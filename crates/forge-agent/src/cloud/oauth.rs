@@ -366,16 +366,48 @@ mod tests {
     #[test]
     fn parses_iso8601_timestamp() {
         use crate::cloud::time::parse_iso8601_timestamp;
-        use std::time::UNIX_EPOCH;
+        use std::time::Duration;
         let parsed = parse_iso8601_timestamp("2025-12-25T12:00:00.000Z").expect("timestamp");
-        assert!(parsed > UNIX_EPOCH);
+        // 2025-12-25T12:00:00Z is a fixed epoch second; pinning it
+        // catches both a wrong parse and a silently dropped subsecond.
+        assert_eq!(
+            parsed.duration_since(std::time::UNIX_EPOCH).expect("after epoch"),
+            Duration::from_secs(1_766_664_000),
+            "2025-12-25T12:00:00Z == epoch second 1766664000"
+        );
     }
 
     #[test]
     fn parses_numeric_millisecond_timestamp() {
-        use std::time::UNIX_EPOCH;
         let parsed =
             parse_timestamp_value(&serde_json::json!(1_735_128_000_000_i64)).expect("timestamp");
-        assert!(parsed > UNIX_EPOCH);
+        assert_eq!(
+            parsed.duration_since(std::time::UNIX_EPOCH).expect("after epoch"),
+            std::time::Duration::from_secs(1_735_128_000),
+            "milliseconds must land on the matching epoch second"
+        );
+    }
+
+    /// A negative UTC offset applies its true sign: the same wall
+    /// clock written in -05:30 lands 19_800s LATER than the Z form.
+    #[test]
+    fn parses_negative_offset_timestamp() {
+        use crate::cloud::time::parse_iso8601_timestamp;
+        use std::time::Duration;
+        let parsed = parse_iso8601_timestamp("2025-12-25T06:30:00-05:30").expect("timestamp");
+        assert_eq!(
+            parsed.duration_since(std::time::UNIX_EPOCH).expect("after epoch"),
+            Duration::from_secs(1_766_664_000),
+            "06:30-05:30 is the same instant as 12:00Z"
+        );
+    }
+
+    /// Pre-epoch instants are rejected on purpose: `SystemTime +
+    /// Duration` cannot represent them, so a negative epoch returns
+    /// None rather than silently wrapping or clamping.
+    #[test]
+    fn rejects_pre_epoch_timestamps() {
+        use crate::cloud::time::parse_iso8601_timestamp;
+        assert!(parse_iso8601_timestamp("1969-12-31T23:59:59.000Z").is_none());
     }
 }

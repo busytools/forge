@@ -34,14 +34,6 @@ impl<T> LayerState<T> {
     pub fn is_populated(&self) -> bool {
         matches!(self, LayerState::Populated(_))
     }
-
-    /// Borrow the payload when populated.
-    pub fn as_populated(&self) -> Option<&T> {
-        match self {
-            LayerState::Populated(t) => Some(t),
-            _ => None,
-        }
-    }
 }
 
 /// Three-state classification of the scan's repo gate. Replaces the
@@ -154,15 +146,5 @@ mod tests {
         assert!(!clean.is_populated());
         assert!(populated.is_populated());
         assert!(!failed.is_populated());
-    }
-
-    #[test]
-    fn layer_state_as_populated_borrows_payload() {
-        let populated: LayerState<u32> = LayerState::Populated(42);
-        assert_eq!(populated.as_populated(), Some(&42));
-        let clean: LayerState<u32> = LayerState::Clean;
-        assert_eq!(clean.as_populated(), None);
-        let failed: LayerState<u32> = LayerState::ScanFailed;
-        assert_eq!(failed.as_populated(), None);
     }
 }

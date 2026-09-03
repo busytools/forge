@@ -1674,12 +1674,12 @@ mod tests {
         for _ in 0..64 {
             update_visual_heights(&mut app, &spinner, 80, 8);
             app.active_viewport_mut().rebuild_prefix_sums();
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
         assert!(
-            !app.active_viewport_mut().resize_remeasure_active(),
+            !app.active_viewport_mut().remeasure_active(),
             "setup must fully converge so background_convergence_pending is clear before the test fires",
         );
 
@@ -1724,7 +1724,7 @@ mod tests {
         for _ in 0..32 {
             update_visual_heights(&mut app, &spinner, 80, 24);
             app.active_viewport_mut().rebuild_prefix_sums();
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
@@ -1798,7 +1798,7 @@ mod tests {
 
         converge(&mut app, 80, 24);
         assert!(
-            !app.active_viewport_mut().resize_remeasure_active(),
+            !app.active_viewport_mut().remeasure_active(),
             "setup must converge before the invalidation under test",
         );
 
@@ -1940,7 +1940,7 @@ mod tests {
                 content_height,
                 usize::from(viewport_height),
             );
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
@@ -2020,7 +2020,7 @@ mod tests {
         for _ in 0..64 {
             let content_height = sync_chat_layout(&mut app, area, &spinner);
             let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
@@ -2206,7 +2206,7 @@ mod tests {
                 "convergence frames must render ~a viewport-worth; rendered_msgs={} of {msg_count}",
                 render_data.stats.rendered_msgs,
             );
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
@@ -2236,7 +2236,7 @@ mod tests {
         for _ in 0..64 {
             let content_height = sync_chat_layout(&mut app, area, &spinner);
             let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 24);
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
@@ -2286,7 +2286,7 @@ mod tests {
                 content_height,
                 usize::from(area.height),
             );
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
@@ -2459,7 +2459,7 @@ mod tests {
         for _ in 0..64 {
             let content_height = sync_chat_layout(&mut app, area, &spinner);
             let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
@@ -2501,13 +2501,13 @@ mod tests {
         for _ in 0..200 {
             let content_height = sync_chat_layout(&mut app, area, &spinner);
             let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
 
         assert!(
-            !app.active_viewport_mut().resize_remeasure_active(),
+            !app.active_viewport_mut().remeasure_active(),
             "the background loop must finish converging",
         );
         for i in 0..app.messages().len() {
@@ -2786,12 +2786,12 @@ mod tests {
         for _ in 0..16 {
             update_visual_heights(&mut app, &spinner, 48, 12);
             app.active_viewport_mut().rebuild_prefix_sums();
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
         assert!(
-            !app.active_viewport_mut().resize_remeasure_active(),
+            !app.active_viewport_mut().remeasure_active(),
             "frame-1 setup must fully measure the initial scrollback before mid-scroll resize",
         );
         let per_message_height = app.active_viewport_mut().message_height(0);
@@ -2806,7 +2806,7 @@ mod tests {
         update_visual_heights(&mut app, &spinner, 18, visible_rows);
 
         assert_eq!(app.viewport().message_heights_width, 0);
-        assert!(app.active_viewport_mut().resize_remeasure_active());
+        assert!(app.active_viewport_mut().remeasure_active());
         assert!(app.active_viewport_mut().message_height_is_current(15));
         assert!(app.active_viewport_mut().message_height_is_current(16));
         assert!(!app.active_viewport_mut().message_height_is_current(31));
@@ -2833,13 +2833,13 @@ mod tests {
         for _ in 0..8 {
             update_visual_heights(&mut app, &spinner, 18, per_message_height * 2);
             app.active_viewport_mut().rebuild_prefix_sums();
-            if !app.active_viewport_mut().resize_remeasure_active() {
+            if !app.active_viewport_mut().remeasure_active() {
                 break;
             }
         }
 
         assert_eq!(app.viewport().message_heights_width, 18);
-        assert!(!app.active_viewport_mut().resize_remeasure_active());
+        assert!(!app.active_viewport_mut().remeasure_active());
         assert!(app.active_viewport_mut().message_height_is_current(0));
         assert!(app.active_viewport_mut().message_height_is_current(39));
     }

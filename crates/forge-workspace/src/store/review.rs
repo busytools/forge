@@ -308,7 +308,12 @@ pub fn delete_branch_state(db: &Db, project: &str, branch: &str) -> anyhow::Resu
 
 /// Overwrite the whole review set for `(project, branch)`. An empty slice
 /// removes the row rather than storing an empty blob.
-pub fn save_reviews(
+///
+/// Test-only: production writes reviews exclusively through
+/// [`submit_review`]; this exists so tests can seed the store directly
+/// (simulating the post-restart shape without a recorded submit origin).
+#[cfg(test)]
+pub(crate) fn save_reviews(
     db: &Db,
     project: &str,
     branch: &str,

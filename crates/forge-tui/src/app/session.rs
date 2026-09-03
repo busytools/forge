@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use forge_workspace::SessionKey;
 
-use crate::agent::events::TerminalMap;
 use crate::agent::model;
 use crate::app::file_index::FileIndexState;
 use crate::app::input::InputSnapshot;
@@ -20,7 +19,7 @@ use crate::app::state::types::{
     SessionUsageState, StopHookSummaryState, TodoItem, ToolCallScope, UsageState, WorkflowEntry,
 };
 use crate::app::state::viewport::ChatViewport;
-use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
+use crate::app::state::{ChatRenderTraceState, TurnNoticeRef};
 pub use forge_primitives::runtime::SessionLifecycleState;
 use forge_primitives::runtime::{RuntimeSessionState, SessionTurnState};
 use forge_primitives::{AccountInfo, PeerInflightStats, SessionId};
@@ -140,16 +139,6 @@ pub struct UiSession {
     /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
     /// Use `App::lookup_tool_call()` / `index_tool_call()`.
     pub tool_call_index: HashMap<String, (usize, usize)>,
-    /// Shared terminal process map - used to snapshot output on
-    /// completion.
-    pub terminals: TerminalMap,
-    /// Indexed terminal tool calls for per-frame terminal snapshot
-    /// updates. Avoids O(n*m) scan of all messages/blocks every
-    /// frame.
-    pub terminal_tool_calls: Vec<TerminalToolCallRef>,
-    /// Membership index for [`Self::terminal_tool_calls`], used to
-    /// avoid linear duplicate checks.
-    pub terminal_tool_call_membership: HashSet<TerminalToolCallRef>,
     /// Hook-observed sub-agent attribution: maps `tool_use_id` to
     /// the sub-agent's typed identifier (e.g. `"general-purpose"`).
     /// Used to label tool-call rows fired by sub-agents (#84
@@ -171,6 +160,10 @@ pub struct UiSession {
     /// to roll the chip back when the CLI refuses the switch
     /// (`SessionUpdate::SetModeFailed`).
     pub pending_mode_rollback: Option<ModeRollback>,
+    /// Pre-apply snapshot taken by the optimistic `/model` apply, used
+    /// to roll the chip back when the CLI refuses the switch
+    /// (`SessionUpdate::SetModelFailed`).
+    pub pending_model_rollback: Option<ModelRollback>,
     /// Hook-observed permission mode. Higher fidelity than [`Self::mode`]
     /// when the CLI changes mode without re-emitting status (#88).
     pub observed_permission_mode: Option<forge_workspace::PermissionMode>,
@@ -370,9 +363,10 @@ pub struct UiSession {
     /// `None` until the first scan completes. Mirrors `git_diff_snapshot`
     /// but holds OS-level process state instead of git state.
     pub process_snapshot: Option<forge_workspace::env::processes::ProcessSnapshot>,
-    /// Generation epoch for the process scanner. Bumped on session
-    /// swap so a scan kicked off against the old `claude_pid` can be
-    /// dropped if it lands after the swap.
+    /// Generation epoch for the process scanner. Bumped alongside
+    /// `git_diff_generation` when a Connected delivers a changed cwd,
+    /// so a scan kicked off against the old `claude_pid` is dropped
+    /// if it lands after the swap.
     pub process_scan_generation: u64,
     /// In-flight scan guard. `request_refresh` short-circuits when
     /// already `true`.
@@ -646,6 +640,14 @@ pub struct ModeRollback {
     pub supported_mode_ids: Vec<forge_workspace::PermissionMode>,
 }
 
+/// What the optimistic `/model` apply changed, snapshotted so a CLI
+/// refusal (`SessionUpdate::SetModelFailed`) can restore it.
+#[derive(Debug, Clone)]
+pub struct ModelRollback {
+    pub current_model: Option<model::CurrentModel>,
+    pub requested_model_id: Option<String>,
+}
+
 impl UiSession {
     /// Restore the snapshot parked by the optimistic `/mode` apply.
     /// Returns false when no snapshot is parked.
@@ -655,6 +657,36 @@ impl UiSession {
         self.turn_state.mode = snapshot.turn_mode;
         self.turn_state.supported_mode_ids = snapshot.supported_mode_ids;
         true
+    }
+
+    /// Restore the snapshot parked by the optimistic `/model` apply.
+    /// Returns false when no snapshot is parked.
+    pub fn rollback_pending_model(&mut self) -> bool {
+        let Some(snapshot) = self.pending_model_rollback.take() else { return false };
+        self.current_model = snapshot.current_model;
+        self.turn_state.requested_model_id = snapshot.requested_model_id;
+        true
+    }
+
+    /// Clear the session-identity mirror set a hard teardown applies -
+    /// the one place to add a mirror field, so a new field cannot be
+    /// missed at one of the hand-synced teardown sites.
+    pub fn clear_runtime_identity(&mut self) {
+        self.key = None;
+        self.session_id = None;
+        self.account_info = None;
+        self.current_model = None;
+        self.mode = None;
+        self.runtime_session_state = None;
+        self.observed_permission_mode = None;
+        self.observed_effort = None;
+        self.pending_mode_rollback = None;
+        self.pending_model_rollback = None;
+        self.session_usage = crate::app::state::SessionUsageState::default();
+        self.cancelled_turn_pending_hint = false;
+        self.pending_cancel = false;
+        self.last_rate_limit_update = None;
+        self.mcp = McpState::default();
     }
 }
 
@@ -692,9 +724,6 @@ impl Default for UiSession {
             active_task_ids: HashSet::default(),
             tool_call_scopes: HashMap::default(),
             tool_call_index: HashMap::default(),
-            terminals: TerminalMap::default(),
-            terminal_tool_calls: Vec::default(),
-            terminal_tool_call_membership: HashSet::default(),
             subagent_attribution: HashMap::default(),
             current_model: Option::default(),
             available_models: Vec::default(),
@@ -702,6 +731,7 @@ impl Default for UiSession {
             available_agents: Vec::default(),
             mode: Option::default(),
             pending_mode_rollback: Option::default(),
+            pending_model_rollback: Option::default(),
             observed_permission_mode: Option::default(),
             observed_effort: Option::default(),
             observed_assistant_model: Option::default(),

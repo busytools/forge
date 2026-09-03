@@ -53,7 +53,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             let style = SpinnerStyle::ALL_STYLES[state.highlight];
             app.spinner_style = style;
             if let Some(ws) = app.workspace.as_ref() {
-                ws.persist_spinner(style);
+                let _ = ws.dispatch(forge_workspace::Command::PersistSpinner { style });
             }
             close(app);
         }

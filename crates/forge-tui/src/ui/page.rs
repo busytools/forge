@@ -116,5 +116,12 @@ mod tests {
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("status here"), "status: {rendered}");
         assert!(rendered.contains("help there"), "footer: {rendered}");
+        // Both present is not the claim - the status row sits ABOVE the
+        // footer, which a same-row swap would still satisfy.
+        let status_row =
+            rendered.lines().position(|l| l.contains("status here")).expect("status rendered");
+        let footer_row =
+            rendered.lines().position(|l| l.contains("help there")).expect("footer rendered");
+        assert!(status_row < footer_row, "status must render above the footer");
     }
 }

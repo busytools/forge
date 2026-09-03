@@ -27,6 +27,23 @@ use crate::target::ProjectKey;
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
+/// A failed prompt dispatch to a running target unwinds the echo's
+/// already-opened turn: without this its bar counts forever and the
+/// bucket spinner never drops (mirrors the typed-submit
+/// compensation). Per-site warns stay at the call sites.
+pub(crate) fn send_dispatch_turn_error(
+    workspace: &Workspace,
+    key: SessionKey,
+    err: &crate::protocol::DispatchError,
+) {
+    let _ = workspace.update_sender().send(SessionUpdate::TurnError {
+        key,
+        message: err.to_string(),
+        class: None,
+        terminal_reason: None,
+    });
+}
+
 /// Build the list of `(flag, value)` extra CLI args specific to a
 /// worker spawn. When the project is a git repo, append
 /// `("worktree", Some(label))` so the spawned `claude` subprocess
@@ -134,6 +151,14 @@ pub(crate) fn handle_spawn_project(
             target: "forge_workspace::spawn",
             project = project_name,
             "Command::SpawnProject for unknown project; ignoring"
+        );
+        try_emit(
+            workspace,
+            "spawn_project::unknown_project",
+            SessionUpdate::ServiceStatus {
+                severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+                message: format!("Unknown project: {project_name}"),
+            },
         );
         return;
     };
@@ -261,15 +286,7 @@ pub(crate) fn handle_deliver_peer_prompt(
                 error = ?err,
                 "DeliverPeerPrompt dispatch to running target failed"
             );
-            // The echo already opened a turn in the TUI; without this
-            // its bar counts forever and the bucket spinner never
-            // drops (mirrors the typed-submit compensation).
-            let _ = workspace.update_sender().send(SessionUpdate::TurnError {
-                key: target_key,
-                message: err.to_string(),
-                class: None,
-                terminal_reason: None,
-            });
+            send_dispatch_turn_error(workspace, target_key, &err);
         }
         return;
     }
@@ -381,15 +398,7 @@ pub(crate) fn deliver_cron_prompt(
                     error = ?err,
                     "cron fire dispatch to live owner failed",
                 );
-                // The echo already opened a turn in the TUI; without
-                // this its bar counts forever and the bucket spinner
-                // never drops (mirrors the typed-submit compensation).
-                let _ = workspace.update_sender().send(SessionUpdate::TurnError {
-                    key: target_key,
-                    message: err.to_string(),
-                    class: None,
-                    terminal_reason: None,
-                });
+                send_dispatch_turn_error(workspace, target_key, &err);
                 CronFireOutcome::DispatchFailed
             }
         };
@@ -529,29 +538,26 @@ pub(crate) fn deliver_gotify_message(
                     error = ?err,
                     "gotify deliver to running team worker failed",
                 );
-                // The echo already opened a turn in the TUI; without
-                // this its bar counts forever and the bucket spinner
-                // never drops (mirrors the typed-submit compensation).
-                let _ = workspace.update_sender().send(SessionUpdate::TurnError {
-                    key: worker_key,
-                    message: err.to_string(),
-                    class: None,
-                    terminal_reason: None,
-                });
+                send_dispatch_turn_error(workspace, worker_key, &err);
             }
         } else if let Some(domain) = workspace.domain_session_for(&worker_key) {
             domain.lock().pending_gotify_prompts.push(notification);
         } else {
             // Live entry exists but its DomainSession isn't registered yet
             // (the sub-second window between insert_live_worker and the
-            // spawn's handle registration). Nowhere to buffer; warn so the
-            // drop isn't silent rather than mis-routing to the lead.
-            tracing::warn!(
-                target: "forge_workspace::spawn",
-                project = %project,
-                role = %role,
-                "gotify notification dropped: worker entry present but no DomainSession yet",
-            );
+            // spawn's handle registration). Buffer on the worker's own
+            // key - the spawn registers that exact DomainSession (reuse,
+            // not overwrite), and its Connected drain re-dispatches the
+            // notification.
+            let mut handles = workspace.domain_handles.lock();
+            let domain = handles
+                .entry(worker_key.clone())
+                .or_insert_with(|| {
+                    Arc::new(Mutex::new(DomainSession::new(worker_key.clone(), None)))
+                })
+                .clone();
+            drop(handles);
+            domain.lock().pending_gotify_prompts.push(notification);
         }
         return;
     }
@@ -579,15 +585,7 @@ pub(crate) fn deliver_gotify_message(
                 error = ?err,
                 "gotify deliver to running project failed",
             );
-            // The echo already opened a turn in the TUI; without this
-            // its bar counts forever and the bucket spinner never
-            // drops (mirrors the typed-submit compensation).
-            let _ = workspace.update_sender().send(SessionUpdate::TurnError {
-                key: target_key,
-                message: err.to_string(),
-                class: None,
-                terminal_reason: None,
-            });
+            send_dispatch_turn_error(workspace, target_key, &err);
         }
         return;
     }
@@ -710,6 +708,14 @@ pub(crate) fn handle_spawn_session(
             session_id,
             "Command::SpawnSession for unknown session; ignoring"
         );
+        try_emit(
+            workspace,
+            "spawn_session::unknown_session",
+            SessionUpdate::ServiceStatus {
+                severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+                message: format!("Session {session_id} is no longer in the project catalog"),
+            },
+        );
         return;
     };
 
@@ -790,6 +796,14 @@ pub(crate) fn handle_switch_account(
             key = %key.as_str(),
             account = %account_display_name,
             "switch_account: unknown account; ignoring",
+        );
+        try_emit(
+            workspace,
+            "switch_account::unknown_account",
+            SessionUpdate::SlashCommandError {
+                key,
+                message: format!("Unknown account: {account_display_name}"),
+            },
         );
         return;
     };
@@ -1213,12 +1227,13 @@ pub(crate) fn handle_close_worker(
 ///
 /// Order matters: the worktree dirty-check runs BEFORE any teardown,
 /// so a dirty worker (uncommitted/untracked or unpushed) is blocked
-/// without being killed (unless `force`). Then the teardown runs (the
-/// subprocess dies on drop - the kill signal is sent synchronously,
-/// before the worktree is touched). Then the worktree is removed. A
-/// post-teardown worktree-removal failure is surfaced as a warning in
-/// the [`DespawnResult`] but never rolls back the kill - teardown and
-/// worktree cleanup are independent.
+/// without being killed (unless `force`). Then the teardown runs -
+/// releasing the session closes the worker's command channel, its
+/// `SessionTask` exits and awaits `AgentHandle::disconnect`, which
+/// signals and drains the subprocess - and then the worktree is
+/// removed. A post-teardown worktree-removal failure is surfaced as a
+/// warning in the [`DespawnResult`] but never rolls back the kill -
+/// teardown and worktree cleanup are independent.
 pub(crate) fn handle_despawn_worker(
     workspace: &Arc<Workspace>,
     project_key: &ProjectKey,
@@ -1458,6 +1473,10 @@ pub(crate) fn handle_deliver_worker_prompt(
             label = %target_label,
             "deliver_worker_prompt: no matching live worker (target gone since dispatch)"
         );
+        // Expire the asks routed at this worker so their callers get
+        // the DeliveryFailureNotice instead of waiting the 30-min
+        // timeout for a target that no longer exists.
+        workspace.expire_inflight_for_closed_worker(project_key, target_label);
         return;
     };
     let target_key = entry.session_key.clone();
@@ -1530,15 +1549,7 @@ pub(crate) fn handle_deliver_worker_prompt(
             error = ?err,
             "DeliverWorkerPrompt dispatch to worker failed"
         );
-        // The echo already opened a turn in the TUI; without this
-        // its bar counts forever and the bucket spinner never
-        // drops (mirrors the typed-submit compensation).
-        let _ = workspace.update_sender().send(SessionUpdate::TurnError {
-            key: target_key,
-            message: err.to_string(),
-            class: None,
-            terminal_reason: None,
-        });
+        send_dispatch_turn_error(workspace, target_key, &err);
     }
 }
 
@@ -1601,15 +1612,7 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
             error = ?err,
             "DeliverWorkerPromptToLead dispatch to lead failed"
         );
-        // The echo already opened a turn in the TUI; without this
-        // its bar counts forever and the bucket spinner never
-        // drops (mirrors the typed-submit compensation).
-        let _ = workspace.update_sender().send(SessionUpdate::TurnError {
-            key: target_lead_key.clone(),
-            message: err.to_string(),
-            class: None,
-            terminal_reason: None,
-        });
+        send_dispatch_turn_error(workspace, target_lead_key.clone(), &err);
     }
 }
 
@@ -1712,8 +1715,15 @@ provider = "anthropic"
 
         handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default());
 
-        // No SessionUpdate should have been emitted.
-        assert!(rx.try_recv().is_err(), "no SessionUpdate emitted for unknown project");
+        // The user sees a typed notice naming the unknown project.
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(SessionUpdate::ServiceStatus { message, .. }) if message.contains("no-such-project")
+            ),
+            "unknown project surfaces a ServiceStatus notice"
+        );
+        assert!(rx.try_recv().is_err(), "nothing beyond the notice");
     }
 
     /// `handle_spawn_project` for a known project must emit a

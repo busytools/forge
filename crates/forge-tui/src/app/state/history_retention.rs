@@ -1,6 +1,5 @@
 use crate::agent::model;
 use std::cmp::Ordering;
-use std::collections::HashSet;
 use std::mem::{size_of, size_of_val};
 
 use super::LayoutInvalidation as InvalidationLevel;
@@ -64,7 +63,7 @@ impl super::App {
     }
 
     fn sync_after_message_topology_change(&mut self, start_idx: usize) {
-        self.rebuild_tool_indices_and_terminal_refs();
+        self.rebuild_tool_indices();
         if self.messages().is_empty() {
             self.active_viewport_mut().sync_message_count(0);
             return;
@@ -294,7 +293,7 @@ impl super::App {
         let updated = self.retained_history_bytes().saturating_sub(removed_bytes);
         *self.retained_history_bytes_mut() = updated;
         self.rebuild_render_cache_accounting();
-        self.rebuild_tool_indices_and_terminal_refs();
+        self.rebuild_tool_indices();
         if removed_tail {
             self.invalidate_tail_transition(None, self.messages().len().checked_sub(1));
         } else if !self.messages().is_empty() {
@@ -314,7 +313,7 @@ impl super::App {
         self.clear_turn_notice_refs();
         self.set_last_stop_hook_summary(None);
         self.rebuild_render_cache_accounting();
-        self.rebuild_tool_indices_and_terminal_refs();
+        self.rebuild_tool_indices();
         self.active_viewport_mut().sync_message_count(0);
         self.needs_redraw = true;
     }
@@ -337,12 +336,9 @@ impl super::App {
         *self.retained_history_bytes_mut() = updated;
     }
 
-    pub(super) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
-        self.clear_terminal_tool_call_tracking();
+    pub(super) fn rebuild_tool_indices(&mut self) {
         self.active_task_ids_mut().clear();
 
-        let mut terminal_tool_call_membership = HashSet::new();
-        let mut terminal_tool_calls = Vec::new();
         // Reuse the index's key allocations rather than clearing it: a
         // session at its retention budget runs this per appended message,
         // and clear-then-reinsert frees and re-allocates every tool-call
@@ -362,19 +358,10 @@ impl super::App {
                     } else {
                         tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
                     }
-                    if let Some(terminal_id) = Self::tracked_terminal_id_for_tool(tc) {
-                        let entry =
-                            super::TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
-                        if terminal_tool_call_membership.insert(entry.clone()) {
-                            terminal_tool_calls.push(entry);
-                        }
-                    }
                 }
             }
         }
         tool_call_index.retain(|_, slot| slot.0 != UNVISITED_MSG_IDX);
-        *self.terminal_tool_calls_mut() = terminal_tool_calls;
-        *self.terminal_tool_call_membership_mut() = terminal_tool_call_membership;
         self.tool_call_scopes_mut().retain(|id, _| tool_call_index.contains_key(id));
         self.subagent_attribution_mut().retain(|id, _| tool_call_index.contains_key(id));
         *self.active_tool_call_index_mut() = tool_call_index;
@@ -512,7 +499,7 @@ impl super::App {
                     active_turn_owner,
                     preserved_anchor,
                 );
-                self.rebuild_tool_indices_and_terminal_refs();
+                self.rebuild_tool_indices();
                 let msg_count = self.messages().len();
                 {
                     let vp = self.active_viewport_mut();

@@ -111,7 +111,9 @@ impl SessionTask {
                 maybe_event = event_rx.recv() => {
                     let Some(event) = maybe_event else { break; };
                     let event = self.merge_catalog_models(event).await;
-                    self.translate_event(event);
+                    if !self.translate_event(event) {
+                        break;
+                    }
                 }
                 maybe_cmd = self.command_rx.recv() => {
                     let Some(cmd) = maybe_cmd else { break; };
@@ -136,6 +138,12 @@ impl SessionTask {
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.release_session_if_current(&self.key, &self.handle);
         }
+        // Take the bridge's client slot and run the SDK's graceful
+        // shutdown. Without this, release / despawn / reader-death left
+        // the `claude` subprocess (and its reader/writer/stderr tasks)
+        // alive until forge exited - the bridge holds the `Client` and
+        // `Client` has no `Drop` of its own.
+        self.handle.disconnect().await;
     }
 
     /// Swap an OpenRouter session's discovered `available_models` for
@@ -183,7 +191,11 @@ impl SessionTask {
     /// (or pair of updates for `Connected`, which also emits
     /// `KeyRenamed` if a synthetic spawn key is pending). Updates
     /// `DomainSession` in-place before each emit.
-    fn translate_event(&mut self, event: AgentEvent) {
+    ///
+    /// Returns `true` to keep the run loop running; `false` when the
+    /// event is terminal for this task and the loop must exit (so the
+    /// exit path releases the session and disconnects the subprocess).
+    fn translate_event(&mut self, event: AgentEvent) -> bool {
         // First, update DomainSession in-place.
         {
             let mut guard = self.domain.lock();
@@ -408,6 +420,10 @@ impl SessionTask {
                         &key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
+                    // Same for Gotify notifications buffered at the synth
+                    // key: the failed spawn strands them - drain and
+                    // record the drop.
+                    workspace.expire_buffered_gotify_prompts(&key);
                     // Worker async spawn failure: classify the
                     // failure, dispatch a typed
                     // WorkerSpawnFailedNotice envelope to the lead's
@@ -420,7 +436,30 @@ impl SessionTask {
                     // - this branch is a no-op for them.
                     workspace.handle_async_worker_spawn_failure(&key, &message);
                 }
-                self.emit(SessionUpdate::ConnectionFailed { key, message, fatal: false });
+                self.emit(SessionUpdate::ConnectionFailed {
+                    key: key.clone(),
+                    message,
+                    fatal: false,
+                });
+                // Terminal for this task: the spawn failed before any
+                // Connected, so the pooled handle is dead and must not
+                // survive it - otherwise the pool fast path hands the
+                // dead handle back to every later click / cron fire /
+                // peer ask and the retry "succeeds" into nothing.
+                // Release both registrations (the resolved key the
+                // workspace maps hold, and the synth key while the TUI
+                // may still route to it); `release_session_if_current`
+                // no-ops on absent keys. The run loop then exits, so
+                // Drop's expiry backstop fires too.
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.release_session_if_current(&self.key, &self.handle);
+                    if let Some(spawn_key) = self.spawn_key.clone()
+                        && spawn_key != self.key
+                    {
+                        workspace.release_session_if_current(&spawn_key, &self.handle);
+                    }
+                }
+                return false;
             }
             AgentEvent::PermissionRequest { session_id, request } => {
                 let session_key = SessionKey::from_session_id(session_id.clone());
@@ -529,6 +568,19 @@ impl SessionTask {
                 let session_key = SessionKey::from_session_id(session_id);
                 self.emit(SessionUpdate::SetModeFailed { key: session_key, mode, message });
             }
+            AgentEvent::SetModelFailed { session_id, model, message } => {
+                let session_key = SessionKey::from_session_id(session_id);
+                self.emit(SessionUpdate::SetModelFailed { key: session_key, model, message });
+            }
+            AgentEvent::TurnError { session_id, message } => {
+                let session_key = SessionKey::from_session_id(session_id);
+                self.emit(SessionUpdate::TurnError {
+                    key: session_key,
+                    message,
+                    class: None,
+                    terminal_reason: None,
+                });
+            }
             AgentEvent::SessionsListed { sessions } => {
                 // Route via `spawn_key` while the pre-Connect bucket
                 // is still in place - same pattern as `AuthRequired`
@@ -600,6 +652,7 @@ impl SessionTask {
                 });
             }
         }
+        true
     }
 
     /// Mark this session's account rate-limited on a live 429 so the
@@ -722,6 +775,15 @@ impl SessionTask {
                         error = %err,
                         "agent command dispatch failed; bridge channel closed?"
                     );
+                    // Surface it - the TUI may already have committed
+                    // optimistic state (Thinking, a flipped chip) that
+                    // unwinds only when the failure is visible.
+                    self.emit(SessionUpdate::TurnError {
+                        key: self.key.clone(),
+                        message: err.to_string(),
+                        class: None,
+                        terminal_reason: None,
+                    });
                 }
             }
         }
@@ -853,6 +915,7 @@ impl SessionTask {
                     error = ?err,
                     "drain_pending_peer_prompts: dispatch failed; prompt dropped"
                 );
+                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
             }
         }
     }
@@ -879,6 +942,7 @@ impl SessionTask {
                     error = ?err,
                     "drain_pending_cron_prompts: dispatch failed; prompt dropped",
                 );
+                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
             }
         }
     }
@@ -912,6 +976,7 @@ impl SessionTask {
                     error = ?err,
                     "drain_pending_gotify_prompts: dispatch failed; prompt dropped"
                 );
+                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
             }
         }
     }
@@ -1123,10 +1188,9 @@ fn on_connected_for_test(
 /// path) and `Workspace::dispatch`'s synchronous test fallback when
 /// no `SessionTask` is running for `key`.
 ///
-/// Returns `Ok(())` on successful enqueue; `Err(...)` only on
-/// AgentHandle send failure (dispatcher channel closed). Commands
-/// requiring a `session_id` that the domain doesn't have yet
-/// (pre-Connect) log a warning and return `Ok(())`.
+/// Returns `Ok(())` on successful enqueue; `Err(...)` on AgentHandle
+/// send failure (dispatcher channel closed) or on a command dropped
+/// for having no `session_id` yet (pre-Connect).
 pub(crate) fn execute_command_via_handle(
     handle: &Arc<AgentHandle>,
     key: &SessionKey,
@@ -1136,29 +1200,25 @@ pub(crate) fn execute_command_via_handle(
     match cmd {
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "Prompt");
-                return Ok(());
+                return Err(warn_no_session(key, "Prompt"));
             };
             handle.prompt_with_images(sid.to_owned(), text, attachments)
         }
         Command::Cancel { key: _ } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "Cancel");
-                return Ok(());
+                return Err(warn_no_session(key, "Cancel"));
             };
             handle.cancel(sid.to_owned())
         }
         Command::SetMode { key: _, mode } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "SetMode");
-                return Ok(());
+                return Err(warn_no_session(key, "SetMode"));
             };
             handle.set_mode(sid.to_owned(), mode)
         }
         Command::SetModel { key: _, model } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "SetModel");
-                return Ok(());
+                return Err(warn_no_session(key, "SetModel"));
             };
             handle.set_model(sid.to_owned(), model)
         }
@@ -1170,15 +1230,13 @@ pub(crate) fn execute_command_via_handle(
         }
         Command::ReconnectMcpServer { key: _, server_name } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "ReconnectMcpServer");
-                return Ok(());
+                return Err(warn_no_session(key, "ReconnectMcpServer"));
             };
             handle.reconnect_mcp_server(sid.to_owned(), server_name)
         }
         Command::ToggleMcpServer { key: _, server_name, enabled } => {
             let Some(sid) = session_id else {
-                warn_no_session(key, "ToggleMcpServer");
-                return Ok(());
+                return Err(warn_no_session(key, "ToggleMcpServer"));
             };
             handle.toggle_mcp_server(sid.to_owned(), server_name, enabled)
         }
@@ -1208,7 +1266,14 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverWorkerPrompt { .. }
         | Command::DeliverWorkerPromptToLead { .. }
         | Command::DeliverGotifyMessage { .. }
-        | Command::SwitchAccount { .. }) => {
+        | Command::SwitchAccount { .. }
+        | Command::SaveReviewThreads { .. }
+        | Command::RemoveReviewThread { .. }
+        | Command::SetReviewThreadStatus { .. }
+        | Command::PersistSpinner { .. }
+        | Command::CloseSession { .. }
+        | Command::UpsertReviewThread { .. }
+        | Command::SubmitReview { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 key = %key.as_str(),
@@ -1220,13 +1285,14 @@ pub(crate) fn execute_command_via_handle(
     }
 }
 
-fn warn_no_session(key: &SessionKey, command: &'static str) {
+fn warn_no_session(key: &SessionKey, command: &'static str) -> forge_agent::AgentError {
     tracing::warn!(
         target: "forge_workspace::session_task",
         key = %key.as_str(),
         command,
         "command dropped: no session_id stamped on DomainSession yet",
     );
+    forge_agent::AgentError::NoSession { command }
 }
 
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
@@ -1238,10 +1304,12 @@ fn warn_no_session(key: &SessionKey, command: &'static str) {
 /// account info) lives on the TUI's `UiSession`, populated via the
 /// `SessionUpdate` envelopes the task emits.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
-    // Always overwrite so /new / /login / /logout don't leave the
-    // mirror stale on the second-Connected emission. A fresh identity
-    // has no turn in flight yet, so clear the runtime mirror + the
-    // turn-commit marker too.
+    if let AgentEvent::ConnectionFailed { .. } = event {
+        // The subprocess is gone - drop the runtime/turn mirrors so the
+        // `/account` backstop doesn't read a stale in-flight turn.
+        domain.runtime_state = None;
+        domain.turn_pending = false;
+    }
     if let AgentEvent::Connected { session_id, .. } = event {
         domain.session_id = Some(SessionId::new(session_id.clone()));
         domain.runtime_state = None;
@@ -1722,6 +1790,289 @@ mod tests {
         assert_eq!(key, reviewer);
     }
 
+    /// A `ConnectionFailed` event is terminal for the task: the dead
+    /// spawn's pool entry and command sender are released so the next
+    /// retry (projects-pane click, cron fire) re-spawns instead of
+    /// dispatching into the dead handle, the TUI still receives the
+    /// user-visible `SessionUpdate::ConnectionFailed`, and
+    /// `translate_event` signals the run loop to exit so `Drop`'s
+    /// expiry backstop fires.
+    #[tokio::test]
+    async fn connection_failed_releases_registrations_and_terminates() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let key = SessionKey::from_str_for_test("dead-spawn");
+        let (handle, _cmds) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let (cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, mut update_rx) = mpsc::unbounded_channel();
+        workspace.pool.lock().insert(
+            key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: crate::account::AccountKey("Acct".to_owned()),
+            },
+        );
+        workspace.command_senders.lock().insert(key.clone(), cmd_tx);
+        workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle,
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        let continues = task
+            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+
+        assert!(!continues, "ConnectionFailed must terminate the task");
+        assert!(
+            !workspace.pool.lock().contains_key(&key),
+            "pool entry released so a retry spawns fresh"
+        );
+        assert!(!workspace.command_senders.lock().contains_key(&key), "command sender released");
+        let update = update_rx.try_recv().expect("an update emits");
+        assert!(
+            matches!(
+                update,
+                SessionUpdate::ConnectionFailed { key: ref emitted, .. } if *emitted == key
+            ),
+            "the TUI still receives the ConnectionFailed envelope"
+        );
+    }
+
+    /// A `ConnectionFailed` on a task that still carries its synthetic
+    /// spawn key releases BOTH registrations - the synth key the TUI
+    /// may still route to, and the resolved key the pool holds.
+    #[tokio::test]
+    async fn connection_failed_releases_spawn_key_registrations_too() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let key = SessionKey::from_str_for_test("real-key");
+        let spawn_key = SessionKey::from_str_for_test("__spawn_proj__");
+        let (handle, _cmds) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let (cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        workspace.pool.lock().insert(
+            key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: crate::account::AccountKey("Acct".to_owned()),
+            },
+        );
+        workspace.command_senders.lock().insert(key.clone(), cmd_tx);
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::clone(&handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
+            update_tx,
+            spawn_key: Some(spawn_key.clone()),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        let continues = task
+            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+
+        assert!(!continues);
+        assert!(
+            !workspace.pool.lock().contains_key(&key),
+            "pool entry under the real key released"
+        );
+        assert!(
+            !workspace.command_senders.lock().contains_key(&key),
+            "command sender under the real key released"
+        );
+    }
+
+    /// A `PermissionRequest` registers a pending slot; `RespondPermission`
+    /// consumes it and the outcome reaches the agent round-trip. The
+    /// happy path of the can_use_tool parking lot.
+    #[tokio::test]
+    async fn respond_permission_round_trips_to_the_agent() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (handle, mut agent_rx) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let key = SessionKey::from_session_id("perm");
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::clone(&handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(
+                key.clone(),
+                Some(Arc::clone(&handle)),
+            ))),
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        task.translate_event(AgentEvent::PermissionRequest {
+            session_id: key.as_str().to_owned(),
+            request: permission_request_fixture("tu-1"),
+        });
+        assert!(
+            task.domain.lock().pending_interactions.contains_key("tu-1"),
+            "the request parks a pending permission slot"
+        );
+
+        task.execute_command(Command::RespondPermission {
+            key: key.clone(),
+            tool_id: "tu-1".to_owned(),
+            outcome: forge_primitives::PermissionOutcome::Cancelled,
+        });
+
+        let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), agent_rx.recv())
+            .await
+            .expect("the forwarded outcome reaches the agent promptly")
+            .expect("command channel open");
+        assert!(
+            matches!(
+                cmd,
+                forge_primitives::AgentCommand::PermissionResponse { tool_call_id, .. }
+                    if tool_call_id == "tu-1"
+            ),
+            "the outcome forwards to the bridge with the right tool id"
+        );
+        assert!(
+            !task.domain.lock().pending_interactions.contains_key("tu-1"),
+            "the slot is consumed"
+        );
+    }
+
+    /// The cross-kind guard: `AskUserQuestion` reuses the can_use_tool
+    /// wire, so a `RespondPermission` can arrive with a tool id whose
+    /// slot is a Question. The mismatched outcome must be dropped and
+    /// the REAL waiter (the question's oneshot) preserved.
+    #[tokio::test]
+    async fn respond_permission_against_a_question_slot_is_dropped() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (handle, mut agent_rx) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let key = SessionKey::from_session_id("xkind");
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::clone(&handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(
+                key.clone(),
+                Some(Arc::clone(&handle)),
+            ))),
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        task.translate_event(AgentEvent::QuestionRequest {
+            session_id: key.as_str().to_owned(),
+            request: question_request_fixture("tu-q1"),
+        });
+
+        task.execute_command(Command::RespondPermission {
+            key: key.clone(),
+            tool_id: "tu-q1".to_owned(),
+            outcome: forge_primitives::PermissionOutcome::Cancelled,
+        });
+
+        assert!(
+            task.domain.lock().pending_interactions.contains_key("tu-q1"),
+            "the question slot survives the mismatched permission response"
+        );
+        assert!(agent_rx.try_recv().is_err(), "nothing forwards to the agent on a kind mismatch");
+    }
+
+    fn permission_request_fixture(tool_id: &str) -> forge_primitives::PermissionRequest {
+        forge_primitives::PermissionRequest {
+            tool_call: forge_primitives::ToolCall {
+                tool_call_id: tool_id.to_owned(),
+                title: "Read".to_owned(),
+                kind: forge_primitives::ToolKind::Read,
+                status: forge_primitives::ToolCallStatus::Pending,
+                content: Vec::new(),
+                raw_input: None,
+                raw_output: None,
+                output_metadata: None,
+                task_metadata: None,
+                locations: Vec::new(),
+                meta: None,
+            },
+            options: Vec::new(),
+            display: None,
+        }
+    }
+
+    fn question_request_fixture(tool_id: &str) -> forge_primitives::QuestionRequest {
+        forge_primitives::QuestionRequest {
+            tool_call: forge_primitives::ToolCall {
+                tool_call_id: tool_id.to_owned(),
+                title: "AskUserQuestion".to_owned(),
+                kind: forge_primitives::ToolKind::Other,
+                status: forge_primitives::ToolCallStatus::Pending,
+                content: Vec::new(),
+                raw_input: None,
+                raw_output: None,
+                output_metadata: None,
+                task_metadata: None,
+                locations: Vec::new(),
+                meta: None,
+            },
+            prompt: forge_primitives::QuestionPrompt {
+                question: "Which?".to_owned(),
+                header: "Pick".to_owned(),
+                multi_select: false,
+                options: Vec::new(),
+            },
+            question_index: 0,
+            total_questions: 1,
+        }
+    }
+
+    /// The typed dispatch-failure events map onto their session-keyed
+    /// envelopes: `SetModelFailed` (the /model rollback trigger) and
+    /// `TurnError` (the committed-turn unwind).
+    #[tokio::test]
+    async fn set_model_failed_and_turn_error_map_to_keyed_updates() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (mut task, mut update_rx) =
+            review_task_for(&workspace, &SessionKey::from_session_id("m"));
+
+        task.translate_event(AgentEvent::SetModelFailed {
+            session_id: "m".to_owned(),
+            model: "claude-attempted".to_owned(),
+            message: "not available".to_owned(),
+        });
+        assert!(
+            matches!(
+                update_rx.try_recv(),
+                Ok(SessionUpdate::SetModelFailed { model, message, .. })
+                    if model == "claude-attempted" && message == "not available"
+            ),
+            "SetModelFailed keeps model + message for the rollback reducer"
+        );
+
+        task.translate_event(AgentEvent::TurnError {
+            session_id: "m".to_owned(),
+            message: "stdin write failed".to_owned(),
+        });
+        assert!(
+            matches!(
+                update_rx.try_recv(),
+                Ok(SessionUpdate::TurnError { message, .. }) if message == "stdin write failed"
+            ),
+            "TurnError carries the failure text so the spinner unwinds"
+        );
+    }
+
     /// The teardown drain must not double-notify a turn that already
     /// ended cleanly - every site shares one idempotent drain.
     #[tokio::test]
@@ -1817,6 +2168,25 @@ mod tests {
             domain.session_id.as_ref().map(std::string::ToString::to_string),
             Some("real-uuid-1".to_owned())
         );
+    }
+
+    /// `apply_event_to_domain` on `AgentEvent::ConnectionFailed`
+    /// clears the runtime/turn mirrors: the subprocess is gone, so the
+    /// `/account` backstop must not read a stale "turn in flight" and
+    /// refuse the switch with "Finish or cancel the current turn".
+    #[test]
+    fn connection_failed_clears_domain_turn_state() {
+        let mut domain = empty_domain();
+        domain.runtime_state = Some(forge_primitives::RuntimeSessionState::Running);
+        domain.turn_pending = true;
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::ConnectionFailed { message: "reader died".to_owned() },
+        );
+
+        assert_eq!(domain.runtime_state, None, "runtime_state cleared on ConnectionFailed");
+        assert!(!domain.turn_pending, "turn_pending cleared on ConnectionFailed");
     }
 
     /// A second `Connected` (`/new`, `/login`, `/logout`) overwrites
@@ -2356,10 +2726,8 @@ mod tests {
         }
         assert!(saw_nonfatal, "the failed re-spawn emits ConnectionFailed with fatal=false");
 
-        // The task then exits (dead event stream) and releases the
-        // session - no lingering agent under the key.
-        assert!(workspace.pool.lock().contains_key(&key), "precondition: pooled before exit");
-        task.run().await;
+        // The dead spawn's registrations are released in the arm itself,
+        // before the task exits - no lingering agent under the key.
         assert!(
             !workspace.pool.lock().contains_key(&key),
             "a failed re-spawn leaves no lingering pooled agent",
@@ -2467,8 +2835,10 @@ mod tests {
     fn execute_command_without_session_id_is_dropped() {
         let (handle, mut rx) = stub_handle_with_rx();
         let key = SessionKey::from_str_for_test("sess");
-        execute_command_via_handle(&handle, &key, None, Command::Cancel { key: key.clone() })
-            .expect("dispatch returns Ok");
+        let err =
+            execute_command_via_handle(&handle, &key, None, Command::Cancel { key: key.clone() })
+                .expect_err("a no-session dispatch reports the drop, not Ok");
+        assert!(err.to_string().contains("no active session"), "the error names the drop: {err}");
         // Nothing should have been queued.
         assert!(rx.try_recv().is_err());
     }

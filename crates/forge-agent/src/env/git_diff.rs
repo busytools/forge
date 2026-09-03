@@ -1020,7 +1020,9 @@ mod tests {
         // Dirty: modify the tracked file without committing.
         write_file(&dir, "README.md", "second\nthird\n");
         let snap = scan(dir.path(), None).await;
-        let stats = snap.worktree.as_populated().expect("layer 1 populated on dirty tree");
+        let LayerState::Populated(stats) = &snap.worktree else {
+            panic!("layer 1 populated on dirty tree");
+        };
         assert!(
             matches!(snap.branch_ahead, LayerState::Clean),
             "on default branch → layer 2 stays empty"
@@ -1047,7 +1049,9 @@ mod tests {
 
         let snap = scan(dir.path(), None).await;
         assert!(matches!(snap.worktree, LayerState::Clean), "clean tree → no layer 1");
-        let ahead = snap.branch_ahead.as_populated().expect("layer 2 populated on feature branch");
+        let LayerState::Populated(ahead) = &snap.branch_ahead else {
+            panic!("layer 2 populated on feature branch");
+        };
         assert_eq!(ahead.commit_count, 1, "one commit on feature branch beyond main");
         assert_eq!(ahead.stats.total_files, 1);
         assert_eq!(ahead.stats.files[0].path, "feat.rs");
@@ -1075,8 +1079,12 @@ mod tests {
         write_file(&dir, "feat.rs", "fn x() {}\nfn y() {}\n");
 
         let snap = scan(dir.path(), None).await;
-        let worktree = snap.worktree.as_populated().expect("layer 1 populated on dirty tree");
-        let ahead = snap.branch_ahead.as_populated().expect("layer 2 populated on feature branch");
+        let LayerState::Populated(worktree) = &snap.worktree else {
+            panic!("layer 1 populated on dirty tree");
+        };
+        let LayerState::Populated(ahead) = &snap.branch_ahead else {
+            panic!("layer 2 populated on feature branch");
+        };
         // Layer 1: in-progress edits to feat.rs.
         assert_eq!(worktree.total_files, 1);
         assert_eq!(worktree.files[0].path, "feat.rs");
@@ -1150,7 +1158,9 @@ mod tests {
             .expect("git ok");
 
         let snap = scan(dir.path(), None).await;
-        let stats = snap.worktree.as_populated().expect("dirty tree → layer 1 populated");
+        let LayerState::Populated(stats) = &snap.worktree else {
+            panic!("dirty tree → layer 1 populated");
+        };
         assert_eq!(stats.total_files, 3);
         // Sum of per-file added/removed equals the overall total.
         let per_file_added: u32 = stats.files.iter().map(|f| f.added).sum();
@@ -1447,8 +1457,9 @@ mod tests {
             Some("origin/main"),
             "compares against the remote-tracking ref, not stripped local main",
         );
-        let ahead =
-            snap.branch_ahead.as_populated().expect("branch-ahead populated for the worker branch");
+        let LayerState::Populated(ahead) = &snap.branch_ahead else {
+            panic!("branch-ahead populated for the worker branch");
+        };
         assert_eq!(
             ahead.commit_count, 1,
             "only the branch's own commit vs origin/main, not the already-merged one",

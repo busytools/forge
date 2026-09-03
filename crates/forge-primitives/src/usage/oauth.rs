@@ -92,15 +92,6 @@ pub enum OauthUsageError {
 }
 
 impl OauthUsageError {
-    /// True for transient/auth-related failures where falling back to
-    /// a different usage source (e.g. the CLI fetcher) makes sense.
-    /// `Network` and `HttpStatus` are excluded because they typically
-    /// indicate the API is unreachable / broken - falling back to a
-    /// different source for the same backend won't help.
-    pub fn should_fallback(&self) -> bool {
-        matches!(self, Self::NoCredentials | Self::Expired | Self::Unauthorized(_))
-    }
-
     /// True when this is a 429 rate-limit response. Used by callers
     /// that schedule the next probe attempt against the
     /// `Retry-After` value.

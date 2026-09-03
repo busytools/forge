@@ -1013,113 +1013,55 @@ mod tests {
         assert!(rendered.iter().any(|line| line == "Line B"));
     }
 
+    /// The 28-field ToolCallInfo literal behind the captured-terminal
+    /// tests, differing only in the five fields that matter.
+    fn terminal_tool_call(
+        id: &str,
+        status: model::ToolCallStatus,
+        terminal_id: &str,
+        terminal_command: &str,
+        terminal_output: &str,
+    ) -> ToolCallInfo {
+        let mut tc = test_tool_call(id, "Bash", status);
+        tc.terminal_id = Some(terminal_id.to_owned());
+        tc.terminal_command = Some(terminal_command.to_owned());
+        tc.terminal_output = Some(terminal_output.to_owned());
+        tc
+    }
+
     #[test]
     fn content_summary_only_extracts_tool_use_error_for_failed_execute() {
-        let tc = ToolCallInfo {
-            id: "tc-1".into(),
-            title: "Bash".into(),
-            sdk_tool_name: "Bash".into(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Completed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: Some("term-1".into()),
-            terminal_command: Some("echo done".into()),
-            terminal_output: Some("<tool_use_error>bad</tool_use_error>\ndone".into()),
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            monitor_output_tail: Vec::default(),
-            monitor_status: None,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
-            last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
-            collapsed_override: None,
-            last_measured_y_in_msg: 0,
-            answered_questions: Vec::new(),
-        };
+        let tc = terminal_tool_call(
+            "tc-1",
+            model::ToolCallStatus::Completed,
+            "term-1",
+            "echo done",
+            "<tool_use_error>bad</tool_use_error>\ndone",
+        );
         assert_eq!(content_summary(&tc), "done");
     }
 
     #[test]
     fn content_summary_extracts_tool_use_error_for_failed_execute() {
-        let tc = ToolCallInfo {
-            id: "tc-1".into(),
-            title: "Bash".into(),
-            sdk_tool_name: "Bash".into(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Failed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: Some("term-1".into()),
-            terminal_command: Some("echo done".into()),
-            terminal_output: Some("<tool_use_error>bad</tool_use_error>\ndone".into()),
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            monitor_output_tail: Vec::default(),
-            monitor_status: None,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
-            last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
-            collapsed_override: None,
-            last_measured_y_in_msg: 0,
-            answered_questions: Vec::new(),
-        };
+        let tc = terminal_tool_call(
+            "tc-1",
+            model::ToolCallStatus::Failed,
+            "term-1",
+            "echo done",
+            "<tool_use_error>bad</tool_use_error>\ndone",
+        );
         assert_eq!(content_summary(&tc), "bad");
     }
 
     #[test]
     fn content_summary_uses_first_terminal_line_for_failed_execute() {
-        let tc = ToolCallInfo {
-            id: "tc-2".into(),
-            title: "Bash".into(),
-            sdk_tool_name: "Bash".into(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Failed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: Some("term-2".into()),
-            terminal_command: Some("cd path with spaces".into()),
-            terminal_output: Some(
-                "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail".into(),
-            ),
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            monitor_output_tail: Vec::default(),
-            monitor_status: None,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
-            last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
-            collapsed_override: None,
-            last_measured_y_in_msg: 0,
-            answered_questions: Vec::new(),
-        };
+        let tc = terminal_tool_call(
+            "tc-2",
+            model::ToolCallStatus::Failed,
+            "term-2",
+            "cd path with spaces",
+            "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail",
+        );
         assert_eq!(content_summary(&tc), "Exit code 1");
     }
 
@@ -1139,39 +1081,13 @@ mod tests {
         // For Failed/Killed Bash, the body shows the first non-empty
         // stderr-ish line via `failed_execute_first_line` instead of
         // dumping the whole captured output.
-        let mut tc = ToolCallInfo {
-            id: "tc-3".into(),
-            title: "Bash".into(),
-            sdk_tool_name: "Bash".into(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Failed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: Some("term-3".into()),
-            terminal_command: Some("cd path with spaces".into()),
-            terminal_output: Some(
-                "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail".into(),
-            ),
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            monitor_output_tail: Vec::default(),
-            monitor_status: None,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
-            last_measured_tools_collapsed: false,
-            cache: BlockCache::default(),
-            collapsed_override: None,
-            last_measured_y_in_msg: 0,
-            answered_questions: Vec::new(),
-        };
+        let mut tc = terminal_tool_call(
+            "tc-3",
+            model::ToolCallStatus::Failed,
+            "term-3",
+            "cd path with spaces",
+            "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail",
+        );
 
         let mut out = Vec::new();
         render_tool_call_cached_with_tools_collapsed(

@@ -23,6 +23,7 @@ use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
 use crate::protocol::{Command, DispatchError, SessionUpdate};
 use crate::session_task::SessionTask;
+use crate::session_task::parse_worker_synth_key;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
 use crate::views::{AccountLoadingRow, ProjectView, SessionView};
@@ -212,6 +213,9 @@ pub struct Workspace {
     /// Per-session [`Command`] sender map. Populated when
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
     /// key; cleared on [`Self::release_session_with_cascade`] and [`Self::shutdown`].
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
+    #[cfg(not(any(test, feature = "testing")))]
     command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
     /// Per-project list of live worker sessions. In-memory only -
     /// wiped on forge restart by design (workers are ephemeral at the
@@ -816,6 +820,16 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             test_extra_projects: Mutex::new(Vec::new()),
         };
+        if workspace.db.lock().is_none() {
+            // One user-visible notice for the whole best-effort-persist
+            // class (spinner override, durable crons, Gotify subs): the
+            // store is gone this run, so every one of those warns would
+            // otherwise fire per-op into the log only.
+            let _ = workspace.update_tx.send(SessionUpdate::ServiceStatus {
+                severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+                message: "Machine-local store unavailable this run; crons, Gotify subscriptions and the spinner override will not persist".to_owned(),
+            });
+        }
         Ok(workspace)
     }
 
@@ -2927,6 +2941,79 @@ impl Workspace {
                         crate::dictate::handle_dictate_stop(&ws, &key, submit).await;
                     });
                 }
+                // User-action store writes routed through the command
+                // bus (MVVM: one channel pair). Synchronous inline
+                // handlers - the writes are local redb operations, and
+                // the TUI has already applied its optimistic state.
+                Command::SaveReviewThreads { project, branch, threads } => {
+                    let span = tracing::info_span!(
+                        "save_review_threads",
+                        project = %project,
+                        branch = %branch,
+                    );
+                    let _enter = span.enter();
+                    self.save_review_threads(&project, &branch, &threads);
+                }
+                Command::RemoveReviewThread { project, branch, thread_id } => {
+                    let span = tracing::info_span!(
+                        "remove_review_thread",
+                        project = %project,
+                        branch = %branch,
+                        thread_id = %thread_id,
+                    );
+                    let _enter = span.enter();
+                    self.remove_review_thread(&project, &branch, &thread_id);
+                }
+                Command::SetReviewThreadStatus { project, branch, thread_id, status } => {
+                    let span = tracing::info_span!(
+                        "set_review_thread_status",
+                        project = %project,
+                        branch = %branch,
+                        thread_id = %thread_id,
+                        status = ?status,
+                    );
+                    let _enter = span.enter();
+                    self.set_review_thread_status(&project, &branch, &thread_id, status);
+                }
+                Command::PersistSpinner { style } => {
+                    let span = tracing::info_span!("persist_spinner", style = %style.key());
+                    let _enter = span.enter();
+                    self.persist_spinner(style);
+                }
+                Command::CloseSession { session_key } => {
+                    let span = tracing::info_span!(
+                        "close_session",
+                        session_key = %session_key.as_str(),
+                    );
+                    let _enter = span.enter();
+                    self.release_session_with_cascade(&session_key);
+                }
+                Command::UpsertReviewThread { project, branch, thread, respond } => {
+                    let span = tracing::info_span!(
+                        "upsert_review_thread",
+                        project = %project,
+                        branch = %branch,
+                        thread_id = %thread.id,
+                    );
+                    let _enter = span.enter();
+                    let _ = respond.send(self.upsert_review_thread(&project, &branch, thread));
+                }
+                Command::SubmitReview { project, branch, summary, thread_ids, origin, respond } => {
+                    let span = tracing::info_span!(
+                        "submit_review",
+                        project = %project,
+                        branch = %branch,
+                        threads = thread_ids.len(),
+                    );
+                    let _enter = span.enter();
+                    let _ = respond.send(self.submit_review(
+                        &project,
+                        &branch,
+                        summary,
+                        &thread_ids,
+                        origin,
+                    ));
+                }
                 other => {
                     tracing::warn!(
                         target: "forge_workspace",
@@ -3107,36 +3194,43 @@ impl Workspace {
     }
 
     /// Graceful shutdown of every pooled Agent. Drains the pool, then
-    /// drops each `Arc<AgentHandle>` so the underlying
-    /// `forge_sdk::Client` kills its `claude` subprocess via its
-    /// existing `Drop` impl when the last reference goes away.
+    /// drops each `Arc<AgentHandle>`.
     ///
+    /// The subprocess kill is asynchronous through each `SessionTask`:
+    /// dropping the command senders closes every task's command channel,
+    /// each task's run loop exits, and its exit path awaits
+    /// `AgentHandle::disconnect`, which takes the bridge's client slot
+    /// and runs the SDK's graceful shutdown (signal reader task, drain,
+    /// close the child). `Client` has no `Drop` of its own, so without
+    /// that disconnect the child would survive the pool drain.
     /// forge-tui releases its handle reference before calling shutdown,
-    /// so Workspace is the sole owner of every pool entry and dropping
-    /// it triggers the subprocess shutdown chain (sender drop ->
-    /// dispatcher exit -> Client drop -> subprocess kill_on_drop).
-    /// Callers that hold cloned handles across shutdown will need to
-    /// release them for the kill-chain to fire promptly.
+    /// so Workspace is the sole owner of every pool entry. Callers that
+    /// hold cloned handles across shutdown keep the AgentHandle's task
+    /// alive until they release them.
     pub fn shutdown(&self) {
         // Release any live dictation before the pools go: a recording
         // task outliving its session's teardown would otherwise hold
         // the microphone for a composer nobody can reach.
         crate::dictate::teardown_all(self);
         // Drop command senders first so every SessionTask sees its
-        // command channel close and exits cleanly.
+        // command channel close and exits cleanly; each task's exit
+        // path then disconnects its subprocess (see the doc above).
         let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
         let _ = self.domain_handles.lock().drain().collect::<Vec<_>>();
-        let entries: Vec<_> = self.pool.lock().drain().collect();
-        // Each (SessionKey, PooledAgent) drops here; the subprocess
-        // teardown chain (sender drop -> dispatcher exit -> Client
-        // drop -> subprocess kill_on_drop) is synchronous and fast.
-        drop(entries);
+        drop(self.pool.lock().drain().collect::<Vec<_>>());
     }
-
-    /// Release a single session's pool entry. Drops the workspace's
     /// `Arc<AgentHandle>` for that key so the underlying `claude`
     /// subprocess exits once the consumer (forge-tui's bucket) also
     /// **Cascade-aware** lead release. Use this when closing a project's
+    /// lead session from the TUI: the lead-row `×` click, the launchpad's
+    /// per-row close on a failed lead bucket, etc.
+    ///
+    /// Release a single session's pool entry: drops the workspace's
+    /// `Arc<AgentHandle>` for that key so the underlying `claude`
+    /// subprocess exits once the consumer (forge-tui's bucket) also
+    /// drops its reference.
+    ///
+    /// Cascade-aware lead release. Use this when closing a project's
     /// lead session from the TUI: the lead-row `×` click, the launchpad's
     /// per-row close on a failed lead bucket, etc.
     ///
@@ -4987,6 +5081,13 @@ impl Workspace {
                         cron_id = %id,
                         "cron fire dispatch failed; leaving it due for the next boot",
                     );
+                    let _ = self.update_tx.send(SessionUpdate::ServiceStatus {
+                        severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+                        message: format!(
+                            "Cron in '{}' could not fire (its session is shutting down); it stays due for the next boot",
+                            cron.project_name
+                        ),
+                    });
                 }
             }
         }
@@ -5364,7 +5465,7 @@ impl Workspace {
         // worktree-failure path still removes (rollback semantics
         // for "worker never existed"); the general-failure path
         // transitions to Failed so the user sees what happened.
-        let lookup = {
+        let direct = {
             let workers = self.live_workers.lock();
             workers.iter().find_map(|(project_key, entries)| {
                 entries
@@ -5373,9 +5474,31 @@ impl Workspace {
                     .map(|entry| (project_key.clone(), entry.clone()))
             })
         };
-        let Some((project_key, entry)) = lookup else {
-            return false;
+        // A failed RESUME-path worker spawn emits ConnectionFailed keyed
+        // by the synth spawn key, but the entry was registered under the
+        // real session id being resumed - the direct match above misses,
+        // the label stays "already live" until restart, and asks wait
+        // the full timeout. Fall back to matching by (project_key,
+        // label) parsed off the synth key.
+        let (project_key, entry, matched_directly) = if let Some(hit) = direct {
+            (hit.0, hit.1, true)
+        } else {
+            match parse_worker_synth_key(session_key).and_then(|(project_key, label)| {
+                let workers = self.live_workers.lock();
+                let project_key = ProjectKey::new(project_key);
+                let entry = workers.get(&project_key)?.iter().find(|e| e.label == label)?.clone();
+                Some((project_key, entry))
+            }) {
+                Some((project_key, entry)) => (project_key, entry, false),
+                None => return false,
+            }
         };
+        if !matched_directly {
+            // The direct match missed, so `session_key` is the dead
+            // spawn's synth key: release its registrations so the label
+            // is spawnable again instead of "already live".
+            self.release_session(session_key);
+        }
         // Any ask already routed at this worker dies with the spawn -
         // buffered asks were never delivered, so the target_session
         // predicate in expire_target_inflight can't catch them.
@@ -5392,7 +5515,15 @@ impl Workspace {
             // Worktree-creation failure: roll back the worker entry
             // (the worker never existed; the user-visible signal is
             // the typed notice routed to the lead, not the worker row).
-            self.remove_worker_by_session_key(session_key);
+            // Keyed on the ENTRY's session id, not the incoming key -
+            // the fallback path matched by (project_key, label) and the
+            // entry may sit under the real resumed session id.
+            self.remove_worker_by_session_key(&entry.session_key);
+            // Same release the tag-rollback arm runs: without it the
+            // synth-keyed pool entry + command sender + domain handle +
+            // SessionTask leak per failed fresh spawn, unbounded across
+            // retries. No-op when the fallback release above ran first.
+            self.release_session(session_key);
             // A dynamic worker persisted its row on the optimistic spawn
             // reply, before this async failure. A worktree-creation
             // failure is a hard removal (the worker never started), so
@@ -5463,7 +5594,7 @@ impl Workspace {
             // it did pre-#245) and the user would be left wondering
             // why a team worker disappeared mid-flight.
             let diagnostic = message.lines().next().map(str::to_owned);
-            transition_worker_to_failed(self, &project_key, session_key, diagnostic);
+            transition_worker_to_failed(self, &project_key, &entry.session_key, diagnostic);
         }
         true
     }
@@ -6376,6 +6507,29 @@ impl Workspace {
         };
         for wrapped in buffered {
             self.expire_inflight_ask_failed(&wrapped.correlation_id, reason);
+        }
+    }
+
+    /// Drain the Gotify notifications buffered at `synth_key` and log
+    /// each as dropped - the spawn the bucket was waiting on has failed,
+    /// so the notifications would otherwise be stranded by the release
+    /// below and silently lost. There is no caller awaiting a delivery
+    /// confirmation for a notification, so a typed notice has no
+    /// recipient; the log is the record.
+    pub(crate) fn expire_buffered_gotify_prompts(&self, synth_key: &SessionKey) {
+        let domain = self.domain_handles.lock().get(synth_key).cloned();
+        let Some(domain) = domain else {
+            return;
+        };
+        let buffered = std::mem::take(&mut domain.lock().pending_gotify_prompts);
+        for notification in buffered {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                synth_key = %synth_key.as_str(),
+                app = %notification.app,
+                title = %notification.title,
+                "gotify notification dropped: the spawn it was buffered for failed",
+            );
         }
     }
 }
@@ -10789,6 +10943,69 @@ provider = "anthropic"
         assert!(matches!(cmd, forge_primitives::AgentCommand::Cancel { .. }));
     }
 
+    /// The review/spinner/close store writes route through the command
+    /// bus: a `SaveReviewThreads` dispatch lands in the redb store
+    /// (observable via the query-side load), and an `UpsertReviewThread`
+    /// dispatch carries its confirmation back on the responder - the
+    /// overlay's at-risk flag depends on it.
+    #[test]
+    fn dispatch_buses_the_review_and_spinner_writes() {
+        use forge_primitives::review::{ReviewAnchor, ReviewSide, ReviewThread};
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let db_dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("db"),
+        );
+        let thread = ReviewThread {
+            id: "t1".to_owned(),
+            anchor: ReviewAnchor {
+                path: "src/x.rs".to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 1,
+                context: vec!["ctx".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: Vec::new(),
+            status: ReviewStatus::Open,
+            created_at: "t".to_owned(),
+            updated_at: "t".to_owned(),
+            commit: None,
+        };
+
+        workspace
+            .dispatch(Command::SaveReviewThreads {
+                project: "forge".to_owned(),
+                branch: "feat".to_owned(),
+                threads: vec![thread.clone()],
+            })
+            .expect("dispatch");
+        let loaded = workspace.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(loaded.len(), 1, "the bus-routed save landed in the store");
+
+        let (respond_tx, mut respond_rx) = tokio::sync::oneshot::channel();
+        workspace
+            .dispatch(Command::UpsertReviewThread {
+                project: "forge".to_owned(),
+                branch: "feat".to_owned(),
+                thread: thread.clone(),
+                respond: respond_tx,
+            })
+            .expect("dispatch");
+        assert!(
+            respond_rx.try_recv().expect("response present"),
+            "an open store confirms the upsert on the responder"
+        );
+
+        // The spinner override persists through its variant too.
+        workspace
+            .dispatch(Command::PersistSpinner { style: crate::ui::SpinnerStyle::Star })
+            .expect("dispatch");
+        let db = workspace.db.lock();
+        let stored = crate::store::state::spinner(db.as_ref().expect("db")).expect("read spinner");
+        assert_eq!(stored, Some(crate::ui::SpinnerStyle::Star));
+    }
+
     /// `/new` and `/resume` re-spawn on the already-pooled handle, where
     /// the spawn-path stamp in `get_agent_handle_with_spawn_key` never
     /// runs - the launch settings must pick the pooled account's mode up
@@ -11637,33 +11854,6 @@ provider = "anthropic"
     /// Workspace::dispatch(Command::DeliverPeerPrompt) routes to the
     /// command channel without panicking. The full spawn-path handling
     /// is exercised in the spawn::handle_deliver_peer_prompt test.
-    #[tokio::test]
-    async fn dispatch_command_deliver_peer_prompt_routes_cleanly() {
-        use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
-        let dir = forge_toml_with_two_projects();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
-
-        let caller = SessionKey::from_str_for_test("caller-dispatch");
-        let wrapped = WrappedPrompt {
-            correlation_id: CorrelationId::new_tell(),
-            kind: WrappedKind::Message,
-            channel: AskChannel::Peers,
-            sender_name: "forge".to_owned(),
-            sender_org: "Default".to_owned(),
-            body: "fyi".to_owned(),
-        };
-        // The command channel is the workspace's main dispatch bus -
-        // routing to an unknown target still queues, the spawn handler
-        // is the one that rejects. Smoke: dispatch returns Ok.
-        let result = workspace.dispatch(crate::protocol::Command::DeliverPeerPrompt {
-            caller,
-            target_project: "gateway-backend".to_owned(),
-            wrapped,
-        });
-        assert!(result.is_ok(), "dispatch routed cleanly: {result:?}");
-    }
-
     #[tokio::test]
     async fn deliver_reply_to_caller_routes_by_session_and_guards() {
         use crate::mcp::peers::facade::ReplyDeliverError;
@@ -13956,7 +14146,9 @@ mod async_worker_spawn_failure_tests {
     /// #2: a worktree-creation failure is a hard removal (the worker
     /// never started), so it deletes the persisted dynamic-worker row -
     /// otherwise the row zombie-re-spawns every restart despite a
-    /// visibly-failed spawn.
+    /// visibly-failed spawn. Also mirrors the tag-rollback arm's
+    /// `release_session`: the synth-keyed pool entry + command sender
+    /// must not leak per failed fresh spawn.
     #[tokio::test]
     async fn worktree_failure_deletes_persisted_dynamic_worker_row() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -13979,12 +14171,25 @@ mod async_worker_spawn_failure_tests {
         install_lead_in_pool(&workspace, lead_id);
 
         let session_key = SessionKey::from_session_id(synth_key);
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
+        workspace.pool.lock().insert(
+            session_key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
+
         let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
         assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
 
         assert!(
             persisted_labels(&workspace, "proj-x").is_empty(),
             "worktree-failure hard removal deletes the persisted row",
+        );
+        assert!(
+            !workspace.pool.lock().contains_key(&session_key)
+                && !workspace.command_senders.lock().contains_key(&session_key),
+            "the failed spawn's synth-keyed session registrations are released",
         );
     }
 
@@ -14030,6 +14235,53 @@ mod async_worker_spawn_failure_tests {
             dispositions,
             vec![crate::protocol::WorktreeDisposition::Absent],
             "a worktree that failed to be created must not be reported preserved",
+        );
+    }
+
+    /// A failed RESUME-path worker spawn arrives keyed by the synth
+    /// spawn key, but the entry was registered under the real session
+    /// id being resumed. The direct session_key match misses; the
+    /// (project_key, label) fallback must still transition the entry
+    /// to Failed and release the synth-keyed registrations, or the
+    /// label is locked as "already live" until restart.
+    #[tokio::test]
+    async fn resume_spawn_failure_matches_worker_entry_by_synth_key_fallback() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let real_id = "real-worker-uuid";
+        // Resume spawn: the entry sits under the REAL session id.
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", real_id, "lead-uuid", true));
+        // The synth spawn key still holds its registrations.
+        let session_key = SessionKey::from_session_id(synth_key);
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
+        workspace.pool.lock().insert(
+            session_key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
+
+        assert!(
+            workspace
+                .handle_async_worker_spawn_failure(&session_key, "resume failed: stale session"),
+            "the synth-key fallback must find the entry the direct match missed"
+        );
+
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].status,
+            forge_primitives::WorkerLiveness::Failed,
+            "the resume-matched entry transitions to Failed"
+        );
+        assert_eq!(entries[0].diagnostic.as_deref(), Some("resume failed: stale session"));
+        assert!(
+            !workspace.pool.lock().contains_key(&session_key)
+                && !workspace.command_senders.lock().contains_key(&session_key),
+            "the dead spawn's synth-keyed registrations are released"
         );
     }
 

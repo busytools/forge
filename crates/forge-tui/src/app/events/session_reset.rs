@@ -11,10 +11,6 @@ pub(super) fn reset_for_new_session(
     mode: Option<super::super::ModeState>,
     preserve_current_welcome_tip: bool,
 ) {
-    if let Some(terminals) = app.terminals() {
-        crate::agent::events::kill_all_terminals(terminals);
-    }
-
     reset_session_identity_state(app, session_id, current_model, mode);
     reset_messages_for_new_session(app, preserve_current_welcome_tip);
     reset_input_state_for_new_session(app);
@@ -42,6 +38,11 @@ fn reset_session_identity_state(
     super::clear_compaction_state(app, false);
     *app.session_usage_mut() = super::super::SessionUsageState::default();
     app.set_runtime_session_state(None);
+    app.set_observed_permission_mode(None);
+    app.set_observed_effort(None);
+    app.set_observed_assistant_model(None);
+    app.set_pending_mode_rollback(None);
+    app.set_pending_model_rollback(None);
     app.set_prompt_suggestion(None);
     app.set_last_rate_limit_update(None);
     app.should_quit = false;
@@ -103,7 +104,6 @@ fn reset_render_state_for_new_session(app: &mut App) {
 }
 
 fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
-    app.clear_terminal_tool_call_tracking();
     *app.mcp_mut() = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
     crate::app::plugins::reset_for_session_change(app);
@@ -1164,9 +1164,7 @@ mod tests {
     ///
     /// Deliberately not a general state diff. Below the gate, the four
     /// `&App` sites only read fields and hand them to a tracing macro,
-    /// so there is no state for them to suppress - `&App` alone does
-    /// not establish that, since `TerminalMap` is an `Rc<RefCell<_>>` a
-    /// shared reference can still mutate through. A wider fingerprint
+    /// so there is no state for them to suppress. A wider fingerprint
     /// would also fail on clean code, since a replay legitimately adds
     /// a welcome message, renders user text the live walker drops, and
     /// rebuilds render-cache accounting.

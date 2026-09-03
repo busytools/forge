@@ -185,15 +185,9 @@ fn apply_tool_call_update_to_indexed_block(
         layout_dirty_idx: None,
         pending_task_delta: None,
     };
-    let terminals = match app.terminals() {
-        Some(t) => std::rc::Rc::clone(t),
-        None => std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
-    };
     // Snapshot upfront so the per-tool mutable-borrow of `app.active_messages_mut()`
     // doesn't conflict with `&app.cwd_raw`.
     let cwd_raw = app.cwd_raw();
-    let mut terminal_subscription: Option<String> = None;
-    let mut detach_terminal = false;
     let mut should_engage_auto_scroll = false;
 
     if let Some(MessageBlock::ToolCall(tc)) =
@@ -203,12 +197,7 @@ fn apply_tool_call_update_to_indexed_block(
         let mut changed = false;
         changed |= apply_tool_call_status_update(tc, tcu.fields.status);
         changed |= apply_tool_call_title_update(tc, tcu.fields.title.as_deref(), &cwd_raw);
-        changed |= apply_tool_call_content_update(
-            tc,
-            tcu.fields.content.as_deref(),
-            &terminals,
-            &mut terminal_subscription,
-        );
+        changed |= apply_tool_call_content_update(tc, tcu.fields.content.as_deref());
         changed |= apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
         changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
         changed |= apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
@@ -222,7 +211,6 @@ fn apply_tool_call_update_to_indexed_block(
         // raw_output are present. TaskGet / TaskList carry no
         // delta - they're chat-suppressed but produce no state.
         out.pending_task_delta = extract_task_delta_from_tool_call_update(tc);
-        detach_terminal = detach_terminal_if_final(tc);
 
         if changed {
             out.changed = true;
@@ -238,12 +226,6 @@ fn apply_tool_call_update_to_indexed_block(
     }
     if out.changed {
         app.sync_render_cache_slot(mi, bi);
-    }
-
-    if detach_terminal {
-        app.untrack_terminal_tool_call(mi, bi);
-    } else if let Some(terminal_id) = terminal_subscription {
-        app.sync_terminal_tool_call(terminal_id, mi, bi);
     }
 
     out
@@ -277,8 +259,6 @@ fn apply_tool_call_title_update(tc: &mut ToolCallInfo, title: Option<&str>, cwd_
 fn apply_tool_call_content_update(
     tc: &mut ToolCallInfo,
     content: Option<&[model::ToolCallContent]>,
-    terminals: &crate::agent::events::TerminalMap,
-    terminal_subscription: &mut Option<String>,
 ) -> bool {
     let Some(content) = content else {
         return false;
@@ -287,17 +267,10 @@ fn apply_tool_call_content_update(
     for cb in content {
         if let model::ToolCallContent::Terminal(t) = cb {
             let tid = t.terminal_id.clone();
-            if let Some(terminal) = terminals.borrow().get(&tid)
-                && tc.terminal_command.as_deref() != Some(terminal.command.as_str())
-            {
-                tc.terminal_command = Some(terminal.command.clone());
-                changed = true;
-            }
             if tc.terminal_id.as_deref() != Some(tid.as_str()) {
-                tc.terminal_id = Some(tid.clone());
+                tc.terminal_id = Some(tid);
                 changed = true;
             }
-            *terminal_subscription = Some(tid);
         }
     }
     // Preserve the original Diff for Edit / Write tools when the
@@ -423,18 +396,6 @@ fn apply_tool_call_hidden_update(tc: &mut ToolCallInfo, meta: Option<&serde_json
         return false;
     }
     tc.hidden = true;
-    true
-}
-
-fn detach_terminal_if_final(tc: &mut ToolCallInfo) -> bool {
-    if !tc.is_execute_tool()
-        || matches!(tc.status, model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress)
-        || tc.terminal_id.is_none()
-    {
-        return false;
-    }
-
-    tc.terminal_id = None;
     true
 }
 
@@ -877,10 +838,6 @@ mod tests {
         }
     }
 
-    fn terminal_content(terminal_id: &str) -> Vec<model::ToolCallContent> {
-        vec![model::ToolCallContent::Terminal(model::TerminalToolCallContent::new(terminal_id))]
-    }
-
     fn make_task_tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
         ToolCallInfo {
             id: id.to_owned(),
@@ -946,98 +903,6 @@ mod tests {
             "Explore \u{b7} Map the pipeline",
             "empty-object update must not clobber the subagent dispatch input",
         );
-    }
-
-    #[test]
-    fn completed_execute_update_detaches_terminal_subscription() {
-        let mut app = App::test_default();
-        let tool_id = "tool-1";
-        app.active_messages_mut().push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-                Some("term-1"),
-            )))],
-        ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
-
-        let update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new()
-                .status(model::ToolCallStatus::Completed)
-                .raw_output(serde_json::Value::String("done".to_owned())),
-        );
-
-        handle_tool_call_update_session(&mut app, &update);
-
-        let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
-            panic!("expected tool call block");
-        };
-        assert_eq!(tc.status, model::ToolCallStatus::Completed);
-        assert_eq!(tc.terminal_id, None);
-        assert_eq!(tc.terminal_output.as_deref(), Some("done"));
-        assert!(app.terminal_tool_calls().is_empty());
-        assert!(app.terminal_tool_call_membership().is_empty());
-    }
-
-    #[test]
-    fn repeated_terminal_updates_do_not_duplicate_subscription() {
-        let mut app = App::test_default();
-        let tool_id = "tool-1";
-        app.active_messages_mut().push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-                None,
-            )))],
-        ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-
-        let update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new().content(terminal_content("term-1")),
-        );
-
-        handle_tool_call_update_session(&mut app, &update);
-        handle_tool_call_update_session(&mut app, &update);
-
-        assert_eq!(app.terminal_tool_calls().len(), 1);
-        assert_eq!(app.terminal_tool_call_membership().len(), 1);
-        assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-1");
-    }
-
-    #[test]
-    fn terminal_update_replaces_stale_subscription_for_same_tool_call() {
-        let mut app = App::test_default();
-        let tool_id = "tool-1";
-        app.active_messages_mut().push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-                Some("term-1"),
-            )))],
-        ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
-
-        let update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new().content(terminal_content("term-2")),
-        );
-
-        handle_tool_call_update_session(&mut app, &update);
-
-        assert_eq!(app.terminal_tool_calls().len(), 1);
-        assert_eq!(app.terminal_tool_call_membership().len(), 1);
-        assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-2");
-        let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
-            panic!("expected tool call block");
-        };
-        assert_eq!(tc.terminal_id.as_deref(), Some("term-2"));
     }
 
     #[test]

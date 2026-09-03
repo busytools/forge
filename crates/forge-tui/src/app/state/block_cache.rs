@@ -244,18 +244,6 @@ impl BlockCache {
         self.touch();
     }
 
-    /// Store lines and set height in one call.
-    /// Deprecated: prefer `store()` + `set_height()` to keep concerns separate.
-    pub fn store_with_height(
-        &mut self,
-        lines: Vec<ratatui::text::Line<'static>>,
-        height: usize,
-        width: u16,
-    ) {
-        self.store(lines);
-        self.set_height(height, width);
-    }
-
     /// Get the cached wrapped height if cache is valid and was computed at the given width.
     pub fn height_at(&self, width: u16) -> Option<usize> {
         if self.version == 0 && self.wrapped_height_valid && self.wrapped_width == width {

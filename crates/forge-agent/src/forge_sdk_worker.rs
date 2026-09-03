@@ -551,19 +551,46 @@ async fn reader_loop(
                 }
             }
             Err(err) => {
+                // A self-initiated teardown also tears the pipe down;
+                // that is not a death and must not surface as one.
+                if client.disconnect_requested() {
+                    tracing::info!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %err,
+                        "forge_sdk reader: stream errored after a requested disconnect",
+                    );
+                    return;
+                }
                 tracing::error!(
                     target: crate::logging::targets::BRIDGE_LIFECYCLE,
                     error = %err,
                     "forge_sdk reader: events stream errored",
                 );
+                let _ = event_tx.send(AgentEvent::ConnectionFailed {
+                    message: format!("the claude subprocess stream errored: {err}"),
+                });
                 return;
             }
         }
+    }
+    // The session swap and teardown paths both call `Client::disconnect`
+    // before dropping their client; the stream end that follows is the
+    // expected consequence, not a death. Only an UNrequested end (the
+    // child exiting on its own) is a ConnectionFailed.
+    if client.disconnect_requested() {
+        tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            "forge_sdk reader: stream closed after a requested disconnect",
+        );
+        return;
     }
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         "forge_sdk reader: events stream closed",
     );
+    let _ = event_tx.send(AgentEvent::ConnectionFailed {
+        message: "the claude subprocess closed its output stream".to_owned(),
+    });
 }
 
 /// The `data` payload of a `system/init` frame, else `None`.
@@ -989,6 +1016,13 @@ fn build_options_with_callback(
         b = b.extra_arg(flag.clone(), value.clone());
     }
 
+    // Swap tests drive the real spawn_session against forge-sdk's mock
+    // fixture; production always runs the `claude` on PATH.
+    #[cfg(test)]
+    if let Some(path) = test_sdk_binary() {
+        b = b.binary(path);
+    }
+
     // Per-spawn `CLAUDE_CONFIG_DIR` - workspace-driven so each
     // `claude` subprocess reads/writes the bound account's
     // user-data tree (oauth tokens, projects history, settings).
@@ -1029,6 +1063,19 @@ fn build_options_with_callback(
         config_dir = %binding.config_dir.display(),
     );
     b.build()
+}
+
+#[cfg(test)]
+static TEST_SDK_BINARY: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+#[cfg(test)]
+fn test_sdk_binary() -> Option<String> {
+    TEST_SDK_BINARY.read().expect("test binary lock").clone()
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_sdk_binary(path: Option<String>) {
+    *TEST_SDK_BINARY.write().expect("test binary lock") = path;
 }
 
 async fn run_permission_request(
@@ -2498,5 +2545,157 @@ mod tests_permission_options {
             dispatch_permission_action(PermissionAction::AllowWithInput, "", Some(edited.clone()));
         let updated_input = decision.updated_input().expect("allow_with_input carries value");
         assert_eq!(updated_input, &edited);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests_reader_terminal {
+    use super::reader_loop;
+    use super::set_test_sdk_binary;
+    use crate::client::AgentEvent;
+    use crate::forge_sdk_bridge::ForgeSdkBridge;
+    use forge_sdk::{Client, OptionsBuilder};
+    use std::collections::HashMap;
+
+    /// forge-sdk's shared dev fixture. reader_loop only needs a
+    /// completed handshake to hold a `Client`; the stream it drains is
+    /// a private channel the test drives directly.
+    fn sdk_mock_binary() -> String {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh")
+            .to_owned()
+    }
+
+    async fn mock_client() -> (Client, forge_sdk::ClientEvents) {
+        let opts = OptionsBuilder::new().binary(sdk_mock_binary()).build();
+        Client::spawn(opts).await.expect("mock client spawns")
+    }
+
+    /// A stream ERROR must surface as `AgentEvent::ConnectionFailed`
+    /// before `reader_loop` returns - the only terminal signal the
+    /// consumer gets; log-only death leaves the spinner and the turn
+    /// pending forever.
+    #[tokio::test]
+    async fn reader_loop_emits_connection_failed_on_stream_error() {
+        let (client, _events) = mock_client().await;
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (event_tx, mut observed) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+        stream_tx
+            .send(Err(forge_sdk::Error::Connection { reason: "pipe broke".into() }))
+            .expect("seed a stream error");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            reader_loop(stream_rx, event_tx, "spawn-id".to_owned(), client, Vec::new()),
+        )
+        .await
+        .expect("reader_loop returns after a stream error");
+
+        match observed.try_recv() {
+            Ok(AgentEvent::ConnectionFailed { message }) => {
+                assert!(
+                    message.contains("pipe broke"),
+                    "the failure message carries the stream error: {message}"
+                );
+            }
+            other => panic!("expected ConnectionFailed on stream error, got {other:?}"),
+        }
+        assert!(observed.try_recv().is_err(), "no further events after the terminal one");
+    }
+
+    /// A clean stream CLOSE (EOF drain, e.g. the child exited) is the
+    /// same terminal: emit, then return.
+    #[tokio::test]
+    async fn reader_loop_emits_connection_failed_on_stream_close() {
+        let (client, _events) = mock_client().await;
+        let (events_tx, events) = tokio::sync::mpsc::unbounded_channel();
+        let (event_tx, mut observed) = tokio::sync::mpsc::unbounded_channel();
+        drop(events_tx);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            reader_loop(events, event_tx, "spawn-id".to_owned(), client, Vec::new()),
+        )
+        .await
+        .expect("reader_loop returns after the stream closes");
+
+        match observed.try_recv() {
+            Ok(AgentEvent::ConnectionFailed { message }) => {
+                assert!(!message.trim().is_empty(), "the close arm still carries a message");
+            }
+            other => panic!("expected ConnectionFailed on stream close, got {other:?}"),
+        }
+    }
+
+    /// A self-initiated disconnect is not a death. A session swap
+    /// disconnects the previous client while a NEW spawn emits its own
+    /// `Connected` - the old reader's stream end is the expected
+    /// consequence, and it must reach the workspace as silence, not as
+    /// a task-terminal `ConnectionFailed` (which would release the
+    /// pool mid-swap and disconnect the freshly spawned client).
+    #[tokio::test]
+    async fn session_swap_does_not_emit_connection_failed() {
+        set_test_sdk_binary(Some(sdk_mock_binary()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bridge = ForgeSdkBridge::new(dir.path().to_owned(), None, Vec::new(), HashMap::new());
+        let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
+
+        bridge
+            .new_session("/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
+            .expect("dispatch");
+
+        // First spawn: Connected#1. The mock completes its handshake
+        // in real time.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .expect("Connected#1 arrives promptly");
+        assert!(
+            matches!(first, Some(AgentEvent::Connected { .. })),
+            "expected Connected#1, got {first:?}"
+        );
+
+        // Second spawn on the same bridge: the swap. clear_client takes
+        // client#1, disconnect() runs to completion (SDK reader joined),
+        // client#2 spawns, Connected#2 emits. Interleaved events
+        // (status snapshots etc.) are fine; a ConnectionFailed between
+        // the two Connecteds is not.
+        bridge
+            .new_session("/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
+            .expect("dispatch");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(event) = events.recv().await {
+                match event {
+                    AgentEvent::Connected { .. } => break,
+                    AgentEvent::ConnectionFailed { message } => {
+                        panic!("a swap must not emit ConnectionFailed: {message}");
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("Connected#2 arrives promptly");
+
+        // Client#1's reader_loop exits as a consequence of the
+        // disconnect; give it a moment to be scheduled, then assert it
+        // stayed SILENT - no ConnectionFailed, nothing at all.
+        tokio::time::timeout(std::time::Duration::from_millis(300), async {
+            loop {
+                match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv())
+                    .await
+                {
+                    Ok(Some(AgentEvent::ConnectionFailed { message })) => {
+                        panic!("a swap must not emit ConnectionFailed: {message}");
+                    }
+                    Ok(Some(_)) => {}
+                    // Ok(None) or timeout: either means silence held.
+                    _ => break,
+                }
+            }
+        })
+        .await
+        .expect("drain window completes");
+
+        set_test_sdk_binary(None);
     }
 }

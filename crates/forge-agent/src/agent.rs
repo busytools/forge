@@ -86,6 +86,25 @@ impl AgentHandle {
         self.bridge.env()
     }
 
+    /// Disconnect the bound `claude` subprocess: take the bridge's
+    /// client slot and run the SDK's graceful shutdown (signal the
+    /// reader task, drain, close the child). Both layers are
+    /// idempotent via `Option::take`, so repeated calls on clones are
+    /// no-ops. Called from `SessionTask`'s exit path so release /
+    /// despawn / teardown paths actually kill the subprocess instead
+    /// of leaving it alive until forge exits.
+    pub async fn disconnect(&self) {
+        if let Some(client) = self.bridge.clear_client()
+            && let Err(err) = client.disconnect().await
+        {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                error = %err,
+                "client disconnect failed during session teardown",
+            );
+        }
+    }
+
     // ---- Fire-and-forget AgentCommand shorthands ----
     //
     // Each method builds the matching `AgentCommand` variant and pushes it
@@ -250,6 +269,10 @@ pub enum AgentError {
     /// command could be dispatched.
     #[error("failed to encode launch settings: {0}")]
     EncodeFailed(#[from] serde_json::Error),
+    /// The command needs a session id but the bridge hasn't emitted
+    /// its first `Connected` yet, so it was dropped.
+    #[error("no active session for {command}")]
+    NoSession { command: &'static str },
 }
 
 /// Agent factory - wraps a private `ForgeSdkBridge` behind a channel API.
@@ -354,46 +377,18 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
 
     match cmd {
         C::NewSession { cwd, launch_settings } => {
-            // Symmetric to the encode-side `?`-propagation in
-            // `AgentHandle::new_session`. Round-trip is safe in
-            // practice when `Serialize`/`Deserialize` are mutually
-            // consistent (the standard derive pair), but a
-            // forward-compat break in SessionLaunchSettings - e.g.
-            // adding `#[serde(deny_unknown_fields)]` or splitting a
-            // field - would silently strip user config here without
-            // this log.
-            let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
-                tracing::error!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    error = %e,
-                    "failed to decode launch_settings on dispatcher receive; falling back to default",
-                );
-                crate::client::SessionLaunchSettings::default()
-            });
-            bridge.new_session(cwd, launch)
+            bridge.new_session(cwd, decode_launch_settings(launch_settings))
         }
-        C::ResumeSession { session_id, cwd, launch_settings } => {
-            let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
-                tracing::error!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    error = %e,
-                    "failed to decode launch_settings on dispatcher receive; falling back to default",
-                );
-                crate::client::SessionLaunchSettings::default()
-            });
-            bridge.resume_session(session_id.into_string(), cwd, launch)
-        }
-        C::ResumeOrNewSession { session_id, cwd, launch_settings } => {
-            let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
-                tracing::error!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    error = %e,
-                    "failed to decode launch_settings on dispatcher receive; falling back to default",
-                );
-                crate::client::SessionLaunchSettings::default()
-            });
-            bridge.resume_or_new_session(session_id.into_string(), cwd, launch)
-        }
+        C::ResumeSession { session_id, cwd, launch_settings } => bridge.resume_session(
+            session_id.into_string(),
+            cwd,
+            decode_launch_settings(launch_settings),
+        ),
+        C::ResumeOrNewSession { session_id, cwd, launch_settings } => bridge.resume_or_new_session(
+            session_id.into_string(),
+            cwd,
+            decode_launch_settings(launch_settings),
+        ),
         C::Prompt { session_id, text } => bridge.prompt_text(session_id.into_string(), text),
         C::PromptWithImages { session_id, text, images } => {
             bridge.prompt_with_images(session_id.into_string(), text, images)
@@ -422,5 +417,54 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             bridge.toggle_mcp_server(session_id.into_string(), server_name, enabled)
         }
         C::ReloadPlugins { session_id } => bridge.reload_plugins(session_id.into_string()),
+    }
+}
+
+/// Decode launch settings off the dispatcher channel. Symmetric to the
+/// encode-side `?`-propagation in `AgentHandle::new_session`. A
+/// forward-compat break in `SessionLaunchSettings` - e.g. adding
+/// `#[serde(deny_unknown_fields)]` or splitting a field - would
+/// otherwise silently strip user config; the fallback keeps the spawn
+/// alive on defaults and logs.
+fn decode_launch_settings(value: serde_json::Value) -> crate::client::SessionLaunchSettings {
+    serde_json::from_value(value).unwrap_or_else(|e| {
+        tracing::error!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            error = %e,
+            "failed to decode launch_settings on dispatcher receive; falling back to default",
+        );
+        crate::client::SessionLaunchSettings::default()
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod decode_launch_settings_tests {
+    use super::decode_launch_settings;
+
+    #[test]
+    fn decodes_the_stamped_settings_intact() {
+        let value = serde_json::json!({
+            "settings": { "model": "haiku" },
+            "agent_progress_summaries": true,
+            "charter": "worker charter",
+        });
+        let decoded = decode_launch_settings(value);
+        assert_eq!(
+            decoded.settings.as_ref().and_then(|s| s.get("model")).and_then(|v| v.as_str()),
+            Some("haiku"),
+            "the stamped settings survive the decode"
+        );
+        assert_eq!(decoded.agent_progress_summaries, Some(true));
+        assert_eq!(decoded.charter.as_deref(), Some("worker charter"));
+    }
+
+    #[test]
+    fn falls_back_to_defaults_on_an_undecodable_value() {
+        // A forward-compat break (or a corrupt payload) lands here:
+        // the spawn proceeds on defaults instead of silently dropping
+        // the stamped config into a null settings map.
+        let decoded = decode_launch_settings(serde_json::json!(42));
+        assert_eq!(decoded, crate::client::SessionLaunchSettings::default());
     }
 }

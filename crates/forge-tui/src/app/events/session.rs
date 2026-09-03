@@ -205,16 +205,7 @@ pub(super) fn handle_auth_required_event(
         // (login_hint, status_message, pending_command). The bucket
         // becomes "needs auth"; if/when the user switches to it we
         // surface the hint then.
-        session.key = None;
-        session.session_id = None;
-        session.account_info = None;
-        session.current_model = None;
-        session.mode = None;
-        session.session_usage = crate::app::state::SessionUsageState::default();
-        session.last_rate_limit_update = None;
-        session.cancelled_turn_pending_hint = false;
-        session.pending_cancel = false;
-        session.mcp = super::super::McpState::default();
+        session.clear_runtime_identity();
         // Teardown is a hard terminal - clear the roster first so the sweep
         // has nothing to exempt and every open card fails.
         session.clear_background_task_registry();
@@ -303,16 +294,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         // pending_submit, push_message, status). Status surface for
         // a background bucket is the bucket itself; the active
         // session's status stays as-is.
-        session.key = None;
-        session.session_id = None;
-        session.account_info = None;
-        session.current_model = None;
-        session.mode = None;
-        session.session_usage = crate::app::state::SessionUsageState::default();
-        session.cancelled_turn_pending_hint = false;
-        session.pending_cancel = false;
-        session.last_rate_limit_update = None;
-        session.mcp = super::super::McpState::default();
+        session.clear_runtime_identity();
         // Teardown is a hard terminal - clear the roster first so the sweep
         // has nothing to exempt and every open card fails.
         session.clear_background_task_registry();
@@ -685,6 +667,14 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
         session.git_diff_snapshot = None;
         session.git_diff_last_refreshed_at = None;
         session.git_diff_scan_in_flight.store(false, std::sync::atomic::Ordering::Release);
+        // Same swap the git-diff block handles: the process scan keyed
+        // on the OLD claude_pid must not land its snapshot on the new
+        // identity, so bump its generation too (its guard drops the
+        // stale event) and let the next ticker re-scan.
+        session.process_scan_generation = session.process_scan_generation.saturating_add(1);
+        session.process_snapshot = None;
+        session.process_last_refreshed_at = None;
+        session.process_scan_in_flight.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -982,6 +972,43 @@ pub(super) fn apply_session_update_set_mode_failed(
         app,
         key,
         &format!("Mode switch to {attempted} was refused by the CLI: {message}"),
+    );
+}
+
+pub(super) fn apply_session_update_set_model_failed(
+    app: &mut App,
+    key: &SessionKey,
+    model: &str,
+    message: &str,
+) {
+    let Some(session) = app.sessions.get_mut(key) else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "set_model_failed_dropped",
+            message = "set model failure dropped for an unknown session",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+            reason = "unknown_session",
+        );
+        return;
+    };
+    let chip_shows_attempted = session.turn_state.requested_model_id.as_deref() == Some(model);
+    if chip_shows_attempted && session.rollback_pending_model() {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "set_model_rollback_applied",
+            message = "model chip rolled back after a CLI refusal",
+            outcome = "failure",
+            session_key = %key.as_str(),
+            model = %model,
+            error_message = %message,
+        );
+        app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
+    }
+    handle_slash_command_error_event(
+        app,
+        key,
+        &format!("Model switch to {model} was refused by the CLI: {message}"),
     );
 }
 
@@ -1305,5 +1332,59 @@ mod connected_log_tests {
             tracing_subscriber::fmt().with_ansi(false).with_writer(move || writer.clone()).finish();
         tracing::subscriber::with_default(subscriber, f);
         String::from_utf8_lossy(&capture.lock().expect("capture lock")).into_owned()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod process_scan_generation_tests {
+    use super::apply_session_cwd;
+    use crate::app::App;
+    use forge_workspace::SessionKey;
+
+    /// A cwd change swaps the session's identity - the process scanner's
+    /// in-flight scan keyed on the OLD claude_pid must land stale. The
+    /// bump is what makes the scanner's generation guard actually fire.
+    #[test]
+    fn changed_cwd_bumps_process_scan_generation_and_clears_the_snapshot() {
+        let mut app = App::test_default();
+        let key = SessionKey::from_session_id("swap-uuid");
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.cwd_raw = "/tmp/old-cwd".to_owned();
+        bucket.process_snapshot = Some(forge_workspace::env::processes::ProcessSnapshot {
+            processes: Vec::new(),
+            scanned_at: std::time::SystemTime::now(),
+        });
+        app.sessions.insert(key.clone(), bucket);
+        app.active_session_key = Some(key.clone());
+
+        apply_session_cwd(&mut app, "/tmp/new-cwd".to_owned());
+
+        let session = app.sessions.get(&key).expect("bucket");
+        assert_eq!(
+            session.process_scan_generation, 1,
+            "the generation bumps once on a genuine cwd change"
+        );
+        assert!(session.process_snapshot.is_none(), "the old-pid snapshot does not survive");
+        assert!(
+            !session.process_scan_in_flight.load(std::sync::atomic::Ordering::Acquire),
+            "the in-flight guard releases so the next tick re-scans"
+        );
+    }
+
+    /// An idempotent Connected re-apply (same cwd) must not churn the
+    /// generation - only genuine swaps do.
+    #[test]
+    fn same_cwd_keeps_the_generation() {
+        let mut app = App::test_default();
+        let key = SessionKey::from_session_id("steady-uuid");
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.cwd_raw = "/tmp/steady-cwd".to_owned();
+        app.sessions.insert(key.clone(), bucket);
+        app.active_session_key = Some(key.clone());
+
+        apply_session_cwd(&mut app, "/tmp/steady-cwd".to_owned());
+
+        assert_eq!(app.sessions.get(&key).expect("bucket").process_scan_generation, 0);
     }
 }

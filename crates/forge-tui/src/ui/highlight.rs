@@ -264,8 +264,7 @@ mod tests {
     fn highlight_code_preserves_text() {
         let rendered = highlight_code("fn main() {}\n", Some("rs"));
         let text: String = rendered[0].spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(text.contains("fn"));
-        assert!(text.contains("main"));
+        assert_eq!(text, "fn main() {}", "highlighting must not alter the source text");
     }
 
     #[test]

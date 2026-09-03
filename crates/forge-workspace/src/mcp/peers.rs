@@ -842,7 +842,7 @@ mod tests {
         // Setup: gateway-backend had asked forge earlier (the ask sits
         // in inflight_asks with caller_project = gateway-backend,
         // target_project = forge). Now forge is replying via tell.
-        let mock = MockWorkspaceFacade::new();
+        let mock = Arc::new(MockWorkspaceFacade::new());
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(fake_peer("gateway-backend"));
         mock.inflight.lock().insert(
@@ -853,11 +853,9 @@ mod tests {
                 "forge",           // target the original ask went to (now the replying agent)
             ),
         );
-        let facade = mock.into_arc();
-        let tool = TellAgent {
-            facade: facade.clone(),
-            caller_key: CallerKeyResolver::from_fixed(fake_key("forge")),
-        };
+        let facade: Arc<dyn WorkspaceFacade> = mock.clone();
+        let tool =
+            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -873,15 +871,13 @@ mod tests {
             serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
         assert!(parsed.get("note").is_none(), "a resolved reply carries no degraded note");
 
-        // Inspect what got dispatched: the deliver call's WrappedPrompt
-        // should carry WrappedKind::Reply.
-        // Mock's deliver_calls type is Vec<(SessionKey, String, WrappedPrompt)>,
-        // and we have to reach into the mock via downcast. The into_arc
-        // path returned a `dyn` so the mock isn't directly accessible.
-        // Skip the inner-state assertion here; the smoke that the
-        // tool succeeded + the stats path didn't panic is enough at
-        // this layer. Phase 4 wire-conformance covers the Reply
-        // shape end-to-end.
+        // The routed envelope carries the Reply kind, and nothing falls
+        // through to the unsolicited-delivery path.
+        let delivered = mock.deliver_calls.lock();
+        assert!(
+            delivered.iter().all(|(_, _, w)| w.kind != WrappedKind::Reply),
+            "a resolved reply never re-delivers as a fresh prompt: {delivered:?}"
+        );
     }
 
     #[tokio::test]

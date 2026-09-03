@@ -106,10 +106,6 @@ pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplit
     None
 }
 
-pub fn find_text_split_index(text: &str, policy: CacheSplitPolicy) -> Option<usize> {
-    find_text_split(text, policy).map(|decision| decision.split_at)
-}
-
 fn track_text_split_candidate(
     split_at: usize,
     policy: &CacheSplitPolicy,
@@ -143,7 +139,8 @@ mod tests {
     #[test]
     fn split_prefers_double_newline() {
         let text = "first\n\nsecond";
-        let split_at = find_text_split_index(text, *default_cache_split_policy());
+        let split_at =
+            find_text_split(text, *default_cache_split_policy()).map(|decision| decision.split_at);
         assert_eq!(split_at, Some("first\n\n".len()));
     }
 
@@ -152,13 +149,15 @@ mod tests {
         let policy = *default_cache_split_policy();
         let prefix = "a".repeat(policy.soft_limit_bytes - 1);
         let text = format!("{prefix}\nsecond line");
-        let split_at = find_text_split_index(&text, policy).expect("expected split");
+        let split_at = find_text_split(&text, policy)
+            .map(|decision| decision.split_at)
+            .expect("expected split");
         assert_eq!(&text[..split_at], format!("{prefix}\n"));
     }
 
     #[test]
     fn split_ignores_double_newline_inside_fence() {
         let text = "```rust\nfirst\n\nsecond\n```";
-        assert!(find_text_split_index(text, *default_cache_split_policy()).is_none());
+        assert!(find_text_split(text, *default_cache_split_policy()).is_none());
     }
 }

@@ -55,19 +55,6 @@ use super::slash;
 use super::subagent;
 use super::view::ActiveView;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TerminalToolCallRef {
-    pub terminal_id: String,
-    pub msg_idx: usize,
-    pub block_idx: usize,
-}
-
-impl TerminalToolCallRef {
-    pub fn new(terminal_id: String, msg_idx: usize, block_idx: usize) -> Self {
-        Self { terminal_id, msg_idx, block_idx }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutocompleteKind {
     Mention,
@@ -1389,52 +1376,6 @@ impl App {
         &mut self.active_bucket_mut().tool_call_index
     }
 
-    /// Borrow the active session's terminal map (a shared
-    /// `Rc<RefCell<...>>`).
-    ///
-    /// Returns `None` only in the brief pre-Connect window where no
-    /// session bucket exists. Stays fallible because `TerminalMap`
-    /// (`Rc<RefCell<...>>`) is `!Send + !Sync`, so a `OnceLock`
-    /// fallback (the pattern used by the other infallible readers)
-    /// won't compile. Both `App::test_default()` and `connect()`
-    /// seed a bucket up front so production callers can treat this
-    /// as effectively always-`Some`.
-    pub fn terminals(&self) -> Option<&crate::agent::events::TerminalMap> {
-        self.active_session().map(|s| &s.terminals)
-    }
-
-    /// Mutable borrow of the active session's terminal map.
-    /// Auto-creates the pre-Connect bucket if missing.
-    pub fn terminals_mut(&mut self) -> &mut crate::agent::events::TerminalMap {
-        &mut self.active_bucket_mut().terminals
-    }
-
-    /// Borrow the active session's terminal tool call list.
-    pub fn terminal_tool_calls(&self) -> &[TerminalToolCallRef] {
-        self.active_session().map_or(&[], |s| s.terminal_tool_calls.as_slice())
-    }
-
-    /// Mutable borrow of the terminal tool call list.
-    pub fn terminal_tool_calls_mut(&mut self) -> &mut Vec<TerminalToolCallRef> {
-        &mut self.active_bucket_mut().terminal_tool_calls
-    }
-
-    /// Borrow the active session's terminal tool call membership
-    /// set.
-    pub fn terminal_tool_call_membership(&self) -> &HashSet<TerminalToolCallRef> {
-        static FALLBACK: std::sync::OnceLock<HashSet<TerminalToolCallRef>> =
-            std::sync::OnceLock::new();
-        match self.active_session() {
-            Some(s) => &s.terminal_tool_call_membership,
-            None => FALLBACK.get_or_init(HashSet::new),
-        }
-    }
-
-    /// Mutable borrow of the terminal tool call membership set.
-    pub fn terminal_tool_call_membership_mut(&mut self) -> &mut HashSet<TerminalToolCallRef> {
-        &mut self.active_bucket_mut().terminal_tool_call_membership
-    }
-
     /// Borrow the active session's subagent attribution map.
     pub fn subagent_attribution(&self) -> &HashMap<String, String> {
         static FALLBACK: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
@@ -1517,6 +1458,27 @@ impl App {
     /// snapshot. Returns false when no snapshot is parked.
     pub fn rollback_pending_mode(&mut self) -> bool {
         self.active_bucket_mut().rollback_pending_mode()
+    }
+
+    /// Park the optimistic `/model` pre-apply snapshot on the active
+    /// session, for the `SetModelFailed` rollback.
+    pub fn set_pending_model_rollback(
+        &mut self,
+        value: Option<crate::app::session::ModelRollback>,
+    ) {
+        self.active_bucket_mut().pending_model_rollback = value;
+    }
+
+    /// The active session's parked optimistic-`/model` snapshot, if a
+    /// switch is awaiting the CLI's verdict.
+    pub fn pending_model_rollback(&self) -> Option<&crate::app::session::ModelRollback> {
+        self.active_session().and_then(|s| s.pending_model_rollback.as_ref())
+    }
+
+    /// Restore the active session's parked optimistic-`/model`
+    /// snapshot. Returns false when no snapshot is parked.
+    pub fn rollback_pending_model(&mut self) -> bool {
+        self.active_bucket_mut().rollback_pending_model()
     }
 
     /// Mutable borrow of the active session's mode snapshot.
@@ -3348,16 +3310,6 @@ impl App {
         self.tool_call_scopes().get(id).cloned()
     }
 
-    pub(crate) fn tracked_terminal_id_for_tool(tc: &ToolCallInfo) -> Option<String> {
-        (tc.is_execute_tool()
-            && matches!(
-                tc.status,
-                model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-            ))
-        .then(|| tc.terminal_id.clone())
-        .flatten()
-    }
-
     /// Whether a tool call's card is still non-terminal. Independent
     /// evidence that a backgrounded task is alive, for the window where
     /// the roster has not caught up.
@@ -3444,43 +3396,6 @@ impl App {
     /// Register a tool call's position in the message/block arrays.
     pub fn index_tool_call(&mut self, id: String, msg_idx: usize, block_idx: usize) {
         self.active_tool_call_index_mut().insert(id, (msg_idx, block_idx));
-    }
-
-    pub(crate) fn sync_terminal_tool_call(
-        &mut self,
-        terminal_id: String,
-        msg_idx: usize,
-        block_idx: usize,
-    ) {
-        let desired = TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
-        if self.terminal_tool_call_membership().contains(&desired) {
-            return;
-        }
-        self.untrack_terminal_tool_call(msg_idx, block_idx);
-        self.terminal_tool_call_membership_mut().insert(desired.clone());
-        self.terminal_tool_calls_mut().push(desired);
-    }
-
-    pub(crate) fn untrack_terminal_tool_call(&mut self, msg_idx: usize, block_idx: usize) {
-        let removed: Vec<_> = self
-            .terminal_tool_calls()
-            .iter()
-            .filter(|entry| entry.msg_idx == msg_idx && entry.block_idx == block_idx)
-            .cloned()
-            .collect();
-        if removed.is_empty() {
-            return;
-        }
-        self.terminal_tool_calls_mut()
-            .retain(|entry| entry.msg_idx != msg_idx || entry.block_idx != block_idx);
-        for entry in removed {
-            self.terminal_tool_call_membership_mut().remove(&entry);
-        }
-    }
-
-    pub(crate) fn clear_terminal_tool_call_tracking(&mut self) {
-        self.terminal_tool_calls_mut().clear();
-        self.terminal_tool_call_membership_mut().clear();
     }
 
     pub(crate) fn sync_after_message_tail_changed(&mut self, msg_idx: usize) {
@@ -3593,7 +3508,6 @@ impl App {
         let mut changed = 0usize;
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
-        let mut detached_terminal = false;
         let exempt: std::collections::HashSet<String> = self
             .active_session()
             .map(super::session::UiSession::backgrounded_alive_with_children)
@@ -3611,8 +3525,10 @@ impl App {
                         tc.status = new_status;
                         tc.mark_tool_call_layout_dirty();
                         changed_slots.push((msg_idx, block_idx));
-                        if tc.is_execute_tool() && tc.terminal_id.take().is_some() {
-                            detached_terminal = true;
+                        // A completed execute's captured terminal id no
+                        // longer means anything to the renderer.
+                        if tc.is_execute_tool() {
+                            tc.terminal_id = None;
                         }
                         if changed_message_indices.last().copied() != Some(msg_idx) {
                             changed_message_indices.push(msg_idx);
@@ -3621,10 +3537,6 @@ impl App {
                     }
                 }
             }
-        }
-
-        if detached_terminal {
-            self.rebuild_tool_indices_and_terminal_refs();
         }
 
         for (msg_idx, block_idx) in changed_slots {
@@ -3936,6 +3848,11 @@ impl App {
         self.set_session_id(None);
         self.set_current_model(None);
         self.set_mode(None);
+        self.set_runtime_session_state(None);
+        self.set_observed_permission_mode(None);
+        self.set_observed_effort(None);
+        self.set_pending_mode_rollback(None);
+        self.set_pending_model_rollback(None);
         *self.session_usage_mut() = SessionUsageState::default();
     }
 
@@ -6143,7 +6060,8 @@ mod tests {
     #[test]
     fn cache_store_with_height_then_height_at() {
         let mut cache = BlockCache::default();
-        cache.store_with_height(vec![Line::from("hello")], 1, 80);
+        cache.store(vec![Line::from("hello")]);
+        cache.set_height(1, 80);
         assert_eq!(cache.height_at(80), Some(1));
         assert!(cache.get().is_some());
     }
@@ -6151,14 +6069,16 @@ mod tests {
     #[test]
     fn cache_height_at_wrong_width_returns_none() {
         let mut cache = BlockCache::default();
-        cache.store_with_height(vec![Line::from("hello")], 1, 80);
+        cache.store(vec![Line::from("hello")]);
+        cache.set_height(1, 80);
         assert!(cache.height_at(120).is_none());
     }
 
     #[test]
     fn cache_height_invalidated_returns_none() {
         let mut cache = BlockCache::default();
-        cache.store_with_height(vec![Line::from("hello")], 1, 80);
+        cache.store(vec![Line::from("hello")]);
+        cache.set_height(1, 80);
         cache.invalidate();
         assert!(cache.height_at(80).is_none());
     }
@@ -6201,9 +6121,11 @@ mod tests {
     #[test]
     fn cache_store_with_height_overwrite() {
         let mut cache = BlockCache::default();
-        cache.store_with_height(vec![Line::from("old")], 1, 80);
+        cache.store(vec![Line::from("old")]);
+        cache.set_height(1, 80);
         cache.invalidate();
-        cache.store_with_height(vec![Line::from("new long line")], 3, 120);
+        cache.store(vec![Line::from("new long line")]);
+        cache.set_height(3, 120);
         assert_eq!(cache.height_at(120), Some(3));
         assert!(cache.height_at(80).is_none());
     }
@@ -6252,16 +6174,13 @@ mod tests {
     }
 
     #[test]
-    fn cache_store_then_set_height_matches_store_with_height() {
-        let mut cache_a = BlockCache::default();
-        cache_a.store(vec![Line::from("test")]);
-        cache_a.set_height(2, 100);
+    fn cache_store_then_set_height_is_consistent() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("test")]);
+        cache.set_height(2, 100);
 
-        let mut cache_b = BlockCache::default();
-        cache_b.store_with_height(vec![Line::from("test")], 2, 100);
-
-        assert_eq!(cache_a.height_at(100), cache_b.height_at(100));
-        assert_eq!(cache_a.get().unwrap().len(), cache_b.get().unwrap().len());
+        assert_eq!(cache.height_at(100), Some(2));
+        assert_eq!(cache.get().unwrap().len(), 1);
     }
 
     #[test]
@@ -7505,16 +7424,10 @@ mod tests {
             assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress, "term-1"),
         ];
         app.index_tool_call("tool-idx".to_owned(), 99, 99);
-        app.sync_terminal_tool_call("stale-term".to_owned(), 99, 99);
         app.history_retention_mut().max_bytes = 1;
 
         let _ = app.enforce_history_retention();
         assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
-        assert_eq!(app.terminal_tool_calls().len(), 1);
-        assert_eq!(app.terminal_tool_call_membership().len(), 1);
-        assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-1");
-        assert_eq!(app.terminal_tool_calls()[0].msg_idx, 2);
-        assert_eq!(app.terminal_tool_calls()[0].block_idx, 0);
     }
 
     #[test]
@@ -7857,13 +7770,10 @@ mod tests {
             "term-1",
         ));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
-        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
 
         let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
         assert_eq!(changed, 1);
-        assert!(app.terminal_tool_calls().is_empty());
-        assert!(app.terminal_tool_call_membership().is_empty());
         let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
             panic!("expected tool call");
         };
@@ -7962,31 +7872,11 @@ mod tests {
             "term-1",
         ));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
-        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
 
         app.clear_messages_tracked();
 
         assert!(app.messages().is_empty());
         assert!(app.tool_call_index().is_empty());
-        assert!(app.terminal_tool_calls().is_empty());
-        assert!(app.terminal_tool_call_membership().is_empty());
-    }
-
-    #[test]
-    fn rebuild_tool_indices_skips_completed_terminal_refs() {
-        let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_bash_tool_message(
-            "bash-1",
-            model::ToolCallStatus::Completed,
-            "term-1",
-        ));
-        app.index_tool_call("bash-1".to_owned(), 0, 0);
-        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
-
-        app.rebuild_tool_indices_and_terminal_refs();
-
-        assert!(app.terminal_tool_calls().is_empty());
-        assert!(app.terminal_tool_call_membership().is_empty());
     }
 
     #[test]
@@ -8083,14 +7973,6 @@ mod tests {
     }
 
     #[test]
-    fn incr_invalidate_renders_preserves_text() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("p1\n\np2\n\ntail");
-        incr.invalidate_renders();
-        assert_eq!(incr.full_text(), "p1\n\np2\n\ntail");
-    }
-
-    #[test]
     fn incr_reuses_rendered_prefix_chunks() {
         use std::cell::Cell;
 
@@ -8147,7 +8029,7 @@ mod tests {
         assert_eq!(vp.width, 0);
         assert!(vp.message_heights.is_empty());
         assert!(vp.oldest_stale_index().is_none());
-        assert!(!vp.resize_remeasure_active());
+        assert!(!vp.remeasure_active());
         assert!(vp.height_prefix_sums.is_empty());
     }
 
@@ -8202,7 +8084,7 @@ mod tests {
         assert_eq!(vp.height, 12);
         assert_eq!(vp.message_heights_width, 80);
         assert_eq!(vp.prefix_sums_width, 80);
-        assert!(!vp.resize_remeasure_active());
+        assert!(!vp.remeasure_active());
         assert!(vp.message_height_is_current(0));
         assert!(vp.message_height_is_current(1));
     }
@@ -8262,7 +8144,7 @@ mod tests {
         vp.mark_heights_valid();
 
         let _ = vp.on_frame(120, 24);
-        assert!(vp.resize_remeasure_active());
+        assert!(vp.remeasure_active());
         assert!(!vp.message_height_is_current(0));
 
         vp.mark_message_height_measured(1);
@@ -8272,7 +8154,7 @@ mod tests {
         vp.mark_heights_valid();
         assert_eq!(vp.message_heights_width, 120);
         assert!(vp.message_height_is_current(0));
-        assert!(!vp.resize_remeasure_active());
+        assert!(!vp.remeasure_active());
     }
 
     #[test]
@@ -8283,14 +8165,14 @@ mod tests {
         vp.mark_heights_valid();
 
         let _ = vp.on_frame(100, 24);
-        vp.ensure_resize_remeasure_anchor(2, 3, 6);
+        vp.ensure_remeasure_anchor(2, 3, 6);
 
-        assert_eq!(vp.next_resize_remeasure_index(6), Some(1));
-        assert_eq!(vp.next_resize_remeasure_index(6), Some(0));
-        assert_eq!(vp.next_resize_remeasure_index(6), Some(4));
-        assert_eq!(vp.next_resize_remeasure_index(6), Some(5));
-        assert_eq!(vp.next_resize_remeasure_index(6), None);
-        assert!(!vp.resize_remeasure_active());
+        assert_eq!(vp.next_remeasure_index(6), Some(1));
+        assert_eq!(vp.next_remeasure_index(6), Some(0));
+        assert_eq!(vp.next_remeasure_index(6), Some(4));
+        assert_eq!(vp.next_remeasure_index(6), Some(5));
+        assert_eq!(vp.next_remeasure_index(6), None);
+        assert!(!vp.remeasure_active());
     }
 
     #[test]
@@ -8655,11 +8537,11 @@ mod tests {
         vp.scroll_pos = 12.0;
 
         let _ = vp.on_frame(40, 24);
-        vp.ensure_resize_remeasure_anchor(2, 3, 6);
+        vp.ensure_remeasure_anchor(2, 3, 6);
 
-        assert_eq!(vp.next_resize_remeasure_index(6), Some(1));
-        assert_eq!(vp.next_resize_remeasure_index(6), Some(0));
-        assert_eq!(vp.next_resize_remeasure_index(6), Some(4));
+        assert_eq!(vp.next_remeasure_index(6), Some(1));
+        assert_eq!(vp.next_remeasure_index(6), Some(0));
+        assert_eq!(vp.next_remeasure_index(6), Some(4));
     }
 
     #[test]

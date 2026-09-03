@@ -528,14 +528,6 @@ impl IncrementalMarkdown {
         rendered
     }
 
-    pub fn invalidate_renders(&mut self) {
-        for chunk in &mut self.chunks {
-            chunk.dirty = true;
-            chunk.rendered = None;
-            chunk.render_key = None;
-        }
-    }
-
     pub(crate) fn ensure_rendered(
         &mut self,
         render_key: MarkdownRenderKey,

@@ -42,7 +42,6 @@ pub(crate) mod spinner_picker;
 mod state;
 pub(crate) mod subagent;
 mod tab_title;
-mod terminal;
 mod todos;
 pub(crate) mod usage;
 pub(crate) mod usage_overlay;
@@ -52,7 +51,6 @@ pub(crate) mod view;
 pub use cache_policy::{
     CacheSplitPolicy, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES, DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,
     TextSplitDecision, TextSplitKind, default_cache_split_policy, find_text_split,
-    find_text_split_index,
 };
 pub use config::ConfigState;
 pub use connect::{create_app, start_connection};
@@ -473,9 +471,6 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         #[allow(clippy::cast_precision_loss)]
         let scroll_delta = (app.viewport().scroll_target as f32 - app.viewport().scroll_pos).abs();
         if scroll_delta >= 0.01 {
-            app.needs_redraw = true;
-        }
-        if terminal::update_terminal_outputs(app) {
             app.needs_redraw = true;
         }
         if app.force_redraw {

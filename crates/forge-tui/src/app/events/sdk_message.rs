@@ -1129,6 +1129,11 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 
     let next_wire =
         resolve_current_model_from_inputs(model_id, requested, resolved_runtime, &available_models);
+    // The CLI reporting a model retires the optimistic `/model`
+    // rollback snapshot - the verdict has landed, whatever it is. Sits
+    // ahead of the equality early-return: the CLI confirming the model
+    // the optimistic apply already set still closes the pending switch.
+    app.set_pending_model_rollback(None);
     if app.current_model() == Some(&next_wire) {
         return;
     }
@@ -1771,9 +1776,6 @@ fn stamp_turn_info_on_latest_assistant(
     };
     let model = app.observed_assistant_model().map(ToOwned::to_owned);
     let usage = usage.filter(|u| !is_unattributed_usage(*u));
-    // Read before `handle_result` clears the session field, which it
-    // does immediately after this returns, since the settled row goes
-    // on showing the estimate.
     let thinking_tokens = app.latest_thinking_tokens();
     if let Some(msg) = app.active_messages_mut().get_mut(idx) {
         let info = &mut msg.turn_info;
