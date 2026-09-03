@@ -3,6 +3,11 @@
 //! Before windowing, a single-pass decode of this clip derailed into
 //! repetition loops and skip-ahead re-syncs that dropped whole
 //! paragraphs, with `truncated` false and nothing flagged.
+//!
+//! The clip is made with macOS `say`, so the whole file is macOS-only;
+//! a crate-level cfg rather than one on the test keeps the helpers from
+//! going dead-code on other platforms under `-D warnings`.
+#![cfg(target_os = "macos")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
