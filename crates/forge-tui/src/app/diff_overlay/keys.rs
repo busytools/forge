@@ -6,13 +6,12 @@
 use std::time::Instant;
 
 use super::comments::{cancel_active_input, save_active_input};
-use super::lifecycle::spawn_scope_scan;
+use super::lifecycle::after_nav;
 use super::reviews::{
     close_with_submit, handle_reviews_list_key, submit_finish_review, toggle_reviews_list,
 };
 use super::state::DiffOverlayState;
-use super::threads::hydrate_threads;
-use super::types::{DiffViewMode, NavOutcome};
+use super::types::DiffViewMode;
 use crate::app::App;
 use crate::app::input::TypedChar;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -204,7 +203,7 @@ fn handle_jump_key(app: &mut App, key: KeyEvent) {
 }
 
 /// Step to the prev/next commit and spawn its scan if uncached.
-pub(super) fn step_commit(app: &mut App, forward: bool) {
+fn step_commit(app: &mut App, forward: bool) {
     let outcome = app.diff_overlay.as_mut().and_then(|o| o.step_commit(forward));
     if let Some(outcome) = outcome {
         after_nav(app, outcome);
@@ -214,7 +213,7 @@ pub(super) fn step_commit(app: &mut App, forward: bool) {
 /// Toggle between the current commit and the whole-branch diff (`a`),
 /// spawning the target scope's scan when it isn't cached. No-op in
 /// whole-diff-only mode.
-pub(super) fn toggle_all_changes(app: &mut App) {
+fn toggle_all_changes(app: &mut App) {
     let outcome = app.diff_overlay.as_mut().and_then(DiffOverlayState::toggle_all_changes);
     if let Some(outcome) = outcome {
         after_nav(app, outcome);
@@ -222,29 +221,13 @@ pub(super) fn toggle_all_changes(app: &mut App) {
 }
 
 /// Open the jump dropdown (commit mode only).
-pub(super) fn open_jump(app: &mut App) {
+fn open_jump(app: &mut App) {
     if let Some(o) = app.diff_overlay.as_mut()
         && !o.commits.is_empty()
     {
         o.open_jump();
         app.needs_redraw = true;
     }
-}
-
-/// After a navigation, spawn the scope's scan when it wasn't cached, and
-/// request a redraw. The scan lands back through the overlay event
-/// channel (see [`super::lifecycle::spawn_scope_fetch`] /
-/// [`super::lifecycle::drain_events`]).
-pub(super) fn after_nav(app: &mut App, outcome: NavOutcome) {
-    match outcome {
-        NavOutcome::NeedsScan(scope) => spawn_scope_scan(app, scope),
-        // A cached scope installs its files without a scan, so this is
-        // the only chance to rebuild its cards. They are a projection of
-        // the store, and the copy left over from the last visit predates
-        // whatever happened in the scope just left.
-        NavOutcome::Ready => hydrate_threads(app),
-    }
-    app.needs_redraw = true;
 }
 
 /// Flip the body layout (unified <-> split) and drop the measured

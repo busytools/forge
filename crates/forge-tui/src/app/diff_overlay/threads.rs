@@ -494,7 +494,7 @@ fn renudge_reopened(app: &mut App, at: CommentRef) {
 mod tests {
     use super::*;
     use crate::app::diff_overlay::comments::save_active_input;
-    use crate::app::diff_overlay::keys::after_nav;
+    use crate::app::diff_overlay::lifecycle::after_nav;
     use crate::app::diff_overlay::mouse::reopen_comment_for_turn;
     use crate::app::diff_overlay::state::DiffOverlayState;
     use crate::app::diff_overlay::test_support::*;

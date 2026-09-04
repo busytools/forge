@@ -8,7 +8,7 @@ use std::sync::mpsc as std_mpsc;
 
 use super::state::DiffOverlayState;
 use super::threads::hydrate_threads;
-use super::types::{DiffOverlayEvent, DiffScanKind, DiffScope};
+use super::types::{DiffOverlayEvent, DiffScanKind, DiffScope, NavOutcome};
 use crate::app::App;
 use crate::app::view::{ActiveView, set_active_view};
 use forge_primitives::git_diff::RepoGate;
@@ -32,7 +32,7 @@ pub enum InitialScope {
 /// Pick the initial scope from the branch's persisted threads: whole-diff
 /// when any whole-diff thread exists (the pre-scope behavior), else the
 /// commit carrying the most-recently-updated comment, else the default.
-pub(super) fn initial_scope_from_threads(
+fn initial_scope_from_threads(
     threads: &[forge_primitives::ReviewThread],
 ) -> InitialScope {
     if threads.iter().any(|t| t.commit.is_none()) {
@@ -48,7 +48,7 @@ pub(super) fn initial_scope_from_threads(
 /// Resolve an [`InitialScope`] against a freshly-scanned commit list into
 /// the commit to open (index + sha), or `None` for whole-diff. A chosen
 /// sha no longer in the list falls back to the first commit.
-pub(super) fn resolve_initial_commit(
+fn resolve_initial_commit(
     initial: &InitialScope,
     commits: &[forge_workspace::env::git_diff::hunks::CommitMeta],
 ) -> Option<(usize, String)> {
@@ -148,7 +148,7 @@ pub fn spawn_fetch(
 /// `None` for whole-diff (which scans `target`). Reuses the current
 /// `seq` (no bump) so a scope scan spawned during navigation is dropped
 /// only if a fresh `/diff` supersedes the whole overlay.
-pub(super) fn spawn_scope_fetch(
+fn spawn_scope_fetch(
     cwd: PathBuf,
     target: String,
     scope: DiffScope,
@@ -304,7 +304,7 @@ pub fn open_with_target(app: &mut App, target: String) {
 /// against the worker's branch, not the lead's. For lead sessions,
 /// non-git workers, or any session not registered as a live worker,
 /// `git_scan_cwd_for_session` returns `cwd_raw` unchanged.
-pub(super) fn resolve_active_diff_cwd(app: &App, cwd_raw: &str) -> PathBuf {
+fn resolve_active_diff_cwd(app: &App, cwd_raw: &str) -> PathBuf {
     let cwd_raw_path = PathBuf::from(cwd_raw);
     let Some(active_key) = app.active_session_key.as_ref() else {
         return cwd_raw_path;
@@ -488,7 +488,22 @@ pub fn drain_events(app: &mut App) {
 /// Kick off the lazy scan for `scope` against the overlay's cwd/target,
 /// reusing the current scan seq (no bump - it's the same overlay
 /// session, not a fresh `/diff`).
-pub(super) fn spawn_scope_scan(app: &mut App, scope: DiffScope) {
+/// After a navigation, spawn the scope's scan when it wasn't cached, and
+/// request a redraw. The scan lands back through the overlay event
+/// channel (see [`spawn_scope_fetch`] / [`drain_events`]).
+pub(super) fn after_nav(app: &mut App, outcome: NavOutcome) {
+    match outcome {
+        NavOutcome::NeedsScan(scope) => spawn_scope_scan(app, scope),
+        // A cached scope installs its files without a scan, so this is
+        // the only chance to rebuild its cards. They are a projection of
+        // the store, and the copy left over from the last visit predates
+        // whatever happened in the scope just left.
+        NavOutcome::Ready => hydrate_threads(app),
+    }
+    app.needs_redraw = true;
+}
+
+fn spawn_scope_scan(app: &mut App, scope: DiffScope) {
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
     let cwd = overlay.cwd.clone();
     let target = overlay.target.clone();
@@ -504,7 +519,7 @@ pub(super) fn spawn_scope_scan(app: &mut App, scope: DiffScope) {
 /// view to [`ActiveView::Diff`]. Wired up by the `/diff` slash
 /// command's drain pump; the Inspector `🦉` click reuses the same
 /// path in a follow-up commit.
-pub(super) fn open(app: &mut App, state: DiffOverlayState) {
+fn open(app: &mut App, state: DiffOverlayState) {
     app.diff_overlay = Some(state);
     set_active_view(app, ActiveView::Diff);
     app.needs_redraw = true;

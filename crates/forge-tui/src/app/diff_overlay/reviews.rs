@@ -2,7 +2,7 @@
 //! Finish-review modal, and the close path that seals this session's
 //! authored comments into a numbered review and nudges the agent.
 
-use super::keys::after_nav;
+use super::lifecycle::after_nav;
 use super::state::{ReviewListRow, ReviewListTotals};
 use super::types::{DiffScope, FinishReviewState};
 use crate::app::App;
@@ -12,7 +12,7 @@ use forge_primitives::review::{ReviewStatus, ReviewThread};
 
 /// Parse an rfc3339 timestamp into a `SystemTime`, or `None` when it is
 /// empty / malformed.
-pub(super) fn parse_rfc3339(text: &str) -> Option<std::time::SystemTime> {
+fn parse_rfc3339(text: &str) -> Option<std::time::SystemTime> {
     use time::format_description::well_known::Rfc3339;
     time::OffsetDateTime::parse(text, &Rfc3339).ok().map(std::time::SystemTime::from)
 }
@@ -22,7 +22,7 @@ pub(super) fn parse_rfc3339(text: &str) -> Option<std::time::SystemTime> {
 /// review's member threads (those with a turn filed into it) by status and
 /// records the first member's scope + path for navigation. A thread the
 /// reviewer replied on across rounds is a member of each of them.
-pub(super) fn compute_review_rows(
+fn compute_review_rows(
     reviews: &[forge_primitives::ReviewSet],
     threads: &[ReviewThread],
     now: std::time::SystemTime,
@@ -67,7 +67,7 @@ pub(super) fn compute_review_rows(
 
 /// Tally the branch's filed comments for the reviews-list footer, counting
 /// a thread once however many reviews its turns span.
-pub(super) fn compute_review_totals(
+fn compute_review_totals(
     reviews: &[forge_primitives::ReviewSet],
     threads: &[ReviewThread],
 ) -> ReviewListTotals {
