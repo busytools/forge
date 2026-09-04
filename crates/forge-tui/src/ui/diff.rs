@@ -1,11 +1,12 @@
 use crate::agent::model;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
-use crate::ui::wrap::{StyledChunk, display_width, expand_tabs, wrap_styled_chunks};
+use crate::ui::wrap::{
+    StyledChunk, display_width, expand_tabs, replace_control_chars, wrap_styled_chunks,
+};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
-use std::borrow::Cow;
 
 /// Rows outside this window render without syntax highlighting.
 ///
@@ -106,9 +107,8 @@ pub fn render_diff(
             // Split leading whitespace; `wrap_styled_chunks` drops
             // leading spaces at wrap boundaries, so the indent column
             // is rendered explicitly (matches pre-syntect behavior).
-            let expanded = expand_tabs(value);
-            let stripped = strip_control_chars(&expanded);
-            let (leading_indent, content) = split_leading_whitespace(&stripped);
+            let expanded = replace_control_chars(expand_tabs(value));
+            let (leading_indent, content) = split_leading_whitespace(&expanded);
             let highlighted = row_is_highlighted(row_idx, row_total, highlight_window);
             row_idx += 1;
             let highlighted_spans = if highlighted {
@@ -240,8 +240,8 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
     // Every marker is one ASCII byte, so the split is always on a
     // boundary when `carries_source` holds.
     let text = match carries_source.then(|| line.split_at(1)) {
-        Some((marker, body)) => format!("{marker}{}", strip_control_chars(&expand_tabs(body))),
-        None => strip_control_chars(&expand_tabs(line)).into_owned(),
+        Some((marker, body)) => format!("{marker}{}", replace_control_chars(expand_tabs(body))),
+        None => replace_control_chars(expand_tabs(line)).into_owned(),
     };
     let mut rendered = Line::from(Span::styled(text, style));
     if let Some(bg) = row_bg {
@@ -379,20 +379,6 @@ fn render_wrapped_diff_row(
             line
         })
         .collect()
-}
-
-/// Drop control characters a diff row charges a column for (`Span::width`
-/// counts them) and paints none of (`styled_graphemes` drops them). The
-/// range spares tab and newline, which expand_tabs and line splitting have
-/// already consumed; DEL has the same measure-paint split and goes too.
-fn strip_control_chars(text: &str) -> Cow<'_, str> {
-    fn is_stripped_control(ch: char) -> bool {
-        matches!(ch, '\u{0}'..='\u{8}' | '\u{b}'..='\u{1f}' | '\u{7f}')
-    }
-    if !text.chars().any(is_stripped_control) {
-        return Cow::Borrowed(text);
-    }
-    Cow::Owned(text.chars().filter(|ch| !is_stripped_control(*ch)).collect())
 }
 
 fn split_leading_whitespace(text: &str) -> (&str, &str) {
@@ -714,12 +700,12 @@ mod tests {
     /// A control character is charged a column by `Span::width` and
     /// painted by nothing (`styled_graphemes` drops it), so a row
     /// carrying one wraps early and every width derived from the
-    /// measurement drifts from what is on screen. All three
-    /// content-to-span paths must close that split; DEL rides along on
-    /// the same measure-paint split.
+    /// measurement drifts. All three content-to-span paths substitute
+    /// the Control Pictures glyph, one column wide, closing the split
+    /// while keeping the byte visible.
     #[test]
-    fn diff_rows_strip_control_chars_so_measured_width_equals_painted() {
-        let assert_clean = |lines: &[Line<'static>], needle: &str| {
+    fn diff_rows_picture_control_chars_so_measured_width_equals_painted() {
+        let assert_pictured = |lines: &[Line<'static>], needle: &str| -> String {
             let row = lines
                 .iter()
                 .find(|line| line.spans.iter().any(|span| span.content.contains(needle)))
@@ -736,13 +722,19 @@ mod tests {
             let joined: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
             assert!(
                 !joined.chars().any(char::is_control),
-                "no control character may reach a span: {joined:?}"
+                "no raw control character may reach a span: {joined:?}"
             );
+            joined
         };
 
-        // The syntect highlight arm.
-        let highlighted = render_diff(&model::Diff::new("tmp.rs", "before\u{1b}after\n"), 80, None);
-        assert_clean(&highlighted, "before");
+        // The syntect highlight arm. The form feed must paint its
+        // picture, not vanish.
+        let highlighted = render_diff(&model::Diff::new("tmp.rs", "before\u{c}after\n"), 80, None);
+        let highlighted_text = assert_pictured(&highlighted, "before");
+        assert!(
+            highlighted_text.contains('\u{240c}'),
+            "a form feed must paint its Control Pictures glyph, not be dropped: {highlighted_text:?}"
+        );
 
         // The non-highlighted Span::raw fallback.
         let raw_fallback = render_diff(
@@ -750,11 +742,11 @@ mod tests {
             80,
             Some(HighlightWindow { head_rows: 0, tail_rows: 0 }),
         );
-        assert_clean(&raw_fallback, "before");
+        assert_pictured(&raw_fallback, "before");
 
         // The unified-diff fallback.
         let raw_unified = render_raw_unified_diff("+before\u{7f}after\n");
-        assert_clean(&raw_unified, "before");
+        assert_pictured(&raw_unified, "before");
     }
 
     #[test]
