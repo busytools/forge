@@ -50,40 +50,66 @@ impl ProviderBackend for Anthropic {
         account: &AccountEnv<'_>,
         host: &dyn ProviderHost,
     ) -> Result<UsageSnapshot, ProbeError> {
-        if let Some(bearer) = token_bearer(account.env) {
-            let ua = host.user_agent().await.map_err(OauthUsageError::UaProbe)?;
-            let client = host.http_client(OAUTH_TIMEOUT).map_err(OauthUsageError::Network)?;
-            let settled =
-                accept_scope_refusal(anthropic_windowed_probe(&client, &ua, None, bearer).await);
-            match &settled {
-                Ok(_) => tracing::info!(
-                    target: "forge_providers::anthropic",
-                    event_name = "oauth_usage_setup_token_settled",
-                    outcome = "ok",
-                    "setup token usage probe settled",
-                ),
-                Err(OauthUsageError::Unauthorized(403)) => tracing::warn!(
-                    target: "forge_providers::anthropic",
-                    event_name = "oauth_usage_setup_token_unrecognized_403",
-                    outcome = "non_ok",
-                    "403 without the oauth_scope_insufficient shape: if the token was just \
-                     re-minted, suspect a changed refusal body rather than a dead token",
-                ),
-                _ => {}
+        match choose_mapper(token_bearer(account.env)) {
+            Mapper::Lenient(bearer) => {
+                let ua = host.user_agent().await.map_err(OauthUsageError::UaProbe)?;
+                let client = host.http_client(OAUTH_TIMEOUT).map_err(OauthUsageError::Network)?;
+                let settled = accept_scope_refusal(
+                    anthropic_windowed_probe(&client, &ua, None, bearer).await,
+                );
+                match &settled {
+                    Ok(_) => tracing::info!(
+                        target: "forge_providers::anthropic",
+                        event_name = "oauth_usage_setup_token_settled",
+                        outcome = "ok",
+                        "setup token usage probe settled",
+                    ),
+                    Err(OauthUsageError::Unauthorized(403)) => tracing::warn!(
+                        target: "forge_providers::anthropic",
+                        event_name = "oauth_usage_setup_token_unrecognized_403",
+                        outcome = "non_ok",
+                        "403 without the oauth_scope_insufficient shape: if the token was just \
+                         re-minted, suspect a changed refusal body rather than a dead token",
+                    ),
+                    _ => {}
+                }
+                let payload = settled.map_err(ProbeError::Fetch)?;
+                Ok(snapshot_from_payload_lenient(payload))
             }
-            let payload = settled.map_err(ProbeError::Fetch)?;
-            return Ok(snapshot_from_payload_lenient(payload));
+            Mapper::Strict => {
+                let Some(credentials) = host.keychain(account.config_dir) else {
+                    return Err(ProbeError::NoCredentials);
+                };
+                let ua = host.user_agent().await.map_err(OauthUsageError::UaProbe)?;
+                let client = host.http_client(OAUTH_TIMEOUT).map_err(OauthUsageError::Network)?;
+                let payload =
+                    anthropic_windowed_probe(&client, &ua, None, &credentials.access_token)
+                        .await
+                        .map_err(ProbeError::Fetch)?;
+                snapshot_from_payload(payload)
+            }
         }
-        let Some(credentials) = host.keychain(account.config_dir) else {
-            return Err(ProbeError::NoCredentials);
-        };
-        let ua = host.user_agent().await.map_err(OauthUsageError::UaProbe)?;
-        let client = host.http_client(OAUTH_TIMEOUT).map_err(OauthUsageError::Network)?;
-        let payload = anthropic_windowed_probe(&client, &ua, None, &credentials.access_token)
-            .await
-            .map_err(ProbeError::Fetch)?;
-        snapshot_from_payload(payload)
     }
+}
+
+/// The mapper an arm applies, paired with the credential that earns
+/// it: the token arm maps leniently (the settled empty payload must
+/// map), the keychain arm strictly (a 200 without the session window
+/// is response-shape drift). Pure so the routing stays unit-pinned -
+/// routing the seven-day-only shape to the strict mapper is a bug that
+/// has shipped before and flipped accounts to fetch errors every 5h
+/// cycle.
+fn choose_mapper(token: Option<&str>) -> Mapper<'_> {
+    match token {
+        Some(bearer) => Mapper::Lenient(bearer),
+        None => Mapper::Strict,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Mapper<'a> {
+    Lenient(&'a str),
+    Strict,
 }
 
 /// Settle a token-mode probe result: the scope refusal is the verdict
@@ -147,6 +173,16 @@ mod tests {
         env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "  ".to_owned());
         assert_eq!(token_bearer(&env), None);
         assert_eq!(token_bearer(&HashMap::new()), None);
+    }
+
+    /// The arm-routing pin: a token credential earns the lenient
+    /// mapper, the keychain earns the strict one. Inverting this sent
+    /// the seven-day-only shape to the strict mapper and flipped
+    /// accounts to fetch errors every 5h cycle.
+    #[test]
+    fn token_bearer_earns_the_lenient_mapper_and_keychain_the_strict() {
+        assert_eq!(choose_mapper(Some("tok")), Mapper::Lenient("tok"));
+        assert_eq!(choose_mapper(None), Mapper::Strict);
     }
 
     /// The neutral settlement: a scope refusal maps to the empty
