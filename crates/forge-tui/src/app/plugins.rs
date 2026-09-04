@@ -219,6 +219,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             if search_enabled(app.plugins.active_tab)
                 && app.plugins.search_focused
                 && let Some(query) = app.plugins.active_search_query_mut()
+                && !matches!(ch, '\n' | '\r')
             {
                 query.insert_char(ch);
                 reset_selection_for_active_tab(app);
@@ -461,9 +462,6 @@ pub(crate) fn handle_add_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Left, KeyModifiers::NONE) => overlay.editor.move_left(),
         (KeyCode::Right, KeyModifiers::NONE) => overlay.editor.move_right(),
-        // Home and End address the field, not the line: a typed newline
-        // splits the draft into rows the user never asked for, and
-        // tui_textarea's own Head/End would stop at the split.
         (KeyCode::Home, KeyModifiers::NONE) => {
             let _ = overlay.editor.set_cursor(0, 0);
         }
@@ -475,7 +473,8 @@ pub(crate) fn handle_add_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Backspace, KeyModifiers::NONE) => overlay.editor.delete_char_before(),
         (KeyCode::Delete, KeyModifiers::NONE) => overlay.editor.delete_char_after(),
         (KeyCode::Char(ch), modifiers)
-            if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
+            if (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+                && !matches!(ch, '\n' | '\r') =>
         {
             overlay.editor.insert_char(ch);
         }
@@ -1448,113 +1447,29 @@ mod tests {
         );
     }
 
-    /// A literal newline key reaches this field's printable-char arm, so
-    /// the draft can hold one. The cursor offset has to keep counting it.
+    /// A newline key is rejected, so the draft stays one line and the
+    /// cursor offset stays a plain character offset.
     #[test]
-    fn add_marketplace_field_counts_a_typed_newline_in_its_cursor_offset() {
+    fn add_marketplace_field_rejects_typed_newlines() {
         let mut app = app_with_add_marketplace_open();
 
         for ch in ['a', 'b'] {
             press_add_marketplace(&mut app, KeyCode::Char(ch));
         }
-        press_add_marketplace(&mut app, KeyCode::Char('\n'));
+        for ch in ['\n', '\r'] {
+            press_add_marketplace(&mut app, KeyCode::Char(ch));
+            assert_eq!(
+                add_marketplace_field(&app),
+                ("ab".to_owned(), 2),
+                "a typed {ch:?} never enters the draft nor moves the cursor"
+            );
+        }
+
         press_add_marketplace(&mut app, KeyCode::Char('c'));
-
         assert_eq!(
             add_marketplace_field(&app),
-            ("ab\nc".to_owned(), 4),
-            "the newline occupies one position in both the draft and the offset"
-        );
-    }
-
-    /// Cursor keys address the whole field, not the line the cursor
-    /// happens to sit on. A typed newline is the only input that can
-    /// tell the two apart.
-    #[test]
-    fn add_marketplace_field_cursor_keys_span_a_typed_newline() {
-        let mut app = app_with_add_marketplace_open();
-        for code in [
-            KeyCode::Char('a'),
-            KeyCode::Char('\n'),
-            KeyCode::Char('b'),
-            KeyCode::Home,
-            KeyCode::Char('X'),
-        ] {
-            press_add_marketplace(&mut app, code);
-        }
-        assert_eq!(
-            add_marketplace_field(&app),
-            ("Xa\nb".to_owned(), 1),
-            "Home reaches the start of the field, not the start of the line"
-        );
-
-        let mut app = app_with_add_marketplace_open();
-        for code in [
-            KeyCode::Char('a'),
-            KeyCode::Char('b'),
-            KeyCode::Char('\n'),
-            KeyCode::Char('c'),
-            KeyCode::Left,
-            KeyCode::Left,
-            KeyCode::End,
-            KeyCode::Char('X'),
-        ] {
-            press_add_marketplace(&mut app, code);
-        }
-        assert_eq!(
-            add_marketplace_field(&app),
-            ("ab\ncX".to_owned(), 5),
-            "End reaches the end of the field, not the end of the line"
-        );
-
-        let mut app = app_with_add_marketplace_open();
-        for code in [
-            KeyCode::Char('a'),
-            KeyCode::Char('\n'),
-            KeyCode::Char('b'),
-            KeyCode::Home,
-            KeyCode::Backspace,
-            KeyCode::Char('X'),
-        ] {
-            press_add_marketplace(&mut app, code);
-        }
-        assert_eq!(
-            add_marketplace_field(&app),
-            ("Xa\nb".to_owned(), 1),
-            "Backspace at the start of the field leaves the newline alone"
-        );
-
-        let mut app = app_with_add_marketplace_open();
-        for code in [
-            KeyCode::Char('a'),
-            KeyCode::Char('\n'),
-            KeyCode::Char('b'),
-            KeyCode::Left,
-            KeyCode::Backspace,
-        ] {
-            press_add_marketplace(&mut app, code);
-        }
-        assert_eq!(
-            add_marketplace_field(&app),
-            ("ab".to_owned(), 1),
-            "Backspace across the newline takes the newline itself"
-        );
-
-        let mut app = app_with_add_marketplace_open();
-        for code in [
-            KeyCode::Char('a'),
-            KeyCode::Char('\n'),
-            KeyCode::Char('b'),
-            KeyCode::Home,
-            KeyCode::Right,
-            KeyCode::Delete,
-        ] {
-            press_add_marketplace(&mut app, code);
-        }
-        assert_eq!(
-            add_marketplace_field(&app),
-            ("ab".to_owned(), 1),
-            "Delete at the end of a line takes the newline itself"
+            ("abc".to_owned(), 3),
+            "typing still appends after a rejection"
         );
     }
 
@@ -1689,10 +1604,11 @@ mod tests {
         );
     }
 
-    /// Paste collapses every newline flavour to a space, but a newline
-    /// delivered as a printable key lands in the filter verbatim.
+    /// Paste collapses every newline flavour to a space, and a newline
+    /// delivered as a printable key is rejected, so both routes into
+    /// the filter agree on one line.
     #[test]
-    fn search_filter_keeps_a_typed_newline_and_flattens_a_pasted_one() {
+    fn search_filter_rejects_typed_newlines_and_flattens_pasted_ones() {
         let mut app = app_with_focused_search(PluginsViewTab::Installed);
 
         assert!(handle_paste(&mut app, "a\nb\r\nc\rd"), "a focused filter accepts a paste");
@@ -1702,11 +1618,20 @@ mod tests {
             "pasted newlines collapse to spaces"
         );
 
-        let _ = press(&mut app, KeyCode::Char('\n'));
+        for ch in ['\n', '\r'] {
+            assert!(press(&mut app, KeyCode::Char(ch)), "a rejected key is still consumed");
+            assert_eq!(
+                app.plugins.search_query_for(PluginsViewTab::Installed),
+                "a b c d",
+                "a typed {ch:?} never enters the filter"
+            );
+        }
+
+        let _ = press(&mut app, KeyCode::Char('e'));
         assert_eq!(
             app.plugins.search_query_for(PluginsViewTab::Installed),
-            "a b c d\n",
-            "a typed newline stays in the filter verbatim"
+            "a b c de",
+            "typing still appends after a rejection"
         );
     }
 
