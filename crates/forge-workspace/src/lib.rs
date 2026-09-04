@@ -65,6 +65,7 @@ mod config;
 mod dictate;
 mod domain_session;
 mod error;
+mod gotify;
 pub(crate) mod mcp;
 pub mod protocol;
 mod review;
