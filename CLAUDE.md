@@ -1,14 +1,15 @@
 # forge - project guide
 
 A Rust workspace that wraps Anthropic's `claude` CLI in a multi-session
-terminal UI. Seven crates, layered acyclically:
+terminal UI. Eight crates, layered acyclically:
 
 ```
 forge-primitives ───── leaf (pure data, no logic)
 forge-dictate    ───── leaf (dictation; depends on no forge-* crate)
+forge-providers  ───→ primitives
 forge-sdk        ───→ primitives
-forge-agent      ───→ primitives + sdk
-forge-workspace  ───→ primitives + agent + sdk + dictate
+forge-agent      ───→ primitives + sdk + providers
+forge-workspace  ───→ primitives + agent + sdk + dictate + providers
 forge-tui        ───→ primitives + workspace      (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```
@@ -20,6 +21,12 @@ forge-test-harness ─→ primitives + sdk + workspace
   on no forge-* crate and knows nothing about a host, so it must not
   grow one; a doc comment mentioning a keypress, a composer or a
   session is a bug.
+- **`forge-providers`** - one backend per `forge.toml` provider token:
+  credential resolution, the usage probe's HTTP + payload mapping,
+  billing shape. Depends on forge-primitives only; the keychain, the
+  `claude --version` user agent and the TLS-trust client arrive
+  through the `ProviderHost` port forge-agent implements, so the
+  crate stays HTTP + mapping and never spawns the CLI.
 - **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
 - **`forge-agent`** - drives one SDK Client behind a channel-based
@@ -64,21 +71,25 @@ Work top-down; first match wins.
 2. **A type that crosses a crate boundary?** (envelope, snapshot
    struct, hook payload, anything sent over a channel or touched by
    more than one crate) -> `forge-primitives`. Pure data shapes only.
-3. **Speaks stream-json to the `claude` subprocess?** (decoder,
+3. **Provider credential, probe, usage mapping, billing or repair?**
+   (how one `forge.toml` provider token authenticates, what endpoint
+   its usage probe hits, how the payload maps to a snapshot, what a
+   failure allows) -> `forge-providers`, one backend per token.
+4. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.
-4. **Live state about the user's environment?** (git watcher, cwd
+5. **Live state about the user's environment?** (git watcher, cwd
    resolution, env probes, OAuth, plugins, settings IO, catalog scan)
    -> `forge-agent`: `env::*` for environment, `cloud::*` for Anthropic
    API / OAuth, `userdata::*` for `~/.claude*` files. Async, may shell
    out.
-5. **Orchestration across projects, sessions, accounts, `forge.toml`,
+6. **Orchestration across projects, sessions, accounts, `forge.toml`,
    or the command bus?** -> `forge-workspace`. Adds `Workspace` methods,
    `Command` variants, `SessionUpdate` events.
-6. **A widget, screen, key binding, mouse handler, or per-session
+7. **A widget, screen, key binding, mouse handler, or per-session
    presentation state?** -> `forge-tui`. Render in `ui/`, dispatch +
    state in `app/`.
-7. **A wire-conformance scenario?** -> `forge-test-harness`.
+8. **A wire-conformance scenario?** -> `forge-test-harness`.
 
 Legitimate splits are common (a git-diff feature touches agent +
 workspace + tui). Rule of thumb: logic/IO/subprocess -> agent;
@@ -100,6 +111,9 @@ much in forge-tui", so bias toward the deeper crate when unsure.
   means one is wrong; lift to primitives or import the re-export. The
   one exception is `forge-dictate`, which may not depend on primitives
   at all: its types stay in it and consumers import them from there.
+- **Provider dispatch outside `forge-providers`.** A match on
+  `Provider` in workspace or tui is the thing this crate exists to
+  delete; route through `forge_providers::backend(token)` instead.
 - **Workspace methods bypassing the Command bus for user actions.**
   User-initiated actions go through `dispatch(Command)`; query-style
   refreshes are direct inherent methods. Don't conflate them.
