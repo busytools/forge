@@ -1462,6 +1462,14 @@ mod tests {
             ("b".to_owned(), 1),
             "Right stops at the end of the draft"
         );
+
+        press_add_marketplace(&mut app, KeyCode::Home);
+        press_add_marketplace(&mut app, KeyCode::Backspace);
+        assert_eq!(
+            add_marketplace_field(&app),
+            ("b".to_owned(), 0),
+            "Backspace at the start of the draft is a no-op"
+        );
     }
 
     #[test]
