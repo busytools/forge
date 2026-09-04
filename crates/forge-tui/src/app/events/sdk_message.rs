@@ -471,6 +471,24 @@ fn append_or_push_envelope(app: &mut App, kind: EnvelopeKind, text: &str) {
     app.push_message_tracked(msg);
 }
 
+/// Resume-side painter: pushes `text` through the stamped envelope
+/// constructors when it is an inbound envelope. Returns false for
+/// plain text so the caller falls through to its own rendering.
+pub(super) fn append_resume_envelope_if_present(app: &mut App, text: &str) -> bool {
+    let Some(kind) = crate::ui::peer_block::detect_inbound(text) else {
+        return false;
+    };
+    append_or_push_envelope(app, EnvelopeKind::of_inbound(&kind), text);
+    app.enforce_history_retention_tracked();
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "resume_envelope_replayed",
+        message = "pushed stamped envelope card for replayed inbound text",
+        outcome = "success",
+    );
+    true
+}
+
 /// Push a peer-wrapper-prefixed user turn into the chat buffer.
 ///
 /// The detection key is `peer_block::detect_inbound` - same matcher
@@ -659,6 +677,9 @@ pub(super) fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
     // `<command-name>` filter in `events::session_reset` for the
     // user-text path.
     if prompt_text.trim_start().starts_with("<task-notification>") {
+        return;
+    }
+    if append_resume_envelope_if_present(app, prompt_text) {
         return;
     }
     let blocks = vec![MessageBlock::Text(TextBlock::from_complete(prompt_text))];

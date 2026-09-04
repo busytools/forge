@@ -191,10 +191,25 @@ fn is_queued_only_user_envelope(msg: &forge_primitives::Message) -> bool {
 /// a single bordered area, which is what option B's mockup showed.
 fn push_queued_group(app: &mut App, prompts: &[String]) {
     app.clear_active_turn_assistant();
-    let header = format!("Queued during the previous turn · {} messages", prompts.len());
-    let mut blocks: Vec<MessageBlock> = Vec::with_capacity(prompts.len() + 1);
-    blocks.push(MessageBlock::Text(TextBlock::from_complete(&header)));
+    let mut survivors: Vec<&String> = Vec::with_capacity(prompts.len());
     for prompt in prompts {
+        if super::sdk_message::append_resume_envelope_if_present(app, prompt) {
+            continue;
+        }
+        survivors.push(prompt);
+    }
+    match survivors.len() {
+        0 => return,
+        1 => {
+            super::sdk_message::handle_queued_command_echo(app, survivors[0]);
+            return;
+        }
+        _ => {}
+    }
+    let header = format!("Queued during the previous turn · {} messages", survivors.len());
+    let mut blocks: Vec<MessageBlock> = Vec::with_capacity(survivors.len() + 1);
+    blocks.push(MessageBlock::Text(TextBlock::from_complete(&header)));
+    for prompt in &survivors {
         let body = format!("▸ {prompt}");
         blocks.push(MessageBlock::Text(TextBlock::from_complete(&body)));
     }
@@ -205,7 +220,7 @@ fn push_queued_group(app: &mut App, prompts: &[String]) {
         event_name = "queued_group_replayed",
         message = "pushed grouped user bubble for replayed queued_command run",
         outcome = "success",
-        message_count = prompts.len(),
+        message_count = survivors.len(),
     );
 }
 
@@ -437,6 +452,10 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                             outcome = "success",
                         );
                         rendered_user_text = true;
+                    }
+                    // The dispatcher below paints an inbound envelope stamped.
+                    if crate::ui::peer_block::detect_inbound(text).is_some() {
+                        continue;
                     }
                     let chunk = model::ContentChunk::new(model::ContentBlock::Text(
                         model::TextContent::new(text.clone()),
@@ -1569,6 +1588,154 @@ mod tests {
         assert!(
             texts.iter().any(|t| t.contains("what does <command-name> mean")),
             "a message mentioning the wrapper mid-text must render: {texts:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // A resumed inbound envelope must render exactly as its live
+    // delivery did: one stamped card, never a plain user bubble
+    // beside it.
+    // ---------------------------------------------------------------
+
+    fn peer_envelope_text(id: &str) -> String {
+        format!("[Message id={id} from agent 'forge' (org 'Personal')]\n\ninbound body")
+    }
+
+    #[test]
+    fn resumed_peer_envelope_renders_as_one_stamped_card() {
+        let mut app = App::test_default();
+        load_resume_history(&mut app, &[historical_user_text(&peer_envelope_text("t-1"))]);
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 1, "the resume loop must not pre-paint the envelope text");
+        assert!(
+            user_msgs[0].is_peer_envelope,
+            "the one user message is the stamped card, not a plain bubble",
+        );
+    }
+
+    #[test]
+    fn resumed_adjacent_envelopes_form_one_stamped_streak() {
+        let mut app = App::test_default();
+        load_resume_history(
+            &mut app,
+            &[
+                historical_user_text(&peer_envelope_text("t-1")),
+                historical_user_text(&peer_envelope_text("t-2")),
+            ],
+        );
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 1, "adjacent envelopes merge into one stamped streak");
+        assert!(user_msgs[0].is_peer_envelope);
+        assert_eq!(user_msgs[0].blocks.len(), 2, "one block per delivered envelope");
+    }
+
+    #[test]
+    fn resumed_gotify_notification_keeps_its_source_label() {
+        let mut app = App::test_default();
+        let notification =
+            "[Gotify - app 'Backups', priority 3]\nNightly backup complete\nAll volumes backed up";
+        load_resume_history(&mut app, &[historical_user_text(notification)]);
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 1, "one card for the notification");
+        assert!(user_msgs[0].is_gotify_envelope, "gotify stamps its own kind");
+        assert!(!user_msgs[0].is_peer_envelope, "and it is not peer traffic");
+    }
+
+    #[test]
+    fn resumed_queued_envelope_prompt_renders_as_envelope_card() {
+        let mut app = App::test_default();
+        let history = vec![synthesized_queued(
+            "[Question id=q-1 from agent 'forge' (org 'Personal')]\n\nwhat gives?",
+        )];
+        load_resume_history(&mut app, &history);
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 1, "the echo must not push a second bubble");
+        assert!(user_msgs[0].is_peer_envelope, "a queued envelope prompt renders as a card");
+    }
+
+    #[test]
+    fn resumed_queued_run_renders_envelope_prompts_as_cards() {
+        let mut app = App::test_default();
+        let history = vec![
+            synthesized_queued("plain prompt one"),
+            synthesized_queued(&peer_envelope_text("t-9")),
+            synthesized_queued("plain prompt two"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(
+            user_msgs.iter().filter(|m| m.is_peer_envelope).count(),
+            1,
+            "exactly one stamped card for the envelope prompt",
+        );
+        let group = user_msgs
+            .iter()
+            .find(|m| m.blocks.len() == 3)
+            .expect("the two surviving plain prompts collapse into a group");
+        let MessageBlock::Text(header_block) = &group.blocks[0] else {
+            panic!("first block should be the header text");
+        };
+        assert!(
+            header_block.text.contains("2 messages"),
+            "only the survivors count: {:?}",
+            header_block.text,
+        );
+        let blocks_text: Vec<&str> = group
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !blocks_text.iter().any(|t| t.contains("Message id=")),
+            "the envelope prompt must not land in the group bubble: {blocks_text:?}",
+        );
+    }
+
+    /// The survivor split can shrink a run below the group threshold:
+    /// an envelope prompt leaves the run as a stamped card and a lone
+    /// plain survivor must take the singleton echo, never a
+    /// "1 messages" group header.
+    #[test]
+    fn resumed_queued_run_shrunk_to_one_survivor_takes_the_singleton_echo() {
+        let mut app = App::test_default();
+        let history = vec![
+            synthesized_queued(&peer_envelope_text("t-5")),
+            synthesized_queued("plain prompt"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 2, "the stamped card and the plain bubble both render");
+        assert_eq!(
+            user_msgs.iter().filter(|m| m.is_peer_envelope).count(),
+            1,
+            "the envelope prompt renders as its stamped card",
+        );
+        let texts: Vec<&str> = user_msgs
+            .iter()
+            .flat_map(|m| m.blocks.iter())
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !texts.iter().any(|t| t.contains("Queued during the previous turn")),
+            "a 1-survivor run must not render a group header: {texts:?}",
         );
     }
 
