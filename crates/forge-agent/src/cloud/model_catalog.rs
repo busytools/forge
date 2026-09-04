@@ -11,6 +11,7 @@
 use std::time::{Duration, SystemTime};
 
 use forge_primitives::AvailableModel;
+use forge_providers::helpers::truncated_body_suffix;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -300,16 +301,13 @@ pub async fn fetch_catalog(base_url: &str) -> Result<Vec<CatalogModel>, ModelCat
                 target: "forge_agent::cloud::model_catalog",
                 url = %models_url(base_url),
                 error = %error,
-                body_suffix = %super::oauth_usage::truncated_body_suffix(&body),
+                body_suffix = %truncated_body_suffix(&body),
                 "200 from the models endpoint did not decode; check the base url is the API root"
             );
             error
         }),
         429 => Err(ModelCatalogError::RateLimited),
-        _ => Err(ModelCatalogError::HttpStatus(
-            status,
-            super::oauth_usage::truncated_body_suffix(&body),
-        )),
+        _ => Err(ModelCatalogError::HttpStatus(status, truncated_body_suffix(&body))),
     }
 }
 

@@ -1,50 +1,24 @@
-//! Anthropic OAuth usage API client.
-//!
-//! Fetches per-account rate-limit utilisation from
-//! `https://api.anthropic.com/api/oauth/usage` using the OAuth
-//! bearer credentials resolved by
-//! [`super::oauth_credentials::load_oauth_credentials`] (macOS
-//! keychain only - the file source was removed in #237-B; see the
-//! module docs in `oauth_credentials.rs` for the rationale). The
-//! `Authorization` header never escapes this module.
-//!
-//! The response shape mirrors the live API as of 2026-04, exposed as
-//! plain optional fields. Timestamp parsing is left to consumers
-//! because the field is documented inconsistently (sometimes ISO-8601,
-//! sometimes a numeric epoch).
+//! Provider probe entry points not yet behind the forge-providers
+//! backends: the [`ProbePlan`] decision, the windowed
+//! `/api/oauth/usage` probe the codex base-url arm drives, and the
+//! OpenRouter key + Z.ai monitor probes. Each PR of #873 moves an arm
+//! into forge-providers; this module shrinks until `ProbePlan` is
+//! deleted.
 
 use std::collections::HashMap;
-use std::path::Path;
-use std::sync::OnceLock;
-use std::time::Duration;
 
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
 
 pub use forge_primitives::account::Provider;
-pub use forge_primitives::usage::oauth::{
-    OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow,
-};
+pub use forge_primitives::usage::oauth::{OauthUsage, OauthUsageError};
 use forge_primitives::usage::zai::{QuotaLimitData, QuotaLimitResponse};
 
-use super::oauth_credentials::{OauthCredentials, load_oauth_credentials, refresh_via_cli_spawn};
-
-const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
-const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
-const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
-
-/// `[accounts.env]` key carrying a per-account setup token (minted by
-/// `claude setup-token`). Its presence makes an Anthropic account
-/// token-mode: the probe authenticates with the token, never with the
-/// keychain entry for the account's config dir.
-const CLAUDE_CODE_OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
-
-/// The setup token `env` carries, when non-empty.
-fn token_bearer<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> Option<&str> {
-    env.get(CLAUDE_CODE_OAUTH_TOKEN_ENV)
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-}
+use super::oauth_credentials::OauthCredentials;
+use forge_providers::ProviderHost;
+use forge_providers::helpers::{
+    OAUTH_TIMEOUT, anthropic_windowed_probe, parse_retry_after, truncated_body_suffix,
+};
+use forge_providers::token_bearer;
 
 /// True when `env` carries a non-empty `CLAUDE_CODE_OAUTH_TOKEN`.
 /// A token-mode account has no keychain entry of its own - the config
@@ -52,124 +26,6 @@ fn token_bearer<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> 
 /// on this rather than on the provider alone.
 pub fn is_token_mode<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> bool {
     token_bearer(env).is_some()
-}
-
-/// `User-Agent` native CLI sends on /api/oauth/usage, captured from
-/// mitmdump 2026-05-26 against claude CLI 2.1.133 in an authenticated
-/// interactive session running `/usage`. Format: `claude-code/<version>`,
-/// no parens, no `(external, cli)` suffix. Distinct from the
-/// /v1/messages UA shape (which is `claude-cli/<version> (external, cli)`);
-/// the messages endpoint and the oauth-usage endpoint deliberately
-/// carry different UAs natively, so this probe matches the usage
-/// endpoint's shape rather than the messages endpoint's.
-///
-/// Version is probed once via `claude --version` and cached. If the
-/// probe fails (claude not on PATH, exec error) we propagate that as
-/// a probe error so the caller's backoff path engages. A stale
-/// pinned fallback would actively lie to Anthropic about which
-/// version is running and drift over time, defeating the point of
-/// matching reality on the wire.
-/// Cached `claude-code/<version>` User-Agent, probed once per process.
-static UA: OnceLock<String> = OnceLock::new();
-
-async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
-    if let Some(cached) = UA.get() {
-        return Ok(cached);
-    }
-    let ua = resolve_ua("claude").await?;
-    // get_or_init isn't `Result`-friendly. set/get pair: if another
-    // caller raced us and set first, our `set` errors out and we
-    // read theirs via `get` below - value is identical (same probe
-    // result for the same machine) so the race is benign.
-    let _ = UA.set(ua);
-    UA.get().map(String::as_str).ok_or_else(|| {
-        OauthUsageError::UaProbe("UA cache disappeared after set; impossible".to_owned())
-    })
-}
-
-/// One `claude --version` round-trip, formatted as the UA. Split from
-/// the cached [`oauth_usage_user_agent`] so the shell-out and its
-/// failure class are drivable without resolving a real binary.
-async fn resolve_ua(binary: &'static str) -> Result<String, OauthUsageError> {
-    let version = tokio::task::spawn_blocking(move || {
-        forge_sdk::transport::process::query_cli_version(binary)
-    })
-    .await
-    .map_err(|e| OauthUsageError::UaProbe(format!("UA probe spawn_blocking panicked: {e}")))?
-    .map_err(|e| OauthUsageError::UaProbe(format!("claude --version probe failed for UA: {e}")))?;
-    Ok(format!("claude-code/{version}"))
-}
-
-/// Fetch the live OAuth usage payload from the Anthropic API using
-/// the bearer the macOS keychain holds for `config_dir` (see
-/// [`super::oauth_credentials::load_oauth_credentials`]).
-///
-/// The caller (typically a `ForgeSdkBridge`) is the source of truth
-/// for `config_dir`; there is no fallback to a process-env-derived
-/// path.
-///
-/// Refresh fast-path: when the cached token's `expires_at` is in the
-/// past OR absent entirely, AND the live probe returns `Unauthorized`,
-/// fires [`refresh_via_cli_spawn`] once to nudge the claude CLI into
-/// rotating the keychain entry, then retries the probe with the
-/// freshly-read token. Any refresh failure (binary missing, timeout,
-/// non-zero exit, keychain still expired) surfaces the original
-/// `Unauthorized` so the #237-A cache-invalidation pathway picks up
-/// after the usual 3-strike threshold. Other 401 causes (valid
-/// token + revoked / scope mismatch) skip refresh entirely - the
-/// expiry check filters them out.
-///
-/// # Errors
-///
-/// Returns [`OauthUsageError`] when credentials are missing/expired,
-/// the HTTPS request fails, or the response can't be decoded.
-pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageError> {
-    let credentials = load_oauth_credentials(config_dir).ok_or(OauthUsageError::NoCredentials)?;
-
-    let first = probe(&credentials, None).await;
-    match first {
-        Err(OauthUsageError::Unauthorized(status))
-            if credentials.expires_at.is_none_or(|t| t < std::time::SystemTime::now()) =>
-        {
-            // Local view of the token agrees with the server's verdict
-            // (401): expires_at is either in the past OR absent
-            // entirely. Treating None as "missing expiry = expired" is
-            // the safe call here - refresh is one-shot (the per-account
-            // mutex prevents a probe storm), and surfacing 401 forever
-            // with no refresh attempt is worse than firing one refresh
-            // against a credential blob whose expiresAt field was
-            // omitted by an older claude write or a future schema
-            // change. Try one refresh + retry; on any refresh failure,
-            // fall through to the original Unauthorized.
-            match refresh_via_cli_spawn(config_dir).await {
-                Ok(new_creds) => probe(&new_creds, None).await,
-                Err(refresh_err) => {
-                    tracing::warn!(
-                        target: "forge_agent::cloud::oauth_usage",
-                        event_name = "oauth_usage_refresh_failed",
-                        config_dir = %config_dir.display(),
-                        error = %refresh_err,
-                        "refresh attempt did not produce fresh creds; surfacing original Unauthorized",
-                    );
-                    Err(OauthUsageError::Unauthorized(status))
-                }
-            }
-        }
-        other => other,
-    }
-}
-
-/// The `/api/oauth/usage` endpoint URL. Defaults to the hardcoded
-/// Anthropic host; a `base_url` override (an account's
-/// `ANTHROPIC_BASE_URL`) redirects the probe to an alternate endpoint
-/// serving the same `OauthUsage` shape. Any trailing slash on the
-/// override is trimmed so `http://host/` and `http://host` behave
-/// identically.
-fn usage_url(base_url: Option<&str>) -> String {
-    match base_url {
-        Some(base) => format!("{}/api/oauth/usage", base.trim_end_matches('/')),
-        None => OAUTH_USAGE_URL.to_owned(),
-    }
 }
 
 /// How an account's usage should be probed, derived once from its
@@ -185,7 +41,7 @@ pub enum ProbePlan {
     /// Base-url provider: probe `{base_url}/api/oauth/usage`
     /// with the env `ANTHROPIC_AUTH_TOKEN` bearer (the macOS keychain is
     /// skipped - a base-url account has no keychain entry), and map the
-    /// response leniently via [`super::oauth::snapshot_from_payload_lenient`]
+    /// response leniently
     /// (each window independently optional). A base-url auth failure
     /// must NOT trigger the keychain CLI-spawn refresh: the probe never
     /// reads that token, so refreshing it burns billed `claude -p hi`
@@ -199,8 +55,8 @@ pub enum ProbePlan {
     /// `CLAUDE_CODE_OAUTH_TOKEN` setup token from `[accounts.env]`, no
     /// keychain read. A setup token carries `user:inference` but not
     /// the `user:profile` scope the usage endpoint requires, so a VALID
-    /// token always answers 403 `oauth_scope_insufficient` -
-    /// [`probe_setup_token`] settles that refusal to the empty payload,
+    /// token always answers 403 `oauth_scope_insufficient` - the probe
+    /// settles that refusal to the empty payload,
     /// which maps leniently to a barless Ready snapshot. A 401 is a
     /// genuinely rejected token and still classifies `Unauthorized`.
     Token { bearer: String },
@@ -467,255 +323,29 @@ fn zai_quota_from_body(body: &[u8]) -> Result<QuotaLimitData, OauthUsageError> {
         .ok_or_else(|| OauthUsageError::Decode("Z.ai monitor 200 carried no data".to_owned()))
 }
 
-/// One round-trip against `/api/oauth/usage` using `credentials.access_token`.
-///
-/// `base_url` overrides the default Anthropic host when `Some` (an
-/// account carrying an `ANTHROPIC_BASE_URL` env override polls its own
-/// endpoint); the `/api/oauth/usage` path is always appended.
-///
-/// Exposed as a separate entry point from [`oauth_usage`] so the
-/// boot-time per-account loading task in
-/// `forge_workspace::account_loader` can drive its own refresh logic
-/// (the loading state machine wants the raw probe result to branch
-/// on `auth_status` rather than going through `oauth_usage`'s
-/// internal auto-refresh). Other callers should still prefer
-/// `oauth_usage` for the auto-refresh convenience.
+/// One round-trip against `/api/oauth/usage` with the given bearer, on
+/// the default host or a `base_url` override. The codex base-url
+/// arm's engine: the request, status classification and scope-refusal
+/// detection live in `forge_providers::helpers`; this wrapper adds the
+/// host-resolved UA and the extra-roots client the backends receive
+/// through the host port.
 pub async fn probe(
     credentials: &OauthCredentials,
     base_url: Option<&str>,
 ) -> Result<OauthUsage, OauthUsageError> {
-    let headers = oauth_headers(&credentials.access_token).await?;
-    let client = crate::http_trust::with_extra_roots(
-        reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
-    )
-    .build()
-    .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
-
-    let response = client
-        .get(usage_url(base_url))
-        .send()
-        .await
-        .map_err(|error| OauthUsageError::Network(error.to_string()))?;
-
-    let status = response.status().as_u16();
-    // Parse Retry-After BEFORE consuming the response body - once
-    // we call .bytes() the response object is moved. Anthropic
-    // returns 429 with a per-account hold-down value in seconds;
-    // honouring it prevents the poller from re-tripping the limit
-    // every cycle.
-    let retry_after = if status == 429 {
-        response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_retry_after)
-    } else {
-        None
-    };
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
-
-    // Diagnostic tracing for the "Anthropic 429s us on the first
-    // probe" suspicion. Log status + a body suffix for every
-    // non-200 response so a triage can correlate "which account /
-    // when / what did the API actually say." Successful 200s are
-    // logged at trace level (high volume - 60 s poll × N accounts)
-    // with no body. config_dir is logged at the caller (workspace
-    // poll loop) so we don't repeat it here.
-    if status == 200 {
-        tracing::trace!(
-            target: "forge_agent::cloud::oauth_usage",
-            event_name = "oauth_usage_response",
-            status,
-            outcome = "ok",
-            body_bytes = body.len(),
-        );
-    } else if status == 403 && is_scope_refusal(&body) {
-        // The verdict on a valid setup token, not a failure: warn here
-        // would fire every 60 s per healthy token account.
-        tracing::debug!(
-            target: "forge_agent::cloud::oauth_usage",
-            event_name = "oauth_usage_scope_refusal",
-            status,
-            outcome = "scope_refused",
-            body_suffix = %truncated_body_suffix(&body),
-        );
-    } else {
-        tracing::warn!(
-            target: "forge_agent::cloud::oauth_usage",
-            event_name = "oauth_usage_response",
-            status,
-            outcome = "non_ok",
-            retry_after_secs = ?retry_after.map(|d| d.as_secs()),
-            body_suffix = %truncated_body_suffix(&body),
-        );
-    }
-
-    match status {
-        200 => serde_json::from_slice::<OauthUsage>(&body)
-            .map_err(|error| OauthUsageError::Decode(error.to_string())),
-        403 if is_scope_refusal(&body) => Err(OauthUsageError::ScopeInsufficient),
-        401 | 403 => Err(OauthUsageError::Unauthorized(status)),
-        429 => Err(OauthUsageError::RateLimited { retry_after }),
-        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
-    }
-}
-
-/// Whether a 403 body is the usage endpoint's scope refusal rather than
-/// an auth failure. Keyed on the body's `error.details.error_code` -
-/// the verified live shape for a valid setup token; a revoked one
-/// answers 401 `authentication_error`, so the two never share a class.
-fn is_scope_refusal(body: &[u8]) -> bool {
-    let code = serde_json::from_slice::<serde_json::Value>(body).ok().and_then(|value| {
-        value.get("error")?.get("details")?.get("error_code")?.as_str().map(str::to_owned)
-    });
-    code.as_deref() == Some("oauth_scope_insufficient")
-}
-
-/// Settle a token-mode probe result: the scope refusal is the verdict
-/// on a valid setup token, so it becomes the empty payload the lenient
-/// mapper turns into a barless snapshot. Every other error passes
-/// through untouched - a 401 must still reach the loader as
-/// `Unauthorized` and bail.
-fn accept_scope_refusal(
-    result: Result<OauthUsage, OauthUsageError>,
-) -> Result<OauthUsage, OauthUsageError> {
-    match result {
-        Err(OauthUsageError::ScopeInsufficient) => Ok(OauthUsage::default()),
-        other => other,
-    }
-}
-
-/// One round-trip against the default-host usage endpoint with the
-/// account's `[accounts.env]` setup token. Never reads the keychain:
-/// a token-mode account's config dir is shared, so the entry there
-/// belongs to whichever account logged in last, or to nobody.
-pub async fn probe_setup_token(bearer: &str) -> Result<OauthUsage, OauthUsageError> {
-    let credentials = OauthCredentials { access_token: bearer.to_owned(), expires_at: None };
-    let settled = accept_scope_refusal(probe(&credentials, None).await);
-    match &settled {
-        // Names the settle so the debug refusal line above is
-        // diagnosable in a triage grep.
-        Ok(_) => tracing::info!(
-            target: "forge_agent::cloud::oauth_usage",
-            event_name = "oauth_usage_setup_token_settled",
-            outcome = "ok",
-            "setup token usage probe settled",
-        ),
-        Err(OauthUsageError::Unauthorized(403)) => tracing::warn!(
-            target: "forge_agent::cloud::oauth_usage",
-            event_name = "oauth_usage_setup_token_unrecognized_403",
-            outcome = "non_ok",
-            "403 without the oauth_scope_insufficient shape: if the token was just \
-             re-minted, suspect a changed refusal body rather than a dead token",
-        ),
-        _ => {}
-    }
-    settled
-}
-
-async fn oauth_headers(access_token: &str) -> Result<HeaderMap, OauthUsageError> {
-    let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert("anthropic-beta", HeaderValue::from_static(OAUTH_BETA_HEADER));
-    let ua = HeaderValue::from_str(oauth_usage_user_agent().await?)
-        .map_err(|error| OauthUsageError::Network(format!("bad UA header: {error}")))?;
-    headers.insert(USER_AGENT, ua);
-    let bearer = HeaderValue::from_str(&format!("Bearer {access_token}"))
-        .map_err(|error| OauthUsageError::Network(format!("bad bearer header: {error}")))?;
-    headers.insert(AUTHORIZATION, bearer);
-    Ok(headers)
-}
-
-/// RFC 7231 §7.1.3 `Retry-After` accepts either delta-seconds
-/// (`"120"`) or an HTTP-date (`"Wed, 21 Oct 2015 07:28:00 GMT"`).
-/// Anthropic emits the integer form today, but the spec leaves the
-/// HTTP-date form open and proxies / CDNs in the path may swap shapes.
-/// Try the integer form first; fall back to httpdate parsing and
-/// compute the delta from `now`.
-fn parse_retry_after(raw: &str) -> Option<Duration> {
-    let trimmed = raw.trim();
-    if let Ok(secs) = trimmed.parse::<u64>() {
-        return Some(Duration::from_secs(secs));
-    }
-    let when = httpdate::parse_http_date(trimmed).ok()?;
-    when.duration_since(std::time::SystemTime::now()).ok()
-}
-
-pub(super) fn truncated_body_suffix(body: &[u8]) -> String {
-    let text = String::from_utf8_lossy(body).trim().replace('\n', " ");
-    if text.is_empty() {
-        return String::new();
-    }
-    let shortened = if text.chars().count() > 200 {
-        let mut out = text.chars().take(200).collect::<String>();
-        out.push_str("...");
-        out
-    } else {
-        text
-    };
-    format!(": {shortened}")
+    let ua =
+        crate::cloud::provider_host::AgentHost.user_agent().map_err(OauthUsageError::UaProbe)?;
+    let client =
+        crate::http_trust::with_extra_roots(reqwest::Client::builder().timeout(OAUTH_TIMEOUT))
+            .build()
+            .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
+    anthropic_windowed_probe(&client, &ua, base_url, &credentials.access_token).await
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
-
-    #[test]
-    fn usage_url_defaults_to_anthropic_host() {
-        assert_eq!(usage_url(None), OAUTH_USAGE_URL);
-    }
-
-    /// A down endpoint must surface as the Network class and the probe
-    /// must return rather than hang: preflight's bounded-failure path
-    /// leans on both. Port 1 on loopback refuses the connect at once.
-    ///
-    /// The UA cache is seeded first: the probe shells out to `claude`
-    /// before it makes any request, and a host without the binary -
-    /// a CI runner - would otherwise short-circuit into UaProbe before
-    /// the connect this test is about ever happens.
-    #[tokio::test]
-    async fn a_down_endpoint_is_a_network_failure_and_the_probe_returns() {
-        let _ = UA.set("claude-code/1.0.0".to_owned());
-        let creds = OauthCredentials { access_token: "test-token".to_owned(), expires_at: None };
-        let result =
-            tokio::time::timeout(Duration::from_secs(5), probe(&creds, Some("http://127.0.0.1:1")))
-                .await
-                .expect("the probe returns against an unreachable endpoint");
-        assert!(
-            matches!(result, Err(OauthUsageError::Network(_))),
-            "a refused connect is the Network class, not a status or decode; got {result:?}"
-        );
-    }
-
-    /// A binary nothing resolves is the UaProbe class - the probe could
-    /// not run, which is not a verdict about the endpoint. Driven
-    /// through the real shell-out with a name that cannot resolve.
-    #[tokio::test]
-    async fn a_missing_claude_binary_is_a_ua_failure_not_a_network_failure() {
-        let result = resolve_ua("forge-test-claude-absent-from-path").await;
-        assert!(
-            matches!(result, Err(OauthUsageError::UaProbe(_))),
-            "a binary nothing resolves is the UaProbe class; got {result:?}"
-        );
-    }
-
-    #[test]
-    fn usage_url_uses_base_url_override_and_trims_trailing_slash() {
-        assert_eq!(
-            usage_url(Some("http://localhost:18765")),
-            "http://localhost:18765/api/oauth/usage",
-        );
-        assert_eq!(
-            usage_url(Some("http://localhost:18765/")),
-            "http://localhost:18765/api/oauth/usage",
-            "trailing slash trimmed so host and host/ behave identically",
-        );
-    }
 
     /// OpenRouter documents the endpoint as `/api/v1/key` relative to
     /// the site root, but the configured base url already ends in
@@ -927,63 +557,6 @@ mod tests {
         assert!(err.to_string().contains("empty"), "got {err}");
     }
 
-    /// A scope refusal is the endpoint's verdict on a VALID setup token:
-    /// the token authenticates but lacks the `user:profile` scope the
-    /// usage endpoint requires. Verified live 2026-09-04: a valid setup
-    /// token gets 403 `oauth_scope_insufficient`, a revoked one gets
-    /// 401 `authentication_error` - so the two must never share a
-    /// classification, or every valid token account bails at boot.
-    /// Expiry was not observed; an unseen 403 shape classifies
-    /// `Unauthorized` and bails, so an unknown shape fails safe.
-    #[test]
-    fn a_403_scope_refusal_body_is_recognized_and_other_403s_are_not() {
-        let refused = br#"{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement user:profile","details":{"error_code":"oauth_scope_insufficient"}}}"#;
-        assert!(
-            is_scope_refusal(refused),
-            "the verified refusal shape classifies as a scope refusal"
-        );
-        assert!(
-            !is_scope_refusal(br#"{"type":"error","error":{"type":"authentication_error","message":"Invalid bearer token","details":{}}}"#),
-            "an authentication_error body is not a scope refusal",
-        );
-        assert!(!is_scope_refusal(b"not json"), "a non-JSON body is not a scope refusal");
-        assert!(
-            !is_scope_refusal(br#"{"error":{"type":"permission_error","message":"no details"}}"#),
-            "a permission_error without the error_code is not a scope refusal",
-        );
-        assert!(
-            !is_scope_refusal(
-                br#"{"error":{"details":{"error_code":"oauth_token_revoked"},"message":"x"}}"#
-            ),
-            "a populated but different error_code is not a scope refusal",
-        );
-    }
-
-    /// The neutral settlement: a scope refusal maps to the empty
-    /// payload the lenient mapper turns into an all-absent snapshot,
-    /// while every other error passes through untouched - a revoked
-    /// token must reach the loader as Unauthorized and bail.
-    #[test]
-    fn accept_scope_refusal_neutralizes_only_the_scope_refusal() {
-        let refused = accept_scope_refusal(Err(OauthUsageError::ScopeInsufficient));
-        assert_eq!(
-            refused,
-            Ok(OauthUsage::default()),
-            "a scope refusal settles to the empty payload"
-        );
-
-        let rejected = accept_scope_refusal(Err(OauthUsageError::Unauthorized(401)));
-        assert!(
-            matches!(rejected, Err(OauthUsageError::Unauthorized(401))),
-            "a rejected token stays an auth error; got {rejected:?}",
-        );
-        let transient = accept_scope_refusal(Err(OauthUsageError::HttpStatus(500, String::new())));
-        assert!(
-            matches!(transient, Err(OauthUsageError::HttpStatus(500, _))),
-            "a transient error keeps its class; got {transient:?}",
-        );
-    }
-
     /// The success verdict is `success: true && code == 200`; a body
     /// with the right code but no success flag is not a green envelope.
     #[test]
@@ -993,86 +566,5 @@ mod tests {
         )
         .expect_err("no success flag fails");
         assert!(matches!(err, OauthUsageError::Decode(_)), "got {err:?}");
-    }
-
-    #[test]
-    fn retry_after_integer_seconds_round_trip() {
-        assert_eq!(parse_retry_after("0"), Some(Duration::from_secs(0)));
-        assert_eq!(parse_retry_after("  120  "), Some(Duration::from_secs(120)));
-        assert_eq!(parse_retry_after("3600"), Some(Duration::from_secs(3600)));
-    }
-
-    #[test]
-    fn retry_after_http_date_returns_delta_from_now() {
-        // ~1 hour in the future, formatted in HTTP-date format
-        let target = std::time::SystemTime::now() + Duration::from_secs(3600);
-        let formatted = httpdate::fmt_http_date(target);
-        let parsed = parse_retry_after(&formatted).expect("http-date parses");
-        // The parsed delta should be close to 1 hour (allow ±5 s drift).
-        assert!(parsed.as_secs() >= 3595 && parsed.as_secs() <= 3605, "got {parsed:?}");
-    }
-
-    #[test]
-    fn retry_after_past_http_date_returns_none() {
-        // HTTP-date in the past - duration_since(now) returns Err → None.
-        let past = std::time::SystemTime::now() - Duration::from_secs(3600);
-        let formatted = httpdate::fmt_http_date(past);
-        assert!(parse_retry_after(&formatted).is_none());
-    }
-
-    #[test]
-    fn retry_after_garbage_returns_none() {
-        assert!(parse_retry_after("not a duration").is_none());
-        assert!(parse_retry_after("").is_none());
-    }
-
-    #[test]
-    fn decodes_sparse_oauth_payload() {
-        let usage: OauthUsage = serde_json::from_slice(
-            br#"{
-                "five_hour": { "utilization": 12.5, "resets_at": "2025-12-25T12:00:00.000Z" },
-                "seven_day_sonnet": { "utilization": 5 },
-                "unknown_field": true
-            }"#,
-        )
-        .expect("decode");
-        assert_eq!(usage.five_hour.as_ref().and_then(|w| w.utilization), Some(12.5));
-        assert_eq!(usage.seven_day_sonnet.as_ref().and_then(|w| w.utilization), Some(5.0));
-        assert!(usage.seven_day.is_none());
-    }
-
-    #[test]
-    fn decodes_extra_usage_in_minor_units() {
-        let usage: OauthUsage = serde_json::from_slice(
-            br#"{
-                "five_hour": { "utilization": 1, "resets_at": "2025-12-25T12:00:00.000Z" },
-                "extra_usage": {
-                    "is_enabled": true,
-                    "monthly_limit": 2000,
-                    "used_credits": 1240,
-                    "utilization": 62,
-                    "currency": "USD"
-                }
-            }"#,
-        )
-        .expect("decode");
-        let extra = usage.extra_usage.expect("extra usage");
-        assert_eq!(extra.monthly_limit, Some(2000.0));
-        assert_eq!(extra.used_credits, Some(1240.0));
-        assert_eq!(extra.utilization, Some(62.0));
-        assert_eq!(extra.currency.as_deref(), Some("USD"));
-    }
-
-    /// Pins the User-Agent shape sent on /api/oauth/usage to the
-    /// `claude-code/<version>` form captured from native CLI 2.1.133.
-    /// The probe at runtime spawns `claude --version` to fill in the
-    /// version; in unit context we exercise the format only.
-    #[test]
-    fn oauth_usage_ua_shape_matches_native_claude_code_prefix() {
-        let formatted = format!("claude-code/{}", "2.1.133");
-        assert_eq!(formatted, "claude-code/2.1.133");
-        assert!(!formatted.contains("(external"));
-        assert!(!formatted.contains("(cli"));
-        assert!(!formatted.starts_with("claude-cli/"));
     }
 }

@@ -9,12 +9,13 @@
 //! only includes accounts whose terminal state is `Ready`.
 //!
 //! Outline of one iteration:
-//! 1. Read keychain via `oauth_credentials::load_oauth_credentials`,
-//!    or the account's `CLAUDE_CODE_OAUTH_TOKEN` when it is
-//!    token-mode (`ProbePlan::Token`; the endpoint's
+//! 1. The account's provider backend resolves the credential: the
+//!    macOS keychain, or the account's `CLAUDE_CODE_OAUTH_TOKEN` when
+//!    it is token-mode (`ProbePlan::Token`; the endpoint's
 //!    `oauth_scope_insufficient` refusal is the valid-token verdict
 //!    and settles to a barless Ready snapshot).
-//! 2. Probe `/api/oauth/usage` via `oauth_usage::probe`.
+//! 2. Probe through the backend (the not-yet-migrated base-url /
+//!    openrouter / zai arms still probe via `oauth_usage` directly).
 //! 3. Branch on the probe result:
 //!    - 200 -> snapshot stored via `set_usage`, transitions to
 //!      `Ready`, task exits.
@@ -197,27 +198,18 @@ pub async fn run_account_loading(
                     access_token: bearer.clone(),
                     expires_at: None,
                 };
-                oauth_usage::probe(&creds, Some(base_url))
-                    .await
-                    .map(|payload| oauth::map_probe_snapshot(true, payload))
+                oauth_usage::probe(&creds, Some(base_url)).await.map(|payload| {
+                    Ok(forge_providers::helpers::snapshot_from_payload_lenient(payload))
+                })
             }
-            oauth_usage::ProbePlan::Keychain => {
-                match oauth_credentials::load_oauth_credentials(&config_dir) {
-                    Some(creds) => oauth_usage::probe(&creds, None)
-                        .await
-                        .map(|payload| oauth::map_probe_snapshot(false, payload)),
-                    None => Err(OauthUsageError::NoCredentials),
-                }
-            }
-            oauth_usage::ProbePlan::Token { bearer } => {
-                // The setup token is the account's credential; the
-                // endpoint's scope refusal is the valid-token verdict
-                // and settles to the neutral barless snapshot. A 401
-                // passes through and terminals below - the token is
-                // genuinely rejected.
-                oauth_usage::probe_setup_token(bearer)
-                    .await
-                    .map(|payload| oauth::map_probe_snapshot(true, payload))
+            // The anthropic-shaped arms run through the provider
+            // backend: credential resolution, the probe and the
+            // strict-vs-lenient mapping are its business.
+            oauth_usage::ProbePlan::Keychain | oauth_usage::ProbePlan::Token { .. } => {
+                crate::provider_probe::flatten_probe_error(
+                    crate::provider_probe::probe_via_backend(provider, &config_dir, &account_env)
+                        .await,
+                )
             }
             oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
                 oauth_usage::probe_openrouter_key(base_url, bearer)

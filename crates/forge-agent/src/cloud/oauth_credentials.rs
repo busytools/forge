@@ -13,11 +13,11 @@
 //! practice; the cfg gate keeps the crate compiling on other targets
 //! without dragging in a Linux-keyring shim).
 //!
-//! Four readers: [`crate::cloud::oauth_usage`], which is the only one
-//! that turns them into a Bearer header; [`refresh_via_cli_spawn`]
+//! Four readers: [`crate::cloud::oauth_usage::probe`], which is the
+//! only one that turns them into a Bearer header; [`refresh_via_cli_spawn`]
 //! below, before and after its spawn; `ForgeSdkBridge`; and
 //! forge-workspace's boot-time per-account loader. Note that
-//! `oauth_usage` skips this loader entirely on the
+//! `probe` skips this loader entirely on the
 //! `ProbePlan::BaseUrl` path, building credentials from
 //! `ANTHROPIC_AUTH_TOKEN` instead.
 //!
@@ -36,7 +36,7 @@ use serde_json::Value;
 
 use crate::cloud::auth_status;
 #[cfg(target_os = "macos")]
-use crate::cloud::time::parse_timestamp_value;
+use forge_providers::helpers::parse_timestamp_value;
 
 pub use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 
@@ -73,8 +73,8 @@ pub fn load_oauth_credentials(config_dir: &Path) -> Option<OauthCredentials> {
 /// noticeable stretch.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Outcomes from a refresh attempt. The caller in `oauth_usage.rs`
-/// treats any error as "fall through to the existing `Unauthorized`
+/// Outcomes from a refresh attempt. The workspace callers treat any
+/// error as "fall through to the existing `Unauthorized`
 /// surface" - the cache-invalidation pathway from #237-A picks up
 /// after 3 consecutive strikes and the bottom panel flips to the
 /// "`⚠ unauthorized - /login`" label.
@@ -177,7 +177,7 @@ fn sweep_stale_jsonls(dir: &Path) {
 /// re-read [`OauthCredentials`] on success, or a [`RefreshError`]
 /// classifying the failure.
 ///
-/// Trigger contract: the caller in `cloud::oauth_usage` invokes this
+/// Trigger contract: the workspace refresh callers invoke this
 /// only when the live `/api/oauth/usage` probe returned 401 AND the
 /// cached `credentials.expires_at` is in the past - i.e. the local
 /// view of the token agrees with the server's verdict that the token
