@@ -312,6 +312,12 @@ pub struct UiSession {
     /// strand a spinner forever.
     pub queued_turn_force_settle_at: Option<std::time::SystemTime>,
 
+    /// Set by the force-settle sweep. Nothing on the wire
+    /// distinguishes a dead queued turn from a slow one, so a live
+    /// envelope arriving after expiry re-opens the session through
+    /// this flag instead of the settle being read as a verdict.
+    pub queued_turn_force_settled: bool,
+
     /// `Message::Result.duration_api_ms` from the previous Result in
     /// this session. That counter is cumulative over the session, so
     /// the next turn's API time is its delta against this.
@@ -797,6 +803,7 @@ impl Default for UiSession {
             queued_turn_sends: 0,
             queued_turn_awaiting_start: false,
             queued_turn_force_settle_at: None,
+            queued_turn_force_settled: false,
             prev_duration_api_ms: None,
             monitors: Vec::default(),
             background_tasks: Vec::default(),

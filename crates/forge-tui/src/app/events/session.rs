@@ -61,6 +61,9 @@ fn apply_connected_presentation(
         cwd.clone()
     };
     let model_for_log = current_model.clone();
+    // A reconnect or resume lands on the same bucket: queued-send
+    // state from before the disconnect must not survive the fresh CLI.
+    super::queued_turn::cancel(app, session_key);
     if was_active {
         // Active path: the user is watching this session. Run the
         // full active-session apply chain so welcome / file-index /
@@ -759,9 +762,6 @@ pub(super) fn apply_session_update_connected(
         app.sessions
             .entry(key.clone())
             .or_insert_with(|| crate::app::session::UiSession::new(key.clone()));
-        // A reused bucket may still carry queued-send state from
-        // before the disconnect; the reconnect mints a fresh CLI.
-        super::queued_turn::cancel(app, key);
         // Ensure a workspace-side DomainSession exists for `key`. In
         // production, `SessionTask` already registered one before
         // emitting `Connected`; this branch covers tests that

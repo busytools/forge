@@ -126,6 +126,11 @@ pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
 /// cost of the always-reparent design.
 fn dispatch_prompt(app: &mut App, text: String) {
     let busy = is_turn_busy(app);
+    // Read before the clear below: a submit typed while a cancel is
+    // pending starts a fresh turn the CLI fuses into the interrupted
+    // one, whose own Result covers it - counting it would phantom-
+    // reopen at that Result every time.
+    let cancel_pending = app.pending_cancel();
     // A submit while the turn is genuinely still running (steering, no
     // cancel intent and no compaction) rides the in-flight turn: the
     // live bar must keep its clock rather than restart, so the
@@ -200,9 +205,9 @@ fn dispatch_prompt(app: &mut App, text: String) {
             crate::app::session::SessionLifecycleState::Running,
         );
     }
-    if busy {
+    if busy && !cancel_pending {
         crate::app::events::queued_turn::note_submit_while_busy(app);
-    } else {
+    } else if !busy {
         crate::app::events::queued_turn::note_idle_submit(app);
     }
     app.enforce_history_retention_tracked();
