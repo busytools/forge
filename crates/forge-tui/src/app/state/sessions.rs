@@ -536,7 +536,7 @@ mod tests {
     /// Seed a background session carrying one pending permission prompt
     /// enqueued `secs` after the UNIX epoch; stamps a project name so
     /// the row resolves without a workspace catalog. Returns its key.
-    pub(super) fn seed_attention_session(
+    fn seed_attention_session(
         app: &mut App,
         id: &str,
         secs: u64,
@@ -697,7 +697,7 @@ mod tests {
 
     /// Seed a background session whose last turn failed `secs` after the
     /// epoch with the given classification. Returns its key.
-    pub(super) fn seed_failed_session(
+    fn seed_failed_session(
         app: &mut App,
         id: &str,
         secs: u64,
