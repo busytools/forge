@@ -141,7 +141,7 @@ async fn handle_line(
             if let Some(request_id) = control_request_id(line) {
                 dispatch.write_error_response(&request_id, &reason).await;
             }
-            let raw: String = line.chars().take(160).collect();
+            let raw = excerpt(line, 160);
             tracing::warn!(
                 target: crate::logging::targets::SDK_READER,
                 line = line_no,
@@ -256,6 +256,12 @@ async fn handle_line(
             true
         }
     }
+}
+
+/// First `max_chars` of `line` for logs and error strings - a corrupt
+/// line can be arbitrarily large.
+pub(crate) fn excerpt(line: &str, max_chars: usize) -> String {
+    line.chars().take(max_chars).collect()
 }
 
 /// `request_id` of `line` when it is a `control_request`, else `None`.

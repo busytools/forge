@@ -35,7 +35,7 @@ use tracing::debug;
 
 use crate::Error;
 use crate::client::runtime::{
-    PendingControls, SharedSessionId, new_shared_session_id, spawn_reader_task,
+    PendingControls, SharedSessionId, excerpt, new_shared_session_id, spawn_reader_task,
 };
 use crate::mcp::orchestration::McpHosts;
 use crate::options::Options;
@@ -365,7 +365,7 @@ impl Client {
                             // broken spawn, not a degradable stream.
                             return Err(Error::message_parse(format!(
                                 "line {line_no}: {reason}; raw line: {}",
-                                line.trim_end()
+                                excerpt(&line, 160)
                             )));
                         }
                         other => {
