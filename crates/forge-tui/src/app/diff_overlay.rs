@@ -3889,6 +3889,7 @@ mod tests {
     use super::*;
     use forge_workspace::env::git_diff::hunks::FileStatus;
     use forge_workspace::{DictateOutcome, SessionUpdate};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
     /// A take resolved while the diff comment editor is focused lands
@@ -6796,9 +6797,12 @@ mod tests {
     /// without caring about the thread's own contents.
     /// A thread as a saved comment leaves it: one unfiled user turn, which
     /// is what every production save path writes.
+    /// Each call mints a distinct id; a test wanting two cards on one
+    /// thread assigns `id` itself.
     fn stock_thread() -> forge_primitives::ReviewThread {
+        static NEXT_STOCK_ID: AtomicU64 = AtomicU64::new(1);
         forge_primitives::ReviewThread {
-            id: "stock".to_owned(),
+            id: format!("stock-{}", NEXT_STOCK_ID.fetch_add(1, Ordering::Relaxed)),
             anchor: ReviewAnchor {
                 path: "src/x.rs".to_owned(),
                 side: ReviewSide::New,
@@ -6826,6 +6830,13 @@ mod tests {
         let mut thread = stock_thread();
         thread.comments[0].text = text.to_owned();
         thread
+    }
+
+    #[test]
+    fn stock_thread_mints_a_distinct_id_per_call() {
+        let first = stock_thread();
+        let second = stock_thread();
+        assert_ne!(first.id, second.id, "two stock threads are not one thread");
     }
 
     /// A thread whose one user turn is already sealed into `review_id`, as

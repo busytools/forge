@@ -2253,6 +2253,17 @@ mod tests {
             .collect()
     }
 
+    /// The pane test derives its expected row from this same fitter, so a
+    /// fitter that cuts the version instead of the sha still passes it.
+    #[test]
+    fn the_fitter_shortens_the_sha_never_the_version() {
+        let fitted = fit_version_to_budget("1.0.36+abcdef0123", 13);
+        assert_eq!(
+            fitted, "v1.0.36+abcde",
+            "the version survives whole, the sha carries the cut: [{fitted}]",
+        );
+    }
+
     /// #679: at Medium the forge version row ran to 26 columns in a
     /// 24-column pane, so the paint dropped the last two hex digits of
     /// the sha with no ellipsis and nothing to show it had happened.
@@ -2264,37 +2275,61 @@ mod tests {
     /// `assert_eq!` rather than an upper bound: `<=` catches a clipped row
     /// but not an over-trimmed one, and a sha cut to a single hex digit
     /// fits any bound while failing the property this guards - that it
-    /// still matches a build. It also makes the case where the stamp
-    /// happens to fit outright loud rather than silently vacuous.
+    /// still matches a build.
+    ///
+    /// The expected row is built through the same `fit_version_to_budget`
+    /// call the render makes, so a tarball build - where build.rs emits no
+    /// sha and the row is legitimately shorter than the budget - passes too.
     #[test]
     fn the_forge_version_row_fills_the_medium_budget_exactly() {
-        let budget = usize::from(crate::ui::layout::PANE_WIDTH_MEDIUM) - PANEL_RIGHT_GUTTER;
+        let width = crate::ui::layout::PANE_WIDTH_MEDIUM;
+        let budget = usize::from(width) - PANEL_RIGHT_GUTTER;
+        let version_budget =
+            usize::from(width) - (1 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2 + PANEL_RIGHT_GUTTER);
         let mut app = App::test_default();
         let project_key = forge_workspace::ProjectKey::new_for_test("forge");
         let projects =
             vec![ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new())];
 
-        let rows = painted_rows(&mut app, &projects, crate::ui::layout::PANE_WIDTH_MEDIUM);
+        let rows = painted_rows(&mut app, &projects, width);
         let row = rows
             .iter()
             .find(|l| l.trim_start().starts_with("forge "))
             .expect("the forge version row paints");
 
+        let unfitted = format!("v{}", crate::FORGE_VERSION_SHORT);
+        let fitted = fit_version_to_budget(crate::FORGE_VERSION_SHORT, version_budget);
+        let expected =
+            format!(" {:<label$}  {}", "forge", fitted, label = ACCOUNT_PANEL_ID_LABEL_WIDTH);
         assert_eq!(
-            row.chars().count(),
-            budget,
-            "the version row fills the Medium budget exactly, neither clipped nor over-trimmed: [{row}]",
+            *row, expected,
+            "the version row renders the label and the fitted stamp, neither clipped nor over-trimmed: [{row}]",
         );
-        // Not `contains('+')`: an ellipsis fix satisfies that while leaving
-        // the sha unusable. The property is that the shortened sha stays a
-        // matchable PREFIX of the real one.
-        let painted_sha = row.rsplit('+').next().expect("row splits");
-        let full_sha = crate::FORGE_VERSION_SHORT.rsplit('+').next().expect("stamp splits");
-        assert!(
-            !painted_sha.is_empty() && full_sha.starts_with(painted_sha),
-            "the shortened sha stays a clean prefix of the real one, not an elided cut: \
-             painted [{painted_sha}] against [{full_sha}]",
-        );
+
+        // The fill and prefix properties only exist when the fitter had to
+        // shorten; a short abbreviation (git's floor is 4 hex) fits outright
+        // and paints whole, like the gitless stamp.
+        if fitted == unfitted {
+            assert!(row.ends_with(unfitted.as_str()), "the whole stamp paints: [{row}]");
+        } else {
+            assert_eq!(
+                row.chars().count(),
+                budget,
+                "the version row fills the Medium budget exactly: [{row}]",
+            );
+            // Not `contains('+')`: an ellipsis fix satisfies that while leaving
+            // the sha unusable. The property is that the shortened sha stays a
+            // matchable PREFIX of the real one.
+            let painted_sha = row.rsplit('+').next().expect("row splits");
+            let (_, full_sha) = crate::FORGE_VERSION_SHORT
+                .split_once('+')
+                .expect("shortened, so the stamp carries a sha");
+            assert!(
+                !painted_sha.is_empty() && full_sha.starts_with(painted_sha),
+                "the shortened sha stays a clean prefix of the real one, not an elided cut: \
+                 painted [{painted_sha}] against [{full_sha}]",
+            );
+        }
 
         // Wide has room, so the fix must not reach it. Without this control
         // a budget applied at every tier would look identical at Medium.
