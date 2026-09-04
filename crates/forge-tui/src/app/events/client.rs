@@ -680,8 +680,20 @@ fn apply_session_update_spawning(
     display_name: &str,
 ) {
     if app.sessions.contains_key(&key) {
-        // Existing bucket → user-triggered re-wake. Switch focus.
-        app.switch_active_session(key);
+        // Same focus rule as the fresh-bucket path below: only a
+        // click that asked for THIS wake moves focus. A background
+        // SpawnProject (cron, peer prompt) hitting a stale synthetic
+        // stub left by an earlier failed spawn must not yank the tab
+        // away from the spawn the user is waiting on.
+        let user_asked_for_this = app.pending_spawn_focus.as_ref() == Some(&key);
+        if user_asked_for_this {
+            app.pending_spawn_focus = None;
+        }
+        if user_asked_for_this || app.active_session_key.is_none() {
+            app.switch_active_session(key);
+        } else {
+            app.needs_redraw = true;
+        }
         return;
     }
     // Stamp the tab's forge.toml project NAME up front so the Inspector
@@ -2425,14 +2437,16 @@ mod tests {
     }
 
     /// `SessionUpdate::Spawning` should be idempotent: a second
-    /// Spawning for the same key (rapid double-click) must NOT
-    /// reset the bucket - just switch active. Without this, a
-    /// duplicate Spawning event would erase any state already
-    /// accumulated under the synthetic key.
+    /// Spawning for the same key must NOT reset the bucket. In
+    /// production the repeat arrives from a background wake (cron,
+    /// peer prompt) - a rapid double-click is refused by the click
+    /// handler while the stub is mid-spawn - so bucket state is
+    /// preserved and focus stays where the user put it.
     #[test]
     fn spawning_reducer_is_idempotent_for_repeat_keys() {
         let mut app = App::test_default();
         app.sessions.clear();
+        let active_before = app.active_session_key.clone();
         let key = SessionKey::from_session_id("__spawn_proj__".to_owned());
         // First Spawning seeds the bucket.
         apply_session_update(
@@ -2472,8 +2486,9 @@ mod tests {
             app.sessions.get(&key).expect("bucket").messages.len(),
             messages_after_second_state,
         );
-        // Still switched to active.
-        assert_eq!(app.active_session_key.as_ref(), Some(&key));
+        // The repeat wake registers without taking the tab: no click
+        // asked for this key while its stub already existed.
+        assert_eq!(app.active_session_key, active_before, "focus stays put");
     }
 
     /// Waking a cold project from the Projects pane records the key it
@@ -2572,6 +2587,59 @@ mod tests {
             app.active_session_key.as_ref(),
             Some(&watching),
             "an unasked-for spawn must not take the tab the user is reading",
+        );
+    }
+
+    /// A background spawn wake (cron, peer prompt) landing while the
+    /// user's own click-woken spawn is mid-boot must not steal the
+    /// landing. Project B's earlier spawn failed and left its
+    /// `__spawn_b__` stub behind; when B is woken again in the
+    /// background, the existing-bucket branch used to switch focus
+    /// unconditionally - so the click on A landed the user on B's
+    /// rename chain instead, and a second click was needed to enter A.
+    #[test]
+    fn background_spawn_wake_does_not_hijack_the_clicked_projects_landing() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+
+        // The user clicked project A; its Spawning honored the pending
+        // focus and sits mid-boot on the waking stub.
+        let clicked = SessionKey::from_session_id("__spawn_a__".to_owned());
+        app.pending_spawn_focus = Some(clicked.clone());
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Spawning {
+                key: clicked.clone(),
+                project_name: "a".to_owned(),
+                cwd: "/p/a".to_owned(),
+                display_name: "a".to_owned(),
+            },
+        );
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&clicked),
+            "precondition: the click's wake took the tab",
+        );
+
+        // Project B failed to spawn earlier; its synthetic stub
+        // survived as Sleeping. A cron (or peer prompt) wakes B in the
+        // background during A's boot window.
+        let stale = SessionKey::from_session_id("__spawn_b__".to_owned());
+        app.sessions.insert(stale.clone(), crate::app::session::UiSession::new(stale.clone()));
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Spawning {
+                key: stale.clone(),
+                project_name: "b".to_owned(),
+                cwd: "/p/b".to_owned(),
+                display_name: "b".to_owned(),
+            },
+        );
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&clicked),
+            "a background wake must not move focus off the clicked spawn",
         );
     }
 
