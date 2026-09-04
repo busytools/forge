@@ -1531,6 +1531,31 @@ mod tests {
         assert!(snapshot.is_ready(), "with nothing configured there is nothing to wait for");
     }
 
+    /// `fail` is the only production writer of `Failed`, so both writes
+    /// it makes are load-bearing: the row must carry its own reason and
+    /// the snapshot must keep the screen-wide copy.
+    #[test]
+    fn fail_marks_the_row_and_keeps_the_screen_wide_copy() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let state = DictateState::new(&settings);
+        let file = state.snapshot.lock().models[0].file.clone();
+
+        let failure = DictateFailure::Cancelled { kept: 100, total: 200 };
+        state.fail(failure.clone(), Some(&file));
+
+        let snapshot = state.snapshot.lock().clone();
+        assert_eq!(
+            snapshot.models.iter().find(|m| m.file == file).map(|m| &m.state),
+            Some(&DictateModelState::Failed(failure.clone())),
+            "the row that stopped carries its own reason",
+        );
+        assert_eq!(
+            snapshot.failure,
+            Some(failure),
+            "and the snapshot keeps the screen-wide copy for the prose block",
+        );
+    }
+
     /// The row that failed is the one that has to go red, and a rejected
     /// download is reported against its `.part` while the row is keyed
     /// on the finished name.
