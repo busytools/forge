@@ -1,6 +1,7 @@
 //! How the overlay opens and closes: target resolution, the spawned
 //! scans and their event channel, the drain pump that lands results,
-//! and the install/drop of the overlay state on `App`.
+//! the post-navigation scan/hydrate tail, and the install/drop of the
+//! overlay state on `App`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

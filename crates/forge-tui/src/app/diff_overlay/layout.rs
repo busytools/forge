@@ -1,5 +1,5 @@
 //! Layout math and pure hunk transforms shared by the overlay state,
-//! the key/mouse handlers, and the renderer at
+//! the mouse handler, and the renderer at
 //! [`crate::ui::diff_overlay`]: tree ordering, hunk re-narrowing,
 //! height estimates, rail width, and split-row geometry.
 

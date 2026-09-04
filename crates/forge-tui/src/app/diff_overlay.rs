@@ -14,7 +14,8 @@
 //! - [`state`]: [`DiffOverlayState`], the transient state the view
 //!   renders from.
 //! - [`lifecycle`]: target resolution, spawned scans, the event
-//!   drain pump, and the overlay's install / drop on `App`.
+//!   drain pump, the post-navigation scan/hydrate tail, and the
+//!   overlay's install / drop on `App`.
 //! - [`threads`]: persisted review threads - hydration, re-anchoring,
 //!   resolve / reopen actions.
 //! - [`comments`]: the comment editor's close / save path and the

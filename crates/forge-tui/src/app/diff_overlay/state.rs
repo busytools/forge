@@ -1,6 +1,7 @@
 //! The overlay's transient state: one [`DiffOverlayState`] live on
 //! `App.diff_overlay` while the view is active, with the scope,
-//! cache, and per-file bookkeeping it owns.
+//! cache, and per-file bookkeeping it owns, plus the reviews-list row
+//! shapes the `l` list renders.
 
 use std::path::PathBuf;
 
