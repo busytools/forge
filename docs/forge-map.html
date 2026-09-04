@@ -1520,14 +1520,14 @@ chat continues here...
     <div class="when">visible: on the active turn's assistant message, while the session is compacting</div>
   </div>
   <div class="surface-body">
-    <p>The third line of the active assistant message's status slot: <code>&#x280b; Compacting context...</code>, the leading glyph in the session's active spinner frame and the whole line in <span class="accent">RUST_ORANGE</span> - the only one of the slot's lines that is not <code>DIM</code>. It trails the message body, after a blank line when the body has content; on a body-less placeholder it is the whole body. Arming is wire-driven, never optimistic: <code>status:"compacting"</code> arrives through <code>apply_session_status_update</code> and each typed <code>compact_boundary</code> re-arms it via <code>handle_compaction_boundary_update</code> (recording the trigger and pre-tokens); it clears when the CLI reports the settle (<code>status:null</code>), which is also when a manual <code>/compact</code> emits its success notice.</p>
+    <p>The first line of the active assistant message's status slot: <code>&#x280b; Compacting context...</code>, the leading glyph in the session's active spinner frame and the whole line in <span class="accent">RUST_ORANGE</span> - the only one of the slot's lines that is not <code>DIM</code>. It trails the message body, after a blank line when the body has content; on a body-less placeholder it is the whole body. Arming is wire-driven, never optimistic: <code>status:"compacting"</code> arrives through <code>apply_session_status_update</code> and each typed <code>compact_boundary</code> re-arms it via <code>handle_compaction_boundary_update</code> (recording the trigger and pre-tokens); it clears when the CLI reports the settle (<code>status:null</code>), which is also when a manual <code>/compact</code> emits its success notice.</p>
     <div class="term">
       <pre class="indent">
   <span class="accent">&#x280b; Compacting context...</span></pre>
     </div>
     <p><strong>It replaces the subagent line, not the turn info row.</strong> While it is up, the running-subagents indicator is suppressed - one line saying what is happening beats two saying different things - but a turn info row that already has figures still renders beneath it, the two-spinner case shown under <a href="#chat">Assistant message</a>.</p>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::compacting_line</code>, pushed from <code>append_assistant_blocks</code> (body-less message) and <code>build_message_layout</code> (after the body); the active-turn restriction rides the same <code>msg_spinner</code> gate as the rest of the slot</dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::compacting_line</code>, pushed from <code>append_assistant_blocks</code> (body-less message) and <code>build_message_layout</code> (after the body); the active-turn restriction rides the <code>msg_spinner</code> gate, like the thinking flags</dd>
       <dt>color</dt><dd>glyph + text: <code>RUST_ORANGE</code></dd>
       <dt>data source</dt><dd><code>App::is_compacting</code>, driven by the CLI's session-status stream (<code>status:"compacting"</code>) and <code>compact_boundary</code> events; the glyph frame is the shared spinner (see <a href="#spinner-picker">[ui] spinner</a>)</dd>
     </dl>
