@@ -1394,11 +1394,7 @@ impl Workspace {
             }
             crate::spawn::push_peer_user_turn_into_chat(self, session_key, &wrapped);
             let text = wrapped.to_prose();
-            if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
-                key: session_key.clone(),
-                text,
-                attachments: Vec::new(),
-            }) {
+            if let Err(err) = self.dispatch_workspace_prompt(session_key, text) {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
                     key = %session_key.as_str(),
@@ -1970,11 +1966,9 @@ impl Workspace {
                         return; // Workspace dropped; exit cleanly.
                     };
                     let session_key = req.session_key.clone();
-                    if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
-                        key: req.session_key,
-                        text: req.prompt_body,
-                        attachments: Vec::new(),
-                    }) {
+                    if let Err(err) =
+                        workspace.dispatch_workspace_prompt(&session_key, req.prompt_body)
+                    {
                         tracing::error!(
                             target: "forge_workspace::workspace",
                             key = %session_key.as_str(),
@@ -2703,6 +2697,23 @@ impl Workspace {
         let _ =
             self.update_sender().send(SessionUpdate::DictateDevicePin { key: key.clone(), pick });
         Ok(())
+    }
+
+    /// Dispatch a workspace-originated plain prompt (cron fire, peer
+    /// or gotify delivery, kick, notices), signalling
+    /// `PromptQueuedWhileBusy` first when the target's turn is in
+    /// flight so the TUI bridges the spinner across the gap.
+    pub fn dispatch_workspace_prompt(
+        self: &Arc<Self>,
+        key: &SessionKey,
+        text: String,
+    ) -> Result<(), DispatchError> {
+        if self.domain_session_for(key).is_some_and(|d| d.lock().turn_in_flight()) {
+            let _ = self
+                .update_sender()
+                .send(SessionUpdate::PromptQueuedWhileBusy { key: key.clone() });
+        }
+        self.dispatch(Command::Prompt { key: key.clone(), text, attachments: Vec::new() })
     }
 
     /// Route a [`Command`]. Per-session commands (`cmd.key() ==
@@ -5599,11 +5610,7 @@ impl Workspace {
                     sender_org: String::new(),
                     body: reason.clone(),
                 };
-                if let Err(err) = self.dispatch(Command::Prompt {
-                    key: lead_key,
-                    text: wrapped.to_prose(),
-                    attachments: Vec::new(),
-                }) {
+                if let Err(err) = self.dispatch_workspace_prompt(&lead_key, wrapped.to_prose()) {
                     tracing::warn!(
                         target: "forge_workspace::worker_async_failure",
                         project = %project_key.as_str(),
@@ -6458,11 +6465,7 @@ impl Workspace {
         // The CLI never echoes stdin-injected prompts back, so paint the
         // visible notice block ourselves before the LLM-side dispatch.
         crate::spawn::push_peer_user_turn_into_chat(self, &ask.caller, &caller_notice);
-        if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
-            key: ask.caller.clone(),
-            text: caller_notice.to_prose(),
-            attachments: Vec::new(),
-        }) {
+        if let Err(err) = self.dispatch_workspace_prompt(&ask.caller, caller_notice.to_prose()) {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 correlation_id = %id,
@@ -6490,11 +6493,7 @@ impl Workspace {
         // The CLI never echoes stdin-injected prompts back, so paint the
         // visible reply block ourselves before the LLM-side dispatch.
         crate::spawn::push_peer_user_turn_into_chat(self, caller, reply);
-        if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
-            key: caller.clone(),
-            text: reply.to_prose(),
-            attachments: Vec::new(),
-        }) {
+        if let Err(err) = self.dispatch_workspace_prompt(caller, reply.to_prose()) {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 correlation_id = %reply.correlation_id,
@@ -10289,6 +10288,84 @@ SOLO_TOKEN = "solo-secret"
             )
         });
         assert!(echoed, "a running-lead cron fire emits a CronPromptAppended echo");
+    }
+
+    /// `dispatch_workspace_prompt` is the queue-signal discriminator:
+    /// an idle session receives the plain prompt and no
+    /// `PromptQueuedWhileBusy`; a session with a turn in flight gets
+    /// the signal carrying its key ahead of the same dispatch. The
+    /// intercept buffers before real routing stamps `turn_pending`,
+    /// so the idle fire does not self-arm - the explicit stamp is the
+    /// discriminator.
+    #[test]
+    fn dispatch_workspace_prompt_signals_only_when_turn_in_flight() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("qkey", "/tmp/q-dispatch");
+        let cwd = project_expanded_path(&ws, "qkey");
+        ws.record_connected_session(&cwd, "q-uuid", None);
+        let key = SessionKey::from_session_id("q-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        ws.mark_session_connected_for_test(&key, "q-uuid");
+        ws.enable_test_dispatch_intercept();
+
+        ws.dispatch_workspace_prompt(&key, "idle".to_owned()).expect("idle dispatch");
+        assert!(
+            !drain_updates(&mut rx)
+                .iter()
+                .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { .. })),
+            "an idle dispatch must not signal PromptQueuedWhileBusy",
+        );
+
+        ws.domain_session_for(&key).expect("domain").lock().turn_pending = true;
+        ws.dispatch_workspace_prompt(&key, "queued".to_owned()).expect("busy dispatch");
+        let signalled = drain_updates(&mut rx)
+            .into_iter()
+            .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { key: k } if k == key));
+        assert!(signalled, "a turn-in-flight dispatch signals PromptQueuedWhileBusy with the key");
+    }
+
+    /// The cron delivery path rides the helper: a cron fired into a
+    /// mid-turn lead signals `PromptQueuedWhileBusy` on top of the
+    /// `CronPromptAppended` echo; an idle fire stays silent.
+    #[test]
+    fn cron_fired_mid_turn_signals_prompt_queued_while_busy() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("cronlead", "/tmp/cron-lead-queued");
+        let cwd = project_expanded_path(&ws, "cronlead");
+        ws.record_connected_session(&cwd, "lead-uuid", None);
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
+        ws.enable_test_dispatch_intercept();
+
+        let outcome =
+            crate::spawn::deliver_cron_prompt(&ws, "cronlead", None, "morning".to_owned(), false);
+        assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+        assert!(
+            !drain_updates(&mut rx)
+                .iter()
+                .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { .. })),
+            "an idle cron fire must not signal PromptQueuedWhileBusy",
+        );
+
+        ws.domain_session_for(&lead_key).expect("domain").lock().turn_pending = true;
+        let outcome =
+            crate::spawn::deliver_cron_prompt(&ws, "cronlead", None, "again".to_owned(), false);
+        assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+        let signalled = drain_updates(&mut rx)
+            .into_iter()
+            .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { key: k } if k == lead_key));
+        assert!(signalled, "a cron fired mid-turn signals PromptQueuedWhileBusy");
     }
 
     #[test]

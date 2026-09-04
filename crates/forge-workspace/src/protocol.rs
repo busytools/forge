@@ -991,6 +991,14 @@ pub enum SessionUpdate {
         session_id: String,
         text: String,
     },
+    /// A workspace-originated prompt (cron fire, peer or gotify
+    /// delivery, kick) landed while the target session's turn was in
+    /// flight. The TUI counts it into the bucket's queued-send bridge
+    /// so the spinner stays open across the gap; the prompt itself
+    /// rides the usual `Command::Prompt` dispatch.
+    PromptQueuedWhileBusy {
+        key: SessionKey,
+    },
     /// A worker's review turn addressed review comments; `key` is the
     /// session that authored the review (the submit origin). The TUI drops
     /// `message` as a system line into that session's chat so the reviewer
@@ -1084,6 +1092,7 @@ impl SessionUpdate {
             | Self::DictateLevel { key, .. }
             | Self::DictateTranscribing { key }
             | Self::DictateProgress { key, .. }
+            | Self::PromptQueuedWhileBusy { key }
             | Self::DictateEnded { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
@@ -1266,6 +1275,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("CronPromptAppended")
                 .field("session_id", session_id)
                 .finish_non_exhaustive(),
+            Self::PromptQueuedWhileBusy { key } => {
+                f.debug_struct("PromptQueuedWhileBusy").field("key", key).finish()
+            }
             Self::ReviewActivityNotice { key, branch, waiting, .. } => f
                 .debug_struct("ReviewActivityNotice")
                 .field("key", key)

@@ -275,11 +275,7 @@ pub(crate) fn handle_deliver_peer_prompt(
         // the TUI knows to render the peer block.
         push_peer_user_turn_into_chat(workspace, &target_key, &wrapped);
         let text = wrapped.to_prose();
-        if let Err(err) = workspace.dispatch(Command::Prompt {
-            key: target_key.clone(),
-            text,
-            attachments: Vec::new(),
-        }) {
+        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, text) {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 target_project = %target_project,
@@ -385,11 +381,7 @@ pub(crate) fn deliver_cron_prompt(
         // order regardless of which event the TUI reducer drains first.
         let text = missed_cron_text(&prompt, missed);
         push_cron_prompt_into_chat(workspace, &target_key, &text);
-        return match workspace.dispatch(Command::Prompt {
-            key: target_key.clone(),
-            text,
-            attachments: Vec::new(),
-        }) {
+        return match workspace.dispatch_workspace_prompt(&target_key, text) {
             Ok(()) => CronFireOutcome::Delivered,
             Err(err) => {
                 tracing::warn!(
@@ -526,11 +518,9 @@ pub(crate) fn deliver_gotify_message(
             // it renders in order regardless of which event the TUI reducer
             // drains first (mirrors handle_deliver_peer_prompt).
             push_gotify_notification_into_chat(workspace, &worker_key, &notification);
-            if let Err(err) = workspace.dispatch(Command::Prompt {
-                key: worker_key.clone(),
-                text: notification.to_prose(),
-                attachments: Vec::new(),
-            }) {
+            if let Err(err) =
+                workspace.dispatch_workspace_prompt(&worker_key, notification.to_prose())
+            {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
                     project = %project,
@@ -574,11 +564,8 @@ pub(crate) fn deliver_gotify_message(
 
     if let Some(target_key) = running_lead {
         push_gotify_notification_into_chat(workspace, &target_key, &notification);
-        if let Err(err) = workspace.dispatch(Command::Prompt {
-            key: target_key.clone(),
-            text: notification.to_prose(),
-            attachments: Vec::new(),
-        }) {
+        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, notification.to_prose())
+        {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 project = %project,
@@ -1538,11 +1525,7 @@ pub(crate) fn handle_deliver_worker_prompt(
     let text = wrapped.to_prose();
     push_peer_user_turn_into_chat(workspace, &target_key, &wrapped);
     drop(wrapped);
-    if let Err(err) = workspace.dispatch(Command::Prompt {
-        key: target_key.clone(),
-        text,
-        attachments: Vec::new(),
-    }) {
+    if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, text) {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project_key.as_str(),
@@ -1602,11 +1585,7 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     let text = wrapped.to_prose();
     push_peer_user_turn_into_chat(workspace, target_lead_key, &wrapped);
     drop(wrapped);
-    if let Err(err) = workspace.dispatch(Command::Prompt {
-        key: target_lead_key.clone(),
-        text,
-        attachments: Vec::new(),
-    }) {
+    if let Err(err) = workspace.dispatch_workspace_prompt(target_lead_key, text) {
         tracing::warn!(
             target: "forge_workspace::spawn",
             target = %target_lead_key.as_str(),
