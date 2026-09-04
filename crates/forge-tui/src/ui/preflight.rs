@@ -435,7 +435,7 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
     if endpoint_failing {
         lines.push(text_row(2, "Check the endpoint", head, width));
         match row.auth {
-            AccountAuth::Keychain => {
+            AccountAuth::Keychain | AccountAuth::Token => {
                 let line = if row.last_error == Some(UsageFetchStatus::NetworkFailed) {
                     "the probe could not run or reach the Anthropic API"
                 } else {
@@ -485,6 +485,15 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
                     width,
                 ));
             }
+            AccountAuth::Token => {
+                lines.push(text_row(
+                    4,
+                    "CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]",
+                    Style::default(),
+                    width,
+                ));
+                lines.extend(command_rows(4, "claude setup-token", width));
+            }
         }
         // Without this a reader who fixes their auth has no way of
         // knowing whether to restart. Keychain: the recovery poll picks
@@ -500,7 +509,7 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
                     width,
                 ));
             }
-            AccountAuth::BaseUrl => {
+            AccountAuth::BaseUrl | AccountAuth::Token => {
                 lines.push(text_row(4, "editing [accounts.env] needs a restart", dim(), width));
             }
         }

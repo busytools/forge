@@ -1487,6 +1487,11 @@ impl Workspace {
                 config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
                 auth: if accounts.provider_or_anthropic(k).uses_base_url() {
                     crate::views::AccountAuth::BaseUrl
+                } else if accounts
+                    .env(k)
+                    .is_some_and(forge_agent::cloud::oauth_usage::is_token_mode)
+                {
+                    crate::views::AccountAuth::Token
                 } else {
                     crate::views::AccountAuth::Keychain
                 },
@@ -2116,6 +2121,11 @@ impl Workspace {
                     forge_agent::cloud::oauth_usage::oauth_usage(&dir).await.map(|payload| {
                         forge_agent::cloud::oauth::map_probe_snapshot(false, payload)
                     })
+                }
+                forge_agent::cloud::oauth_usage::ProbePlan::Token { bearer } => {
+                    forge_agent::cloud::oauth_usage::probe_setup_token(bearer)
+                        .await
+                        .map(|payload| forge_agent::cloud::oauth::map_probe_snapshot(true, payload))
                 }
                 forge_agent::cloud::oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
                     forge_agent::cloud::oauth_usage::probe_openrouter_key(base_url, bearer)
@@ -6181,6 +6191,10 @@ pub(crate) fn classify_oauth_usage_error(
         OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
         OauthUsageError::UaProbe(_)
         | OauthUsageError::HttpStatus(_, _)
+        // The token-mode arms convert a scope refusal before it gets
+        // here; reaching this arm means it arrived on the keychain
+        // path, which is not an auth failure either.
+        | OauthUsageError::ScopeInsufficient
         | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
     }
 }
@@ -11644,6 +11658,54 @@ provider = "anthropic"
         assert_eq!(
             classify_oauth_usage_error(&OauthUsageError::UaProbe("no binary".to_owned())),
             UsageFetchStatus::Other,
+        );
+        // A scope refusal on the keychain path is anomalous (keychain
+        // tokens carry user:profile) and must not render as an auth
+        // failure; the token-mode paths convert it before classification.
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::ScopeInsufficient),
+            UsageFetchStatus::Other,
+        );
+    }
+
+    /// A token-mode Anthropic account (setup token in `[accounts.env]`,
+    /// shared config dir) is neither a keychain repair nor a base-url
+    /// env edit, so preflight's bailed-row copy would send the reader
+    /// to `/login` in a dir that does not hold this account's
+    /// credential. The row has to carry the third class.
+    #[tokio::test]
+    async fn a_token_mode_account_derives_the_token_auth_class() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["TokenAcct"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "TokenAcct"
+config_dir = "~/.claude"
+provider = "anthropic"
+
+  [accounts.env]
+  CLAUDE_CODE_OAUTH_TOKEN = "setup-token"
+"#,
+        )
+        .expect("write forge.toml");
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).await.expect("new");
+
+        let rows = workspace.account_loading_snapshot();
+        assert_eq!(rows.len(), 1, "the fixture has one account; got {rows:?}");
+        assert_eq!(
+            rows[0].auth,
+            crate::views::AccountAuth::Token,
+            "a setup-token account is the token auth class; got {:?}",
+            rows[0].auth,
         );
     }
 

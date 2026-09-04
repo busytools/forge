@@ -431,6 +431,43 @@ fn an_erroring_endpoint_is_not_an_auth_failure_either() {
     );
 }
 
+/// A bailed token account's credential is the setup token in its
+/// `[accounts.env]`, not a keychain entry: `/login` would authenticate
+/// whichever account owns the shared config dir, not this one. The
+/// repair is a re-mint, and it is an env edit, so it needs a restart.
+#[test]
+fn a_bailed_token_account_names_the_re_mint_not_login() {
+    let text = flatten(&bail_detail(
+        &App::test_default(),
+        &bailed_with_error(
+            "TokenAcct",
+            "/home/x/.claude",
+            forge_workspace::AccountAuth::Token,
+            forge_workspace::UsageFetchStatus::Unauthorized,
+        ),
+        PICKER_WIDTH,
+    ))
+    .join("\n");
+
+    assert!(
+        text.contains("Fix the auth"),
+        "a 401 on a setup token is an auth failure; got:\n{text}",
+    );
+    assert!(
+        !text.contains("/login"),
+        "`/login` repairs the shared dir's keychain account, never this one; got:\n{text}",
+    );
+    assert!(
+        text.contains("CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]"),
+        "the credential's home is named; got:\n{text}",
+    );
+    assert!(text.contains("claude setup-token"), "the re-mint command is the repair; got:\n{text}");
+    assert!(
+        text.contains("editing [accounts.env] needs a restart"),
+        "an env repair is boot-frozen until restart - the screen has to say so; got:\n{text}",
+    );
+}
+
 /// A 429 streak is nobody's repair job: the token is fine and the
 /// endpoint is fine, so the only instruction is to wait.
 #[test]

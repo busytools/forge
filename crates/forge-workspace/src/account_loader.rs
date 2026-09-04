@@ -9,7 +9,11 @@
 //! only includes accounts whose terminal state is `Ready`.
 //!
 //! Outline of one iteration:
-//! 1. Read keychain via `oauth_credentials::load_oauth_credentials`.
+//! 1. Read keychain via `oauth_credentials::load_oauth_credentials`,
+//!    or the account's `CLAUDE_CODE_OAUTH_TOKEN` when it is
+//!    token-mode (`ProbePlan::Token`; the endpoint's
+//!    `oauth_scope_insufficient` refusal is the valid-token verdict
+//!    and settles to a barless Ready snapshot).
 //! 2. Probe `/api/oauth/usage` via `oauth_usage::probe`.
 //! 3. Branch on the probe result:
 //!    - 200 -> snapshot stored via `set_usage`, transitions to
@@ -18,7 +22,10 @@
 //!      path. Transition to `Refreshing`, fire
 //!      `refresh_via_cli_spawn`. On success, transition back to
 //!      `Loading` and loop. On failure (NotLoggedIn or any other
-//!      `RefreshError`), transition to `Bailed`, task exits.
+//!      `RefreshError`), transition to `Bailed`, task exits. On a
+//!      token-mode plan an auth failure skips the refresh (the
+//!      env-bearer probe cannot be repaired by rotating the keychain)
+//!      and terminals straight to `Bailed`.
 //!    - `RateLimited` / `HttpStatus` / `Network` / `Decode` ->
 //!      transient probe failure. Sleep `PROBE_RETRY_INTERVAL`
 //!      (or the server-provided `retry_after`, when present), loop.
@@ -113,6 +120,10 @@ fn boot_probe_action(env_bearer: bool, err: &OauthUsageError) -> BootProbeAction
         OauthUsageError::Network(_)
         | OauthUsageError::UaProbe(_)
         | OauthUsageError::HttpStatus(_, _)
+        // Unreachable on a token plan (the probe converts the refusal
+        // first); on the keychain path it is not an auth failure, so
+        // it retries like any other transient class.
+        | OauthUsageError::ScopeInsufficient
         | OauthUsageError::Decode(_) => BootProbeAction::RetryLoop(status, None),
     }
 }
@@ -197,6 +208,16 @@ pub async fn run_account_loading(
                         .map(|payload| oauth::map_probe_snapshot(false, payload)),
                     None => Err(OauthUsageError::NoCredentials),
                 }
+            }
+            oauth_usage::ProbePlan::Token { bearer } => {
+                // The setup token is the account's credential; the
+                // endpoint's scope refusal is the valid-token verdict
+                // and settles to the neutral barless snapshot. A 401
+                // passes through and terminals below - the token is
+                // genuinely rejected.
+                oauth_usage::probe_setup_token(bearer)
+                    .await
+                    .map(|payload| oauth::map_probe_snapshot(true, payload))
             }
             oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
                 oauth_usage::probe_openrouter_key(base_url, bearer)
@@ -359,13 +380,22 @@ pub async fn run_recovery_poll(workspace_weak: Weak<Workspace>) {
         // never recover one - it would only burn a shellout every 30 s
         // and log a misleading "kept bailed". A bailed base-url account
         // recovers instead via the 60 s usage poller, which re-probes it
-        // and flips it Ready when its endpoint heals.
+        // and flips it Ready when its endpoint heals. Token-mode
+        // accounts are excluded for the same reason, plus one more:
+        // their credential lives in `[accounts.env]`, which is read
+        // once at boot, so even a successful recovery probe would
+        // re-read the old token until restart. The 60 s usage poller
+        // is their recovery path.
         let bailed: Vec<(AccountKey, std::path::PathBuf)> = {
             let accounts = workspace.account_states().lock();
             accounts
                 .by_key
                 .iter()
-                .filter(|(_, s)| s.loading == LoadingState::Bailed && !s.provider.uses_base_url())
+                .filter(|(_, s)| {
+                    s.loading == LoadingState::Bailed
+                        && !s.provider.uses_base_url()
+                        && !oauth_usage::is_token_mode(&s.env)
+                })
                 .map(|(k, s)| (k.clone(), s.config_dir.clone()))
                 .collect()
         };
@@ -528,6 +558,14 @@ mod tests {
         assert_eq!(
             boot_probe_action(true, &OauthUsageError::RateLimited { retry_after }),
             BootProbeAction::RetryLoop(UsageFetchStatus::RateLimited, retry_after),
+        );
+    }
+
+    #[test]
+    fn boot_probe_action_scope_refusal_is_retry_loop_not_bail() {
+        assert_eq!(
+            boot_probe_action(false, &OauthUsageError::ScopeInsufficient),
+            BootProbeAction::RetryLoop(UsageFetchStatus::Other, None),
         );
     }
 }

@@ -97,12 +97,15 @@ written below one is read as an environment variable and the account
 still counts as missing it.
 
 `"anthropic"` reads credentials from the macOS keychain and probes the
-default host. `"codex"`, `"openrouter"` and `"zai"` authenticate with
-the `ANTHROPIC_AUTH_TOKEN` beside their `ANTHROPIC_BASE_URL`, and an
-account declaring any of them without that base url fails the load
-naming the account and the missing key. Either key may come from the
-account's own `[accounts.env]` or from the global `[env]`, since the
-two are merged before the check runs.
+default host - unless its `[accounts.env]` carries
+`CLAUDE_CODE_OAUTH_TOKEN`, in which case that token is the credential
+and the keychain is not read (see [Environment
+layering](#environment-layering)). `"codex"`, `"openrouter"` and
+`"zai"` authenticate with the `ANTHROPIC_AUTH_TOKEN` beside their
+`ANTHROPIC_BASE_URL`, and an account declaring any of them without
+that base url fails the load naming the account and the missing key.
+Either key may come from the account's own `[accounts.env]` or from
+the global `[env]`, since the two are merged before the check runs.
 
 For `"openrouter"` the base url must be the API root, `https://openrouter.ai/api`,
 and an account whose base does not end in `/api` fails the load. The
@@ -206,6 +209,15 @@ that has already chosen a base-url account. Setting `ANTHROPIC_BASE_URL`
 or `ANTHROPIC_AUTH_TOKEN` at the *project* layer instead desynchronises
 forge's own accounting, because the usage probe, plan detection and the
 account picker all read the account map.
+
+A `CLAUDE_CODE_OAUTH_TOKEN` under an `"anthropic"` account's
+`[accounts.env]` makes the account token-mode: the token, minted by
+`claude setup-token`, is the credential, the keychain is never read,
+and several accounts can share one config dir. The usage endpoint
+refuses setup tokens (they lack the `user:profile` scope), so a valid
+token settles as usable with no usage bars; a rejected token renders
+as an auth failure whose repair is a re-mint. Like every env key, it
+is read once at boot, so replacing the token needs a restart.
 
 Only key names, never values, are recorded in forge's per-spawn log
 line. These tables hold tokens.
