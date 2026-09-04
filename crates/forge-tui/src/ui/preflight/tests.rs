@@ -200,16 +200,18 @@ fn a_bailed_account_names_both_exits() {
     );
 }
 
-/// The repair instruction is the one thing that differs by account
-/// class, and `claude /login` is actively wrong for a base-url account:
-/// it has no keychain entry to write, its credential being the token in
-/// its own `[accounts.env]`.
+/// The repair instruction AND the retry line differ by account class.
+/// `claude /login` is actively wrong for a base-url account: it has no
+/// keychain entry to write, its credential being the token in its own
+/// `[accounts.env]`. And the no-restart promise is only true for the
+/// keychain arm - an env edit is boot-frozen, so the base-url arm owes
+/// the reader the restart instead.
 ///
-/// **Asserted as a DIFFERENCE, not as two independent contents.** Two
-/// `contains` checks would both keep passing if the branch were
+/// **Asserted as DIFFERENCES, not as independent contents.** Two
+/// `contains` checks would both keep passing if the branches were
 /// collapsed and one arm's copy shown to everyone.
 #[test]
-fn the_repair_instruction_differs_by_account_class_and_the_retry_line_does_not() {
+fn the_repair_and_retry_lines_differ_by_account_class() {
     let render = |auth| {
         flatten(&bail_detail(
             &App::test_default(),
@@ -230,16 +232,23 @@ fn the_repair_instruction_differs_by_account_class_and_the_retry_line_does_not()
         "a keychain account is repaired with /login; got:\n{keychain}",
     );
     assert!(
+        keychain.contains("forge retries on its own - no restart needed")
+            && !keychain.contains("needs a restart"),
+        "a keychain repair is picked up in place; got:\n{keychain}",
+    );
+    assert!(
         base_url.contains("ANTHROPIC_AUTH_TOKEN in [accounts.env]") && !base_url.contains("/login"),
         "a base-url account has no keychain entry for /login to write; got:\n{base_url}",
     );
-    for text in [&keychain, &base_url] {
-        assert!(
-            text.contains("forge retries on its own - no restart needed"),
-            "the retry line is class-agnostic and appears in both; got:\n{text}",
-        );
-        assert!(text.contains("Or drop the account"), "and so is the second exit; got:\n{text}");
-    }
+    assert!(
+        base_url.contains("editing [accounts.env] needs a restart")
+            && !base_url.contains("no restart needed"),
+        "an env edit is boot-frozen and must not promise an in-place retry; got:\n{base_url}",
+    );
+    assert!(
+        keychain.contains("Or drop the account") && base_url.contains("Or drop the account"),
+        "the second exit is class-agnostic; got:\n{keychain}",
+    );
 }
 
 /// An account whose endpoint is down settles `Bailed` on its own - the

@@ -1104,18 +1104,18 @@ chat continues here...
 
  <span class="dim">ctrl+q  quit</span></pre>
     </div>
-    <p>The repair instruction is the only thing that branches, because it is the only thing that differs. An account whose <code>provider</code> is a base-url one (<code>codex</code>, <code>openrouter</code> or <code>zai</code>) has no keychain entry at all, so <code>claude /login</code> cannot repair it - its credential is the <code>ANTHROPIC_AUTH_TOKEN</code> beside its base url. The branch is on <code>provider</code>, not on the presence of <code>ANTHROPIC_BASE_URL</code>, so an <code>anthropic</code> account that happens to set one still gets keychain copy:</p>
+    <p>The repair instruction and the retry line both branch, because both differ. An account whose <code>provider</code> is a base-url one (<code>codex</code>, <code>openrouter</code> or <code>zai</code>) has no keychain entry at all, so <code>claude /login</code> cannot repair it - its credential is the <code>ANTHROPIC_AUTH_TOKEN</code> beside its base url. The branch is on <code>provider</code>, not on the presence of <code>ANTHROPIC_BASE_URL</code>, so an <code>anthropic</code> account that happens to set one still gets keychain copy:</p>
     <div class="term">
       <pre class="indent">
         <span class="bold">Fix the auth</span>
           ANTHROPIC_AUTH_TOKEN in [accounts.env]
-          <span class="dim">forge retries on its own - no restart needed</span>
+          <span class="dim">editing [accounts.env] needs a restart</span>
 
         <span class="bold">Or drop the account</span>
           delete its [[accounts]] block from
           ~/.claude/forge/forge.toml</pre>
     </div>
-    <p>The retry line is identical in both, and deliberately so: both classes recover without a restart, and neither shares the other's interval - a keychain account on the 30 s recovery poll, a base-url account on the 60 s usage poll under probe backoff - so it names none.</p>
+    <p>The retry line states no interval in either arm, because no single number is true of both polls - a keychain account on the 30 s recovery poll, a base-url account on the 60 s usage poll under probe backoff. What it does key on is the restart: a keychain repair is picked up in place, while the base-url repair is an edit to <code>forge.toml</code>, which is read once at boot, so the retrying poller keeps the old token until forge restarts.</p>
     <p>An endpoint that never answered is a different failure, and the row says so: the last probe attempt classified the error, and an endpoint-class bail reads <code>unreachable</code> (never got through) or <code>fetch error</code> (answered, but with a 5xx or a body that will not decode - a proxy with a dead upstream 502s rather than refusing), with the repair aimed at the endpoint rather than the token. A <code>rate limited</code> bail has no repair at all beyond waiting: the pollers keep retrying. forge no longer holds boot for any of them, so the head line says what happens now instead of what used to stop:</p>
     <div class="term">
       <pre class="indent">

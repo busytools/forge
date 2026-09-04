@@ -382,10 +382,10 @@ fn failure_label(failure: Option<&DictateFailure>) -> &'static str {
 /// The head and the repair line key on the failure class: an auth
 /// problem, a rate limit, and an endpoint that is down or answering
 /// badly are three different repairs. The auth branch's retry line
-/// states no interval on purpose, and is the same in both account
-/// classes - a keychain account recovers on the 30 s recovery poll, a
-/// base-url one on the 60 s usage poll, so no single number is true of
-/// both, while "no restart needed" is true of each.
+/// states no interval on purpose, and keys on the account class: a
+/// keychain repair is picked up in place by the recovery poll, while a
+/// base-url repair is an env edit, and no single interval is true of
+/// the polls that watch the two classes.
 fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'static>> {
     let error = Style::default().fg(theme::STATUS_ERROR);
     let head = Style::default().add_modifier(Modifier::BOLD);
@@ -486,9 +486,24 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
                 ));
             }
         }
-        // Without this a reader who fixes their auth has no way of knowing
-        // whether to restart, and the answer is no.
-        lines.push(text_row(4, "forge retries on its own - no restart needed", dim(), width));
+        // Without this a reader who fixes their auth has no way of
+        // knowing whether to restart. Keychain: the recovery poll picks
+        // the repair up in place. Base-url: the repaired token lives in
+        // [accounts.env], which is read once at boot, so the retry
+        // cannot see it until forge restarts.
+        match row.auth {
+            AccountAuth::Keychain => {
+                lines.push(text_row(
+                    4,
+                    "forge retries on its own - no restart needed",
+                    dim(),
+                    width,
+                ));
+            }
+            AccountAuth::BaseUrl => {
+                lines.push(text_row(4, "editing [accounts.env] needs a restart", dim(), width));
+            }
+        }
     }
     lines.push(Line::default());
     lines.push(text_row(2, "Or drop the account", head, width));
