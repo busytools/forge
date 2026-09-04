@@ -13,11 +13,12 @@
 //! practice; the cfg gate keeps the crate compiling on other targets
 //! without dragging in a Linux-keyring shim).
 //!
-//! Four readers: [`crate::cloud::oauth_usage::probe`], which is the
-//! only one that turns them into a Bearer header; [`refresh_via_cli_spawn`]
-//! below, before and after its spawn; `ForgeSdkBridge`; and
-//! forge-workspace's boot-time per-account loader. Note that
-//! `probe` skips this loader entirely on the
+//! Two readers turn them into a Bearer header: the forge-providers
+//! Anthropic backend, via [`crate::cloud::provider_host::AgentHost`],
+//! and [`crate::cloud::oauth_usage::probe`] (the codex base-url arm).
+//! The others: [`refresh_via_cli_spawn`] below, before and after its
+//! spawn; `ForgeSdkBridge`; and forge-workspace's usage-poll 401 gate.
+//! Note that `probe` skips this loader entirely on the
 //! `ProbePlan::BaseUrl` path, building credentials from
 //! `ANTHROPIC_AUTH_TOKEN` instead.
 //!
