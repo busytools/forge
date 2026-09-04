@@ -194,10 +194,10 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
 
 /// Narrowest gutter, so single-digit line numbers don't shift the
 /// marker column relative to two-digit ones in the same hunk.
-pub(super) const SPLIT_GUTTER_MIN: usize = 2;
+const SPLIT_GUTTER_MIN: usize = 2;
 /// Widest gutter. Beyond this the gutter is under-reserved and the
 /// row's divider shifts right of where `split_layout` puts it.
-pub(super) const SPLIT_GUTTER_MAX: usize = 6;
+const SPLIT_GUTTER_MAX: usize = 6;
 
 /// Gutter width for a file's split / unified line numbers.
 pub(crate) fn gutter_width_for(file: &FileHunks) -> usize {
@@ -227,9 +227,9 @@ pub(crate) fn effective_view_mode(stored: DiffViewMode, pane_width: u16) -> Diff
 }
 
 /// Leading indent before the left column of a split row.
-pub(super) const SPLIT_INDENT_COLS: usize = 2;
+const SPLIT_INDENT_COLS: usize = 2;
 /// Space, `│`, space between the two columns.
-pub(super) const SPLIT_DIVIDER_COLS: usize = 3;
+const SPLIT_DIVIDER_COLS: usize = 3;
 /// Space, marker, space between a column's gutter and its text.
 pub(crate) const SPLIT_MARKER_COLS: usize = 3;
 

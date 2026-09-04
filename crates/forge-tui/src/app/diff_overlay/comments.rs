@@ -352,7 +352,7 @@ fn anchor_side(kind: DiffLineKind) -> ReviewSide {
 /// caller stamps the scope `commit`. The store stamps `created_at` /
 /// `updated_at` and any empty comment `at` on write, so they start
 /// empty here.
-pub(super) fn build_thread(
+fn build_thread(
     prior: Option<forge_primitives::ReviewThread>,
     anchor: ReviewAnchor,
     text: &str,
