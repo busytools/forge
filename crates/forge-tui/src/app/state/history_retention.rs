@@ -97,20 +97,20 @@ impl super::App {
         })
     }
 
-    fn measure_tool_content_bytes(content: &model::ToolCallContent) -> usize {
+    fn measure_tool_content_bytes(content: &model::RenderToolCallContent) -> usize {
         match content {
-            model::ToolCallContent::Content(inner) => match &inner.content {
-                model::ContentBlock::Text(text) => text.text.capacity(),
-                model::ContentBlock::Image(image) => {
+            model::RenderToolCallContent::Content(inner) => match &inner.content {
+                model::RenderContentBlock::Text(text) => text.text.capacity(),
+                model::RenderContentBlock::Image(image) => {
                     image.data.capacity().saturating_add(image.mime_type.capacity())
                 }
             },
-            model::ToolCallContent::Diff(diff) => diff
+            model::RenderToolCallContent::Diff(diff) => diff
                 .path
                 .capacity()
                 .saturating_add(diff.old_text.as_ref().map_or(0, String::capacity))
                 .saturating_add(diff.new_text.capacity()),
-            model::ToolCallContent::McpResource(resource) => resource
+            model::RenderToolCallContent::McpResource(resource) => resource
                 .uri
                 .capacity()
                 .saturating_add(resource.mime_type.as_ref().map_or(0, String::capacity))
@@ -118,7 +118,7 @@ impl super::App {
                 .saturating_add(
                     resource.blob_saved_to.as_ref().map_or(0, std::path::PathBuf::capacity),
                 ),
-            model::ToolCallContent::Terminal(term) => term.terminal_id.capacity(),
+            model::RenderToolCallContent::Terminal(term) => term.terminal_id.capacity(),
         }
     }
 
@@ -130,7 +130,7 @@ impl super::App {
             .saturating_add(tc.terminal_id.as_ref().map_or(0, String::capacity))
             .saturating_add(tc.terminal_output.as_ref().map_or(0, String::capacity))
             .saturating_add(
-                tc.content.capacity().saturating_mul(size_of::<model::ToolCallContent>()),
+                tc.content.capacity().saturating_mul(size_of::<model::RenderToolCallContent>()),
             );
 
         total = total.saturating_add(tc.raw_input_bytes);

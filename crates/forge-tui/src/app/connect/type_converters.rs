@@ -59,10 +59,12 @@ pub(crate) fn map_available_models(
         .collect()
 }
 
-pub(super) fn convert_content_block(content: types::ChunkContent) -> Option<model::ContentBlock> {
+pub(super) fn convert_content_block(
+    content: types::ChunkContent,
+) -> Option<model::RenderContentBlock> {
     match content {
         types::ChunkContent::Text { text } => {
-            Some(model::ContentBlock::Text(model::TextContent::new(text)))
+            Some(model::RenderContentBlock::Text(model::TextContent::new(text)))
         }
         types::ChunkContent::Image { mime_type, uri: _, data } => {
             let mime = mime_type.unwrap_or_else(|| "image/png".to_owned());
@@ -75,12 +77,12 @@ pub(super) fn convert_content_block(content: types::ChunkContent) -> Option<mode
                 tracing::warn!("convert_content_block: skipping image block with empty data");
                 return None;
             }
-            Some(model::ContentBlock::Image(model::ImageContent::new(image_data, mime)))
+            Some(model::RenderContentBlock::Image(model::ImageContent::new(image_data, mime)))
         }
     }
 }
 
-pub(crate) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
+pub(crate) fn convert_tool_call(tool_call: types::ToolCall) -> model::RenderToolCall {
     let types::ToolCall {
         tool_call_id,
         title,
@@ -95,7 +97,7 @@ pub(crate) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
         meta,
     } = tool_call;
 
-    let mut tc = model::ToolCall::new(tool_call_id, title)
+    let mut tc = model::RenderToolCall::new(tool_call_id, title)
         .kind(kind)
         .status(status)
         .content(content.into_iter().filter_map(convert_tool_call_content).collect())
@@ -121,13 +123,16 @@ pub(crate) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     tc
 }
 
-pub(crate) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::ToolCallUpdate {
+pub(crate) fn convert_tool_call_update(
+    update: types::ToolCallUpdate,
+) -> model::RenderToolCallUpdate {
     // Exhaustive destructure (no `..`) so a new wire field fails the
     // build until it's mapped: the render model and wire shape can't
     // silently drift.
     let types::ToolCallUpdate { tool_call_id, fields } = update;
     let update_meta = fields.meta.clone();
-    let mut out = model::ToolCallUpdate::new(tool_call_id, convert_tool_call_update_fields(fields));
+    let mut out =
+        model::RenderToolCallUpdate::new(tool_call_id, convert_tool_call_update_fields(fields));
     if let Some(meta) = update_meta {
         out = out.meta(meta);
     }
@@ -136,10 +141,10 @@ pub(crate) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::
 
 pub(super) fn convert_tool_call_update_fields(
     fields: types::ToolCallUpdateFields,
-) -> model::ToolCallUpdateFields {
+) -> model::RenderToolCallUpdateFields {
     // Exhaustive destructure (no `..`) so a new wire field fails the
     // build until it's mapped. `meta` is lifted onto the model's
-    // ToolCallUpdate by convert_tool_call_update, not carried here.
+    // RenderToolCallUpdate by convert_tool_call_update, not carried here.
     let types::ToolCallUpdateFields {
         title,
         kind,
@@ -152,7 +157,7 @@ pub(super) fn convert_tool_call_update_fields(
         locations,
         meta: _,
     } = fields;
-    let mut out = model::ToolCallUpdateFields::new();
+    let mut out = model::RenderToolCallUpdateFields::new();
 
     if let Some(title) = title {
         out = out.title(title);
@@ -188,19 +193,19 @@ pub(super) fn convert_tool_call_update_fields(
 
 fn convert_tool_call_content(
     tool_content: types::ToolCallContent,
-) -> Option<model::ToolCallContent> {
+) -> Option<model::RenderToolCallContent> {
     match tool_content {
         types::ToolCallContent::Content { content } => {
             let block = convert_content_block(content)?;
-            Some(model::ToolCallContent::Content(model::Content::new(block)))
+            Some(model::RenderToolCallContent::Content(model::Content::new(block)))
         }
         types::ToolCallContent::Diff { new_path, old, new, repository } => {
-            Some(model::ToolCallContent::Diff(
+            Some(model::RenderToolCallContent::Diff(
                 model::Diff::new(new_path, new).old_text(Some(old)).repository(repository),
             ))
         }
         types::ToolCallContent::McpResource { uri, mime_type, text, blob_saved_to } => {
-            Some(model::ToolCallContent::McpResource(
+            Some(model::RenderToolCallContent::McpResource(
                 model::McpResource::new(uri)
                     .mime_type(mime_type)
                     .text(text)
@@ -362,7 +367,7 @@ mod tests {
 
         assert_eq!(
             tool_call.content,
-            vec![model::ToolCallContent::Diff(
+            vec![model::RenderToolCallContent::Diff(
                 model::Diff::new("src/main.rs", "new")
                     .old_text(Some("old"))
                     .repository(Some("stargate/project".to_owned())),
@@ -396,7 +401,7 @@ mod tests {
 
         assert_eq!(
             tool_call.content,
-            vec![model::ToolCallContent::McpResource(
+            vec![model::RenderToolCallContent::McpResource(
                 model::McpResource::new("file://manual.pdf")
                     .mime_type(Some("application/pdf".to_owned()))
                     .text(Some(

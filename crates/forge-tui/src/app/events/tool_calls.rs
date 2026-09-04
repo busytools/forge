@@ -5,7 +5,7 @@ use super::super::{
 use super::tool_updates::raw_output_to_terminal_text;
 use crate::agent::model;
 
-pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
+pub(super) fn handle_tool_call(app: &mut App, tc: model::RenderToolCall) {
     let id_str = tc.tool_call_id.clone();
     let sdk_tool_name = resolve_sdk_tool_name(tc.kind, tc.meta.as_ref());
     let parent_tool_use_id = parent_tool_use_id_from_meta(tc.meta.as_ref());
@@ -110,7 +110,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
 
 fn log_tool_call_received(
     app: &App,
-    tc: &model::ToolCall,
+    tc: &model::RenderToolCall,
     scope: &ToolCallScope,
     sdk_tool_name: &str,
 ) {
@@ -182,12 +182,12 @@ pub(super) fn update_subagent_scope_state(
 
 fn build_tool_info_from_tool_call(
     app: &App,
-    tc: model::ToolCall,
+    tc: model::RenderToolCall,
     sdk_tool_name: String,
     scope: &ToolCallScope,
 ) -> ToolCallInfo {
     let terminal_id = tc.content.iter().find_map(|content| match content {
-        model::ToolCallContent::Terminal(term) => Some(term.terminal_id.clone()),
+        model::RenderToolCallContent::Terminal(term) => Some(term.terminal_id.clone()),
         _ => None,
     });
     let initial_execute_output = if super::super::is_execute_tool_name(&sdk_tool_name) {
@@ -501,7 +501,7 @@ pub(super) fn should_jump_on_large_write(tc: &ToolCallInfo) -> bool {
         return false;
     }
     tc.content.iter().any(|c| match c {
-        model::ToolCallContent::Diff(diff) => {
+        model::RenderToolCallContent::Diff(diff) => {
             let new_lines = diff.new_text.lines().count();
             let old_lines = diff.old_text.as_deref().map_or(0, |t| t.lines().count());
             new_lines.max(old_lines) >= WRITE_DIFF_JUMP_THRESHOLD_LINES
@@ -803,12 +803,13 @@ mod tests {
     #[test]
     fn monitor_reaches_the_chat_renderer() {
         let app = App::test_default();
-        let tc = model::ToolCall::new("toolu_lifecycle", "Monitor").raw_input(serde_json::json!({
-            "description": "ci-watch",
-            "command": "gh run watch 1",
-            "persistent": true,
-            "timeout_ms": 0,
-        }));
+        let tc =
+            model::RenderToolCall::new("toolu_lifecycle", "Monitor").raw_input(serde_json::json!({
+                "description": "ci-watch",
+                "command": "gh run watch 1",
+                "persistent": true,
+                "timeout_ms": 0,
+            }));
         let info = build_tool_info_from_tool_call(
             &app,
             tc,
@@ -828,7 +829,7 @@ mod tests {
     #[test]
     fn workflow_stays_chat_suppressed() {
         let app = App::test_default();
-        let tc = model::ToolCall::new("toolu_wf", "Workflow")
+        let tc = model::RenderToolCall::new("toolu_wf", "Workflow")
             .raw_input(serde_json::json!({"script": "export const meta = { name: 'x' }"}));
         let info = build_tool_info_from_tool_call(
             &app,
@@ -849,7 +850,8 @@ mod tests {
     #[test]
     fn initial_empty_object_raw_input_is_captured_at_creation() {
         let app = App::test_default();
-        let tc = model::ToolCall::new("toolu_no_arg", "NoArg").raw_input(serde_json::json!({}));
+        let tc =
+            model::RenderToolCall::new("toolu_no_arg", "NoArg").raw_input(serde_json::json!({}));
         let info =
             build_tool_info_from_tool_call(&app, tc, "NoArg".to_owned(), &ToolCallScope::MainAgent);
         assert_eq!(info.raw_input, Some(serde_json::json!({})));

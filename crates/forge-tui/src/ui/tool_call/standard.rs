@@ -95,7 +95,7 @@ pub(super) fn render_tool_call_body(tc: &ToolCallInfo, width: u16) -> Vec<Line<'
 }
 
 pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
-    tc.content.iter().any(|content| matches!(content, model::ToolCallContent::Diff(_)))
+    tc.content.iter().any(|content| matches!(content, model::RenderToolCallContent::Diff(_)))
 }
 
 pub(super) fn tool_call_effectively_collapsed(tc: &ToolCallInfo, tools_collapsed: bool) -> bool {
@@ -183,14 +183,14 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
 
     for content in &tc.content {
         match content {
-            model::ToolCallContent::Diff(diff) => {
+            model::RenderToolCallContent::Diff(diff) => {
                 let name = diff.path.file_name().map_or_else(
                     || diff.path.to_string_lossy().into_owned(),
                     |f| f.to_string_lossy().into_owned(),
                 );
                 return name;
             }
-            model::ToolCallContent::McpResource(resource) => {
+            model::RenderToolCallContent::McpResource(resource) => {
                 if let Some(path) = &resource.blob_saved_to {
                     return path.file_name().map_or_else(
                         || path.to_string_lossy().into_owned(),
@@ -203,8 +203,8 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                 }
                 return resource.uri.clone();
             }
-            model::ToolCallContent::Content(c) => {
-                if let model::ContentBlock::Text(text) = &c.content {
+            model::RenderToolCallContent::Content(c) => {
+                if let model::RenderContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
                     if matches!(
                         tc.status,
@@ -217,7 +217,7 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                     return truncate_summary_line(first, DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT);
                 }
             }
-            model::ToolCallContent::Terminal(_) => {}
+            model::RenderToolCallContent::Terminal(_) => {}
         }
     }
     String::new()
@@ -271,7 +271,7 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
 
     for content in &tc.content {
         match content {
-            model::ToolCallContent::Diff(diff) => {
+            model::RenderToolCallContent::Diff(diff) => {
                 let is_write = tc.sdk_tool_name == "Write";
                 // A Write has no old text, so the whole file arrives as
                 // one insert hunk and every line of it used to be
@@ -287,15 +287,15 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
                 let raw = if is_write { cap_write_diff_lines(raw) } else { raw };
                 lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
             }
-            model::ToolCallContent::McpResource(resource) => {
+            model::RenderToolCallContent::McpResource(resource) => {
                 lines.extend(render_mcp_resource_content(tc, resource));
             }
-            model::ToolCallContent::Content(c) => {
-                if let model::ContentBlock::Text(text) = &c.content {
+            model::RenderToolCallContent::Content(c) => {
+                if let model::RenderContentBlock::Text(text) = &c.content {
                     render_text_content(tc, &text.text, &mut lines);
                 }
             }
-            model::ToolCallContent::Terminal(_) => {}
+            model::RenderToolCallContent::Terminal(_) => {}
         }
     }
 

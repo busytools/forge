@@ -5,7 +5,7 @@ use super::super::{
 use crate::agent::model;
 
 pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChunk) {
-    let model::ContentBlock::Text(text) = chunk.content else {
+    let model::RenderContentBlock::Text(text) = chunk.content else {
         return;
     };
 

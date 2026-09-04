@@ -261,7 +261,7 @@ fn walk_assistant_content(
                 if is_subagent || text.is_empty() {
                     continue;
                 }
-                let chunk = model::ContentChunk::new(model::ContentBlock::Text(
+                let chunk = model::ContentChunk::new(model::RenderContentBlock::Text(
                     model::TextContent::new(text.clone()),
                 ));
                 super::streaming::handle_agent_message_chunk(app, chunk);
@@ -704,7 +704,7 @@ fn parent_tool_use_id_from_meta(meta: Option<&Value>) -> Option<String> {
 
 /// Insert or update an entry in `app.turn_state.tool_calls` for a
 /// `tool_use` content block, and dispatch the resulting initial
-/// `ToolCall` or `ToolCallUpdate` via the existing App handlers.
+/// `RenderToolCall` or `RenderToolCallUpdate` via the existing App handlers.
 fn apply_tool_use_block(
     app: &mut App,
     tool_use_id: &str,
@@ -753,7 +753,7 @@ fn apply_tool_use_block(
 /// Apply a tool_result content block to App state. Looks up the
 /// tool_call in `app.turn_state.tool_calls`, builds result fields
 /// via `agent::tooling::build_tool_result_fields`, and dispatches a
-/// `ToolCallUpdate` through the existing App handler.
+/// `RenderToolCallUpdate` through the existing App handler.
 fn apply_tool_result_block(
     app: &mut App,
     tool_use_id: &str,
@@ -805,7 +805,7 @@ fn stamp_cron_job_id_if_applicable(
 }
 
 /// Mutate `app.turn_state.tool_calls` with the supplied update
-/// fields, then dispatch a `ToolCallUpdate` via the existing App
+/// fields, then dispatch a `RenderToolCallUpdate` via the existing App
 /// handler.
 fn apply_tool_call_update(
     app: &mut App,
@@ -1236,7 +1236,7 @@ fn apply_local_command_output(app: &mut App, data: &Value) {
         return;
     }
     super::clear_compaction_state(app, true);
-    let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+    let chunk = model::ContentChunk::new(model::RenderContentBlock::Text(model::TextContent::new(
         content.to_owned(),
     )));
     super::streaming::handle_agent_message_chunk(app, chunk);
@@ -4627,9 +4627,9 @@ mod monitor_chat_block_tests {
 
         tool_updates::handle_tool_call_update_session(
             &mut app,
-            &model::ToolCallUpdate::new(
+            &model::RenderToolCallUpdate::new(
                 TOOL_USE_ID,
-                model::ToolCallUpdateFields {
+                model::RenderToolCallUpdateFields {
                     status: Some(model::ToolCallStatus::Completed),
                     raw_output: Some(serde_json::json!(
                         "Monitor started (task task_monitor, timeout 60000ms)."
@@ -4756,7 +4756,7 @@ mod monitor_chat_block_tests {
         // already-known id to the field-patch path instead.
         super::super::tool_calls::handle_tool_call(
             &mut app,
-            model::ToolCall::new(TOOL_USE_ID, "Monitor")
+            model::RenderToolCall::new(TOOL_USE_ID, "Monitor")
                 .status(model::ToolCallStatus::Completed)
                 .meta(serde_json::json!({"claudeCode": {"toolName": "Monitor"}}))
                 .raw_input(monitor_input()),
@@ -4876,9 +4876,9 @@ mod monitor_chat_block_tests {
         // The ack: the tool call goes terminal while the monitor runs on.
         tool_updates::handle_tool_call_update_session(
             &mut app,
-            &model::ToolCallUpdate::new(
+            &model::RenderToolCallUpdate::new(
                 TOOL_USE_ID,
-                model::ToolCallUpdateFields {
+                model::RenderToolCallUpdateFields {
                     status: Some(model::ToolCallStatus::Completed),
                     ..Default::default()
                 },

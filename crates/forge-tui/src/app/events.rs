@@ -5157,7 +5157,7 @@ mod tests {
 
         super::streaming::handle_agent_message_chunk(
             &mut app,
-            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+            model::ContentChunk::new(model::RenderContentBlock::Text(model::TextContent::new(
                 "streaming reply".to_owned(),
             ))),
         );
@@ -5286,7 +5286,7 @@ mod tests {
 
         super::streaming::handle_agent_message_chunk(
             &mut app,
-            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+            model::ContentChunk::new(model::RenderContentBlock::Text(model::TextContent::new(
                 "new turn".to_owned(),
             ))),
         );

@@ -8,7 +8,7 @@
 //! Execute / Diff / Monitor render expanded regardless of the
 //! directive.
 
-use crate::agent::model::ToolCallContent;
+use crate::agent::model::RenderToolCallContent;
 use crate::app::ToolCallInfo;
 use crate::ui::message::grouping::GroupCollapseLevel;
 
@@ -49,7 +49,7 @@ pub fn is_carved_out_from_global_directive(tc: &ToolCallInfo) -> bool {
     if tc.is_execute_tool() {
         return true;
     }
-    if tc.content.iter().any(|c| matches!(c, ToolCallContent::Diff(_))) {
+    if tc.content.iter().any(|c| matches!(c, RenderToolCallContent::Diff(_))) {
         return true;
     }
     if crate::ui::message::renders_as_lifecycle_block(tc) {
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn carve_out_true_for_diff_content() {
         let mut tc = make_tc("Read");
-        tc.content.push(model::ToolCallContent::Diff(model::Diff::new("/tmp/x.rs", "")));
+        tc.content.push(model::RenderToolCallContent::Diff(model::Diff::new("/tmp/x.rs", "")));
         assert!(is_carved_out_from_global_directive(&tc));
     }
 
