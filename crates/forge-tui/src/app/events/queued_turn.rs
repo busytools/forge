@@ -22,6 +22,13 @@ const FORCE_SETTLE_AFTER: Duration = Duration::from_secs(90);
 /// a re-open is that turn starting.
 pub(crate) fn note_turn_started(app: &mut App, key: &SessionKey) {
     let Some(bucket) = app.sessions.get_mut(key) else {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "queued_turn_started_dropped",
+            message = "queued-turn start dropped for an unknown session",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+        );
         return;
     };
     if !bucket.queued_turn_awaiting_start {
@@ -33,14 +40,24 @@ pub(crate) fn note_turn_started(app: &mut App, key: &SessionKey) {
 }
 
 /// Record a typed submit dispatched while the session was busy: one
-/// queued turn the settling paths must bridge.
+/// queued turn the settling paths must bridge. Inside a re-opened
+/// gap the awaiting flag and deadline stay armed - clearing them
+/// there would leave later sends with no desync backstop.
 pub(crate) fn note_submit_while_busy(app: &mut App) {
     let Some(bucket) = active_bucket_mut(app) else {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "queued_send_dropped",
+            message = "busy submit dropped for an unknown session",
+            outcome = "dropped",
+        );
         return;
     };
+    if !bucket.queued_turn_awaiting_start {
+        bucket.queued_turn_awaiting_start = false;
+        bucket.queued_turn_force_settle_at = None;
+    }
     bucket.queued_turn_sends = bucket.queued_turn_sends.saturating_add(1);
-    bucket.queued_turn_awaiting_start = false;
-    bucket.queued_turn_force_settle_at = None;
 }
 
 /// A fresh (idle-path) submit means any earlier queued-send bookkeeping
@@ -53,11 +70,19 @@ pub(crate) fn note_idle_submit(app: &mut App) {
 /// Result for the queued turn (cancel, error). A stale count would
 /// re-open Thinking at the next settle for a turn that is not coming.
 pub(crate) fn cancel(app: &mut App, key: &SessionKey) {
-    if let Some(bucket) = app.sessions.get_mut(key) {
-        bucket.queued_turn_sends = 0;
-        bucket.queued_turn_awaiting_start = false;
-        bucket.queued_turn_force_settle_at = None;
-    }
+    let Some(bucket) = app.sessions.get_mut(key) else {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "queued_turn_cancel_dropped",
+            message = "queued-send clear dropped for an unknown session",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+        );
+        return;
+    };
+    bucket.queued_turn_sends = 0;
+    bucket.queued_turn_awaiting_start = false;
+    bucket.queued_turn_force_settle_at = None;
 }
 
 /// Active-session turn-complete consult. `true` when a queued send
@@ -66,6 +91,11 @@ pub(crate) fn cancel(app: &mut App, key: &SessionKey) {
 pub(crate) fn reopen_queued(app: &mut App, key: &SessionKey) -> bool {
     if app.sessions.get(key).is_none_or(|s| s.queued_turn_sends == 0) {
         return false;
+    }
+    // Already re-opened and still waiting: a repeated turn-complete
+    // must not stack a second placeholder on top of the first.
+    if app.sessions.get(key).is_some_and(|s| s.queued_turn_awaiting_start) {
+        return true;
     }
     let Some(bucket) = app.sessions.get_mut(key) else {
         return false;
@@ -153,14 +183,18 @@ fn force_settle(app: &mut App, key: &SessionKey) {
     bucket.live_turn = crate::app::state::messages::LiveTurn::default();
     // The re-open's placeholder is empty at expiry: any content would
     // have arrived with an envelope, which clears the deadline first.
-    let empty_tail = bucket
-        .messages
-        .iter()
-        .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
-        .and_then(|idx| bucket.messages.get(idx).map(|msg| (idx, msg.blocks.is_empty())));
-    if let Some((idx, true)) = empty_tail {
-        bucket.messages.remove(idx);
-        bucket.message_retained_bytes.remove(idx);
+    // Only the active bucket gets the strip - background buckets never
+    // reach a re-open, and a background strip has no tracked-remove
+    // primitive to keep the bucket's indices honest.
+    if is_active {
+        let empty_tail = app
+            .messages()
+            .iter()
+            .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+            .and_then(|idx| app.messages().get(idx).map(|msg| (idx, msg.blocks.is_empty())));
+        if let Some((idx, true)) = empty_tail {
+            app.remove_message_tracked(idx);
+        }
     }
     super::set_bucket_lifecycle_state(app, key, crate::app::session::SessionLifecycleState::Idle);
     if is_active && matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
@@ -388,6 +422,46 @@ mod tests {
             !matches!(last.role, crate::app::MessageRole::Assistant) || !last.blocks.is_empty(),
             "the empty re-open placeholder is stripped"
         );
+    }
+
+    /// A submit typed inside the re-opened gap (status is Thinking,
+    /// so busy) must not disarm the force-settle backstop: the
+    /// awaiting flag and deadline stay armed, and the next envelope
+    /// still consumes exactly one send.
+    #[test]
+    fn gap_submit_keeps_the_desync_backstop_armed() {
+        let mut app = app_with_connection();
+        let key = active_session_key(&app);
+
+        app.status = AppStatus::Ready;
+        set_input(&mut app, "first");
+        crate::app::input_submit::submit_input(&mut app);
+        set_input(&mut app, "second");
+        crate::app::input_submit::submit_input(&mut app);
+        apply_session_update_turn_complete(&mut app, &key, None);
+        assert!(matches!(app.status, AppStatus::Thinking));
+
+        set_input(&mut app, "gap");
+        crate::app::input_submit::submit_input(&mut app);
+
+        {
+            let bucket = app.sessions.get(&key).expect("bucket present");
+            assert_eq!(bucket.queued_turn_sends, 2);
+            assert!(
+                bucket.queued_turn_awaiting_start,
+                "the gap submit must not clear the awaiting flag"
+            );
+            assert!(
+                bucket.queued_turn_force_settle_at.is_some(),
+                "the gap submit must not disarm the force-settle deadline"
+            );
+        }
+
+        super::super::sdk_message::handle_sdk_message(&mut app, assistant_envelope("msg_gap_turn"));
+
+        let bucket = app.sessions.get(&key).expect("bucket present");
+        assert_eq!(bucket.queued_turn_sends, 1, "the started turn consumes one send");
+        assert!(!bucket.queued_turn_awaiting_start);
     }
 
     /// An error ending the turn clears the queued-send state, so the
