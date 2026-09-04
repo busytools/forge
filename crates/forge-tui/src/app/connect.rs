@@ -170,7 +170,8 @@ fn create_app_impl(
     // Tier-based default for side panes: visible at Wide, hidden
     // elsewhere. Both panes use the same threshold (Wide tier) so
     // narrow / medium terminals start with a chat-only layout the
-    // user can grow via Ctrl+B / Ctrl+E if they want the chrome
+    // user can grow via the pane toggles (Cmd+Left / Cmd+Right,
+    // Ctrl+Left / Ctrl+Right elsewhere) if they want the chrome
     // back. Nothing is persisted - each forge launch re-derives
     // from the current terminal width.
     let (initial_term_width, _) = crossterm::terminal::size().unwrap_or((0, 0));
