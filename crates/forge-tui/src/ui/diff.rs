@@ -742,11 +742,25 @@ mod tests {
             80,
             Some(HighlightWindow { head_rows: 0, tail_rows: 0 }),
         );
-        assert_pictured(&raw_fallback, "before");
+        let raw_fallback_text = assert_pictured(&raw_fallback, "before");
+        assert!(
+            raw_fallback_text.contains('\u{2401}'),
+            "SOH must paint its Control Pictures glyph, not be dropped: {raw_fallback_text:?}"
+        );
 
-        // The unified-diff fallback.
-        let raw_unified = render_raw_unified_diff("+before\u{7f}after\n");
-        assert_pictured(&raw_unified, "before");
+        // The unified-diff fallback. The second row carries no marker,
+        // so it rides render_raw_diff_line's markerless arm.
+        let raw_unified = render_raw_unified_diff("+before\u{7f}after\nplain\u{1}line\n");
+        let raw_unified_text = assert_pictured(&raw_unified, "before");
+        assert!(
+            raw_unified_text.contains('\u{2421}'),
+            "DEL must paint its Control Pictures glyph, not be dropped: {raw_unified_text:?}"
+        );
+        let markerless_text = assert_pictured(&raw_unified, "plain");
+        assert!(
+            markerless_text.contains('\u{2401}'),
+            "a markerless row's SOH must paint its picture too: {markerless_text:?}"
+        );
     }
 
     #[test]
