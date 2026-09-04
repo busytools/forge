@@ -325,14 +325,14 @@ fn model_rows(
         DictateModelState::Fetched | DictateModelState::Ready => {
             ("\u{25cf}".to_owned(), Color::Green, "ready".to_owned(), dim())
         }
-        DictateModelState::Failed => (
+        DictateModelState::Failed(failure) => (
             "\u{26a0}".to_owned(),
             theme::STATUS_ERROR,
-            failure_label(snapshot.failure.as_ref()).to_owned(),
+            failure_label(failure).to_owned(),
             Style::default().fg(theme::STATUS_ERROR),
         ),
     };
-    let name_style = if model.state == DictateModelState::Failed {
+    let name_style = if matches!(model.state, DictateModelState::Failed(_)) {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
         Style::default()
@@ -355,19 +355,17 @@ fn model_rows(
     }
     // A cancelled transfer keeps its bar, so the screen can say how much
     // of the 3 GB is already on disk rather than only that it stopped.
-    if model.state == DictateModelState::Failed
-        && let Some(DictateFailure::Cancelled { kept, total }) = snapshot.failure.as_ref()
-    {
+    if let DictateModelState::Failed(DictateFailure::Cancelled { kept, total }) = &model.state {
         rows.push(bar_row(*kept, *total));
     }
     rows
 }
 
-fn failure_label(failure: Option<&DictateFailure>) -> &'static str {
+fn failure_label(failure: &DictateFailure) -> &'static str {
     match failure {
-        Some(DictateFailure::HashMismatch { .. }) => "bad hash",
-        Some(DictateFailure::Cancelled { .. }) => "cancelled",
-        _ => "failed",
+        DictateFailure::HashMismatch { .. } => "bad hash",
+        DictateFailure::Cancelled { .. } => "cancelled",
+        DictateFailure::Other { .. } => "failed",
     }
 }
 

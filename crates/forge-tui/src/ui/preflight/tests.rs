@@ -749,7 +749,14 @@ async fn forge_does_not_quit_on_cancel_until_the_copy_is_on_screen() {
         .expect("workspace");
     workspace.seed_test_account_state("Subspace", LoadingState::Ready);
     workspace.seed_test_dictate_snapshot(DictateSnapshot {
-        models: vec![model(DictateRole::Transcribing, "asr.gguf", DictateModelState::Failed)],
+        models: vec![model(
+            DictateRole::Transcribing,
+            "asr.gguf",
+            DictateModelState::Failed(DictateFailure::Cancelled {
+                kept: 612_000_000,
+                total: 1_558_162_944,
+            }),
+        )],
         failure: Some(DictateFailure::Cancelled { kept: 612_000_000, total: 1_558_162_944 }),
     });
     let mut app = App::test_default();
@@ -787,7 +794,14 @@ async fn forge_does_not_quit_on_cancel_until_the_copy_is_on_screen() {
 #[test]
 fn a_cancelled_transfer_does_not_read_as_a_finished_one() {
     let snapshot = DictateSnapshot {
-        models: vec![model(DictateRole::Transcribing, "asr.gguf", DictateModelState::Failed)],
+        models: vec![model(
+            DictateRole::Transcribing,
+            "asr.gguf",
+            DictateModelState::Failed(DictateFailure::Cancelled {
+                kept: 592_000_000,
+                total: 1_558_162_944,
+            }),
+        )],
         failure: Some(DictateFailure::Cancelled { kept: 592_000_000, total: 1_558_162_944 }),
     };
     let flat =
@@ -801,6 +815,57 @@ fn a_cancelled_transfer_does_not_read_as_a_finished_one() {
     assert!(
         bar.contains('\u{2591}'),
         "a bar with no empty cells left reads as a completed download; got {bar:?}",
+    );
+}
+
+/// A failed row wears its own cause, never the snapshot's. The reason
+/// used to live once on the screen-wide snapshot and be read through
+/// this per-model function, so a second failed row would have carried
+/// the first model's label and byte counts. Each row here is rendered
+/// against a snapshot naming the OTHER model's cause: nothing the row
+/// renders may come from it.
+#[test]
+fn a_failed_row_wears_its_own_cause_not_the_snapshots() {
+    let cancelled = DictateFailure::Cancelled { kept: 592_000_000, total: 1_558_162_944 };
+    let hash = DictateFailure::HashMismatch {
+        path: std::path::PathBuf::from("/models/s1-mini-f16.gguf"),
+        expected: "0370da4f1bae".to_owned(),
+        actual: "4f2b9c1a77e0".to_owned(),
+        size: 1_509_347_232,
+    };
+    let app = App::test_default();
+
+    let flat = flatten(&model_rows(
+        &app,
+        &model(DictateRole::Transcribing, "asr.gguf", DictateModelState::Failed(cancelled.clone())),
+        &DictateSnapshot { models: Vec::new(), failure: Some(hash.clone()) },
+        PICKER_WIDTH,
+    ));
+    let row = row_containing(&flat, "transcribing model");
+    assert!(
+        row.contains("cancelled"),
+        "the row names its own cause, not the snapshot's; got {flat:#?}",
+    );
+    let bar = row_containing(&flat, "\u{2588}");
+    assert!(
+        bar.contains("38%") && bar.contains("592 MB / 1.56 GB"),
+        "the bar carries this transfer's bytes, not the snapshot's; got {bar:?}",
+    );
+
+    let flat = flatten(&model_rows(
+        &app,
+        &model(DictateRole::Normalization, "s1-mini-f16.gguf", DictateModelState::Failed(hash)),
+        &DictateSnapshot { models: Vec::new(), failure: Some(cancelled) },
+        PICKER_WIDTH,
+    ));
+    let row = row_containing(&flat, "normalization model");
+    assert!(
+        row.contains("bad hash"),
+        "and the mirror: this row names its own cause too; got {flat:#?}",
+    );
+    assert!(
+        !flat.iter().any(|r| r.contains("1.56 GB")),
+        "another model's byte counts must not reach this row; got {flat:#?}",
     );
 }
 

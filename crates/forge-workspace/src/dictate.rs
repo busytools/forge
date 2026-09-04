@@ -349,9 +349,9 @@ pub enum DictateModelState {
     Loading,
     /// Loaded and usable.
     Ready,
-    /// The one that stopped preflight. Which way is in
-    /// [`DictateSnapshot::failure`].
-    Failed,
+    /// The one that stopped preflight, carrying its own reason. The
+    /// snapshot's copy is for the prose block under the rows.
+    Failed(DictateFailure),
 }
 
 /// Why preflight stopped.
@@ -401,6 +401,8 @@ pub struct DictateSnapshot {
     /// Set once, and never cleared for the run: nothing re-probes a
     /// failed model the way the account loader re-probes a bailed
     /// account, so clearing this one takes a config edit or a fresh run.
+    /// The failing row carries its own copy; this one is the screen-wide
+    /// prose block's.
     pub failure: Option<DictateFailure>,
 }
 
@@ -442,7 +444,7 @@ impl DictateState {
 
     fn fail(&self, failure: DictateFailure, file: Option<&str>) {
         if let Some(file) = file {
-            self.set_state(file, DictateModelState::Failed);
+            self.set_state(file, DictateModelState::Failed(failure.clone()));
         }
         self.snapshot.lock().failure = Some(failure);
     }
