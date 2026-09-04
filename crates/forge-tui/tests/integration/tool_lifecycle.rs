@@ -1863,6 +1863,78 @@ async fn a_roster_drain_settles_the_departed_roots_open_children() {
     );
 }
 
+/// The turn-error path clears the sticky markers BEFORE the Failed
+/// sweep: flipped the other way round, a marker set at `task_started`
+/// would exempt the failed turn's own root and child from settling and
+/// their cards would strand open on an errored turn.
+#[tokio::test]
+async fn a_turn_error_settles_a_sticky_root_despite_its_marker() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    // Dispatch + task_started; no roster frame yet, so the sticky
+    // marker is the only liveness signal in play.
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "bg scan",
+                "prompt": "bg scan",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "bg scan".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "x"}))],
+            "toolu_root",
+        ),
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_root").status,
+        model::ToolCallStatus::InProgress,
+        "precondition: the root card is open",
+    );
+
+    let key = active_session_key(&app);
+    send_client_event(
+        &mut app,
+        SessionUpdate::TurnError {
+            key,
+            message: "boom".to_owned(),
+            class: None,
+            terminal_reason: None,
+        },
+    );
+
+    assert_eq!(
+        tool_call_block(&app, "toolu_root").status,
+        model::ToolCallStatus::Failed,
+        "the sticky marker must not exempt the errored turn's root; got {:?}",
+        tool_call_block(&app, "toolu_root").status,
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_child").status,
+        model::ToolCallStatus::Failed,
+        "nor its child; got {:?}",
+        tool_call_block(&app, "toolu_child").status,
+    );
+}
+
 /// A `Task`/`Agent` dispatch is the MAIN agent's own call, so a turn that
 /// opens with one owns its turn like any other. Classifying the root as
 /// subagent-scoped bars it from binding and reproduces the finished-turn
@@ -2003,6 +2075,20 @@ async fn a_subagent_child_follows_its_root_not_the_last_assistant() {
 /// agent's live child frames keep naming the card. The view must derive
 /// a root from such a parent too (#808), and drain once nothing under
 /// it runs.
+///
+/// The fixture encodes the premise the PR flags as unverified: a child
+/// frame's `parent_tool_use_id` is the ORIGINAL dispatch's tool-use id
+/// (read off subagents/*.meta.json). A live capture showing children
+/// naming a different id leaves this derivation parentless and the
+/// resumed agent invisible again - the capture task decides.
+///
+/// Composition note: in this resume state nothing restores liveness.
+/// The replay walk synthesizes only User / Assistant envelopes, so no
+/// `task_started`, roster row, or session-map entry is re-delivered,
+/// and the first turn boundary sweeps the live child and drains the
+/// section. Whether the resumed CLI announces its agents is what the
+/// live capture pins; a `task_started` would re-arm the sticky marker
+/// and a roster row re-arms it through the session map.
 #[tokio::test]
 async fn a_resumed_unscoped_root_surfaces_through_its_children_frames() {
     let mut app = test_app();

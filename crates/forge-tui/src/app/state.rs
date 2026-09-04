@@ -8089,7 +8089,9 @@ mod tests {
     /// whole scope map - that cost scales with the map #791 just
     /// bounded. The debug record in `backgrounded_alive_with_children`
     /// is the probe: a sweep site must not emit it, while the sweep
-    /// still spares exactly the live work.
+    /// still spares exactly the live work. The probe is introduced by
+    /// this PR, so this test is mutation-verified rather than red on
+    /// main - deleting the eager call cannot exist as a prior state.
     #[test]
     fn the_turn_boundary_sweep_does_not_build_the_eager_exempt_set() {
         use std::sync::{Arc, Mutex};
@@ -10287,6 +10289,38 @@ mod tests {
             Vec::new(),
         );
         check("every root terminal", &all_terminal);
+
+        // Resumed shape (#808): the root card replays unscoped and a
+        // live child frame names it. The two walks are separately
+        // implemented, so the new derivation is agreed on exactly here.
+        let resumed_with = |child_status: model::ToolCallStatus| {
+            let mut app = App::test_default();
+            let mut child = make_subagent_child_tc("tu-resumed-c", "Bash", "sleep");
+            child.status = child_status;
+            app.active_messages_mut().push(ChatMessage::new(
+                MessageRole::Assistant,
+                vec![MessageBlock::ToolCall(Box::new(make_subagent_root_tc(
+                    "tu-resumed",
+                    "Explore",
+                    "resumed",
+                    model::ToolCallStatus::Completed,
+                )))],
+            ));
+            app.register_tool_call_scope(
+                "tu-resumed-c".to_owned(),
+                ToolCallScope::SubagentChild { parent_tool_use_id: "tu-resumed".to_owned() },
+            );
+            app.active_messages_mut().push(ChatMessage::new(
+                MessageRole::Assistant,
+                vec![MessageBlock::ToolCall(Box::new(child))],
+            ));
+            app
+        };
+        check("resumed unscoped root, live child", &resumed_with(model::ToolCallStatus::InProgress));
+        check(
+            "resumed unscoped root, settled child",
+            &resumed_with(model::ToolCallStatus::Completed),
+        );
 
         let mut mixed = App::test_default();
         push_subagent_session(
