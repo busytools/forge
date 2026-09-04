@@ -3417,6 +3417,21 @@ impl App {
             })
     }
 
+    /// The positive form: the card exists AND has reached a terminal
+    /// status. An id with no card in the message list has no evidence
+    /// either way and reads as not settled (#791).
+    fn tool_call_is_settled(&self, id: &str) -> bool {
+        self.lookup_tool_call(id)
+            .and_then(|(mi, bi)| self.messages().get(mi)?.blocks.get(bi))
+            .is_some_and(|block| match block {
+                MessageBlock::ToolCall(tc) => !matches!(
+                    tc.status,
+                    model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                ),
+                _ => false,
+            })
+    }
+
     pub fn clear_tool_scope_tracking(&mut self) {
         // Preserve scope tracking for still-running backgrounded roots and
         // their children so a backgrounded subagent stays identifiable in
@@ -3450,10 +3465,26 @@ impl App {
                 tool_call_id = %id,
             );
         }
+        // A child whose own card is terminal cannot be swept into anything,
+        // so holding its scope only grows the map with the subagent's total
+        // tool-call count (#791). A live grandchild behind such a child is
+        // still spared: a terminal-yet-running nested Task carries its own
+        // roster row and is a live root in `alive` itself.
+        let settled_children: HashSet<String> = self
+            .tool_call_scopes()
+            .iter()
+            .filter(|(id, scope)| {
+                matches!(
+                    scope,
+                    crate::app::state::types::ToolCallScope::SubagentChild { .. }
+                ) && self.tool_call_is_settled(id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
         self.tool_call_scopes_mut().retain(|id, scope| match scope {
             crate::app::state::types::ToolCallScope::SubagentRoot => alive.contains(id.as_str()),
             crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } => {
-                alive.contains(parent_tool_use_id.as_str())
+                alive.contains(parent_tool_use_id.as_str()) && !settled_children.contains(id)
             }
             crate::app::state::types::ToolCallScope::MainAgent => false,
         });
@@ -7862,6 +7893,120 @@ mod tests {
         app.clear_tool_scope_tracking();
         assert!(app.tool_call_scope("toolu_root").is_none(), "completed root scope dropped");
         assert!(app.tool_call_scope("toolu_child").is_none(), "orphaned child scope dropped");
+    }
+
+    /// A backgrounded subagent's children used to hold their scopes until
+    /// the ROOT settled, so the scope map grew with the subagent's total
+    /// tool-call count (#791). A child whose own card is terminal cannot
+    /// be swept into anything - sweeps only touch open calls - so its
+    /// scope drops at the turn boundary; the root and still-open
+    /// children stay.
+    #[test]
+    fn terminal_children_drop_their_scope_at_the_turn_boundary() {
+        use crate::app::state::types::{BackgroundTask, ToolCallScope};
+
+        let mut app = make_test_app();
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_root", model::ToolCallStatus::Completed));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_open_child", model::ToolCallStatus::InProgress));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_done_child", model::ToolCallStatus::Completed));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_dead_child", model::ToolCallStatus::Failed));
+        for (idx, id) in
+            ["toolu_root", "toolu_open_child", "toolu_done_child", "toolu_dead_child"]
+                .into_iter()
+                .enumerate()
+        {
+            app.index_tool_call(id.to_owned(), idx, 0);
+        }
+        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        for id in ["toolu_open_child", "toolu_done_child", "toolu_dead_child"] {
+            app.tool_call_scopes_mut().insert(
+                id.to_owned(),
+                ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
+            );
+        }
+        app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-root".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: String::new(),
+        }];
+
+        app.clear_tool_scope_tracking();
+
+        assert!(app.tool_call_scope("toolu_root").is_some(), "live root kept");
+        assert!(
+            app.tool_call_scope("toolu_open_child").is_some(),
+            "the open child keeps its scope - it still needs the sweep exemption",
+        );
+        assert!(
+            app.tool_call_scope("toolu_done_child").is_none(),
+            "a terminal child's scope drops at the boundary",
+        );
+        assert!(
+            app.tool_call_scope("toolu_dead_child").is_none(),
+            "a failed child's scope drops too",
+        );
+    }
+
+    /// The pin behind the rule above: a terminal nested Task may drop its
+    /// scope, but a grandchild still running under it must not lose its
+    /// sweep exemption - a nested Task that is terminal-yet-backgrounded
+    /// carries its own roster row, so the grandchild resolves to IT as a
+    /// live root, not through the dropped scope.
+    #[test]
+    fn a_live_grandchild_is_not_stranded_behind_its_terminal_nested_parent() {
+        use crate::app::state::types::{BackgroundTask, ToolCallScope};
+
+        let mut app = make_test_app();
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_root", model::ToolCallStatus::Completed));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_nested", model::ToolCallStatus::Completed));
+        app.active_messages_mut().push(assistant_tool_message(
+            "toolu_gchild",
+            model::ToolCallStatus::InProgress,
+        ));
+        for (idx, id) in ["toolu_root", "toolu_nested", "toolu_gchild"].into_iter().enumerate() {
+            app.index_tool_call(id.to_owned(), idx, 0);
+        }
+        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        app.tool_call_scopes_mut().insert(
+            "toolu_nested".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
+        );
+        app.tool_call_scopes_mut().insert(
+            "toolu_gchild".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_nested".to_owned() },
+        );
+        app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
+        app.insert_session_task_mapping("task-nested".to_owned(), "toolu_nested".to_owned());
+        *app.background_tasks_mut() = vec![
+            BackgroundTask {
+                task_id: "task-root".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: String::new(),
+            },
+            BackgroundTask {
+                task_id: "task-nested".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: String::new(),
+            },
+        ];
+
+        app.clear_tool_scope_tracking();
+        assert!(
+            app.tool_call_scope("toolu_gchild").is_some(),
+            "the grandchild's scope survives its parent's drop",
+        );
+        assert_eq!(
+            app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed),
+            0,
+            "and the sweep spares it while it runs",
+        );
     }
 
     #[test]
