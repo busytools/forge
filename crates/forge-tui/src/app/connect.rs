@@ -347,7 +347,8 @@ pub fn start_connection(app: &mut App) {
     // And every account has to have settled, because that is the
     // condition preflight hands over on. The plan excludes a bailed
     // account, so a released spawn routes sessions to the accounts
-    // that can take them.
+    // that can take them, when any exist - with every account bailed
+    // the plan is empty and the spawn can fall back on a dead one.
     //
     // Neither half waits on the dictation weights, so the models load
     // alongside the session rather than delaying it.
@@ -658,12 +659,14 @@ mod tests {
     /// so holding boot waits on nothing that could change it.
     ///
     /// **The plan half is UNKILLABLE from a test, and that is a property
-    /// of the code rather than a gap.** Every route to a terminal state
-    /// runs `recompute_plan_if_ready`, so no test can construct
-    /// plan-absent-with-accounts-settled - the state exists only inside
+    /// of the code rather than a gap.** Production reaches every
+    /// terminal state through the loader, which recomputes the plan on
+    /// each one, so plan-absent-with-accounts-settled exists only inside
     /// the real two-lock window between the map being published and the
-    /// plan being written. Dropping `!workspace_ready` therefore passes,
-    /// and no test would change that. Do not add one to chase it.
+    /// plan being written. The test seeding deliberately skips the
+    /// recompute, so a seeded plan-absent state proves nothing about
+    /// production. Dropping `!workspace_ready` therefore passes, and no
+    /// test would change that. Do not add one to chase it.
     #[tokio::test(flavor = "current_thread")]
     async fn the_plan_and_settled_are_both_required() {
         let config_dir = tempfile::tempdir().expect("tempdir");
