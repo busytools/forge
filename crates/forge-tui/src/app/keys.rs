@@ -592,11 +592,11 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        // Word left: Alt+Left on macOS, Ctrl+Left elsewhere.
+        // Word left: Alt+Left on every platform (WORD_NAV_MOD).
         (KeyCode::Left, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
             app.input_mut().textarea_move_word_left()
         }
-        // Word right: Alt+Right on macOS, Ctrl+Right elsewhere.
+        // Word right: Alt+Right on every platform.
         (KeyCode::Right, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
             app.input_mut().textarea_move_word_right()
         }
@@ -810,7 +810,7 @@ pub(super) fn is_clipboard_paste_shortcut(key: KeyEvent) -> bool {
 
 fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        // Delete word backward: Alt+Backspace on macOS, Ctrl+Backspace elsewhere.
+        // Delete word backward: Alt+Backspace on every platform.
         (KeyCode::Backspace, m)
             if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
@@ -819,7 +819,7 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
             }
             app.input_mut().textarea_delete_word_before()
         }
-        // Delete word forward: Alt+Delete on macOS, Ctrl+Delete elsewhere.
+        // Delete word forward: Alt+Delete on every platform.
         (KeyCode::Delete, m)
             if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
