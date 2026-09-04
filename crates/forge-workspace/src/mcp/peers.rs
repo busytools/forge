@@ -157,10 +157,11 @@ impl Tool for ListAgents {
          in-flight peer-message counters (asks awaiting reply, both \
          incoming and outgoing). \
          \
-         FAMILY NOTE: the peers__* tools never create sessions - they \
-         address other projects' already-existing agents. Spawning a \
-         worker in YOUR project is workers__spawn, a separate family; if \
-         you are here to delegate to a new worker, emit that instead. \
+         FAMILY NOTE: the peers__* tools never create a worker in YOUR \
+         project; the most they start is another configured project's \
+         own lead. Spawning a worker in YOUR project is workers__spawn, \
+         a separate family; if you are here to delegate to a new worker, \
+         emit that instead. \
          \
          CROSS-PROJECT RULE (mutations only): whenever the user asks you \
          to CHANGE state in a project other than your own - edit files, \
@@ -193,7 +194,11 @@ impl Tool for ListAgents {
     async fn call(&self, _input: ToolInput) -> ToolOutput {
         let peers = self.facade.list_peers();
         match serde_json::to_string_pretty(&peers) {
-            Ok(json) => ToolOutput::text(json),
+            Ok(json) => ToolOutput::text(format!(
+                "other projects' agents; these tools never spawn a worker - \
+                 to delegate to a new worker in your own project, emit \
+                 workers__spawn\n{json}"
+            )),
             Err(err) => ToolOutput {
                 blocks: vec![forge_sdk::mcp::tool::ToolOutputBlock {
                     text: format!("peer-list serialization failed: {err}"),
@@ -710,6 +715,14 @@ mod tests {
         }
     }
 
+    /// The result text leads with the spawn steer; the JSON payload
+    /// follows it.
+    fn list_agents_payload(text: &str) -> &str {
+        let (steer, payload) = text.split_once('\n').expect("steer line before the payload");
+        assert!(steer.contains("workers__spawn"), "the result steers spawn intent");
+        payload
+    }
+
     #[tokio::test]
     async fn list_agents_returns_all_peers_as_json_array() {
         let mock = MockWorkspaceFacade::new();
@@ -728,7 +741,7 @@ mod tests {
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error);
         let parsed: serde_json::Value =
-            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+            serde_json::from_str(list_agents_payload(&output.blocks[0].text)).expect("valid JSON");
         let arr = parsed.as_array().expect("output is an array");
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["name"], "forge");
@@ -745,7 +758,7 @@ mod tests {
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error);
         let parsed: serde_json::Value =
-            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+            serde_json::from_str(list_agents_payload(&output.blocks[0].text)).expect("valid JSON");
         assert_eq!(parsed.as_array().unwrap().len(), 0);
     }
 
@@ -756,6 +769,10 @@ mod tests {
         let tool = ListAgents { facade };
         assert_eq!(tool.name(), "peers__list_agents");
         assert!(tool.description().to_lowercase().contains("list"));
+        assert!(
+            tool.description().contains("workers__spawn"),
+            "the family note steers spawn intent at the workers family",
+        );
         let schema = tool.input_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"].as_object().unwrap().is_empty());
