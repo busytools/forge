@@ -257,12 +257,15 @@ pub fn update_availability(
 
 /// What forge remembers after a plugin moved. `marketplace_ref_before`
 /// is the marketplace clone's HEAD before the update - the ref a
-/// rollback checks out.
+/// rollback checks out. `cwd_raw` is where the update ran, so a
+/// rollback of a project/local entry works on the same install.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PluginUpdateRecord {
     pub plugin_id: String,
     pub marketplace: String,
     pub scope: String,
+    #[serde(default)]
+    pub cwd_raw: String,
     pub from_version: Option<String>,
     pub to_version: Option<String>,
     pub marketplace_ref_before: Option<String>,

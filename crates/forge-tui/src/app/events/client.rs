@@ -292,14 +292,40 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             });
         }
         SessionUpdate::PluginsUpdateRunProgress { cwd_raw, run } => {
-            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_update_run_progress_dropped", |app| {
+            // A boot auto-update run is app-scoped: it borrows a
+            // project cwd that need not match the focused session, so
+            // its events bypass the cwd gate.
+            if run.trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
                 crate::app::plugins::apply_update_run_progress(app, run);
-            });
+            } else {
+                dispatch_if_cwd_matches(
+                    app,
+                    &cwd_raw,
+                    "plugins_update_run_progress_dropped",
+                    |app| {
+                        crate::app::plugins::apply_update_run_progress(app, run);
+                    },
+                );
+            }
         }
         SessionUpdate::PluginsUpdateRunFinished { cwd_raw, run, snapshot, claude_path } => {
-            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_update_run_finished_dropped", |app| {
+            if run.trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
                 crate::app::plugins::apply_update_run_finished(app, &run, snapshot, claude_path);
-            });
+            } else {
+                dispatch_if_cwd_matches(
+                    app,
+                    &cwd_raw,
+                    "plugins_update_run_finished_dropped",
+                    |app| {
+                        crate::app::plugins::apply_update_run_finished(
+                            app,
+                            &run,
+                            snapshot,
+                            claude_path,
+                        );
+                    },
+                );
+            }
         }
         SessionUpdate::PluginsRollbackSucceeded {
             cwd_raw,

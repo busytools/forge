@@ -37,7 +37,7 @@ similar = { workspace = true }
 syntect = { workspace = true }
 time = { workspace = true }
 time-tz = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }

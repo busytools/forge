@@ -86,6 +86,7 @@ mod tests {
             plugin_id: plugin_id.to_owned(),
             marketplace: "probe-market".to_owned(),
             scope: "user".to_owned(),
+            cwd_raw: "/proj".to_owned(),
             from_version: Some("0.1.0".to_owned()),
             to_version: Some(to_version.to_owned()),
             marketplace_ref_before: Some("2d7d4c6".to_owned()),
