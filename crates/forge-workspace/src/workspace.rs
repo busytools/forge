@@ -1483,6 +1483,7 @@ impl Workspace {
             .map(|k| AccountLoadingRow {
                 display_name: k.0.clone(),
                 state: accounts.loading_state(k),
+                last_error: accounts.usage_error(k),
                 config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
                 auth: if accounts.provider_or_anthropic(k).uses_base_url() {
                     crate::views::AccountAuth::BaseUrl
@@ -6790,6 +6791,17 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_account_state(&self, account: &str, state: crate::account::LoadingState) {
         self.accounts.lock().set_loading(&AccountKey(account.to_owned()), state);
+    }
+
+    /// Record a probe failure on `account`, so a cross-crate test can
+    /// render bailed-row copy keyed on why the account bailed. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_account_failure(
+        &self,
+        account: &str,
+        status: crate::account::UsageFetchStatus,
+    ) {
+        self.accounts.lock().set_last_error(&AccountKey(account.to_owned()), status, None);
     }
 
     /// Replace the dictation preflight snapshot, so a cross-crate test

@@ -565,6 +565,22 @@ mod tests {
         assert_eq!(usage_url(None), OAUTH_USAGE_URL);
     }
 
+    /// A down endpoint must surface as the Network class and the probe
+    /// must return rather than hang: preflight's bounded-failure path
+    /// leans on both. Port 1 on loopback refuses the connect at once.
+    #[tokio::test]
+    async fn a_down_endpoint_is_a_network_failure_and_the_probe_returns() {
+        let creds = OauthCredentials { access_token: "test-token".to_owned(), expires_at: None };
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), probe(&creds, Some("http://127.0.0.1:1")))
+                .await
+                .expect("the probe returns against an unreachable endpoint");
+        assert!(
+            matches!(result, Err(OauthUsageError::Network(_))),
+            "a refused connect is the Network class, not a status or decode; got {result:?}"
+        );
+    }
+
     #[test]
     fn usage_url_uses_base_url_override_and_trims_trailing_slash() {
         assert_eq!(

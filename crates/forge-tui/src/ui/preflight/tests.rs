@@ -57,8 +57,21 @@ fn account_with(
     AccountLoadingRow {
         display_name: name.to_owned(),
         state,
+        last_error: None,
         config_dir: std::path::PathBuf::from(dir),
         auth,
+    }
+}
+
+fn bailed_with_error(
+    name: &str,
+    dir: &str,
+    auth: forge_workspace::AccountAuth,
+    last_error: forge_workspace::UsageFetchStatus,
+) -> AccountLoadingRow {
+    AccountLoadingRow {
+        last_error: Some(last_error),
+        ..account_with(name, LoadingState::Bailed, dir, auth)
     }
 }
 
@@ -227,6 +240,108 @@ fn the_repair_instruction_differs_by_account_class_and_the_retry_line_does_not()
         );
         assert!(text.contains("Or drop the account"), "and so is the second exit; got:\n{text}");
     }
+}
+
+/// An account whose endpoint is down settles `Bailed` on its own - the
+/// loader retries, hits its cap, and stops. Holding preflight after
+/// that buys nothing: the launchpad's gate already counts `Bailed` as
+/// terminal, the plan excludes the account, and the pollers keep
+/// re-probing, so degraded rides along instead of holding boot.
+#[tokio::test]
+async fn preflight_hands_over_when_an_account_settles_bailed() {
+    let config_dir = tempfile::tempdir().expect("tempdir");
+    let forge = config_dir.path().join("forge");
+    std::fs::create_dir_all(&forge).expect("forge/");
+    std::fs::write(
+        forge.join("forge.toml"),
+        "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
+         [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+    )
+    .expect("write forge.toml");
+    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+        .await
+        .expect("workspace");
+    let mut app = App::test_default();
+    app.workspace = Some(std::sync::Arc::new(workspace));
+    app.active_view = crate::app::ActiveView::Launchpad;
+    app.startup_project = Some("forge".to_owned());
+
+    crate::app::preflight::tick(&mut app);
+    assert!(!app.preflight_done, "a still-loading account holds preflight");
+
+    app.workspace
+        .as_ref()
+        .expect("workspace")
+        .seed_test_account_state("Subspace", LoadingState::Bailed);
+    crate::app::preflight::tick(&mut app);
+    assert!(app.preflight_done, "a settled account must not hold preflight forever");
+    assert_eq!(
+        app.active_view,
+        crate::app::ActiveView::Chat,
+        "the handover goes where the invocation was headed, degraded or not",
+    );
+}
+
+/// The state column is the typed failure: a probe that could not reach
+/// the endpoint at all is not an auth problem, and a red `auth failed`
+/// over a healthy token sends the reader to fix the wrong thing.
+#[test]
+fn an_unreachable_endpoint_does_not_read_as_an_auth_failure() {
+    let row_text = |row: &AccountLoadingRow| {
+        account_row(row, PICKER_WIDTH).spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+    };
+    let unreachable = row_text(&bailed_with_error(
+        "Subspace",
+        "/x",
+        forge_workspace::AccountAuth::BaseUrl,
+        forge_workspace::UsageFetchStatus::NetworkFailed,
+    ));
+    let auth = row_text(&account("Subspace", LoadingState::Bailed, "/x"));
+
+    assert!(
+        unreachable.trim_end().ends_with("unreachable"),
+        "a network-class bail reads as unreachable; got {unreachable:?}",
+    );
+    assert!(
+        auth.trim_end().ends_with("auth failed"),
+        "an auth-class bail, or one with no recorded cause, keeps the old label; got {auth:?}",
+    );
+}
+
+/// The unreachable screen repairs the endpoint, not the token: the
+/// credential is fine, and `Fix the auth` would send a reader with a
+/// down proxy off to re-enter a working key.
+#[test]
+fn an_unreachable_bail_names_the_endpoint_not_the_auth() {
+    let text = flatten(&bail_detail(
+        &App::test_default(),
+        &bailed_with_error(
+            "Subspace",
+            "/home/x/.claude-subspace",
+            forge_workspace::AccountAuth::BaseUrl,
+            forge_workspace::UsageFetchStatus::NetworkFailed,
+        ),
+        PICKER_WIDTH,
+    ))
+    .join("\n");
+
+    assert!(
+        text.contains("Subspace cannot be reached"),
+        "the screen says the endpoint is down; got:\n{text}",
+    );
+    assert!(
+        text.contains("forge starts without it"),
+        "and that forge no longer holds boot for it; got:\n{text}",
+    );
+    assert!(
+        text.contains("ANTHROPIC_BASE_URL") && !text.contains("Fix the auth"),
+        "the repair is the endpoint, never the auth; got:\n{text}",
+    );
+    assert!(
+        text.contains("Or drop the account") && text.contains("[[accounts]]"),
+        "dropping the account stays as the second way out; got:\n{text}",
+    );
 }
 
 /// `Bailed` is red rather than the shipped warning yellow. On the one

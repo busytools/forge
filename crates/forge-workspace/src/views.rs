@@ -175,6 +175,10 @@ pub struct AccountLoadingRow {
     /// forge.toml `[[accounts]]` display name.
     pub display_name: String,
     pub state: crate::account::LoadingState,
+    /// The classified outcome of the last failed probe attempt. What
+    /// lets a bailed row say `unreachable` when the endpoint is simply
+    /// down rather than `auth failed`.
+    pub last_error: Option<crate::account::UsageFetchStatus>,
     /// `CLAUDE_CONFIG_DIR` for this account, which is what preflight
     /// puts in the `/login` line when it will not authenticate.
     pub config_dir: std::path::PathBuf,

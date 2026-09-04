@@ -2,7 +2,7 @@
 //!
 //! Preflight is the first thing forge renders on every route (the
 //! renderer lives in [`crate::ui::preflight`]). It runs once per forge
-//! run and, once every account has authenticated and every configured
+//! run and, once every account has settled and every configured
 //! dictation model is loaded, hands over to wherever the invocation was
 //! headed: chat when forge was given a project, the project picker when
 //! it was not.

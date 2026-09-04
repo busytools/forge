@@ -2,14 +2,15 @@
 //!
 //! Two sibling sections, `Accounts` and `Dictation`, each row carrying
 //! its own state. Shown once per forge run, on every route; nothing
-//! proceeds until every account is `Ready` and every configured model
+//! proceeds until every account has settled and every configured model
 //! is loaded, so neither the project picker nor a chat session can be
 //! reached mid-load.
 //!
-//! **Preflight completes only on `Ready`, never on `Bailed`.** forge
-//! will not start while an account in `forge.toml` cannot, so the
-//! failure states name both ways out rather than leaving the reader on
-//! a screen with nothing to press.
+//! **Preflight completes when every account settles, not only when
+//! every account is `Ready`.** A bailed account rides along as
+//! degraded: its row names the failure, the assignment plan excludes
+//! it, and the pollers keep re-probing it, so holding the screen waits
+//! on nothing that could change it.
 //!
 //! Repairing the auth needs no restart; dropping the account does. Both
 //! pollers re-probe a bailed account throughout preflight, so a repair
@@ -26,7 +27,7 @@
 
 use forge_workspace::{
     AccountAuth, AccountLoadingRow, DictateBind, DictateFailure, DictateModel, DictateModelState,
-    DictateSnapshot, LoadingState,
+    DictateSnapshot, LoadingState, UsageFetchStatus,
 };
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -58,7 +59,7 @@ const PANEL_BOTTOM_MARGIN: u16 = 1;
 /// apart on what green means.
 ///
 /// `Bailed` is [`theme::STATUS_ERROR`] rather than the warning yellow:
-/// on the one screen that can stop forge starting, loading and failed
+/// on the one screen that gates forge starting, loading and failed
 /// must not differ only by glyph. The project row's own account chip
 /// uses the same red for the same state.
 pub(super) fn account_glyph(state: LoadingState) -> (&'static str, Color) {
@@ -69,19 +70,26 @@ pub(super) fn account_glyph(state: LoadingState) -> (&'static str, Color) {
     }
 }
 
-/// `true` when every account has authenticated. Bailed is terminal and
-/// never satisfies it, which is what stops forge starting over an
-/// account that cannot spawn a session.
-pub fn accounts_ready(app: &App) -> bool {
+/// `true` when every account has settled into a terminal state -
+/// `Ready` or `Bailed`. A bailed account no longer holds boot: the
+/// assignment plan already excludes it and the pollers keep re-probing
+/// it, so the screen would be waiting on nothing that could change it.
+/// The preflight handover and the boot-spawn release in `app::connect`
+/// share this one condition.
+pub fn accounts_settled(app: &App) -> bool {
     app.workspace.as_ref().is_some_and(|ws| {
         let rows = ws.account_loading_snapshot();
-        !rows.is_empty() && rows.iter().all(|row| row.state == LoadingState::Ready)
+        !rows.is_empty()
+            && rows
+                .iter()
+                .all(|row| matches!(row.state, LoadingState::Ready | LoadingState::Bailed))
     })
 }
 
 /// `true` once preflight has nothing left to wait for.
 pub fn is_complete(app: &App) -> bool {
-    accounts_ready(app) && app.workspace.as_ref().is_some_and(|ws| ws.dictate_snapshot().is_ready())
+    accounts_settled(app)
+        && app.workspace.as_ref().is_some_and(|ws| ws.dictate_snapshot().is_ready())
 }
 
 /// Render the preflight screen over the whole frame.
@@ -248,11 +256,20 @@ fn account_row(row: &AccountLoadingRow, width: u16) -> Line<'static> {
     let (state, state_style, name_style) = match row.state {
         LoadingState::Ready => ("ready", dim(), Style::default()),
         LoadingState::Loading | LoadingState::Refreshing => ("resolving", dim(), Style::default()),
-        LoadingState::Bailed => (
-            "auth failed",
-            Style::default().fg(theme::STATUS_ERROR),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
+        LoadingState::Bailed => {
+            // The state column carries the classified failure: a probe
+            // that never reached the endpoint is not an auth problem.
+            let state = if row.last_error == Some(UsageFetchStatus::NetworkFailed) {
+                "unreachable"
+            } else {
+                "auth failed"
+            };
+            (
+                state,
+                Style::default().fg(theme::STATUS_ERROR),
+                Style::default().add_modifier(Modifier::BOLD),
+            )
+        }
     };
     status_row(glyph, color, &row.display_name, name_style, state, state_style, width)
 }
@@ -351,18 +368,19 @@ fn failure_label(failure: Option<&DictateFailure>) -> &'static str {
     }
 }
 
-/// The account that will not authenticate, and both ways past it.
+/// The account that failed, and both ways past it.
 ///
 /// Both, in that order, because they are not equivalent: a repair made
 /// out of band is picked up in place, while dropping the account edits
 /// config, which is read at boot and so needs a restart. Naming only one
 /// would leave a reader who cannot take that route with nowhere to go.
 ///
-/// The retry line states no interval on purpose, and is the same in
-/// both. A keychain account recovers on the 30 s recovery poll; a
-/// base-url account is skipped by that poll and recovers on the 60 s
-/// usage poll, subject to probe backoff. No single number is true of
-/// both, while "no restart needed" is true of each.
+/// The head and the repair line key on the failure class: a probe that
+/// never reached the endpoint is not an auth problem. The auth branch's
+/// retry line states no interval on purpose, and is the same in both
+/// account classes - a keychain account recovers on the 30 s recovery
+/// poll, a base-url one on the 60 s usage poll, so no single number is
+/// true of both, while "no restart needed" is true of each.
 fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'static>> {
     let error = Style::default().fg(theme::STATUS_ERROR);
     let head = Style::default().add_modifier(Modifier::BOLD);
@@ -370,43 +388,78 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
         .workspace
         .as_ref()
         .map_or_else(|| "forge.toml".to_owned(), |ws| home_relative(&ws.config_path()));
+    let unreachable = row.last_error == Some(UsageFetchStatus::NetworkFailed);
 
-    let mut lines = wrapped(
-        2,
-        &format!(
-            "{} will not start a session, and forge will not start while an account in \
-             forge.toml cannot.",
-            row.display_name
-        ),
-        error,
-        width,
-    );
+    let mut lines = if unreachable {
+        wrapped(
+            2,
+            &format!(
+                "{} cannot be reached. forge starts without it and keeps retrying.",
+                row.display_name
+            ),
+            error,
+            width,
+        )
+    } else {
+        wrapped(
+            2,
+            &format!(
+                "{} will not start a session. forge starts without it; fix the auth and it \
+                 recovers in place.",
+                row.display_name
+            ),
+            error,
+            width,
+        )
+    };
     lines.push(Line::default());
-    lines.push(text_row(2, "Fix the auth", head, width));
-    // The only thing that differs by account class. A base-url account
-    // has no keychain entry for `/login` to write - its credential is
-    // the token beside it in `[accounts.env]`.
-    match row.auth {
-        AccountAuth::Keychain => {
-            lines.extend(command_rows(
-                4,
-                &format!("CLAUDE_CONFIG_DIR={} claude", home_relative(&row.config_dir)),
-                width,
-            ));
-            lines.push(text_row(4, "/login", Style::default(), width));
+    if unreachable {
+        lines.push(text_row(2, "Check the endpoint", head, width));
+        match row.auth {
+            AccountAuth::Keychain => {
+                lines.push(text_row(
+                    4,
+                    "the probe could not reach the Anthropic API",
+                    Style::default(),
+                    width,
+                ));
+            }
+            AccountAuth::BaseUrl => {
+                lines.push(text_row(
+                    4,
+                    "ANTHROPIC_BASE_URL in [accounts.env], or the endpoint itself",
+                    Style::default(),
+                    width,
+                ));
+            }
         }
-        AccountAuth::BaseUrl => {
-            lines.push(text_row(
-                4,
-                "ANTHROPIC_AUTH_TOKEN in [accounts.env]",
-                Style::default(),
-                width,
-            ));
+    } else {
+        lines.push(text_row(2, "Fix the auth", head, width));
+        // The only thing that differs by account class. A base-url account
+        // has no keychain entry for `/login` to write - its credential is
+        // the token beside it in `[accounts.env]`.
+        match row.auth {
+            AccountAuth::Keychain => {
+                lines.extend(command_rows(
+                    4,
+                    &format!("CLAUDE_CONFIG_DIR={} claude", home_relative(&row.config_dir)),
+                    width,
+                ));
+                lines.push(text_row(4, "/login", Style::default(), width));
+            }
+            AccountAuth::BaseUrl => {
+                lines.push(text_row(
+                    4,
+                    "ANTHROPIC_AUTH_TOKEN in [accounts.env]",
+                    Style::default(),
+                    width,
+                ));
+            }
         }
+        // Without this a reader who fixes their auth has no way of knowing
+        // whether to restart, and the answer is no.
+        lines.push(text_row(4, "forge retries on its own - no restart needed", dim(), width));
     }
-    // Without this a reader who fixes their auth has no way of knowing
-    // whether to restart, and the answer is no.
-    lines.push(text_row(4, "forge retries on its own - no restart needed", dim(), width));
     lines.push(Line::default());
     lines.push(text_row(2, "Or drop the account", head, width));
     lines.push(text_row(4, "delete its [[accounts]] block from", Style::default(), width));
