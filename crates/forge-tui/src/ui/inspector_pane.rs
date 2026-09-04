@@ -696,13 +696,14 @@ const PROCESSES_MEMORY_WIDTH_THRESHOLD: u16 = 36;
 
 /// Append the MCP SERVERS section: header (with the `▦` open-view
 /// affordance at the right edge, matching the GIT header's `🦉`) + one
-/// tree per server. Each tree is the name line carrying the status
-/// glyph, the DIM detail line under it, and - for a subprocess-backed
-/// server - the process line with memory + pid, exactly as the old
-/// PROCESSES tree rendered a matched server's backing process.
+/// self-contained block per server. Each block is an indented bold
+/// name line carrying the status glyph, with its detail line and -
+/// for a subprocess-backed server - the process line with memory +
+/// pid connected as a small tree under the name; servers connect to
+/// nothing outside their own block.
 ///
-/// Rows pack tight (no blanks between servers) so the tree reads as
-/// one connected block.
+/// Rows pack tight (no blanks between servers); the bold indented
+/// names anchor each block.
 fn append_mcp_servers_section(
     lines: &mut Vec<Line<'static>>,
     rows: &[crate::app::mcp_servers::McpServerRow],
@@ -725,37 +726,29 @@ fn append_mcp_servers_section(
     lines.push(Line::default());
 
     let include_memory = width >= PROCESSES_MEMORY_WIDTH_THRESHOLD;
-    let server_count = rows.len();
-    for (idx, row) in rows.iter().enumerate() {
-        let is_last = idx + 1 == server_count;
-        // No vertical trunk: the children hang under the name on blank
-        // space, so every server's block reads the same.
-        let trunk = "      ";
-        let connector = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
+    for row in rows.iter() {
         let (glyph, glyph_color) = mcp_status_glyph(row.status);
         let name_chrome = usize::from(PANE_PAD)
-            + 3 // connector
+            + 2 // block indent
             + 1 // space before the glyph
             + glyph.chars().count()
             + usize::from(PANE_PAD); // right gutter
         let name = truncate_or_pass(&row.name, row_text_budget(usize::from(width), name_chrome));
         lines.push(Line::from(vec![
-            Span::raw(" ".repeat(usize::from(PANE_PAD))),
-            Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)),
+            Span::raw(" ".repeat(usize::from(PANE_PAD) + 2)),
             Span::styled(name, Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" "),
             Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
         ]));
 
-        let child_chrome = usize::from(PANE_PAD) + 6 + 3 + usize::from(PANE_PAD); // pad + trunk + connector + gutter
+        let child_chrome = usize::from(PANE_PAD) + 4 + 3 + usize::from(PANE_PAD); // pad + block indent + connector + gutter
         let budget = row_text_budget(usize::from(width), child_chrome);
         // Detail line: ├─ when the process line follows it, └─ when the
-        // detail is the tree's last child.
+        // detail is the block's last child.
         let detail_connector =
             if row.process.is_some() { "\u{251C}\u{2500} " } else { "\u{2514}\u{2500} " };
         lines.push(Line::from(vec![
-            Span::raw(" ".repeat(usize::from(PANE_PAD))),
-            Span::styled(trunk.to_owned(), Style::default().fg(theme::DIM)),
+            Span::raw(" ".repeat(usize::from(PANE_PAD) + 4)),
             Span::styled(detail_connector.to_owned(), Style::default().fg(theme::DIM)),
             Span::styled(truncate_or_pass(&row.detail, budget), Style::default().fg(theme::DIM)),
         ]));
@@ -776,8 +769,7 @@ fn append_mcp_servers_section(
             };
             let text_budget = budget.saturating_sub(suffix.chars().count());
             lines.push(Line::from(vec![
-                Span::raw(" ".repeat(usize::from(PANE_PAD))),
-                Span::styled(trunk.to_owned(), Style::default().fg(theme::DIM)),
+                Span::raw(" ".repeat(usize::from(PANE_PAD) + 4)),
                 Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
                 Span::styled(
                     truncate_or_pass(&process.command, text_budget),
@@ -4113,16 +4105,16 @@ mod tests {
         let texts: Vec<String> = lines.iter().map(line_text).collect();
 
         let forge_idx = texts.iter().position(|t| t.contains("forge")).expect("forge row renders");
-        assert_eq!(texts[forge_idx], " \u{251C}\u{2500} forge \u{25CF}", "name + glyph line");
+        assert_eq!(texts[forge_idx], "   forge \u{25CF}", "indented name + glyph line");
         assert_eq!(
             texts[forge_idx + 1],
-            " \u{2502}   \u{2514}\u{2500} sdk \u{00B7} 18 tools",
+            "     \u{2514}\u{2500} sdk \u{00B7} 18 tools",
             "sdk scope with the tool count, no process line",
         );
 
         let greptile_idx =
             texts.iter().position(|t| t.contains("greptile")).expect("pending server renders");
-        assert_eq!(texts[greptile_idx], " \u{2514}\u{2500} greptile \u{25CC}", "pending glyph");
+        assert_eq!(texts[greptile_idx], "   greptile \u{25CC}", "pending glyph");
         assert_eq!(
             texts[greptile_idx + 1],
             "     \u{2514}\u{2500} user \u{00B7} pending",
@@ -4158,7 +4150,7 @@ mod tests {
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         let idx =
             texts.iter().position(|t| t.contains("jetbrains")).expect("failed server renders");
-        assert_eq!(texts[idx], " \u{2514}\u{2500} jetbrains \u{2717}", "failed glyph");
+        assert_eq!(texts[idx], "   jetbrains \u{2717}", "failed glyph");
         assert_eq!(
             texts[idx + 1],
             "     \u{2514}\u{2500} project \u{00B7} SSE error: Non-200 status code (502)",
@@ -4225,7 +4217,7 @@ mod tests {
         append_body(&mut lines, &app, 40, &[]);
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         let idx = texts.iter().position(|t| t.contains("context7")).expect("server row renders");
-        assert_eq!(texts[idx], " \u{2514}\u{2500} context7 \u{25CF}");
+        assert_eq!(texts[idx], "   context7 \u{25CF}");
         assert_eq!(texts[idx + 1], "     \u{251C}\u{2500} user \u{00B7} 2 tools");
         assert_eq!(
             texts[idx + 2],
@@ -4434,6 +4426,10 @@ mod tests {
             lines.iter().find(|l| line_text(l).contains("playwright-local")).expect("name row");
         let name_row = line_text(name_line);
         assert!(name_row.contains('\u{25CF}'), "the glyph survives next to the name");
+        assert!(
+            !name_row.contains('\u{251C}') && !name_row.contains('\u{2514}'),
+            "servers are individual blocks: no connector joins one server to another",
+        );
         let name_span = name_line
             .spans
             .iter()
@@ -4449,8 +4445,12 @@ mod tests {
             .find(|l| line_text(l).contains("user \u{00B7} 24 tools"))
             .expect("detail row");
         assert!(
-            !line_text(detail_line).contains('\u{2502}'),
-            "no vertical trunk hangs between a server's name and its children",
+            lines.iter().all(|l| !line_text(l).contains('\u{2502}')),
+            "no vertical bar anywhere in the section: servers are individual blocks",
+        );
+        assert!(
+            line_text(detail_line).starts_with("     \u{251C}\u{2500} "),
+            "children nest two columns inside their block's indented name",
         );
     }
 
