@@ -67,16 +67,39 @@ pub(crate) fn note_turn_started(app: &mut App, key: &SessionKey) {
 /// Record a typed submit dispatched while the session was busy: one
 /// queued turn the settling paths must bridge.
 pub(crate) fn note_submit_while_busy(app: &mut App) {
-    let Some(bucket) = active_bucket_mut(app) else {
+    if let Some(key) = app.active_session_key.clone() {
+        note_queued_dispatch(app, &key);
+    }
+}
+
+/// Record a workspace-originated dispatch (cron fire, peer or gotify
+/// delivery, kick) that landed while the session's turn was in
+/// flight: the same queued-send count a busy typed submit arms,
+/// keyed instead of active-scoped.
+pub(crate) fn note_queued_dispatch(app: &mut App, key: &SessionKey) {
+    let Some(bucket) = app.sessions.get_mut(key) else {
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "queued_send_dropped",
-            message = "busy submit dropped for an unknown session",
+            message = "queued send dropped for an unknown session",
             outcome = "dropped",
-            active_session_key = ?app.active_session_key.as_ref().map(|k| k.as_str().to_owned()),
+            session_key = %key.as_str(),
         );
         return;
     };
+    // The workspace busy-check can lose the race to the in-flight
+    // turn's own Result (same channel, FIFO); counting into a settled
+    // bucket phantom-reopens for the prompt's fresh turn.
+    if !matches!(bucket.lifecycle_state, crate::app::session::SessionLifecycleState::Running) {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "queued_send_dropped",
+            message = "queued send dropped: the bucket has no live turn",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+        );
+        return;
+    }
     bucket.queued_turn_sends = bucket.queued_turn_sends.saturating_add(1);
 }
 
@@ -290,6 +313,7 @@ fn active_bucket_mut(app: &mut App) -> Option<&mut crate::app::session::UiSessio
 
 #[cfg(test)]
 mod tests {
+    use super::super::apply_session_update;
     use super::super::handle_runtime_session_state_update;
     use super::super::session::apply_session_update_connected;
     use super::super::turn::{
@@ -301,6 +325,7 @@ mod tests {
     use crate::app::session::SessionLifecycleState;
     use forge_primitives::AgentCommand;
     use forge_primitives::{AssistantEnvelope, ContentBlock, Message};
+    use forge_workspace::SessionUpdate;
 
     fn app_with_connection() -> App {
         let mut app = App::test_default();
@@ -772,6 +797,134 @@ mod tests {
         let bucket = app.sessions.get(&key).expect("bucket present");
         assert_eq!(bucket.queued_turn_sends, 1, "the started turn consumes one send");
         assert!(!bucket.queued_turn_awaiting_start);
+    }
+
+    /// The workspace's own dispatches (cron, peer, gotify, kick) arrive
+    /// as `PromptQueuedWhileBusy` and count into the keyed bucket -
+    /// active or background, live turns both - while an unknown key
+    /// must not mint one.
+    #[test]
+    fn prompt_queued_while_busy_counts_into_the_keyed_bucket() {
+        use crate::app::session::UiSession;
+        let mut app = App::test_default();
+        let active_key = SessionKey::from_str_for_test("active-queued");
+        let bg_key = SessionKey::from_str_for_test("background-queued");
+        app.sessions.insert(active_key.clone(), UiSession::new(active_key.clone()));
+        app.sessions.insert(bg_key.clone(), UiSession::new(bg_key.clone()));
+        for key in [&active_key, &bg_key] {
+            app.sessions.get_mut(key).expect("seeded").lifecycle_state =
+                SessionLifecycleState::Running;
+        }
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PromptQueuedWhileBusy { key: active_key.clone() },
+        );
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PromptQueuedWhileBusy { key: bg_key.clone() },
+        );
+
+        assert_eq!(
+            app.sessions.get(&active_key).expect("active present").queued_turn_sends,
+            1,
+            "the active bucket counts one workspace dispatch",
+        );
+        assert_eq!(
+            app.sessions.get(&bg_key).expect("bg present").queued_turn_sends,
+            1,
+            "the background bucket counts one workspace dispatch",
+        );
+
+        let unknown = SessionKey::from_str_for_test("no-such-session");
+        apply_session_update(&mut app, SessionUpdate::PromptQueuedWhileBusy { key: unknown });
+        assert!(
+            !app.sessions.contains_key(&SessionKey::from_str_for_test("no-such-session")),
+            "an unknown key must not mint a bucket",
+        );
+    }
+
+    /// The race the helper cannot rule out: the busy-check passes, then
+    /// the in-flight turn's Result settles the bucket before the signal
+    /// lands (same channel, FIFO). Counting then would phantom-reopen
+    /// for the prompt's own fresh turn and misattribute the 90s expiry,
+    /// so a settled (Idle) bucket drops the signal.
+    #[test]
+    fn prompt_queued_while_busy_after_the_settle_is_dropped() {
+        let mut app = app_with_connection();
+        let key = active_session_key(&app);
+
+        app.status = AppStatus::Ready;
+        set_input(&mut app, "first");
+        crate::app::input_submit::submit_input(&mut app);
+        apply_session_update_turn_complete(&mut app, &key, None);
+        assert!(matches!(app.status, AppStatus::Ready), "fixture: the turn settled");
+        assert_eq!(
+            app.sessions.get(&key).expect("bucket").lifecycle_state,
+            SessionLifecycleState::Idle,
+            "fixture: the settle idled the bucket",
+        );
+
+        apply_session_update(&mut app, SessionUpdate::PromptQueuedWhileBusy { key: key.clone() });
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(bucket.queued_turn_sends, 0, "a settled bucket drops the signal");
+        assert_eq!(bucket.lifecycle_state, SessionLifecycleState::Idle, "no re-open");
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "the settle is not suppressed by a dropped signal",
+        );
+    }
+
+    /// The full workspace-side ride: a cron echo plus its
+    /// `PromptQueuedWhileBusy` arrive while a typed turn runs. The
+    /// turn-complete re-opens Thinking, the envelope consumes one
+    /// send, a second queued dispatch re-opens again, and the final
+    /// settle is Ready once the count is exhausted.
+    #[test]
+    fn workspace_queued_dispatch_bridges_like_a_queued_send() {
+        let mut app = app_with_connection();
+        let key = active_session_key(&app);
+
+        app.status = AppStatus::Ready;
+        set_input(&mut app, "first");
+        crate::app::input_submit::submit_input(&mut app);
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::CronPromptAppended {
+                session_id: key.as_str().to_owned(),
+                text: "morning".to_owned(),
+            },
+        );
+        apply_session_update(&mut app, SessionUpdate::PromptQueuedWhileBusy { key: key.clone() });
+
+        let bucket = app.sessions.get(&key).expect("bucket present");
+        assert_eq!(
+            bucket.queued_turn_sends, 1,
+            "the mid-turn workspace dispatch counts as one queued send",
+        );
+
+        apply_session_update_turn_complete(&mut app, &key, None);
+        assert!(
+            matches!(app.status, AppStatus::Thinking),
+            "turn-complete re-opens Thinking for the queued workspace dispatch",
+        );
+
+        super::super::sdk_message::handle_sdk_message(&mut app, assistant_envelope("msg_cron"));
+        apply_session_update(&mut app, SessionUpdate::PromptQueuedWhileBusy { key: key.clone() });
+        apply_session_update_turn_complete(&mut app, &key, None);
+        assert!(
+            matches!(app.status, AppStatus::Thinking),
+            "the second dispatch is still queued; re-open again",
+        );
+
+        super::super::sdk_message::handle_sdk_message(&mut app, assistant_envelope("msg_cron_2"));
+        apply_session_update_turn_complete(&mut app, &key, None);
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "final settle is Ready once the count is exhausted",
+        );
     }
 
     /// An error ending the turn clears the queued-send state, so the

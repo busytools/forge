@@ -271,6 +271,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::TurnError { key, message, class, terminal_reason } => {
             turn::apply_session_update_turn_error(app, &key, &message, class, terminal_reason);
         }
+        SessionUpdate::PromptQueuedWhileBusy { key } => {
+            super::queued_turn::note_queued_dispatch(app, &key);
+        }
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_dropped", |app| {
                 crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);

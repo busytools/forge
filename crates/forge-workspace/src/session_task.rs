@@ -926,11 +926,7 @@ impl SessionTask {
             // so the user-turn ordering is natural.
             crate::spawn::push_peer_user_turn_into_chat(&workspace, &self.key, &wrapped);
             let text = wrapped.to_prose();
-            if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
-                key: self.key.clone(),
-                text,
-                attachments: Vec::new(),
-            }) {
+            if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, text) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     key = %self.key.as_str(),
@@ -953,11 +949,7 @@ impl SessionTask {
         for cron in workspace.take_pending_crons_for_session(&self.key, cwd) {
             let text = crate::spawn::missed_cron_text(&cron.text, cron.missed);
             crate::spawn::push_cron_prompt_into_chat(&workspace, &self.key, &text);
-            if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
-                key: self.key.clone(),
-                text,
-                attachments: Vec::new(),
-            }) {
+            if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, text) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     key = %self.key.as_str(),
@@ -987,11 +979,9 @@ impl SessionTask {
             // plain user turn (mirrors the running-target path in
             // spawn::deliver_gotify_message).
             crate::spawn::push_gotify_notification_into_chat(&workspace, &self.key, &notification);
-            if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
-                key: self.key.clone(),
-                text: notification.to_prose(),
-                attachments: Vec::new(),
-            }) {
+            if let Err(err) =
+                workspace.dispatch_workspace_prompt(&self.key, notification.to_prose())
+            {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     key = %self.key.as_str(),
