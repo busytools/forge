@@ -10316,7 +10316,10 @@ mod tests {
             ));
             app
         };
-        check("resumed unscoped root, live child", &resumed_with(model::ToolCallStatus::InProgress));
+        check(
+            "resumed unscoped root, live child",
+            &resumed_with(model::ToolCallStatus::InProgress),
+        );
         check(
             "resumed unscoped root, settled child",
             &resumed_with(model::ToolCallStatus::Completed),
