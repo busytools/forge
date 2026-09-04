@@ -736,9 +736,11 @@ mod tests {
             "a form feed must paint its Control Pictures glyph, not be dropped: {highlighted_text:?}"
         );
 
-        // The non-highlighted Span::raw fallback.
+        // The non-highlighted Span::raw fallback. C1 rides in beside the
+        // SOH so its replacement-character fallback is pinned through a
+        // full render too.
         let raw_fallback = render_diff(
-            &model::Diff::new("tmp.rs", "before\u{1}after\n"),
+            &model::Diff::new("tmp.rs", "before\u{1}\u{85}after\n"),
             80,
             Some(HighlightWindow { head_rows: 0, tail_rows: 0 }),
         );
@@ -746,6 +748,10 @@ mod tests {
         assert!(
             raw_fallback_text.contains('\u{2401}'),
             "SOH must paint its Control Pictures glyph, not be dropped: {raw_fallback_text:?}"
+        );
+        assert!(
+            raw_fallback_text.contains('\u{fffd}'),
+            "C1 must fall back to the replacement character, not ride raw: {raw_fallback_text:?}"
         );
 
         // The unified-diff fallback. The second row carries no marker,
