@@ -24,6 +24,7 @@ pub use forge_primitives::account::Provider;
 pub use forge_primitives::usage::oauth::{
     OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow,
 };
+use forge_primitives::usage::zai::{QuotaLimitData, QuotaLimitResponse};
 
 use super::oauth_credentials::{OauthCredentials, load_oauth_credentials, refresh_via_cli_spawn};
 
@@ -171,6 +172,13 @@ pub enum ProbePlan {
     /// windows, so nothing about this plan can go through the
     /// window-shaped mappers.
     OpenRouterKey { base_url: String, bearer: String },
+    /// Z.ai GLM coding plan: probe
+    /// `{host_root}/api/monitor/usage/quota/limit` where `host_root`
+    /// is the scheme+host of the account's `ANTHROPIC_BASE_URL` (the
+    /// base itself carries `/api/anthropic` for the chat API; the
+    /// monitor paths live off the site root). The key is sent raw,
+    /// without a Bearer prefix.
+    ZaiMonitor { base_url: String, bearer: String },
 }
 
 /// Derive the [`ProbePlan`] for an account from its declared
@@ -204,6 +212,7 @@ pub fn probe_plan<S: std::hash::BuildHasher>(
     let (base_url, bearer) = (base_url.to_owned(), bearer.to_owned());
     match provider {
         Provider::Openrouter => ProbePlan::OpenRouterKey { base_url, bearer },
+        Provider::Zai => ProbePlan::ZaiMonitor { base_url, bearer },
         Provider::Anthropic | Provider::Codex => ProbePlan::BaseUrl { base_url, bearer },
     }
 }
@@ -299,6 +308,122 @@ pub async fn probe_openrouter_key(
         429 => Err(OauthUsageError::RateLimited { retry_after }),
         _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
     }
+}
+
+/// The scheme+host of an account's `ANTHROPIC_BASE_URL` - everything
+/// before the first path segment. The Z.ai monitor paths live off the
+/// site root (`https://api.z.ai`), never under the `/api/anthropic`
+/// chat prefix the base carries.
+fn zai_monitor_host(base_url: &str) -> &str {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let after = trimmed.split_once("://").map_or(trimmed, |(_, rest)| rest);
+    let host = after.split('/').next().unwrap_or_default();
+    if host.is_empty() {
+        return trimmed;
+    }
+    &trimmed[..trimmed.len() - after.len() + host.len()]
+}
+
+fn zai_monitor_url(base_url: &str) -> String {
+    format!("{}/api/monitor/usage/quota/limit", zai_monitor_host(base_url))
+}
+
+fn zai_headers(key: &str) -> Result<HeaderMap, OauthUsageError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    let auth = HeaderValue::from_str(key)
+        .map_err(|error| OauthUsageError::Network(format!("bad auth header: {error}")))?;
+    headers.insert(AUTHORIZATION, auth);
+    Ok(headers)
+}
+
+/// One round-trip against `{host_root}/api/monitor/usage/quota/limit`
+/// for a Z.ai GLM coding plan account. Shares [`OauthUsageError`] with
+/// the window probes so the loader and poller classify failures the
+/// same way regardless of provider.
+pub async fn probe_zai_monitor(
+    base_url: &str,
+    bearer: &str,
+) -> Result<QuotaLimitData, OauthUsageError> {
+    let headers = zai_headers(bearer)?;
+    let client = crate::http_trust::with_extra_roots(
+        reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
+    )
+    .build()
+    .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
+
+    let response = client
+        .get(zai_monitor_url(base_url))
+        .send()
+        .await
+        .map_err(|error| OauthUsageError::Network(error.to_string()))?;
+
+    let status = response.status().as_u16();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
+
+    if status == 200 {
+        tracing::trace!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "zai_monitor_response",
+            status,
+            outcome = "ok",
+            body_bytes = body.len(),
+        );
+    } else {
+        tracing::warn!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "zai_monitor_response",
+            status,
+            outcome = "non_ok",
+            body_suffix = %truncated_body_suffix(&body),
+        );
+    }
+
+    match status {
+        200 => zai_quota_from_body(&body),
+        401 | 403 => Err(OauthUsageError::Unauthorized(status)),
+        429 => Err(OauthUsageError::RateLimited { retry_after: None }),
+        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+    }
+}
+
+/// Parse a Z.ai monitor body. The HTTP layer carries no verdict - a
+/// wrong key and a wrong path arrive as HTTP 200 - so the envelope is
+/// decoded unconditionally and keyed on `success`/`code`. A body-level
+/// 401 (wrong key) surfaces as [`OauthUsageError::Unauthorized`] so it
+/// bails the boot probe like a real auth rejection; every other
+/// failure keeps the envelope's `msg`.
+fn zai_quota_from_body(body: &[u8]) -> Result<QuotaLimitData, OauthUsageError> {
+    if String::from_utf8_lossy(body).trim().is_empty() {
+        return Err(OauthUsageError::Decode(
+            "Z.ai monitor answered 200 with an empty body".to_owned(),
+        ));
+    }
+    let envelope: QuotaLimitResponse = serde_json::from_slice(body).map_err(|error| {
+        OauthUsageError::Decode(format!("Z.ai monitor body did not decode: {error}"))
+    })?;
+    let msg = envelope.msg.as_deref().unwrap_or("no msg");
+    if !envelope.success {
+        if envelope.code == Some(401) {
+            return Err(OauthUsageError::Unauthorized(401));
+        }
+        return Err(OauthUsageError::Decode(format!(
+            "Z.ai monitor reported failure (code {}): {msg}",
+            envelope.code.unwrap_or(0),
+        )));
+    }
+    if envelope.code != Some(200) {
+        return Err(OauthUsageError::Decode(format!(
+            "Z.ai monitor reported code {}: {msg}",
+            envelope.code.unwrap_or(0),
+        )));
+    }
+    envelope
+        .data
+        .ok_or_else(|| OauthUsageError::Decode("Z.ai monitor 200 carried no data".to_owned()))
 }
 
 /// One round-trip against `/api/oauth/usage` using `credentials.access_token`.
@@ -542,6 +667,107 @@ mod tests {
                 bearer: String::new(),
             },
         );
+    }
+
+    #[test]
+    fn probe_plan_zai_probes_its_monitor_host() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "https://api.z.ai/api/anthropic".to_owned());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "zai-key".to_owned());
+        assert_eq!(
+            probe_plan(Provider::Zai, &env),
+            ProbePlan::ZaiMonitor {
+                base_url: "https://api.z.ai/api/anthropic".to_owned(),
+                bearer: "zai-key".to_owned(),
+            },
+            "zai must not share Codex's windowed /api/oauth/usage plan",
+        );
+    }
+
+    #[test]
+    fn zai_monitor_url_derives_the_host_root() {
+        assert_eq!(
+            zai_monitor_url("https://api.z.ai/api/anthropic"),
+            "https://api.z.ai/api/monitor/usage/quota/limit",
+        );
+        assert_eq!(
+            zai_monitor_url("https://api.z.ai/api/anthropic/"),
+            "https://api.z.ai/api/monitor/usage/quota/limit",
+            "trailing slash trimmed so base and base/ behave identically",
+        );
+    }
+
+    #[test]
+    fn zai_headers_send_the_key_raw_without_a_bearer_prefix() {
+        let headers = zai_headers("zai-key").expect("headers");
+        let auth = headers
+            .get(AUTHORIZATION)
+            .expect("auth header set")
+            .to_str()
+            .expect("ascii header value");
+        assert_eq!(auth, "zai-key", "the key goes out raw; no Bearer prefix");
+    }
+
+    /// The verified fresh-account shape: HTTP 200, envelope green, two
+    /// CREDIT_LIMIT windows, 5h entry without a nextResetTime.
+    #[test]
+    fn zai_quota_from_body_maps_the_fresh_account_envelope() {
+        let body = br#"{
+            "code": 200,
+            "msg": "success",
+            "data": {
+                "limits": [
+                    {"type":"CREDIT_LIMIT","unit":3,"number":5,"usage":28000,
+                     "remaining":28000,"percentage":0,"currentValue":0},
+                    {"type":"CREDIT_LIMIT","unit":6,"number":1,"usage":140000,
+                     "remaining":140000,"percentage":0,"currentValue":0,
+                     "nextResetTime":1757000000000}
+                ],
+                "level": "max"
+            },
+            "success": true
+        }"#;
+        let data = zai_quota_from_body(body).expect("a green envelope parses");
+        assert_eq!(data.limits.len(), 2);
+        assert_eq!(data.level.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn zai_quota_from_body_fails_on_wrong_key_inside_a_200() {
+        let err = zai_quota_from_body(
+            br#"{"code":401,"msg":"token expired or incorrect","success":false}"#,
+        )
+        .expect_err("wrong key fails");
+        assert!(
+            matches!(err, OauthUsageError::Unauthorized(401)),
+            "a body-level 401 must classify as unauthorized, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn zai_quota_from_body_fails_on_wrong_path_inside_a_200() {
+        let err = zai_quota_from_body(br#"{"code":500,"msg":"404 NOT_FOUND","success":false}"#)
+            .expect_err("a wrong path fails");
+        assert!(err.to_string().contains("404 NOT_FOUND"), "the msg reaches the log: {err}");
+    }
+
+    /// A silent empty 200 (observed on the model-usage endpoint) is a
+    /// failure, not a bill of zero.
+    #[test]
+    fn zai_quota_from_body_fails_on_empty_body() {
+        let err = zai_quota_from_body(b"").expect_err("empty body fails");
+        assert!(err.to_string().contains("empty"), "got {err}");
+    }
+
+    /// The success verdict is `success: true && code == 200`; a body
+    /// with the right code but no success flag is not a green envelope.
+    #[test]
+    fn zai_quota_from_body_requires_the_success_flag() {
+        let err = zai_quota_from_body(
+            br#"{"code":200,"msg":"success","data":{"limits":[],"level":"max"}}"#,
+        )
+        .expect_err("no success flag fails");
+        assert!(matches!(err, OauthUsageError::Decode(_)), "got {err:?}");
     }
 
     #[test]

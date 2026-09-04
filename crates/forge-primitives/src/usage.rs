@@ -13,10 +13,11 @@ use serde::{Deserialize, Serialize};
 
 pub mod oauth;
 pub mod openrouter;
+pub mod zai;
 
 /// Origin of a [`UsageSnapshot`], and with it which half of the
-/// snapshot carries data: `Oauth` fills the windows, `OpenRouterKey`
-/// fills [`UsageSnapshot::spend`].
+/// snapshot carries data: `Oauth` and `ZaiMonitor` fill the windows,
+/// `OpenRouterKey` fills [`UsageSnapshot::spend`].
 ///
 /// Load-bearing across a config change: the snapshot is cached and
 /// rehydrated, so an account whose `provider` was edited still has a
@@ -27,6 +28,7 @@ pub mod openrouter;
 pub enum UsageSourceKind {
     Oauth,
     OpenRouterKey,
+    ZaiMonitor,
 }
 
 impl UsageSourceKind {
@@ -34,6 +36,7 @@ impl UsageSourceKind {
         match self {
             Self::Oauth => "oauth",
             Self::OpenRouterKey => "openrouter-key",
+            Self::ZaiMonitor => "zai-monitor",
         }
     }
 }

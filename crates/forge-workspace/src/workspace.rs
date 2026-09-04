@@ -2121,6 +2121,11 @@ impl Workspace {
                         .await
                         .map(forge_agent::cloud::oauth::snapshot_from_openrouter_key)
                 }
+                forge_agent::cloud::oauth_usage::ProbePlan::ZaiMonitor { base_url, bearer } => {
+                    forge_agent::cloud::oauth_usage::probe_zai_monitor(base_url, bearer)
+                        .await
+                        .map(forge_agent::cloud::oauth::snapshot_from_zai_quota)
+                }
             };
             match fetch_result {
                 Ok(mapped) => match mapped {
@@ -6100,6 +6105,11 @@ fn account_budget(
                 resets_at: account::binding_reset_at(snapshot),
             }
         }
+        (Provider::Zai, UsageSourceKind::ZaiMonitor) => crate::views::AccountBudget::Subscription {
+            five_hour_util: account::five_hour_util(snapshot),
+            seven_day_util: account::seven_day_util(snapshot),
+            resets_at: account::binding_reset_at(snapshot),
+        },
         (Provider::Openrouter, UsageSourceKind::OpenRouterKey) => {
             match snapshot.spend.as_ref() {
                 Some(spend) => crate::views::AccountBudget::Api {
@@ -6113,8 +6123,12 @@ fn account_budget(
                 None => unreadable_snapshot(account, provider, snapshot, unknown),
             }
         }
-        (Provider::Anthropic | Provider::Codex, UsageSourceKind::OpenRouterKey)
-        | (Provider::Openrouter, UsageSourceKind::Oauth) => {
+        (
+            Provider::Anthropic | Provider::Codex,
+            UsageSourceKind::OpenRouterKey | UsageSourceKind::ZaiMonitor,
+        )
+        | (Provider::Zai, UsageSourceKind::OpenRouterKey | UsageSourceKind::Oauth)
+        | (Provider::Openrouter, UsageSourceKind::ZaiMonitor | UsageSourceKind::Oauth) => {
             unreadable_snapshot(account, provider, snapshot, unknown)
         }
     }
@@ -7241,6 +7255,33 @@ mod tests {
             "a stale windowed row must not render as money",
         );
 
+        // Zai bills windows, so a monitor snapshot renders as a
+        // subscription and every other source under it is a stale row.
+        let mut zai = account_usage_snapshot(34.0, 63.0, None);
+        zai.source = UsageSourceKind::ZaiMonitor;
+        assert!(
+            matches!(
+                account_budget("Acct", Provider::Zai, Some(&zai)),
+                AccountBudget::Subscription { .. }
+            ),
+            "zai with a monitor snapshot renders windows",
+        );
+        assert_eq!(
+            account_budget("Acct", Provider::Zai, Some(&key)),
+            AccountBudget::Unknown { spend_billed: false },
+            "zai must not render a spend snapshot as its own",
+        );
+        assert_eq!(
+            account_budget("Acct", Provider::Anthropic, Some(&zai)),
+            AccountBudget::Unknown { spend_billed: false },
+            "a stale zai row must not render under an anthropic account",
+        );
+        assert_eq!(
+            account_budget("Acct", Provider::Openrouter, Some(&zai)),
+            AccountBudget::Unknown { spend_billed: true },
+            "a stale zai row must not render as money",
+        );
+
         // No snapshot still carries the billing model, so the empty row
         // sits under the labels the account would really have.
         assert_eq!(
@@ -7250,6 +7291,10 @@ mod tests {
         assert_eq!(
             account_budget("Acct", Provider::Openrouter, None),
             AccountBudget::Unknown { spend_billed: true },
+        );
+        assert_eq!(
+            account_budget("Acct", Provider::Zai, None),
+            AccountBudget::Unknown { spend_billed: false },
         );
     }
 

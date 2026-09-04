@@ -21,12 +21,17 @@ pub enum Provider {
     /// plan windows and no allowance, so its usage is spend over a
     /// period rather than a percentage.
     Openrouter,
+    /// Z.ai GLM coding plan: a credit-windowed subscription probed at
+    /// the monitor host derived from the base url's host root. Chat
+    /// rides the same env-override shape as the other base-url
+    /// providers.
+    Zai,
 }
 
 impl Provider {
     /// Every accepted `provider` value, for the load error a missing or
     /// unusable declaration produces.
-    pub const ACCEPTED: &'static str = "\"anthropic\", \"codex\", \"openrouter\"";
+    pub const ACCEPTED: &'static str = "\"anthropic\", \"codex\", \"openrouter\", \"zai\"";
 
     /// `true` when the account's credential is an `ANTHROPIC_AUTH_TOKEN`
     /// beside an `ANTHROPIC_BASE_URL` in `[accounts.env]` rather than a
@@ -34,7 +39,7 @@ impl Provider {
     /// on this rather than on the provider itself, because every
     /// non-Anthropic provider repairs the same way.
     pub const fn uses_base_url(self) -> bool {
-        matches!(self, Self::Codex | Self::Openrouter)
+        matches!(self, Self::Codex | Self::Openrouter | Self::Zai)
     }
 
     /// `true` when this backend charges per token rather than against a
@@ -46,7 +51,7 @@ impl Provider {
     /// windows and rendering `5h` / `7d` labels it may not have.
     pub const fn bills_by_spend(self) -> bool {
         match self {
-            Self::Anthropic | Self::Codex => false,
+            Self::Anthropic | Self::Codex | Self::Zai => false,
             Self::Openrouter => true,
         }
     }
@@ -65,6 +70,7 @@ mod tests {
             (Provider::Anthropic, "anthropic"),
             (Provider::Codex, "codex"),
             (Provider::Openrouter, "openrouter"),
+            (Provider::Zai, "zai"),
         ] {
             let serialized =
                 serde_json::to_string(&variant).expect("provider serializes to its toml token");
@@ -78,5 +84,23 @@ mod tests {
                 "ACCEPTED must name {token}, or the load error lists the wrong set",
             );
         }
+    }
+
+    #[test]
+    fn zai_parses_from_its_toml_token() {
+        let parsed: Provider = serde_json::from_str("\"zai\"").expect("zai parses");
+        assert_eq!(parsed, Provider::Zai);
+    }
+
+    #[test]
+    fn zai_bills_as_a_subscription_over_a_base_url() {
+        assert!(
+            !Provider::Zai.bills_by_spend(),
+            "the GLM coding plan is a windowed subscription, not pay-per-token spend",
+        );
+        assert!(
+            Provider::Zai.uses_base_url(),
+            "the credential is an ANTHROPIC_AUTH_TOKEN beside an ANTHROPIC_BASE_URL",
+        );
     }
 }
