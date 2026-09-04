@@ -4348,9 +4348,8 @@ mod tests {
     }
 
     /// A pasted peer envelope arrives as a plain user message - only the
-    /// envelope reducers stamp `is_peer_envelope`. The deleted
-    /// `suppress_group_header` gate suppressed this bubble's label whenever
-    /// a same-org envelope preceded it; the label must stay.
+    /// envelope reducers stamp `is_peer_envelope` - and its User label
+    /// must stay.
     #[test]
     fn unflagged_envelope_shaped_user_prompt_keeps_its_user_label() {
         let flagged = ChatMessage::new_peer_envelope(
