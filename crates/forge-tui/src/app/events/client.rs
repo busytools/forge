@@ -276,10 +276,22 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);
             });
         }
-        SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message } => {
-            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_failure_dropped", |app| {
+        SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message, trigger } => {
+            // A boot auto-update run is app-scoped (see the run arms
+            // below): its failure must unpin the seeded run whatever
+            // session holds the focus.
+            if trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
                 crate::app::plugins::apply_inventory_refresh_failure(app, message);
-            });
+            } else {
+                dispatch_if_cwd_matches(
+                    app,
+                    &cwd_raw,
+                    "plugins_inventory_failure_dropped",
+                    |app| {
+                        crate::app::plugins::apply_inventory_refresh_failure(app, message);
+                    },
+                );
+            }
         }
         SessionUpdate::PluginsCliActionSucceeded { cwd_raw, result } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_cli_success_dropped", |app| {

@@ -33,7 +33,7 @@ use forge_primitives::error::AppError;
 use forge_primitives::permission::PermissionMode;
 use forge_primitives::permission_ui::{PermissionOutcome, PermissionRequest};
 use forge_primitives::plugins::{
-    PluginUpdateRun, PluginsCliActionSuccess, PluginsInventorySnapshot,
+    PluginUpdateRun, PluginUpdateTrigger, PluginsCliActionSuccess, PluginsInventorySnapshot,
 };
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::review::{ReviewStatus, ReviewThread};
@@ -932,6 +932,9 @@ pub enum SessionUpdate {
     PluginsInventoryRefreshFailed {
         cwd_raw: String,
         message: String,
+        /// Whether the failed refresh served a boot auto-update run -
+        /// app-scoped, so its failure bypasses the cwd gate.
+        trigger: PluginUpdateTrigger,
     },
     PluginsCliActionSucceeded {
         cwd_raw: String,

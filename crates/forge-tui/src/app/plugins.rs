@@ -321,6 +321,7 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
                     let _ = event_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
                         cwd_raw: cwd_context,
                         message,
+                        trigger: PluginUpdateTrigger::Manual,
                     });
                 }
             }
@@ -1188,6 +1189,7 @@ pub(crate) fn start_check_run(app: &mut App) {
                     let _ = update_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
                         cwd_raw: cwd_context,
                         message,
+                        trigger: PluginUpdateTrigger::Manual,
                     });
                 }
             }
@@ -1438,8 +1440,11 @@ pub(crate) fn maybe_spawn_boot_auto_update(
                         error = %message,
                         "boot plugin auto-update could not refresh the plugin inventory",
                     );
-                    let _ = update_tx
-                        .send(SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message });
+                    let _ = update_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
+                        cwd_raw,
+                        message,
+                        trigger: PluginUpdateTrigger::Auto,
+                    });
                     return;
                 }
             };
@@ -1542,21 +1547,32 @@ pub(crate) fn start_rollback(app: &mut App, plugin_id: String, scope: String) {
             // recorded version if it actually pins one. Unverified
             // rollbacks keep the record so the attempt can be retried.
             let verified = match &rollback {
-                Ok(_) => (cli.refresh)(cached_claude_path, cwd_raw)
+                Ok(_) => {
+                    match tokio::time::timeout(
+                        UPDATE_CALL_TIMEOUT,
+                        (cli.refresh)(cached_claude_path, cwd_raw),
+                    )
                     .await
-                    .map_err(|message| format!("the inventory refresh failed: {message}"))
-                    .map(|(snapshot, claude_path)| {
-                        let post_version = snapshot
-                            .installed
-                            .iter()
-                            .find(|entry| {
-                                entry.id == record.plugin_id && entry.scope == record.scope
-                            })
-                            .and_then(|entry| entry.version.clone());
-                        let verified =
-                            post_version.is_some() && post_version == record.from_version;
-                        (verified, snapshot, claude_path, post_version)
-                    }),
+                    {
+                        Ok(Ok((snapshot, claude_path))) => {
+                            let post_version = snapshot
+                                .installed
+                                .iter()
+                                .find(|entry| {
+                                    entry.id == record.plugin_id && entry.scope == record.scope
+                                })
+                                .and_then(|entry| entry.version.clone());
+                            let verified =
+                                post_version.is_some() && post_version == record.from_version;
+                            Ok((verified, snapshot, claude_path, post_version))
+                        }
+                        Ok(Err(message)) => Err(format!("the inventory refresh failed: {message}")),
+                        Err(_) => Err(format!(
+                            "the verification refresh timed out after {}s",
+                            UPDATE_CALL_TIMEOUT.as_secs()
+                        )),
+                    }
+                }
                 Err(message) => Err(message.clone()),
             };
             match verified {
@@ -3371,6 +3387,166 @@ mod tests {
             row.detail.as_deref().is_some_and(|detail| detail.contains("timed out")),
             "the timeout names itself: {:?}",
             row.detail
+        );
+    }
+
+    /// The deferred branch: updates land, then the post-run refresh
+    /// hangs. Rows keep the captured CLI output AND the timeout
+    /// reason, so the evidence of what may have applied survives.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_hung_post_run_refresh_keeps_the_output_and_names_itself() {
+        tokio::time::pause();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let snapshot = two_plugin_snapshot();
+        let cli = UpdateCli {
+            run_update: {
+                let snapshot = snapshot.clone();
+                std::sync::Arc::new(move |_cached, _cwd, _args| {
+                    let _ = snapshot.clone();
+                    Box::pin(async move {
+                        Ok((
+                            std::path::PathBuf::from("claude"),
+                            "Plugin \"supabase\" updated from 1.0.0 to 2.0.0 for scope user."
+                                .to_owned(),
+                        ))
+                    })
+                })
+            },
+            refresh: std::sync::Arc::new(|_cached, _cwd| {
+                Box::pin(std::future::pending::<RefreshResult>())
+            }),
+            rollback: std::sync::Arc::new(|_, _, _, _| {
+                Box::pin(std::future::pending::<RollbackResult>())
+            }),
+        };
+        let rows = build_rows_from_entries(
+            &snapshot.installed,
+            "/proj",
+            PluginUpdateTrigger::Manual,
+            &forge_workspace::PluginSettings::default(),
+        );
+        let plan = UpdateRunPlan {
+            cwd_context: "/proj".to_owned(),
+            claude_path: None,
+            marketplaces: vec![],
+            run: PluginUpdateRun { trigger: PluginUpdateTrigger::Manual, finished: false, rows },
+            cli,
+            store: None,
+        };
+        execute_update_plan(tx, plan).await;
+
+        let mut finished = None;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::PluginsUpdateRunFinished { run, .. } = update {
+                finished = Some(run);
+            }
+        }
+        let run = finished.expect("the finished event lands");
+        let row = &run.rows[0];
+        assert_eq!(row.status, PluginRunRowStatus::Failed);
+        let detail = row.detail.as_deref().expect("the row keeps its evidence");
+        assert!(detail.contains("updated from 1.0.0 to 2.0.0"), "CLI output kept: {detail}");
+        assert!(
+            detail.contains("timed out"),
+            "the refresh timeout names itself beside the output: {detail}"
+        );
+    }
+
+    /// Boot failure routing: the failure event unpinns the seeded run
+    /// even when the borrowed project cwd does not match the focused
+    /// session.
+    #[tokio::test(flavor = "current_thread")]
+    async fn boot_refresh_failure_unpins_the_run_across_a_mismatched_cwd() {
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace");
+        let calls = call_log();
+        let cli = UpdateCli {
+            run_update: std::sync::Arc::new(|_, _, _| {
+                Box::pin(std::future::pending::<UpdateResult>())
+            }),
+            refresh: std::sync::Arc::new(|_cached, _cwd| {
+                Box::pin(async move { Err("claude CLI not found".to_owned()) })
+            }),
+            rollback: std::sync::Arc::new(|_, _, _, _| {
+                Box::pin(std::future::pending::<RollbackResult>())
+            }),
+        };
+        let settings = forge_workspace::PluginSettings {
+            auto_update: true,
+            trusted_marketplaces: vec!["claude-plugins-official".to_owned()],
+            pins: Vec::new(),
+        };
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                maybe_spawn_boot_auto_update(
+                    &workspace,
+                    &mut app,
+                    "/proj".to_owned(),
+                    settings,
+                    cli,
+                );
+                for _ in 0..200 {
+                    tokio::task::yield_now().await;
+                    while let Ok(update) = app.update_rx.try_recv() {
+                        apply_session_update(&mut app, update);
+                    }
+                    if !app.plugins.loading {
+                        break;
+                    }
+                }
+            })
+            .await;
+
+        assert!(!app.plugins.loading, "the seeded run does not pin the pane");
+        assert!(app.plugins.update_run.is_none(), "the empty seeded run is cleared");
+        assert!(
+            app.plugins
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("claude CLI not found")),
+            "the failure is visible in the pane: {:?}",
+            app.plugins.last_error
+        );
+        assert!(
+            calls.lock().expect("call log").is_empty(),
+            "nothing ran beyond the failed refresh"
+        );
+    }
+
+    /// The bypass is trigger-scoped: a Manual run's events still drop
+    /// on a cwd mismatch.
+    #[test]
+    fn manual_run_events_still_respect_the_cwd_gate() {
+        let mut app = App::test_default();
+        let run = PluginUpdateRun {
+            trigger: PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: vec![PluginUpdateRunRow {
+                plugin_id: "supabase@claude-plugins-official".to_owned(),
+                scope: "user".to_owned(),
+                cwd_raw: String::new(),
+                marketplace: "claude-plugins-official".to_owned(),
+                status: PluginRunRowStatus::Updated,
+                installed_version: Some("2.0.0".to_owned()),
+                available_version: None,
+                detail: None,
+            }],
+        };
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PluginsUpdateRunFinished {
+                cwd_raw: "/elsewhere".to_owned(),
+                run,
+                snapshot: None,
+                claude_path: None,
+            },
+        );
+
+        assert!(
+            app.plugins.update_run.is_none(),
+            "a mismatched manual event must not seed the pane"
         );
     }
 
