@@ -17,7 +17,7 @@ forge-test-harness->  primitives + sdk
 |---|---|
 | `forge-primitives` | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side view structs. No logic, no I/O, no async. |
 | `forge-dictate` | The dictation primitive: audio in, text out. Owns its model files, speech recognition and transcript normalization. Depends on no forge-* crate and knows nothing about the program embedding it. |
-| `forge-providers` | One backend per provider token: credential resolution, the usage probe's HTTP and payload mapping, billing shape. Depends on forge-primitives only; keychain, CLI-spawn refresh and TLS-trust plumbing arrive through the host port forge-agent implements. |
+| `forge-providers` | One backend per provider token: credential resolution, the usage probe's HTTP and payload mapping, billing shape. Depends on forge-primitives only; keychain, the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements. |
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
