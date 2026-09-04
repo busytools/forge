@@ -2780,7 +2780,7 @@ mod tests {
     use super::*;
 
     // `rail_width_for` tests live next to the function definition in
-    // `crate::app::diff_overlay::tests` - this module only tests the
+    // `crate::app::diff_overlay::layout` - this module only tests the
     // renderer-local helpers below.
 
     #[test]

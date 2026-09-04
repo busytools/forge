@@ -22,6 +22,8 @@
 //! - [`reviews`]: the `l` REVIEWS list, the Finish-review modal, and
 //!   the seal-and-nudge close path.
 //! - [`keys`] / [`mouse`]: the key and mouse dispatch.
+//!
+//! [`test_support`] holds the fixtures shared by the submodules' tests.
 
 pub(crate) mod comments;
 pub(crate) mod keys;
