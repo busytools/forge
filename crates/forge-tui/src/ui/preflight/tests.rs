@@ -400,6 +400,37 @@ fn an_unreachable_bail_names_the_endpoint_not_the_auth() {
     );
 }
 
+/// The auth-failure screen for a base-url account promises a restart:
+/// its credential is the env token, which the pollers cannot re-read
+/// until forge restarts - "recovers in place" would be false.
+#[test]
+fn a_bailed_base_url_account_promises_a_restart_not_in_place_recovery() {
+    let text = flatten(&bail_detail(
+        &App::test_default(),
+        &bailed_with_error(
+            "Subspace",
+            "/home/x/.claude-subspace",
+            forge_workspace::AccountAuth::BaseUrl,
+            forge_workspace::UsageFetchStatus::Unauthorized,
+        ),
+        PICKER_WIDTH,
+    ))
+    .join("\n");
+
+    assert!(
+        text.contains("Fix the auth"),
+        "a 401 on the env token is an auth failure; got:\n{text}",
+    );
+    assert!(
+        text.contains("restart forge to pick"),
+        "the env is boot-frozen, so the head line cannot promise in-place recovery; got:\n{text}",
+    );
+    assert!(
+        !text.contains("recovers in place"),
+        "the repaired token lives in [accounts.env], read once at boot; got:\n{text}",
+    );
+}
+
 /// An endpoint that answers badly is not an auth failure either - a
 /// proxy with a dead upstream 502s rather than refusing, which is the
 /// common real shape of "endpoint down" - and the copy must say the

@@ -757,6 +757,10 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
+        // A stray setup token must not outrank the provider: the
+        // provider is decided first, so a base-url account keeps its
+        // endpoint probe even with this key present.
+        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
         assert_eq!(
             probe_plan(Provider::Codex, &env),
             ProbePlan::BaseUrl {

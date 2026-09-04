@@ -387,13 +387,16 @@ impl AccountStateMap {
             state.last_error = Some(status);
             state.consecutive_failures = state.consecutive_failures.saturating_add(1);
             // Auth-recovery cache-clear: an Unauthorized or Expired
-            // probe response means the account's keychain token is
-            // dead. Transition `loading` to `Bailed` and drop the
+            // probe response means the account's credential is dead.
+            // Transition `loading` to `Bailed` and drop the
             // cached `usage` so the renderer surfaces the error label
-            // instead of the stale %bar. The 30 s recovery poll
-            // (account_loader::run_recovery_poll) picks the account
-            // back up once `claude auth status` reports logged-in,
-            // re-running the full loading flow. Other statuses leave
+            // instead of the stale %bar. Recovery paths differ by
+            // class: the 30 s recovery poll
+            // (account_loader::run_recovery_poll) picks a keychain
+            // account back up once `claude auth status` reports
+            // logged-in, while a base-url or token account recovers
+            // via the 60 s usage poller (after the edited env is
+            // re-read at a restart). Other statuses leave
             // `loading` alone (a transient `RateLimited` or
             // `NetworkFailed` is not auth-related; the cache stays
             // and the account remains Ready for the assignment plan).
@@ -407,7 +410,7 @@ impl AccountStateMap {
                 // "account suddenly stopped working" can see WHEN the
                 // bail happened + which probe-class triggered it.
                 // Without this log a Ready -> Bailed flip is silent
-                // until the recovery poll runs 30 s later.
+                // until a poller runs again.
                 if prev != LoadingState::Bailed {
                     tracing::warn!(
                         target: "forge_workspace::account",
@@ -415,7 +418,7 @@ impl AccountStateMap {
                         account = %key.0,
                         prev_state = ?prev,
                         status = ?status,
-                        "account transitioned to Bailed via probe failure; recovery poll will retry every 30s",
+                        "account transitioned to Bailed via probe failure; the pollers will retry it",
                     );
                 }
             }

@@ -2186,7 +2186,17 @@ impl Workspace {
                         }
                         account::UsageFetchStatus::Expired
                         | account::UsageFetchStatus::Unauthorized => {
-                            "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
+                            // A token account's credential is the setup
+                            // token, which /login cannot repair - the
+                            // shared dir's keychain belongs to a sibling.
+                            if matches!(
+                                plan,
+                                forge_agent::cloud::oauth_usage::ProbePlan::Token { .. }
+                            ) {
+                                "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
+                            } else {
+                                "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
+                            }
                         }
                         account::UsageFetchStatus::NetworkFailed => {
                             "usage_poll fetch failed with network error; will retry on next tick"
