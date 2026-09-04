@@ -206,11 +206,7 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
 
 /// Resolve a left-click in the diff body to the row it landed on,
 /// and for a split row to the old or new side of it.
-fn handle_body_click(
-    overlay: &mut DiffOverlayState,
-    column: u16,
-    row: u16,
-) -> MouseEffect {
+fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> MouseEffect {
     // Empty body_keys means the renderer hasn't drawn yet (or drew
     // the too-short fallback). A click before the first real render
     // can't resolve anything; drop it silently.

@@ -32,9 +32,7 @@ pub enum InitialScope {
 /// Pick the initial scope from the branch's persisted threads: whole-diff
 /// when any whole-diff thread exists (the pre-scope behavior), else the
 /// commit carrying the most-recently-updated comment, else the default.
-fn initial_scope_from_threads(
-    threads: &[forge_primitives::ReviewThread],
-) -> InitialScope {
+fn initial_scope_from_threads(threads: &[forge_primitives::ReviewThread]) -> InitialScope {
     if threads.iter().any(|t| t.commit.is_none()) {
         return InitialScope::WholeDiff;
     }
