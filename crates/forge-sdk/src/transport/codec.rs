@@ -78,6 +78,19 @@ pub enum DecodedLine {
         /// Full JSON payload for later inspection.
         raw: Value,
     },
+    /// A line that failed to decode: not valid JSON, or valid JSON that
+    /// matched no message shape. Typed rather than an `Err` so the read
+    /// loop skips the line and continues - a per-line decode failure
+    /// must not end the session, the same rule `Unknown` applies to
+    /// unknown types. The reader warns with the line number, reason and
+    /// a 160-char excerpt, and answers a corrupt `control_request` that
+    /// carries a `request_id`.
+    Malformed {
+        /// 1-based number of the offending line.
+        line: u64,
+        /// Why the line failed to decode.
+        reason: String,
+    },
 }
 
 /// Parse one stream-json line into a [`Message`].
@@ -99,43 +112,45 @@ pub fn decode_line(line: &str, line_number: u64) -> Result<Message, Error> {
 
 /// Decode one stream-json line, dispatching on the `type` field.
 ///
-/// Returns one of [`DecodedLine`]'s variants. For forward-compat with
-/// future `claude` CLI releases, any top-level `type` value forge-sdk
-/// doesn't recognise lands in [`DecodedLine::Unknown`] rather than
-/// erroring - callers (notably the wire-conformance harness) can
-/// detect these by matching the variant. The read loop in
-/// the events stream returned by [`Client::spawn`](crate::Client::spawn) logs a
-/// `tracing::warn!` on Unknown and continues reading.
-///
-/// # Errors
-///
-/// - [`Error::JsonDecode`] when not valid JSON.
-/// - [`Error::MessageParse`] when the `type` field is missing entirely
-///   or the inner shape of a recognised type is invalid.
-pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Error> {
-    let value: Value = serde_json::from_str(line)
-        .map_err(|source| Error::JsonDecode { line: line_number, source })?;
-    let ty = value
-        .get("type")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| Error::message_parse(format!("line {line_number}: missing `type` field")))?;
-    match ty {
-        "control_request" => {
-            let req: ControlRequest = serde_json::from_value(value)
-                .map_err(|e| Error::message_parse(format!("line {line_number}: {e}")))?;
-            Ok(DecodedLine::Control(req))
+/// Returns one of [`DecodedLine`]'s variants and never fails. For
+/// forward-compat with future `claude` CLI releases, any top-level
+/// `type` value forge-sdk doesn't recognise lands in
+/// [`DecodedLine::Unknown`], and a line that cannot be decoded at all
+/// lands in [`DecodedLine::Malformed`] - callers (notably the
+/// wire-conformance harness) can detect both by matching the variant.
+/// The read loop in the events stream returned by
+/// [`Client::spawn`](crate::Client::spawn) warns on either and
+/// continues reading.
+pub fn decode_dispatch(line: &str, line_number: u64) -> DecodedLine {
+    let value: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(e) => {
+            return DecodedLine::Malformed {
+                line: line_number,
+                reason: format!("invalid JSON: {e}"),
+            };
         }
+    };
+    let Some(ty) = value.get("type").and_then(|v| v.as_str()) else {
+        return DecodedLine::Malformed {
+            line: line_number,
+            reason: "missing `type` field".to_string(),
+        };
+    };
+    match ty {
+        "control_request" => match serde_json::from_value::<ControlRequest>(value) {
+            Ok(req) => DecodedLine::Control(req),
+            Err(e) => DecodedLine::Malformed { line: line_number, reason: e.to_string() },
+        },
         "control_cancel_request" => {
-            let request_id = value
-                .get("request_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    Error::message_parse(format!(
-                        "line {line_number}: control_cancel_request missing `request_id`"
-                    ))
-                })?
-                .to_string();
-            Ok(DecodedLine::ControlCancel { request_id })
+            let request_id = value.get("request_id").and_then(Value::as_str);
+            match request_id {
+                Some(rid) => DecodedLine::ControlCancel { request_id: rid.to_string() },
+                None => DecodedLine::Malformed {
+                    line: line_number,
+                    reason: "control_cancel_request missing `request_id`".to_string(),
+                },
+            }
         }
         "control_response" => {
             // `response.request_id` is where the CLI echoes the
@@ -147,34 +162,32 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
             // `next_event`) treats unknowns as warn-and-skip.
             match value.pointer("/response/request_id").and_then(Value::as_str) {
                 Some(rid) => {
-                    Ok(DecodedLine::ControlResponse { request_id: rid.to_string(), raw: value })
+                    DecodedLine::ControlResponse { request_id: rid.to_string(), raw: value }
                 }
-                None => Ok(DecodedLine::Unknown {
+                None => DecodedLine::Unknown {
                     type_str: "control_response (missing /response/request_id)".to_string(),
                     raw: value,
-                }),
+                },
             }
         }
         "assistant" | "user" | "system" | "result" | "rate_limit_event" | "stream_event"
-        | "error" => {
-            let msg: Message = serde_json::from_value(value)
-                .map_err(|e| Error::message_parse(format!("line {line_number}: {e}")))?;
-            Ok(DecodedLine::Message(msg))
-        }
+        | "error" => match serde_json::from_value::<Message>(value) {
+            Ok(msg) => DecodedLine::Message(msg),
+            Err(e) => DecodedLine::Malformed { line: line_number, reason: e.to_string() },
+        },
         "tool_progress" => {
-            // A heartbeat that fails to fit must degrade to `Unknown`,
-            // never error: a decode error ends the whole session, and
-            // this is the one frame class that must be incapable of
-            // ending one.
+            // A heartbeat that fails to fit is an unrecognised shape,
+            // not a corrupt line: degrade to `Unknown` so the harness
+            // counts it there.
             match serde_json::from_value::<ToolProgress>(value.clone()) {
-                Ok(progress) => Ok(DecodedLine::ToolProgress(progress)),
-                Err(_) => Ok(DecodedLine::Unknown {
+                Ok(progress) => DecodedLine::ToolProgress(progress),
+                Err(_) => DecodedLine::Unknown {
                     type_str: "tool_progress (unparseable payload)".to_string(),
                     raw: value,
-                }),
+                },
             }
         }
-        other => Ok(DecodedLine::Unknown { type_str: other.to_string(), raw: value }),
+        other => DecodedLine::Unknown { type_str: other.to_string(), raw: value },
     }
 }
 

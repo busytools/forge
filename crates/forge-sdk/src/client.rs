@@ -35,7 +35,7 @@ use tracing::debug;
 
 use crate::Error;
 use crate::client::runtime::{
-    PendingControls, SharedSessionId, new_shared_session_id, spawn_reader_task,
+    PendingControls, SharedSessionId, excerpt, new_shared_session_id, spawn_reader_task,
 };
 use crate::mcp::orchestration::McpHosts;
 use crate::options::Options;
@@ -322,7 +322,7 @@ impl Client {
                             "control_cancel_request during init; nothing live to cancel"
                         );
                     }
-                    _ => match decode_dispatch(&line, line_number)? {
+                    _ => match decode_dispatch(&line, line_number) {
                         DecodedLine::Message(msg) => {
                             debug!(line_number, "buffering pre-init frame for caller");
                             // Capture session id off pre-init messages so
@@ -358,6 +358,15 @@ impl Client {
                                 "unknown top-level type during init - buffering as Message::Unknown"
                             );
                             pre_init_messages.push_back(Message::Unknown { type_str, raw });
+                        }
+                        DecodedLine::Malformed { line: line_no, reason } => {
+                            // Pre-init frames stay strict: unparsable
+                            // output before initialize completes is a
+                            // broken spawn, not a degradable stream.
+                            return Err(Error::message_parse(format!(
+                                "line {line_no}: {reason}; raw line: {}",
+                                excerpt(&line, 160)
+                            )));
                         }
                         other => {
                             debug!(

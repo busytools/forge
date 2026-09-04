@@ -117,20 +117,21 @@ fn real_session_decode_probe() {
         for (idx, line) in transformed.iter().enumerate() {
             frames_tried += 1;
             match decode_dispatch(line, (idx + 1) as u64) {
-                Ok(DecodedLine::Unknown { type_str, raw: _ }) => {
+                DecodedLine::Unknown { type_str, raw: _ } => {
                     unknown_types.push((path.clone(), idx + 1, type_str));
                 }
-                Ok(DecodedLine::Message(msg)) => {
+                DecodedLine::Message(msg) => {
                     frames_decoded += 1;
                     for (block_type, preview) in unknown_content_blocks(&msg) {
                         unknown_blocks.push((path.clone(), idx + 1, block_type, preview));
                     }
                 }
-                Ok(_) => {
-                    frames_decoded += 1;
+                DecodedLine::Malformed { line, reason } => {
+                    let line: usize = usize::try_from(line).unwrap_or(usize::MAX);
+                    decode_errors.push((path.clone(), line, reason));
                 }
-                Err(e) => {
-                    decode_errors.push((path.clone(), idx + 1, format!("{e}")));
+                _ => {
+                    frames_decoded += 1;
                 }
             }
         }

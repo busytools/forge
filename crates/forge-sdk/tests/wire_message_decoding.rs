@@ -81,7 +81,7 @@ mod tests_rate_limit_frames {
     #[test]
     fn dispatch_recognises_rate_limit_event_as_message() {
         let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"},"uuid":"evt","session_id":"s"}"#;
-        let decoded = decode_dispatch(line, 1).expect("dispatch");
+        let decoded = decode_dispatch(line, 1);
         match decoded {
             DecodedLine::Message(Message::RateLimitEvent { .. }) => {}
             other => panic!("expected RateLimitEvent message, got: {other:?}"),
@@ -229,7 +229,7 @@ mod tests_task_lifecycle_frames {
     #[test]
     fn dispatch_recognises_task_started_as_message() {
         let line = r#"{"type":"system","subtype":"task_started","task_id":"t","description":"d","uuid":"u","session_id":"s"}"#;
-        let decoded = decode_dispatch(line, 1).expect("dispatch");
+        let decoded = decode_dispatch(line, 1);
         match decoded {
             DecodedLine::Message(Message::TaskStarted { .. }) => {}
             other => panic!("expected TaskStarted, got: {other:?}"),
@@ -239,7 +239,7 @@ mod tests_task_lifecycle_frames {
     #[test]
     fn dispatch_recognises_task_progress_as_message() {
         let line = r#"{"type":"system","subtype":"task_progress","task_id":"t","description":"d","usage":{"total_tokens":1,"tool_uses":1,"duration_ms":1},"uuid":"u","session_id":"s"}"#;
-        let decoded = decode_dispatch(line, 1).expect("dispatch");
+        let decoded = decode_dispatch(line, 1);
         match decoded {
             DecodedLine::Message(Message::TaskProgress { .. }) => {}
             other => panic!("expected TaskProgress, got: {other:?}"),
@@ -249,7 +249,7 @@ mod tests_task_lifecycle_frames {
     #[test]
     fn dispatch_recognises_task_notification_as_message() {
         let line = r#"{"type":"system","subtype":"task_notification","task_id":"t","status":"stopped","output_file":"/x","summary":"s","uuid":"u","session_id":"s"}"#;
-        let decoded = decode_dispatch(line, 1).expect("dispatch");
+        let decoded = decode_dispatch(line, 1);
         match decoded {
             DecodedLine::Message(Message::TaskNotification { .. }) => {}
             other => panic!("expected TaskNotification, got: {other:?}"),
@@ -342,7 +342,7 @@ mod tests_stream_event_and_error_frames {
     #[test]
     fn dispatch_surfaces_stream_event_as_message() {
         let line = r#"{"type":"stream_event","uuid":"evt-3","session_id":"sess-3","event":{"type":"message_stop"}}"#;
-        match decode_dispatch(line, 1).expect("decode") {
+        match decode_dispatch(line, 1) {
             DecodedLine::Message(Message::StreamEvent { uuid, .. }) => {
                 assert_eq!(uuid, "evt-3");
             }
@@ -353,7 +353,7 @@ mod tests_stream_event_and_error_frames {
     #[test]
     fn dispatch_surfaces_error_frame_as_message() {
         let line = r#"{"type":"error","error":"boom"}"#;
-        match decode_dispatch(line, 1).expect("decode") {
+        match decode_dispatch(line, 1) {
             DecodedLine::Message(Message::Error { error }) => {
                 assert_eq!(error, "boom");
             }
