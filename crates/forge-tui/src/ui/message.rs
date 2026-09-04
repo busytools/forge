@@ -4347,6 +4347,43 @@ mod tests {
             .sum()
     }
 
+    /// A pasted peer envelope arrives as a plain user message - only the
+    /// envelope reducers stamp `is_peer_envelope`. The deleted
+    /// `suppress_group_header` gate suppressed this bubble's label whenever
+    /// a same-org envelope preceded it; the label must stay.
+    #[test]
+    fn unflagged_envelope_shaped_user_prompt_keeps_its_user_label() {
+        let flagged = ChatMessage::new_peer_envelope(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(
+                "[Message id=t-1 from agent 'forge' (org 'Personal')]\n\ninbound",
+            ))],
+        );
+        assert!(role_label_line(&flagged).is_none());
+
+        let mut pasted = ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(
+                "[Message id=t-2 from agent 'forge' (org 'Personal')]\n\npasted quote",
+            ))],
+        );
+        assert!(role_label_line(&pasted).is_some());
+
+        let spinner = idle_spinner();
+        let mut lines = Vec::new();
+        render_message(
+            &mut pasted,
+            &spinner,
+            MessageRenderContext::new(None, 80, 0, default_options()),
+            &mut lines,
+        );
+        let rows = render_lines_to_strings(&lines);
+        assert!(
+            rows.first().is_some_and(|row| row.contains("User")),
+            "an unflagged envelope-shaped prompt keeps the User label: {rows:?}",
+        );
+    }
+
     // -----------------------------------------------------------------
     // #163: envelope streak position helpers.
     // -----------------------------------------------------------------
