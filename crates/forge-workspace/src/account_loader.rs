@@ -191,6 +191,11 @@ pub async fn run_account_loading(
                     .await
                     .map(oauth::snapshot_from_openrouter_key)
             }
+            oauth_usage::ProbePlan::ZaiMonitor { base_url, bearer } => {
+                oauth_usage::probe_zai_monitor(base_url, bearer)
+                    .await
+                    .map(oauth::snapshot_from_zai_quota)
+            }
         };
 
         match probe_result {
