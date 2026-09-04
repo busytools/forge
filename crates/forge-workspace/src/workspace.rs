@@ -865,6 +865,12 @@ impl Workspace {
         self.config.dictate.enabled
     }
 
+    /// The `[plugins]` auto-update policy from forge.toml. Read by the
+    /// plugins pane for boot auto-update and to show marketplace trust.
+    pub fn plugin_settings(&self) -> &crate::config::PluginSettings {
+        &self.config.plugins
+    }
+
     /// The `[gotify]` server connection from forge.toml, or `None`
     /// when the section is absent. `None` keeps the Gotify subsystem
     /// dormant and makes `gotify__subscribe` error. Read-only - forge
