@@ -2708,12 +2708,22 @@ impl Workspace {
         key: &SessionKey,
         text: String,
     ) -> Result<(), DispatchError> {
-        if self.domain_session_for(key).is_some_and(|d| d.lock().turn_in_flight()) {
+        // Busy is captured before the dispatch: dispatching first would
+        // read the turn_pending stamp the dispatch itself just set.
+        // Signalling only on success keeps a failed dispatch (the
+        // log-only failure sites never emit a TurnError) from
+        // stranding a count nothing clears. Whether the re-open-gap
+        // residual signals at all depends on a session_state_changed
+        // mirror being present, so it is CLI-version-dependent.
+        let busy = self.domain_session_for(key).is_some_and(|d| d.lock().turn_in_flight());
+        let result =
+            self.dispatch(Command::Prompt { key: key.clone(), text, attachments: Vec::new() });
+        if busy && result.is_ok() {
             let _ = self
                 .update_sender()
                 .send(SessionUpdate::PromptQueuedWhileBusy { key: key.clone() });
         }
-        self.dispatch(Command::Prompt { key: key.clone(), text, attachments: Vec::new() })
+        result
     }
 
     /// Route a [`Command`]. Per-session commands (`cmd.key() ==
@@ -10366,6 +10376,64 @@ SOLO_TOKEN = "solo-secret"
             .into_iter()
             .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { key: k } if k == lead_key));
         assert!(signalled, "a cron fired mid-turn signals PromptQueuedWhileBusy");
+    }
+
+    /// A failed dispatch must not strand a queue signal: the log-only
+    /// failure sites (kick, notices, drains) never emit a TurnError,
+    /// so a signal sent despite the failure would survive on a live
+    /// bucket with nothing to clear it.
+    #[test]
+    fn failed_dispatch_does_not_signal_queued_while_busy() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let key = SessionKey::from_session_id("doomed-uuid");
+        ws.mark_session_connected_for_test(&key, "doomed-uuid");
+        ws.domain_session_for(&key).expect("domain").lock().turn_pending = true;
+
+        let result = ws.dispatch_workspace_prompt(&key, "lost".to_owned());
+        assert!(result.is_err(), "no SessionTask and no stub conn: the dispatch fails");
+        assert!(
+            !drain_updates(&mut rx)
+                .iter()
+                .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { .. })),
+            "a failed dispatch must not signal PromptQueuedWhileBusy",
+        );
+    }
+
+    /// The gotify running-lead delivery rides the helper too - a
+    /// second family (after cron) through a different entry path:
+    /// idle fire silent, turn in flight then the signal.
+    #[test]
+    fn gotify_delivered_mid_turn_signals_prompt_queued_while_busy() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("glead", "/tmp/gotify-lead-queued");
+        let cwd = project_expanded_path(&ws, "glead");
+        ws.record_connected_session(&cwd, "lead-uuid", None);
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
+        ws.enable_test_dispatch_intercept();
+        let notif = gotify_notif("Backups", "Nightly backup", "done", 5);
+
+        crate::spawn::deliver_gotify_message(&ws, "glead", None, notif.clone());
+        assert!(
+            !drain_updates(&mut rx)
+                .iter()
+                .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { .. })),
+            "an idle gotify fire must not signal PromptQueuedWhileBusy",
+        );
+
+        ws.domain_session_for(&lead_key).expect("domain").lock().turn_pending = true;
+        crate::spawn::deliver_gotify_message(&ws, "glead", None, notif);
+        let signalled = drain_updates(&mut rx)
+            .into_iter()
+            .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { key: k } if k == lead_key));
+        assert!(signalled, "a gotify delivered mid-turn signals PromptQueuedWhileBusy");
     }
 
     #[test]

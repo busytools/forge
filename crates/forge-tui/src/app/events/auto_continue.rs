@@ -373,6 +373,7 @@ mod tests {
         let (ws, mut updates) = forge_workspace::Workspace::testing_stub();
         app.workspace = Some(ws);
         let _rx = app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
         let key = app.active_session_key.clone().expect("active key");
 
         app.sessions.get_mut(&key).expect("bucket").auto_continue_due_at =
@@ -383,6 +384,10 @@ mod tests {
             "an idle continuation must not signal PromptQueuedWhileBusy",
         );
 
+        // The counted case models a turn that started inside the
+        // backoff window, so the bucket carries a live turn.
+        app.sessions.get_mut(&key).expect("bucket").lifecycle_state =
+            crate::app::session::SessionLifecycleState::Running;
         app.workspace
             .as_ref()
             .expect("workspace")

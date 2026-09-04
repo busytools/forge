@@ -87,6 +87,19 @@ pub(crate) fn note_queued_dispatch(app: &mut App, key: &SessionKey) {
         );
         return;
     };
+    // The workspace busy-check can lose the race to the in-flight
+    // turn's own Result (same channel, FIFO); counting into a settled
+    // bucket phantom-reopens for the prompt's fresh turn.
+    if !matches!(bucket.lifecycle_state, crate::app::session::SessionLifecycleState::Running) {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "queued_send_dropped",
+            message = "queued send dropped: the bucket has no live turn",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+        );
+        return;
+    }
     bucket.queued_turn_sends = bucket.queued_turn_sends.saturating_add(1);
 }
 
@@ -788,7 +801,8 @@ mod tests {
 
     /// The workspace's own dispatches (cron, peer, gotify, kick) arrive
     /// as `PromptQueuedWhileBusy` and count into the keyed bucket -
-    /// active or background - while an unknown key must not mint one.
+    /// active or background, live turns both - while an unknown key
+    /// must not mint one.
     #[test]
     fn prompt_queued_while_busy_counts_into_the_keyed_bucket() {
         use crate::app::session::UiSession;
@@ -797,6 +811,10 @@ mod tests {
         let bg_key = SessionKey::from_str_for_test("background-queued");
         app.sessions.insert(active_key.clone(), UiSession::new(active_key.clone()));
         app.sessions.insert(bg_key.clone(), UiSession::new(bg_key.clone()));
+        for key in [&active_key, &bg_key] {
+            app.sessions.get_mut(key).expect("seeded").lifecycle_state =
+                SessionLifecycleState::Running;
+        }
 
         apply_session_update(
             &mut app,
@@ -823,6 +841,38 @@ mod tests {
         assert!(
             !app.sessions.contains_key(&SessionKey::from_str_for_test("no-such-session")),
             "an unknown key must not mint a bucket",
+        );
+    }
+
+    /// The race the helper cannot rule out: the busy-check passes, then
+    /// the in-flight turn's Result settles the bucket before the signal
+    /// lands (same channel, FIFO). Counting then would phantom-reopen
+    /// for the prompt's own fresh turn and misattribute the 90s expiry,
+    /// so a settled (Idle) bucket drops the signal.
+    #[test]
+    fn prompt_queued_while_busy_after_the_settle_is_dropped() {
+        let mut app = app_with_connection();
+        let key = active_session_key(&app);
+
+        app.status = AppStatus::Ready;
+        set_input(&mut app, "first");
+        crate::app::input_submit::submit_input(&mut app);
+        apply_session_update_turn_complete(&mut app, &key, None);
+        assert!(matches!(app.status, AppStatus::Ready), "fixture: the turn settled");
+        assert_eq!(
+            app.sessions.get(&key).expect("bucket").lifecycle_state,
+            SessionLifecycleState::Idle,
+            "fixture: the settle idled the bucket",
+        );
+
+        apply_session_update(&mut app, SessionUpdate::PromptQueuedWhileBusy { key: key.clone() });
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(bucket.queued_turn_sends, 0, "a settled bucket drops the signal");
+        assert_eq!(bucket.lifecycle_state, SessionLifecycleState::Idle, "no re-open");
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "the settle is not suppressed by a dropped signal",
         );
     }
 
