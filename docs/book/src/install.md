@@ -57,6 +57,11 @@ builds and tests on Linux, but two things behave differently:
   is unaffected, because those paths carry their own bearer token and
   never consult the keychain. `provider` is what decides that, not the
   presence of `ANTHROPIC_BASE_URL`.
+- **Keyboard chords use Cmd on macOS, Ctrl elsewhere.** The pane
+  toggles (`Cmd+Left`/`Cmd+Right` vs `Ctrl+Left`/`Ctrl+Right`),
+  toggle-all-tool-calls (`Cmd+X` vs `Ctrl+X`) and word navigation
+  (Alt vs Ctrl on the arrow and backspace chords) all swap their
+  modifier.
 
 ## Build and check
 
