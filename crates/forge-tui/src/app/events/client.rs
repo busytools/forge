@@ -690,8 +690,22 @@ fn apply_session_update_spawning(
             app.pending_spawn_focus = None;
         }
         if user_asked_for_this || app.active_session_key.is_none() {
+            tracing::info!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "spawn_wake_focus",
+                outcome = "focused",
+                reason = "user_asked",
+                key = %key.as_str(),
+            );
             app.switch_active_session(key);
         } else {
+            tracing::info!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "spawn_wake_focus",
+                outcome = "registered",
+                reason = "background_wake",
+                key = %key.as_str(),
+            );
             app.needs_redraw = true;
         }
         return;
@@ -751,8 +765,22 @@ fn apply_session_update_spawning(
         app.pending_spawn_focus = None;
     }
     if user_asked_for_this || app.active_session_key.is_none() {
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "spawn_wake_focus",
+            outcome = "focused",
+            reason = "user_asked",
+            key = %key.as_str(),
+        );
         app.switch_active_session(key);
     } else {
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "spawn_wake_focus",
+            outcome = "registered",
+            reason = "background_wake",
+            key = %key.as_str(),
+        );
         app.needs_redraw = true;
     }
 }

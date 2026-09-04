@@ -1069,6 +1069,15 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             // through the overlay; leave the overlay open.
             return true;
         };
+        tracing::info!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "pane_click_hit_test",
+            outcome = "hit",
+            surface = "overlay",
+            resolved_target = ?target,
+            column = mouse.column,
+            row = mouse.row,
+        );
         return match target {
             PaneHitTarget::ProjectHeader { project_name, .. } => {
                 switch_to_project_lead(app, &project_name);
@@ -1115,6 +1124,15 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         // hit-test below can't accidentally fire on a pane click.
         return true;
     };
+    tracing::info!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "pane_click_hit_test",
+        outcome = "hit",
+        surface = "inline_pane",
+        resolved_target = ?target,
+        column = mouse.column,
+        row = mouse.row,
+    );
     match target {
         PaneHitTarget::ProjectHeader { project_name, .. } => {
             switch_to_project_lead(app, &project_name);

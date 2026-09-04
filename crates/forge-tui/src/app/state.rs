@@ -868,6 +868,13 @@ impl App {
             );
             return;
         }
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "active_session_switched",
+            outcome = "success",
+            from = ?self.active_session_key.as_ref().map(forge_workspace::SessionKey::as_str),
+            to = %key.as_str(),
+        );
 
         // `App.status` is derived freshly from the destination
         // bucket's `lifecycle_state` instead of being snapshotted, so
