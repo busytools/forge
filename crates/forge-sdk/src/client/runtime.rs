@@ -158,7 +158,6 @@ pub(crate) fn spawn_reader_task(
 /// Process one decoded line. Returns [`LineOutcome::Stop`] only when
 /// the events channel has closed and the read loop should exit; a
 /// line that fails to decode is skipped and the loop continues.
-#[allow(clippy::too_many_arguments)]
 async fn handle_line(
     dispatch: &ControlDispatchHandle,
     pending_controls: &PendingControls,
