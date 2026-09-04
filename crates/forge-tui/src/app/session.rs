@@ -616,7 +616,7 @@ impl UiSession {
             self.backgrounded_roots
                 .iter()
                 .filter(|id| self.session_task_tool_use_ids.values().any(|v| v == *id))
-                .map(|id| id.as_str()),
+                .map(String::as_str),
         );
         alive
     }

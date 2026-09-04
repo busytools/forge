@@ -277,7 +277,7 @@ pub(super) fn finalize_background_tool_calls(
     let exempt: std::collections::HashSet<&str> = open_ids
         .iter()
         .filter(|id| session.is_backgrounded_alive_or_descendant(id))
-        .map(|id| id.as_str())
+        .map(String::as_str)
         .collect();
     let mut swept = 0usize;
     for msg in &mut session.messages {

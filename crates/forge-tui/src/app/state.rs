@@ -2301,7 +2301,7 @@ impl App {
         for msg_idx in &changed_messages {
             self.recompute_message_retained_bytes(*msg_idx);
         }
-        self.invalidate_message_set(changed_messages.into_iter());
+        self.invalidate_message_set(changed_messages);
     }
 
     /// Clear the active session's background-task registry (and its
@@ -3656,7 +3656,7 @@ impl App {
                 self.active_session()
                     .is_some_and(|session| session.is_backgrounded_alive_or_descendant(id))
             })
-            .map(|id| id.as_str())
+            .map(String::as_str)
             .collect();
 
         for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {
