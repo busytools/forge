@@ -44,6 +44,7 @@ pub use viewport::{
     LayoutRemeasureReason, ScrollbarGeometry, compute_scrollbar_geometry,
 };
 
+#[cfg(any(test, feature = "testing"))]
 use crate::agent::model;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
