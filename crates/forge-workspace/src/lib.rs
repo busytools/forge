@@ -67,6 +67,7 @@ mod domain_session;
 mod error;
 pub(crate) mod mcp;
 pub mod protocol;
+mod review;
 mod session_task;
 mod single_instance;
 mod spawn;
