@@ -62,9 +62,10 @@ impl super::App {
 
     /// The status-only half of block protection, answered against a
     /// block the caller already borrowed. The walk sites resolve
-    /// `messages()` once per walk rather than once per block - a
-    /// message that only grows made the per-block re-resolution
-    /// quadratic on backgrounded-subagent traffic (#793).
+    /// `messages()` once per walk rather than once per block - each
+    /// re-resolution is a session-map lookup plus a slice, and a
+    /// message that only grows paid it for every block on every insert
+    /// (#793).
     fn block_is_render_cache_protected(tail_protected: bool, block: Option<&MessageBlock>) -> bool {
         let tool_protected = matches!(
             block,

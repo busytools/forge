@@ -659,8 +659,10 @@ impl UiSession {
 
     /// Whether one tool call id is exempt from a turn-boundary sweep: a
     /// live backgrounded root itself, or hanging off one at any depth.
-    /// Per-call form of the sweep exemption - O(depth) for this id,
-    /// rather than resolving every scope in the map (#793).
+    /// Per-call form of the sweep exemption: building the live-root set
+    /// costs O(roster + map + sticky), and the chain walk on top of it
+    /// O(depth) - against the eager form's O(all scopes) per sweep
+    /// (#793).
     pub(crate) fn is_backgrounded_alive_or_descendant(&self, id: &str) -> bool {
         let roots = self.backgrounded_alive_tool_use_ids();
         roots.contains(id) || self.resolves_to_live_root(id, &roots)
