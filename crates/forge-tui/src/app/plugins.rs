@@ -1265,6 +1265,13 @@ pub fn maybe_spawn_boot_auto_update(
     if !settings.auto_update || settings.trusted_marketplaces.is_empty() {
         return;
     }
+    if cwd_raw.is_empty() {
+        tracing::warn!(
+            target: crate::logging::targets::APP_CONFIG,
+            "boot auto-update skipped: forge launched with no project cwd for the plugin CLI",
+        );
+        return;
+    }
     let span = info_span!(
         target: crate::logging::targets::APP_CONFIG,
         "plugin_boot_auto_update",
@@ -2607,7 +2614,7 @@ mod tests {
         assert!(!app.plugins.loading);
         assert_eq!(
             app.plugins.update_run.map(|run| run.summary()),
-            Some("1 updated, 0 current".to_owned())
+            Some("1 updated, 0 failed, 0 current".to_owned())
         );
         assert!(app.plugins.update_records.is_empty());
     }

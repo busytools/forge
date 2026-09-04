@@ -90,9 +90,18 @@ fn create_app_impl(
     let (process_scan_event_tx, process_scan_event_rx) = std::sync::mpsc::channel();
     // Opt-in plugin auto-update ([plugins] auto_update): one
     // inventory refresh + eligible updates in the background, results
-    // landing in the plugins pane state.
+    // landing in the plugins pane state. The plugin CLI needs a cwd;
+    // a launchpad boot has none, so it borrows the first project's.
     let update_tx_for_plugins = workspace.update_sender();
-    let boot_cwd_raw = cwd_raw.clone();
+    let boot_cwd_raw = if cwd_raw.is_empty() {
+        workspace
+            .list_projects()
+            .first()
+            .map(|project| project.path.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        cwd_raw.clone()
+    };
     crate::app::plugins::maybe_spawn_boot_auto_update(
         &workspace,
         update_tx_for_plugins,

@@ -152,12 +152,12 @@ impl PluginUpdateRun {
                 _ => {}
             }
         }
-        if failed > 0 {
+        if updated > 0 || failed > 0 {
             format!("{updated} updated, {failed} failed, {current} current")
         } else if available > 0 {
             format!("{available} update(s) available")
         } else {
-            format!("{updated} updated, {current} current")
+            "all current".to_owned()
         }
     }
 }
