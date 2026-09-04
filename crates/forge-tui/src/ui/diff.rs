@@ -5,6 +5,7 @@ use crate::ui::wrap::{StyledChunk, display_width, expand_tabs, wrap_styled_chunk
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
+use std::borrow::Cow;
 
 /// Rows outside this window render without syntax highlighting.
 ///
@@ -106,7 +107,8 @@ pub fn render_diff(
             // leading spaces at wrap boundaries, so the indent column
             // is rendered explicitly (matches pre-syntect behavior).
             let expanded = expand_tabs(value);
-            let (leading_indent, content) = split_leading_whitespace(&expanded);
+            let stripped = strip_control_chars(&expanded);
+            let (leading_indent, content) = split_leading_whitespace(&stripped);
             let highlighted = row_is_highlighted(row_idx, row_total, highlight_window);
             row_idx += 1;
             let highlighted_spans = if highlighted {
@@ -238,8 +240,8 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
     // Every marker is one ASCII byte, so the split is always on a
     // boundary when `carries_source` holds.
     let text = match carries_source.then(|| line.split_at(1)) {
-        Some((marker, body)) => format!("{marker}{}", expand_tabs(body)),
-        None => expand_tabs(line).into_owned(),
+        Some((marker, body)) => format!("{marker}{}", strip_control_chars(&expand_tabs(body))),
+        None => strip_control_chars(&expand_tabs(line)).into_owned(),
     };
     let mut rendered = Line::from(Span::styled(text, style));
     if let Some(bg) = row_bg {
@@ -377,6 +379,20 @@ fn render_wrapped_diff_row(
             line
         })
         .collect()
+}
+
+/// Drop control characters a diff row charges a column for (`Span::width`
+/// counts them) and paints none of (`styled_graphemes` drops them). The
+/// range spares tab and newline, which expand_tabs and line splitting have
+/// already consumed; DEL has the same measure-paint split and goes too.
+fn strip_control_chars(text: &str) -> Cow<'_, str> {
+    fn is_stripped_control(ch: char) -> bool {
+        matches!(ch, '\u{0}'..='\u{8}' | '\u{b}'..='\u{1f}' | '\u{7f}')
+    }
+    if !text.chars().any(is_stripped_control) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(text.chars().filter(|ch| !is_stripped_control(*ch)).collect())
 }
 
 fn split_leading_whitespace(text: &str) -> (&str, &str) {
@@ -693,6 +709,52 @@ mod tests {
             grapheme.iter().any(|line| line.contains("\u{2764}\u{fe0f}  x = 1")),
             "a 2-column grapheme leaves the tab advancing 2: {grapheme:?}"
         );
+    }
+
+    /// A control character is charged a column by `Span::width` and
+    /// painted by nothing (`styled_graphemes` drops it), so a row
+    /// carrying one wraps early and every width derived from the
+    /// measurement drifts from what is on screen. All three
+    /// content-to-span paths must close that split; DEL rides along on
+    /// the same measure-paint split.
+    #[test]
+    fn diff_rows_strip_control_chars_so_measured_width_equals_painted() {
+        let assert_clean = |lines: &[Line<'static>], needle: &str| {
+            let row = lines
+                .iter()
+                .find(|line| line.spans.iter().any(|span| span.content.contains(needle)))
+                .unwrap_or_else(|| panic!("no row containing `{needle}`"));
+            let painted: usize = row
+                .styled_graphemes(Style::default())
+                .map(|grapheme| display_width(grapheme.symbol))
+                .sum();
+            let measured: usize = row.spans.iter().map(Span::width).sum();
+            assert_eq!(
+                measured, painted,
+                "`{needle}` row charges a column it does not paint: {row:?}"
+            );
+            let joined: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+            assert!(
+                !joined.chars().any(char::is_control),
+                "no control character may reach a span: {joined:?}"
+            );
+        };
+
+        // The syntect highlight arm.
+        let highlighted = render_diff(&model::Diff::new("tmp.rs", "before\u{1b}after\n"), 80, None);
+        assert_clean(&highlighted, "before");
+
+        // The non-highlighted Span::raw fallback.
+        let raw_fallback = render_diff(
+            &model::Diff::new("tmp.rs", "before\u{1}after\n"),
+            80,
+            Some(HighlightWindow { head_rows: 0, tail_rows: 0 }),
+        );
+        assert_clean(&raw_fallback, "before");
+
+        // The unified-diff fallback.
+        let raw_unified = render_raw_unified_diff("+before\u{7f}after\n");
+        assert_clean(&raw_unified, "before");
     }
 
     #[test]
