@@ -47,6 +47,8 @@ struct MarketplaceSourceJson {
     name: String,
     source: Option<String>,
     repo: Option<String>,
+    #[serde(rename = "installLocation")]
+    install_location: Option<String>,
 }
 
 pub async fn refresh_inventory(
@@ -151,6 +153,7 @@ fn refresh_inventory_blocking(
             name: entry.name,
             source: entry.source,
             repo: entry.repo,
+            install_location: entry.install_location,
         })
         .collect::<Vec<_>>();
     marketplace_sources.sort_by_cached_key(|entry| entry.name.to_ascii_lowercase());
