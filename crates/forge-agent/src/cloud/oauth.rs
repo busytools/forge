@@ -177,7 +177,7 @@ fn zai_window_from_entry(
     entry: &forge_primitives::usage::zai::QuotaLimitEntry,
 ) -> Option<UsageWindow> {
     let usage = entry.usage?;
-    let remaining = entry.remaining.unwrap_or(0.0);
+    let remaining = entry.remaining?;
     let utilization = if usage > 0.0 {
         ((usage - remaining).max(0.0) / usage * 100.0).clamp(0.0, 100.0)
     } else {
@@ -281,6 +281,31 @@ mod tests {
         let five = snapshot.five_hour.expect("5h window");
         assert!(five.utilization.abs() < f64::EPSILON, "fresh account has consumed nothing");
         assert_eq!(five.resets_at, None, "no nextResetTime means no reset moment yet");
+    }
+
+    /// `remaining` absent is an unreadable entry, not a full one: it is
+    /// skipped like a missing `usage`, because asserting a default
+    /// would render a saturated red row off a field the payload never
+    /// carried.
+    #[test]
+    fn zai_quota_skips_an_entry_without_remaining() {
+        let payload: forge_primitives::usage::zai::QuotaLimitData = serde_json::from_str(
+            r#"{
+                "limits": [
+                    {"type":"CREDIT_LIMIT","unit":3,"number":5,"usage":28000},
+                    {"type":"CREDIT_LIMIT","unit":6,"number":1,"usage":140000,
+                     "remaining":139000,"nextResetTime":1757000000000}
+                ],
+                "level": "max"
+            }"#,
+        )
+        .expect("decode");
+        let snapshot = snapshot_from_zai_quota(payload).expect("the weekly entry maps");
+        assert!(
+            snapshot.five_hour.is_none(),
+            "an entry with no remaining must not map to 100% utilization",
+        );
+        assert!(snapshot.seven_day.is_some(), "its present sibling still maps");
     }
 
     /// Both an empty `limits` array and entries of some future
