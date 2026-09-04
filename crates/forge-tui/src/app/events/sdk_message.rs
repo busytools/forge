@@ -1463,6 +1463,10 @@ fn handle_task_notification(app: &mut App, msg: Message) {
         app.remove_session_task_mapping(&task_id);
         if let Some(root_id) = root_id {
             app.clear_backgrounded_root(&root_id);
+            // The true completion settles the root's open children here,
+            // not only at the roster drain (#789): the drain frame finds
+            // no mapping after this and could not resolve them.
+            app.settle_departed_root_children(&root_id);
         }
     }
     // stamp the `output_file` path on the matching
@@ -4090,6 +4094,47 @@ mod subagent_sentinel_tests {
         );
         assert!(map_has(&app, "task-a"), "the still-listed subagent keeps its map entry");
         assert!(!map_has(&app, "task-b"), "the departed subagent loses its map entry");
+    }
+
+    fn card_status(app: &App, id: &str) -> ToolCallStatus {
+        let (mi, bi) = app.lookup_tool_call(id).expect("indexed");
+        match app.messages().get(mi).and_then(|m| m.blocks.get(bi)) {
+            Some(MessageBlock::ToolCall(tc)) => tc.status,
+            _ => panic!("expected ToolCall block for {id}"),
+        }
+    }
+
+    /// The notification is the subagent's true completion, and it can
+    /// land while the task is still rostered. Its open children settle
+    /// here too: the later drain frame finds no mapping left to resolve
+    /// and would otherwise strand them open until the next turn
+    /// boundary (#789, second trigger).
+    #[test]
+    fn task_notification_settles_the_roots_open_children() {
+        let mut app = App::test_default();
+        seed_subagent(&mut app, "task-sub", "tu-root-sub", "tu-child-1");
+        // Reopen the child: the shape where the notification is the only
+        // settle signal left.
+        let (mi, bi) = app.lookup_tool_call("tu-child-1").expect("child indexed");
+        match app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi)) {
+            Some(MessageBlock::ToolCall(tc)) => tc.as_mut().status = ToolCallStatus::InProgress,
+            _ => panic!("expected ToolCall block for tu-child-1"),
+        }
+        handle_sdk_message(&mut app, roster_changed(&["task-sub"]));
+        assert_eq!(
+            card_status(&app, "tu-child-1"),
+            ToolCallStatus::InProgress,
+            "precondition: the child is open before the notification",
+        );
+
+        handle_sdk_message(&mut app, task_notification("task-sub", "tu-root-sub"));
+
+        assert_eq!(
+            card_status(&app, "tu-child-1"),
+            ToolCallStatus::Completed,
+            "the true completion settles the root's open children; got {:?}",
+            card_status(&app, "tu-child-1"),
+        );
     }
 }
 
