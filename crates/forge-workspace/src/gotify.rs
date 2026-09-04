@@ -330,7 +330,6 @@ impl Workspace {
     /// subscribe path. Cross-crate test access so forge-tui can exercise
     /// the Inspector's `refresh_gotify` resolution, mirroring
     /// [`Self::seed_test_cron`].
-    #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_gotify_subscription(&self, sub: forge_primitives::GotifySubscription) {
         self.add_gotify_subscription(sub, false);
     }
