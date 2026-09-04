@@ -1064,11 +1064,28 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         let target =
             app.pane_hit_targets.iter().find(|t| t.contains(mouse.column, mouse.row)).cloned();
         let Some(target) = target else {
+            tracing::info!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "pane_click_hit_test",
+                outcome = "miss",
+                surface = "overlay",
+                column = mouse.column,
+                row = mouse.row,
+            );
             // Click landed on overlay chrome (banner rule, blank
             // padding). Consume so chat hit-tests don't fire
             // through the overlay; leave the overlay open.
             return true;
         };
+        tracing::info!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "pane_click_hit_test",
+            outcome = "hit",
+            surface = "overlay",
+            resolved_target = ?target,
+            column = mouse.column,
+            row = mouse.row,
+        );
         return match target {
             PaneHitTarget::ProjectHeader { project_name, .. } => {
                 switch_to_project_lead(app, &project_name);
@@ -1110,11 +1127,28 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
     }
     let target = app.pane_hit_targets.iter().find(|t| t.contains(mouse.column, mouse.row)).cloned();
     let Some(target) = target else {
+        tracing::info!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "pane_click_hit_test",
+            outcome = "miss",
+            surface = "inline_pane",
+            column = mouse.column,
+            row = mouse.row,
+        );
         // Click landed in the pane area but outside any stamped row
         // (banner rule, blank line, padding). Consume so the chat
         // hit-test below can't accidentally fire on a pane click.
         return true;
     };
+    tracing::info!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "pane_click_hit_test",
+        outcome = "hit",
+        surface = "inline_pane",
+        resolved_target = ?target,
+        column = mouse.column,
+        row = mouse.row,
+    );
     match target {
         PaneHitTarget::ProjectHeader { project_name, .. } => {
             switch_to_project_lead(app, &project_name);
@@ -1271,6 +1305,13 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
     if app.active_session_key.as_ref() == Some(&spawn_synthetic)
         && app.sessions.contains_key(&spawn_synthetic)
     {
+        tracing::info!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "pane_click_refused",
+            outcome = "refused",
+            reason = "already_active",
+            project = %project_name,
+        );
         return;
     }
 
@@ -1294,6 +1335,13 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
         })
         .map(|s| s.lifecycle_state);
     if spawning_bucket == Some(forge_primitives::SessionLifecycleState::Spawning) {
+        tracing::info!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "pane_click_refused",
+            outcome = "refused",
+            reason = "mid_spawn",
+            project = %project_name,
+        );
         return;
     }
 
