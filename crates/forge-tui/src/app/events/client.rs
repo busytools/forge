@@ -499,6 +499,10 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                             editor.insert_str(&crate::app::plugins::normalize_single_line_input(
                                 text,
                             ));
+                            // The overlay field has no selection list to reset.
+                            if app.config.add_marketplace_overlay().is_none() {
+                                crate::app::plugins::reset_selection_for_active_tab(app);
+                            }
                         } else {
                             editor.insert_str(text);
                         }
