@@ -726,7 +726,7 @@ fn append_mcp_servers_section(
     lines.push(Line::default());
 
     let include_memory = width >= PROCESSES_MEMORY_WIDTH_THRESHOLD;
-    for row in rows.iter() {
+    for row in rows {
         let (glyph, glyph_color) = mcp_status_glyph(row.status);
         let name_chrome = usize::from(PANE_PAD)
             + 2 // block indent
