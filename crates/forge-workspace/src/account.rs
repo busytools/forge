@@ -249,10 +249,10 @@ impl AccountStateMap {
         self.by_key.get(key).map(|s| &s.config_dir)
     }
 
-    /// Per-account `[accounts.env]` map for `key`. Consumed by the
-    /// spawn path (stamped onto the child) and the usage poller /
-    /// loader (base url + bearer for a base-url provider). `None` for
-    /// unknown keys.
+    /// The account's env map: global `[env]` extended by its own
+    /// `[accounts.env]`. Consumed by the spawn path (stamped onto the
+    /// child) and the usage poller / loader (base url, bearer, setup
+    /// token). `None` for unknown keys.
     pub fn env(&self, key: &AccountKey) -> Option<&std::collections::HashMap<String, String>> {
         self.by_key.get(key).map(|s| &s.env)
     }

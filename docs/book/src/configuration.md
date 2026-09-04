@@ -97,9 +97,9 @@ written below one is read as an environment variable and the account
 still counts as missing it.
 
 `"anthropic"` reads credentials from the macOS keychain and probes the
-default host - unless its `[accounts.env]` carries
-`CLAUDE_CODE_OAUTH_TOKEN`, in which case that token is the credential
-and the keychain is not read (see [Environment
+default host - unless its env carries `CLAUDE_CODE_OAUTH_TOKEN` (from
+`[accounts.env]` or the global `[env]`), in which case that token is
+the credential and the keychain is not read (see [Environment
 layering](#environment-layering)). `"codex"`, `"openrouter"` and
 `"zai"` authenticate with the `ANTHROPIC_AUTH_TOKEN` beside their
 `ANTHROPIC_BASE_URL`, and an account declaring any of them without
@@ -210,8 +210,9 @@ or `ANTHROPIC_AUTH_TOKEN` at the *project* layer instead desynchronises
 forge's own accounting, because the usage probe, plan detection and the
 account picker all read the account map.
 
-A `CLAUDE_CODE_OAUTH_TOKEN` under an `"anthropic"` account's
-`[accounts.env]` makes the account token-mode: the token, minted by
+A `CLAUDE_CODE_OAUTH_TOKEN` in an `"anthropic"` account's env - its
+own `[accounts.env]`, or the global `[env]` every account extends -
+makes the account token-mode: the token, minted by
 `claude setup-token`, is the credential, the keychain is never read,
 and several accounts can share one config dir. The usage endpoint
 refuses setup tokens (they lack the `user:profile` scope), so a valid

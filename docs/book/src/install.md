@@ -56,10 +56,10 @@ builds and tests on Linux, but two things behave differently:
   with. An account whose `provider` is `codex`, `openrouter` or `zai`
   is unaffected, because those paths carry their own bearer token and
   never consult the keychain. The same is true of an `anthropic`
-  account whose `[accounts.env]` carries `CLAUDE_CODE_OAUTH_TOKEN`:
-  that token is the credential and the keychain is never read. The
-  provider plus that key decide that, not the presence of
-  `ANTHROPIC_BASE_URL`.
+  account whose env carries `CLAUDE_CODE_OAUTH_TOKEN` (its
+  `[accounts.env]`, or the global `[env]`): that token is the
+  credential and the keychain is never read. The provider plus that
+  key decide that, not the presence of `ANTHROPIC_BASE_URL`.
 - **App-level chords use Cmd on macOS, Ctrl elsewhere.** The pane
   toggles (`Cmd+Left`/`Cmd+Right` vs `Ctrl+Left`/`Ctrl+Right`) and
   toggle-all-tool-calls (`Cmd+X` vs `Ctrl+X`) swap their modifier.
