@@ -763,7 +763,7 @@ chat continues here...
     <p id="inspector-mcp-servers">The <strong>MCP SERVERS</strong> section sits above PROCESSES and is sourced <strong>entirely from the session's MCP snapshot</strong> (<code>App::mcp().servers</code>, refreshed by the connect-time + tick-driven <code>mcp_status</code> polls), never from the OS process walk. That is what makes every configured server visible: an <code>sdk</code> in-process server (forge itself) has no process for a walk to find, an <code>http</code> / <code>sse</code> server never spawns one, and a <code>pending</code> or <code>failed</code> server has no handshake either - all four render here, where the old PROCESSES MCP tier structurally only ever showed servers with a live pid. Rows render in order: <strong>connected first by name, then pending, then failed</strong>.</p>
     <p>Row anatomy - up to three lines per server, packed tight (no blank between servers) so each tree reads as one block:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><strong>Name line</strong> - <code>├─ / └─</code> connector + the server's configured name (plugin namespaces stripped, so <code>plugin:context7:context7</code> renders as <code>context7</code>) in <code>DIM</code>, matching the section's other chrome, + a trailing status glyph: <span style="color:rgb(130,199,107)">●</span> connected (<code>REVIEW_RESOLVED</code> green) / <span style="color:rgb(97,160,224)">◌</span> pending (<code>REVIEW_ADDRESSED</code> blue) / <span style="color:#e06c75">✗</span> failed (<code>STATUS_ERROR</code> red). One glyph and no word, so the name line never wraps at 40 cols - the status word only appears where the state is the news (below).</li>
+      <li><strong>Name line</strong> - <code>├─ / └─</code> connector + the server's configured name (plugin namespaces stripped, so <code>plugin:context7:context7</code> renders as <code>context7</code>) in <strong>bold default-fg</strong>, the SCHEDULES headline treatment, + a trailing status glyph: <span style="color:rgb(130,199,107)">●</span> connected (<code>REVIEW_RESOLVED</code> green) / <span style="color:rgb(97,160,224)">◌</span> pending (<code>REVIEW_ADDRESSED</code> blue) / <span style="color:#e06c75">✗</span> failed (<code>STATUS_ERROR</code> red). One glyph and no word, so the name line never wraps at 40 cols - the status word only appears where the state is the news (below).</li>
       <li><strong>Detail line</strong> (DIM, indented under the name) - <code>&lt;scope&gt; · &lt;state&gt;</code>. The scope is the snapshot's own label rendered verbatim (<code>user</code>, <code>project</code>, <code>dynamic</code> for plugin-provided servers), falling back to <code>sdk</code> when the config blob's type says sdk, then <code>session</code>. A connected server appends the tool count (<code>user · 24 tools</code>, <code>no tools</code> for an empty list); a pending server appends the word <code>pending</code>; a failed server appends the CLI's failure reason verbatim (e.g. <code>project · SSE error: Non-200 status code (502)</code>), truncated with the row like every other pane cell. Versions are deliberately not shown per-row - they were the widest token and the least actionable, and the <a href="#settings">/mcp view</a> still carries them.</li>
       <li><strong>Process line</strong> (DIM, only for subprocess-backed servers) - <code>&lt;cmd&gt; · &lt;memory&gt; · &lt;pid&gt;</code>, exactly as the old PROCESSES tree rendered the backing process under a matched server: the command with its exe basenamed, the <strong>subtree</strong> resident memory (the collapsed <code>node</code> leaf's RSS stays inside it), and the pid so a long-lived server can be found with <code>ps</code>. Memory + pid ride the same ≥36-col threshold as PROCESSES, so at Medium the line reads as the cmdline alone.</li>
     </ul>
@@ -776,15 +776,15 @@ chat continues here...
 
   <span class="dim bold">  MCP SERVERS</span>                    <span class="dim">▦</span>
 
-  <span class="dim">  ├─ forge</span> <span style="color:rgb(130,199,107)">●</span>
-  <span class="dim">  │   └─ sdk · 18 tools</span>
-  <span class="dim">  ├─ context7</span> <span style="color:rgb(130,199,107)">●</span>
-  <span class="dim">  │   ├─ dynamic · 2 tools</span>
-  <span class="dim">  │   └─ npm exec @upstash/… · 46 MB · 47881</span>
-  <span class="dim">  ├─ playwright</span> <span style="color:rgb(97,160,224)">◌</span>
-  <span class="dim">  │   └─ user · pending</span>
-  <span class="dim">  └─ granite-ops</span> <span style="color:#e06c75">✗</span>
-  <span class="dim">      └─ user · connect refused</span>
+  <span class="dim">  ├─ </span><span style="color:var(--text); font-weight:700">forge</span> <span style="color:rgb(130,199,107)">●</span>
+  <span class="dim">  │     └─ sdk · 18 tools</span>
+  <span class="dim">  ├─ </span><span style="color:var(--text); font-weight:700">context7</span> <span style="color:rgb(130,199,107)">●</span>
+  <span class="dim">  │     ├─ dynamic · 2 tools</span>
+  <span class="dim">  │     └─ npm exec @upstash/… · 46 MB · 47881</span>
+  <span class="dim">  ├─ </span><span style="color:var(--text); font-weight:700">playwright</span> <span style="color:rgb(97,160,224)">◌</span>
+  <span class="dim">  │     └─ user · pending</span>
+  <span class="dim">  └─ </span><span style="color:var(--text); font-weight:700">granite-ops</span> <span style="color:#e06c75">✗</span>
+  <span class="dim">        └─ user · connect refused</span>
 </pre>
     </div>
     <dl style="margin-left: 16px;">

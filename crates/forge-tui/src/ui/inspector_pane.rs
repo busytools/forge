@@ -728,9 +728,9 @@ fn append_mcp_servers_section(
     let server_count = rows.len();
     for (idx, row) in rows.iter().enumerate() {
         let is_last = idx + 1 == server_count;
-        // Continuation column under the name connector: `│   ` while
+        // Continuation column under the name connector: `│     ` while
         // more servers follow, blank once the trunk closed.
-        let trunk = if is_last { "    " } else { "\u{2502}   " };
+        let trunk = if is_last { "      " } else { "\u{2502}     " };
         let connector = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
         let (glyph, glyph_color) = mcp_status_glyph(row.status);
         let name_chrome = usize::from(PANE_PAD)
@@ -742,12 +742,12 @@ fn append_mcp_servers_section(
         lines.push(Line::from(vec![
             Span::raw(" ".repeat(usize::from(PANE_PAD))),
             Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)),
-            Span::styled(name, Style::default().fg(theme::DIM)),
+            Span::styled(name, Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" "),
             Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
         ]));
 
-        let child_chrome = usize::from(PANE_PAD) + 4 + 3 + usize::from(PANE_PAD); // pad + trunk + connector + gutter
+        let child_chrome = usize::from(PANE_PAD) + 6 + 3 + usize::from(PANE_PAD); // pad + trunk + connector + gutter
         let budget = row_text_budget(usize::from(width), child_chrome);
         // Detail line: ├─ when the process line follows it, └─ when the
         // detail is the tree's last child.
@@ -4434,13 +4434,16 @@ mod tests {
             lines.iter().find(|l| line_text(l).contains("playwright-local")).expect("name row");
         let name_row = line_text(name_line);
         assert!(name_row.contains('\u{25CF}'), "the glyph survives next to the name");
-        // The name is section chrome; bright colour here is reserved for the status glyph.
         let name_span = name_line
             .spans
             .iter()
             .find(|s| s.content.contains("playwright-local"))
             .expect("name span");
-        assert_eq!(name_span.style.fg, Some(theme::DIM), "server name renders in DIM chrome");
+        assert_eq!(name_span.style.fg, None, "server name renders in default fg");
+        assert!(
+            name_span.style.add_modifier.contains(Modifier::BOLD),
+            "server name renders bold, the row's headline treatment",
+        );
     }
 
     // ---------------------------------------------------------
