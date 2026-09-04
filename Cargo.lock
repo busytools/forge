@@ -1216,7 +1216,9 @@ name = "forge-agent"
 version = "1.0.38"
 dependencies = [
  "anyhow",
+ "async-trait",
  "forge-primitives",
+ "forge-providers",
  "forge-sdk",
  "futures",
  "hex",
@@ -1274,6 +1276,20 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "forge-providers"
+version = "1.0.38"
+dependencies = [
+ "async-trait",
+ "forge-primitives",
+ "httpdate",
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1367,6 +1383,7 @@ dependencies = [
  "forge-agent",
  "forge-dictate",
  "forge-primitives",
+ "forge-providers",
  "forge-sdk",
  "forge-workspace",
  "parking_lot",

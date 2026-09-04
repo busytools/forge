@@ -7,7 +7,8 @@ pub mod model_catalog;
 pub mod oauth;
 pub mod oauth_credentials;
 pub mod oauth_usage;
+pub mod provider_host;
 pub mod service_status;
-mod time;
 
 pub use forge_primitives::usage::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
+pub use provider_host::AgentHost;

@@ -21,7 +21,9 @@ testing = []
 
 [dependencies]
 forge-primitives = { workspace = true }
+forge-providers = { workspace = true }
 forge-sdk = { path = "../forge-sdk", version = "=1.0.38" }
+async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 futures = { workspace = true }
 serde = { workspace = true }

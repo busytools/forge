@@ -1,13 +1,14 @@
 # Architecture
 
-Seven crates, layered so the dependency graph stays acyclic.
+Eight crates, layered so the dependency graph stays acyclic.
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
 forge-dictate         leaf: dictation, depends on no forge-* crate
+forge-providers   ->  primitives
 forge-sdk         ->  primitives
-forge-agent       ->  primitives + sdk
-forge-workspace   ->  primitives + agent + sdk + dictate
+forge-agent       ->  primitives + sdk + providers
+forge-workspace   ->  primitives + agent + sdk + dictate + providers
 forge-tui         ->  primitives + workspace
 forge-test-harness->  primitives + sdk
 ```
@@ -16,6 +17,7 @@ forge-test-harness->  primitives + sdk
 |---|---|
 | `forge-primitives` | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side view structs. No logic, no I/O, no async. |
 | `forge-dictate` | The dictation primitive: audio in, text out. Owns its model files, speech recognition and transcript normalization. Depends on no forge-* crate and knows nothing about the program embedding it. |
+| `forge-providers` | One backend per provider token: credential resolution, the usage probe's HTTP and payload mapping, billing shape. Depends on forge-primitives only; keychain, the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements. |
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
@@ -39,18 +41,21 @@ Work top-down; the first match wins.
 2. **A type that crosses a crate boundary** (an envelope, a snapshot
    struct, a hook payload, anything sent over a channel or touched by
    more than one crate) goes in `forge-primitives`. Data shapes only.
-3. **Anything that speaks stream-json to the subprocess** (a decoder, a
+3. **Provider credential resolution, the usage probe, payload-to-snapshot
+   mapping, billing shape or repair policy** goes in `forge-providers`,
+   as one backend per provider token.
+4. **Anything that speaks stream-json to the subprocess** (a decoder, a
    new control-request subtype, transport, the MCP host, the options
    builder) goes in `forge-sdk`, and ships with a wire-conformance
    scenario.
-4. **Live state about the user's environment** (git watching, cwd
+5. **Live state about the user's environment** (git watching, cwd
    resolution, environment probes, OAuth, plugins, settings I/O,
    catalog scans) goes in `forge-agent`.
-5. **Orchestration across projects, sessions, accounts, `forge.toml`
+6. **Orchestration across projects, sessions, accounts, `forge.toml`
    or the command bus** goes in `forge-workspace`.
-6. **A widget, screen, key binding, mouse handler or per-session
+7. **A widget, screen, key binding, mouse handler or per-session
    presentation state** goes in `forge-tui`.
-7. **A wire-conformance scenario** goes in `forge-test-harness`.
+8. **A wire-conformance scenario** goes in `forge-test-harness`.
 
 Splits across several crates are normal; a git-diff feature naturally
 touches agent, workspace and TUI. The rule of thumb is that logic, I/O
@@ -68,6 +73,9 @@ Four patterns get caught in review repeatedly:
   separate channel.
 - **Defining the same shape in two crates.** Lift it to primitives, or
   import the re-export.
+- **Provider dispatch outside `forge-providers`.** A match on
+  `Provider` in workspace or tui is the thing the provider-backends
+  crate exists to delete.
 - **Reaching around the command bus for a user action.** User-initiated
   actions go through `dispatch`; query-style refreshes are direct
   methods.

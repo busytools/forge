@@ -69,6 +69,7 @@ mod error;
 mod gotify;
 pub(crate) mod mcp;
 pub mod protocol;
+mod provider_probe;
 mod review;
 mod session_task;
 mod single_instance;

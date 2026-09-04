@@ -2075,19 +2075,25 @@ impl Workspace {
                         access_token: bearer.clone(),
                         expires_at: None,
                     };
-                    forge_agent::cloud::oauth_usage::probe(&creds, Some(base_url))
-                        .await
-                        .map(|payload| forge_agent::cloud::oauth::map_probe_snapshot(true, payload))
+                    forge_agent::cloud::oauth_usage::probe(&creds, Some(base_url)).await.map(
+                        |payload| {
+                            Ok(forge_providers::helpers::snapshot_from_payload_lenient(payload))
+                        },
+                    )
                 }
+                // The anthropic-shaped arms run through the provider
+                // backend; the keychain arm keeps the 401 refresh gate
+                // the boot loader handles through its own Refresh action.
                 forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
-                    forge_agent::cloud::oauth_usage::oauth_usage(&dir).await.map(|payload| {
-                        forge_agent::cloud::oauth::map_probe_snapshot(false, payload)
-                    })
+                    crate::provider_probe::flatten_probe_error(
+                        crate::provider_probe::probe_with_keychain_recovery(provider, &dir, &env)
+                            .await,
+                    )
                 }
-                forge_agent::cloud::oauth_usage::ProbePlan::Token { bearer } => {
-                    forge_agent::cloud::oauth_usage::probe_setup_token(bearer)
-                        .await
-                        .map(|payload| forge_agent::cloud::oauth::map_probe_snapshot(true, payload))
+                forge_agent::cloud::oauth_usage::ProbePlan::Token { .. } => {
+                    crate::provider_probe::flatten_probe_error(
+                        crate::provider_probe::probe_via_backend(provider, &dir, &env).await,
+                    )
                 }
                 forge_agent::cloud::oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
                     forge_agent::cloud::oauth_usage::probe_openrouter_key(base_url, bearer)

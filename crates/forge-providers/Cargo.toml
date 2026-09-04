@@ -1,0 +1,25 @@
+[package]
+name = "forge-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "One backend per forge.toml provider token: credential resolution, probe HTTP + mapping, billing shape."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+forge-primitives = { workspace = true }
+async-trait = { workspace = true }
+httpdate = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
