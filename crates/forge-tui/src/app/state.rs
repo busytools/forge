@@ -3536,12 +3536,6 @@ mod tests {
         assert!(app.gotify_subs.is_empty(), "no owned subscription leaves the GOTIFY cache empty");
     }
 
-    /// Clicking a launchpad-auto_started project triggers the
-    /// per-session refresh chain (status / oauth / context-usage /
-    /// 5h+7d) so the bottom panel's bars populate on the destination
-    /// session, not just on connect.
-    ///
-    /// An Edit-family name breaks a tool-call run, so this renders as
     // App tool_call_index
 
     pub(super) fn make_test_app() -> App {

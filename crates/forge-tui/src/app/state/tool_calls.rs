@@ -684,6 +684,12 @@ mod tests {
         assert!(tc.answered_questions[0].typed_note.is_none());
     }
 
+    /// Clicking a launchpad-auto_started project triggers the
+    /// per-session refresh chain (status / oauth / context-usage /
+    /// 5h+7d) so the bottom panel's bars populate on the destination
+    /// session, not just on connect.
+    ///
+    /// An Edit-family name breaks a tool-call run, so this renders as
     /// `RenderUnit::Individual` and is handed `app.tools_collapsed`
     /// directly instead of a group-derived level; grouped tools get
     /// that flag overwritten and never reach the measure call. Plain
