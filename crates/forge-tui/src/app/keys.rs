@@ -18,7 +18,9 @@ const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
 
 // Platform-aware modifier conventions. macOS native shortcuts use Cmd
 // (SUPER) for app-level actions like Cmd+C / Cmd+V / Cmd+Z, and Option
-// (ALT) for word navigation. Linux/Windows fall back to Ctrl for both.
+// (ALT) for word navigation. Linux/Windows fall back to Ctrl for the
+// app-level actions; word navigation stays Alt everywhere (see
+// WORD_NAV_MOD).
 //
 // Reaching the app: SUPER only arrives when the terminal speaks the
 // kitty enhanced-keyboard protocol (Ghostty, kitty, WezTerm). forge-tui
