@@ -51,7 +51,7 @@ impl ProviderBackend for Anthropic {
         host: &dyn ProviderHost,
     ) -> Result<UsageSnapshot, ProbeError> {
         if let Some(bearer) = token_bearer(account.env) {
-            let ua = host.user_agent().map_err(OauthUsageError::UaProbe)?;
+            let ua = host.user_agent().await.map_err(OauthUsageError::UaProbe)?;
             let client = host.http_client(OAUTH_TIMEOUT).map_err(OauthUsageError::Network)?;
             let settled =
                 accept_scope_refusal(anthropic_windowed_probe(&client, &ua, None, bearer).await);
@@ -77,7 +77,7 @@ impl ProviderBackend for Anthropic {
         let Some(credentials) = host.keychain(account.config_dir) else {
             return Err(ProbeError::NoCredentials);
         };
-        let ua = host.user_agent().map_err(OauthUsageError::UaProbe)?;
+        let ua = host.user_agent().await.map_err(OauthUsageError::UaProbe)?;
         let client = host.http_client(OAUTH_TIMEOUT).map_err(OauthUsageError::Network)?;
         let payload = anthropic_windowed_probe(&client, &ua, None, &credentials.access_token)
             .await
@@ -126,6 +126,8 @@ fn snapshot_from_payload(payload: OauthUsage) -> Result<UsageSnapshot, ProbeErro
 mod tests {
     use std::path::Path;
     use std::time::Duration;
+
+    use async_trait::async_trait;
 
     use super::*;
 
@@ -228,6 +230,7 @@ mod tests {
 
     struct FailingUaHost;
 
+    #[async_trait]
     impl ProviderHost for FailingUaHost {
         fn keychain(&self, _config_dir: &Path) -> Option<crate::OauthCredentials> {
             Some(crate::OauthCredentials { access_token: "tok".to_owned(), expires_at: None })
@@ -237,13 +240,14 @@ mod tests {
             reqwest::Client::builder().build().map_err(|e| e.to_string())
         }
 
-        fn user_agent(&self) -> Result<String, String> {
+        async fn user_agent(&self) -> Result<String, String> {
             Err("claude missing from PATH".to_owned())
         }
     }
 
     struct EmptyHost;
 
+    #[async_trait]
     impl ProviderHost for EmptyHost {
         fn keychain(&self, _config_dir: &Path) -> Option<crate::OauthCredentials> {
             None
@@ -253,7 +257,7 @@ mod tests {
             unreachable!("the probe must not build a client for a missing credential")
         }
 
-        fn user_agent(&self) -> Result<String, String> {
+        async fn user_agent(&self) -> Result<String, String> {
             unreachable!("the probe must not resolve a UA for a missing credential")
         }
     }

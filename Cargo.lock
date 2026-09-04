@@ -1216,6 +1216,7 @@ name = "forge-agent"
 version = "1.0.38"
 dependencies = [
  "anyhow",
+ "async-trait",
  "forge-primitives",
  "forge-providers",
  "forge-sdk",

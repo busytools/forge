@@ -54,6 +54,7 @@ pub enum ProbeError {
 /// The host port, implemented by forge-agent. The only filesystem,
 /// keychain or process plumbing a backend may reach, so the crate
 /// stays HTTP + mapping and is testable offline.
+#[async_trait]
 pub trait ProviderHost: Send + Sync {
     /// The macOS keychain entry for `config_dir`, or None.
     fn keychain(&self, config_dir: &Path) -> Option<OauthCredentials>;
@@ -61,9 +62,10 @@ pub trait ProviderHost: Send + Sync {
     /// and the caller's timeout baked in.
     fn http_client(&self, timeout: Duration) -> Result<reqwest::Client, String>;
     /// `claude-code/<version>`, resolved by one `claude --version`
-    /// shell-out per process and cached. Err preserves the probe's
-    /// UaProbe failure class.
-    fn user_agent(&self) -> Result<String, String>;
+    /// shell-out per process and cached, off the async runtime via
+    /// spawn_blocking. Err preserves the probe's UaProbe failure
+    /// class.
+    async fn user_agent(&self) -> Result<String, String>;
 }
 
 /// One backend per `forge.toml` `provider` token. The impls are

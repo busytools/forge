@@ -333,8 +333,10 @@ pub async fn probe(
     credentials: &OauthCredentials,
     base_url: Option<&str>,
 ) -> Result<OauthUsage, OauthUsageError> {
-    let ua =
-        crate::cloud::provider_host::AgentHost.user_agent().map_err(OauthUsageError::UaProbe)?;
+    let ua = crate::cloud::provider_host::AgentHost
+        .user_agent()
+        .await
+        .map_err(OauthUsageError::UaProbe)?;
     let client =
         crate::http_trust::with_extra_roots(reqwest::Client::builder().timeout(OAUTH_TIMEOUT))
             .build()
