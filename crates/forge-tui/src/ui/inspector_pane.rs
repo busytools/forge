@@ -728,9 +728,9 @@ fn append_mcp_servers_section(
     let server_count = rows.len();
     for (idx, row) in rows.iter().enumerate() {
         let is_last = idx + 1 == server_count;
-        // Continuation column under the name connector: `│     ` while
-        // more servers follow, blank once the trunk closed.
-        let trunk = if is_last { "      " } else { "\u{2502}     " };
+        // No vertical trunk: the children hang under the name on blank
+        // space, so every server's block reads the same.
+        let trunk = "      ";
         let connector = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
         let (glyph, glyph_color) = mcp_status_glyph(row.status);
         let name_chrome = usize::from(PANE_PAD)
@@ -4443,6 +4443,14 @@ mod tests {
         assert!(
             name_span.style.add_modifier.contains(Modifier::BOLD),
             "server name renders bold, the row's headline treatment",
+        );
+        let detail_line = lines
+            .iter()
+            .find(|l| line_text(l).contains("user \u{00B7} 24 tools"))
+            .expect("detail row");
+        assert!(
+            !line_text(detail_line).contains('\u{2502}'),
+            "no vertical trunk hangs between a server's name and its children",
         );
     }
 
