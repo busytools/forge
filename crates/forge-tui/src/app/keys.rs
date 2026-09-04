@@ -255,7 +255,8 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
     }
 
     // Launchpad has its own keymap and intentionally swallows every
-    // other key (including Ctrl+B / Ctrl+E and printable input) so
+    // other key (including the pane-toggle chords and printable
+    // input) so
     // nothing leaks into the chat input or pane toggles while the
     // picker is the active view. `Ctrl+Q` is handled by the
     // always-allowed shortcuts above so the user can still quit.
@@ -1217,7 +1218,7 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
     app.invalidate_background_session_layouts();
 }
 
-/// Tier-aware Ctrl+B handler.
+/// Tier-aware pane toggle - Cmd+Left on macOS, Ctrl+Left elsewhere.
 ///
 /// At Wide / Medium tiers (terminal width ≥ `MEDIUM_TIER_MIN_WIDTH`)
 /// this toggles the inline pane's visibility. At Narrow
@@ -1245,8 +1246,9 @@ pub(super) fn toggle_projects_pane(app: &mut App) {
     app.needs_redraw = true;
 }
 
-/// Tier-aware Ctrl+E handler - mirror of [`toggle_projects_pane`]
-/// for the right Inspector pane. At Wide / Medium tiers flips the
+/// Tier-aware pane toggle - Cmd+Right on macOS, Ctrl+Right
+/// elsewhere. Mirror of [`toggle_projects_pane`] for the right
+/// Inspector pane. At Wide / Medium tiers flips the
 /// in-memory `inspector_pane_visible` flag. At Narrow tier flips
 /// the transient `inspector_pane_overlay_open` flag and closes any
 /// open Projects overlay (mutually exclusive).

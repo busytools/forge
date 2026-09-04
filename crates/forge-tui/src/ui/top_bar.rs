@@ -8,12 +8,12 @@
 //! ▤  <active-project>·<active-session>                       ▦
 //! ```
 //!
-//! Clicking the leading `▤` icon (or pressing `Ctrl+B`) toggles the
-//! Narrow-tier Projects overlay rendered by
-//! [`crate::ui::projects_pane::render_overlay`]. Clicking the
-//! trailing `▦` icon (or pressing `Ctrl+E`) toggles the Inspector
-//! overlay. Both icons are stamped as their own hit-target variants
-//! for the mouse handler.
+//! Clicking the leading `▤` icon (or pressing `Cmd+Left` on macOS,
+//! `Ctrl+Left` elsewhere) toggles the Narrow-tier Projects overlay
+//! rendered by [`crate::ui::projects_pane::render_overlay`]. Clicking
+//! the trailing `▦` icon (or pressing `Cmd+Right` on macOS,
+//! `Ctrl+Right` elsewhere) toggles the Inspector overlay. Both icons
+//! are stamped as their own hit-target variants for the mouse handler.
 
 use forge_workspace::ProjectView;
 use ratatui::Frame;
