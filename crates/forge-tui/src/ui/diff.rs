@@ -39,7 +39,7 @@ pub fn render_diff(
     let mut lines: Vec<Line<'static>> = Vec::new();
     if let Some(repository) = diff.repository.as_deref() {
         lines.push(Line::from(Span::styled(
-            format!("[{repository}]"),
+            format!("[{}]", replace_control_chars(repository.into())),
             Style::default().fg(theme::DIM),
         )));
     }
@@ -76,7 +76,7 @@ pub fn render_diff(
             && header.starts_with("@@")
         {
             lines.push(Line::from(Span::styled(
-                format_compact_hunk_header(header),
+                replace_control_chars(format_compact_hunk_header(header).into()),
                 Style::default().fg(Color::Cyan),
             )));
         }
@@ -774,6 +774,30 @@ mod tests {
         assert_eq!(format_compact_hunk_header("@@ -0,0 +1,7 @@"), "lines +1-7");
         assert_eq!(format_compact_hunk_header("@@ -4,3 +4,5 @@"), "lines -4-6 +4-8");
         assert_eq!(format_compact_hunk_header("@@ -8 +8 @@"), "lines -8 +8");
+    }
+
+    /// The repo label is metadata, not terminal output: a control
+    /// character in it must paint what it charges, so the row is
+    /// pictured rather than stripped.
+    #[test]
+    fn metadata_spans_picture_control_chars_so_measured_width_equals_painted() {
+        let lines = render_diff(
+            &model::Diff::new("tmp.rs", "body\n").repository(Some("repo\u{7}x".to_owned())),
+            80,
+            None,
+        );
+        let label = &lines[0];
+        let painted: usize = label
+            .styled_graphemes(Style::default())
+            .map(|grapheme| display_width(grapheme.symbol))
+            .sum();
+        let measured: usize = label.spans.iter().map(Span::width).sum();
+        assert_eq!(measured, painted, "repo label charges a column it does not paint: {label:?}");
+        let joined: String = label.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(
+            joined.contains('\u{2407}'),
+            "the control must paint its picture, not be stripped: {joined:?}"
+        );
     }
 
     /// A Rust insert line should pick up syntect tokenization: the

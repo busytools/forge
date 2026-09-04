@@ -402,14 +402,17 @@ fn render_stepper(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState)
     let bold = Style::default().add_modifier(Modifier::BOLD);
 
     let n = overlay.commits.len();
-    let branch = overlay.branch.clone().unwrap_or_else(|| "HEAD".to_owned());
+    let branch =
+        replace_control_chars(overlay.branch.clone().unwrap_or_else(|| "HEAD".to_owned()).into())
+            .into_owned();
+    let target = replace_control_chars(overlay.target.clone().into()).into_owned();
     let title = Line::from(vec![
         Span::raw("  "),
         Span::styled("COMMITS", accent_bold),
         Span::styled(" · ", dim),
         Span::styled(branch, accent),
         Span::styled(" vs ", dim),
-        Span::styled(overlay.target.clone(), accent),
+        Span::styled(target.clone(), accent),
         Span::styled(format!(" · {n} commit{}", if n == 1 { "" } else { "s" }), dim),
     ]);
     let title_y = area.y.saturating_add(STEPPER_TITLE_ROW);
@@ -429,8 +432,14 @@ fn render_stepper(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState)
     let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
     match overlay.scope {
         DiffScope::Commit(i) => {
-            let short = overlay.commits.get(i).map(|c| c.short_sha.clone()).unwrap_or_default();
-            let subject = overlay.commits.get(i).map(|c| c.subject.clone()).unwrap_or_default();
+            let short = replace_control_chars(
+                overlay.commits.get(i).map(|c| c.short_sha.clone()).unwrap_or_default().into(),
+            )
+            .into_owned();
+            let subject = replace_control_chars(
+                overlay.commits.get(i).map(|c| c.subject.clone()).unwrap_or_default().into(),
+            )
+            .into_owned();
             spans.push(Span::styled("\u{25c0} ", accent));
             spans.push(Span::styled("[", dim));
             spans.push(Span::styled(format!("{} / {n}", i + 1), bold));
@@ -442,7 +451,7 @@ fn render_stepper(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState)
         }
         DiffScope::WholeDiff => {
             spans.push(Span::styled("All changes", bold));
-            spans.push(Span::styled(format!("  (whole branch vs {})", overlay.target), dim));
+            spans.push(Span::styled(format!("  (whole branch vs {target})"), dim));
         }
     }
     spans.push(Span::raw("   "));
@@ -4430,6 +4439,58 @@ mod tests {
         assert!(full.contains("split the near-threshold predicate"), "body renders above the diff");
         assert!(full.contains("is_near_threshold"), "the commit's diff still renders below it");
         assert!(full.contains("all changes / back"), "footer shows the `a` toggle hint");
+    }
+
+    /// Stepper header spans are metadata: a control character must paint
+    /// what it charges, so the render pictures it rather than stripping.
+    #[test]
+    fn stepper_header_spans_picture_control_chars_so_they_paint_what_they_charge() {
+        use crate::app::diff_overlay::{CachedScan, DiffScope};
+        use forge_workspace::env::git_diff::hunks::{CommitMeta, DiffLine, Hunk};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let file = FileHunks {
+            path: "rate_limit.rs".into(),
+            status: FileStatus::Modified,
+            oversize: false,
+            hunks: vec![Hunk {
+                old_start: 65,
+                old_count: 1,
+                new_start: 65,
+                new_count: 2,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "fn is_near_threshold() {".into(),
+                    old_line: None,
+                    new_line: Some(66),
+                }],
+            }],
+        };
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![file.clone()],
+        );
+        state.branch = Some("feat\u{7}ure".to_owned());
+        state.commits = vec![CommitMeta {
+            sha: "a".into(),
+            short_sha: "a3f9\u{7}c1e".into(),
+            subject: "subject".into(),
+            body: String::new(),
+        }];
+        state.scope = DiffScope::Commit(0);
+        state.commit_cache = vec![Some(CachedScan { files: vec![file], scanner_ok: true })];
+        let mut app = App::test_default();
+        app.diff_overlay = Some(state);
+
+        let backend = TestBackend::new(130, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let full: String =
+            terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert!(full.contains("feat\u{2407}ure"), "branch pictured in stepper title: {full:?}");
+        assert!(full.contains("a3f9\u{2407}c1e"), "short sha pictured in stepper: {full:?}");
     }
 
     fn chip_comment(line: u32, text: &str, status: ReviewStatus) -> HunkComment {
