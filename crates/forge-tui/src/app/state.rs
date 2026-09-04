@@ -2806,24 +2806,36 @@ impl App {
 
     /// Whether `subagents_view` would return anything, without building it.
     /// Short-circuits on the first live root instead of indexing every tool
-    /// call in the session.
+    /// call in the session. Root derivation mirrors `subagents_view`,
+    /// including the unscoped parents of registered child scopes (#808).
     pub fn has_active_subagent_root(&self) -> bool {
         let Some(session) = self.active_session() else {
             return false;
         };
-        // No root registered means no entries, so skip the message walk
-        // entirely - the common case for a session that never dispatched one.
-        if !session
-            .tool_call_scopes
-            .values()
-            .any(|scope| matches!(scope, crate::app::state::types::ToolCallScope::SubagentRoot))
-        {
+        // No scopes at all means no roots and no child frames, so skip
+        // the message walk entirely - the common case for a session that
+        // never dispatched one.
+        if session.tool_call_scopes.is_empty() {
             return false;
         }
         let backgrounded_alive = session.backgrounded_alive_tool_use_ids();
+        // Parents named by child scopes; the ones carrying no scope of
+        // their own are root candidates alongside registered roots.
+        let mut referenced_parents: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for scope in session.tool_call_scopes.values() {
+            if let crate::app::state::types::ToolCallScope::SubagentChild {
+                parent_tool_use_id,
+            } = scope
+            {
+                referenced_parents.insert(parent_tool_use_id.as_str());
+            }
+        }
         // First occurrence of an id wins, mirroring the `by_id` index the
         // view builds, so a duplicate cannot revive a drained root.
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut open_child_parents: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
         for msg in &session.messages {
             for block in &msg.blocks {
                 let crate::app::MessageBlock::ToolCall(tc) = block else {
@@ -2832,24 +2844,40 @@ impl App {
                 if !seen.insert(tc.id.as_str()) {
                     continue;
                 }
-                if !matches!(
-                    session.tool_call_scopes.get(tc.id.as_str()),
+                let id = tc.id.as_str();
+                let is_open = matches!(
+                    tc.status,
+                    crate::agent::model::ToolCallStatus::InProgress
+                        | crate::agent::model::ToolCallStatus::Pending
+                );
+                let scope = session.tool_call_scopes.get(id);
+                let is_root = matches!(
+                    scope,
                     Some(crate::app::state::types::ToolCallScope::SubagentRoot)
-                ) {
-                    continue;
-                }
-                if backgrounded_alive.contains(tc.id.as_str())
-                    || matches!(
-                        tc.status,
-                        crate::agent::model::ToolCallStatus::InProgress
-                            | crate::agent::model::ToolCallStatus::Pending
-                    )
-                {
+                ) || (scope.is_none() && referenced_parents.contains(id));
+                if is_root && (backgrounded_alive.contains(id) || is_open) {
                     return true;
+                }
+                if is_open
+                    && let Some(crate::app::state::types::ToolCallScope::SubagentChild {
+                        parent_tool_use_id,
+                    }) = scope
+                {
+                    open_child_parents.insert(parent_tool_use_id.as_str());
                 }
             }
         }
-        false
+        // A root kept open only by its children (#808): the parent must
+        // be among the walked cards, and either a registered root or an
+        // unscoped parent candidate.
+        open_child_parents.iter().any(|parent| {
+            seen.contains(*parent)
+                && match session.tool_call_scopes.get(*parent) {
+                    Some(crate::app::state::types::ToolCallScope::SubagentRoot) => true,
+                    Some(_) => false,
+                    None => referenced_parents.contains(parent),
+                }
+        })
     }
 
     /// Active-session SUBAGENTS Inspector view. Derives one entry
@@ -2883,30 +2911,45 @@ impl App {
             }
         }
 
-        // Walk in block order: collect roots first (so the order in
-        // the Inspector mirrors the chat scrollback's dispatch order)
-        // and a flat list of children per-root-id.
-        let mut roots: Vec<&crate::app::ToolCallInfo> = Vec::new();
+        // Children per parent id from the registered child scopes; a
+        // parent is keyed only when its own card is in the index.
         let mut children_by_parent: std::collections::HashMap<
             &str,
             Vec<&crate::app::ToolCallInfo>,
         > = std::collections::HashMap::new();
         for id in &ordered_tool_ids {
             let Some(tc) = by_id.get(id) else { continue };
-            match self.tool_call_scope(id) {
-                Some(crate::app::state::types::ToolCallScope::SubagentRoot) => roots.push(tc),
-                Some(crate::app::state::types::ToolCallScope::SubagentChild {
-                    parent_tool_use_id,
-                }) => {
-                    // The parent's id is in the registered scope -
-                    // copy a stable str borrow off the indexed map
-                    // (its keys outlive the children vec).
-                    if let Some((&parent_key, _)) = by_id.get_key_value(parent_tool_use_id.as_str())
-                    {
-                        children_by_parent.entry(parent_key).or_default().push(tc);
-                    }
-                }
-                Some(crate::app::state::types::ToolCallScope::MainAgent) | None => {}
+            if let Some(crate::app::state::types::ToolCallScope::SubagentChild {
+                parent_tool_use_id,
+            }) = self.tool_call_scope(id)
+                && let Some((&parent_key, _)) = by_id.get_key_value(parent_tool_use_id.as_str())
+            {
+                // The parent's id is in the registered scope - copy a
+                // stable str borrow off the indexed map (its keys
+                // outlive the children vec).
+                children_by_parent.entry(parent_key).or_default().push(tc);
+            }
+        }
+        // A resumed agent's replayed Task card carries no scope (resume
+        // registers none), but its live child frames still name the
+        // card - such a parent is a root too (#808).
+        let unscoped_parents: std::collections::HashSet<&str> = children_by_parent
+            .keys()
+            .filter(|id| self.tool_call_scope(id).is_none())
+            .copied()
+            .collect();
+        // Roots in dispatch order, scoped and unscoped alike.
+        let mut roots: Vec<&crate::app::ToolCallInfo> = Vec::new();
+        for id in &ordered_tool_ids {
+            let scope = self.tool_call_scope(id);
+            let is_root = matches!(
+                scope,
+                Some(crate::app::state::types::ToolCallScope::SubagentRoot)
+            ) || (scope.is_none() && unscoped_parents.contains(*id));
+            if is_root
+                && let Some(tc) = by_id.get(id)
+            {
+                roots.push(tc);
             }
         }
 
@@ -2920,8 +2963,27 @@ impl App {
         // and covers every backgrounded kind. A genuinely running
         // non-backgrounded root still surfaces via its own in-flight status.
         let backgrounded_alive = session.backgrounded_alive_tool_use_ids();
+        // A root kept open by its children: a resumed agent's own card is
+        // terminal from the replay, so an open child under it is the only
+        // running evidence (#808).
+        let open_child_roots: std::collections::HashSet<&str> = children_by_parent
+            .iter()
+            .filter_map(|(parent, children)| {
+                children
+                    .iter()
+                    .any(|c| {
+                        matches!(
+                            c.status,
+                            crate::agent::model::ToolCallStatus::InProgress
+                                | crate::agent::model::ToolCallStatus::Pending
+                        )
+                    })
+                    .then_some(*parent)
+            })
+            .collect();
         let root_is_active = |root: &&crate::app::ToolCallInfo| {
             backgrounded_alive.contains(root.id.as_str())
+                || open_child_roots.contains(root.id.as_str())
                 || matches!(
                     root.status,
                     crate::agent::model::ToolCallStatus::InProgress

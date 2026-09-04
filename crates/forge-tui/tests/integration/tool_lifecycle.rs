@@ -2000,3 +2000,67 @@ async fn a_subagent_child_follows_its_root_not_the_last_assistant() {
         "the child follows its root, not whichever assistant happens to be last",
     );
 }
+
+/// A resumed agent's Task card replays WITHOUT a scope - resume
+/// registers none and the post-replay sweep clears the rest - so a
+/// dispatch-keyed view can never see it again, even while the resumed
+/// agent's live child frames keep naming the card. The view must derive
+/// a root from such a parent too (#808), and drain once nothing under
+/// it runs.
+#[tokio::test]
+async fn a_resumed_unscoped_root_surfaces_through_its_children_frames() {
+    let mut app = test_app();
+
+    // The replayed Task card: indexed, terminal from its replayed
+    // result, no scope registered.
+    let mut root = backgrounded_bash_card("toolu_root");
+    root.sdk_tool_name = "Task".to_owned();
+    root.status = model::ToolCallStatus::Completed;
+    root.hidden = true;
+    app.active_messages_mut().push(ChatMessage::new(
+        MessageRole::Assistant,
+        vec![MessageBlock::ToolCall(Box::new(root))],
+    ));
+    let root_msg = app.messages().len() - 1;
+    app.index_tool_call("toolu_root".to_owned(), root_msg, 0);
+
+    assert!(
+        app.subagents_view().is_empty(),
+        "precondition: an unscoped card alone shows nothing; got {:?}",
+        app.subagents_view(),
+    );
+
+    // Live child traffic from the resumed agent names the card.
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "sleep"}))],
+            "toolu_root",
+        ),
+    );
+
+    let view = app.subagents_view();
+    assert_eq!(
+        view.len(),
+        1,
+        "the resumed agent surfaces through its child frame; got {view:?}",
+    );
+    assert_eq!(view[0].tool_use_id, "toolu_root");
+    assert_eq!(
+        view[0].status,
+        model::ToolCallStatus::InProgress,
+        "it renders running on the open child; got {:?}",
+        view[0].status,
+    );
+
+    // The child settles; nothing keeps the section open.
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block("toolu_child", serde_json::json!("ok"))]),
+    );
+    assert!(
+        app.subagents_view().is_empty(),
+        "the section drains once the child settles; got {:?}",
+        app.subagents_view(),
+    );
+}
