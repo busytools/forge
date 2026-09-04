@@ -359,11 +359,14 @@ impl Client {
                             );
                             pre_init_messages.push_back(Message::Unknown { type_str, raw });
                         }
-                        DecodedLine::Malformed { line, reason } => {
+                        DecodedLine::Malformed { line: line_no, reason } => {
                             // Pre-init frames stay strict: unparsable
                             // output before initialize completes is a
                             // broken spawn, not a degradable stream.
-                            return Err(Error::message_parse(format!("line {line}: {reason}")));
+                            return Err(Error::message_parse(format!(
+                                "line {line_no}: {reason}; raw line: {}",
+                                line.trim_end()
+                            )));
                         }
                         other => {
                             debug!(

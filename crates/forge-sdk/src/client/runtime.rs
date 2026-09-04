@@ -135,11 +135,18 @@ async fn handle_line(
             dispatch.capture_session_id_from(&msg);
             events_tx.send(Ok(msg)).is_ok()
         }
-        DecodedLine::Malformed { line, reason } => {
+        DecodedLine::Malformed { line: line_no, reason } => {
+            // A recognised control_request with one bad field must
+            // still be answered, or the CLI blocks on it forever.
+            if let Some(request_id) = control_request_id(line) {
+                dispatch.write_error_response(&request_id, &reason).await;
+            }
+            let raw: String = line.chars().take(160).collect();
             tracing::warn!(
                 target: crate::logging::targets::SDK_READER,
-                line,
+                line = line_no,
                 reason = %reason,
+                raw = %raw,
                 "unparsable stream-json line - skipping, session continues",
             );
             true
@@ -251,6 +258,15 @@ async fn handle_line(
     }
 }
 
+/// `request_id` of `line` when it is a `control_request`, else `None`.
+fn control_request_id(line: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("control_request") {
+        return None;
+    }
+    value.pointer("/request_id").and_then(serde_json::Value::as_str).map(str::to_string)
+}
+
 async fn close_subprocess(subprocess: &mut Subprocess) {
     if let Err(e) = subprocess.close().await {
         // warn, not debug: `sdk.reader` is not raised to debug by the
@@ -323,7 +339,7 @@ mod tests {
     /// here, one bad field from a non-Anthropic backend included.
     #[tokio::test]
     async fn a_malformed_line_is_skipped_and_the_stream_continues() {
-        let (writer, _lines) = SharedWriter::test_stub();
+        let (writer, mut lines) = SharedWriter::test_stub();
         let dispatch = ControlDispatchHandle::new(
             Arc::new(writer),
             None,
@@ -341,6 +357,10 @@ mod tests {
 
         assert!(keep_going, "a decode error must not end the read loop");
         assert!(events_rx.try_recv().is_err(), "a skipped line must not surface an event");
+        assert!(
+            lines.try_recv().is_err(),
+            "a corrupt non-control line must not be answered on stdin"
+        );
 
         let valid = r#"{"type":"stream_event","uuid":"evt-1","session_id":"sess-1","event":{"type":"message_start"}}"#;
         let keep_going = handle_line(&dispatch, &pending, &inflight, &events_tx, 8, valid).await;
@@ -350,5 +370,45 @@ mod tests {
             Ok(Ok(Message::StreamEvent { uuid, .. })) => assert_eq!(uuid, "evt-1"),
             other => panic!("expected the next valid frame on the event stream, got {other:?}"),
         }
+    }
+
+    /// A control_request whose body fails to decode is answered with
+    /// an error `control_response` before being skipped: the CLI
+    /// blocks on an unanswered request, so silence would hang the
+    /// turn even though the session survives.
+    #[tokio::test]
+    async fn a_malformed_control_request_is_answered_then_skipped() {
+        let (writer, mut lines) = SharedWriter::test_stub();
+        let dispatch = ControlDispatchHandle::new(
+            Arc::new(writer),
+            None,
+            None,
+            crate::mcp::orchestration::McpHosts::new(Vec::new(), HashMap::new()),
+            HashMap::new(),
+            new_shared_session_id(),
+        );
+        let pending: PendingControls = Arc::new(Mutex::new(HashMap::new()));
+        let inflight: InflightDispatches = Arc::new(Mutex::new(HashMap::new()));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        // `can_use_tool` without `tool_use_id` fails the custom
+        // `ControlRequestKind` Deserialize, so the line is Malformed.
+        let line = r#"{"type":"control_request","request_id":"req_9","request":{"subtype":"can_use_tool","tool_name":"Edit"}}"#;
+        let keep_going = handle_line(&dispatch, &pending, &inflight, &events_tx, 7, line).await;
+
+        assert!(keep_going, "a malformed control_request must not end the read loop");
+        assert!(events_rx.try_recv().is_err(), "nothing surfaces on the event stream");
+        let written = tokio::time::timeout(std::time::Duration::from_secs(5), lines.recv())
+            .await
+            .expect("error control_response written to stdin within 5s")
+            .expect("writer channel open");
+        assert!(
+            written.contains(r#""request_id":"req_9""#),
+            "the response must name the request: {written}"
+        );
+        assert!(
+            written.contains(r#""subtype":"error""#),
+            "the response must be an error: {written}"
+        );
     }
 }

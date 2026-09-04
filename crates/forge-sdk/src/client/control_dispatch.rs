@@ -119,18 +119,28 @@ impl ControlDispatchHandle {
         let request_id = req.request_id.clone();
         let result = self.dispatch_inner(req).await;
         if let Err(err) = &result {
-            let resp = ControlResponse {
-                ty: ControlResponseType::ControlResponse,
-                response: ControlResponseKind::Error { request_id, error: err.to_string() },
-            };
-            if let Ok(mut line) = serde_json::to_string(&resp) {
-                line.push('\n');
-                if let Err(write_err) = self.writer.write_line(&line).await {
-                    tracing::debug!(%write_err, "error control_response write failed");
-                }
-            }
+            self.write_error_response(&request_id, &err.to_string()).await;
         }
         result
+    }
+
+    /// Best-effort error `control_response` for a request we could not
+    /// handle. The CLI blocks on an unanswered request, so any frame
+    /// carrying a `request_id` must be answered even on failure.
+    pub(crate) async fn write_error_response(&self, request_id: &str, error: &str) {
+        let resp = ControlResponse {
+            ty: ControlResponseType::ControlResponse,
+            response: ControlResponseKind::Error {
+                request_id: request_id.to_string(),
+                error: error.to_string(),
+            },
+        };
+        if let Ok(mut line) = serde_json::to_string(&resp) {
+            line.push('\n');
+            if let Err(write_err) = self.writer.write_line(&line).await {
+                tracing::debug!(%write_err, "error control_response write failed");
+            }
+        }
     }
 
     async fn dispatch_inner(&self, req: ControlRequest) -> Result<(), Error> {
