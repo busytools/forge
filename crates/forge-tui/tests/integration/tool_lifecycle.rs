@@ -979,9 +979,6 @@ async fn a_late_roster_frame_does_not_collapse_the_subagent_exemption() {
 /// clears it.
 #[tokio::test]
 async fn the_sticky_backgrounded_root_lasts_until_a_terminal_event() {
-    let mut app = test_app();
-    app.status = AppStatus::Thinking;
-
     fn alive_of(app: &App) -> std::collections::HashSet<String> {
         app.active_session()
             .expect("active session")
@@ -990,6 +987,9 @@ async fn the_sticky_backgrounded_root_lasts_until_a_terminal_event() {
             .map(str::to_owned)
             .collect()
     }
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
     send_msg(
         &mut app,
         assistant_message(vec![tool_use_block(
