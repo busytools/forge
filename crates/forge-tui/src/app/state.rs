@@ -8074,6 +8074,7 @@ mod tests {
         }
 
         use crate::app::state::types::{BackgroundTask, ToolCallScope};
+        use tracing_subscriber::layer::SubscriberExt;
 
         let names = EventNames::default();
         let mut app = make_test_app();
@@ -8099,7 +8100,6 @@ mod tests {
             description: String::new(),
         }];
 
-        use tracing_subscriber::layer::SubscriberExt;
         let subscriber = tracing_subscriber::registry().with(names.clone());
         tracing::subscriber::with_default(subscriber, || {
             assert_eq!(

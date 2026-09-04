@@ -982,6 +982,14 @@ async fn the_sticky_backgrounded_root_lasts_until_a_terminal_event() {
     let mut app = test_app();
     app.status = AppStatus::Thinking;
 
+    fn alive_of(app: &App) -> std::collections::HashSet<String> {
+        app.active_session()
+            .expect("active session")
+            .backgrounded_alive_tool_use_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
     send_msg(
         &mut app,
         assistant_message(vec![tool_use_block(
@@ -1005,14 +1013,6 @@ async fn the_sticky_backgrounded_root_lasts_until_a_terminal_event() {
             task_type: Some("local_agent".to_owned()),
         },
     );
-    fn alive_of(app: &App) -> std::collections::HashSet<String> {
-        app.active_session()
-            .expect("active session")
-            .backgrounded_alive_tool_use_ids()
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
-    }
 
     // The turn completes before any roster frame: the sticky marker
     // carries liveness through the boundary the empty roster would
