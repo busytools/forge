@@ -28,12 +28,14 @@ impl super::App {
     }
 
     fn is_render_cache_message_protected(&self, msg_idx: usize) -> bool {
-        if self.protected_streaming_message_idx() == Some(msg_idx) {
+        let tail_protected = self.protected_streaming_message_idx() == Some(msg_idx);
+        if tail_protected {
             return true;
         }
         self.messages().get(msg_idx).is_some_and(|msg| {
-            (0..msg.blocks.len())
-                .any(|block_idx| self.is_render_cache_block_protected(msg_idx, block_idx))
+            msg.blocks
+                .iter()
+                .any(|block| Self::block_is_render_cache_protected(tail_protected, Some(block)))
         })
     }
 
@@ -58,21 +60,28 @@ impl super::App {
         }
     }
 
-    fn is_render_cache_block_protected(&self, msg_idx: usize, block_idx: usize) -> bool {
-        let tail_protected = self.protected_streaming_message_idx() == Some(msg_idx);
-        let Some(block) = self.messages().get(msg_idx).and_then(|msg| msg.blocks.get(block_idx))
-        else {
-            return false;
-        };
+    /// The status-only half of block protection, answered against a
+    /// block the caller already borrowed. The walk sites resolve
+    /// `messages()` once per walk rather than once per block - a
+    /// message that only grows made the per-block re-resolution
+    /// quadratic on backgrounded-subagent traffic (#793).
+    fn block_is_render_cache_protected(tail_protected: bool, block: Option<&MessageBlock>) -> bool {
         let tool_protected = matches!(
             block,
-            MessageBlock::ToolCall(tc)
+            Some(MessageBlock::ToolCall(tc))
                 if matches!(
                     tc.status,
                     model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
                 )
         );
         tail_protected || tool_protected
+    }
+
+    fn is_render_cache_block_protected(&self, msg_idx: usize, block_idx: usize) -> bool {
+        let tail_protected = self.protected_streaming_message_idx() == Some(msg_idx);
+        self.messages().get(msg_idx).is_some_and(|msg| {
+            Self::block_is_render_cache_protected(tail_protected, msg.blocks.get(block_idx))
+        })
     }
 
     fn render_cache_slot_key(
@@ -119,18 +128,11 @@ impl super::App {
         let mut evictable_keys: Vec<RenderCacheEvictionKey> = Vec::new();
         for (msg_idx, msg) in self.messages().iter().enumerate() {
             let mut slots = Vec::with_capacity(Self::render_cache_slot_count_for_message(msg));
+            let tail_protected = protected_tail == Some(msg_idx);
             for (block_idx, block) in msg.blocks.iter().enumerate() {
                 let cache = Self::block_cache(block);
                 let cached_bytes = cache.cached_bytes();
-                let protected = protected_tail == Some(msg_idx)
-                    || matches!(
-                        block,
-                        MessageBlock::ToolCall(tc)
-                            if matches!(
-                                tc.status,
-                                model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-                            )
-                    );
+                let protected = Self::block_is_render_cache_protected(tail_protected, Some(block));
                 let slot = RenderCacheSlotState {
                     cached_bytes,
                     last_access_tick: cache.last_access_tick(),
@@ -495,16 +497,28 @@ impl super::App {
         // `self.render_cache_evictable`.
         let mut updates: Vec<SlotUpdate> = Vec::new();
         let msg_count = self.messages().len();
+        let protected_tail = self.protected_streaming_message_idx();
         let mut block_protections: Vec<Vec<bool>> = Vec::with_capacity(msg_count);
         let mut message_protections: Vec<bool> = Vec::with_capacity(msg_count);
         for msg_idx in 0..msg_count {
-            let block_count = self.messages().get(msg_idx).map_or(0, |m| m.blocks.len());
-            let mut row = Vec::with_capacity(block_count);
-            for block_idx in 0..block_count {
-                row.push(self.is_render_cache_block_protected(msg_idx, block_idx));
-            }
+            let tail_protected = protected_tail == Some(msg_idx);
+            let Some(msg) = self.messages().get(msg_idx) else {
+                block_protections.push(Vec::new());
+                message_protections.push(false);
+                continue;
+            };
+            let row: Vec<bool> = msg
+                .blocks
+                .iter()
+                .map(|block| Self::block_is_render_cache_protected(tail_protected, Some(block)))
+                .collect();
+            let message_protected = tail_protected
+                || msg
+                    .blocks
+                    .iter()
+                    .any(|block| Self::block_is_render_cache_protected(tail_protected, Some(block)));
             block_protections.push(row);
-            message_protections.push(self.is_render_cache_message_protected(msg_idx));
+            message_protections.push(message_protected);
         }
         for (msg_idx, msg) in self.messages().iter().enumerate() {
             for (block_idx, block) in msg.blocks.iter().enumerate() {

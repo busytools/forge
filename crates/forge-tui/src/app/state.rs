@@ -3631,10 +3631,33 @@ impl App {
         let mut changed = 0usize;
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
-        let exempt: std::collections::HashSet<String> = self
-            .active_session()
-            .map(super::session::UiSession::backgrounded_alive_with_children)
-            .unwrap_or_default();
+        // Open calls first, so liveness is answered per call - O(depth)
+        // each - instead of deriving the eager exempt set off the whole
+        // scope map (#793).
+        let open_ids: Vec<String> = self
+            .messages()
+            .iter()
+            .flat_map(|msg| &msg.blocks)
+            .filter_map(|block| match block {
+                MessageBlock::ToolCall(tc)
+                    if matches!(
+                        tc.status,
+                        model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                    ) =>
+                {
+                    Some(tc.id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let exempt: std::collections::HashSet<&str> = open_ids
+            .iter()
+            .filter(|id| {
+                self.active_session()
+                    .is_some_and(|session| session.is_backgrounded_alive_or_descendant(id))
+            })
+            .map(|id| id.as_str())
+            .collect();
 
         for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
@@ -8006,6 +8029,94 @@ mod tests {
             app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed),
             0,
             "and the sweep spares it while it runs",
+        );
+    }
+
+    /// The turn-boundary sweeps answer liveness per open call (#793);
+    /// they must not derive the eager alive-with-children set off the
+    /// whole scope map - that cost scales with the map #791 just
+    /// bounded. The debug record in `backgrounded_alive_with_children`
+    /// is the probe: a sweep site must not emit it, while the sweep
+    /// still spares exactly the live work.
+    #[test]
+    fn the_turn_boundary_sweep_does_not_build_the_eager_exempt_set() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default, Clone)]
+        struct EventNames(Arc<Mutex<Vec<String>>>);
+
+        struct CollectEventName(String);
+
+        impl tracing::field::Visit for CollectEventName {
+            fn record_debug(
+                &mut self,
+                field: &tracing::field::Field,
+                value: &dyn std::fmt::Debug,
+            ) {
+                if field.name() == "event_name" {
+                    self.0 = format!("{value:?}").trim_matches('"').to_owned();
+                }
+            }
+        }
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventNames {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut visitor = CollectEventName(String::new());
+                event.record(&mut visitor);
+                if !visitor.0.is_empty() {
+                    self.0.lock().expect("capture").push(visitor.0);
+                }
+            }
+        }
+
+        use crate::app::state::types::{BackgroundTask, ToolCallScope};
+
+        let names = EventNames::default();
+        let mut app = make_test_app();
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_root", model::ToolCallStatus::Completed));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_child", model::ToolCallStatus::InProgress));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_plain_bash", model::ToolCallStatus::InProgress));
+        for (idx, id) in ["toolu_root", "toolu_child", "toolu_plain_bash"].into_iter().enumerate()
+        {
+            app.index_tool_call(id.to_owned(), idx, 0);
+        }
+        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        app.tool_call_scopes_mut().insert(
+            "toolu_child".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
+        );
+        app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-root".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: String::new(),
+        }];
+
+        use tracing_subscriber::layer::SubscriberExt;
+        let subscriber = tracing_subscriber::registry().with(names.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            assert_eq!(
+                app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed),
+                1,
+                "only the unrelated bash sweeps; the live child is exempt either way",
+            );
+        });
+        assert!(
+            !names
+                .0
+                .lock()
+                .expect("capture")
+                .iter()
+                .any(|name| name == "backgrounded_alive_set_built"),
+            "the sweep derived the eager exempt set off the scope map; saw {:?}",
+            names.0.lock().expect("capture"),
         );
     }
 

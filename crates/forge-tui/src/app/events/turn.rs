@@ -256,7 +256,29 @@ pub(super) fn finalize_background_tool_calls(
     session: &mut crate::app::session::UiSession,
     new_status: model::ToolCallStatus,
 ) {
-    let exempt = session.backgrounded_alive_with_children();
+    // Liveness is answered per open call - O(depth) each - rather than
+    // deriving the eager exempt set off the whole scope map (#793).
+    let open_ids: Vec<String> = session
+        .messages
+        .iter()
+        .flat_map(|msg| &msg.blocks)
+        .filter_map(|block| match block {
+            MessageBlock::ToolCall(tc)
+                if matches!(
+                    tc.status,
+                    model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                ) =>
+            {
+                Some(tc.id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let exempt: std::collections::HashSet<&str> = open_ids
+        .iter()
+        .filter(|id| session.is_backgrounded_alive_or_descendant(id))
+        .map(|id| id.as_str())
+        .collect();
     let mut swept = 0usize;
     for msg in &mut session.messages {
         for block in &mut msg.blocks {

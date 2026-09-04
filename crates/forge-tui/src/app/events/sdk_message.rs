@@ -825,27 +825,13 @@ fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallSta
     use crate::app::state::tool_call_info::is_monitor_tool_name;
     use forge_primitives::{ToolCallStatus, ToolCallUpdateFields};
 
-    // Their terminal status arrives later via `task_updated`.
-    let backgrounded_alive: std::collections::HashSet<String> = app
-        .active_session()
-        .map(crate::app::session::UiSession::backgrounded_alive_with_children)
-        .unwrap_or_default();
-    tracing::debug!(
-        target: crate::logging::targets::APP_TOOL,
-        event_name = "tool_call_sweep",
-        message = "swept open tool calls at a turn boundary",
-        outcome = "success",
-        sweep_site = "result_finalize",
-        new_status = ?status,
-        exempt_count = backgrounded_alive.len(),
-    );
-    let pending: Vec<String> = app.with_turn_state(|ts| {
+    let open_ids: Vec<String> = app.with_turn_state(|ts| {
         ts.tool_calls
             .iter()
             .filter(|(_, t)| {
                 matches!(t.status, ToolCallStatus::Pending | ToolCallStatus::InProgress)
             })
-            .filter(|(id, t)| {
+            .filter(|(_, t)| {
                 // Skip explicit persistent monitors - the docs and
                 // wire shape both say these outlive the turn that
                 // started them.
@@ -868,16 +854,27 @@ fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallSta
                 if t.raw_input.is_none() && is_monitor_tool_name(&t.title) {
                     return false;
                 }
-                // Still-running backgrounded work (bash / Task root) settles
-                // via its own task_updated, not the turn boundary.
-                if backgrounded_alive.contains(id.as_str()) {
-                    return false;
-                }
                 true
             })
             .map(|(id, _)| id.clone())
             .collect()
     });
+    // Liveness is answered per open call - O(depth) each - rather than
+    // deriving the eager exempt set off the whole scope map (#793).
+    let (pending, spared): (Vec<String>, Vec<String>) = open_ids.into_iter().partition(|id| {
+        !app.active_session().is_some_and(|session| {
+            session.is_backgrounded_alive_or_descendant(id)
+        })
+    });
+    tracing::debug!(
+        target: crate::logging::targets::APP_TOOL,
+        event_name = "tool_call_sweep",
+        message = "swept open tool calls at a turn boundary",
+        outcome = "success",
+        sweep_site = "result_finalize",
+        new_status = ?status,
+        exempt_count = spared.len(),
+    );
     for id in pending {
         apply_tool_call_update(
             app,

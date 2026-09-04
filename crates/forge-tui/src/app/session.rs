@@ -642,7 +642,25 @@ impl UiSession {
                 .filter(|id| self.resolves_to_live_root(id, &roots))
                 .cloned(),
         );
+        // Field visibility for the exempt-set size, which is what the
+        // sweep-cost issues (#791, #793) scale on.
+        tracing::debug!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = "backgrounded_alive_set_built",
+            message = "derived the alive-with-children exempt set over the scope map",
+            outcome = "success",
+            entries = alive.len(),
+        );
         alive
+    }
+
+    /// Whether one tool call id is exempt from a turn-boundary sweep: a
+    /// live backgrounded root itself, or hanging off one at any depth.
+    /// Per-call form of the sweep exemption - O(depth) for this id,
+    /// rather than resolving every scope in the map (#793).
+    pub(crate) fn is_backgrounded_alive_or_descendant(&self, id: &str) -> bool {
+        let roots = self.backgrounded_alive_tool_use_ids();
+        roots.contains(id) || self.resolves_to_live_root(id, &roots)
     }
 
     /// Whether a tool call hangs off one of `roots`, at any depth. A `Task`
