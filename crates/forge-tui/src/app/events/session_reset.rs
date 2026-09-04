@@ -1602,7 +1602,7 @@ mod tests {
     }
 
     #[test]
-    fn resumed_peer_envelope_renders_like_its_live_delivery() {
+    fn resumed_peer_envelope_renders_as_one_stamped_card() {
         let mut app = App::test_default();
         load_resume_history(&mut app, &[historical_user_text(&peer_envelope_text("t-1"))]);
 
@@ -1701,6 +1701,41 @@ mod tests {
         assert!(
             !blocks_text.iter().any(|t| t.contains("Message id=")),
             "the envelope prompt must not land in the group bubble: {blocks_text:?}",
+        );
+    }
+
+    /// The survivor split can shrink a run below the group threshold:
+    /// an envelope prompt leaves the run as a stamped card and a lone
+    /// plain survivor must take the singleton echo, never a
+    /// "1 messages" group header.
+    #[test]
+    fn resumed_queued_run_shrunk_to_one_survivor_takes_the_singleton_echo() {
+        let mut app = App::test_default();
+        let history = vec![
+            synthesized_queued(&peer_envelope_text("t-5")),
+            synthesized_queued("plain prompt"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 2, "the stamped card and the plain bubble both render");
+        assert_eq!(
+            user_msgs.iter().filter(|m| m.is_peer_envelope).count(),
+            1,
+            "the envelope prompt renders as its stamped card",
+        );
+        let texts: Vec<&str> = user_msgs
+            .iter()
+            .flat_map(|m| m.blocks.iter())
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !texts.iter().any(|t| t.contains("Queued during the previous turn")),
+            "a 1-survivor run must not render a group header: {texts:?}",
         );
     }
 

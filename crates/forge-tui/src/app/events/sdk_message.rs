@@ -480,6 +480,12 @@ pub(super) fn append_resume_envelope_if_present(app: &mut App, text: &str) -> bo
     };
     append_or_push_envelope(app, EnvelopeKind::of_inbound(&kind), text);
     app.enforce_history_retention_tracked();
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "resume_envelope_replayed",
+        message = "pushed stamped envelope card for replayed inbound text",
+        outcome = "success",
+    );
     true
 }
 
