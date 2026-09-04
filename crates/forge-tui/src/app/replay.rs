@@ -204,9 +204,7 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
             continue;
         }
         let line_no = (raw_line_no + 1) as u64;
-        let decoded = decode_dispatch(&envelope.line, line_no).unwrap_or_else(|err| {
-            panic!("replay_baseline {name}: decode_dispatch line {line_no}: {err}")
-        });
+        let decoded = decode_dispatch(&envelope.line, line_no);
         match decoded {
             DecodedLine::Message(msg) => {
                 if let Message::Result { duration_ms, .. } = &msg {
@@ -233,6 +231,9 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
                      (type={type_str}). Either the decoder regressed or the baseline \
                      captured a newer wire variant - re-run sdk_wire_conformance to triage."
                 );
+            }
+            DecodedLine::Malformed { line, reason } => {
+                panic!("replay_baseline {name}: decode_dispatch line {line}: {reason}");
             }
         }
     }
@@ -524,8 +525,10 @@ mod tests {
         let mut app = App::test_default();
         app.set_session_id(Some(model::SessionId::new(session_id)));
         for (i, line) in [create_tool_use, create_result, delete_tool_use].iter().enumerate() {
-            let decoded = decode_dispatch(line, (i + 1) as u64)
-                .unwrap_or_else(|err| panic!("decode_dispatch line {}: {err}", i + 1));
+            let decoded = decode_dispatch(line, (i + 1) as u64);
+            if let DecodedLine::Malformed { line, reason } = decoded {
+                panic!("decode_dispatch line {line}: {reason}");
+            }
             if let DecodedLine::Message(msg) = decoded {
                 apply_session_update(
                     &mut app,

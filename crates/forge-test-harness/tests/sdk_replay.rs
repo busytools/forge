@@ -143,7 +143,7 @@ fn the_compact_baseline_carries_a_real_compaction() {
         .filter(|line| {
             matches!(
                 decode_dispatch(line, 1),
-                Ok(DecodedLine::Message(Message::CompactBoundary { .. }))
+                DecodedLine::Message(Message::CompactBoundary { .. })
             )
         })
         .count();

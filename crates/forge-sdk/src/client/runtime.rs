@@ -119,8 +119,9 @@ pub(crate) fn spawn_reader_task(
     )
 }
 
-/// Process one decoded line. Returns `false` when the read loop should
-/// exit (events channel closed, terminal error).
+/// Process one decoded line. Returns `false` only when the events
+/// channel has closed and the read loop should exit; a line that
+/// fails to decode is skipped and the loop continues.
 async fn handle_line(
     dispatch: &ControlDispatchHandle,
     pending_controls: &PendingControls,
@@ -130,11 +131,20 @@ async fn handle_line(
     line: &str,
 ) -> bool {
     match decode_dispatch(line, line_number) {
-        Ok(DecodedLine::Message(msg)) => {
+        DecodedLine::Message(msg) => {
             dispatch.capture_session_id_from(&msg);
             events_tx.send(Ok(msg)).is_ok()
         }
-        Ok(DecodedLine::Control(req)) => {
+        DecodedLine::Malformed { line, reason } => {
+            tracing::warn!(
+                target: crate::logging::targets::SDK_READER,
+                line,
+                reason = %reason,
+                "unparsable stream-json line - skipping, session continues",
+            );
+            true
+        }
+        DecodedLine::Control(req) => {
             let dispatch_clone = dispatch.clone();
             let inflight_clone = Arc::clone(inflight);
             let request_id = req.request_id.clone();
@@ -163,7 +173,7 @@ async fn handle_line(
             let _ = gate_tx.send(());
             true
         }
-        Ok(DecodedLine::ControlCancel { request_id }) => {
+        DecodedLine::ControlCancel { request_id } => {
             if let Some(handle) = inflight.lock().await.remove(&request_id) {
                 handle.abort();
                 tracing::debug!(
@@ -180,7 +190,7 @@ async fn handle_line(
             }
             true
         }
-        Ok(DecodedLine::ControlResponse { request_id, raw: value }) => {
+        DecodedLine::ControlResponse { request_id, raw: value } => {
             let resp_subtype =
                 value.pointer("/response/subtype").and_then(serde_json::Value::as_str);
             let outcome = if resp_subtype == Some("success") {
@@ -214,7 +224,7 @@ async fn handle_line(
             }
             true
         }
-        Ok(DecodedLine::Unknown { type_str, raw }) => {
+        DecodedLine::Unknown { type_str, raw } => {
             tracing::warn!(
                 target: crate::logging::targets::SDK_READER,
                 type = %type_str,
@@ -224,7 +234,7 @@ async fn handle_line(
             );
             events_tx.send(Ok(Message::Unknown { type_str, raw })).is_ok()
         }
-        Ok(DecodedLine::ToolProgress(progress)) => {
+        DecodedLine::ToolProgress(progress) => {
             // Dropped on purpose: informational only, forge's own tool
             // lifecycle rendering covers it. Debug, not warn - a 30s
             // cadence at warn is 10MB of log rotation per session-hour.
@@ -237,18 +247,6 @@ async fn handle_line(
                 "tool_progress heartbeat dropped",
             );
             true
-        }
-        Err(e) => {
-            let err_text = e.to_string();
-            if events_tx.send(Err(e)).is_err() {
-                tracing::warn!(
-                    target: crate::logging::targets::SDK_READER,
-                    error = %err_text,
-                    line_number,
-                    "events channel closed; decode error dropped",
-                );
-            }
-            false
         }
     }
 }
@@ -317,5 +315,40 @@ mod tests {
             events_rx.try_recv().is_err(),
             "a heartbeat must not surface an event to the agent"
         );
+    }
+
+    /// A line that fails to decode is skipped: the read loop continues
+    /// and nothing reaches the events channel, and the next valid frame
+    /// still arrives. A decode error used to end the whole session
+    /// here, one bad field from a non-Anthropic backend included.
+    #[tokio::test]
+    async fn a_malformed_line_is_skipped_and_the_stream_continues() {
+        let (writer, _lines) = SharedWriter::test_stub();
+        let dispatch = ControlDispatchHandle::new(
+            Arc::new(writer),
+            None,
+            None,
+            crate::mcp::orchestration::McpHosts::new(Vec::new(), HashMap::new()),
+            HashMap::new(),
+            new_shared_session_id(),
+        );
+        let pending: PendingControls = Arc::new(Mutex::new(HashMap::new()));
+        let inflight: InflightDispatches = Arc::new(Mutex::new(HashMap::new()));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        let corrupt = r#"{"type":"stream_event""#;
+        let keep_going = handle_line(&dispatch, &pending, &inflight, &events_tx, 7, corrupt).await;
+
+        assert!(keep_going, "a decode error must not end the read loop");
+        assert!(events_rx.try_recv().is_err(), "a skipped line must not surface an event");
+
+        let valid = r#"{"type":"stream_event","uuid":"evt-1","session_id":"sess-1","event":{"type":"message_start"}}"#;
+        let keep_going = handle_line(&dispatch, &pending, &inflight, &events_tx, 8, valid).await;
+
+        assert!(keep_going, "the read loop must still be alive after a skip");
+        match events_rx.try_recv() {
+            Ok(Ok(Message::StreamEvent { uuid, .. })) => assert_eq!(uuid, "evt-1"),
+            other => panic!("expected the next valid frame on the event stream, got {other:?}"),
+        }
     }
 }

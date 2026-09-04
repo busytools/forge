@@ -616,23 +616,25 @@ pub fn decode_all_inbound(log: &TraceLog) -> DecodeReport {
             continue;
         }
         match decode_dispatch(line, (idx + 1) as u64) {
-            Ok(DecodedLine::Message(msg)) => {
+            DecodedLine::Message(msg) => {
                 report.messages += 1;
                 record_fallbacks(&msg, line, &mut report);
             }
-            Ok(DecodedLine::Control(req)) => {
+            DecodedLine::Control(req) => {
                 report.controls += 1;
                 if let ControlRequestKind::Unknown { subtype, .. } = &req.request {
                     report.unknown_control_subtypes.push(subtype.clone());
                 }
             }
-            Ok(DecodedLine::ControlCancel { .. }) => report.control_cancels += 1,
-            Ok(DecodedLine::ControlResponse { .. }) => report.control_responses += 1,
-            Ok(DecodedLine::ToolProgress(_)) => report.tool_progress += 1,
-            Ok(DecodedLine::Unknown { type_str, .. }) => {
+            DecodedLine::ControlCancel { .. } => report.control_cancels += 1,
+            DecodedLine::ControlResponse { .. } => report.control_responses += 1,
+            DecodedLine::ToolProgress(_) => report.tool_progress += 1,
+            DecodedLine::Unknown { type_str, .. } => {
                 report.unknown_types.push(type_str);
             }
-            Err(e) => report.decode_errors.push((idx, format!("{e}"))),
+            DecodedLine::Malformed { line, reason } => {
+                report.decode_errors.push((idx, format!("line {line}: {reason}")));
+            }
         }
     }
     report
