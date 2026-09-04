@@ -61,6 +61,9 @@ fn apply_connected_presentation(
         cwd.clone()
     };
     let model_for_log = current_model.clone();
+    // A reconnect or resume lands on the same bucket: queued-send
+    // state from before the disconnect must not survive the fresh CLI.
+    super::queued_turn::cancel(app, session_key);
     if was_active {
         // Active path: the user is watching this session. Run the
         // full active-session apply chain so welcome / file-index /
@@ -213,6 +216,8 @@ pub(super) fn handle_auth_required_event(
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         let _ = session;
+        // Teardown took the CLI's queued prompt with it.
+        super::queued_turn::cancel(app, session_key);
         // Flip the bucket's lifecycle state so the Projects pane
         // glyph reflects the auth-blocked condition.
         set_bucket_lifecycle_state(app, session_key, SessionLifecycleState::AuthRequired);
@@ -256,6 +261,8 @@ pub(super) fn handle_auth_required_event(
     // Projects pane glyph picks up the AuthRequired marker without
     // waiting for a subsequent event.
     if let Some(key) = app.active_session_key.clone() {
+        // Teardown took the CLI's queued prompt with it.
+        super::queued_turn::cancel(app, &key);
         super::set_bucket_lifecycle_state(
             app,
             &key,
@@ -385,6 +392,8 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     if !is_rate_limited && let Some(session) = app.session_mut(session_key) {
         session.last_connection_error = Some(msg.to_owned());
     }
+    // Teardown took the CLI's queued prompt with it.
+    super::queued_turn::cancel(app, session_key);
     set_bucket_lifecycle_state(app, session_key, next_state);
     if is_rate_limited {
         push_system_message_with_severity(

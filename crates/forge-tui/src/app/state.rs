@@ -2018,6 +2018,7 @@ impl App {
     pub fn start_live_turn(&mut self, at: std::time::Instant) {
         self.set_latest_thinking_tokens(None);
         self.active_bucket_mut().live_turn.start(at);
+        self.settle_orphaned_turn_rows(at);
         let Some(idx) = self
             .messages()
             .iter()
@@ -2033,6 +2034,28 @@ impl App {
                 ..crate::app::state::messages::TurnInfo::default()
             };
             msg.invalidate_render_cache();
+        }
+    }
+
+    /// Settle rows still counting from a turn that can no longer
+    /// produce a Result of its own - the CLI fuses a cancel-then-type
+    /// prompt into the interrupted turn without emitting one, so the
+    /// fresh start is the only chance to stop the clock.
+    fn settle_orphaned_turn_rows(&mut self, at: std::time::Instant) {
+        for msg in self.active_messages_mut() {
+            if !matches!(msg.role, crate::app::MessageRole::Assistant) {
+                continue;
+            }
+            let Some(started) = msg.turn_info.started_at else {
+                continue;
+            };
+            if msg.turn_info.is_settled() {
+                continue;
+            }
+            msg.turn_info.duration_ms = Some(
+                u64::try_from(at.saturating_duration_since(started).as_millis())
+                    .unwrap_or(u64::MAX),
+            );
         }
     }
 
