@@ -161,7 +161,7 @@ pub(crate) struct LoadedAccount {
 
 /// The `[plugins]` section. Unknown fields are rejected so a mistyped
 /// key cannot silently leave auto-update doing nothing.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PluginSettings {
     /// Update installed plugins once at forge boot. Off by default:

@@ -906,6 +906,21 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    /// Forget the record for one installed entry after its rollback
+    /// ran: the previous version it named is now current.
+    pub fn clear_plugin_update_record(&self, plugin_id: &str, scope: &str) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::plugins::clear_update_record(db, plugin_id, scope)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                plugin = %plugin_id,
+                error = %error,
+                "failed to clear a plugin update record",
+            );
+        }
+    }
+
     /// The `[gotify]` server connection from forge.toml, or `None`
     /// when the section is absent. `None` keeps the Gotify subsystem
     /// dormant and makes `gotify__subscribe` error. Read-only - forge

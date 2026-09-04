@@ -88,6 +88,16 @@ fn create_app_impl(
     let (diff_overlay_event_tx, diff_overlay_event_rx) = std::sync::mpsc::channel();
     let (usage_overlay_event_tx, usage_overlay_event_rx) = std::sync::mpsc::channel();
     let (process_scan_event_tx, process_scan_event_rx) = std::sync::mpsc::channel();
+    // Opt-in plugin auto-update ([plugins] auto_update): one
+    // inventory refresh + eligible updates in the background, results
+    // landing in the plugins pane state.
+    let update_tx_for_plugins = workspace.update_sender();
+    let boot_cwd_raw = cwd_raw.clone();
+    crate::app::plugins::maybe_spawn_boot_auto_update(
+        &workspace,
+        update_tx_for_plugins,
+        boot_cwd_raw,
+    );
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());

@@ -291,6 +291,52 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 crate::app::plugins::apply_cli_action_failure(app, message);
             });
         }
+        SessionUpdate::PluginsUpdateRunProgress { cwd_raw, run } => {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_update_run_progress_dropped", |app| {
+                crate::app::plugins::apply_update_run_progress(app, run);
+            });
+        }
+        SessionUpdate::PluginsUpdateRunFinished {
+            cwd_raw,
+            run,
+            snapshot,
+            claude_path,
+            records,
+        } => {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_update_run_finished_dropped", |app| {
+                crate::app::plugins::apply_update_run_finished(
+                    app,
+                    &run,
+                    snapshot,
+                    claude_path,
+                    &records,
+                );
+            });
+        }
+        SessionUpdate::PluginsRollbackSucceeded {
+            cwd_raw,
+            plugin_id,
+            scope,
+            message,
+            snapshot,
+            claude_path,
+        } => {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_rollback_success_dropped", |app| {
+                crate::app::plugins::apply_rollback_success(
+                    app,
+                    &plugin_id,
+                    &scope,
+                    message,
+                    snapshot,
+                    claude_path,
+                );
+            });
+        }
+        SessionUpdate::PluginsRollbackFailed { cwd_raw, plugin_id, message } => {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_rollback_failure_dropped", |app| {
+                crate::app::plugins::apply_rollback_failure(app, &plugin_id, &message);
+            });
+        }
         SessionUpdate::PeerInflightStatsChanged { key, stats } => {
             if let Some(session) = app.session_mut(&key) {
                 // Track when the failure counters last incremented so

@@ -59,6 +59,19 @@ pub fn update_records(db: &Db) -> anyhow::Result<BTreeMap<String, PluginUpdateRe
     Ok(out)
 }
 
+/// Drop the record for one installed entry - the rollback a record
+/// made possible has been used, and there is no earlier version to go
+/// back to behind it.
+pub fn clear_update_record(db: &Db, plugin_id: &str, scope: &str) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(PLUGIN_UPDATES)?;
+        table.remove(record_key(plugin_id, scope).as_str())?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,10 +101,7 @@ mod tests {
 
         let records = update_records(&db).expect("read");
         assert_eq!(records.len(), 2, "one row per installed entry");
-        assert_eq!(
-            records["hello@probe-market|user"].to_version.as_deref(),
-            Some("0.3.0")
-        );
+        assert_eq!(records["hello@probe-market|user"].to_version.as_deref(), Some("0.3.0"));
         assert_eq!(records["hello@probe-market|user"].marketplace, "probe-market");
     }
 

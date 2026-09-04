@@ -128,6 +128,7 @@ pub use forge_agent::client::SessionLaunchSettings;
 pub mod cloud {
     pub use forge_agent::cloud::*;
 }
+pub use config::PluginSettings;
 pub mod commands {
     pub use forge_agent::commands::*;
 }

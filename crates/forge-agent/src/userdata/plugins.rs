@@ -9,6 +9,7 @@ pub mod cli;
 
 pub use forge_primitives::plugins::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
-    PluginUpdateAvailability, PluginUpdateOutcome, PluginUpdateOutcomeStatus, PluginUpdateRecord,
-    PluginUpdateTarget, PluginUpdateTrigger, PluginsInventorySnapshot, update_availability,
+    PluginRunRowStatus, PluginUpdateAvailability, PluginUpdateRecord, PluginUpdateRun,
+    PluginUpdateRunRow, PluginUpdateTrigger, PluginsInventorySnapshot, classify_update_row,
+    update_availability,
 };

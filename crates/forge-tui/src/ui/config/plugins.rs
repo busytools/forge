@@ -1,9 +1,9 @@
 use super::theme;
 use crate::app::App;
 use crate::app::plugins::{
-    PluginCapability, PluginsViewTab, display_label, filtered_installed,
-    filtered_marketplace_plugins, ordered_installed, relevant_installed_count, search_enabled,
-    visible_marketplaces,
+    PluginCapability, PluginRunRowStatus, PluginUpdateRunRow, PluginsViewTab, display_label,
+    filtered_installed, filtered_marketplace_plugins, ordered_installed, relevant_installed_count,
+    search_enabled, visible_marketplaces,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -32,6 +32,15 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
     if search_enabled(app.plugins.active_tab) {
+        let report_height = report_block_height(app);
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(report_height),
+                Constraint::Min(0),
+            ])
+            .split(area);
         // The unified single-line field: the query embedded in a one-row
         // thick border, orange while focused, DIM otherwise.
         let style = if app.plugins.search_focused {
@@ -46,8 +55,14 @@ fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
                 usize::from(area.width),
                 style,
             )),
-            area,
+            sections[0],
         );
+        if report_height > 0 {
+            frame.render_widget(
+                Paragraph::new(update_report_lines(app)).wrap(Wrap { trim: false }),
+                sections[1],
+            );
+        }
         return;
     }
 
@@ -77,9 +92,93 @@ fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn top_region_height(_app: &App, _width: u16) -> u16 {
-    // The single-line field is one row whatever the query length.
-    1
+fn top_region_height(app: &App, _width: u16) -> u16 {
+    // The single-line field is one row whatever the query length; the
+    // update report grows the region only while it is on screen.
+    1 + report_block_height(app)
+}
+
+/// Rows of the update report shown at once; the rest collapse into a
+/// count line so the report cannot eat the whole list.
+const REPORT_ROW_CAP: usize = 10;
+
+fn report_block_height(app: &App) -> u16 {
+    let Some(run) = app.plugins.update_run.as_ref() else {
+        return 0;
+    };
+    if !search_enabled(app.plugins.active_tab) {
+        return 0;
+    }
+    let mut height = 2; // header + blank separator
+    height += u16::try_from(run.rows.len().min(REPORT_ROW_CAP)).unwrap_or(u16::MAX);
+    if run.rows.len() > REPORT_ROW_CAP {
+        height += 1;
+    }
+    height
+}
+
+fn update_report_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(run) = app.plugins.update_run.as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = Vec::with_capacity(report_block_height(app) as usize);
+    let head_style = if !run.finished {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else if run.rows.iter().any(|row| row.status == PluginRunRowStatus::Failed) {
+        Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::REVIEW_RESOLVED).add_modifier(Modifier::BOLD)
+    };
+    let mut header = vec![Span::styled(" Plugin updates", head_style)];
+    if run.finished {
+        header.push(Span::styled(format!(" - {}", run.summary()), head_style));
+        header.push(Span::styled("  (Esc clears)", Style::default().fg(theme::DIM)));
+    } else {
+        header.push(Span::styled(" - running...", Style::default().fg(theme::DIM)));
+    }
+    lines.push(Line::from(header));
+
+    for row in run.rows.iter().take(REPORT_ROW_CAP) {
+        lines.push(update_report_row_line(row));
+    }
+    if run.rows.len() > REPORT_ROW_CAP {
+        lines.push(Line::from(Span::styled(
+            format!("   ...and {} more", run.rows.len() - REPORT_ROW_CAP),
+            Style::default().fg(theme::DIM),
+        )));
+    }
+    lines
+}
+
+fn update_report_row_line(row: &PluginUpdateRunRow) -> Line<'static> {
+    let (word, color) = match row.status {
+        PluginRunRowStatus::Queued => ("queued", theme::DIM),
+        PluginRunRowStatus::Updating => ("updating...", Color::White),
+        PluginRunRowStatus::Updated => ("updated", theme::REVIEW_RESOLVED),
+        PluginRunRowStatus::AlreadyCurrent => ("current", theme::DIM),
+        PluginRunRowStatus::Failed => ("failed", theme::STATUS_ERROR),
+        PluginRunRowStatus::Skipped => ("skipped", theme::DIM),
+        PluginRunRowStatus::UpdateAvailable => ("update available", theme::STATUS_WARNING),
+    };
+    let mut text = format!("   {}  {}", row.plugin_id, word);
+    if row.status == PluginRunRowStatus::UpdateAvailable {
+        text.push_str(" - ");
+        text.push_str(row.installed_version.as_deref().unwrap_or("?"));
+        text.push_str(" -> ");
+        text.push_str(row.available_version.as_deref().unwrap_or("?"));
+    }
+    if row.status == PluginRunRowStatus::Updated
+        && let Some(version) = row.installed_version.as_deref()
+    {
+        text.push_str(" to ");
+        text.push_str(version);
+    }
+    if let Some(detail) = row.detail.as_deref() {
+        text.push_str("  (");
+        text.push_str(detail);
+        text.push(')');
+    }
+    Line::from(Span::styled(text, Style::default().fg(color)))
 }
 
 fn tab_header_line(app: &App) -> Line<'static> {
@@ -257,12 +356,21 @@ fn marketplace_list(app: &App, viewport_width: u16, viewport_height: u16) -> Ren
     if entries.is_empty() && app.plugins.loading {
         return RenderedList::single("Loading configured marketplaces...", viewport_height);
     }
+    let trusted = app
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.plugin_settings().trusted_marketplaces.clone())
+        .unwrap_or_default();
     let mut blocks = entries
         .iter()
         .enumerate()
         .map(|(index, marketplace)| {
             let selected = index == app.plugins.marketplace_selected_index;
-            let mut lines = vec![title_line(&display_label(&marketplace.name), selected)];
+            let mut lines = vec![marketplace_title_line(
+                &display_label(&marketplace.name),
+                trusted.iter().any(|name| name == &marketplace.name),
+                selected,
+            )];
             if let Some(source) = marketplace.source.as_deref() {
                 lines.push(meta_line(&format!("Source: {source}"), selected));
             }
@@ -291,6 +399,23 @@ fn marketplace_list(app: &App, viewport_width: u16, viewport_height: u16) -> Ren
 
 fn title_line(text: &str, selected: bool) -> Line<'static> {
     title_line_with_badge(text, None, selected)
+}
+
+/// A marketplace row title; a green AUTO badge marks the marketplaces
+/// `[plugins] trusted_marketplaces` lets auto-update touch.
+fn marketplace_title_line(text: &str, trusted: bool, selected: bool) -> Line<'static> {
+    let mut line = title_line(text, selected);
+    if trusted {
+        line.spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
+        line.spans.push(Span::styled(
+            " AUTO ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::REVIEW_RESOLVED)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    line
 }
 
 fn title_line_with_badge(
@@ -464,9 +589,12 @@ fn divider_line(viewport_width: u16, label: &str) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use super::{search_field_line, top_region_height};
+    use super::{search_field_line, top_region_height, update_report_lines};
     use crate::app::App;
-    use crate::app::plugins::PluginsViewTab;
+    use crate::app::plugins::{
+        PluginRunRowStatus, PluginUpdateRun, PluginUpdateRunRow, PluginUpdateTrigger,
+        PluginsViewTab,
+    };
     use crate::ui::theme;
     use ratatui::style::Style;
     use unicode_width::UnicodeWidthStr;
@@ -483,6 +611,52 @@ mod tests {
             .set_text("search query long enough to have wrapped multiple lines");
 
         assert_eq!(usize::from(top_region_height(&app, 12)), 1);
+    }
+
+    /// The update report names each plugin with its outcome and the
+    /// marketplace its id came from, plus the run summary on the
+    /// header line.
+    #[test]
+    fn the_update_report_renders_rows_and_a_summary() {
+        let mut app = App::test_default();
+        app.plugins.active_tab = PluginsViewTab::Installed;
+        app.plugins.update_run = Some(PluginUpdateRun {
+            trigger: PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: vec![
+                PluginUpdateRunRow {
+                    plugin_id: "pensive@claude-night-market".to_owned(),
+                    scope: "user".to_owned(),
+                    cwd_raw: String::new(),
+                    marketplace: "claude-night-market".to_owned(),
+                    status: PluginRunRowStatus::Updated,
+                    installed_version: Some("1.8.0".to_owned()),
+                    available_version: None,
+                    detail: None,
+                },
+                PluginUpdateRunRow {
+                    plugin_id: "leyline@claude-night-market".to_owned(),
+                    scope: "user".to_owned(),
+                    cwd_raw: String::new(),
+                    marketplace: "claude-night-market".to_owned(),
+                    status: PluginRunRowStatus::Failed,
+                    installed_version: Some("0.1.0".to_owned()),
+                    available_version: None,
+                    detail: Some("network unreachable".to_owned()),
+                },
+            ],
+        });
+
+        let text: String = update_report_lines(&app)
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Plugin updates"), "header present: {text}");
+        assert!(text.contains("1 updated, 1 failed, 0 current"), "summary present: {text}");
+        assert!(text.contains("pensive@claude-night-market"), "row names plugin + market: {text}");
+        assert!(text.contains("updated to 1.8.0"), "updated row shows the new version: {text}");
+        assert!(text.contains("(network unreachable)"), "failed row shows why: {text}");
     }
 
     /// A focused search field embeds the query in the one-row thick

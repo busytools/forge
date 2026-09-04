@@ -305,12 +305,8 @@ pub async fn run_plugin_rollback(
     let git_steps = rollback_git_args(&install_location, &ref_before);
     let marketplace_name = record.marketplace.clone();
     let plugin_update = plugin_update_args(&record.plugin_id, &record.scope);
-    let marketplace_update = vec![
-        "plugin".to_owned(),
-        "marketplace".to_owned(),
-        "update".to_owned(),
-        marketplace_name,
-    ];
+    let marketplace_update =
+        vec!["plugin".to_owned(), "marketplace".to_owned(), "update".to_owned(), marketplace_name];
     tokio::task::spawn_blocking(move || {
         for args in &git_steps {
             let output = Command::new("git")

@@ -32,7 +32,9 @@ use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_primitives::error::AppError;
 use forge_primitives::permission::PermissionMode;
 use forge_primitives::permission_ui::{PermissionOutcome, PermissionRequest};
-use forge_primitives::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
+use forge_primitives::plugins::{
+    PluginUpdateRecord, PluginUpdateRun, PluginsCliActionSuccess, PluginsInventorySnapshot,
+};
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::review::{ReviewStatus, ReviewThread};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
@@ -939,6 +941,36 @@ pub enum SessionUpdate {
         cwd_raw: String,
         message: String,
     },
+    /// A section-level update run or check moved: one or more rows
+    /// changed state. Carries the whole run so the pane replaces its
+    /// copy wholesale.
+    PluginsUpdateRunProgress {
+        cwd_raw: String,
+        run: PluginUpdateRun,
+    },
+    /// The run (or check) is over. A successful run carries the
+    /// post-run inventory refresh plus the records to persist; a run
+    /// that could not even refresh carries neither.
+    PluginsUpdateRunFinished {
+        cwd_raw: String,
+        run: PluginUpdateRun,
+        snapshot: Option<PluginsInventorySnapshot>,
+        claude_path: Option<PathBuf>,
+        records: Vec<PluginUpdateRecord>,
+    },
+    PluginsRollbackSucceeded {
+        cwd_raw: String,
+        plugin_id: String,
+        scope: String,
+        message: String,
+        snapshot: PluginsInventorySnapshot,
+        claude_path: PathBuf,
+    },
+    PluginsRollbackFailed {
+        cwd_raw: String,
+        plugin_id: String,
+        message: String,
+    },
     /// Peer-coordination ask in-flight stats changed for `key`. Fired
     /// whenever `bump_inflight_stats` mutates the session's
     /// `PeerInflightStats` (ask sent, reply received, timeout, delivery
@@ -1105,6 +1137,10 @@ impl SessionUpdate {
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
             | Self::PluginsCliActionFailed { .. }
+            | Self::PluginsUpdateRunProgress { .. }
+            | Self::PluginsUpdateRunFinished { .. }
+            | Self::PluginsRollbackSucceeded { .. }
+            | Self::PluginsRollbackFailed { .. }
             | Self::WorkerStatusChanged { .. }
             | Self::DictateAvailability { .. }
             | Self::FatalError(..) => None,
@@ -1237,6 +1273,26 @@ impl std::fmt::Debug for SessionUpdate {
             Self::PluginsCliActionFailed { cwd_raw, .. } => f
                 .debug_struct("PluginsCliActionFailed")
                 .field("cwd_raw", cwd_raw)
+                .finish_non_exhaustive(),
+            Self::PluginsUpdateRunProgress { cwd_raw, run } => f
+                .debug_struct("PluginsUpdateRunProgress")
+                .field("cwd_raw", cwd_raw)
+                .field("rows", &run.rows.len())
+                .finish(),
+            Self::PluginsUpdateRunFinished { cwd_raw, run, .. } => f
+                .debug_struct("PluginsUpdateRunFinished")
+                .field("cwd_raw", cwd_raw)
+                .field("rows", &run.rows.len())
+                .finish(),
+            Self::PluginsRollbackSucceeded { cwd_raw, plugin_id, .. } => f
+                .debug_struct("PluginsRollbackSucceeded")
+                .field("cwd_raw", cwd_raw)
+                .field("plugin_id", plugin_id)
+                .finish_non_exhaustive(),
+            Self::PluginsRollbackFailed { cwd_raw, plugin_id, .. } => f
+                .debug_struct("PluginsRollbackFailed")
+                .field("cwd_raw", cwd_raw)
+                .field("plugin_id", plugin_id)
                 .finish_non_exhaustive(),
             Self::PeerInflightStatsChanged { key, stats } => f
                 .debug_struct("PeerInflightStatsChanged")
