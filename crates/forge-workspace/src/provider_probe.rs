@@ -206,13 +206,16 @@ mod tests {
         assert!(!should_attempt_keychain_refresh(Provider::Anthropic, &HashMap::new(), &network));
     }
 
-    /// The production wiring through the real backend and host: a
-    /// codex probe answered 401 by a local endpoint comes back
-    /// Unauthorized untouched. The keychain read itself cannot be
-    /// planted offline - it reads the real macOS keychain - so the
-    /// no-refresh decision's teeth live in the test above.
+    /// The production wiring through the real backend and host: an
+    /// env-bearer codex probe's transport-class error comes back
+    /// untouched - no refresh fired, no remapping. On a machine with
+    /// the claude binary the local endpoint's 401 surfaces; a
+    /// claude-less runner fails the UA step first, which surfaces the
+    /// same way. The keychain read itself cannot be planted offline -
+    /// it reads the real macOS keychain - so the no-refresh decision's
+    /// teeth live in the test above.
     #[tokio::test]
-    async fn an_env_bearer_codex_401_returns_unauthorized_untouched() {
+    async fn an_env_bearer_codex_transport_error_surfaces_untouched() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         std::thread::spawn(move || {
@@ -238,8 +241,13 @@ mod tests {
         let result =
             probe_with_keychain_recovery(Provider::Codex, Path::new("/tmp/unused"), &env).await;
         assert!(
-            matches!(result, Err(ProbeError::Fetch(OauthUsageError::Unauthorized(401)))),
-            "a 401 from the env-bearer probe surfaces untouched; got {result:?}",
+            matches!(
+                result,
+                Err(ProbeError::Fetch(
+                    OauthUsageError::Unauthorized(401) | OauthUsageError::UaProbe(_)
+                ))
+            ),
+            "the transport-class error must surface untouched; got {result:?}",
         );
     }
 }
