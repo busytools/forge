@@ -442,6 +442,47 @@ fn a_rate_limited_bail_tells_the_reader_to_wait() {
     );
 }
 
+/// The unreachable repair line is class-shaped like the auth one: a
+/// keychain account has no base url to check, so naming
+/// `ANTHROPIC_BASE_URL` at it would send a reader hunting for a key
+/// their forge.toml does not have.
+///
+/// **Asserted as a DIFFERENCE, not as two independent contents**, for
+/// the same reason the auth repair is: two `contains` checks would both
+/// keep passing if the branch were collapsed and one arm's line shown
+/// to everyone.
+#[test]
+fn the_unreachable_repair_differs_by_account_class() {
+    let render = |auth| {
+        flatten(&bail_detail(
+            &App::test_default(),
+            &bailed_with_error(
+                "Subspace",
+                "/home/x/.claude-subspace",
+                auth,
+                forge_workspace::UsageFetchStatus::NetworkFailed,
+            ),
+            PICKER_WIDTH,
+        ))
+        .join("\n")
+    };
+    let keychain = render(forge_workspace::AccountAuth::Keychain);
+    let base_url = render(forge_workspace::AccountAuth::BaseUrl);
+
+    assert_ne!(
+        keychain, base_url,
+        "collapsing the classes shows one arm's repair line to both; got:\n{keychain}",
+    );
+    assert!(
+        keychain.contains("Anthropic API") && !keychain.contains("ANTHROPIC_BASE_URL"),
+        "a keychain account has no base url to check; got:\n{keychain}",
+    );
+    assert!(
+        base_url.contains("ANTHROPIC_BASE_URL") && !base_url.contains("Anthropic API"),
+        "a base-url account's endpoint is the thing to check; got:\n{base_url}",
+    );
+}
+
 /// `Bailed` is red rather than the shipped warning yellow. On the one
 /// screen that gates forge starting, mid-flight and failed must not
 /// differ only by glyph.
