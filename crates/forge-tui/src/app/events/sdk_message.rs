@@ -203,6 +203,7 @@ fn handle_assistant(app: &mut App, msg: Message) {
             &key,
             crate::app::session::SessionLifecycleState::Running,
         );
+        super::queued_turn::note_turn_started(app, &key);
     }
     // Per-turn model observation. The CLI's `system/init` carries the
     // resolved model id once per session; every subsequent Assistant

@@ -400,6 +400,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // arrives on the wire to tell us the delay is up.
         events::auto_continue::maybe_fire(app);
 
+        // And again: a queued send the CLI never turned into a turn
+        // would hold the session spinner open forever without this.
+        events::queued_turn::force_settle_expired(app);
+
         // Preflight hands over to wherever the user was headed, and a
         // cancelled model fetch quits once its screen has been painted.
         // Driven from here rather than from the renderer, since handing

@@ -208,6 +208,7 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
         // Lifecycle: cancellation accepted - return active session
         // to Idle. (Steady-state TurnComplete fires shortly after,
         // also setting Idle - this is a defensive idempotent set.)
+        super::queued_turn::cancel(app, session_key);
         super::set_bucket_lifecycle_state(
             app,
             session_key,
@@ -234,6 +235,7 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
     // Drop the `session` mut borrow before reaching for the workspace.
     let _ = session;
     // Lifecycle: background cancel accepted - same Idle target.
+    super::queued_turn::cancel(app, session_key);
     super::set_bucket_lifecycle_state(
         app,
         session_key,
@@ -393,6 +395,9 @@ fn apply_turn_complete_presentation(
             session_key,
             crate::app::session::SessionLifecycleState::Idle,
         );
+        if super::queued_turn::hold_background_open(app, session_key) {
+            return;
+        }
         if let Some(reason) = terminal_reason {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -440,6 +445,27 @@ fn apply_turn_complete_presentation(
     if turn_was_active {
         app.notify(super::super::notify::NotifyEvent::TurnComplete);
     }
+    // A mid-turn submit the CLI has queued must keep the spinner open
+    // across the pre-first-token gap of its turn, which nothing on the
+    // wire announces. Consulted before the geometry net below: the
+    // count is authoritative, the net only catches shapes a submit
+    // that predates it could still produce.
+    // A mid-turn submit the CLI has queued must keep the spinner open
+    // across the pre-first-token gap of its turn, which nothing on the
+    // wire announces. Consulted before the geometry net below: the
+    // count is authoritative, the net only catches shapes a submit
+    // that predates it could still produce.
+    if super::queued_turn::reopen_queued(app, session_key) {
+        return;
+    }
+    // Mid-turn submits leave user bubbles after the active assistant.
+    // When this turn wraps, claude immediately starts another turn to
+    // consume those buffered prompts - but its first content chunk
+    // can take 1-2s to arrive, leaving a gap where the chat looks
+    // idle. Anticipate that next turn: push an empty assistant
+    // placeholder + flip back to Thinking so the spinner shows
+    // continuously through the handoff.
+    anticipate_buffered_next_turn(app, tail_assistant_idx_before);
     // Mid-turn submits leave user bubbles after the active assistant.
     // When this turn wraps, claude immediately starts another turn to
     // consume those buffered prompts - but its first content chunk
@@ -574,6 +600,7 @@ fn apply_turn_error_presentation(
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         let _ = session;
+        super::queued_turn::cancel(app, session_key);
         // Lifecycle: turn ended (with error) - return the background
         // bucket to Idle so the Projects pane drops the spinner glyph,
         // and reset the per-turn SDK state.
@@ -628,6 +655,7 @@ fn apply_turn_error_presentation(
             terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
         );
         *app.pending_submit_mut() = None;
+        super::queued_turn::cancel(app, session_key);
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         // Lifecycle: cancelled turn - back to Idle, reset turn_state.
         if let Some(key) = app.active_session_key.clone() {
@@ -700,6 +728,7 @@ fn apply_turn_error_presentation(
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.input_mut().clear();
     *app.pending_submit_mut() = None;
+    super::queued_turn::cancel(app, session_key);
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
         app.last_rate_limit_update()

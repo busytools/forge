@@ -200,6 +200,11 @@ fn dispatch_prompt(app: &mut App, text: String) {
             crate::app::session::SessionLifecycleState::Running,
         );
     }
+    if busy {
+        crate::app::events::queued_turn::note_submit_while_busy(app);
+    } else {
+        crate::app::events::queued_turn::note_idle_submit(app);
+    }
     app.enforce_history_retention_tracked();
     app.active_viewport_mut().engage_auto_scroll();
 

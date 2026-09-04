@@ -294,6 +294,24 @@ pub struct UiSession {
     /// its Result settles.
     pub live_turn: LiveTurn,
 
+    /// Typed submits sent while a turn was in flight whose turn has
+    /// not been observed to start yet (the TUI twin of
+    /// `DomainSession.turn_pending`). The CLI emits nothing on the
+    /// wire for a queued turn until its first token, so the
+    /// idle-settling paths consult this to keep the spinner open
+    /// across the gap instead of settling to Ready/Idle.
+    pub queued_turn_sends: usize,
+
+    /// Set when turn-complete re-opened the session for a queued
+    /// send. The next live assistant envelope is that queued turn
+    /// starting; it consumes one send and clears this.
+    pub queued_turn_awaiting_start: bool,
+
+    /// Wall clock past which a re-opened queued turn with no
+    /// assistant envelope is force-settled, so a desync cannot
+    /// strand a spinner forever.
+    pub queued_turn_force_settle_at: Option<std::time::SystemTime>,
+
     /// `Message::Result.duration_api_ms` from the previous Result in
     /// this session. That counter is cumulative over the session, so
     /// the next turn's API time is its delta against this.
@@ -776,6 +794,9 @@ impl Default for UiSession {
             last_stop_hook_summary: None,
             stop_hook_summary_expanded: std::collections::HashMap::default(),
             live_turn: LiveTurn::default(),
+            queued_turn_sends: 0,
+            queued_turn_awaiting_start: false,
+            queued_turn_force_settle_at: None,
             prev_duration_api_ms: None,
             monitors: Vec::default(),
             background_tasks: Vec::default(),
