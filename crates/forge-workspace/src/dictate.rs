@@ -349,9 +349,9 @@ pub enum DictateModelState {
     Loading,
     /// Loaded and usable.
     Ready,
-    /// The one that stopped preflight. Which way is in
-    /// [`DictateSnapshot::failure`].
-    Failed,
+    /// The one that stopped preflight, carrying its own reason. The
+    /// snapshot's copy is for the prose block under the rows.
+    Failed(DictateFailure),
 }
 
 /// Why preflight stopped.
@@ -401,6 +401,8 @@ pub struct DictateSnapshot {
     /// Set once, and never cleared for the run: nothing re-probes a
     /// failed model the way the account loader re-probes a bailed
     /// account, so clearing this one takes a config edit or a fresh run.
+    /// The failing row carries its own copy; this one is the screen-wide
+    /// prose block's.
     pub failure: Option<DictateFailure>,
 }
 
@@ -442,7 +444,7 @@ impl DictateState {
 
     fn fail(&self, failure: DictateFailure, file: Option<&str>) {
         if let Some(file) = file {
-            self.set_state(file, DictateModelState::Failed);
+            self.set_state(file, DictateModelState::Failed(failure.clone()));
         }
         self.snapshot.lock().failure = Some(failure);
     }
@@ -1527,6 +1529,31 @@ mod tests {
         let snapshot = state.snapshot.lock().clone();
         assert!(snapshot.models.is_empty(), "a disabled dictation draws no rows");
         assert!(snapshot.is_ready(), "with nothing configured there is nothing to wait for");
+    }
+
+    /// `fail` is the only production writer of `Failed`, so both writes
+    /// it makes are load-bearing: the row must carry its own reason and
+    /// the snapshot must keep the screen-wide copy.
+    #[test]
+    fn fail_marks_the_row_and_keeps_the_screen_wide_copy() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let state = DictateState::new(&settings);
+        let file = state.snapshot.lock().models[0].file.clone();
+
+        let failure = DictateFailure::Cancelled { kept: 100, total: 200 };
+        state.fail(failure.clone(), Some(&file));
+
+        let snapshot = state.snapshot.lock().clone();
+        assert_eq!(
+            snapshot.models.iter().find(|m| m.file == file).map(|m| &m.state),
+            Some(&DictateModelState::Failed(failure.clone())),
+            "the row that stopped carries its own reason",
+        );
+        assert_eq!(
+            snapshot.failure,
+            Some(failure),
+            "and the snapshot keeps the screen-wide copy for the prose block",
+        );
     }
 
     /// The row that failed is the one that has to go red, and a rejected

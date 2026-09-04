@@ -44,6 +44,29 @@ fn model(role: DictateRole, file: &str, state: DictateModelState) -> DictateMode
     DictateModel { role, file: file.to_owned(), state }
 }
 
+/// An `App` whose workspace carries `snapshot` as its dictate state,
+/// for assertions that read through the workspace rather than a bare
+/// snapshot.
+async fn app_with_dictate(snapshot: DictateSnapshot) -> App {
+    let config_dir = tempfile::tempdir().expect("tempdir");
+    let forge = config_dir.path().join("forge");
+    std::fs::create_dir_all(&forge).expect("forge/");
+    std::fs::write(
+        forge.join("forge.toml"),
+        "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
+         [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+    )
+    .expect("write forge.toml");
+    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+        .await
+        .expect("workspace");
+    workspace.seed_test_dictate_snapshot(snapshot);
+    let mut app = App::test_default();
+    app.workspace = Some(std::sync::Arc::new(workspace));
+    app
+}
+
 fn account(name: &str, state: LoadingState, dir: &str) -> AccountLoadingRow {
     account_with(name, state, dir, forge_workspace::AccountAuth::Keychain)
 }
@@ -749,7 +772,14 @@ async fn forge_does_not_quit_on_cancel_until_the_copy_is_on_screen() {
         .expect("workspace");
     workspace.seed_test_account_state("Subspace", LoadingState::Ready);
     workspace.seed_test_dictate_snapshot(DictateSnapshot {
-        models: vec![model(DictateRole::Transcribing, "asr.gguf", DictateModelState::Failed)],
+        models: vec![model(
+            DictateRole::Transcribing,
+            "asr.gguf",
+            DictateModelState::Failed(DictateFailure::Cancelled {
+                kept: 612_000_000,
+                total: 1_558_162_944,
+            }),
+        )],
         failure: Some(DictateFailure::Cancelled { kept: 612_000_000, total: 1_558_162_944 }),
     });
     let mut app = App::test_default();
@@ -787,7 +817,14 @@ async fn forge_does_not_quit_on_cancel_until_the_copy_is_on_screen() {
 #[test]
 fn a_cancelled_transfer_does_not_read_as_a_finished_one() {
     let snapshot = DictateSnapshot {
-        models: vec![model(DictateRole::Transcribing, "asr.gguf", DictateModelState::Failed)],
+        models: vec![model(
+            DictateRole::Transcribing,
+            "asr.gguf",
+            DictateModelState::Failed(DictateFailure::Cancelled {
+                kept: 592_000_000,
+                total: 1_558_162_944,
+            }),
+        )],
         failure: Some(DictateFailure::Cancelled { kept: 592_000_000, total: 1_558_162_944 }),
     };
     let flat =
@@ -801,6 +838,54 @@ fn a_cancelled_transfer_does_not_read_as_a_finished_one() {
     assert!(
         bar.contains('\u{2591}'),
         "a bar with no empty cells left reads as a completed download; got {bar:?}",
+    );
+}
+
+/// A failed row wears its own cause, never the snapshot's. Each row
+/// here is rendered against a snapshot naming the OTHER model's cause:
+/// nothing the row renders may come from it.
+#[test]
+fn a_failed_row_wears_its_own_cause_not_the_snapshots() {
+    let cancelled = DictateFailure::Cancelled { kept: 592_000_000, total: 1_558_162_944 };
+    let hash = DictateFailure::HashMismatch {
+        path: std::path::PathBuf::from("/models/s1-mini-f16.gguf"),
+        expected: "0370da4f1bae".to_owned(),
+        actual: "4f2b9c1a77e0".to_owned(),
+        size: 1_509_347_232,
+    };
+    let app = App::test_default();
+
+    let flat = flatten(&model_rows(
+        &app,
+        &model(DictateRole::Transcribing, "asr.gguf", DictateModelState::Failed(cancelled.clone())),
+        &DictateSnapshot { models: Vec::new(), failure: Some(hash.clone()) },
+        PICKER_WIDTH,
+    ));
+    let row = row_containing(&flat, "transcribing model");
+    assert!(
+        row.contains("cancelled"),
+        "the row names its own cause, not the snapshot's; got {flat:#?}",
+    );
+    let bar = row_containing(&flat, "\u{2588}");
+    assert!(
+        bar.contains("38%") && bar.contains("592 MB / 1.56 GB"),
+        "the bar carries this transfer's bytes, not the snapshot's; got {bar:?}",
+    );
+
+    let flat = flatten(&model_rows(
+        &app,
+        &model(DictateRole::Normalization, "s1-mini-f16.gguf", DictateModelState::Failed(hash)),
+        &DictateSnapshot { models: Vec::new(), failure: Some(cancelled) },
+        PICKER_WIDTH,
+    ));
+    let row = row_containing(&flat, "normalization model");
+    assert!(
+        row.contains("bad hash"),
+        "and the mirror: this row names its own cause too; got {flat:#?}",
+    );
+    assert!(
+        !flat.iter().any(|r| r.contains("1.56 GB")),
+        "another model's byte counts must not reach this row; got {flat:#?}",
     );
 }
 
@@ -877,13 +962,41 @@ fn a_pending_model_under_a_failure_is_not_queued() {
 }
 
 /// `esc` is only offered while there is a transfer to stop. Offering it
-/// once the bytes have landed advertises a key that does nothing.
-#[test]
-fn the_escape_hint_tracks_whether_there_is_anything_to_cancel() {
+/// once the bytes have landed advertises a key that does nothing, and
+/// once a cancellation has fired forge is on its way out - the footer
+/// offers no keys at all.
+#[tokio::test]
+async fn the_escape_hint_tracks_whether_there_is_anything_to_cancel() {
     assert_eq!(
         footer_hint(&App::test_default()),
         " ctrl+q  quit",
         "with nothing downloading there is nothing to cancel",
+    );
+
+    let transferring = app_with_dictate(DictateSnapshot {
+        models: vec![model(
+            DictateRole::Transcribing,
+            "asr.gguf",
+            DictateModelState::Downloading { downloaded: 0, total: 1, resumed_from: Some(0) },
+        )],
+        failure: None,
+    })
+    .await;
+    assert_eq!(
+        footer_hint(&transferring),
+        " esc  cancel     ctrl+q  quit",
+        "bytes moving is what makes esc mean something",
+    );
+
+    let cancelled = app_with_dictate(DictateSnapshot {
+        models: Vec::new(),
+        failure: Some(DictateFailure::Cancelled { kept: 0, total: 0 }),
+    })
+    .await;
+    assert_eq!(
+        footer_hint(&cancelled),
+        " quitting\u{2026}",
+        "a cancelled preflight is leaving; no keys are offered",
     );
 }
 
