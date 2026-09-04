@@ -73,6 +73,7 @@ pub(crate) fn note_submit_while_busy(app: &mut App) {
             event_name = "queued_send_dropped",
             message = "busy submit dropped for an unknown session",
             outcome = "dropped",
+            active_session_key = ?app.active_session_key.as_ref().map(|k| k.as_str().to_owned()),
         );
         return;
     };
@@ -243,23 +244,19 @@ fn force_settle(app: &mut App, key: &SessionKey) {
         app.status = AppStatus::Ready;
     }
     if dropped > 0 {
+        let secs = FORCE_SETTLE_AFTER.as_secs();
         let message = if dropped == 1 {
-            "A queued message was never picked up. Resend it if it is still needed.".to_owned()
+            format!(
+                "A queued message did not start within {secs}s; it may still run. \
+                 Resend only if nothing happens."
+            )
         } else {
-            format!("{dropped} queued messages were never picked up. Resend them if still needed.")
+            format!(
+                "{dropped} queued messages did not start within {secs}s; they may still run. \
+                 Resend only if nothing happens."
+            )
         };
-        if is_active {
-            super::push_system_message_with_severity(app, Some(SystemSeverity::Warning), &message);
-        } else if let Some(bucket) = app.sessions.get_mut(key) {
-            bucket.messages.push(crate::app::ChatMessage::new(
-                crate::app::MessageRole::System(Some(SystemSeverity::Warning)),
-                vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
-                    &message,
-                ))],
-            ));
-            bucket.message_retained_bytes.push(0);
-            app.needs_redraw = true;
-        }
+        super::push_system_message_to_session(app, key, Some(SystemSeverity::Warning), &message);
     }
     tracing::warn!(
         target: crate::logging::targets::APP_SESSION,
@@ -491,7 +488,7 @@ mod tests {
         let dropped_notice = app.messages().iter().any(|m| {
             matches!(m.role, crate::app::MessageRole::System(Some(SystemSeverity::Warning)))
                 && m.blocks.iter().any(|b| match b {
-                    crate::app::MessageBlock::Text(t) => t.text.contains("never picked up"),
+                    crate::app::MessageBlock::Text(t) => t.text.contains("did not start"),
                     _ => false,
                 })
         });
@@ -590,6 +587,44 @@ mod tests {
         assert!(
             matches!(app.status, AppStatus::Ready),
             "the fused turn's Result settles without a phantom re-open"
+        );
+    }
+
+    /// The production cancel-then-type ordering: the TurnCancelled
+    /// presentation is pumped before the retype. The presentation's
+    /// own clear plus the retype's fresh-turn shape must leave
+    /// nothing queued for the fused turn's Result to trip over.
+    #[test]
+    fn cancel_presentation_pumped_before_retype_leaves_nothing_queued() {
+        let mut app = app_with_connection();
+        let key = active_session_key(&app);
+
+        app.status = AppStatus::Ready;
+        set_input(&mut app, "first");
+        crate::app::input_submit::submit_input(&mut app);
+        set_input(&mut app, "second");
+        crate::app::input_submit::submit_input(&mut app);
+        assert_eq!(
+            app.sessions.get(&key).expect("bucket present").queued_turn_sends,
+            1,
+            "fixture: one send armed before the cancel"
+        );
+
+        // Esc, then the update loop pumps the local TurnCancelled echo.
+        app.set_pending_cancel(true);
+        apply_session_update_turn_cancelled(&mut app, &key);
+
+        // The retype under a pending cancel, then the fused turn's
+        // only Result.
+        set_input(&mut app, "retype");
+        crate::app::input_submit::submit_input(&mut app);
+        apply_session_update_turn_complete(&mut app, &key, None);
+
+        let bucket = app.sessions.get(&key).expect("bucket present");
+        assert_eq!(bucket.queued_turn_sends, 0);
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "no phantom re-open across the pumped cancel and the fused Result"
         );
     }
 
