@@ -780,22 +780,21 @@ fn handle_dead_turn(app: &mut App, key: &SessionKey) {
 }
 
 /// A turn that ended in error has no duration to settle, so drop the
-/// live clock and the latest assistant's unsettled row: a failed
-/// dispatch must not leave a bar counting forever.
+/// live clock and every assistant's unsettled row: a failed dispatch
+/// must not leave a bar counting forever.
 fn clear_failed_turn_clock(app: &mut App, key: &SessionKey) {
     let Some(bucket) = app.sessions.get_mut(key) else {
         return;
     };
     bucket.live_turn = crate::app::state::messages::LiveTurn::default();
-    let Some(idx) = bucket.messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant))
-    else {
-        return;
-    };
-    if let Some(msg) = bucket.messages.get_mut(idx)
-        && !msg.turn_info.is_settled()
-    {
-        msg.turn_info = crate::app::state::messages::TurnInfo::default();
-        msg.invalidate_render_cache();
+    for msg in &mut bucket.messages {
+        if matches!(msg.role, MessageRole::Assistant)
+            && !msg.turn_info.is_settled()
+            && !msg.turn_info.is_empty()
+        {
+            msg.turn_info = crate::app::state::messages::TurnInfo::default();
+            msg.invalidate_render_cache();
+        }
     }
 }
 
@@ -969,6 +968,45 @@ mod tests {
         assert_eq!(app.messages().len(), 2);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
         assert!(matches!(app.messages()[1].role, MessageRole::System(None)));
+    }
+
+    /// A turn that dies without a Result (transport death routes
+    /// through `Message::Error`) must leave no row counting - not
+    /// just the latest one.
+    #[test]
+    fn turn_error_sweeps_every_unsettled_row() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Thinking;
+        app.active_messages_mut().push(user_message("hello"));
+        app.active_messages_mut().push(empty_assistant_message());
+        app.start_live_turn(std::time::Instant::now());
+        app.active_messages_mut().push(empty_assistant_message());
+        app.start_live_turn(std::time::Instant::now());
+        for msg in app.active_messages_mut().iter_mut().skip(1) {
+            msg.blocks.push(MessageBlock::Text(TextBlock::from_complete("turn output")));
+        }
+        // An older row counting from a turn that never got its own
+        // Result. No public flow reaches two counting rows once a
+        // fresh start sweeps its orphans; the error path owns the
+        // invariant over every row regardless.
+        app.active_messages_mut()[1].turn_info = crate::app::state::messages::TurnInfo {
+            started_at: Some(std::time::Instant::now()),
+            ..crate::app::state::messages::TurnInfo::default()
+        };
+        let counting = |app: &App| {
+            app.messages()
+                .iter()
+                .filter(|m| matches!(m.role, MessageRole::Assistant))
+                .filter(|m| !m.turn_info.is_settled() && !m.turn_info.is_empty())
+                .count()
+        };
+        assert_eq!(counting(&app), 2, "fixture: two rows counting before the error");
+
+        let key = active_session_key(&app);
+        apply_session_update_turn_error(&mut app, &key, "boom", None, None);
+
+        assert_eq!(counting(&app), 0, "no row may keep counting after the turn died");
+        assert!(app.active_session().expect("bucket").live_turn.started_at.is_none());
     }
 
     #[test]

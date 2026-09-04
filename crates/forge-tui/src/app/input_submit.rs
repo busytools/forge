@@ -451,6 +451,39 @@ mod tests {
         ));
     }
 
+    /// A prompt typed right after a cancel is fused into the
+    /// interrupted turn, which never emits a Result of its own. The
+    /// fresh turn the submit starts must settle the interrupted
+    /// turn's row instead of leaving it counting forever.
+    #[test]
+    fn cancel_then_type_settles_the_interrupted_row() {
+        let (mut app, _rx) = app_with_connection();
+        app.status = AppStatus::Ready;
+        app.input_mut().set_text("first");
+        submit_input(&mut app);
+        // Turn 1 streamed tokens into its placeholder, so it is a
+        // content-bearing row with a live clock.
+        if let Some(msg) = app.active_messages_mut().last_mut() {
+            msg.blocks.push(MessageBlock::Text(TextBlock::from_complete("turn one output")));
+        }
+        let interrupted_idx = app.messages().len() - 1;
+        assert!(app.messages()[interrupted_idx].turn_info.started_at.is_some());
+
+        request_cancel(&mut app).expect("cancel dispatches");
+        app.input_mut().set_text("second");
+        submit_input(&mut app);
+
+        let interrupted = &app.messages()[interrupted_idx];
+        assert!(
+            interrupted.turn_info.is_settled(),
+            "the interrupted turn's row must settle at its elapsed time, got {:?}",
+            interrupted.turn_info.duration_ms,
+        );
+        let tail = app.messages().last().expect("fresh placeholder");
+        assert!(matches!(tail.role, MessageRole::Assistant) && tail.blocks.is_empty());
+        assert!(!tail.turn_info.is_settled(), "the fresh turn's own row counts from now");
+    }
+
     #[test]
     fn multiple_mid_turn_submits_strip_empty_placeholder_between_them() {
         // Each mid-turn submit pushes its own asst placeholder, but

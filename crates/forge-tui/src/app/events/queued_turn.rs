@@ -134,9 +134,7 @@ pub(crate) fn force_settle_expired(app: &mut App) {
     let due: Vec<SessionKey> = app
         .sessions
         .iter()
-        .filter(|(_, session)| {
-            session.queued_turn_force_settle_at.is_some_and(|at| now >= at)
-        })
+        .filter(|(_, session)| session.queued_turn_force_settle_at.is_some_and(|at| now >= at))
         .map(|(key, _)| key.clone())
         .collect();
     for key in due {
@@ -155,24 +153,19 @@ fn force_settle(app: &mut App, key: &SessionKey) {
     bucket.live_turn = crate::app::state::messages::LiveTurn::default();
     if let Some(idx) =
         bucket.messages.iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+        && let Some(msg) = bucket.messages.get_mut(idx)
     {
-        if let Some(msg) = bucket.messages.get_mut(idx) {
-            if msg.blocks.is_empty() {
-                bucket.messages.remove(idx);
-                bucket.message_retained_bytes.remove(idx);
-            } else {
-                msg.turn_info = crate::app::state::messages::TurnInfo {
-                    duration_ms: Some(msg.turn_info.elapsed_secs.saturating_mul(1_000)),
-                    ..crate::app::state::messages::TurnInfo::default()
-                };
-            }
+        if msg.blocks.is_empty() {
+            bucket.messages.remove(idx);
+            bucket.message_retained_bytes.remove(idx);
+        } else {
+            msg.turn_info = crate::app::state::messages::TurnInfo {
+                duration_ms: Some(msg.turn_info.elapsed_secs.saturating_mul(1_000)),
+                ..crate::app::state::messages::TurnInfo::default()
+            };
         }
     }
-    super::set_bucket_lifecycle_state(
-        app,
-        key,
-        crate::app::session::SessionLifecycleState::Idle,
-    );
+    super::set_bucket_lifecycle_state(app, key, crate::app::session::SessionLifecycleState::Idle);
     if is_active && matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         app.status = AppStatus::Ready;
     }
@@ -205,13 +198,13 @@ fn active_bucket_mut(app: &mut App) -> Option<&mut crate::app::session::UiSessio
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::handle_runtime_session_state_update;
     use super::super::turn::{apply_session_update_turn_complete, handle_turn_error_event};
+    use super::*;
     use crate::agent::model;
     use crate::app::session::SessionLifecycleState;
-    use forge_primitives::{AssistantEnvelope, ContentBlock, Message};
     use forge_primitives::AgentCommand;
+    use forge_primitives::{AssistantEnvelope, ContentBlock, Message};
 
     fn app_with_connection() -> App {
         let mut app = App::test_default();
@@ -228,9 +221,9 @@ mod tests {
         app.input_mut().set_text(text);
     }
 
-    /// The #871 shape: send a follow-up while turn 1 is still running,
-    /// then let turn 1 complete. The queued turn must re-open a
-    /// Thinking turn instead of settling to Ready/Idle.
+    /// Send a follow-up while turn 1 is still running, then let
+    /// turn 1 complete. The queued turn must re-open a Thinking turn
+    /// instead of settling to Ready/Idle.
     #[test]
     fn mid_turn_submit_then_turn_complete_reopens_thinking() {
         let mut app = app_with_connection();
@@ -249,12 +242,22 @@ mod tests {
 
         apply_session_update_turn_complete(&mut app, &key, None);
 
-        assert!(matches!(app.status, AppStatus::Thinking), "queued turn must re-open Thinking, got {:?}", app.status);
+        assert!(
+            matches!(app.status, AppStatus::Thinking),
+            "queued turn must re-open Thinking, got {:?}",
+            app.status
+        );
         let bucket = app.sessions.get(&key).expect("bucket present");
-        assert!(bucket.live_turn.started_at.is_some(), "re-open must start the live clock so the row paints");
+        assert!(
+            bucket.live_turn.started_at.is_some(),
+            "re-open must start the live clock so the row paints"
+        );
         assert!(bucket.queued_turn_awaiting_start);
         assert!(bucket.queued_turn_force_settle_at.is_some());
-        assert_eq!(bucket.queued_turn_sends, 1, "the count is consumed by the turn start, not the settle");
+        assert_eq!(
+            bucket.queued_turn_sends, 1,
+            "the count is consumed by the turn start, not the settle"
+        );
         assert_eq!(
             bucket.lifecycle_state,
             SessionLifecycleState::Running,
@@ -322,10 +325,16 @@ mod tests {
         let bucket = app.sessions.get(&key).expect("bucket present");
         assert_eq!(bucket.queued_turn_sends, 0, "the queued turn started; its send is consumed");
         assert!(!bucket.queued_turn_awaiting_start);
-        assert!(bucket.queued_turn_force_settle_at.is_none(), "a started turn no longer needs the force-settle");
+        assert!(
+            bucket.queued_turn_force_settle_at.is_none(),
+            "a started turn no longer needs the force-settle"
+        );
 
         apply_session_update_turn_complete(&mut app, &key, None);
-        assert!(matches!(app.status, AppStatus::Ready), "with the count consumed, the settle must settle");
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "with the count consumed, the settle must settle"
+        );
     }
 
     /// A desynced re-open (the CLI never ran the queued send) must
@@ -344,8 +353,7 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Thinking));
 
         if let Some(bucket) = app.sessions.get_mut(&key) {
-            bucket.queued_turn_force_settle_at =
-                Some(SystemTime::now() - Duration::from_secs(1));
+            bucket.queued_turn_force_settle_at = Some(SystemTime::now() - Duration::from_secs(1));
         }
         force_settle_expired(&mut app);
 
@@ -355,8 +363,10 @@ mod tests {
         assert_eq!(bucket.lifecycle_state, SessionLifecycleState::Idle);
         assert!(bucket.live_turn.started_at.is_none());
         let last = app.messages().last().expect("user bubble stays");
-        assert!(!matches!(last.role, crate::app::MessageRole::Assistant) || !last.blocks.is_empty(),
-            "the empty re-open placeholder is stripped");
+        assert!(
+            !matches!(last.role, crate::app::MessageRole::Assistant) || !last.blocks.is_empty(),
+            "the empty re-open placeholder is stripped"
+        );
     }
 
     /// An error ending the turn clears the queued-send state, so the
