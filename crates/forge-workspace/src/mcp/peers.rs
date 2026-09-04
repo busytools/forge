@@ -157,6 +157,11 @@ impl Tool for ListAgents {
          in-flight peer-message counters (asks awaiting reply, both \
          incoming and outgoing). \
          \
+         FAMILY NOTE: the peers__* tools never create sessions - they \
+         address other projects' already-existing agents. Spawning a \
+         worker in YOUR project is workers__spawn, a separate family; if \
+         you are here to delegate to a new worker, emit that instead. \
+         \
          CROSS-PROJECT RULE (mutations only): whenever the user asks you \
          to CHANGE state in a project other than your own - edit files, \
          run a command, file an issue, push a branch, anything with side \

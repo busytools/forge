@@ -91,7 +91,11 @@ const KICK_DISPATCH_INTERVAL: Duration = Duration::from_millis(750);
 /// literal, no runtime assembly.
 const LEAD_DELEGATION_PREAMBLE: &str = "\
 You can delegate work to peer worker sessions via the \
-mcp__forge__workers__ tools. Spawn one with \
+mcp__forge__workers__ tools. These tools manage THIS project's worker \
+sessions only. The peers__* family is a different one: it addresses \
+other projects' already-existing agents (list / ask / tell) and has no \
+spawn - if you mean to spawn a worker, emit workers__spawn, never a \
+peers call. Spawn one with \
 workers__spawn(label=\"<name>\", charter=\"<its mission>\") - the charter \
 is required and is what defines that worker; talk to it with \
 workers__tell / workers__ask; list live workers with workers__list; \
