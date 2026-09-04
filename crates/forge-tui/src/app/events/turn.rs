@@ -450,22 +450,9 @@ fn apply_turn_complete_presentation(
     // wire announces. Consulted before the geometry net below: the
     // count is authoritative, the net only catches shapes a submit
     // that predates it could still produce.
-    // A mid-turn submit the CLI has queued must keep the spinner open
-    // across the pre-first-token gap of its turn, which nothing on the
-    // wire announces. Consulted before the geometry net below: the
-    // count is authoritative, the net only catches shapes a submit
-    // that predates it could still produce.
     if super::queued_turn::reopen_queued(app, session_key) {
         return;
     }
-    // Mid-turn submits leave user bubbles after the active assistant.
-    // When this turn wraps, claude immediately starts another turn to
-    // consume those buffered prompts - but its first content chunk
-    // can take 1-2s to arrive, leaving a gap where the chat looks
-    // idle. Anticipate that next turn: push an empty assistant
-    // placeholder + flip back to Thinking so the spinner shows
-    // continuously through the handoff.
-    anticipate_buffered_next_turn(app, tail_assistant_idx_before);
     // Mid-turn submits leave user bubbles after the active assistant.
     // When this turn wraps, claude immediately starts another turn to
     // consume those buffered prompts - but its first content chunk

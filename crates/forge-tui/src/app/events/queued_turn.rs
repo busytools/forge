@@ -151,19 +151,16 @@ fn force_settle(app: &mut App, key: &SessionKey) {
     bucket.queued_turn_awaiting_start = false;
     bucket.queued_turn_force_settle_at = None;
     bucket.live_turn = crate::app::state::messages::LiveTurn::default();
-    if let Some(idx) =
-        bucket.messages.iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
-        && let Some(msg) = bucket.messages.get_mut(idx)
-    {
-        if msg.blocks.is_empty() {
-            bucket.messages.remove(idx);
-            bucket.message_retained_bytes.remove(idx);
-        } else {
-            msg.turn_info = crate::app::state::messages::TurnInfo {
-                duration_ms: Some(msg.turn_info.elapsed_secs.saturating_mul(1_000)),
-                ..crate::app::state::messages::TurnInfo::default()
-            };
-        }
+    // The re-open's placeholder is empty at expiry: any content would
+    // have arrived with an envelope, which clears the deadline first.
+    let empty_tail = bucket
+        .messages
+        .iter()
+        .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+        .and_then(|idx| bucket.messages.get(idx).map(|msg| (idx, msg.blocks.is_empty())));
+    if let Some((idx, true)) = empty_tail {
+        bucket.messages.remove(idx);
+        bucket.message_retained_bytes.remove(idx);
     }
     super::set_bucket_lifecycle_state(app, key, crate::app::session::SessionLifecycleState::Idle);
     if is_active && matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
@@ -199,7 +196,10 @@ fn active_bucket_mut(app: &mut App) -> Option<&mut crate::app::session::UiSessio
 #[cfg(test)]
 mod tests {
     use super::super::handle_runtime_session_state_update;
-    use super::super::turn::{apply_session_update_turn_complete, handle_turn_error_event};
+    use super::super::turn::{
+        apply_session_update_turn_cancelled, apply_session_update_turn_complete,
+        handle_turn_error_event,
+    };
     use super::*;
     use crate::agent::model;
     use crate::app::session::SessionLifecycleState;
@@ -219,6 +219,24 @@ mod tests {
 
     fn set_input(app: &mut App, text: &str) {
         app.input_mut().set_text(text);
+    }
+
+    fn assistant_envelope(id: &str) -> Message {
+        Message::Assistant {
+            message: AssistantEnvelope {
+                id: id.to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![ContentBlock::Text { text: "queued turn output".to_owned() }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
     }
 
     /// Send a follow-up while turn 1 is still running, then let
@@ -290,8 +308,10 @@ mod tests {
         );
     }
 
-    /// The queued count is consumed by the queued turn starting (the
-    /// first live assistant envelope), after which a settle settles.
+    /// The queued count is consumed one send at a time by each queued
+    /// turn starting (the first live assistant envelope), so a second
+    /// queued message still re-opens after the first queued turn
+    /// wraps; once the count reaches zero, a settle settles.
     #[test]
     fn queued_turn_start_envelope_consumes_the_count() {
         let mut app = app_with_connection();
@@ -302,33 +322,34 @@ mod tests {
         crate::app::input_submit::submit_input(&mut app);
         set_input(&mut app, "second");
         crate::app::input_submit::submit_input(&mut app);
+        set_input(&mut app, "third");
+        crate::app::input_submit::submit_input(&mut app);
         apply_session_update_turn_complete(&mut app, &key, None);
         assert!(super::active_has_queued(&app));
 
-        let envelope = Message::Assistant {
-            message: AssistantEnvelope {
-                id: "msg_queued".to_owned(),
-                role: "assistant".to_owned(),
-                model: "claude-test".to_owned(),
-                content: vec![ContentBlock::Text { text: "queued turn output".to_owned() }],
-                stop_reason: None,
-                stop_sequence: None,
-                usage: None,
-            },
-            session_id: String::new(),
-            parent_tool_use_id: None,
-            error: None,
-            uuid: None,
-        };
-        super::super::sdk_message::handle_sdk_message(&mut app, envelope);
+        super::super::sdk_message::handle_sdk_message(&mut app, assistant_envelope("msg_queued_1"));
 
         let bucket = app.sessions.get(&key).expect("bucket present");
-        assert_eq!(bucket.queued_turn_sends, 0, "the queued turn started; its send is consumed");
+        assert_eq!(
+            bucket.queued_turn_sends, 1,
+            "one turn started; exactly one send is consumed, not all"
+        );
         assert!(!bucket.queued_turn_awaiting_start);
         assert!(
             bucket.queued_turn_force_settle_at.is_none(),
             "a started turn no longer needs the force-settle"
         );
+
+        apply_session_update_turn_complete(&mut app, &key, None);
+        assert!(
+            matches!(app.status, AppStatus::Thinking),
+            "the second queued message must re-open after the first queued turn wraps"
+        );
+
+        super::super::sdk_message::handle_sdk_message(&mut app, assistant_envelope("msg_queued_2"));
+
+        let bucket = app.sessions.get(&key).expect("bucket present");
+        assert_eq!(bucket.queued_turn_sends, 0, "the last queued turn started");
 
         apply_session_update_turn_complete(&mut app, &key, None);
         assert!(
@@ -390,19 +411,75 @@ mod tests {
         assert!(bucket.queued_turn_force_settle_at.is_none());
     }
 
-    /// An idle-path submit does not count as a queued send, so a
-    /// normal turn still settles.
+    /// The Esc-path cancel presentation clears the queued-send state
+    /// too: a stale count would re-open Thinking at the next settle
+    /// for a turn the interrupt dropped.
+    #[test]
+    fn turn_cancelled_clears_the_queued_count() {
+        let mut app = app_with_connection();
+        let key = active_session_key(&app);
+
+        app.status = AppStatus::Ready;
+        set_input(&mut app, "first");
+        crate::app::input_submit::submit_input(&mut app);
+        set_input(&mut app, "second");
+        crate::app::input_submit::submit_input(&mut app);
+
+        apply_session_update_turn_cancelled(&mut app, &key);
+
+        let bucket = app.sessions.get(&key).expect("bucket present");
+        assert_eq!(
+            bucket.queued_turn_sends, 0,
+            "a stale count would re-open Thinking at the next settle"
+        );
+        assert!(!bucket.queued_turn_awaiting_start);
+        assert!(bucket.queued_turn_force_settle_at.is_none());
+    }
+
+    /// The background arm of turn-complete also holds a queued send
+    /// open instead of dropping the pane glyph to Idle for the gap.
+    #[test]
+    fn background_turn_complete_holds_open_for_a_queued_send() {
+        use crate::app::session::UiSession;
+        let mut app = App::test_default();
+        let bg_key = SessionKey::from_str_for_test("background-session");
+        let mut bg = UiSession::new(bg_key.clone());
+        bg.queued_turn_sends = 1;
+        app.sessions.insert(bg_key.clone(), bg);
+
+        apply_session_update_turn_complete(&mut app, &bg_key, None);
+
+        let bg = app.sessions.get(&bg_key).expect("bg present");
+        assert_eq!(
+            bg.lifecycle_state,
+            SessionLifecycleState::Running,
+            "the background bucket keeps its spinner glyph for the queued turn"
+        );
+        assert!(bg.queued_turn_awaiting_start);
+        assert!(bg.queued_turn_force_settle_at.is_some());
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "the focused session's own status is untouched"
+        );
+    }
+
+    /// An idle-path submit clears any stale queued-send state and does
+    /// not count as queued itself, so a normal turn still settles.
     #[test]
     fn idle_submit_does_not_block_settling() {
         let mut app = app_with_connection();
         let key = active_session_key(&app);
+
+        if let Some(bucket) = app.sessions.get_mut(&key) {
+            bucket.queued_turn_sends = 1;
+        }
 
         app.status = AppStatus::Ready;
         set_input(&mut app, "only");
         crate::app::input_submit::submit_input(&mut app);
 
         let bucket = app.sessions.get(&key).expect("bucket present");
-        assert_eq!(bucket.queued_turn_sends, 0);
+        assert_eq!(bucket.queued_turn_sends, 0, "the idle submit clears stale queued-send state");
 
         apply_session_update_turn_complete(&mut app, &key, None);
         assert!(matches!(app.status, AppStatus::Ready));
