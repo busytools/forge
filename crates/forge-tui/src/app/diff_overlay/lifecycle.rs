@@ -483,9 +483,6 @@ pub fn drain_events(app: &mut App) {
     }
 }
 
-/// Kick off the lazy scan for `scope` against the overlay's cwd/target,
-/// reusing the current scan seq (no bump - it's the same overlay
-/// session, not a fresh `/diff`).
 /// After a navigation, spawn the scope's scan when it wasn't cached, and
 /// request a redraw. The scan lands back through the overlay event
 /// channel (see [`spawn_scope_fetch`] / [`drain_events`]).
@@ -501,6 +498,9 @@ pub(super) fn after_nav(app: &mut App, outcome: NavOutcome) {
     app.needs_redraw = true;
 }
 
+/// Kick off the lazy scan for `scope` against the overlay's cwd/target,
+/// reusing the current scan seq (no bump - it's the same overlay
+/// session, not a fresh `/diff`).
 fn spawn_scope_scan(app: &mut App, scope: DiffScope) {
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
     let cwd = overlay.cwd.clone();
