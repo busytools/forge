@@ -132,7 +132,8 @@ impl Tool for Whoami {
 }
 
 /// `peers__list_agents` - snapshot of every forge.toml project's
-/// peer status. No args. Returns a JSON array.
+/// peer status. No args. Returns a one-line spawn steer, then the
+/// JSON array.
 ///
 /// Used by the LLM BEFORE calling `peers__ask_agent` or
 /// `peers__tell_agent` to discover which peers exist and which are
