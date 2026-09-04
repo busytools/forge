@@ -379,6 +379,75 @@ mod tests {
         );
         let last = app.messages().last().expect("placeholder pushed");
         assert!(matches!(last.role, crate::app::MessageRole::Assistant) && last.blocks.is_empty());
+        assert_eq!(
+            app.messages().len(),
+            3,
+            "the geometry net must not stack a second placeholder behind the re-open's"
+        );
+    }
+
+    /// An envelope inside the still-running turn (awaiting not set)
+    /// consumes nothing: the count is only spent by the envelope that
+    /// starts the queued turn after a re-open.
+    #[test]
+    fn envelope_during_the_live_turn_does_not_consume() {
+        let mut app = app_with_connection();
+        let key = active_session_key(&app);
+
+        app.status = AppStatus::Ready;
+        set_input(&mut app, "first");
+        crate::app::input_submit::submit_input(&mut app);
+        set_input(&mut app, "second");
+        crate::app::input_submit::submit_input(&mut app);
+
+        super::super::sdk_message::handle_sdk_message(&mut app, assistant_envelope("msg_turn1"));
+
+        let bucket = app.sessions.get(&key).expect("bucket present");
+        assert_eq!(bucket.queued_turn_sends, 1, "turn 1 is still producing; nothing is spent");
+        assert!(!bucket.queued_turn_awaiting_start);
+
+        apply_session_update_turn_complete(&mut app, &key, None);
+        assert!(
+            matches!(app.status, AppStatus::Thinking),
+            "turn-complete still re-opens for the queued send"
+        );
+    }
+
+    /// The force-settle's background arm: the glyph settles to Idle,
+    /// the focused session's status is untouched, no messages are
+    /// stripped, and the expiry notice lands in the bucket.
+    #[test]
+    fn force_settle_background_bucket_sets_down_quietly() {
+        use crate::app::session::UiSession;
+        let mut app = App::test_default();
+        let bg_key = SessionKey::from_str_for_test("background-session");
+        let mut bg = UiSession::new(bg_key.clone());
+        bg.queued_turn_sends = 1;
+        bg.queued_turn_awaiting_start = true;
+        bg.queued_turn_force_settle_at = Some(SystemTime::now() - Duration::from_secs(1));
+        bg.messages
+            .push(crate::app::ChatMessage::new(crate::app::MessageRole::Assistant, Vec::new()));
+        app.sessions.insert(bg_key.clone(), bg);
+
+        force_settle_expired(&mut app);
+
+        let bg = app.sessions.get(&bg_key).expect("bg present");
+        assert_eq!(bg.lifecycle_state, SessionLifecycleState::Idle);
+        assert_eq!(bg.queued_turn_sends, 0);
+        assert!(bg.queued_turn_force_settled);
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "the focused session's own status is untouched"
+        );
+        assert_eq!(
+            bg.messages.len(),
+            2,
+            "the background bucket gets the expiry notice; nothing is stripped"
+        );
+        assert!(matches!(
+            bg.messages.last().expect("notice").role,
+            crate::app::MessageRole::System(Some(SystemSeverity::Warning))
+        ));
     }
 
     /// The second settling path: the wire `Idle` runtime event must
@@ -613,6 +682,10 @@ mod tests {
         // Esc, then the update loop pumps the local TurnCancelled echo.
         app.set_pending_cancel(true);
         apply_session_update_turn_cancelled(&mut app, &key);
+        assert!(
+            app.pending_cancel(),
+            "the echo pump keeps the flag set - the busy-gate's discriminator still holds at retype"
+        );
 
         // The retype under a pending cancel, then the fused turn's
         // only Result.
