@@ -4469,14 +4469,14 @@ mod tests {
         };
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
-            "HEAD".to_owned(),
+            "HEA\u{7}D".to_owned(),
             vec![file.clone()],
         );
         state.branch = Some("feat\u{7}ure".to_owned());
         state.commits = vec![CommitMeta {
             sha: "a".into(),
             short_sha: "a3f9\u{7}c1e".into(),
-            subject: "subject".into(),
+            subject: "sub\u{7}ject".into(),
             body: String::new(),
         }];
         state.scope = DiffScope::Commit(0);
@@ -4490,7 +4490,9 @@ mod tests {
         let full: String =
             terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
         assert!(full.contains("feat\u{2407}ure"), "branch pictured in stepper title: {full:?}");
+        assert!(full.contains("HEA\u{2407}D"), "target pictured in stepper title: {full:?}");
         assert!(full.contains("a3f9\u{2407}c1e"), "short sha pictured in stepper: {full:?}");
+        assert!(full.contains("sub\u{2407}ject"), "subject pictured in stepper: {full:?}");
     }
 
     fn chip_comment(line: u32, text: &str, status: ReviewStatus) -> HunkComment {
