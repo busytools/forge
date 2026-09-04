@@ -47,6 +47,22 @@ pub(crate) fn env_bearer(provider: Provider, env: &HashMap<String, String>) -> b
     provider.uses_base_url() || is_token_mode(env)
 }
 
+/// Whether a failed first probe should move on to the CLI-spawn
+/// refresh: only a keychain-authenticated probe whose failure is a
+/// 401, the one class a rotated keychain token repairs. An env-bearer
+/// probe is never refresh-eligible - refreshing would burn billed
+/// `claude -p hi` spawns against a token the probe never reads.
+fn should_attempt_keychain_refresh(
+    provider: Provider,
+    env: &HashMap<String, String>,
+    first: &Result<UsageSnapshot, ProbeError>,
+) -> bool {
+    if env_bearer(provider, env) {
+        return false;
+    }
+    matches!(first, Err(ProbeError::Fetch(OauthUsageError::Unauthorized(_))))
+}
+
 /// The 60 s poller's keychain recovery, over the backend: on a 401
 /// whose keychain token is locally expired (or undated), fire the
 /// CLI-spawn refresh once and re-probe; any refresh failure surfaces
@@ -58,13 +74,9 @@ pub(crate) async fn probe_with_keychain_recovery(
     env: &HashMap<String, String>,
 ) -> Result<UsageSnapshot, ProbeError> {
     let first = probe_via_backend(provider, config_dir, env).await;
-    // The refresh can only repair a keychain-authenticated probe.
-    if env_bearer(provider, env) {
+    if !should_attempt_keychain_refresh(provider, env, &first) {
         return first;
     }
-    let Err(ProbeError::Fetch(OauthUsageError::Unauthorized(_))) = &first else {
-        return first;
-    };
     // Treating an absent expires_at as expired is deliberate: refresh
     // is one-shot per account (the per-account mutex prevents a probe
     // storm), and surfacing 401 forever because an older claude write
@@ -160,5 +172,74 @@ mod tests {
         for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
             assert!(env_bearer(provider, &HashMap::new()), "{provider:?}");
         }
+    }
+
+    /// The refresh-gate pin: a 401 on a keychain-authenticated probe
+    /// is the only shape that moves on to the CLI-spawn refresh. An
+    /// env-bearer 401 (codex base url, anthropic setup token) stops
+    /// here, and so does every non-auth failure class.
+    #[test]
+    fn only_a_keychain_401_is_refresh_eligible() {
+        let unauthorized = Err(ProbeError::Fetch(OauthUsageError::Unauthorized(401)));
+        let network = Err(ProbeError::Fetch(OauthUsageError::Network("dns".to_owned())));
+
+        assert!(should_attempt_keychain_refresh(
+            Provider::Anthropic,
+            &HashMap::new(),
+            &unauthorized
+        ));
+
+        let mut token = HashMap::new();
+        token.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
+        assert!(!should_attempt_keychain_refresh(Provider::Anthropic, &token, &unauthorized));
+
+        let mut base = HashMap::new();
+        base.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
+        base.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
+        for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
+            assert!(
+                !should_attempt_keychain_refresh(provider, &base, &unauthorized),
+                "{provider:?}",
+            );
+        }
+
+        assert!(!should_attempt_keychain_refresh(Provider::Anthropic, &HashMap::new(), &network));
+    }
+
+    /// The production wiring through the real backend and host: a
+    /// codex probe answered 401 by a local endpoint comes back
+    /// Unauthorized untouched. The keychain read itself cannot be
+    /// planted offline - it reads the real macOS keychain - so the
+    /// no-refresh decision's teeth live in the test above.
+    #[tokio::test]
+    async fn an_env_bearer_codex_401_returns_unauthorized_untouched() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            use std::io::{Read, Write as _};
+            let Ok((mut sock, _)) = listener.accept() else { return };
+            // Drain the request before answering: closing with unread
+            // request bytes pending sends an RST that can destroy the
+            // response already in flight.
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                match sock.read(&mut byte) {
+                    Ok(1) => request.push(byte[0]),
+                    _ => break,
+                }
+            }
+            let _ = sock.write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n");
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+        });
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), format!("http://{addr}"));
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
+        let result =
+            probe_with_keychain_recovery(Provider::Codex, Path::new("/tmp/unused"), &env).await;
+        assert!(
+            matches!(result, Err(ProbeError::Fetch(OauthUsageError::Unauthorized(401)))),
+            "a 401 from the env-bearer probe surfaces untouched; got {result:?}",
+        );
     }
 }
