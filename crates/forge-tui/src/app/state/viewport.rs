@@ -907,7 +907,8 @@ impl Default for ChatViewport {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatViewport, DEFAULT_MESSAGE_HEIGHT_ESTIMATE};
+    use super::{ChatViewport, DEFAULT_MESSAGE_HEIGHT_ESTIMATE, LayoutRemeasureReason};
+    use pretty_assertions::assert_eq;
 
     fn viewport_with(width: u16, heights: &[usize], stale: &[bool]) -> ChatViewport {
         let mut vp = ChatViewport::new();
@@ -960,5 +961,847 @@ mod tests {
             "average of measured {{4, 8}} excludes the 99 estimate"
         );
         assert_eq!(vp.message_heights[1], 99, "prior estimate is left untouched, not re-seeded");
+    }
+
+    // ChatViewport
+
+    #[test]
+    fn viewport_new_defaults() {
+        let vp = ChatViewport::new();
+        assert_eq!(vp.scroll_offset, 0);
+        assert_eq!(vp.scroll_target, 0);
+        assert!(vp.auto_scroll);
+        assert_eq!(vp.width, 0);
+        assert!(vp.message_heights.is_empty());
+        assert!(vp.oldest_stale_index().is_none());
+        assert!(!vp.remeasure_active());
+        assert!(vp.height_prefix_sums.is_empty());
+    }
+
+    #[test]
+    fn viewport_on_frame_sets_width() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        assert_eq!(vp.width, 80);
+        assert_eq!(vp.height, 24);
+    }
+
+    #[test]
+    fn viewport_on_frame_resize_invalidates() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.set_message_height(0, 10);
+        vp.set_message_height(1, 20);
+        vp.rebuild_prefix_sums();
+
+        // Resize: old heights are kept as approximations,
+        // but width markers are invalidated so re-measurement happens.
+        let _ = vp.on_frame(120, 24);
+        assert_eq!(vp.message_height(0), 10); // kept, not zeroed
+        assert_eq!(vp.message_height(1), 20); // kept, not zeroed
+        assert_eq!(vp.message_heights_width, 0); // forces re-measure
+        assert_eq!(vp.prefix_sums_width, 0); // forces rebuild
+    }
+
+    #[test]
+    fn viewport_on_frame_same_width_no_invalidation() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.set_message_height(0, 10);
+        let _ = vp.on_frame(80, 24); // same width
+        assert_eq!(vp.message_height(0), 10); // not zeroed
+    }
+
+    #[test]
+    fn viewport_on_frame_height_change_preserves_message_measurements() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(2);
+        vp.set_message_height(0, 10);
+        vp.set_message_height(1, 20);
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        let change = vp.on_frame(80, 12);
+
+        assert!(!change.width_changed);
+        assert!(change.height_changed);
+        assert_eq!(vp.height, 12);
+        assert_eq!(vp.message_heights_width, 80);
+        assert_eq!(vp.prefix_sums_width, 80);
+        assert!(!vp.remeasure_active());
+        assert!(vp.message_height_is_current(0));
+        assert!(vp.message_height_is_current(1));
+    }
+
+    #[test]
+    fn viewport_message_height_set_and_get() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.set_message_height(0, 5);
+        vp.set_message_height(1, 10);
+        assert_eq!(vp.message_height(0), 5);
+        assert_eq!(vp.message_height(1), 10);
+        assert_eq!(vp.message_height(2), 0); // out of bounds
+    }
+
+    #[test]
+    fn viewport_message_height_grows_vec() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.set_message_height(5, 42);
+        assert_eq!(vp.message_heights.len(), 6);
+        assert_eq!(vp.message_height(5), 42);
+        assert_eq!(vp.message_height(3), 0); // gap filled with 0
+    }
+
+    #[test]
+    fn viewport_invalidate_message_tracks_oldest_index() {
+        let mut vp = ChatViewport::new();
+        vp.sync_message_count(8);
+        vp.mark_heights_valid();
+        vp.invalidate_message(5);
+        vp.invalidate_message(2);
+        vp.invalidate_message(7);
+        assert_eq!(vp.oldest_stale_index(), Some(2));
+    }
+
+    #[test]
+    fn viewport_mark_heights_valid_clears_dirty_index() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(2);
+        vp.mark_heights_valid();
+        vp.invalidate_message(1);
+        assert_eq!(vp.oldest_stale_index(), Some(1));
+        vp.mark_heights_valid();
+        assert!(vp.oldest_stale_index().is_none());
+    }
+
+    #[test]
+    fn viewport_resize_remeasure_tracks_partial_exactness() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(3);
+        vp.set_message_height(0, 4);
+        vp.set_message_height(1, 5);
+        vp.set_message_height(2, 6);
+        vp.mark_heights_valid();
+
+        let _ = vp.on_frame(120, 24);
+        assert!(vp.remeasure_active());
+        assert!(!vp.message_height_is_current(0));
+
+        vp.mark_message_height_measured(1);
+        assert!(vp.message_height_is_current(1));
+        assert!(!vp.message_height_is_current(0));
+
+        vp.mark_heights_valid();
+        assert_eq!(vp.message_heights_width, 120);
+        assert!(vp.message_height_is_current(0));
+        assert!(!vp.remeasure_active());
+    }
+
+    #[test]
+    fn viewport_resize_remeasure_expands_outward_from_anchor() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(6);
+        vp.mark_heights_valid();
+
+        let _ = vp.on_frame(100, 24);
+        vp.ensure_remeasure_anchor(2, 3, 6);
+
+        assert_eq!(vp.next_remeasure_index(6), Some(1));
+        assert_eq!(vp.next_remeasure_index(6), Some(0));
+        assert_eq!(vp.next_remeasure_index(6), Some(4));
+        assert_eq!(vp.next_remeasure_index(6), Some(5));
+        assert_eq!(vp.next_remeasure_index(6), None);
+        assert!(!vp.remeasure_active());
+    }
+
+    #[test]
+    fn viewport_restore_resize_anchor_keeps_same_message_visible() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        let _ = vp.on_frame(40, 24);
+
+        // Re-wrapping moves every height, so the reader drifts unless the
+        // anchor corrects for it.
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.set_message_height(1, 8);
+        vp.mark_message_height_measured(1);
+        vp.set_message_height(2, 6);
+        vp.set_message_height(3, 6);
+        vp.prefix_sums_width = 0;
+        vp.rebuild_prefix_sums();
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must re-wrap enough that the raw offset drifts off message 1",
+        );
+
+        let (anchor_idx, anchor_offset) =
+            vp.take_ready_scroll_anchor().expect("resize should snapshot a scroll anchor");
+        vp.restore_scroll_anchor(anchor_idx, anchor_offset);
+
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "the resize must land the reader back on the message they were reading",
+        );
+        assert_eq!(vp.scroll_offset, 14);
+    }
+
+    #[test]
+    fn viewport_preserves_resize_anchor_when_followup_remeasure_keeps_higher_priority_reason() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        let _ = vp.on_frame(40, 24);
+        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::Resize));
+
+        vp.invalidate_messages_from(0);
+
+        assert_eq!(
+            vp.remeasure_reason(),
+            Some(LayoutRemeasureReason::Resize),
+            "a follow-up MessagesFrom must not downgrade the in-flight Resize plan",
+        );
+
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.set_message_height(1, 8);
+        vp.mark_message_height_measured(1);
+        vp.rebuild_prefix_sums();
+
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must re-wrap enough that the raw offset drifts off message 1",
+        );
+
+        let anchor =
+            vp.take_ready_scroll_anchor().expect("the resize anchor survives the follow-up");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "the follow-up must leave the reader landing where the resize anchored them",
+        );
+        assert_eq!(vp.scroll_offset, 14);
+    }
+
+    #[test]
+    fn viewport_message_change_preserves_manual_anchor() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        vp.invalidate_message(0);
+
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.rebuild_prefix_sums();
+
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must grow the message above enough that the raw offset drifts",
+        );
+
+        let anchor = vp
+            .take_ready_scroll_anchor()
+            .expect("a manual-scroll invalidation should preserve an anchor");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "growing the message above must not move the reader off the one they were reading",
+        );
+        assert_eq!(vp.scroll_offset, 14);
+    }
+
+    #[test]
+    fn viewport_delays_anchor_restore_until_prefix_above_is_exact() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 12;
+        vp.scroll_target = 12;
+        vp.scroll_pos = 12.0;
+
+        let _ = vp.on_frame(40, 24);
+        assert_eq!(
+            vp.take_ready_scroll_anchor(),
+            None,
+            "restoring against stale rows above would land the reader on the wrong one",
+        );
+
+        vp.set_message_height(2, 9);
+        vp.mark_message_height_measured(2);
+        vp.rebuild_prefix_sums();
+        assert_eq!(
+            vp.take_ready_scroll_anchor(),
+            None,
+            "measuring the anchor's own row is not enough; the rows above set its position",
+        );
+
+        vp.set_message_height(0, 11);
+        vp.mark_message_height_measured(0);
+        vp.set_message_height(1, 8);
+        vp.mark_message_height_measured(1);
+        vp.rebuild_prefix_sums();
+
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            2,
+            "fixture must grow the rows above enough that the raw offset drifts",
+        );
+
+        let anchor = vp
+            .take_ready_scroll_anchor()
+            .expect("the anchor is ready once every row above it is exact");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            2,
+            "the delayed restore still lands the reader on the message they were reading",
+        );
+    }
+
+    /// The anchor is viewport state, not plan state: a teardown site added
+    /// later must not be able to discard it.
+    #[test]
+    fn viewport_preserved_anchor_outlives_plan_teardown() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        vp.invalidate_message(0);
+
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.finalize_remeasure_if_clean();
+        vp.rebuild_prefix_sums();
+
+        assert!(!vp.remeasure_active(), "teardown must actually clear the plan");
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must grow the message above enough that the raw offset drifts",
+        );
+
+        let anchor = vp
+            .take_ready_scroll_anchor()
+            .expect("the anchor must outlive the plan that happened to be open when it was armed");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "an anchor discarded by teardown would leave the reader adrift on message 0",
+        );
+    }
+
+    /// An anchor that outlived its plan describes a position the reader has
+    /// left, so returning to the bottom must retire it rather than let it
+    /// win over the arm taken when they next move.
+    #[test]
+    fn viewport_anchor_outliving_its_plan_is_retired_by_an_auto_scroll_remeasure() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        vp.invalidate_message(0);
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.finalize_remeasure_if_clean();
+        vp.rebuild_prefix_sums();
+        assert!(!vp.remeasure_active(), "the state under test needs the plan already torn down");
+
+        // The state under test needs a live anchor there to lose, so prove one
+        // is there by spending it, then re-arm the same way.
+        let anchor = vp.take_ready_scroll_anchor().expect("an anchor outlived the teardown");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "setup: the anchor that survived the teardown must still describe message 1",
+        );
+        vp.invalidate_message(0);
+        vp.mark_message_height_measured(0);
+        vp.finalize_remeasure_if_clean();
+
+        vp.auto_scroll = true;
+        vp.invalidate_message(1);
+
+        // Heights are [12, 5, 5, 5], so message 2 starts at row 17.
+        vp.auto_scroll = false;
+        vp.scroll_offset = 18;
+        vp.scroll_target = 18;
+        vp.scroll_pos = 18.0;
+        vp.invalidate_message(2);
+
+        vp.mark_message_height_measured(1);
+        vp.mark_message_height_measured(2);
+        vp.rebuild_prefix_sums();
+        let fresh = vp.take_ready_scroll_anchor().expect("the next arm preserves an anchor");
+        vp.restore_scroll_anchor(fresh.0, fresh.1);
+
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            2,
+            "returning to the bottom must retire the stale anchor so the next arm wins; \
+             an un-retired one would drag the reader back to message 1",
+        );
+        assert_eq!(
+            vp.scroll_offset, 18,
+            "the fresh arm captured the exact row, not just the row's message"
+        );
+    }
+
+    /// A live anchor blocks a fresh one: the position captured at the first
+    /// arm wins until it is consumed, so a later invalidation must not
+    /// re-capture wherever the reader has scrolled to since.
+    #[test]
+    fn viewport_first_arm_wins_while_the_preserved_anchor_is_live() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        // Heights are [5, 5, 5, 5], so row 7 sits 2 rows into message 1.
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        vp.invalidate_message(0);
+
+        // The reader moves on to message 3 (row 17) with that anchor still live.
+        vp.scroll_offset = 17;
+        vp.scroll_target = 17;
+        vp.scroll_pos = 17.0;
+        vp.invalidate_message(2);
+
+        vp.mark_message_height_measured(0);
+        vp.mark_message_height_measured(2);
+        vp.rebuild_prefix_sums();
+        let anchor = vp.take_ready_scroll_anchor().expect("the preserved anchor is still there");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "the first arm wins: a second arm overwriting it would yank the reader forward \
+             to message 3, where they had scrolled to but never asked to be returned",
+        );
+    }
+
+    #[test]
+    fn viewport_prioritizes_rows_above_preserved_anchor_until_restore_is_exact() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(6);
+        for idx in 0..6 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 12;
+        vp.scroll_target = 12;
+        vp.scroll_pos = 12.0;
+
+        let _ = vp.on_frame(40, 24);
+        vp.ensure_remeasure_anchor(2, 3, 6);
+
+        assert_eq!(vp.next_remeasure_index(6), Some(1));
+        assert_eq!(vp.next_remeasure_index(6), Some(0));
+        assert_eq!(vp.next_remeasure_index(6), Some(4));
+    }
+
+    #[test]
+    fn viewport_global_remeasure_preserves_anchor_while_prefix_above_converges() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(6);
+        for idx in 0..6 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 17;
+        vp.scroll_target = 17;
+        vp.scroll_pos = 17.0;
+
+        vp.invalidate_all_messages(LayoutRemeasureReason::Global);
+
+        vp.invalidate_message(5);
+
+        assert_eq!(
+            vp.remeasure_reason(),
+            Some(LayoutRemeasureReason::Global),
+            "a single-message invalidate must not downgrade the in-flight Global plan",
+        );
+
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.set_message_height(1, 8);
+        vp.mark_message_height_measured(1);
+        vp.mark_message_height_measured(2);
+        vp.mark_message_height_measured(3);
+        vp.rebuild_prefix_sums();
+
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            1,
+            "fixture must grow the rows above enough that the raw offset drifts",
+        );
+
+        let anchor =
+            vp.take_ready_scroll_anchor().expect("global remeasure should preserve an anchor");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+
+        assert_eq!(
+            vp.find_first_visible(vp.scroll_offset),
+            3,
+            "the anchor must pull the reader back off the drift and onto message 3",
+        );
+        assert_eq!(vp.scroll_offset, 27);
+    }
+
+    // ----------------------------------------------------------------
+    // background_convergence_pending flag + schedule_remeasure
+    // no-downgrade merge: the C1 plumbing for the off-screen-laziness
+    // perf fix. MessageChanged events must dirty their target but
+    // must NOT set the convergence flag or downgrade an in-flight
+    // higher-priority plan.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn viewport_background_convergence_pending_starts_false() {
+        let vp = ChatViewport::new();
+        assert!(!vp.background_convergence_pending);
+    }
+
+    #[test]
+    fn viewport_background_convergence_pending_set_by_resize() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        assert!(!vp.background_convergence_pending, "mark_heights_valid clears the flag");
+
+        let _ = vp.on_frame(40, 24);
+        assert!(vp.background_convergence_pending, "width resize must set the flag");
+    }
+
+    #[test]
+    fn viewport_background_convergence_pending_set_by_global() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+        assert!(!vp.background_convergence_pending);
+
+        vp.invalidate_all_messages(LayoutRemeasureReason::Global);
+        assert!(vp.background_convergence_pending, "Global must set the flag");
+    }
+
+    #[test]
+    fn viewport_background_convergence_pending_set_by_messages_from() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+        assert!(!vp.background_convergence_pending);
+
+        vp.invalidate_messages_from(2);
+        assert!(vp.background_convergence_pending, "MessagesFrom must set the flag");
+    }
+
+    #[test]
+    fn viewport_background_convergence_pending_not_set_by_message_changed() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+        assert!(!vp.background_convergence_pending);
+
+        vp.invalidate_message(2);
+        assert!(
+            !vp.background_convergence_pending,
+            "single MessageChanged must NOT set the convergence flag",
+        );
+    }
+
+    #[test]
+    fn viewport_background_convergence_pending_cleared_when_clean() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(2);
+        vp.invalidate_messages_from(0);
+        assert!(vp.background_convergence_pending);
+        for idx in 0..2 {
+            vp.set_message_height(idx, 4);
+            vp.mark_message_height_measured(idx);
+        }
+        vp.finalize_remeasure_if_clean();
+        assert!(
+            !vp.background_convergence_pending,
+            "finalize_remeasure_if_clean must clear the flag once all messages are current",
+        );
+    }
+
+    #[test]
+    fn viewport_schedule_remeasure_keeps_resize_over_messages_from() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+
+        let _ = vp.on_frame(40, 24);
+        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::Resize));
+        vp.invalidate_messages_from(0);
+        assert_eq!(
+            vp.remeasure_reason(),
+            Some(LayoutRemeasureReason::Resize),
+            "MessagesFrom must not downgrade an in-flight Resize plan",
+        );
+    }
+
+    #[test]
+    fn viewport_schedule_remeasure_keeps_messages_from_over_message_changed() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+
+        vp.invalidate_messages_from(2);
+        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::MessagesFrom));
+        vp.invalidate_message(0);
+        assert_eq!(
+            vp.remeasure_reason(),
+            Some(LayoutRemeasureReason::MessagesFrom),
+            "MessageChanged must not downgrade an in-flight MessagesFrom plan",
+        );
+    }
+
+    #[test]
+    fn viewport_schedule_remeasure_upgrades_message_changed_to_resize() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+
+        vp.invalidate_message(1);
+        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::MessageChanged));
+
+        let _ = vp.on_frame(40, 24);
+        assert_eq!(
+            vp.remeasure_reason(),
+            Some(LayoutRemeasureReason::Resize),
+            "Resize must override a stale MessageChanged plan reason",
+        );
+    }
+
+    #[test]
+    fn viewport_message_changed_marks_target_stale_without_setting_flag() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+
+        vp.invalidate_message(2);
+        assert!(
+            !vp.message_height_is_current(2),
+            "MessageChanged must mark its target stale so it re-measures on scroll-in",
+        );
+        assert!(
+            !vp.background_convergence_pending,
+            "MessageChanged still must not set the convergence flag",
+        );
+    }
+
+    #[test]
+    fn viewport_prefix_sums_basic() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.set_message_height(0, 5);
+        vp.set_message_height(1, 10);
+        vp.set_message_height(2, 3);
+        vp.rebuild_prefix_sums();
+        assert_eq!(vp.total_message_height(), 18);
+        assert_eq!(vp.cumulative_height_before(0), 0);
+        assert_eq!(vp.cumulative_height_before(1), 5);
+        assert_eq!(vp.cumulative_height_before(2), 15);
+    }
+
+    #[test]
+    fn viewport_prefix_sums_streaming_fast_path() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.set_message_height(0, 5);
+        vp.set_message_height(1, 10);
+        vp.rebuild_prefix_sums();
+        assert_eq!(vp.total_message_height(), 15);
+
+        // Simulate streaming: last message grows
+        vp.set_message_height(1, 20);
+        vp.rebuild_prefix_sums(); // should hit fast path
+        assert_eq!(vp.total_message_height(), 25);
+        assert_eq!(vp.cumulative_height_before(1), 5);
+    }
+
+    #[test]
+    fn viewport_find_first_visible() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.set_message_height(0, 10);
+        vp.set_message_height(1, 10);
+        vp.set_message_height(2, 10);
+        vp.rebuild_prefix_sums();
+
+        assert_eq!(vp.find_first_visible(0), 0);
+        assert_eq!(vp.find_first_visible(10), 1);
+        assert_eq!(vp.find_first_visible(15), 1);
+        assert_eq!(vp.find_first_visible(20), 2);
+    }
+
+    #[test]
+    fn viewport_find_first_visible_handles_offsets_before_first_boundary() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.set_message_height(0, 10);
+        vp.set_message_height(1, 10);
+        vp.rebuild_prefix_sums();
+
+        assert_eq!(vp.find_first_visible(0), 0);
+        assert_eq!(vp.find_first_visible(5), 0);
+        assert_eq!(vp.find_first_visible(15), 1);
+    }
+
+    #[test]
+    fn viewport_scroll_up_down() {
+        let mut vp = ChatViewport::new();
+        vp.scroll_target = 20;
+        vp.scroll_pos = 20.0;
+        vp.scroll_offset = 20;
+        vp.auto_scroll = true;
+
+        vp.scroll_up(5);
+        assert_eq!(vp.scroll_target, 15);
+        assert!((vp.scroll_pos - 15.0).abs() < f32::EPSILON);
+        assert_eq!(vp.scroll_offset, 15);
+        assert!(!vp.auto_scroll); // disabled on manual scroll
+
+        vp.scroll_down(3);
+        assert_eq!(vp.scroll_target, 18);
+        assert!((vp.scroll_pos - 18.0).abs() < f32::EPSILON);
+        assert_eq!(vp.scroll_offset, 18);
+        assert!(!vp.auto_scroll); // not re-engaged by scroll_down
+    }
+
+    #[test]
+    fn viewport_scroll_up_saturates() {
+        let mut vp = ChatViewport::new();
+        vp.scroll_target = 2;
+        vp.scroll_pos = 2.0;
+        vp.scroll_offset = 2;
+        vp.scroll_up(10);
+        assert_eq!(vp.scroll_target, 0);
+        assert!(vp.scroll_pos.abs() < f32::EPSILON);
+        assert_eq!(vp.scroll_offset, 0);
+    }
+
+    #[test]
+    fn viewport_engage_auto_scroll() {
+        let mut vp = ChatViewport::new();
+        vp.auto_scroll = false;
+        vp.engage_auto_scroll();
+        assert!(vp.auto_scroll);
+    }
+
+    #[test]
+    fn viewport_default_eq_new() {
+        let a = ChatViewport::new();
+        let b = ChatViewport::default();
+        assert_eq!(a.width, b.width);
+        assert_eq!(a.auto_scroll, b.auto_scroll);
+        assert_eq!(a.message_heights.len(), b.message_heights.len());
     }
 }

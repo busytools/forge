@@ -611,3 +611,383 @@ impl super::App {
         old_to_new[fallback_old_idx].map(|new_idx| (new_idx, 0))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, ToolCallScope};
+    use crate::agent::model;
+    use crate::app::state::tests::{
+        assistant_bash_tool_message, assistant_text_block, assistant_tool_message, make_test_app,
+        user_text_message,
+    };
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn enforce_history_retention_noop_under_budget() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("small message"),
+            user_text_message("another message"),
+        ];
+        app.history_retention_mut().max_bytes = usize::MAX / 4;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 0);
+        assert_eq!(stats.total_dropped_messages, 0);
+        assert!(!app.messages().iter().any(App::is_history_hidden_marker_message));
+    }
+
+    #[test]
+    fn enforce_history_retention_drops_oldest_and_adds_marker() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("first old message"),
+            user_text_message("second old message"),
+            user_text_message("third old message"),
+        ];
+        app.history_retention_mut().max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 3);
+        assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
+        assert!(app.messages().iter().any(App::is_history_hidden_marker_message));
+        assert_eq!(app.messages().len(), 2);
+    }
+
+    #[test]
+    fn enforce_history_retention_drops_tool_index_entries_for_dropped_messages() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            assistant_tool_message("tool-dropped", model::ToolCallStatus::Completed),
+            assistant_tool_message("tool-kept", model::ToolCallStatus::InProgress),
+        ];
+        app.index_tool_call("tool-dropped".to_owned(), 1, 0);
+        app.index_tool_call("tool-kept".to_owned(), 2, 0);
+        app.history_retention_mut().max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+
+        assert_eq!(stats.dropped_messages, 1);
+        assert_eq!(
+            app.lookup_tool_call("tool-dropped"),
+            None,
+            "a tool call whose message was trimmed leaves no index entry behind",
+        );
+        assert_eq!(app.lookup_tool_call("tool-kept"), Some((2, 0)));
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_in_progress_tool_message() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("droppable"),
+            assistant_tool_message("tool-keep", model::ToolCallStatus::InProgress),
+        ];
+        app.history_retention_mut().max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(app.messages().iter().any(|msg| {
+            msg.blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    MessageBlock::ToolCall(tc) if tc.id == "tool-keep"
+                        && matches!(tc.status, model::ToolCallStatus::InProgress)
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_pending_tool_message() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("droppable"),
+            assistant_tool_message("tool-pending", model::ToolCallStatus::Pending),
+        ];
+        app.history_retention_mut().max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(app.messages().iter().any(|msg| {
+            msg.blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-pending"))
+        }));
+    }
+
+    #[test]
+    fn enforce_history_retention_rebuilds_tool_index_after_prune() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("drop this"),
+            assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress, "term-1"),
+        ];
+        app.index_tool_call("tool-idx".to_owned(), 99, 99);
+        app.history_retention_mut().max_bytes = 1;
+
+        let _ = app.enforce_history_retention();
+        assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
+    }
+
+    #[test]
+    fn enforce_history_retention_prunes_subagent_attribution_for_dropped_tool_calls() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            assistant_tool_message("tool-dropped", model::ToolCallStatus::Completed),
+            assistant_tool_message("tool-kept", model::ToolCallStatus::InProgress),
+        ];
+        app.subagent_attribution_mut().insert("tool-dropped".to_owned(), "Explore".to_owned());
+        app.subagent_attribution_mut().insert("tool-kept".to_owned(), "code-reviewer".to_owned());
+        app.history_retention_mut().max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(
+            !app.subagent_attribution().contains_key("tool-dropped"),
+            "attribution for a dropped tool call is pruned",
+        );
+        assert_eq!(
+            app.subagent_attribution().get("tool-kept").map(String::as_str),
+            Some("code-reviewer"),
+            "attribution for a still-retained tool call survives",
+        );
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_active_turn_assistant_message() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("drop this"),
+            ChatMessage::new(MessageRole::Assistant, Vec::new()),
+        ];
+        app.bind_active_turn_assistant(2);
+        app.history_retention_mut().max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+
+        assert_eq!(stats.dropped_messages, 1);
+        assert_eq!(app.active_turn_assistant_idx(), Some(2));
+        assert!(matches!(app.messages()[2].role, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn enforce_history_retention_remaps_active_turn_assistant_after_prune() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        *app.active_messages_mut() = vec![
+            user_text_message("drop this"),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming reply")]),
+        ];
+        app.bind_active_turn_assistant(1);
+        app.history_retention_mut().max_bytes = App::measure_message_bytes(&app.messages()[1]);
+
+        let stats = app.enforce_history_retention();
+
+        assert_eq!(stats.dropped_messages, 1);
+        assert_eq!(app.active_turn_assistant_idx(), Some(1));
+        assert!(App::is_history_hidden_marker_message(&app.messages()[0]));
+        assert!(matches!(app.messages()[1].role, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn enforce_history_retention_keeps_single_marker_on_repeat() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("drop me"),
+        ];
+        app.history_retention_mut().max_bytes = 1;
+
+        let first = app.enforce_history_retention();
+        let second = app.enforce_history_retention();
+        let marker_count =
+            app.messages().iter().filter(|msg| App::is_history_hidden_marker_message(msg)).count();
+
+        assert_eq!(first.dropped_messages, 1);
+        assert_eq!(second.dropped_messages, 0);
+        assert_eq!(marker_count, 1);
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_manual_scroll_anchor_across_drop_and_marker_insert() {
+        let mut app = make_test_app();
+        *app.active_messages_mut() = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("drop me first"),
+            user_text_message("keep this anchored"),
+            user_text_message("tail"),
+        ];
+        let _ = app.active_viewport_mut().on_frame(40, 12);
+        {
+            let n = app.messages().len();
+            app.active_viewport_mut().sync_message_count(n);
+        };
+        for idx in 0..app.messages().len() {
+            app.active_viewport_mut().set_message_height(idx, 4);
+        }
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
+
+        app.active_viewport_mut().auto_scroll = false;
+        app.active_viewport_mut().scroll_offset = 9;
+        app.active_viewport_mut().scroll_target = 9;
+        app.active_viewport_mut().scroll_pos = 9.0;
+        app.history_retention_mut().max_bytes = app
+            .measure_history_bytes()
+            .saturating_sub(App::measure_message_bytes(&app.messages()[1]));
+
+        let _ = app.enforce_history_retention();
+
+        assert!(app.messages().iter().any(App::is_history_hidden_marker_message));
+
+        let anchored = app
+            .messages()
+            .iter()
+            .position(|msg| {
+                matches!(msg.blocks.first(), Some(MessageBlock::Text(block))
+                    if block.text.contains("keep this anchored"))
+            })
+            .expect("the anchored message survives the drop");
+
+        // Measure the marker taller than the message it replaced, so the rows
+        // above the reader move. Sized identically, the anchor reproduces the
+        // raw offset and the restore has nothing to do.
+        let heights: Vec<usize> = app
+            .messages()
+            .iter()
+            .map(|msg| if App::is_history_hidden_marker_message(msg) { 6 } else { 4 })
+            .collect();
+        let vp = app.active_viewport_mut();
+        vp.sync_message_count(heights.len());
+        for (idx, &height) in heights.iter().enumerate() {
+            vp.set_message_height(idx, height);
+            vp.mark_message_height_measured(idx);
+        }
+        vp.rebuild_prefix_sums();
+        assert_ne!(
+            vp.find_first_visible(vp.scroll_offset),
+            anchored,
+            "fixture must move the rows above the reader so the raw offset drifts",
+        );
+
+        let anchor =
+            vp.take_ready_scroll_anchor().expect("retention must not discard the reader's anchor");
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+        let top = vp.find_first_visible(vp.scroll_offset);
+
+        assert_eq!(
+            top, anchored,
+            "dropping a message above the reader and inserting a marker in its place must \
+             leave them on the message they were reading",
+        );
+    }
+
+    #[test]
+    fn insert_message_tracked_nontail_rebuilds_tool_indices_and_invalidates_suffix() {
+        let mut app = make_test_app();
+        app.active_messages_mut().push(user_text_message("before"));
+        app.active_messages_mut()
+            .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.active_messages_mut().push(user_text_message("after"));
+        app.index_tool_call("tool-1".to_owned(), 1, 0);
+
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().sync_message_count(3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
+
+        app.insert_message_tracked(1, user_text_message("inserted"));
+        {
+            let n = app.messages().len();
+            app.active_viewport_mut().sync_message_count(n);
+        };
+
+        assert_eq!(app.lookup_tool_call("tool-1"), Some((2, 0)));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(1));
+        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(1));
+    }
+
+    #[test]
+    fn remove_message_tracked_nontail_rebuilds_tool_indices_and_invalidates_suffix() {
+        let mut app = make_test_app();
+        app.active_messages_mut().push(user_text_message("before"));
+        app.active_messages_mut()
+            .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.active_messages_mut().push(user_text_message("after"));
+        app.index_tool_call("tool-1".to_owned(), 1, 0);
+
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().sync_message_count(3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
+
+        let removed = app.remove_message_tracked(0);
+        {
+            let n = app.messages().len();
+            app.active_viewport_mut().sync_message_count(n);
+        };
+
+        assert!(removed.is_some());
+        assert_eq!(app.lookup_tool_call("tool-1"), Some((0, 0)));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
+        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(0));
+    }
+
+    #[test]
+    fn remove_message_tracked_tail_removes_orphaned_tool_indices() {
+        let mut app = make_test_app();
+        app.active_messages_mut().push(user_text_message("before"));
+        app.active_messages_mut()
+            .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.index_tool_call("tool-1".to_owned(), 1, 0);
+
+        let removed = app.remove_message_tracked(1);
+
+        assert!(removed.is_some());
+        assert!(app.lookup_tool_call("tool-1").is_none());
+    }
+
+    #[test]
+    fn remove_message_tracked_prunes_tool_scope_entries() {
+        let mut app = make_test_app();
+        app.active_messages_mut()
+            .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.index_tool_call("tool-1".to_owned(), 0, 0);
+        app.register_tool_call_scope(
+            "tool-1".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "task-1".to_owned() },
+        );
+
+        let removed = app.remove_message_tracked(0);
+
+        assert!(removed.is_some());
+        assert_eq!(app.tool_call_scope("tool-1"), None);
+    }
+
+    #[test]
+    fn clear_messages_tracked_clears_tool_and_terminal_tracking() {
+        let mut app = make_test_app();
+        app.active_messages_mut().push(assistant_bash_tool_message(
+            "bash-1",
+            model::ToolCallStatus::InProgress,
+            "term-1",
+        ));
+        app.index_tool_call("bash-1".to_owned(), 0, 0);
+
+        app.clear_messages_tracked();
+
+        assert!(app.messages().is_empty());
+        assert!(app.tool_call_index().is_empty());
+    }
+}

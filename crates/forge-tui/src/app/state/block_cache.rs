@@ -362,7 +362,8 @@ fn line_utf8_bytes(line: &ratatui::text::Line<'static>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::text::Line;
+    use ratatui::style::{Color, Style};
+    use ratatui::text::{Line, Span};
 
     fn make_lines(text: &str) -> Vec<Line<'static>> {
         vec![Line::from(text.to_owned())]
@@ -521,5 +522,272 @@ mod tests {
             "at-120-v2",
             "live slot should hold the most recent v2 content",
         );
+    }
+
+    // BlockCache
+
+    #[test]
+    fn cache_lifecycle_covers_default_store_invalidate_and_restore() {
+        let mut cache = BlockCache::default();
+        assert!(cache.get().is_none());
+
+        cache.store(vec![Line::from("old")]);
+        assert_eq!(cache.get().unwrap().len(), 1);
+
+        cache.invalidate();
+        cache.invalidate();
+        cache.invalidate();
+        assert!(cache.get().is_none());
+
+        cache.store(vec![Line::from("new")]);
+        let lines = cache.get().unwrap();
+        assert_eq!(lines.len(), 1);
+        let span_content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(span_content, "new");
+    }
+
+    #[test]
+    fn cache_store_empty_lines() {
+        let mut cache = BlockCache::default();
+        cache.store(Vec::new());
+        let lines = cache.get().unwrap();
+        assert!(lines.is_empty());
+    }
+
+    /// Store twice without invalidating - second store overwrites first.
+    #[test]
+    fn cache_store_overwrite_without_invalidate() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("first")]);
+        cache.store(vec![Line::from("second"), Line::from("line2")]);
+        let lines = cache.get().unwrap();
+        assert_eq!(lines.len(), 2);
+        let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(content, "second");
+    }
+
+    /// `get()` called twice returns consistent data.
+    #[test]
+    fn cache_get_twice_consistent() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("stable")]);
+        let first = cache.get().unwrap().len();
+        let second = cache.get().unwrap().len();
+        assert_eq!(first, second);
+    }
+
+    // BlockCache
+
+    #[test]
+    fn cache_store_many_lines() {
+        let mut cache = BlockCache::default();
+        let lines: Vec<Line<'static>> =
+            (0..1000).map(|i| Line::from(Span::raw(format!("line {i}")))).collect();
+        cache.store(lines);
+        assert_eq!(cache.get().unwrap().len(), 1000);
+    }
+
+    #[test]
+    fn cache_store_splits_into_kb_segments() {
+        let mut cache = BlockCache::default();
+        let long = "x".repeat(800);
+        let lines: Vec<Line<'static>> = (0..12).map(|_| Line::from(long.clone())).collect();
+        cache.store(lines);
+        assert!(cache.segment_count() > 1);
+        assert!(cache.cached_bytes() > 0);
+    }
+
+    #[test]
+    fn cache_invalidate_without_store() {
+        let mut cache = BlockCache::default();
+        cache.invalidate();
+        assert!(cache.get().is_none());
+    }
+
+    #[test]
+    fn cache_rapid_store_invalidate_cycle() {
+        let mut cache = BlockCache::default();
+        for i in 0..50 {
+            cache.store(vec![Line::from(format!("v{i}"))]);
+            assert!(cache.get().is_some());
+            cache.invalidate();
+            assert!(cache.get().is_none());
+        }
+        cache.store(vec![Line::from("final")]);
+        assert!(cache.get().is_some());
+    }
+
+    /// Store styled lines with multiple spans per line.
+    #[test]
+    fn cache_store_styled_lines() {
+        let mut cache = BlockCache::default();
+        let line = Line::from(vec![
+            Span::styled("bold", Style::default().fg(Color::Red)),
+            Span::raw(" normal "),
+            Span::styled("blue", Style::default().fg(Color::Blue)),
+        ]);
+        cache.store(vec![line]);
+        let lines = cache.get().unwrap();
+        assert_eq!(lines[0].spans.len(), 3);
+    }
+
+    /// Version counter after many invalidations - verify it doesn't
+    /// accidentally wrap to 0 (which would make stale data appear fresh).
+    /// With u64, 10K invalidations is nowhere near overflow.
+    #[test]
+    fn cache_version_no_false_fresh_after_many_invalidations() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("data")]);
+        for _ in 0..10_000 {
+            cache.invalidate();
+        }
+        // Cache was invalidated 10K times without re-storing - must be stale
+        assert!(cache.get().is_none());
+    }
+
+    /// Invalidate, store, invalidate, store - alternating pattern.
+    #[test]
+    fn cache_alternating_invalidate_store() {
+        let mut cache = BlockCache::default();
+        for i in 0..100 {
+            cache.invalidate();
+            assert!(cache.get().is_none(), "stale after invalidate at iter {i}");
+            cache.store(vec![Line::from(format!("v{i}"))]);
+            assert!(cache.get().is_some(), "fresh after store at iter {i}");
+        }
+    }
+
+    // BlockCache height
+
+    #[test]
+    fn cache_height_default_returns_none() {
+        let cache = BlockCache::default();
+        assert!(cache.height_at(80).is_none());
+    }
+
+    #[test]
+    fn cache_store_with_height_then_height_at() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("hello")]);
+        cache.set_height(1, 80);
+        assert_eq!(cache.height_at(80), Some(1));
+        assert!(cache.get().is_some());
+    }
+
+    #[test]
+    fn cache_height_at_wrong_width_returns_none() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("hello")]);
+        cache.set_height(1, 80);
+        assert!(cache.height_at(120).is_none());
+    }
+
+    #[test]
+    fn cache_height_invalidated_returns_none() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("hello")]);
+        cache.set_height(1, 80);
+        cache.invalidate();
+        assert!(cache.height_at(80).is_none());
+    }
+
+    #[test]
+    fn cache_store_without_height_has_no_height() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("hello")]);
+        // store() without height leaves wrapped_width at 0
+        assert!(cache.height_at(80).is_none());
+    }
+
+    #[test]
+    fn cache_store_with_height_overwrite() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("old")]);
+        cache.set_height(1, 80);
+        cache.invalidate();
+        cache.store(vec![Line::from("new long line")]);
+        cache.set_height(3, 120);
+        assert_eq!(cache.height_at(120), Some(3));
+        assert!(cache.height_at(80).is_none());
+    }
+
+    // BlockCache set_height (separate from store)
+
+    #[test]
+    fn cache_set_height_after_store() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("hello")]);
+        assert!(cache.height_at(80).is_none()); // no height yet
+        cache.set_height(1, 80);
+        assert_eq!(cache.height_at(80), Some(1));
+        assert!(cache.get().is_some()); // lines still valid
+    }
+
+    #[test]
+    fn cache_set_height_update_width() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("hello world")]);
+        cache.set_height(1, 80);
+        assert_eq!(cache.height_at(80), Some(1));
+        // Re-measure at new width
+        cache.set_height(2, 40);
+        assert_eq!(cache.height_at(40), Some(2));
+        assert!(cache.height_at(80).is_none()); // old width no longer valid
+    }
+
+    #[test]
+    fn cache_set_height_invalidate_clears_height() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("data")]);
+        cache.set_height(3, 80);
+        cache.invalidate();
+        assert!(cache.height_at(80).is_none()); // version mismatch
+    }
+
+    #[test]
+    fn cache_set_height_on_invalidated_cache_returns_none() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("data")]);
+        cache.invalidate(); // version != 0
+        cache.set_height(5, 80);
+        // height_at returns None because cache is stale (version != 0)
+        assert!(cache.height_at(80).is_none());
+    }
+
+    #[test]
+    fn cache_store_then_set_height_is_consistent() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("test")]);
+        cache.set_height(2, 100);
+
+        assert_eq!(cache.height_at(100), Some(2));
+        assert_eq!(cache.get().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cache_measure_and_set_height_from_segments() {
+        let mut cache = BlockCache::default();
+        let lines = vec![
+            Line::from("alpha beta gamma delta epsilon"),
+            Line::from("zeta eta theta iota kappa lambda"),
+            Line::from("mu nu xi omicron pi rho sigma"),
+        ];
+        cache.store(lines.clone());
+        let measured = cache.measure_and_set_height(16).expect("expected measured height");
+        let expected = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(lines))
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .line_count(16);
+        assert_eq!(measured, expected);
+        assert_eq!(cache.height_at(16), Some(expected));
+    }
+
+    #[test]
+    fn cache_get_updates_last_access_tick() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("tick")]);
+        let before = cache.last_access_tick();
+        let _ = cache.get();
+        let after = cache.last_access_tick();
+        assert!(after > before);
     }
 }
