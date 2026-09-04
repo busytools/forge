@@ -536,11 +536,7 @@ mod tests {
     /// Seed a background session carrying one pending permission prompt
     /// enqueued `secs` after the UNIX epoch; stamps a project name so
     /// the row resolves without a workspace catalog. Returns its key.
-    fn seed_attention_session(
-        app: &mut App,
-        id: &str,
-        secs: u64,
-    ) -> forge_workspace::SessionKey {
+    fn seed_attention_session(app: &mut App, id: &str, secs: u64) -> forge_workspace::SessionKey {
         let key = forge_workspace::SessionKey::from_session_id(id);
         let mut session = crate::app::session::UiSession::new(key.clone());
         session.project = Some(format!("proj-{id}"));
