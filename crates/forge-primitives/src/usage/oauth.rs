@@ -86,6 +86,10 @@ pub enum OauthUsageError {
     /// Network error reaching the API.
     #[error("Claude OAuth network error: {0}")]
     Network(String),
+    /// The `claude --version` probe that supplies the User-Agent
+    /// failed - a local exec problem, not a reachability verdict.
+    #[error("Claude CLI version probe failed: {0}")]
+    UaProbe(String),
     /// Response body could not be parsed.
     #[error("Failed to decode Claude OAuth usage response: {0}")]
     Decode(String),

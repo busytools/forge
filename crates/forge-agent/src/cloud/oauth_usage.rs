@@ -47,29 +47,35 @@ const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
 /// pinned fallback would actively lie to Anthropic about which
 /// version is running and drift over time, defeating the point of
 /// matching reality on the wire.
+/// Cached `claude-code/<version>` User-Agent, probed once per process.
+static UA: OnceLock<String> = OnceLock::new();
+
 async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
-    static UA: OnceLock<String> = OnceLock::new();
     if let Some(cached) = UA.get() {
         return Ok(cached);
     }
-    let version =
-        tokio::task::spawn_blocking(|| forge_sdk::transport::process::query_cli_version("claude"))
-            .await
-            .map_err(|e| {
-                OauthUsageError::Network(format!("UA probe spawn_blocking panicked: {e}"))
-            })?
-            .map_err(|e| {
-                OauthUsageError::Network(format!("claude --version probe failed for UA: {e}"))
-            })?;
-    let ua = format!("claude-code/{version}");
+    let ua = resolve_ua("claude").await?;
     // get_or_init isn't `Result`-friendly. set/get pair: if another
     // caller raced us and set first, our `set` errors out and we
     // read theirs via `get` below - value is identical (same probe
     // result for the same machine) so the race is benign.
     let _ = UA.set(ua);
     UA.get().map(String::as_str).ok_or_else(|| {
-        OauthUsageError::Network("UA cache disappeared after set; impossible".to_owned())
+        OauthUsageError::UaProbe("UA cache disappeared after set; impossible".to_owned())
     })
+}
+
+/// One `claude --version` round-trip, formatted as the UA. Split from
+/// the cached [`oauth_usage_user_agent`] so the shell-out and its
+/// failure class are drivable without resolving a real binary.
+async fn resolve_ua(binary: &'static str) -> Result<String, OauthUsageError> {
+    let version = tokio::task::spawn_blocking(move || {
+        forge_sdk::transport::process::query_cli_version(binary)
+    })
+    .await
+    .map_err(|e| OauthUsageError::UaProbe(format!("UA probe spawn_blocking panicked: {e}")))?
+    .map_err(|e| OauthUsageError::UaProbe(format!("claude --version probe failed for UA: {e}")))?;
+    Ok(format!("claude-code/{version}"))
 }
 
 /// Fetch the live OAuth usage payload from the Anthropic API using
@@ -563,6 +569,40 @@ mod tests {
     #[test]
     fn usage_url_defaults_to_anthropic_host() {
         assert_eq!(usage_url(None), OAUTH_USAGE_URL);
+    }
+
+    /// A down endpoint must surface as the Network class and the probe
+    /// must return rather than hang: preflight's bounded-failure path
+    /// leans on both. Port 1 on loopback refuses the connect at once.
+    ///
+    /// The UA cache is seeded first: the probe shells out to `claude`
+    /// before it makes any request, and a host without the binary -
+    /// a CI runner - would otherwise short-circuit into UaProbe before
+    /// the connect this test is about ever happens.
+    #[tokio::test]
+    async fn a_down_endpoint_is_a_network_failure_and_the_probe_returns() {
+        let _ = UA.set("claude-code/1.0.0".to_owned());
+        let creds = OauthCredentials { access_token: "test-token".to_owned(), expires_at: None };
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), probe(&creds, Some("http://127.0.0.1:1")))
+                .await
+                .expect("the probe returns against an unreachable endpoint");
+        assert!(
+            matches!(result, Err(OauthUsageError::Network(_))),
+            "a refused connect is the Network class, not a status or decode; got {result:?}"
+        );
+    }
+
+    /// A binary nothing resolves is the UaProbe class - the probe could
+    /// not run, which is not a verdict about the endpoint. Driven
+    /// through the real shell-out with a name that cannot resolve.
+    #[tokio::test]
+    async fn a_missing_claude_binary_is_a_ua_failure_not_a_network_failure() {
+        let result = resolve_ua("forge-test-claude-absent-from-path").await;
+        assert!(
+            matches!(result, Err(OauthUsageError::UaProbe(_))),
+            "a binary nothing resolves is the UaProbe class; got {result:?}"
+        );
     }
 
     #[test]

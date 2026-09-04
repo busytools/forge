@@ -57,8 +57,21 @@ fn account_with(
     AccountLoadingRow {
         display_name: name.to_owned(),
         state,
+        last_error: None,
         config_dir: std::path::PathBuf::from(dir),
         auth,
+    }
+}
+
+fn bailed_with_error(
+    name: &str,
+    dir: &str,
+    auth: forge_workspace::AccountAuth,
+    last_error: forge_workspace::UsageFetchStatus,
+) -> AccountLoadingRow {
+    AccountLoadingRow {
+        last_error: Some(last_error),
+        ..account_with(name, LoadingState::Bailed, dir, auth)
     }
 }
 
@@ -187,16 +200,18 @@ fn a_bailed_account_names_both_exits() {
     );
 }
 
-/// The repair instruction is the one thing that differs by account
-/// class, and `claude /login` is actively wrong for a base-url account:
-/// it has no keychain entry to write, its credential being the token in
-/// its own `[accounts.env]`.
+/// The repair instruction AND the retry line differ by account class.
+/// `claude /login` is actively wrong for a base-url account: it has no
+/// keychain entry to write, its credential being the token in its own
+/// `[accounts.env]`. And the no-restart promise is only true for the
+/// keychain arm - an env edit is boot-frozen, so the base-url arm owes
+/// the reader the restart instead.
 ///
-/// **Asserted as a DIFFERENCE, not as two independent contents.** Two
-/// `contains` checks would both keep passing if the branch were
+/// **Asserted as DIFFERENCES, not as independent contents.** Two
+/// `contains` checks would both keep passing if the branches were
 /// collapsed and one arm's copy shown to everyone.
 #[test]
-fn the_repair_instruction_differs_by_account_class_and_the_retry_line_does_not() {
+fn the_repair_and_retry_lines_differ_by_account_class() {
     let render = |auth| {
         flatten(&bail_detail(
             &App::test_default(),
@@ -217,20 +232,274 @@ fn the_repair_instruction_differs_by_account_class_and_the_retry_line_does_not()
         "a keychain account is repaired with /login; got:\n{keychain}",
     );
     assert!(
+        keychain.contains("forge retries on its own - no restart needed")
+            && !keychain.contains("needs a restart"),
+        "a keychain repair is picked up in place; got:\n{keychain}",
+    );
+    assert!(
         base_url.contains("ANTHROPIC_AUTH_TOKEN in [accounts.env]") && !base_url.contains("/login"),
         "a base-url account has no keychain entry for /login to write; got:\n{base_url}",
     );
-    for text in [&keychain, &base_url] {
-        assert!(
-            text.contains("forge retries on its own - no restart needed"),
-            "the retry line is class-agnostic and appears in both; got:\n{text}",
-        );
-        assert!(text.contains("Or drop the account"), "and so is the second exit; got:\n{text}");
+    assert!(
+        base_url.contains("editing [accounts.env] needs a restart")
+            && !base_url.contains("no restart needed"),
+        "an env edit is boot-frozen and must not promise an in-place retry; got:\n{base_url}",
+    );
+    assert!(
+        keychain.contains("Or drop the account") && base_url.contains("Or drop the account"),
+        "the second exit is class-agnostic; got:\n{keychain}",
+    );
+}
+
+/// An account whose endpoint is down settles `Bailed` on its own - the
+/// loader retries, hits its cap, and stops. Holding preflight after
+/// that buys nothing: the launchpad's gate already counts `Bailed` as
+/// terminal, the plan excludes the account, and the pollers keep
+/// re-probing, so degraded rides along instead of holding boot.
+#[tokio::test]
+async fn preflight_hands_over_when_an_account_settles_bailed() {
+    let config_dir = tempfile::tempdir().expect("tempdir");
+    let forge = config_dir.path().join("forge");
+    std::fs::create_dir_all(&forge).expect("forge/");
+    std::fs::write(
+        forge.join("forge.toml"),
+        "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
+         [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+    )
+    .expect("write forge.toml");
+    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+        .await
+        .expect("workspace");
+    let mut app = App::test_default();
+    app.workspace = Some(std::sync::Arc::new(workspace));
+    app.active_view = crate::app::ActiveView::Launchpad;
+    app.startup_project = Some("forge".to_owned());
+
+    crate::app::preflight::tick(&mut app);
+    assert!(!app.preflight_done, "a still-loading account holds preflight");
+
+    app.workspace
+        .as_ref()
+        .expect("workspace")
+        .seed_test_account_state("Subspace", LoadingState::Bailed);
+    crate::app::preflight::tick(&mut app);
+    assert!(app.preflight_done, "a settled account must not hold preflight forever");
+    assert_eq!(
+        app.active_view,
+        crate::app::ActiveView::Chat,
+        "the handover goes where the invocation was headed, degraded or not",
+    );
+}
+
+/// The state column is the typed failure, one label per class. The auth
+/// classes keep `auth failed`; a probe that never got through reads
+/// `unreachable`; a classed-but-unrecognised failure (a 5xx proxy, a
+/// body that will not decode) reads `fetch error`; a 429 streak reads
+/// `rate limited`. A red `auth failed` over a healthy token sends the
+/// reader to fix the wrong thing.
+#[test]
+fn the_state_column_names_the_failure_class() {
+    let row_text = |last_error: Option<forge_workspace::UsageFetchStatus>| {
+        account_row(
+            &AccountLoadingRow { last_error, ..account("Subspace", LoadingState::Bailed, "/x") },
+            PICKER_WIDTH,
+        )
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect::<String>()
+    };
+
+    for (status, label) in [
+        (Some(forge_workspace::UsageFetchStatus::NetworkFailed), "unreachable"),
+        (Some(forge_workspace::UsageFetchStatus::Other), "fetch error"),
+        (Some(forge_workspace::UsageFetchStatus::RateLimited), "rate limited"),
+        (Some(forge_workspace::UsageFetchStatus::Unauthorized), "auth failed"),
+        (None, "auth failed"),
+    ] {
+        let row = row_text(status);
+        assert!(row.trim_end().ends_with(label), "{status:?} must read as {label:?}; got {row:?}");
     }
 }
 
+/// The typed label's producer leg, driven through the same
+/// `set_last_error` call the loader's retry arm makes: the recorded
+/// failure reaches the snapshot, and the snapshot reaches the row.
+/// Deleting the snapshot's `last_error` line fails the first assert.
+#[tokio::test]
+async fn the_recorded_failure_rides_the_snapshot_to_the_row() {
+    let config_dir = tempfile::tempdir().expect("tempdir");
+    let forge = config_dir.path().join("forge");
+    std::fs::create_dir_all(&forge).expect("forge/");
+    std::fs::write(
+        forge.join("forge.toml"),
+        "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
+         [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+    )
+    .expect("write forge.toml");
+    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+        .await
+        .expect("workspace");
+    workspace.seed_test_account_state("Subspace", LoadingState::Bailed);
+    workspace
+        .seed_test_account_failure("Subspace", forge_workspace::UsageFetchStatus::NetworkFailed);
+
+    let rows = workspace.account_loading_snapshot();
+    assert_eq!(
+        rows[0].last_error,
+        Some(forge_workspace::UsageFetchStatus::NetworkFailed),
+        "the recorded failure reaches the snapshot; got {rows:?}",
+    );
+
+    let mut app = App::test_default();
+    app.workspace = Some(std::sync::Arc::new(workspace));
+    app.active_view = crate::app::ActiveView::Launchpad;
+    let painted = paint(&mut app, 100, 34);
+    assert!(painted.contains("unreachable"), "and the row renders it as the label:\n{painted}");
+}
+
+/// The unreachable screen repairs the endpoint, not the token: the
+/// credential is fine, and `Fix the auth` would send a reader with a
+/// down proxy off to re-enter a working key.
+#[test]
+fn an_unreachable_bail_names_the_endpoint_not_the_auth() {
+    let text = flatten(&bail_detail(
+        &App::test_default(),
+        &bailed_with_error(
+            "Subspace",
+            "/home/x/.claude-subspace",
+            forge_workspace::AccountAuth::BaseUrl,
+            forge_workspace::UsageFetchStatus::NetworkFailed,
+        ),
+        PICKER_WIDTH,
+    ))
+    .join("\n");
+
+    assert!(
+        text.contains("Subspace cannot be reached"),
+        "the screen says the endpoint is down; got:\n{text}",
+    );
+    assert!(
+        text.contains("forge starts without it"),
+        "and that forge no longer holds boot for it; got:\n{text}",
+    );
+    assert!(
+        text.contains("ANTHROPIC_BASE_URL") && !text.contains("Fix the auth"),
+        "the repair is the endpoint, never the auth; got:\n{text}",
+    );
+    assert!(
+        text.contains("needs a restart"),
+        "the env is read once at boot, so an edited base url does nothing until restart - \
+         the screen has to say so; got:\n{text}",
+    );
+    assert!(
+        text.contains("Or drop the account") && text.contains("[[accounts]]"),
+        "dropping the account stays as the second way out; got:\n{text}",
+    );
+}
+
+/// An endpoint that answers badly is not an auth failure either - a
+/// proxy with a dead upstream 502s rather than refusing, which is the
+/// common real shape of "endpoint down" - and the copy must say the
+/// endpoint was reached, because it was.
+#[test]
+fn an_erroring_endpoint_is_not_an_auth_failure_either() {
+    let text = flatten(&bail_detail(
+        &App::test_default(),
+        &bailed_with_error(
+            "Subspace",
+            "/home/x/.claude-subspace",
+            forge_workspace::AccountAuth::BaseUrl,
+            forge_workspace::UsageFetchStatus::Other,
+        ),
+        PICKER_WIDTH,
+    ))
+    .join("\n");
+
+    assert!(
+        text.contains("Subspace keeps failing its probe"),
+        "the head claims only that the probe failed - the class covers endpoints that \
+         answered badly and probes that could not run; got:\n{text}",
+    );
+    assert!(
+        text.contains("Check the endpoint")
+            && !text.contains("Fix the auth")
+            && !text.contains("ANTHROPIC_AUTH_TOKEN"),
+        "the repair is the endpoint, never the token; got:\n{text}",
+    );
+}
+
+/// A 429 streak is nobody's repair job: the token is fine and the
+/// endpoint is fine, so the only instruction is to wait.
+#[test]
+fn a_rate_limited_bail_tells_the_reader_to_wait() {
+    let text = flatten(&bail_detail(
+        &App::test_default(),
+        &bailed_with_error(
+            "Subspace",
+            "/home/x/.claude-subspace",
+            forge_workspace::AccountAuth::BaseUrl,
+            forge_workspace::UsageFetchStatus::RateLimited,
+        ),
+        PICKER_WIDTH,
+    ))
+    .join("\n");
+
+    assert!(text.contains("Subspace is rate limited"), "the head names the limit; got:\n{text}");
+    assert!(text.contains("Waiting clears it"), "the repair is time, not an edit; got:\n{text}");
+    assert!(
+        !text.contains("Fix the auth")
+            && !text.contains("ANTHROPIC_AUTH_TOKEN")
+            && !text.contains("Check the endpoint"),
+        "neither the token nor the endpoint is the problem; got:\n{text}",
+    );
+}
+
+/// The unreachable repair line is class-shaped like the auth one: a
+/// keychain account has no base url to check, so naming
+/// `ANTHROPIC_BASE_URL` at it would send a reader hunting for a key
+/// their forge.toml does not have.
+///
+/// **Asserted as a DIFFERENCE, not as two independent contents**, for
+/// the same reason the auth repair is: two `contains` checks would both
+/// keep passing if the branch were collapsed and one arm's line shown
+/// to everyone.
+#[test]
+fn the_unreachable_repair_differs_by_account_class() {
+    let render = |auth| {
+        flatten(&bail_detail(
+            &App::test_default(),
+            &bailed_with_error(
+                "Subspace",
+                "/home/x/.claude-subspace",
+                auth,
+                forge_workspace::UsageFetchStatus::NetworkFailed,
+            ),
+            PICKER_WIDTH,
+        ))
+        .join("\n")
+    };
+    let keychain = render(forge_workspace::AccountAuth::Keychain);
+    let base_url = render(forge_workspace::AccountAuth::BaseUrl);
+
+    assert_ne!(
+        keychain, base_url,
+        "collapsing the classes shows one arm's repair line to both; got:\n{keychain}",
+    );
+    assert!(
+        keychain.contains("Anthropic API") && !keychain.contains("ANTHROPIC_BASE_URL"),
+        "a keychain account has no base url to check; got:\n{keychain}",
+    );
+    assert!(
+        base_url.contains("ANTHROPIC_BASE_URL") && !base_url.contains("Anthropic API"),
+        "a base-url account's endpoint is the thing to check; got:\n{base_url}",
+    );
+}
+
 /// `Bailed` is red rather than the shipped warning yellow. On the one
-/// screen that can stop forge starting, mid-flight and failed must not
+/// screen that gates forge starting, mid-flight and failed must not
 /// differ only by glyph.
 #[test]
 fn a_bailed_account_is_red_not_yellow() {

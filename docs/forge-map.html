@@ -986,7 +986,7 @@ chat continues here...
 </p>
 
 <p class="intro">
-  <strong>Nothing spawns until every account has authenticated.</strong>
+  <strong>Nothing spawns until every account has settled.</strong>
   The assignment plan is only computed once they have, so a session
   started before that falls back to round-robin and can land on an
   account the project's org does not allow. The launchpad has gated
@@ -998,18 +998,22 @@ chat continues here...
 </p>
 
 <p class="intro">
-  <strong>Preflight completes only on <code>Ready</code>, never on
-  <code>Bailed</code>.</strong> forge will not start while an account in
-  <code>forge.toml</code> cannot, so every failure state names its exits
-  rather than leaving the reader on a screen with nothing to press.
-  <strong>Fixing the auth needs no restart; dropping the account does.</strong>
-  Both pollers run throughout preflight and re-probe a bailed account, so
-  repairing it out of band clears the screen in place - the 30 s recovery
+  <strong>Preflight completes when every account settles, not only when
+  every account is <code>Ready</code>.</strong> A bailed account rides
+  along as degraded rather than holding boot: the assignment plan
+  excludes it, the pollers keep re-probing it, and its row names the
+  failure. Every failure state names its exits rather than leaving the
+  reader on a screen with nothing to press.
+  <strong>Repairing the auth on a keychain account needs no restart;
+  anything that edits <code>forge.toml</code> does.</strong> Both pollers
+  run throughout preflight and re-probe a bailed account, so a repair
+  that does not touch config clears the row in place - the 30 s recovery
   poll for a keychain account, the 60 s usage poll for a base-url one,
   which that poll deliberately skips because it gates on
-  <code>claude auth status</code>. Dropping the account edits
-  <code>forge.toml</code>, which is read at boot, so that one does need a
-  restart. The screen states the no-restart half without a number,
+  <code>claude auth status</code>. Editing the account's env, or dropping
+  the account, edits <code>forge.toml</code>, which is read once at boot
+  - the pollers keep probing what they loaded until forge restarts. The
+  screen states the no-restart half without a number,
   because the two classes do not share one.
 </p>
 
@@ -1051,7 +1055,7 @@ chat continues here...
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/preflight.rs</code> (renderer) + <code>crates/forge-tui/src/app/preflight.rs</code> (hand-over latch + keyboard handler) · progress state from <code>crates/forge-workspace/src/dictate.rs</code></dd>
       <dt>spinner</dt><dd>The configured <code>SpinnerStyle</code> at its own cadence, through the same <code>App::active_spinner_glyph</code> every other animated surface reads. Preflight is one more of those, not a new vocabulary - change <code>[ui] spinner</code> and this moves with the rest.</dd>
-      <dt>account states</dt><dd><code style="color:#cfc26b">○</code> yellow <code>resolving</code> = Loading or Refreshing · <code style="color:#7eb87a">●</code> green <code>ready</code> = probe returned · <code style="color:#cf6171">⚠</code> red <code>auth failed</code> = Bailed. Bailed renders in <code>STATUS_ERROR</code> rather than the warning yellow the launchpad chip row used: on the one screen that can stop forge starting, mid-flight and failed must not differ only by glyph. It also settles a disagreement with the project row's own account chip, which was already red.</dd>
+      <dt>account states</dt><dd><code style="color:#cfc26b">○</code> yellow <code>resolving</code> = Loading or Refreshing · <code style="color:#7eb87a">●</code> green <code>ready</code> = probe returned · <code style="color:#cf6171">⚠</code> red, one label per failure class: <code>auth failed</code> = rejected credentials, <code>unreachable</code> = the probe never got through, <code>fetch error</code> = a classed-but-unrecognised failure (a 5xx proxy, a body that will not decode), <code>rate limited</code> = a 429 streak that waiting clears. Bailed renders in <code>STATUS_ERROR</code> rather than the warning yellow the launchpad chip row used: on the one screen that gates forge starting, mid-flight and failed must not differ only by glyph. It also settles a disagreement with the project row's own account chip, which was already red.</dd>
       <dt>model states</dt><dd><code>queued</code> · <code>downloading</code> · <code>resuming</code> (a transfer that picked up a <code>.part</code>) · <code>verifying</code> · <code>ready</code> · <code>loading</code> · then <code>ready</code> again once the weights are in memory. A failure reads <code>bad hash</code> or <code>cancelled</code>, and a row nothing will now start reads <code>not started</code> rather than <code>queued</code>.</dd>
       <dt>both rows advance together</dt><dd><code>forge_dictate::prepare</code> gives each model a thread, so the pair costs the slower of the two rather than their sum - 5.3 s to 2.7 s verifying the shipped 3.07 GB warm. <code>queued</code> is therefore the moment before both start, not one model waiting on the other.</dd>
       <dt>keys</dt><dd><kbd>Esc</kbd> cancels an in-flight model download, which quits forge · <kbd>Ctrl+Q</kbd> quit. Every other key is consumed silently - there is nothing to navigate and the projects view underneath is not reachable yet.</dd>
@@ -1065,7 +1069,7 @@ chat continues here...
 <div class="surface">
   <div class="surface-head">
     <h4>Preflight fails: a bailed account</h4>
-    <div class="when">gates forge entirely - clears in place when the account is repaired, or on a config edit plus a restart</div>
+    <div class="when">rides along as degraded - preflight hands over once the rest settles; the row clears in place when the account is repaired, or on a config edit plus a restart</div>
   </div>
   <div class="surface-body">
     <p>The <code>/login</code> exit says the retry is automatic, because otherwise a reader who fixes their auth has no way of knowing whether to restart - and the answer is no. It states no interval: a keychain account recovers on the 30 s recovery poll and a base-url account on the 60 s usage poll, which is subject to probe backoff, so any single number would be false for one class. <strong>The block itself is keychain-shaped</strong> - <code>claude /login</code> does not repair a base-url account, whose credentials live in its <code>[accounts.env]</code> - and that predates this screen. Both exits are named because neither is optional: a reader who cannot re-authenticate needs the second one. The footer drops <code>esc</code> - there is nothing left to cancel - and the paths are printed in full, since the reader is about to leave forge to edit them. A command too long for the panel wraps after a <code>/</code> onto a deeper-indented continuation line; it is never elided, because half a path is worse than none.</p>
@@ -1085,8 +1089,8 @@ chat continues here...
         <span style="color:#7eb87a">●</span> normalization model                   <span class="dim">       ready</span>
           <span class="dim">(s1-mini-f16)</span>
 
-        <span class="#cf6171">Granite1 will not start a session, and forge will</span>
-        <span class="#cf6171">not start while an account in forge.toml cannot.</span>
+        <span class="#cf6171">Granite1 will not start a session. forge starts</span>
+        <span class="#cf6171">without it; fix the auth and it recovers in place.</span>
 
         <span class="bold">Fix the auth</span>
           CLAUDE_CONFIG_DIR=~/.claude-granite1 claude
@@ -1100,18 +1104,42 @@ chat continues here...
 
  <span class="dim">ctrl+q  quit</span></pre>
     </div>
-    <p>The repair instruction is the only thing that branches, because it is the only thing that differs. An account whose <code>provider</code> is a base-url one (<code>codex</code>, <code>openrouter</code> or <code>zai</code>) has no keychain entry at all, so <code>claude /login</code> cannot repair it - its credential is the <code>ANTHROPIC_AUTH_TOKEN</code> beside its base url. The branch is on <code>provider</code>, not on the presence of <code>ANTHROPIC_BASE_URL</code>, so an <code>anthropic</code> account that happens to set one still gets keychain copy:</p>
+    <p>The repair instruction and the retry line both branch, because both differ. An account whose <code>provider</code> is a base-url one (<code>codex</code>, <code>openrouter</code> or <code>zai</code>) has no keychain entry at all, so <code>claude /login</code> cannot repair it - its credential is the <code>ANTHROPIC_AUTH_TOKEN</code> beside its base url. The branch is on <code>provider</code>, not on the presence of <code>ANTHROPIC_BASE_URL</code>, so an <code>anthropic</code> account that happens to set one still gets keychain copy:</p>
     <div class="term">
       <pre class="indent">
         <span class="bold">Fix the auth</span>
           ANTHROPIC_AUTH_TOKEN in [accounts.env]
-          <span class="dim">forge retries on its own - no restart needed</span>
+          <span class="dim">editing [accounts.env] needs a restart</span>
 
         <span class="bold">Or drop the account</span>
           delete its [[accounts]] block from
           ~/.claude/forge/forge.toml</pre>
     </div>
-    <p>The retry line is identical in both, and deliberately so: both classes recover without a restart, and neither shares the other's interval - a keychain account on the 30 s recovery poll, a base-url account on the 60 s usage poll under probe backoff - so it names none.</p>
+    <p>The retry line states no interval in either arm, because no single number is true of both polls - a keychain account on the 30 s recovery poll, a base-url account on the 60 s usage poll under probe backoff. What it does key on is the restart: a keychain repair is picked up in place, while the base-url repair is an edit to <code>forge.toml</code>, which is read once at boot, so the retrying poller keeps the old token until forge restarts.</p>
+    <p>An endpoint that never answered is a different failure, and the row says so: the last probe attempt classified the error, and an endpoint-class bail reads <code>unreachable</code> (never got through) or <code>fetch error</code> (answered, but with a 5xx or a body that will not decode - a proxy with a dead upstream 502s rather than refusing), with the repair aimed at the endpoint rather than the token. A <code>rate limited</code> bail has no repair at all beyond waiting: the pollers keep retrying. forge no longer holds boot for any of them, so the head line says what happens now instead of what used to stop:</p>
+    <div class="term">
+      <pre class="indent">
+      <span class="dim">────────────────────────────────────────────────────────</span>
+        <span class="dim bold">Accounts</span>
+        <span style="color:#7eb87a">●</span> Subspace                              <span class="dim">       ready</span>
+        <span style="color:#cf6171">⚠</span> <span class="bold">Granite1</span>                              <span style="color:#cf6171">  unreachable</span>
+        <span style="color:#7eb87a">●</span> Personal                              <span class="dim">       ready</span>
+        <span style="color:#7eb87a">●</span> Codex                                 <span class="dim">       ready</span>
+
+        <span class="#cf6171">Granite1 cannot be reached. forge starts without</span>
+        <span class="#cf6171">it and keeps retrying.</span>
+
+        <span class="bold">Check the endpoint</span>
+          ANTHROPIC_BASE_URL in [accounts.env], or the
+          endpoint itself
+          <span class="dim">editing forge.toml needs a restart; fixing the</span>
+          <span class="dim">endpoint does not</span>
+
+        <span class="bold">Or drop the account</span>
+          delete its [[accounts]] block from
+          ~/.claude/forge/forge.toml
+      <span class="dim">────────────────────────────────────────────────────────</span></pre>
+    </div>
   </div>
 </div>
 
