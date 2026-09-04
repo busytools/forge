@@ -314,6 +314,43 @@ fn the_state_column_names_the_failure_class() {
     }
 }
 
+/// The typed label's producer leg, driven through the same
+/// `set_last_error` call the loader's retry arm makes: the recorded
+/// failure reaches the snapshot, and the snapshot reaches the row.
+/// Deleting the snapshot's `last_error` line fails the first assert.
+#[tokio::test]
+async fn the_recorded_failure_rides_the_snapshot_to_the_row() {
+    let config_dir = tempfile::tempdir().expect("tempdir");
+    let forge = config_dir.path().join("forge");
+    std::fs::create_dir_all(&forge).expect("forge/");
+    std::fs::write(
+        forge.join("forge.toml"),
+        "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
+         [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+    )
+    .expect("write forge.toml");
+    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+        .await
+        .expect("workspace");
+    workspace.seed_test_account_state("Subspace", LoadingState::Bailed);
+    workspace
+        .seed_test_account_failure("Subspace", forge_workspace::UsageFetchStatus::NetworkFailed);
+
+    let rows = workspace.account_loading_snapshot();
+    assert_eq!(
+        rows[0].last_error,
+        Some(forge_workspace::UsageFetchStatus::NetworkFailed),
+        "the recorded failure reaches the snapshot; got {rows:?}",
+    );
+
+    let mut app = App::test_default();
+    app.workspace = Some(std::sync::Arc::new(workspace));
+    app.active_view = crate::app::ActiveView::Launchpad;
+    let painted = paint(&mut app, 100, 34);
+    assert!(painted.contains("unreachable"), "and the row renders it as the label:\n{painted}");
+}
+
 /// The unreachable screen repairs the endpoint, not the token: the
 /// credential is fine, and `Fix the auth` would send a reader with a
 /// down proxy off to re-enter a working key.
