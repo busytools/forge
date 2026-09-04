@@ -44,6 +44,31 @@ pub(crate) type PendingControls = Arc<Mutex<HashMap<String, oneshot::Sender<Cont
 /// write back a `control_response` the CLI has already moved past.
 pub(crate) type InflightDispatches = Arc<Mutex<HashMap<String, JoinHandle<()>>>>;
 
+/// Consecutive skips of unparsable lines. At
+/// [`UNPARSABLE_ESCALATE_AFTER`] in a row the stream is not speaking
+/// stream-json, and the near-100%-malformed session would otherwise
+/// present to the user as a silent hang.
+#[derive(Default)]
+pub(crate) struct SkipCounters {
+    consecutive: u64,
+    total: u64,
+}
+
+/// Consecutive unparsable lines after which the reader escalates once
+/// to a session-visible error. A sparse bad frame still just skips.
+const UNPARSABLE_ESCALATE_AFTER: u64 = 50;
+
+/// What [`handle_line`] decided about one decoded line.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LineOutcome {
+    /// Handled normally; keep reading.
+    Continue,
+    /// The line was unparsable and was skipped; keep reading.
+    Skipped,
+    /// The events channel closed; the read loop should exit.
+    Stop,
+}
+
 /// Spawn the post-init reader task.
 ///
 /// Pre-pumps `pre_init_messages` into `events_tx` first, then runs the
@@ -74,6 +99,7 @@ pub(crate) fn spawn_reader_task(
             }
 
             let mut line_number: u64 = 0;
+            let mut counters = SkipCounters::default();
             loop {
                 tokio::select! {
                     biased;
@@ -82,15 +108,17 @@ pub(crate) fn spawn_reader_task(
                         match line {
                             Ok(Some(line)) => {
                                 line_number += 1;
-                                if !handle_line(
+                                if handle_line(
                                     &dispatch,
                                     &pending_controls,
                                     &inflight,
                                     &events_tx,
                                     line_number,
                                     &line,
+                                    &mut counters,
                                 )
                                 .await
+                                == LineOutcome::Stop
                                 {
                                     break;
                                 }
@@ -112,6 +140,14 @@ pub(crate) fn spawn_reader_task(
                 }
             }
 
+            if counters.total > 0 {
+                tracing::warn!(
+                    target: crate::logging::targets::SDK_READER,
+                    total = counters.total,
+                    "stream ended with unparsable lines skipped",
+                );
+            }
+
             close_subprocess(&mut subprocess).await;
             drain_pending(&pending_controls).await;
         }
@@ -119,9 +155,10 @@ pub(crate) fn spawn_reader_task(
     )
 }
 
-/// Process one decoded line. Returns `false` only when the events
-/// channel has closed and the read loop should exit; a line that
-/// fails to decode is skipped and the loop continues.
+/// Process one decoded line. Returns [`LineOutcome::Stop`] only when
+/// the events channel has closed and the read loop should exit; a
+/// line that fails to decode is skipped and the loop continues.
+#[allow(clippy::too_many_arguments)]
 async fn handle_line(
     dispatch: &ControlDispatchHandle,
     pending_controls: &PendingControls,
@@ -129,17 +166,26 @@ async fn handle_line(
     events_tx: &mpsc::UnboundedSender<Result<Message, Error>>,
     line_number: u64,
     line: &str,
-) -> bool {
-    match decode_dispatch(line, line_number) {
+    counters: &mut SkipCounters,
+) -> LineOutcome {
+    let outcome = match decode_dispatch(line, line_number) {
         DecodedLine::Message(msg) => {
             dispatch.capture_session_id_from(&msg);
-            events_tx.send(Ok(msg)).is_ok()
+            if events_tx.send(Ok(msg)).is_ok() { LineOutcome::Continue } else { LineOutcome::Stop }
         }
         DecodedLine::Malformed { line: line_no, reason } => {
+            counters.consecutive += 1;
+            counters.total += 1;
             // A recognised control_request with one bad field must
             // still be answered, or the CLI blocks on it forever.
+            // Detached like the dispatch path: a full stdin pipe must
+            // not stall reads.
             if let Some(request_id) = control_request_id(line) {
-                dispatch.write_error_response(&request_id, &reason).await;
+                let dispatch = dispatch.clone();
+                let reason = reason.clone();
+                tokio::spawn(async move {
+                    dispatch.write_error_response(&request_id, &reason).await;
+                });
             }
             let raw = excerpt(line, 160);
             tracing::warn!(
@@ -149,7 +195,21 @@ async fn handle_line(
                 raw = %raw,
                 "unparsable stream-json line - skipping, session continues",
             );
-            true
+            if counters.consecutive == UNPARSABLE_ESCALATE_AFTER {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    consecutive = counters.consecutive,
+                    "subprocess is not speaking stream-json - surfacing a session failure",
+                );
+                let _ = events_tx.send(Err(Error::Connection {
+                    reason: format!(
+                        "{} consecutive unparsable stream-json lines; \
+                         the subprocess is not speaking stream-json",
+                        counters.consecutive
+                    ),
+                }));
+            }
+            LineOutcome::Skipped
         }
         DecodedLine::Control(req) => {
             let dispatch_clone = dispatch.clone();
@@ -178,7 +238,7 @@ async fn handle_line(
             inflight.lock().await.insert(request_id, handle);
             // Release the gate after the registration is visible.
             let _ = gate_tx.send(());
-            true
+            LineOutcome::Continue
         }
         DecodedLine::ControlCancel { request_id } => {
             if let Some(handle) = inflight.lock().await.remove(&request_id) {
@@ -195,7 +255,7 @@ async fn handle_line(
                     "control_cancel_request: no in-flight dispatch (already completed)",
                 );
             }
-            true
+            LineOutcome::Continue
         }
         DecodedLine::ControlResponse { request_id, raw: value } => {
             let resp_subtype =
@@ -229,7 +289,7 @@ async fn handle_line(
                     "unexpected control_response - dropping",
                 );
             }
-            true
+            LineOutcome::Continue
         }
         DecodedLine::Unknown { type_str, raw } => {
             tracing::warn!(
@@ -239,7 +299,11 @@ async fn handle_line(
                 line = line_number,
                 "unknown top-level stream-json type - surfacing as Message::Unknown",
             );
-            events_tx.send(Ok(Message::Unknown { type_str, raw })).is_ok()
+            if events_tx.send(Ok(Message::Unknown { type_str, raw })).is_ok() {
+                LineOutcome::Continue
+            } else {
+                LineOutcome::Stop
+            }
         }
         DecodedLine::ToolProgress(progress) => {
             // Dropped on purpose: informational only, forge's own tool
@@ -253,9 +317,14 @@ async fn handle_line(
                 line = line_number,
                 "tool_progress heartbeat dropped",
             );
-            true
+            LineOutcome::Continue
         }
+    };
+    // Only a skip keeps the run alive; anything else resets it.
+    if outcome != LineOutcome::Skipped {
+        counters.consecutive = 0;
     }
+    outcome
 }
 
 /// First `max_chars` of `line` for logs and error strings - a corrupt
@@ -330,9 +399,11 @@ mod tests {
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
 
         let line = r#"{"type":"tool_progress","tool_use_id":"toolu_01QhFqNDEgKeskhhiYpzeHnL-heartbeat-0","tool_name":"Bash","parent_tool_use_id":"toolu_01QhFqNDEgKeskhhiYpzeHnL","elapsed_time_seconds":30,"heartbeat":true,"session_id":"s","uuid":"u"}"#;
-        let keep_going = handle_line(&dispatch, &pending, &inflight, &events_tx, 40, line).await;
+        let mut counters = SkipCounters::default();
+        let outcome =
+            handle_line(&dispatch, &pending, &inflight, &events_tx, 40, line, &mut counters).await;
 
-        assert!(keep_going, "a heartbeat must not end the read loop");
+        assert_eq!(outcome, LineOutcome::Continue, "a heartbeat must not end the read loop");
         assert!(
             events_rx.try_recv().is_err(),
             "a heartbeat must not surface an event to the agent"
@@ -359,9 +430,12 @@ mod tests {
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
 
         let corrupt = r#"{"type":"stream_event""#;
-        let keep_going = handle_line(&dispatch, &pending, &inflight, &events_tx, 7, corrupt).await;
+        let mut counters = SkipCounters::default();
+        let outcome =
+            handle_line(&dispatch, &pending, &inflight, &events_tx, 7, corrupt, &mut counters)
+                .await;
 
-        assert!(keep_going, "a decode error must not end the read loop");
+        assert_eq!(outcome, LineOutcome::Skipped, "a decode error must not end the read loop");
         assert!(events_rx.try_recv().is_err(), "a skipped line must not surface an event");
         assert!(
             lines.try_recv().is_err(),
@@ -369,9 +443,34 @@ mod tests {
         );
 
         let valid = r#"{"type":"stream_event","uuid":"evt-1","session_id":"sess-1","event":{"type":"message_start"}}"#;
-        let keep_going = handle_line(&dispatch, &pending, &inflight, &events_tx, 8, valid).await;
+        let not_a_request = r#"{"type":"rate_limit_event","request_id":"req_7"}"#;
+        let outcome = handle_line(
+            &dispatch,
+            &pending,
+            &inflight,
+            &events_tx,
+            8,
+            not_a_request,
+            &mut counters,
+        )
+        .await;
+        assert_eq!(outcome, LineOutcome::Skipped);
+        // The answer write is detached, so poll rather than try_recv.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), lines.recv())
+                .await
+                .is_err(),
+            "only a corrupt control_request may be answered on stdin"
+        );
 
-        assert!(keep_going, "the read loop must still be alive after a skip");
+        let outcome =
+            handle_line(&dispatch, &pending, &inflight, &events_tx, 9, valid, &mut counters).await;
+
+        assert_eq!(
+            outcome,
+            LineOutcome::Continue,
+            "the read loop must still be alive after a skip"
+        );
         match events_rx.try_recv() {
             Ok(Ok(Message::StreamEvent { uuid, .. })) => assert_eq!(uuid, "evt-1"),
             other => panic!("expected the next valid frame on the event stream, got {other:?}"),
@@ -400,9 +499,15 @@ mod tests {
         // `can_use_tool` without `tool_use_id` fails the custom
         // `ControlRequestKind` Deserialize, so the line is Malformed.
         let line = r#"{"type":"control_request","request_id":"req_9","request":{"subtype":"can_use_tool","tool_name":"Edit"}}"#;
-        let keep_going = handle_line(&dispatch, &pending, &inflight, &events_tx, 7, line).await;
+        let mut counters = SkipCounters::default();
+        let outcome =
+            handle_line(&dispatch, &pending, &inflight, &events_tx, 7, line, &mut counters).await;
 
-        assert!(keep_going, "a malformed control_request must not end the read loop");
+        assert_eq!(
+            outcome,
+            LineOutcome::Skipped,
+            "a malformed control_request must not end the read loop"
+        );
         assert!(events_rx.try_recv().is_err(), "nothing surfaces on the event stream");
         let written = tokio::time::timeout(std::time::Duration::from_secs(5), lines.recv())
             .await
@@ -415,6 +520,126 @@ mod tests {
         assert!(
             written.contains(r#""subtype":"error""#),
             "the response must be an error: {written}"
+        );
+        assert!(
+            written.contains("tool_use_id"),
+            "the error body must carry the real decode reason: {written}"
+        );
+    }
+
+    /// A stream that is near-100% malformed presents to the user as a
+    /// silent hang, so the reader escalates once to a session-visible
+    /// error at the consecutive-skip threshold. A sparse bad frame
+    /// never gets that far, and a good line resets the count.
+    #[tokio::test]
+    async fn a_degenerate_malformed_stream_escalates_once() {
+        let (writer, _lines) = SharedWriter::test_stub();
+        let dispatch = ControlDispatchHandle::new(
+            Arc::new(writer),
+            None,
+            None,
+            crate::mcp::orchestration::McpHosts::new(Vec::new(), HashMap::new()),
+            HashMap::new(),
+            new_shared_session_id(),
+        );
+        let pending: PendingControls = Arc::new(Mutex::new(HashMap::new()));
+        let inflight: InflightDispatches = Arc::new(Mutex::new(HashMap::new()));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let mut counters = SkipCounters::default();
+        let corrupt = r#"{"type":"stream_event""#;
+
+        for line_no in 1..UNPARSABLE_ESCALATE_AFTER {
+            let outcome = handle_line(
+                &dispatch,
+                &pending,
+                &inflight,
+                &events_tx,
+                line_no,
+                corrupt,
+                &mut counters,
+            )
+            .await;
+            assert_eq!(outcome, LineOutcome::Skipped);
+            assert!(
+                events_rx.try_recv().is_err(),
+                "no escalation below the threshold (line {line_no})"
+            );
+        }
+
+        let outcome = handle_line(
+            &dispatch,
+            &pending,
+            &inflight,
+            &events_tx,
+            UNPARSABLE_ESCALATE_AFTER,
+            corrupt,
+            &mut counters,
+        )
+        .await;
+        assert_eq!(outcome, LineOutcome::Skipped, "the escalation itself must not stop the loop");
+        match events_rx.try_recv() {
+            Ok(Err(_)) => {}
+            other => panic!("expected the session-visible escalation error, got {other:?}"),
+        }
+        assert!(events_rx.try_recv().is_err(), "the escalation must fire exactly once");
+    }
+
+    #[tokio::test]
+    async fn a_good_line_resets_the_consecutive_skip_count() {
+        let (writer, _lines) = SharedWriter::test_stub();
+        let dispatch = ControlDispatchHandle::new(
+            Arc::new(writer),
+            None,
+            None,
+            crate::mcp::orchestration::McpHosts::new(Vec::new(), HashMap::new()),
+            HashMap::new(),
+            new_shared_session_id(),
+        );
+        let pending: PendingControls = Arc::new(Mutex::new(HashMap::new()));
+        let inflight: InflightDispatches = Arc::new(Mutex::new(HashMap::new()));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let mut counters = SkipCounters::default();
+        let corrupt = r#"{"type":"stream_event""#;
+        let valid = r#"{"type":"stream_event","uuid":"evt-1","session_id":"sess-1","event":{"type":"message_start"}}"#;
+
+        let mut line_no = 0;
+        for _ in 0..(UNPARSABLE_ESCALATE_AFTER - 1) {
+            line_no += 1;
+            handle_line(
+                &dispatch,
+                &pending,
+                &inflight,
+                &events_tx,
+                line_no,
+                corrupt,
+                &mut counters,
+            )
+            .await;
+        }
+        line_no += 1;
+        handle_line(&dispatch, &pending, &inflight, &events_tx, line_no, valid, &mut counters)
+            .await;
+        for _ in 0..(UNPARSABLE_ESCALATE_AFTER - 1) {
+            line_no += 1;
+            handle_line(
+                &dispatch,
+                &pending,
+                &inflight,
+                &events_tx,
+                line_no,
+                corrupt,
+                &mut counters,
+            )
+            .await;
+        }
+
+        match events_rx.try_recv() {
+            Ok(Ok(Message::StreamEvent { .. })) => {}
+            other => panic!("expected the valid frame's event, got {other:?}"),
+        }
+        assert!(
+            events_rx.try_recv().is_err(),
+            "a good line between runs of corrupt lines must reset the escalation count"
         );
     }
 }

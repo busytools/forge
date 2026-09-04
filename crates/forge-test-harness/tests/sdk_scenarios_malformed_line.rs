@@ -125,6 +125,10 @@ async fn a_corrupt_line_before_initialize_still_fails_the_spawn() {
                 reason.contains("raw line:"),
                 "the failure must name the offending line: {reason}"
             );
+            assert!(
+                reason.contains(r#""type":"stream_event""#),
+                "the failure must carry the corrupt text itself: {reason}"
+            );
         }
         other => panic!("expected MessageParse from pre-init strictness, got {other:?}"),
     }

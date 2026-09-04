@@ -135,10 +135,17 @@ impl ControlDispatchHandle {
                 error: error.to_string(),
             },
         };
-        if let Ok(mut line) = serde_json::to_string(&resp) {
-            line.push('\n');
-            if let Err(write_err) = self.writer.write_line(&line).await {
-                tracing::debug!(%write_err, "error control_response write failed");
+        match serde_json::to_string(&resp) {
+            Ok(mut line) => {
+                line.push('\n');
+                if let Err(write_err) = self.writer.write_line(&line).await {
+                    // The CLI stays blocked on this request; that is
+                    // not a debug-level loss.
+                    tracing::warn!(%write_err, "error control_response write failed");
+                }
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "error control_response encode failed");
             }
         }
     }

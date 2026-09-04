@@ -82,7 +82,9 @@ pub enum DecodedLine {
     /// matched no message shape. Typed rather than an `Err` so the read
     /// loop skips the line and continues - a per-line decode failure
     /// must not end the session, the same rule `Unknown` applies to
-    /// unknown types. The reader warns with the line and reason.
+    /// unknown types. The reader warns with the line number, reason and
+    /// a 160-char excerpt, and answers a corrupt `control_request` that
+    /// carries a `request_id`.
     Malformed {
         /// 1-based number of the offending line.
         line: u64,
