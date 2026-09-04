@@ -1274,7 +1274,7 @@ impl Workspace {
             }
             pool.insert(
                 session_key.clone(),
-                PooledAgent { handle: Arc::clone(&arc), account: account_key },
+                PooledAgent { handle: Arc::clone(&arc), account: account_key.clone() },
             );
         }
 
@@ -1311,6 +1311,7 @@ impl Workspace {
                 domain,
                 update_tx: self.update_tx.clone(),
                 spawn_key,
+                account: Some(account_key),
                 // An account switch replaces a live session's agent, so
                 // the new task's first Connected must emit SessionReplaced
                 // (reset chat, then the --resume backfill re-seeds it).
@@ -1483,6 +1484,11 @@ impl Workspace {
                 config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
                 auth: if accounts.provider_or_anthropic(k).uses_base_url() {
                     crate::views::AccountAuth::BaseUrl
+                } else if accounts
+                    .env(k)
+                    .is_some_and(forge_agent::cloud::oauth_usage::is_token_mode)
+                {
+                    crate::views::AccountAuth::Token
                 } else {
                     crate::views::AccountAuth::Keychain
                 },
@@ -2111,6 +2117,11 @@ impl Workspace {
                         forge_agent::cloud::oauth::map_probe_snapshot(false, payload)
                     })
                 }
+                forge_agent::cloud::oauth_usage::ProbePlan::Token { bearer } => {
+                    forge_agent::cloud::oauth_usage::probe_setup_token(bearer)
+                        .await
+                        .map(|payload| forge_agent::cloud::oauth::map_probe_snapshot(true, payload))
+                }
                 forge_agent::cloud::oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
                     forge_agent::cloud::oauth_usage::probe_openrouter_key(base_url, bearer)
                         .await
@@ -2169,7 +2180,22 @@ impl Workspace {
                         }
                         account::UsageFetchStatus::Expired
                         | account::UsageFetchStatus::Unauthorized => {
-                            "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
+                            // Env credentials are boot-frozen and, on a
+                            // shared dir, /login repairs whichever
+                            // sibling last logged in - so both env
+                            // classes get their own repair, never
+                            // /login.
+                            match &plan {
+                                forge_agent::cloud::oauth_usage::ProbePlan::Token { .. } => {
+                                    "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
+                                }
+                                forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { .. } => {
+                                    "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
+                                }
+                                _ => {
+                                    "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
+                                }
+                            }
                         }
                         account::UsageFetchStatus::NetworkFailed => {
                             "usage_poll fetch failed with network error; will retry on next tick"
@@ -6198,6 +6224,11 @@ pub(crate) fn classify_oauth_usage_error(
         OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
         OauthUsageError::UaProbe(_)
         | OauthUsageError::HttpStatus(_, _)
+        // The token-mode arms convert a scope refusal before it gets
+        // here; reaching this arm means it arrived on a non-token
+        // path (keychain or base-url), which is not an auth failure
+        // either.
+        | OauthUsageError::ScopeInsufficient
         | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
     }
 }
@@ -11442,6 +11473,7 @@ provider = "anthropic"
             domain,
             update_tx,
             spawn_key: None,
+            account: None,
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };
@@ -11789,6 +11821,54 @@ provider = "anthropic"
         assert_eq!(
             classify_oauth_usage_error(&OauthUsageError::UaProbe("no binary".to_owned())),
             UsageFetchStatus::Other,
+        );
+        // A scope refusal on the keychain path is anomalous (keychain
+        // tokens carry user:profile) and must not render as an auth
+        // failure; the token-mode paths convert it before classification.
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::ScopeInsufficient),
+            UsageFetchStatus::Other,
+        );
+    }
+
+    /// A token-mode Anthropic account (setup token in `[accounts.env]`,
+    /// shared config dir) is neither a keychain repair nor a base-url
+    /// env edit, so preflight's bailed-row copy would send the reader
+    /// to `/login` in a dir that does not hold this account's
+    /// credential. The row has to carry the third class.
+    #[tokio::test]
+    async fn a_token_mode_account_derives_the_token_auth_class() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["TokenAcct"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "TokenAcct"
+config_dir = "~/.claude"
+provider = "anthropic"
+
+  [accounts.env]
+  CLAUDE_CODE_OAUTH_TOKEN = "setup-token"
+"#,
+        )
+        .expect("write forge.toml");
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).await.expect("new");
+
+        let rows = workspace.account_loading_snapshot();
+        assert_eq!(rows.len(), 1, "the fixture has one account; got {rows:?}");
+        assert_eq!(
+            rows[0].auth,
+            crate::views::AccountAuth::Token,
+            "a setup-token account is the token auth class; got {:?}",
+            rows[0].auth,
         );
     }
 

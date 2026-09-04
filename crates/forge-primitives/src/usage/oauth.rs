@@ -60,7 +60,7 @@ pub struct OauthExtraUsage {
 /// fallback-eligible states (`NoCredentials`, `Expired`,
 /// `Unauthorized`) from terminal ones so callers can decide whether
 /// to retry against a different auth source.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum OauthUsageError {
     /// No OAuth credentials were resolved from file or keychain.
     /// Caller should advise `/login`.
@@ -73,6 +73,12 @@ pub enum OauthUsageError {
     /// API returned 401/403. Token may be stale or revoked.
     #[error("Claude OAuth usage request was rejected (HTTP {0})")]
     Unauthorized(u16),
+    /// API returned 403 with `oauth_scope_insufficient`: the token
+    /// authenticated but lacks the `user:profile` scope this endpoint
+    /// requires. The verdict on a VALID setup token, not an auth
+    /// failure - setup tokens carry `user:inference` only.
+    #[error("Claude OAuth usage endpoint refused the token's scopes")]
+    ScopeInsufficient,
     /// API returned 429. `retry_after` is the parsed `Retry-After`
     /// header value (in seconds) when present - Anthropic returns
     /// per-account hold-down durations that the caller should honour

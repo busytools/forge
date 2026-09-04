@@ -400,6 +400,37 @@ fn an_unreachable_bail_names_the_endpoint_not_the_auth() {
     );
 }
 
+/// The auth-failure screen for a base-url account promises a restart:
+/// its credential is the env token, which the pollers cannot re-read
+/// until forge restarts - "recovers in place" would be false.
+#[test]
+fn a_bailed_base_url_account_promises_a_restart_not_in_place_recovery() {
+    let text = flatten(&bail_detail(
+        &App::test_default(),
+        &bailed_with_error(
+            "Subspace",
+            "/home/x/.claude-subspace",
+            forge_workspace::AccountAuth::BaseUrl,
+            forge_workspace::UsageFetchStatus::Unauthorized,
+        ),
+        PICKER_WIDTH,
+    ))
+    .join("\n");
+
+    assert!(
+        text.contains("Fix the auth"),
+        "a 401 on the env token is an auth failure; got:\n{text}",
+    );
+    assert!(
+        text.contains("restart forge to pick"),
+        "the env is boot-frozen, so the head line cannot promise in-place recovery; got:\n{text}",
+    );
+    assert!(
+        !text.contains("recovers in place"),
+        "the repaired token lives in [accounts.env], read once at boot; got:\n{text}",
+    );
+}
+
 /// An endpoint that answers badly is not an auth failure either - a
 /// proxy with a dead upstream 502s rather than refusing, which is the
 /// common real shape of "endpoint down" - and the copy must say the
@@ -428,6 +459,47 @@ fn an_erroring_endpoint_is_not_an_auth_failure_either() {
             && !text.contains("Fix the auth")
             && !text.contains("ANTHROPIC_AUTH_TOKEN"),
         "the repair is the endpoint, never the token; got:\n{text}",
+    );
+}
+
+/// A bailed token account's credential is the setup token in its
+/// `[accounts.env]`, not a keychain entry: `/login` would authenticate
+/// whichever account owns the shared config dir, not this one. The
+/// repair is a re-mint, and it is an env edit, so it needs a restart.
+#[test]
+fn a_bailed_token_account_names_the_re_mint_not_login() {
+    let text = flatten(&bail_detail(
+        &App::test_default(),
+        &bailed_with_error(
+            "TokenAcct",
+            "/home/x/.claude",
+            forge_workspace::AccountAuth::Token,
+            forge_workspace::UsageFetchStatus::Unauthorized,
+        ),
+        PICKER_WIDTH,
+    ))
+    .join("\n");
+
+    assert!(
+        text.contains("Fix the auth"),
+        "a 401 on a setup token is an auth failure; got:\n{text}",
+    );
+    assert!(
+        text.contains("restart forge to pick"),
+        "a token repair is an env edit, so the head line cannot promise in-place recovery; got:\n{text}",
+    );
+    assert!(
+        !text.contains("/login"),
+        "`/login` repairs the shared dir's keychain account, never this one; got:\n{text}",
+    );
+    assert!(
+        text.contains("CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]"),
+        "the credential's home is named; got:\n{text}",
+    );
+    assert!(text.contains("claude setup-token"), "the re-mint command is the repair; got:\n{text}");
+    assert!(
+        text.contains("editing [accounts.env] needs a restart"),
+        "an env repair is boot-frozen until restart - the screen has to say so; got:\n{text}",
     );
 }
 

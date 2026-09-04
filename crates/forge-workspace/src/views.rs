@@ -165,6 +165,13 @@ pub enum AccountAuth {
     /// no keychain entry for `/login` to write. The recovery poll skips
     /// these; the 60 s usage poll recovers them.
     BaseUrl,
+    /// `CLAUDE_CODE_OAUTH_TOKEN` in the account's env (a setup token,
+    /// merged from global `[env]` and `[accounts.env]`): the keychain
+    /// is never read, so neither `/login` nor a base-url token edit
+    /// repairs it. Repaired by re-minting the token, which is an env
+    /// edit and needs a restart; the 60 s usage poll recovers a
+    /// transient bail.
+    Token,
 }
 
 /// One account's place in preflight: what it is called, how far it

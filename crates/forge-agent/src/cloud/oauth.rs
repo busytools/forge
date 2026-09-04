@@ -65,15 +65,16 @@ pub fn snapshot_from_payload_lenient(payload: super::oauth_usage::OauthUsage) ->
 }
 
 /// Map a probe payload to a snapshot, picking the mapper the probe
-/// plan calls for: a base-url account maps leniently (each window
-/// independent, never erroring), a keychain account maps strictly (a
+/// plan calls for: a base-url or token-mode account maps leniently
+/// (each window independent, never erroring - the settled empty
+/// payload must map, not error), a keychain account maps strictly (a
 /// 200 must carry the five-hour window). The loader and poller share
-/// this so their base-url-vs-keychain mapping never drifts apart.
+/// this so their lenient-vs-strict choice never drifts apart.
 pub fn map_probe_snapshot(
-    is_base_url: bool,
+    lenient: bool,
     payload: super::oauth_usage::OauthUsage,
 ) -> Result<UsageSnapshot, OauthFetchError> {
-    if is_base_url {
+    if lenient {
         Ok(snapshot_from_payload_lenient(payload))
     } else {
         snapshot_from_payload(payload)

@@ -13,6 +13,8 @@ use std::sync::Arc;
 use forge_agent::AgentHandle;
 use forge_agent::client::AgentEvent;
 use forge_primitives::SessionId;
+
+use crate::account::{AccountKey, UsageFetchStatus};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -32,6 +34,11 @@ pub(crate) struct SessionTask {
     /// to: real_key }` ahead of the first `Connected` emit. Cleared
     /// after the first migration.
     pub(crate) spawn_key: Option<SessionKey>,
+    /// The account this session spawned under. A live 429 rotates off
+    /// THIS key: several accounts can share one config dir, so a
+    /// reverse lookup from the dir would mark an arbitrary one. `None`
+    /// off-plan; such a session cannot rotate and says so.
+    pub(crate) account: Option<AccountKey>,
     /// Tracks whether the first `Connected` has been emitted. The
     /// second-and-beyond Connected on the same task drives
     /// `SessionUpdate::SessionReplaced` instead (covers `/new`,
@@ -688,24 +695,35 @@ impl SessionTask {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
-        let config_dir = self.handle.config_dir();
-        let marked = workspace
-            .account_states()
-            .lock()
-            .mark_rate_limited_by_config_dir(&config_dir, hit.retry_after);
-        if marked {
+        let Some(account) = &self.account else {
+            tracing::warn!(
+                target: "forge_workspace::session_task",
+                key = %self.key.as_str(),
+                "live 429 on a session with no tracked account; cannot rotate",
+            );
+            return;
+        };
+        let rotated = {
+            let mut states = workspace.account_states().lock();
+            let tracked = states.config_dir(account).is_some();
+            if tracked {
+                states.set_last_error(account, UsageFetchStatus::RateLimited, hit.retry_after);
+            }
+            tracked
+        };
+        if rotated {
             tracing::info!(
                 target: "forge_workspace::session_task",
                 key = %self.key.as_str(),
-                config_dir = %config_dir.display(),
-                "marked session account rate-limited from a live 429; next assignment rotates off it",
+                account = %account.0.as_str(),
+                "marked the session's account rate-limited from a live 429; next assignment rotates off it",
             );
         } else {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 key = %self.key.as_str(),
-                config_dir = %config_dir.display(),
-                "live 429 detected but the session config_dir maps to no tracked account; cannot rotate",
+                account = %account.0.as_str(),
+                "live 429 names an account the map no longer tracks; cannot rotate",
             );
         }
     }
@@ -1502,10 +1520,7 @@ mod tests {
 
         let hit = rate_limit_hit_from_message(&api_retry(429, "rate_limit"))
             .expect("429 detected as a rate-limit");
-        assert!(
-            map.mark_rate_limited_by_config_dir(std::path::Path::new("/fake/A"), hit.retry_after),
-            "the active account's config_dir maps to a known key",
-        );
+        map.set_last_error(&key_a, UsageFetchStatus::RateLimited, hit.retry_after);
 
         assert!(
             !map.is_account_usable(&key_a),
@@ -1565,7 +1580,10 @@ mod tests {
     /// handle (its `config_dir` is the `TESTING_STUB_CONFIG_DIR`
     /// `/tmp/forge-testing-stub`). Only `note_rate_limit_from_message`
     /// is exercised, so the command/update channels stay idle.
-    fn session_task_for(workspace: &Arc<crate::Workspace>) -> SessionTask {
+    fn session_task_for(
+        workspace: &Arc<crate::Workspace>,
+        account: Option<AccountKey>,
+    ) -> SessionTask {
         let (handle, _cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
@@ -1579,6 +1597,7 @@ mod tests {
             domain,
             update_tx,
             spawn_key: None,
+            account,
             connected_once: false,
             workspace: Arc::downgrade(workspace),
         }
@@ -1650,6 +1669,7 @@ mod tests {
             domain,
             update_tx,
             spawn_key: None,
+            account: None,
             connected_once: false,
             workspace: Arc::downgrade(workspace),
         };
@@ -1827,6 +1847,7 @@ mod tests {
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
             spawn_key: None,
+            account: None,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -1877,6 +1898,7 @@ mod tests {
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
             spawn_key: Some(spawn_key.clone()),
+            account: None,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -1916,6 +1938,7 @@ mod tests {
             ))),
             update_tx,
             spawn_key: None,
+            account: None,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -1975,6 +1998,7 @@ mod tests {
             ))),
             update_tx,
             spawn_key: None,
+            account: None,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2097,10 +2121,9 @@ mod tests {
         assert!(drained_notice(&mut update_rx).is_none(), "teardown adds no second notice");
     }
 
-    /// End-to-end glue: a 429 on a session whose `config_dir` IS a
-    /// tracked account rotates that account via
-    /// `note_rate_limit_from_message` (upgrade + handle.config_dir() +
-    /// the account-map lock).
+    /// End-to-end glue: a 429 on a session spawned under a tracked
+    /// account rotates THAT account via `note_rate_limit_from_message`
+    /// (upgrade + the account-map lock).
     #[tokio::test]
     async fn note_rate_limit_rotates_the_sessions_own_account() {
         use crate::account::AccountKey;
@@ -2108,7 +2131,7 @@ mod tests {
         let key = AccountKey("Acct".to_owned());
         assert!(workspace.account_states().lock().is_account_usable(&key), "usable before the 429");
 
-        let task = session_task_for(&workspace);
+        let task = session_task_for(&workspace, Some(key.clone()));
         task.note_rate_limit_from_message(&api_retry(429, "rate_limit"));
 
         assert!(
@@ -2117,9 +2140,8 @@ mod tests {
         );
     }
 
-    /// The config_dir-match seam (the #394-class risk): a 429 whose
-    /// session `config_dir` maps to no tracked account must NOT rotate
-    /// an unrelated account - it hits the warn path instead.
+    /// A 429 on a session spawned off-plan (no account) must NOT
+    /// rotate anything - it hits the warn path instead.
     #[tokio::test]
     async fn note_rate_limit_leaves_untracked_config_dir_accounts_alone() {
         use crate::account::AccountKey;
@@ -2127,12 +2149,48 @@ mod tests {
         let key = AccountKey("Acct".to_owned());
         assert!(workspace.account_states().lock().is_account_usable(&key));
 
-        let task = session_task_for(&workspace);
+        let task = session_task_for(&workspace, None);
         task.note_rate_limit_from_message(&api_retry(429, "rate_limit"));
 
         assert!(
             workspace.account_states().lock().is_account_usable(&key),
-            "a 429 whose config_dir maps to no tracked account must not rotate an unrelated one",
+            "a 429 on an account-less session must not rotate an unrelated one",
+        );
+    }
+
+    /// Two accounts sharing one config dir is the token-mode norm: the
+    /// 429 must mark the session's OWN account, never whichever
+    /// sibling a config-dir reverse lookup would happen to find.
+    #[tokio::test]
+    async fn note_rate_limit_marks_the_sessions_account_not_a_shared_dir_sibling() {
+        use crate::account::AccountKey;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge dir");
+        std::fs::write(
+            forge.join("forge.toml"),
+            "[[orgs]]\nname = \"Default\"\naccounts = [\"Acct\", \"Sibling\"]\n\n\
+             [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
+             [[accounts]]\ndisplay_name = \"Acct\"\nconfig_dir = \"/tmp/forge-testing-stub\"\nprovider = \"anthropic\"\n\n\
+             [[accounts]]\ndisplay_name = \"Sibling\"\nconfig_dir = \"/tmp/forge-testing-stub\"\nprovider = \"anthropic\"\n",
+        )
+        .expect("write forge.toml");
+        let workspace =
+            Arc::new(crate::Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let session_account = AccountKey("Acct".to_owned());
+        let sibling = AccountKey("Sibling".to_owned());
+        assert!(workspace.account_states().lock().is_account_usable(&sibling));
+
+        let task = session_task_for(&workspace, Some(session_account.clone()));
+        task.note_rate_limit_from_message(&api_retry(429, "rate_limit"));
+
+        assert!(
+            !workspace.account_states().lock().is_account_usable(&session_account),
+            "the session's own account takes the 429 mark",
+        );
+        assert!(
+            workspace.account_states().lock().is_account_usable(&sibling),
+            "the sibling sharing the config dir stays usable",
         );
     }
 
@@ -2260,6 +2318,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            account: None,
             connected_once: true,
             workspace: std::sync::Weak::new(),
         };
@@ -2347,6 +2406,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            account: None,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2468,6 +2528,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            account: None,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2534,6 +2595,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            account: None,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2578,6 +2640,7 @@ mod tests {
                 domain: Arc::clone(&domain),
                 update_tx: workspace.update_sender(),
                 spawn_key: None,
+                account: None,
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
             };
@@ -2627,6 +2690,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            account: None,
             // The seed a forced-account re-spawn installs.
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
@@ -2704,6 +2768,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx: workspace.update_sender(),
             spawn_key: None,
+            account: None,
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2786,6 +2851,7 @@ mod tests {
             domain,
             update_tx: workspace.update_sender(),
             spawn_key: None,
+            account: None,
             connected_once: true, // a forced-account switch re-spawn
             workspace: Arc::downgrade(&workspace),
         };

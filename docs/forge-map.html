@@ -1008,13 +1008,13 @@ chat continues here...
   anything that edits <code>forge.toml</code> does.</strong> Both pollers
   run throughout preflight and re-probe a bailed account, so a repair
   that does not touch config clears the row in place - the 30 s recovery
-  poll for a keychain account, the 60 s usage poll for a base-url one,
-  which that poll deliberately skips because it gates on
-  <code>claude auth status</code>. Editing the account's env, or dropping
-  the account, edits <code>forge.toml</code>, which is read once at boot
-  - the pollers keep probing what they loaded until forge restarts. The
-  screen states the no-restart half without a number,
-  because the two classes do not share one.
+  poll for a keychain account, the 60 s usage poll for a base-url or
+  token-mode one, both of which that poll deliberately skips because it
+  gates on <code>claude auth status</code>. Editing the account's env,
+  or dropping the account, edits <code>forge.toml</code>, which is read
+  once at boot - the pollers keep probing what they loaded until forge
+  restarts. The screen states the no-restart half without a number,
+  because the classes do not share one.
 </p>
 
 <div class="surface">
@@ -1104,7 +1104,7 @@ chat continues here...
 
  <span class="dim">ctrl+q  quit</span></pre>
     </div>
-    <p>The repair instruction and the retry line both branch, because both differ. An account whose <code>provider</code> is a base-url one (<code>codex</code>, <code>openrouter</code> or <code>zai</code>) has no keychain entry at all, so <code>claude /login</code> cannot repair it - its credential is the <code>ANTHROPIC_AUTH_TOKEN</code> beside its base url. The branch is on <code>provider</code>, not on the presence of <code>ANTHROPIC_BASE_URL</code>, so an <code>anthropic</code> account that happens to set one still gets keychain copy:</p>
+    <p>The repair instruction and the retry line both branch, because both differ. An account whose <code>provider</code> is a base-url one (<code>codex</code>, <code>openrouter</code> or <code>zai</code>) has no keychain entry at all, so <code>claude /login</code> cannot repair it - its credential is the <code>ANTHROPIC_AUTH_TOKEN</code> beside its base url. A token-mode <code>anthropic</code> account - one whose env carries <code>CLAUDE_CODE_OAUTH_TOKEN</code>, from its <code>[accounts.env]</code> or the global <code>[env]</code> - has no keychain entry of its own either: <code>/login</code> would authenticate whichever account owns its config dir, so its repair is a re-mint. The branch is on the account class, not on the presence of <code>ANTHROPIC_BASE_URL</code>, so an <code>anthropic</code> account that happens to set one still gets keychain copy:</p>
     <div class="term">
       <pre class="indent">
         <span class="bold">Fix the auth</span>
@@ -1115,7 +1115,23 @@ chat continues here...
           delete its [[accounts]] block from
           ~/.claude/forge/forge.toml</pre>
     </div>
-    <p>The retry line states no interval in either arm, because no single number is true of both polls - a keychain account on the 30 s recovery poll, a base-url account on the 60 s usage poll under probe backoff. What it does key on is the restart: a keychain repair is picked up in place, while the base-url repair is an edit to <code>forge.toml</code>, which is read once at boot, so the retrying poller keeps the old token until forge restarts.</p>
+    <div class="term">
+      <pre class="indent">
+        <span style="color:#cf6171">TokenAcct will not start a session. forge starts</span>
+        <span style="color:#cf6171">without it; fix the auth and restart forge to pick</span>
+        <span style="color:#cf6171">the re-mint up.</span>
+
+        <span class="bold">Fix the auth</span>
+          CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]
+          claude setup-token
+          <span class="dim">editing [accounts.env] needs a restart</span>
+
+        <span class="bold">Or drop the account</span>
+          delete its [[accounts]] block from
+          ~/.claude/forge/forge.toml</pre>
+    </div>
+    <p>A token-mode account that is valid never reaches this screen at all: the usage endpoint refuses a setup token with <code>oauth_scope_insufficient</code> (it lacks the <code>user:profile</code> scope), so the boot probe settles it <code>ready</code> with no usage bars. A 401 is a genuinely rejected token, and only that bails.</p>
+    <p>The retry line states no interval in either arm, because no single number is true of both polls - a keychain account on the 30 s recovery poll, a base-url or token-mode account on the 60 s usage poll under probe backoff. What it does key on is the restart: a keychain repair is picked up in place, while the base-url and token repairs are edits to <code>forge.toml</code>, which is read once at boot, so the retrying poller keeps the old token until forge restarts.</p>
     <p>An endpoint that never answered is a different failure, and the row says so: the last probe attempt classified the error, and an endpoint-class bail reads <code>unreachable</code> (never got through) or <code>fetch error</code> (answered, but with a 5xx or a body that will not decode - a proxy with a dead upstream 502s rather than refusing), with the repair aimed at the endpoint rather than the token. A <code>rate limited</code> bail has no repair at all beyond waiting: the pollers keep retrying. forge no longer holds boot for any of them, so the head line says what happens now instead of what used to stop:</p>
     <div class="term">
       <pre class="indent">

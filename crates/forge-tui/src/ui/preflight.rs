@@ -17,9 +17,9 @@
 //! does, because config is read once at boot and the pollers keep
 //! probing what they loaded. What needs no restart is picked up in
 //! place - on the 30 s recovery poll for a keychain account, on the
-//! 60 s usage poll for a base-url one, which the recovery poll skips
-//! because it gates on `claude auth status`. The screen offers the
-//! repairs in that order for that reason.
+//! 60 s usage poll for a base-url or token-mode one, which the
+//! recovery poll skips because it gates on `claude auth status`. The
+//! screen offers the repairs in that order for that reason.
 //!
 //! Geometry matches [`super::launchpad`]: same wordmark, same
 //! `PICKER_WIDTH` panel, so handing over to the project picker is a
@@ -383,9 +383,9 @@ fn failure_label(failure: Option<&DictateFailure>) -> &'static str {
 /// problem, a rate limit, and an endpoint that is down or answering
 /// badly are three different repairs. The auth branch's retry line
 /// states no interval on purpose, and keys on the account class: a
-/// keychain repair is picked up in place by the recovery poll, while a
-/// base-url repair is an env edit, and no single interval is true of
-/// the polls that watch the two classes.
+/// keychain repair is picked up in place by the recovery poll, while
+/// a base-url or token repair is an env edit, and no single interval
+/// is true of the polls that watch the classes.
 fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'static>> {
     let error = Style::default().fg(theme::STATUS_ERROR);
     let head = Style::default().add_modifier(Modifier::BOLD);
@@ -420,12 +420,18 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
             width,
         )
     } else {
+        // Both env-credential repairs are boot-frozen, so only a
+        // keychain repair recovers in place.
+        let tail = match row.auth {
+            AccountAuth::Keychain => "fix the auth and it recovers in place",
+            AccountAuth::BaseUrl => "fix the auth and restart forge to pick the new token up",
+            AccountAuth::Token => "fix the auth and restart forge to pick the re-mint up",
+        };
         wrapped(
             2,
             &format!(
-                "{} will not start a session. forge starts without it; fix the auth and it \
-                 recovers in place.",
-                row.display_name
+                "{} will not start a session. forge starts without it; {}.",
+                row.display_name, tail
             ),
             error,
             width,
@@ -435,7 +441,7 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
     if endpoint_failing {
         lines.push(text_row(2, "Check the endpoint", head, width));
         match row.auth {
-            AccountAuth::Keychain => {
+            AccountAuth::Keychain | AccountAuth::Token => {
                 let line = if row.last_error == Some(UsageFetchStatus::NetworkFailed) {
                     "the probe could not run or reach the Anthropic API"
                 } else {
@@ -485,6 +491,15 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
                     width,
                 ));
             }
+            AccountAuth::Token => {
+                lines.push(text_row(
+                    4,
+                    "CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]",
+                    Style::default(),
+                    width,
+                ));
+                lines.extend(command_rows(4, "claude setup-token", width));
+            }
         }
         // Without this a reader who fixes their auth has no way of
         // knowing whether to restart. Keychain: the recovery poll picks
@@ -500,7 +515,7 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
                     width,
                 ));
             }
-            AccountAuth::BaseUrl => {
+            AccountAuth::BaseUrl | AccountAuth::Token => {
                 lines.push(text_row(4, "editing [accounts.env] needs a restart", dim(), width));
             }
         }

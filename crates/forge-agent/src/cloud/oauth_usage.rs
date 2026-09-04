@@ -32,6 +32,28 @@ const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// `[accounts.env]` key carrying a per-account setup token (minted by
+/// `claude setup-token`). Its presence makes an Anthropic account
+/// token-mode: the probe authenticates with the token, never with the
+/// keychain entry for the account's config dir.
+const CLAUDE_CODE_OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/// The setup token `env` carries, when non-empty.
+fn token_bearer<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> Option<&str> {
+    env.get(CLAUDE_CODE_OAUTH_TOKEN_ENV)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+}
+
+/// True when `env` carries a non-empty `CLAUDE_CODE_OAUTH_TOKEN`.
+/// A token-mode account has no keychain entry of its own - the config
+/// dir is shared - so both the probe and preflight's repair copy branch
+/// on this rather than on the provider alone.
+pub fn is_token_mode<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> bool {
+    token_bearer(env).is_some()
+}
+
 /// `User-Agent` native CLI sends on /api/oauth/usage, captured from
 /// mitmdump 2026-05-26 against claude CLI 2.1.133 in an authenticated
 /// interactive session running `/usage`. Format: `claude-code/<version>`,
@@ -173,6 +195,15 @@ pub enum ProbePlan {
     /// strict mapping (a 200 must carry the five-hour window), and the
     /// CLI-spawn auth-recovery refresh on a 401.
     Keychain,
+    /// Token-mode Anthropic account: default host + the
+    /// `CLAUDE_CODE_OAUTH_TOKEN` setup token from `[accounts.env]`, no
+    /// keychain read. A setup token carries `user:inference` but not
+    /// the `user:profile` scope the usage endpoint requires, so a VALID
+    /// token always answers 403 `oauth_scope_insufficient` -
+    /// [`probe_setup_token`] settles that refusal to the empty payload,
+    /// which maps leniently to a barless Ready snapshot. A 401 is a
+    /// genuinely rejected token and still classifies `Unauthorized`.
+    Token { bearer: String },
     /// OpenRouter: probe `{base_url}/v1/key` with the env
     /// `ANTHROPIC_AUTH_TOKEN` bearer and map the per-key spend. No
     /// windows, so nothing about this plan can go through the
@@ -188,9 +219,10 @@ pub enum ProbePlan {
 }
 
 /// Derive the [`ProbePlan`] for an account from its declared
-/// [`Provider`]. The provider alone decides the shape; `env` is read
-/// only to fill in the base url and bearer a base-url provider
-/// authenticates with. `ANTHROPIC_BASE_URL` decides nothing, because it
+/// [`Provider`]. The provider alone decides the shape; `env` fills in
+/// the base url and bearer a base-url provider authenticates with, and
+/// a non-base-url provider's setup token flips the plan to
+/// [`ProbePlan::Token`]. `ANTHROPIC_BASE_URL` decides nothing, because it
 /// answers where the credential lives rather than what the backend
 /// bills for - Codex sets one and is still a windowed subscription.
 ///
@@ -203,7 +235,10 @@ pub fn probe_plan<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
 ) -> ProbePlan {
     if !provider.uses_base_url() {
-        return ProbePlan::Keychain;
+        return match token_bearer(env) {
+            Some(bearer) => ProbePlan::Token { bearer: bearer.to_owned() },
+            None => ProbePlan::Keychain,
+        };
     }
     let Some(base_url) =
         env.get("ANTHROPIC_BASE_URL").map(|value| value.trim()).filter(|value| !value.is_empty())
@@ -497,6 +532,16 @@ pub async fn probe(
             outcome = "ok",
             body_bytes = body.len(),
         );
+    } else if status == 403 && is_scope_refusal(&body) {
+        // The verdict on a valid setup token, not a failure: warn here
+        // would fire every 60 s per healthy token account.
+        tracing::debug!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "oauth_usage_scope_refusal",
+            status,
+            outcome = "scope_refused",
+            body_suffix = %truncated_body_suffix(&body),
+        );
     } else {
         tracing::warn!(
             target: "forge_agent::cloud::oauth_usage",
@@ -511,10 +556,64 @@ pub async fn probe(
     match status {
         200 => serde_json::from_slice::<OauthUsage>(&body)
             .map_err(|error| OauthUsageError::Decode(error.to_string())),
+        403 if is_scope_refusal(&body) => Err(OauthUsageError::ScopeInsufficient),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
         429 => Err(OauthUsageError::RateLimited { retry_after }),
         _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
     }
+}
+
+/// Whether a 403 body is the usage endpoint's scope refusal rather than
+/// an auth failure. Keyed on the body's `error.details.error_code` -
+/// the verified live shape for a valid setup token; a revoked one
+/// answers 401 `authentication_error`, so the two never share a class.
+fn is_scope_refusal(body: &[u8]) -> bool {
+    let code = serde_json::from_slice::<serde_json::Value>(body).ok().and_then(|value| {
+        value.get("error")?.get("details")?.get("error_code")?.as_str().map(str::to_owned)
+    });
+    code.as_deref() == Some("oauth_scope_insufficient")
+}
+
+/// Settle a token-mode probe result: the scope refusal is the verdict
+/// on a valid setup token, so it becomes the empty payload the lenient
+/// mapper turns into a barless snapshot. Every other error passes
+/// through untouched - a 401 must still reach the loader as
+/// `Unauthorized` and bail.
+fn accept_scope_refusal(
+    result: Result<OauthUsage, OauthUsageError>,
+) -> Result<OauthUsage, OauthUsageError> {
+    match result {
+        Err(OauthUsageError::ScopeInsufficient) => Ok(OauthUsage::default()),
+        other => other,
+    }
+}
+
+/// One round-trip against the default-host usage endpoint with the
+/// account's `[accounts.env]` setup token. Never reads the keychain:
+/// a token-mode account's config dir is shared, so the entry there
+/// belongs to whichever account logged in last, or to nobody.
+pub async fn probe_setup_token(bearer: &str) -> Result<OauthUsage, OauthUsageError> {
+    let credentials = OauthCredentials { access_token: bearer.to_owned(), expires_at: None };
+    let settled = accept_scope_refusal(probe(&credentials, None).await);
+    match &settled {
+        // Names the settle so the debug refusal line above is
+        // diagnosable in a triage grep.
+        Ok(_) => tracing::info!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "oauth_usage_setup_token_settled",
+            outcome = "ok",
+            "setup token usage probe settled",
+        ),
+        Err(OauthUsageError::Unauthorized(403)) => tracing::warn!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "oauth_usage_setup_token_unrecognized_403",
+            outcome = "non_ok",
+            "403 without the oauth_scope_insufficient shape: if the token was just \
+             re-minted, suspect a changed refusal body rather than a dead token",
+        ),
+        _ => {}
+    }
+    settled
 }
 
 async fn oauth_headers(access_token: &str) -> Result<HeaderMap, OauthUsageError> {
@@ -658,6 +757,10 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
+        // A stray setup token must not outrank the provider: the
+        // provider is decided first, so a base-url account keeps its
+        // endpoint probe even with this key present.
+        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
         assert_eq!(
             probe_plan(Provider::Codex, &env),
             ProbePlan::BaseUrl {
@@ -692,6 +795,31 @@ mod tests {
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-anything".to_owned());
         assert_eq!(probe_plan(Provider::Anthropic, &env), ProbePlan::Keychain);
         assert_eq!(probe_plan(Provider::Anthropic, &HashMap::new()), ProbePlan::Keychain);
+    }
+
+    /// A setup token in `[accounts.env]` is the account's credential, so
+    /// the probe must authenticate with it instead of reading the
+    /// keychain - whose entry for the shared config dir belongs to
+    /// whichever account last logged in interactively, or to nobody.
+    #[test]
+    fn probe_plan_anthropic_setup_token_is_token_mode() {
+        let mut env = HashMap::new();
+        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
+        assert_eq!(
+            probe_plan(Provider::Anthropic, &env),
+            ProbePlan::Token { bearer: "setup-token".to_owned() },
+            "an env setup token must not fall through to the keychain plan",
+        );
+    }
+
+    /// An empty CLAUDE_CODE_OAUTH_TOKEN must not flip the plan: a real
+    /// keychain account with a stale empty var in its env block would
+    /// otherwise lose its probe entirely.
+    #[test]
+    fn probe_plan_empty_setup_token_stays_keychain() {
+        let mut env = HashMap::new();
+        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "  ".to_owned());
+        assert_eq!(probe_plan(Provider::Anthropic, &env), ProbePlan::Keychain);
     }
 
     #[test]
@@ -797,6 +925,63 @@ mod tests {
     fn zai_quota_from_body_fails_on_empty_body() {
         let err = zai_quota_from_body(b"").expect_err("empty body fails");
         assert!(err.to_string().contains("empty"), "got {err}");
+    }
+
+    /// A scope refusal is the endpoint's verdict on a VALID setup token:
+    /// the token authenticates but lacks the `user:profile` scope the
+    /// usage endpoint requires. Verified live 2026-09-04: a valid setup
+    /// token gets 403 `oauth_scope_insufficient`, a revoked one gets
+    /// 401 `authentication_error` - so the two must never share a
+    /// classification, or every valid token account bails at boot.
+    /// Expiry was not observed; an unseen 403 shape classifies
+    /// `Unauthorized` and bails, so an unknown shape fails safe.
+    #[test]
+    fn a_403_scope_refusal_body_is_recognized_and_other_403s_are_not() {
+        let refused = br#"{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement user:profile","details":{"error_code":"oauth_scope_insufficient"}}}"#;
+        assert!(
+            is_scope_refusal(refused),
+            "the verified refusal shape classifies as a scope refusal"
+        );
+        assert!(
+            !is_scope_refusal(br#"{"type":"error","error":{"type":"authentication_error","message":"Invalid bearer token","details":{}}}"#),
+            "an authentication_error body is not a scope refusal",
+        );
+        assert!(!is_scope_refusal(b"not json"), "a non-JSON body is not a scope refusal");
+        assert!(
+            !is_scope_refusal(br#"{"error":{"type":"permission_error","message":"no details"}}"#),
+            "a permission_error without the error_code is not a scope refusal",
+        );
+        assert!(
+            !is_scope_refusal(
+                br#"{"error":{"details":{"error_code":"oauth_token_revoked"},"message":"x"}}"#
+            ),
+            "a populated but different error_code is not a scope refusal",
+        );
+    }
+
+    /// The neutral settlement: a scope refusal maps to the empty
+    /// payload the lenient mapper turns into an all-absent snapshot,
+    /// while every other error passes through untouched - a revoked
+    /// token must reach the loader as Unauthorized and bail.
+    #[test]
+    fn accept_scope_refusal_neutralizes_only_the_scope_refusal() {
+        let refused = accept_scope_refusal(Err(OauthUsageError::ScopeInsufficient));
+        assert_eq!(
+            refused,
+            Ok(OauthUsage::default()),
+            "a scope refusal settles to the empty payload"
+        );
+
+        let rejected = accept_scope_refusal(Err(OauthUsageError::Unauthorized(401)));
+        assert!(
+            matches!(rejected, Err(OauthUsageError::Unauthorized(401))),
+            "a rejected token stays an auth error; got {rejected:?}",
+        );
+        let transient = accept_scope_refusal(Err(OauthUsageError::HttpStatus(500, String::new())));
+        assert!(
+            matches!(transient, Err(OauthUsageError::HttpStatus(500, _))),
+            "a transient error keeps its class; got {transient:?}",
+        );
     }
 
     /// The success verdict is `success: true && code == 200`; a body

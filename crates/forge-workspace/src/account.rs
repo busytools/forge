@@ -249,10 +249,10 @@ impl AccountStateMap {
         self.by_key.get(key).map(|s| &s.config_dir)
     }
 
-    /// Per-account `[accounts.env]` map for `key`. Consumed by the
-    /// spawn path (stamped onto the child) and the usage poller /
-    /// loader (base url + bearer for a base-url provider). `None` for
-    /// unknown keys.
+    /// The account's env map: global `[env]` extended by its own
+    /// `[accounts.env]`. Consumed by the spawn path (stamped onto the
+    /// child) and the usage poller / loader (base url, bearer, setup
+    /// token). `None` for unknown keys.
     pub fn env(&self, key: &AccountKey) -> Option<&std::collections::HashMap<String, String>> {
         self.by_key.get(key).map(|s| &s.env)
     }
@@ -288,31 +288,6 @@ impl AccountStateMap {
             );
             forge_primitives::account::Provider::Anthropic
         })
-    }
-
-    /// Reverse of [`Self::config_dir`]: the account key bound to `dir`.
-    /// A live session runs under its account's `config_dir`, so this
-    /// maps that dir back to the key to rotate off on a 429.
-    pub fn key_for_config_dir(&self, dir: &std::path::Path) -> Option<AccountKey> {
-        self.by_key.iter().find(|(_, state)| state.config_dir == dir).map(|(key, _)| key.clone())
-    }
-
-    /// Mark the account bound to `config_dir` rate-limited from a live
-    /// 429, flipping `is_account_usable` false until the next successful
-    /// probe. `retry_after` schedules that probe so a transient throttle
-    /// self-corrects (sub-second hints fall back to the exponential
-    /// default via [`Self::set_last_error`]). No-op when no account maps
-    /// to `config_dir`.
-    pub fn mark_rate_limited_by_config_dir(
-        &mut self,
-        config_dir: &std::path::Path,
-        retry_after: Option<std::time::Duration>,
-    ) -> bool {
-        let Some(key) = self.key_for_config_dir(config_dir) else {
-            return false;
-        };
-        self.set_last_error(&key, UsageFetchStatus::RateLimited, retry_after);
-        true
     }
 
     /// Distinct on-disk config_dirs across every known account. Used by
@@ -412,13 +387,16 @@ impl AccountStateMap {
             state.last_error = Some(status);
             state.consecutive_failures = state.consecutive_failures.saturating_add(1);
             // Auth-recovery cache-clear: an Unauthorized or Expired
-            // probe response means the account's keychain token is
-            // dead. Transition `loading` to `Bailed` and drop the
+            // probe response means the account's credential is dead.
+            // Transition `loading` to `Bailed` and drop the
             // cached `usage` so the renderer surfaces the error label
-            // instead of the stale %bar. The 30 s recovery poll
-            // (account_loader::run_recovery_poll) picks the account
-            // back up once `claude auth status` reports logged-in,
-            // re-running the full loading flow. Other statuses leave
+            // instead of the stale %bar. Recovery paths differ by
+            // class: the 30 s recovery poll
+            // (account_loader::run_recovery_poll) picks a keychain
+            // account back up once `claude auth status` reports
+            // logged-in, while a base-url or token account recovers
+            // via the 60 s usage poller (after the edited env is
+            // re-read at a restart). Other statuses leave
             // `loading` alone (a transient `RateLimited` or
             // `NetworkFailed` is not auth-related; the cache stays
             // and the account remains Ready for the assignment plan).
@@ -432,7 +410,7 @@ impl AccountStateMap {
                 // "account suddenly stopped working" can see WHEN the
                 // bail happened + which probe-class triggered it.
                 // Without this log a Ready -> Bailed flip is silent
-                // until the recovery poll runs 30 s later.
+                // until a poller runs again.
                 if prev != LoadingState::Bailed {
                     tracing::warn!(
                         target: "forge_workspace::account",
@@ -440,7 +418,7 @@ impl AccountStateMap {
                         account = %key.0,
                         prev_state = ?prev,
                         status = ?status,
-                        "account transitioned to Bailed via probe failure; recovery poll will retry every 30s",
+                        "account transitioned to Bailed via probe failure; the pollers will retry it",
                     );
                 }
             }
