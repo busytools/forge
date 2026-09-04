@@ -70,8 +70,8 @@ pub(crate) use state::cache_metrics;
 pub use state::{
     AnsweredQuestion, App, AppStatus, AttentionEntry, AttentionKind, BackgroundTask, BlockCache,
     CacheMetrics, CachedMessageSegment, ChatMessage, ChatRenderTraceState, ChatViewport,
-    ExtraUsage, FailedTurn, HelpView, IncrementalMarkdown, InputFocus, InvalidationLevel,
-    LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRenderCache,
+    ExtraUsage, FailedTurn, HelpView, HistoryRetentionPolicy, IncrementalMarkdown, InputFocus,
+    InvalidationLevel, LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRenderCache,
     MessageRenderCacheKey, MessageRenderSignature, MessageRole, ModeInfo, ModeState, MonitorEntry,
     MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget, PasteSessionState,
     PendingCommandAck, PhaseEntry, PhaseStatus, ROW_CLOSE_BUTTON, RateLimitIncidentKey,

@@ -31,13 +31,13 @@ pub use tool_call_info::{
 };
 pub use types::{
     AppStatus, AttentionEntry, AttentionKind, BackgroundTask, ExtraUsage, FailedTurn, HelpView,
-    HistoryRetentionStats, LoginHint, McpState, ModeInfo, ModeState, MonitorEntry, MonitorStatus,
-    PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus, RecentSessionInfo,
-    RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind,
-    ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
-    SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry, SubagentEntry,
-    TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState, UsageWindow,
-    WorkflowEntry, WorkflowStatus,
+    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeInfo, ModeState,
+    MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus,
+    RecentSessionInfo, RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry,
+    ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
+    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
+    SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState,
+    UsageWindow, WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
