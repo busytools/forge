@@ -39,16 +39,14 @@ const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
 const CLAUDE_CODE_OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
 /// The setup token `env` carries, when non-empty.
-fn token_bearer<'a, S: std::hash::BuildHasher>(
-    env: &'a HashMap<String, String, S>,
-) -> Option<&'a str> {
+fn token_bearer<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> Option<&str> {
     env.get(CLAUDE_CODE_OAUTH_TOKEN_ENV)
         .map(String::as_str)
         .map(str::trim)
         .filter(|token| !token.is_empty())
 }
 
-/// True when `env` carries a non-empty [`CLAUDE_CODE_OAUTH_TOKEN_ENV`].
+/// True when `env` carries a non-empty `CLAUDE_CODE_OAUTH_TOKEN`.
 /// A token-mode account has no keychain entry of its own - the config
 /// dir is shared - so both the probe and preflight's repair copy branch
 /// on this rather than on the provider alone.
