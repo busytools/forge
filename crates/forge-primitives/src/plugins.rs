@@ -346,10 +346,7 @@ mod tests {
         );
         assert_eq!(exit_zero_failure.status, PluginRunRowStatus::Failed);
         assert!(
-            exit_zero_failure
-                .detail
-                .as_deref()
-                .is_some_and(|detail| detail.contains("not found")),
+            exit_zero_failure.detail.as_deref().is_some_and(|detail| detail.contains("not found")),
             "the failure prose is the row detail"
         );
 

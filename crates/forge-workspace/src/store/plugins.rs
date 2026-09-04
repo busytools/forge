@@ -18,14 +18,18 @@ fn record_key(plugin_id: &str, scope: &str) -> String {
     format!("{plugin_id}|{scope}")
 }
 
-/// Persist one update outcome, replacing any earlier record for the
-/// same installed entry.
-pub fn record_update(db: &Db, record: &PluginUpdateRecord) -> anyhow::Result<()> {
+/// Persist one batch of update outcomes in a single transaction,
+/// replacing any earlier record for the same installed entries. A
+/// mid-batch failure leaves nothing half-written.
+pub fn record_updates(db: &Db, records: &[PluginUpdateRecord]) -> anyhow::Result<()> {
     let txn = db.database().begin_write()?;
     {
         let mut table = txn.open_table(PLUGIN_UPDATES)?;
-        let value = serde_json::to_vec(record).context("serialize plugin update record")?;
-        table.insert(record_key(&record.plugin_id, &record.scope).as_str(), value.as_slice())?;
+        for record in records {
+            let value = serde_json::to_vec(record).context("serialize plugin update record")?;
+            table
+                .insert(record_key(&record.plugin_id, &record.scope).as_str(), value.as_slice())?;
+        }
     }
     txn.commit()?;
     Ok(())
@@ -95,9 +99,9 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
 
-        record_update(&db, &record("hello@probe-market", "0.2.0")).expect("write");
-        record_update(&db, &record("pensive@claude-night-market", "1.7.3")).expect("write");
-        record_update(&db, &record("hello@probe-market", "0.3.0")).expect("overwrite");
+        record_updates(&db, &[record("hello@probe-market", "0.2.0")]).expect("write");
+        record_updates(&db, &[record("pensive@claude-night-market", "1.7.3")]).expect("write");
+        record_updates(&db, &[record("hello@probe-market", "0.3.0")]).expect("overwrite");
 
         let records = update_records(&db).expect("read");
         assert_eq!(records.len(), 2, "one row per installed entry");
@@ -111,7 +115,7 @@ mod tests {
         let path = dir.path().join("db.redb");
         {
             let db = Db::open(&path).expect("open db");
-            record_update(&db, &record("hello@probe-market", "0.2.0")).expect("write");
+            record_updates(&db, &[record("hello@probe-market", "0.2.0")]).expect("write");
         }
         let reopened = Db::open(&path).expect("reopen db");
         let records = update_records(&reopened).expect("read");
@@ -123,5 +127,27 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
         assert!(update_records(&db).expect("read").is_empty());
+    }
+
+    /// A consumed rollback drops its record; the record's promise is
+    /// one rollback, not a permanent one.
+    #[test]
+    fn clear_removes_only_the_target_record() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        record_updates(
+            &db,
+            &[
+                record("hello@probe-market", "0.2.0"),
+                record("pensive@claude-night-market", "1.7.3"),
+            ],
+        )
+        .expect("write");
+
+        clear_update_record(&db, "hello@probe-market", "user").expect("clear");
+
+        let records = update_records(&db).expect("read");
+        assert_eq!(records.len(), 1, "only the rolled-back entry is forgotten");
+        assert!(records.contains_key("pensive@claude-night-market|user"));
     }
 }

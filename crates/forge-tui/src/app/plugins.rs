@@ -9,6 +9,7 @@ use crate::app::config::{
 use crate::app::input::InputState;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use forge_workspace::SessionUpdate;
+use forge_workspace::userdata::plugins::cli::PluginRollbackOutcome;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -86,6 +87,9 @@ pub struct PluginsState {
     /// Latest recorded update per installed entry, read from the
     /// store; feeds the rollback affordance.
     pub update_records: Vec<PluginUpdateRecord>,
+    /// Test seam: the per-run CLI surface a run uses. `None` means
+    /// the real `claude` subprocess calls.
+    pub(crate) update_cli: Option<UpdateCli>,
 }
 
 impl PluginsState {
@@ -151,6 +155,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     if matches!(key.code, KeyCode::Esc)
+        && search_enabled(app.plugins.active_tab)
         && app.plugins.update_run.as_ref().is_some_and(|run| run.finished)
     {
         app.plugins.update_run = None;
@@ -233,7 +238,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Char(ch), modifiers)
             if matches!(ch, 'u' | 'U')
                 && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
-                && !app.plugins.search_focused =>
+                && !app.plugins.search_focused
+                && search_enabled(app.plugins.active_tab) =>
         {
             start_update_run(app, PluginUpdateTrigger::Manual);
             true
@@ -241,7 +247,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Char(ch), modifiers)
             if matches!(ch, 'c' | 'C')
                 && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
-                && !app.plugins.search_focused =>
+                && !app.plugins.search_focused
+                && search_enabled(app.plugins.active_tab) =>
         {
             start_check_run(app);
             true
@@ -970,20 +977,21 @@ fn start_runtime_reload(app: &mut App, success_message: String) {
 /// Queue one row per installed entry. With the `Auto` trigger, rows a
 /// plugin policy excludes (untrusted marketplace, pinned, or no
 /// marketplace) are marked `Skipped` up front instead of queued.
-fn build_update_rows(
-    app: &App,
+/// Shared by the manual `u` run and boot auto-update so both shape
+/// rows - including each entry's working directory - identically.
+fn build_rows_from_entries(
+    entries: &[InstalledPluginEntry],
+    base_cwd: &str,
     trigger: PluginUpdateTrigger,
     settings: &forge_workspace::PluginSettings,
 ) -> Vec<PluginUpdateRunRow> {
-    let cwd = app.cwd_raw();
-    app.plugins
-        .installed
+    entries
         .iter()
         .map(|entry| {
             let mut row = PluginUpdateRunRow::queued(
                 entry.id.clone(),
                 entry.scope.clone(),
-                action_cwd_for(&cwd, &entry.scope, entry.project_path.as_deref()),
+                action_cwd_for(base_cwd, &entry.scope, entry.project_path.as_deref()),
                 entry.version.clone(),
             );
             if trigger == PluginUpdateTrigger::Auto && !settings.allows_auto_update(&entry.id) {
@@ -995,10 +1003,21 @@ fn build_update_rows(
         .collect()
 }
 
+fn build_update_rows(
+    app: &App,
+    trigger: PluginUpdateTrigger,
+    settings: &forge_workspace::PluginSettings,
+) -> Vec<PluginUpdateRunRow> {
+    let cwd = app.cwd_raw();
+    build_rows_from_entries(&app.plugins.installed, &cwd, trigger, settings)
+}
+
 fn skip_reason(settings: &forge_workspace::PluginSettings, plugin_id: &str) -> String {
     let marketplace = forge_primitives::plugins::plugin_marketplace(plugin_id);
     if settings.pins.iter().any(|pin| pin == plugin_id) {
         "pinned in forge.toml".to_owned()
+    } else if marketplace.is_empty() {
+        "plugin id carries no marketplace".to_owned()
     } else if !settings.trusted_marketplaces.iter().any(|t| t == marketplace) {
         format!("marketplace {marketplace} is not trusted for auto-update")
     } else {
@@ -1013,13 +1032,57 @@ fn action_cwd_for(app_cwd: &str, scope: &str, project_path: Option<&str>) -> Str
     }
 }
 
+/// One future handed back by the [`UpdateCli`] seams.
+type UpdateCliFut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
+/// The refresh seam's result: the inventory plus a resolved claude path.
+type RefreshResult = Result<(PluginsInventorySnapshot, PathBuf), String>;
+/// The update seam's result: the resolved claude path plus the CLI's
+/// combined stdout+stderr.
+type UpdateResult = Result<(PathBuf, String), String>;
+type SharedUpdateFn =
+    std::sync::Arc<dyn Fn(Option<PathBuf>, String, Vec<String>) -> UpdateCliFut<UpdateResult>>;
+type SharedRefreshFn =
+    std::sync::Arc<dyn Fn(Option<PathBuf>, String) -> UpdateCliFut<RefreshResult>>;
+
+/// Per-run CLI surface, injectable so tests drive a whole run without
+/// shelling out. The production instance wraps the `claude` subprocess
+/// calls.
+#[derive(Clone)]
+pub(crate) struct UpdateCli {
+    run_update: SharedUpdateFn,
+    refresh: SharedRefreshFn,
+}
+
+impl UpdateCli {
+    pub(crate) fn real() -> Self {
+        Self {
+            run_update: std::sync::Arc::new(|cached, cwd, args| {
+                Box::pin(cli::run_cli_command(cwd, cached, args))
+            }),
+            refresh: std::sync::Arc::new(|cached, cwd| {
+                Box::pin(cli::refresh_inventory(cwd, cached))
+            }),
+        }
+    }
+}
+
+impl std::fmt::Debug for UpdateCli {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateCli").finish_non_exhaustive()
+    }
+}
+
+/// Upper bound on one `claude plugin` call inside a run; a hung CLI
+/// fails its row instead of pinning the pane's loading flag forever.
+const UPDATE_CALL_TIMEOUT: Duration = Duration::from_secs(180);
+
 /// The `u` key: update every installed plugin, one CLI call per entry,
 /// reporting per-plugin outcomes in the pane.
 pub(crate) fn start_update_run(app: &mut App, trigger: PluginUpdateTrigger) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
-    if app.plugins.loading {
+    if app.plugins.loading || app.plugins.update_run.as_ref().is_some_and(|run| !run.finished) {
         return;
     }
     let settings = app
@@ -1028,7 +1091,7 @@ pub(crate) fn start_update_run(app: &mut App, trigger: PluginUpdateTrigger) {
         .map(|workspace| workspace.plugin_settings().clone())
         .unwrap_or_default();
     let rows = build_update_rows(app, trigger, &settings);
-    if rows.iter().all(|row| row.status == PluginRunRowStatus::Skipped) {
+    if rows.is_empty() {
         app.plugins.status_message =
             Some("No installed plugins are eligible for update".to_owned());
         return;
@@ -1042,9 +1105,11 @@ pub(crate) fn start_update_run(app: &mut App, trigger: PluginUpdateTrigger) {
     app.needs_redraw = true;
     let plan = UpdateRunPlan {
         cwd_context: app.cwd_raw(),
-        cached_claude_path: app.plugins.claude_path.clone(),
+        claude_path: app.plugins.claude_path.clone(),
         marketplaces: app.plugins.marketplaces.clone(),
         run,
+        cli: app.plugins.update_cli.clone().unwrap_or_else(UpdateCli::real),
+        store: app.workspace.clone(),
     };
     let update_tx = app.update_tx.clone();
     let span = info_span!(
@@ -1061,7 +1126,7 @@ pub(crate) fn start_check_run(app: &mut App) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
-    if app.plugins.loading {
+    if app.plugins.loading || app.plugins.update_run.as_ref().is_some_and(|run| !run.finished) {
         return;
     }
     app.plugins.loading = true;
@@ -1072,6 +1137,7 @@ pub(crate) fn start_check_run(app: &mut App) {
     let cwd_context = app.cwd_raw();
     let cwd_raw = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
+    let cli = app.plugins.update_cli.clone().unwrap_or_else(UpdateCli::real);
     let span = info_span!(
         target: crate::logging::targets::APP_CONFIG,
         "plugin_update_check",
@@ -1079,7 +1145,8 @@ pub(crate) fn start_check_run(app: &mut App) {
     );
     tokio::task::spawn_local(
         async move {
-            match cli::refresh_inventory(cwd_raw, cached_claude_path).await {
+            let refresh = (cli.refresh)(cached_claude_path, cwd_raw);
+            match refresh.await {
                 Ok((snapshot, claude_path)) => {
                     let rows = update_availability(&snapshot.installed, &snapshot.marketplace)
                         .into_iter()
@@ -1104,7 +1171,6 @@ pub(crate) fn start_check_run(app: &mut App) {
                         run,
                         snapshot: Some(snapshot),
                         claude_path: Some(claude_path),
-                        records: Vec::new(),
                     });
                 }
                 Err(message) => {
@@ -1119,13 +1185,19 @@ pub(crate) fn start_check_run(app: &mut App) {
     );
 }
 
-/// Everything one update run needs, captured from `App` before the
-/// task is spawned.
+/// Everything one update run needs, captured before the task is
+/// spawned. `store` is where applied-update records persist - written
+/// here in the task, not in the event handler, so a dropped or
+/// mismatched event still costs the record nothing.
 struct UpdateRunPlan {
     cwd_context: String,
-    cached_claude_path: Option<PathBuf>,
+    /// A claude path resolved earlier in this process (the pane's last
+    /// CLI action, or the boot refresh) so the run skips re-resolving.
+    claude_path: Option<PathBuf>,
     marketplaces: Vec<MarketplaceSourceEntry>,
     run: PluginUpdateRun,
+    cli: UpdateCli,
+    store: Option<std::sync::Arc<forge_workspace::Workspace>>,
 }
 
 /// The marketplace clone HEAD per marketplace name, so updated plugins
@@ -1135,10 +1207,19 @@ async fn capture_marketplace_refs(
 ) -> HashMap<String, String> {
     let mut refs = HashMap::new();
     for marketplace in marketplaces {
-        if let Some(location) = marketplace.install_location.as_deref()
-            && let Some(head) = cli::marketplace_head(location.to_owned()).await
-        {
-            refs.insert(marketplace.name.clone(), head);
+        if let Some(location) = marketplace.install_location.as_deref() {
+            match cli::marketplace_head(location.to_owned()).await {
+                Some(head) => {
+                    refs.insert(marketplace.name.clone(), head);
+                }
+                None => {
+                    tracing::warn!(
+                        target: crate::logging::targets::APP_CONFIG,
+                        marketplace = %marketplace.name,
+                        "no git HEAD for a marketplace clone; rollback will not be offered for its plugins updated in this run",
+                    );
+                }
+            }
         }
     }
     refs
@@ -1149,7 +1230,7 @@ async fn execute_update_plan(
     mut plan: UpdateRunPlan,
 ) {
     let refs = capture_marketplace_refs(&plan.marketplaces).await;
-    let mut claude_path = plan.cached_claude_path.clone();
+    let mut claude_path = plan.claude_path.clone();
 
     let row_count = plan.run.rows.len();
     for index in 0..row_count {
@@ -1162,20 +1243,23 @@ async fn execute_update_plan(
             run: plan.run.clone(),
         });
         let row = &plan.run.rows[index];
-        let result = cli::run_cli_command(
-            row.cwd_raw.clone(),
+        let call = (plan.cli.run_update)(
             claude_path.clone(),
-            vec![
-                "plugin".to_owned(),
-                "update".to_owned(),
-                row.plugin_id.clone(),
-                "--scope".to_owned(),
-                row.scope.clone(),
-            ],
-        )
-        .await;
+            row.cwd_raw.clone(),
+            cli::plugin_update_args(&row.plugin_id, &row.scope),
+        );
+        let result = match tokio::time::timeout(UPDATE_CALL_TIMEOUT, call).await {
+            Ok(result) => result,
+            Err(_) => Err(format!(
+                "`claude plugin update` timed out after {}s",
+                UPDATE_CALL_TIMEOUT.as_secs()
+            )),
+        };
         match result {
-            Ok(path) => claude_path = Some(path),
+            Ok((path, output)) => {
+                claude_path = Some(path);
+                plan.run.rows[index].detail = Some(output);
+            }
             Err(message) => {
                 plan.run.rows[index].status = PluginRunRowStatus::Failed;
                 plan.run.rows[index].detail = Some(message);
@@ -1183,17 +1267,29 @@ async fn execute_update_plan(
         }
     }
 
-    let snapshot = match cli::refresh_inventory(plan.cwd_context.clone(), claude_path.clone()).await
-    {
-        Ok((snapshot, path)) => {
+    let refresh = (plan.cli.refresh)(claude_path.clone(), plan.cwd_context.clone());
+    let snapshot = match tokio::time::timeout(UPDATE_CALL_TIMEOUT, refresh).await {
+        Ok(Ok((snapshot, path))) => {
             claude_path = Some(path);
             Some(snapshot)
         }
-        Err(message) => {
+        Ok(Err(message)) => {
             for row in &mut plan.run.rows {
                 if row.status == PluginRunRowStatus::Updating {
                     row.status = PluginRunRowStatus::Failed;
                     row.detail = Some(format!("post-update inventory refresh failed: {message}"));
+                }
+            }
+            None
+        }
+        Err(_) => {
+            for row in &mut plan.run.rows {
+                if row.status == PluginRunRowStatus::Updating {
+                    row.status = PluginRunRowStatus::Failed;
+                    row.detail = Some(format!(
+                        "post-update inventory refresh timed out after {}s",
+                        UPDATE_CALL_TIMEOUT.as_secs()
+                    ));
                 }
             }
             None
@@ -1212,14 +1308,22 @@ async fn execute_update_plan(
                 .find(|entry| entry.id == row.plugin_id && entry.scope == row.scope)
                 .and_then(|entry| entry.version.as_deref())
         });
+        let Some(version_after) = version_after else {
+            // An entry that vanished from the inventory has no
+            // observable outcome and must not yield a rollback record
+            // naming a version nobody can see.
+            row.status = PluginRunRowStatus::Failed;
+            row.detail = Some("not found in post-update inventory".to_owned());
+            continue;
+        };
         let before = row.installed_version.clone();
+        let output = row.detail.take().unwrap_or_default();
         let outcome = classify_update_row(
             &row.plugin_id,
             &row.scope,
             before.as_deref(),
-            version_after,
-            true,
-            "",
+            Some(version_after),
+            &output,
         );
         row.status = outcome.status;
         row.installed_version.clone_from(&outcome.installed_version);
@@ -1236,13 +1340,21 @@ async fn execute_update_plan(
             });
         }
     }
+
+    // Persist in the task: the report event can be dropped on a cwd
+    // mismatch, the record must not be.
+    if !records.is_empty()
+        && let Some(store) = plan.store.as_ref()
+    {
+        store.record_plugin_updates(&records);
+    }
+
     plan.run.finished = true;
     let _ = update_tx.send(SessionUpdate::PluginsUpdateRunFinished {
         cwd_raw: plan.cwd_context,
         run: plan.run,
         snapshot,
         claude_path,
-        records,
     });
 }
 
@@ -1254,14 +1366,15 @@ fn now_rfc3339() -> String {
 
 /// Boot hook: with `[plugins] auto_update = true`, refresh the
 /// inventory and update every eligible plugin before the user has
-/// spawned anything. Results surface in the plugins pane whenever it
-/// is next opened.
-pub fn maybe_spawn_boot_auto_update(
+/// spawned anything. The run is seeded into the pane synchronously so
+/// a manual `u`/`c` cannot start a second run while boot is flying.
+pub(crate) fn maybe_spawn_boot_auto_update(
     workspace: &std::sync::Arc<forge_workspace::Workspace>,
-    update_tx: mpsc::UnboundedSender<SessionUpdate>,
+    app: &mut App,
     cwd_raw: String,
+    settings: forge_workspace::PluginSettings,
+    cli: UpdateCli,
 ) {
-    let settings = workspace.plugin_settings().clone();
     if !settings.auto_update || settings.trusted_marketplaces.is_empty() {
         return;
     }
@@ -1272,43 +1385,43 @@ pub fn maybe_spawn_boot_auto_update(
         );
         return;
     }
+    app.plugins.update_run =
+        Some(PluginUpdateRun { trigger: PluginUpdateTrigger::Auto, finished: false, rows: vec![] });
+    app.plugins.loading = true;
+    let update_tx = app.update_tx.clone();
     let span = info_span!(
         target: crate::logging::targets::APP_CONFIG,
         "plugin_boot_auto_update",
         cwd = %cwd_raw,
     );
+    let store = workspace.clone();
     tokio::task::spawn_local(
         async move {
-            let Ok((snapshot, claude_path)) = cli::refresh_inventory(cwd_raw.clone(), None).await
-            else {
-                return;
+            let refresh = (cli.refresh)(None, cwd_raw.clone());
+            let (snapshot, claude_path) = match refresh.await {
+                Ok(ok) => ok,
+                Err(message) => {
+                    // The pane's empty seeded run is cleared by the
+                    // failed refresh event; nothing durable was
+                    // attempted.
+                    let _ = update_tx
+                        .send(SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message });
+                    return;
+                }
             };
-            let rows: Vec<PluginUpdateRunRow> = snapshot
-                .installed
-                .iter()
-                .map(|entry| {
-                    let mut row = PluginUpdateRunRow::queued(
-                        entry.id.clone(),
-                        entry.scope.clone(),
-                        cwd_raw.clone(),
-                        entry.version.clone(),
-                    );
-                    if !settings.allows_auto_update(&entry.id) {
-                        row.status = PluginRunRowStatus::Skipped;
-                        row.detail = Some(skip_reason(&settings, &entry.id));
-                    }
-                    row
-                })
-                .collect();
-            if rows.iter().all(|row| row.status == PluginRunRowStatus::Skipped) {
-                return;
-            }
-            let run = PluginUpdateRun { trigger: PluginUpdateTrigger::Auto, finished: false, rows };
+            let rows = build_rows_from_entries(
+                &snapshot.installed,
+                &cwd_raw,
+                PluginUpdateTrigger::Auto,
+                &settings,
+            );
             let plan = UpdateRunPlan {
                 cwd_context: cwd_raw,
-                cached_claude_path: Some(claude_path),
+                claude_path: Some(claude_path),
                 marketplaces: snapshot.marketplaces.clone(),
-                run,
+                run: PluginUpdateRun { trigger: PluginUpdateTrigger::Auto, finished: false, rows },
+                cli,
+                store: Some(store),
             };
             execute_update_plan(update_tx, plan).await;
         }
@@ -1328,6 +1441,11 @@ pub(crate) fn start_rollback(app: &mut App, plugin_id: String, scope: String) {
         app.plugins.last_error = Some("No recorded previous version for this plugin".to_owned());
         return;
     };
+    if record.marketplace_ref_before.is_none() {
+        app.plugins.last_error =
+            Some("No pre-update marketplace ref was captured; rollback is unavailable".to_owned());
+        return;
+    }
     let install_location = app
         .plugins
         .marketplaces
@@ -1364,40 +1482,85 @@ pub(crate) fn start_rollback(app: &mut App, plugin_id: String, scope: String) {
     );
     tokio::task::spawn_local(
         async move {
-            let result = cli::run_plugin_rollback(
-                cached_claude_path.clone().unwrap_or_default(),
+            let rollback = cli::run_plugin_rollback(
+                cached_claude_path.clone(),
                 cwd_raw.clone(),
-                record,
+                record.clone(),
                 install_location,
             )
             .await;
-            match result {
-                Ok(()) => match cli::refresh_inventory(cwd_raw, cached_claude_path).await {
-                    Ok((snapshot, claude_path)) => {
-                        let _ = update_tx.send(SessionUpdate::PluginsRollbackSucceeded {
-                            cwd_raw: cwd_context,
-                            plugin_id,
-                            scope,
-                            message: format!("Rolled back {label} to {to_version}"),
-                            snapshot,
-                            claude_path,
-                        });
-                    }
-                    Err(message) => {
-                        let _ = update_tx.send(SessionUpdate::PluginsRollbackFailed {
-                            cwd_raw: cwd_context,
-                            plugin_id,
-                            message: format!(
-                                "rollback ran but the inventory refresh failed: {message}"
-                            ),
-                        });
-                    }
-                },
+            // A rollback that claims success is verified against the
+            // refreshed inventory: the old manifest only restores the
+            // recorded version if it actually pins one. Unverified
+            // rollbacks keep the record so the attempt can be retried.
+            let verified = match &rollback {
+                Ok(_) => cli::refresh_inventory(cwd_raw, cached_claude_path)
+                    .await
+                    .map_err(|message| format!("the inventory refresh failed: {message}"))
+                    .map(|(snapshot, claude_path)| {
+                        let post_version = snapshot
+                            .installed
+                            .iter()
+                            .find(|entry| {
+                                entry.id == record.plugin_id && entry.scope == record.scope
+                            })
+                            .and_then(|entry| entry.version.clone());
+                        let verified =
+                            post_version.is_some() && post_version == record.from_version;
+                        (verified, snapshot, claude_path, post_version)
+                    }),
+                Err(message) => Err(message.clone()),
+            };
+            match verified {
+                Ok((true, snapshot, claude_path, _)) => {
+                    let message = match rollback {
+                        Ok(PluginRollbackOutcome::RolledBack) => {
+                            format!("Rolled back {label} to {to_version}")
+                        }
+                        Ok(PluginRollbackOutcome::RolledBackCloneParked(_)) => {
+                            format!(
+                                "Rolled back {label} to {to_version}; the marketplace clone is \
+                                 still parked - run `claude plugin marketplace update {}`",
+                                record.marketplace
+                            )
+                        }
+                        Err(message) => {
+                            let _ = update_tx.send(SessionUpdate::PluginsRollbackFailed {
+                                cwd_raw: cwd_context,
+                                plugin_id,
+                                message,
+                                snapshot: Some(snapshot),
+                            });
+                            return;
+                        }
+                    };
+                    let _ = update_tx.send(SessionUpdate::PluginsRollbackSucceeded {
+                        cwd_raw: cwd_context,
+                        plugin_id,
+                        scope,
+                        message,
+                        snapshot,
+                        claude_path,
+                    });
+                }
+                Ok((false, snapshot, _, post_version)) => {
+                    let still = post_version.unwrap_or_else(|| "unknown".to_owned());
+                    let _ = update_tx.send(SessionUpdate::PluginsRollbackFailed {
+                        cwd_raw: cwd_context,
+                        plugin_id,
+                        message: format!(
+                            "the version did not move to {to_version} (still at {still}); \
+                             the previous-version record is kept"
+                        ),
+                        snapshot: Some(snapshot),
+                    });
+                }
                 Err(message) => {
                     let _ = update_tx.send(SessionUpdate::PluginsRollbackFailed {
                         cwd_raw: cwd_context,
                         plugin_id,
                         message,
+                        snapshot: None,
                     });
                 }
             }
@@ -1416,7 +1579,6 @@ pub(crate) fn apply_update_run_finished(
     run: &PluginUpdateRun,
     snapshot: Option<PluginsInventorySnapshot>,
     claude_path: Option<PathBuf>,
-    records: &[PluginUpdateRecord],
 ) {
     app.plugins.update_run = Some(run.clone());
     if let Some(snapshot) = snapshot {
@@ -1429,18 +1591,19 @@ pub(crate) fn apply_update_run_finished(
     if let Some(claude_path) = claude_path {
         app.plugins.claude_path = Some(claude_path);
     }
-    if let Some(workspace) = app.workspace.clone()
-        && !records.is_empty()
-    {
-        workspace.record_plugin_updates(records);
-        refresh_update_records(app);
-    }
+    refresh_update_records(app);
     app.plugins.loading = false;
     app.needs_redraw = true;
+    let applied = run.rows.iter().any(|row| row.status == PluginRunRowStatus::Updated);
     match run.trigger {
+        // Boot runs never reload runtimes: no session may exist yet,
+        // and the ones that spawn afterwards pick the new plugins up.
         PluginUpdateTrigger::Auto => {
             app.plugins.status_message =
                 Some(format!("Plugin auto-update finished: {}", run.summary()));
+        }
+        PluginUpdateTrigger::Manual if applied => {
+            start_runtime_reload(app, format!("Update run finished: {}", run.summary()));
         }
         PluginUpdateTrigger::Manual if is_check_run(run) => {
             app.plugins.status_message = Some(format!("Update check: {}", run.summary()));
@@ -1451,17 +1614,10 @@ pub(crate) fn apply_update_run_finished(
     }
 }
 
-/// A finished run with only check rows (no queue/update outcomes) is
-/// the report-only `c` flow.
+/// A finished run made only of check rows is the report-only `c`
+/// flow; an update run whose plugins all failed is not a check.
 fn is_check_run(run: &PluginUpdateRun) -> bool {
-    run.rows.iter().all(|row| {
-        matches!(
-            row.status,
-            PluginRunRowStatus::UpdateAvailable
-                | PluginRunRowStatus::AlreadyCurrent
-                | PluginRunRowStatus::Failed
-        )
-    })
+    run.rows.iter().all(|row| row.status == PluginRunRowStatus::UpdateAvailable)
 }
 
 pub(crate) fn apply_rollback_success(
@@ -1485,7 +1641,19 @@ pub(crate) fn apply_rollback_success(
     start_runtime_reload(app, message);
 }
 
-pub(crate) fn apply_rollback_failure(app: &mut App, plugin_id: &str, message: &str) {
+pub(crate) fn apply_rollback_failure(
+    app: &mut App,
+    plugin_id: &str,
+    message: &str,
+    snapshot: Option<PluginsInventorySnapshot>,
+) {
+    if let Some(snapshot) = snapshot {
+        app.plugins.installed = snapshot.installed;
+        app.plugins.marketplace = snapshot.marketplace;
+        app.plugins.marketplaces = snapshot.marketplaces;
+        app.plugins.last_inventory_refresh_at = Some(Instant::now());
+        clamp_selection(app);
+    }
     app.plugins.loading = false;
     app.plugins.status_message = None;
     app.plugins.last_error =
@@ -1501,12 +1669,14 @@ fn refresh_update_records(app: &mut App) {
 }
 
 /// Rollback is offered for the selected entry when forge remembers a
-/// previous version for it.
+/// previous version AND captured the marketplace ref the rollback
+/// restores; a record without the ref cannot deliver.
 pub(crate) fn has_rollback_record(app: &App, plugin_id: &str, scope: &str) -> bool {
-    app.plugins
-        .update_records
-        .iter()
-        .any(|record| record.plugin_id == plugin_id && record.scope == scope)
+    app.plugins.update_records.iter().any(|record| {
+        record.plugin_id == plugin_id
+            && record.scope == scope
+            && record.marketplace_ref_before.is_some()
+    })
 }
 
 fn installed_action_command(
@@ -2609,7 +2779,7 @@ mod tests {
             }],
         };
 
-        apply_update_run_finished(&mut app, &run, None, None, &[]);
+        apply_update_run_finished(&mut app, &run, None, None);
 
         assert!(!app.plugins.loading);
         assert_eq!(
@@ -2652,5 +2822,344 @@ mod tests {
             actions.contains(&InstalledPluginActionKind::Rollback),
             "the overlay offers rollback with a record: {actions:?}"
         );
+    }
+
+    /// A record whose pre-update marketplace HEAD was never captured
+    /// cannot deliver a rollback and must not offer one.
+    #[test]
+    fn a_refless_record_never_offers_rollback() {
+        let mut app = App::test_default();
+        app.plugins.update_records = vec![PluginUpdateRecord {
+            plugin_id: "pensive@claude-night-market".to_owned(),
+            marketplace: "claude-night-market".to_owned(),
+            scope: "user".to_owned(),
+            from_version: Some("1.7.1".to_owned()),
+            to_version: Some("1.7.2".to_owned()),
+            marketplace_ref_before: None,
+            updated_at: "2026-09-04T06:00:00Z".to_owned(),
+            trigger: PluginUpdateTrigger::Manual,
+        }];
+
+        assert!(!has_rollback_record(&app, "pensive@claude-night-market", "user"));
+    }
+
+    /// Shared fake CLI: records every update call as `cwd:args` and
+    /// answers with `output`; the refresh always returns `snapshot`.
+    fn fake_cli(
+        output: &str,
+        snapshot: &PluginsInventorySnapshot,
+        calls: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> UpdateCli {
+        UpdateCli {
+            run_update: {
+                let output = output.to_owned();
+                let calls = calls.clone();
+                std::sync::Arc::new(move |cached, cwd, args| {
+                    let output = output.clone();
+                    let calls = calls.clone();
+                    Box::pin(async move {
+                        calls.lock().expect("call log").push(format!("{cwd}:{}", args.join(" ")));
+                        Ok((cached.unwrap_or_else(|| std::path::PathBuf::from("claude")), output))
+                    })
+                })
+            },
+            refresh: {
+                let snapshot = snapshot.clone();
+                let calls = calls.clone();
+                std::sync::Arc::new(move |_cached, _cwd| {
+                    let snapshot = snapshot.clone();
+                    let calls = calls.clone();
+                    Box::pin(async move {
+                        calls.lock().expect("call log").push("refresh".to_owned());
+                        Ok((snapshot, std::path::PathBuf::from("claude")))
+                    })
+                })
+            },
+        }
+    }
+
+    fn two_plugin_snapshot() -> PluginsInventorySnapshot {
+        PluginsInventorySnapshot {
+            installed: vec![
+                InstalledPluginEntry {
+                    id: "supabase@claude-plugins-official".to_owned(),
+                    version: Some("1.0.0".to_owned()),
+                    scope: "user".to_owned(),
+                    enabled: true,
+                    installed_at: None,
+                    last_updated: None,
+                    project_path: None,
+                    capability: PluginCapability::Skill,
+                },
+                InstalledPluginEntry {
+                    id: "pensive@claude-night-market".to_owned(),
+                    version: Some("1.7.2".to_owned()),
+                    scope: "user".to_owned(),
+                    enabled: true,
+                    installed_at: None,
+                    last_updated: None,
+                    project_path: None,
+                    capability: PluginCapability::Skill,
+                },
+                InstalledPluginEntry {
+                    id: "leyline@claude-night-market".to_owned(),
+                    version: Some("0.1.0".to_owned()),
+                    scope: "user".to_owned(),
+                    enabled: true,
+                    installed_at: None,
+                    last_updated: None,
+                    project_path: None,
+                    capability: PluginCapability::Skill,
+                },
+            ],
+            marketplace: vec![],
+            marketplaces: vec![],
+        }
+    }
+
+    fn call_log() -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))
+    }
+
+    /// Skipped rows are policy decisions made before any CLI call; a
+    /// run with one must invoke the CLI exactly once.
+    #[tokio::test(flavor = "current_thread")]
+    async fn skipped_rows_never_reach_the_cli() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let calls = call_log();
+        let cli = fake_cli(
+            "supabase is already at the latest version (1.0.0).",
+            &two_plugin_snapshot(),
+            &calls,
+        );
+        let rows = build_rows_from_entries(
+            &two_plugin_snapshot().installed,
+            "/proj",
+            PluginUpdateTrigger::Auto,
+            &auto_settings(),
+        );
+        let run = PluginUpdateRun { trigger: PluginUpdateTrigger::Auto, finished: false, rows };
+        let plan = UpdateRunPlan {
+            cwd_context: "/proj".to_owned(),
+            claude_path: None,
+            marketplaces: vec![],
+            run,
+            cli,
+            store: None,
+        };
+        execute_update_plan(tx, plan).await;
+
+        let log = calls.lock().expect("call log").clone();
+        let update_calls: Vec<&String> =
+            log.iter().filter(|call| !call.starts_with("refresh")).collect();
+        assert_eq!(update_calls.len(), 1, "only the queued row invokes the CLI: {log:?}");
+        assert!(update_calls[0].contains("supabase@claude-plugins-official"));
+
+        let mut finished = None;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::PluginsUpdateRunFinished { run, .. } = update {
+                finished = Some(run);
+            }
+        }
+        let run = finished.expect("the finished event lands");
+        let skipped =
+            run.rows.iter().find(|row| row.plugin_id.starts_with("pensive")).expect("row");
+        assert_eq!(skipped.status, PluginRunRowStatus::Skipped);
+        let ran = run.rows.iter().find(|row| row.plugin_id.starts_with("supabase")).expect("row");
+        assert_eq!(ran.status, PluginRunRowStatus::AlreadyCurrent);
+    }
+
+    /// The `u` key inside a LocalSet: the run executes through the
+    /// injected CLI, one call per entry, and the pane settles with the
+    /// report instead of refusing silently.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_u_key_runs_every_installed_plugin() {
+        let mut app = App::test_default();
+        seeded_installed(&mut app);
+        let calls = call_log();
+        app.plugins.update_cli =
+            Some(fake_cli("is already at the latest version.", &two_plugin_snapshot(), &calls));
+        app.plugins.active_tab = PluginsViewTab::Installed;
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                handle_key(&mut app, KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+                for _ in 0..200 {
+                    tokio::task::yield_now().await;
+                    while let Ok(update) = app.update_rx.try_recv() {
+                        apply_session_update(&mut app, update);
+                    }
+                    if app.plugins.update_run.as_ref().is_some_and(|run| run.finished) {
+                        break;
+                    }
+                }
+            })
+            .await;
+
+        let log = calls.lock().expect("call log").clone();
+        assert_eq!(
+            log.iter().filter(|call| !call.starts_with("refresh")).count(),
+            3,
+            "one update call per installed entry: {log:?}"
+        );
+        let run = app.plugins.update_run.as_ref().expect("the report stands");
+        assert!(run.finished);
+        assert!(run.rows.iter().all(|row| row.status == PluginRunRowStatus::AlreadyCurrent));
+    }
+
+    /// Boot auto-update with the switch off touches nothing: no
+    /// seeded run, no CLI calls, no events.
+    #[tokio::test(flavor = "current_thread")]
+    async fn boot_auto_update_off_does_nothing() {
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace");
+        let calls = call_log();
+        let cli = fake_cli("unused", &two_plugin_snapshot(), &calls);
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                maybe_spawn_boot_auto_update(
+                    &workspace,
+                    &mut app,
+                    "/proj".to_owned(),
+                    forge_workspace::PluginSettings::default(),
+                    cli,
+                );
+                for _ in 0..20 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+
+        assert!(app.plugins.update_run.is_none());
+        assert!(calls.lock().expect("call log").is_empty());
+        assert!(app.update_rx.try_recv().is_err());
+    }
+
+    /// The boot gate: trusted, unpinned plugins update from their own
+    /// entry cwd; everything else is skipped with the reason. The run
+    /// is seeded synchronously so a manual `u` cannot race it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn boot_auto_update_skips_untrusted_and_runs_trusted() {
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace");
+        let calls = call_log();
+        let cli = fake_cli(
+            "supabase is already at the latest version (1.0.0).",
+            &two_plugin_snapshot(),
+            &calls,
+        );
+        let settings = forge_workspace::PluginSettings {
+            auto_update: true,
+            trusted_marketplaces: vec!["claude-plugins-official".to_owned()],
+            pins: Vec::new(),
+        };
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                maybe_spawn_boot_auto_update(
+                    &workspace,
+                    &mut app,
+                    "/test".to_owned(),
+                    settings,
+                    cli,
+                );
+                assert!(
+                    app.plugins.update_run.as_ref().is_some_and(|run| !run.finished),
+                    "the seeded run guards u/c before the first event lands"
+                );
+                for _ in 0..200 {
+                    tokio::task::yield_now().await;
+                    while let Ok(update) = app.update_rx.try_recv() {
+                        apply_session_update(&mut app, update);
+                    }
+                    if app.plugins.update_run.as_ref().is_some_and(|run| run.finished) {
+                        break;
+                    }
+                }
+            })
+            .await;
+
+        let log = calls.lock().expect("call log").clone();
+        let update_calls: Vec<&String> =
+            log.iter().filter(|call| !call.starts_with("refresh")).collect();
+        assert_eq!(update_calls.len(), 1, "only the trusted plugin updates: {log:?}");
+        assert!(
+            log.iter().any(|call| call.starts_with("/test:")),
+            "the trusted user-scoped plugin updates from the boot cwd: {log:?}"
+        );
+
+        let run = app.plugins.update_run.as_ref().expect("the report stands");
+        assert!(run.finished);
+        let pensive =
+            run.rows.iter().find(|row| row.plugin_id.starts_with("pensive")).expect("row");
+        assert_eq!(pensive.status, PluginRunRowStatus::Skipped);
+        assert_eq!(
+            pensive.detail.as_deref(),
+            Some("marketplace claude-night-market is not trusted for auto-update")
+        );
+        let supabase =
+            run.rows.iter().find(|row| row.plugin_id.starts_with("supabase")).expect("row");
+        assert_eq!(supabase.status, PluginRunRowStatus::AlreadyCurrent);
+    }
+
+    /// Records persist in the run task, not the event handler: a
+    /// dropped report event cannot lose the rollback record.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_update_run_persists_records_in_the_task() {
+        let mut app = App::test_default();
+        let db_dir = tempfile::tempdir().expect("tempdir");
+        app.workspace.as_ref().expect("workspace").install_db_for_test(
+            forge_workspace::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        app.plugins.installed = vec![InstalledPluginEntry {
+            id: "supabase@claude-plugins-official".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        }];
+        let mut snapshot = two_plugin_snapshot();
+        snapshot.installed = vec![InstalledPluginEntry {
+            id: "supabase@claude-plugins-official".to_owned(),
+            version: Some("2.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        }];
+        let calls = call_log();
+        app.plugins.update_cli = Some(fake_cli(
+            "Plugin \"supabase\" updated from 1.0.0 to 2.0.0 for scope user.",
+            &snapshot,
+            &calls,
+        ));
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                handle_key(&mut app, KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+                for _ in 0..200 {
+                    tokio::task::yield_now().await;
+                    while let Ok(update) = app.update_rx.try_recv() {
+                        apply_session_update(&mut app, update);
+                    }
+                    if app.plugins.update_run.as_ref().is_some_and(|run| run.finished) {
+                        break;
+                    }
+                }
+            })
+            .await;
+
+        let workspace = app.workspace.as_ref().expect("workspace");
+        let records = workspace.plugin_update_records();
+        assert_eq!(records.len(), 1, "the record persisted despite any event handling");
+        assert_eq!(records[0].from_version.as_deref(), Some("1.0.0"));
+        assert_eq!(records[0].to_version.as_deref(), Some("2.0.0"));
+        assert_eq!(records[0].trigger, PluginUpdateTrigger::Manual);
     }
 }

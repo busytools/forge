@@ -289,8 +289,10 @@ marketplace is listed as trusted, and it is not pinned. When the run
 fires, the plugins pane reports what updated, from which marketplace,
 and what it skipped; forge remembers the previous version so the
 plugin's actions overlay can offer "Roll back to previous version"
-afterwards. Rollback needs the marketplace to be git-backed and the
-recorded pre-update ref to still be fetchable.
+afterwards. Rollback needs the recorded pre-update marketplace ref,
+which in turn needs the marketplace to be git-backed, and the ref to
+still be fetchable; a rollback that does not actually move the plugin
+to the recorded version keeps the record so it can be retried.
 
 Like `[dictate]`, an unrecognised key here fails the load rather than
 being ignored: a mistyped `trusted_marketplaces` would otherwise leave

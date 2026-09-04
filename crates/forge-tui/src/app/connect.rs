@@ -92,7 +92,8 @@ fn create_app_impl(
     // inventory refresh + eligible updates in the background, results
     // landing in the plugins pane state. The plugin CLI needs a cwd;
     // a launchpad boot has none, so it borrows the first project's.
-    let update_tx_for_plugins = workspace.update_sender();
+    // Runs after App construction so the seeded run guards `u`/`c`
+    // from the first frame.
     let boot_cwd_raw = if cwd_raw.is_empty() {
         workspace
             .list_projects()
@@ -102,11 +103,9 @@ fn create_app_impl(
     } else {
         cwd_raw.clone()
     };
-    crate::app::plugins::maybe_spawn_boot_auto_update(
-        &workspace,
-        update_tx_for_plugins,
-        boot_cwd_raw,
-    );
+    let boot_settings = workspace.plugin_settings().clone();
+    let boot_cli = crate::app::plugins::UpdateCli::real();
+    let boot_workspace = workspace.clone();
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
@@ -322,6 +321,14 @@ fn create_app_impl(
         );
         app.config.last_error = Some(err);
     }
+
+    crate::app::plugins::maybe_spawn_boot_auto_update(
+        &boot_workspace,
+        &mut app,
+        boot_cwd_raw,
+        boot_settings,
+        boot_cli,
+    );
 
     app.rebuild_history_retention_accounting();
     app.rebuild_render_cache_accounting();

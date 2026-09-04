@@ -873,24 +873,17 @@ impl Workspace {
 
     /// Remember plugin updates applied by a pane run or by boot
     /// auto-update: the visible record of what moved, from where, and
-    /// the ref a rollback restores. A no-op with a warn when the store
-    /// is closed.
+    /// the ref a rollback restores. One transaction for the whole
+    /// batch. A no-op with a warn when the store is closed.
     pub fn record_plugin_updates(&self, records: &[forge_primitives::plugins::PluginUpdateRecord]) {
-        if let Some(db) = self.db.lock().as_ref() {
-            for record in records {
-                if let Err(error) = crate::store::plugins::record_update(db, record) {
-                    tracing::warn!(
-                        target: "forge_workspace::workspace",
-                        plugin = %record.plugin_id,
-                        error = %error,
-                        "failed to persist a plugin update record",
-                    );
-                }
-            }
-        } else {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::plugins::record_updates(db, records)
+        {
             tracing::warn!(
                 target: "forge_workspace::workspace",
-                "store unavailable; the plugin update record will not persist",
+                count = records.len(),
+                error = %error,
+                "failed to persist the plugin update records",
             );
         }
     }

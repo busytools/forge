@@ -2,6 +2,7 @@ use super::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
     PluginUpdateRecord, PluginsInventorySnapshot,
 };
+use crate::env::git_command;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -239,11 +240,7 @@ pub async fn run_cli_command(
         let stderr = combined.trim().to_owned();
         let exit_code =
             output.status.code().map_or_else(|| "unknown".to_owned(), |code| code.to_string());
-        let detail = if stderr.is_empty() {
-            format!("exit code {exit_code}")
-        } else {
-            stderr
-        };
+        let detail = if stderr.is_empty() { format!("exit code {exit_code}") } else { stderr };
         Err(format!("`claude {}` failed: {detail}", args.join(" ")))
     })
     .await
@@ -251,7 +248,7 @@ pub async fn run_cli_command(
 }
 
 /// The `claude plugin update` invocation for one installed entry.
-fn plugin_update_args(plugin_id: &str, scope: &str) -> Vec<String> {
+pub fn plugin_update_args(plugin_id: &str, scope: &str) -> Vec<String> {
     vec![
         "plugin".to_owned(),
         "update".to_owned(),
@@ -266,7 +263,7 @@ fn plugin_update_args(plugin_id: &str, scope: &str) -> Vec<String> {
 /// ref is what a rollback later restores.
 pub async fn marketplace_head(install_location: String) -> Option<String> {
     tokio::task::spawn_blocking(move || {
-        let output = Command::new("git")
+        let output = git_command::command("git")
             .args(["rev-parse", "HEAD"])
             .current_dir(&install_location)
             .output()
@@ -322,18 +319,30 @@ fn rollback_claude_args(record: &PluginUpdateRecord) -> Vec<Vec<String>> {
     ]
 }
 
+/// How a rollback's CLI steps landed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginRollbackOutcome {
+    /// The plugin reinstalled and the marketplace clone moved forward.
+    RolledBack,
+    /// The plugin reinstalled but the clone could not move forward;
+    /// it is still parked at the old ref. A later `claude plugin
+    /// marketplace update <name>` repairs it.
+    RolledBackCloneParked(String),
+}
+
 /// Roll one plugin back to its recorded previous version: restore the
 /// marketplace clone to the pre-update ref, let `claude plugin update`
 /// install the version that manifest points at, then move the clone
-/// forward again so other plugins keep tracking the latest. Any failed
-/// step aborts; the clone can be repaired with `claude plugin
-/// marketplace update <name>`.
+/// forward again so other plugins keep tracking the latest. A failed
+/// git or plugin-update step aborts with `Err`; only the trailing
+/// clone-restore failure lands as [`PluginRollbackOutcome::
+/// RolledBackCloneParked`].
 pub async fn run_plugin_rollback(
-    claude_path: PathBuf,
+    claude_path: Option<PathBuf>,
     cwd_raw: String,
     record: PluginUpdateRecord,
     install_location: String,
-) -> Result<(), String> {
+) -> Result<PluginRollbackOutcome, String> {
     let ref_before = record
         .marketplace_ref_before
         .clone()
@@ -341,8 +350,9 @@ pub async fn run_plugin_rollback(
     let git_steps = rollback_git_args(&install_location, &ref_before);
     let claude_steps = rollback_claude_args(&record);
     tokio::task::spawn_blocking(move || {
+        let claude_path = resolve_claude_path(claude_path)?;
         for args in &git_steps {
-            let output = Command::new("git")
+            let output = git_command::command("git")
                 .args(args)
                 .output()
                 .map_err(|error| format!("Failed to run git {}: {error}", args.join(" ")))?;
@@ -351,10 +361,13 @@ pub async fn run_plugin_rollback(
                 return Err(format!("git {} failed: {stderr}", args.join(" ")));
             }
         }
-        for args in &claude_steps {
-            run_command(&claude_path, &cwd_raw, args)?;
+        // The plugin update decides the rollback; only the trailing
+        // clone restore is allowed to half-land.
+        run_command(&claude_path, &cwd_raw, &claude_steps[0])?;
+        match run_command(&claude_path, &cwd_raw, &claude_steps[1]) {
+            Ok(()) => Ok(PluginRollbackOutcome::RolledBack),
+            Err(message) => Ok(PluginRollbackOutcome::RolledBackCloneParked(message)),
         }
-        Ok(())
     })
     .await
     .map_err(|error| format!("Plugin rollback task failed: {error}"))?

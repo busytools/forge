@@ -296,21 +296,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 crate::app::plugins::apply_update_run_progress(app, run);
             });
         }
-        SessionUpdate::PluginsUpdateRunFinished {
-            cwd_raw,
-            run,
-            snapshot,
-            claude_path,
-            records,
-        } => {
+        SessionUpdate::PluginsUpdateRunFinished { cwd_raw, run, snapshot, claude_path } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_update_run_finished_dropped", |app| {
-                crate::app::plugins::apply_update_run_finished(
-                    app,
-                    &run,
-                    snapshot,
-                    claude_path,
-                    &records,
-                );
+                crate::app::plugins::apply_update_run_finished(app, &run, snapshot, claude_path);
             });
         }
         SessionUpdate::PluginsRollbackSucceeded {
@@ -332,9 +320,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 );
             });
         }
-        SessionUpdate::PluginsRollbackFailed { cwd_raw, plugin_id, message } => {
+        SessionUpdate::PluginsRollbackFailed { cwd_raw, plugin_id, message, snapshot } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_rollback_failure_dropped", |app| {
-                crate::app::plugins::apply_rollback_failure(app, &plugin_id, &message);
+                crate::app::plugins::apply_rollback_failure(app, &plugin_id, &message, snapshot);
             });
         }
         SessionUpdate::PeerInflightStatsChanged { key, stats } => {

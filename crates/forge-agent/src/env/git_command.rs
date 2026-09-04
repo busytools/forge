@@ -12,8 +12,9 @@
 use std::process::Command;
 
 /// A `git` / `gh` spawn with the ambient repo-location env scrubbed,
-/// for synchronous callers.
-pub(super) fn command(program: &str) -> Command {
+/// for synchronous callers anywhere in the crate (the plugin
+/// rollback's marketplace-clone git steps included).
+pub(crate) fn command(program: &str) -> Command {
     let mut command = Command::new(program);
     command.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_COMMON_DIR");
     command

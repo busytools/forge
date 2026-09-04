@@ -33,7 +33,7 @@ use forge_primitives::error::AppError;
 use forge_primitives::permission::PermissionMode;
 use forge_primitives::permission_ui::{PermissionOutcome, PermissionRequest};
 use forge_primitives::plugins::{
-    PluginUpdateRecord, PluginUpdateRun, PluginsCliActionSuccess, PluginsInventorySnapshot,
+    PluginUpdateRun, PluginsCliActionSuccess, PluginsInventorySnapshot,
 };
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::review::{ReviewStatus, ReviewThread};
@@ -948,15 +948,13 @@ pub enum SessionUpdate {
         cwd_raw: String,
         run: PluginUpdateRun,
     },
-    /// The run (or check) is over. A successful run carries the
-    /// post-run inventory refresh plus the records to persist; a run
-    /// that could not even refresh carries neither.
+    /// The run (or check) is over. The record batch is persisted by
+    /// the run task itself; this event is reporting only.
     PluginsUpdateRunFinished {
         cwd_raw: String,
         run: PluginUpdateRun,
         snapshot: Option<PluginsInventorySnapshot>,
         claude_path: Option<PathBuf>,
-        records: Vec<PluginUpdateRecord>,
     },
     PluginsRollbackSucceeded {
         cwd_raw: String,
@@ -970,6 +968,9 @@ pub enum SessionUpdate {
         cwd_raw: String,
         plugin_id: String,
         message: String,
+        /// The refreshed inventory when the rollback ran but did not
+        /// verify, so the pane still reflects the real state.
+        snapshot: Option<PluginsInventorySnapshot>,
     },
     /// Peer-coordination ask in-flight stats changed for `key`. Fired
     /// whenever `bump_inflight_stats` mutates the session's
