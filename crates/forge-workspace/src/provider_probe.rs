@@ -14,8 +14,14 @@ use forge_primitives::usage::oauth::OauthUsageError;
 use forge_providers::{AccountEnv, ProbeError, ProviderBackend, UsageSnapshot};
 
 fn backend_for(provider: Provider) -> Result<&'static dyn ProviderBackend, ProbeError> {
-    forge_providers::backend(provider)
-        .ok_or_else(|| ProbeError::Unmappable(format!("no backend registered for {provider:?}")))
+    if let Some(backend) = forge_providers::backend(provider) {
+        return Ok(backend);
+    }
+    debug_assert!(
+        false,
+        "every provider the probe arms reach must have a backend registered; {provider:?}"
+    );
+    Err(ProbeError::Unmappable(format!("no backend registered for {provider:?}")))
 }
 
 /// One probe round-trip through the account's backend and the shared
