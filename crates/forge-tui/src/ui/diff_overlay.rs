@@ -1739,7 +1739,7 @@ fn push_file_body(
 /// just ended, then a blank spacer. Emitted after every file but the
 /// last (the document just ends there). Both rows carry
 /// [`BodyRowKey::FileEndCap`] so a click on them no-ops. The row count
-/// matches [`crate::app::diff_overlay::END_CAP_ROWS`].
+/// matches [`crate::app::diff_overlay::layout::END_CAP_ROWS`].
 fn push_file_end_cap(
     overlay: &DiffOverlayState,
     file_idx: usize,
@@ -2972,7 +2972,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         let mut state =
             DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
-        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+        state.finish_review = Some(crate::app::diff_overlay::types::FinishReviewState {
             editor: crate::app::input::InputState::new(),
         });
         state.finish_review.as_mut().expect("finish review").editor.insert_str(&"x".repeat(61));
@@ -3118,7 +3118,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         let mut state =
             DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
-        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+        state.finish_review = Some(crate::app::diff_overlay::types::FinishReviewState {
             editor: crate::app::input::InputState::new(),
         });
         let mut long = chip_comment(5, "FIRST", ReviewStatus::Open);
@@ -4391,7 +4391,8 @@ mod tests {
 
     #[test]
     fn commit_mode_renders_message_block_above_the_diff() {
-        use crate::app::diff_overlay::{CachedScan, DiffScope};
+        use crate::app::diff_overlay::DiffScope;
+        use crate::app::diff_overlay::types::CachedScan;
         use forge_workspace::env::git_diff::hunks::{CommitMeta, DiffLine, Hunk};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -4445,7 +4446,8 @@ mod tests {
     /// what it charges, so the render pictures it rather than stripping.
     #[test]
     fn stepper_header_spans_picture_control_chars_so_they_paint_what_they_charge() {
-        use crate::app::diff_overlay::{CachedScan, DiffScope};
+        use crate::app::diff_overlay::DiffScope;
+        use crate::app::diff_overlay::types::CachedScan;
         use forge_workspace::env::git_diff::hunks::{CommitMeta, DiffLine, Hunk};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -4932,7 +4934,7 @@ mod tests {
         // must show one row, carrying the edit they just made.
         let mut state =
             DiffOverlayState::new(std::path::PathBuf::from("/tmp/repo"), "main".to_owned(), vec![]);
-        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+        state.finish_review = Some(crate::app::diff_overlay::types::FinishReviewState {
             editor: crate::app::input::InputState::new(),
         });
         for (scope, text) in [(Some("aaa".to_owned()), "FIRSTTEXT"), (None, "SECONDTEXT")] {
@@ -4989,7 +4991,7 @@ mod tests {
             },
         ];
         state.scope = DiffScope::Commit(1);
-        state.finish_review = Some(crate::app::diff_overlay::FinishReviewState {
+        state.finish_review = Some(crate::app::diff_overlay::types::FinishReviewState {
             editor: crate::app::input::InputState::new(),
         });
         for (scope, text) in [(Some("aaa".to_owned()), "FIRSTTEXT"), (None, "SECONDTEXT")] {

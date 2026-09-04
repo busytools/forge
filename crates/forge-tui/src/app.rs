@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn bracketed_paste_reaches_the_finish_review_editor() {
-        use crate::app::diff_overlay::FinishReviewState;
+        use crate::app::diff_overlay::types::FinishReviewState;
         let mut app = app_with_open_comment_editor();
         if let Some(o) = app.diff_overlay.as_mut() {
             o.active_input = None;
