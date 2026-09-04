@@ -2283,6 +2283,27 @@ impl App {
         self.active_bucket_mut().session_task_tool_use_ids.remove(task_id);
     }
 
+    /// Settle the open descendants of a backgrounded root that just left
+    /// the roster on the active session. See
+    /// [`UiSession::settle_children_of`].
+    pub(crate) fn settle_departed_root_children(&mut self, root_id: &str) {
+        let settled = self.active_bucket_mut().settle_children_of(root_id);
+        if settled.is_empty() {
+            return;
+        }
+        let mut changed_messages: Vec<usize> = Vec::new();
+        for (msg_idx, block_idx) in &settled {
+            self.sync_render_cache_slot(*msg_idx, *block_idx);
+            if changed_messages.last() != Some(msg_idx) {
+                changed_messages.push(*msg_idx);
+            }
+        }
+        for msg_idx in &changed_messages {
+            self.recompute_message_retained_bytes(*msg_idx);
+        }
+        self.invalidate_message_set(changed_messages.into_iter());
+    }
+
     /// Clear the active session's background-task registry (and its
     /// task-id mirror) on teardown. See
     /// [`UiSession::clear_background_task_registry`].

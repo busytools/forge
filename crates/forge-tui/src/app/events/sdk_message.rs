@@ -1666,7 +1666,17 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
             .unwrap_or_default()
     };
     for task_id in &departed {
+        // Resolve the root before dropping the mapping, so its open
+        // children settle now rather than waiting for the next turn
+        // boundary (#789). The root's own card stays open for its
+        // terminal `task_updated`, which lands a frame after the drain.
+        let root_id = app
+            .active_session()
+            .and_then(|session| session.session_task_tool_use_ids.get(task_id).cloned());
         app.remove_session_task_mapping(task_id);
+        if let Some(root_id) = root_id {
+            app.settle_departed_root_children(&root_id);
+        }
     }
     *app.background_tasks_mut() = parsed;
 }

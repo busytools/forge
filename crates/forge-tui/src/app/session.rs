@@ -646,6 +646,44 @@ impl UiSession {
         }
         false
     }
+
+    /// Flip every open tool call hanging off `root_id` at any depth to
+    /// `Completed`. Fired by the roster diff when a backgrounded root
+    /// departs: its children have no terminal event of their own and
+    /// would otherwise stay open until the next turn boundary. The root
+    /// itself is untouched - its own `task_updated` lands a frame after
+    /// the drain. Returns the touched (message, block) slots for
+    /// render-cache sync.
+    pub(crate) fn settle_children_of(&mut self, root_id: &str) -> Vec<(usize, usize)> {
+        let roots: HashSet<&str> = std::iter::once(root_id).collect();
+        let doomed: HashSet<String> = self
+            .tool_call_scopes
+            .iter()
+            .filter(|(id, scope)| {
+                matches!(scope, ToolCallScope::SubagentChild { .. })
+                    && self.resolves_to_live_root(id, &roots)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut settled: Vec<(usize, usize)> = Vec::new();
+        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+            for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
+                let crate::app::MessageBlock::ToolCall(tc) = block else { continue };
+                let tc = tc.as_mut();
+                if doomed.contains(tc.id.as_str())
+                    && matches!(
+                        tc.status,
+                        model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                    )
+                {
+                    tc.status = model::ToolCallStatus::Completed;
+                    tc.mark_tool_call_layout_dirty();
+                    settled.push((msg_idx, block_idx));
+                }
+            }
+        }
+        settled
+    }
 }
 
 /// Whether a session's Projects-pane row shows the activity spinner: an
