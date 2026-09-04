@@ -27,8 +27,8 @@ pub fn is_token_mode<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>
 /// decision so the probe source AND the response-mapping strictness
 /// stay in lockstep.
 ///
-/// Deliberately not [`Provider`] itself: the `BaseUrl` variant carries
-/// a bearer, so this type must not cross into a view the TUI renders.
+/// Deliberately not [`Provider`] itself: several variants carry a
+/// bearer, so this type must not cross into a view the TUI renders.
 /// `forge_workspace::AccountAuth` is the secret-free counterpart.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProbePlan {

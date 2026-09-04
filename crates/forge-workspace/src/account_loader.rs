@@ -485,7 +485,7 @@ pub async fn run_recovery_poll(workspace_weak: Weak<Workspace>) {
 mod tests {
     // End-to-end behavior tests (probe → branch → refresh + retry)
     // require either a mock claude binary on PATH or a substitution
-    // layer over oauth_usage::probe + refresh_via_cli_spawn. Both
+    // layer over the forge-providers probe + refresh_via_cli_spawn. Both
     // approaches add significant test infrastructure; the planner
     // approved deferring these to manual smoke against a real
     // expired-token account.
