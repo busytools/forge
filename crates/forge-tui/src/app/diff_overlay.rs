@@ -49,5 +49,4 @@ pub(crate) use mouse::handle_mouse;
 pub(crate) use reviews::would_file;
 
 #[cfg(test)]
-#[cfg(test)]
 pub(crate) mod test_support;
