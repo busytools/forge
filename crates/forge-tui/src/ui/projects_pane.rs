@@ -2286,20 +2286,21 @@ mod tests {
             .find(|l| l.trim_start().starts_with("forge "))
             .expect("the forge version row paints");
 
-        let expected = format!(
-            " {:<label$}  {}",
-            "forge",
-            fit_version_to_budget(crate::FORGE_VERSION_SHORT, version_budget),
-            label = ACCOUNT_PANEL_ID_LABEL_WIDTH,
-        );
+        let unfitted = format!("v{}", crate::FORGE_VERSION_SHORT);
+        let fitted = fit_version_to_budget(crate::FORGE_VERSION_SHORT, version_budget);
+        let expected =
+            format!(" {:<label$}  {}", "forge", fitted, label = ACCOUNT_PANEL_ID_LABEL_WIDTH);
         assert_eq!(
             *row, expected,
             "the version row renders the label and the fitted stamp, neither clipped nor over-trimmed: [{row}]",
         );
 
-        // The fill and prefix properties only exist when the stamp
-        // carries a sha to shorten.
-        if let Some((_, full_sha)) = crate::FORGE_VERSION_SHORT.split_once('+') {
+        // The fill and prefix properties only exist when the fitter had to
+        // shorten; a short abbreviation (git's floor is 4 hex) fits outright
+        // and paints whole, like the gitless stamp.
+        if fitted == unfitted {
+            assert!(row.ends_with(unfitted.as_str()), "the whole stamp paints: [{row}]");
+        } else {
             assert_eq!(
                 row.chars().count(),
                 budget,
@@ -2309,6 +2310,9 @@ mod tests {
             // the sha unusable. The property is that the shortened sha stays a
             // matchable PREFIX of the real one.
             let painted_sha = row.rsplit('+').next().expect("row splits");
+            let (_, full_sha) = crate::FORGE_VERSION_SHORT
+                .split_once('+')
+                .expect("shortened, so the stamp carries a sha");
             assert!(
                 !painted_sha.is_empty() && full_sha.starts_with(painted_sha),
                 "the shortened sha stays a clean prefix of the real one, not an elided cut: \
