@@ -44,6 +44,29 @@ fn model(role: DictateRole, file: &str, state: DictateModelState) -> DictateMode
     DictateModel { role, file: file.to_owned(), state }
 }
 
+/// An `App` whose workspace carries `snapshot` as its dictate state,
+/// for assertions that read through the workspace rather than a bare
+/// snapshot.
+async fn app_with_dictate(snapshot: DictateSnapshot) -> App {
+    let config_dir = tempfile::tempdir().expect("tempdir");
+    let forge = config_dir.path().join("forge");
+    std::fs::create_dir_all(&forge).expect("forge/");
+    std::fs::write(
+        forge.join("forge.toml"),
+        "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
+         [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+    )
+    .expect("write forge.toml");
+    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+        .await
+        .expect("workspace");
+    workspace.seed_test_dictate_snapshot(snapshot);
+    let mut app = App::test_default();
+    app.workspace = Some(std::sync::Arc::new(workspace));
+    app
+}
+
 fn account(name: &str, state: LoadingState, dir: &str) -> AccountLoadingRow {
     account_with(name, state, dir, forge_workspace::AccountAuth::Keychain)
 }
@@ -939,13 +962,41 @@ fn a_pending_model_under_a_failure_is_not_queued() {
 }
 
 /// `esc` is only offered while there is a transfer to stop. Offering it
-/// once the bytes have landed advertises a key that does nothing.
-#[test]
-fn the_escape_hint_tracks_whether_there_is_anything_to_cancel() {
+/// once the bytes have landed advertises a key that does nothing, and
+/// once a cancellation has fired forge is on its way out - the footer
+/// offers no keys at all.
+#[tokio::test]
+async fn the_escape_hint_tracks_whether_there_is_anything_to_cancel() {
     assert_eq!(
         footer_hint(&App::test_default()),
         " ctrl+q  quit",
         "with nothing downloading there is nothing to cancel",
+    );
+
+    let transferring = app_with_dictate(DictateSnapshot {
+        models: vec![model(
+            DictateRole::Transcribing,
+            "asr.gguf",
+            DictateModelState::Downloading { downloaded: 0, total: 1, resumed_from: Some(0) },
+        )],
+        failure: None,
+    })
+    .await;
+    assert_eq!(
+        footer_hint(&transferring),
+        " esc  cancel     ctrl+q  quit",
+        "bytes moving is what makes esc mean something",
+    );
+
+    let cancelled = app_with_dictate(DictateSnapshot {
+        models: Vec::new(),
+        failure: Some(DictateFailure::Cancelled { kept: 0, total: 0 }),
+    })
+    .await;
+    assert_eq!(
+        footer_hint(&cancelled),
+        " quitting\u{2026}",
+        "a cancelled preflight is leaving; no keys are offered",
     );
 }
 
