@@ -257,12 +257,14 @@ fn account_row(row: &AccountLoadingRow, width: u16) -> Line<'static> {
         LoadingState::Ready => ("ready", dim(), Style::default()),
         LoadingState::Loading | LoadingState::Refreshing => ("resolving", dim(), Style::default()),
         LoadingState::Bailed => {
-            // The state column carries the classified failure: a probe
-            // that never reached the endpoint is not an auth problem.
-            let state = if row.last_error == Some(UsageFetchStatus::NetworkFailed) {
-                "unreachable"
-            } else {
-                "auth failed"
+            // The state column carries the classified failure: an auth
+            // problem, a rate limit, and an endpoint that is down or
+            // answering badly are three different repairs.
+            let state = match row.last_error {
+                Some(UsageFetchStatus::NetworkFailed) => "unreachable",
+                Some(UsageFetchStatus::Other) => "fetch error",
+                Some(UsageFetchStatus::RateLimited) => "rate limited",
+                _ => "auth failed",
             };
             (
                 state,
@@ -375,12 +377,13 @@ fn failure_label(failure: Option<&DictateFailure>) -> &'static str {
 /// config, which is read at boot and so needs a restart. Naming only one
 /// would leave a reader who cannot take that route with nowhere to go.
 ///
-/// The head and the repair line key on the failure class: a probe that
-/// never reached the endpoint is not an auth problem. The auth branch's
-/// retry line states no interval on purpose, and is the same in both
-/// account classes - a keychain account recovers on the 30 s recovery
-/// poll, a base-url one on the 60 s usage poll, so no single number is
-/// true of both, while "no restart needed" is true of each.
+/// The head and the repair line key on the failure class: an auth
+/// problem, a rate limit, and an endpoint that is down or answering
+/// badly are three different repairs. The auth branch's retry line
+/// states no interval on purpose, and is the same in both account
+/// classes - a keychain account recovers on the 30 s recovery poll, a
+/// base-url one on the 60 s usage poll, so no single number is true of
+/// both, while "no restart needed" is true of each.
 fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'static>> {
     let error = Style::default().fg(theme::STATUS_ERROR);
     let head = Style::default().add_modifier(Modifier::BOLD);
@@ -388,15 +391,27 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
         .workspace
         .as_ref()
         .map_or_else(|| "forge.toml".to_owned(), |ws| home_relative(&ws.config_path()));
-    let unreachable = row.last_error == Some(UsageFetchStatus::NetworkFailed);
+    let endpoint_failing =
+        matches!(row.last_error, Some(UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other));
+    let rate_limited = row.last_error == Some(UsageFetchStatus::RateLimited);
 
-    let mut lines = if unreachable {
-        wrapped(
-            2,
-            &format!(
+    let mut lines = if endpoint_failing {
+        let head_line = if row.last_error == Some(UsageFetchStatus::NetworkFailed) {
+            format!(
                 "{} cannot be reached. forge starts without it and keeps retrying.",
                 row.display_name
-            ),
+            )
+        } else {
+            format!(
+                "{} keeps answering with errors. forge starts without it and keeps retrying.",
+                row.display_name
+            )
+        };
+        wrapped(2, &head_line, error, width)
+    } else if rate_limited {
+        wrapped(
+            2,
+            &format!("{} is rate limited. forge starts without it.", row.display_name),
             error,
             width,
         )
@@ -413,13 +428,13 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
         )
     };
     lines.push(Line::default());
-    if unreachable {
+    if endpoint_failing {
         lines.push(text_row(2, "Check the endpoint", head, width));
         match row.auth {
             AccountAuth::Keychain => {
                 lines.push(text_row(
                     4,
-                    "the probe could not reach the Anthropic API",
+                    "the Anthropic API is unreachable or erroring",
                     Style::default(),
                     width,
                 ));
@@ -433,6 +448,8 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
                 ));
             }
         }
+    } else if rate_limited {
+        lines.push(text_row(4, "Waiting clears it - the pollers keep retrying", dim(), width));
     } else {
         lines.push(text_row(2, "Fix the auth", head, width));
         // The only thing that differs by account class. A base-url account

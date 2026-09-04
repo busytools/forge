@@ -283,30 +283,35 @@ async fn preflight_hands_over_when_an_account_settles_bailed() {
     );
 }
 
-/// The state column is the typed failure: a probe that could not reach
-/// the endpoint at all is not an auth problem, and a red `auth failed`
-/// over a healthy token sends the reader to fix the wrong thing.
+/// The state column is the typed failure, one label per class. The auth
+/// classes keep `auth failed`; a probe that never got through reads
+/// `unreachable`; a classed-but-unrecognised failure (a 5xx proxy, a
+/// body that will not decode) reads `fetch error`; a 429 streak reads
+/// `rate limited`. A red `auth failed` over a healthy token sends the
+/// reader to fix the wrong thing.
 #[test]
-fn an_unreachable_endpoint_does_not_read_as_an_auth_failure() {
-    let row_text = |row: &AccountLoadingRow| {
-        account_row(row, PICKER_WIDTH).spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+fn the_state_column_names_the_failure_class() {
+    let row_text = |last_error: Option<forge_workspace::UsageFetchStatus>| {
+        account_row(
+            &AccountLoadingRow { last_error, ..account("Subspace", LoadingState::Bailed, "/x") },
+            PICKER_WIDTH,
+        )
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect::<String>()
     };
-    let unreachable = row_text(&bailed_with_error(
-        "Subspace",
-        "/x",
-        forge_workspace::AccountAuth::BaseUrl,
-        forge_workspace::UsageFetchStatus::NetworkFailed,
-    ));
-    let auth = row_text(&account("Subspace", LoadingState::Bailed, "/x"));
 
-    assert!(
-        unreachable.trim_end().ends_with("unreachable"),
-        "a network-class bail reads as unreachable; got {unreachable:?}",
-    );
-    assert!(
-        auth.trim_end().ends_with("auth failed"),
-        "an auth-class bail, or one with no recorded cause, keeps the old label; got {auth:?}",
-    );
+    for (status, label) in [
+        (Some(forge_workspace::UsageFetchStatus::NetworkFailed), "unreachable"),
+        (Some(forge_workspace::UsageFetchStatus::Other), "fetch error"),
+        (Some(forge_workspace::UsageFetchStatus::RateLimited), "rate limited"),
+        (Some(forge_workspace::UsageFetchStatus::Unauthorized), "auth failed"),
+        (None, "auth failed"),
+    ] {
+        let row = row_text(status);
+        assert!(row.trim_end().ends_with(label), "{status:?} must read as {label:?}; got {row:?}");
+    }
 }
 
 /// The unreachable screen repairs the endpoint, not the token: the
@@ -344,8 +349,64 @@ fn an_unreachable_bail_names_the_endpoint_not_the_auth() {
     );
 }
 
+/// An endpoint that answers badly is not an auth failure either - a
+/// proxy with a dead upstream 502s rather than refusing, which is the
+/// common real shape of "endpoint down" - and the copy must say the
+/// endpoint was reached, because it was.
+#[test]
+fn an_erroring_endpoint_is_not_an_auth_failure_either() {
+    let text = flatten(&bail_detail(
+        &App::test_default(),
+        &bailed_with_error(
+            "Subspace",
+            "/home/x/.claude-subspace",
+            forge_workspace::AccountAuth::BaseUrl,
+            forge_workspace::UsageFetchStatus::Other,
+        ),
+        PICKER_WIDTH,
+    ))
+    .join("\n");
+
+    assert!(
+        text.contains("Subspace keeps answering with errors"),
+        "the head says the endpoint answered and failed, not that it was unreachable; got:\n{text}",
+    );
+    assert!(
+        text.contains("Check the endpoint")
+            && !text.contains("Fix the auth")
+            && !text.contains("ANTHROPIC_AUTH_TOKEN"),
+        "the repair is the endpoint, never the token; got:\n{text}",
+    );
+}
+
+/// A 429 streak is nobody's repair job: the token is fine and the
+/// endpoint is fine, so the only instruction is to wait.
+#[test]
+fn a_rate_limited_bail_tells_the_reader_to_wait() {
+    let text = flatten(&bail_detail(
+        &App::test_default(),
+        &bailed_with_error(
+            "Subspace",
+            "/home/x/.claude-subspace",
+            forge_workspace::AccountAuth::BaseUrl,
+            forge_workspace::UsageFetchStatus::RateLimited,
+        ),
+        PICKER_WIDTH,
+    ))
+    .join("\n");
+
+    assert!(text.contains("Subspace is rate limited"), "the head names the limit; got:\n{text}");
+    assert!(text.contains("Waiting clears it"), "the repair is time, not an edit; got:\n{text}");
+    assert!(
+        !text.contains("Fix the auth")
+            && !text.contains("ANTHROPIC_AUTH_TOKEN")
+            && !text.contains("Check the endpoint"),
+        "neither the token nor the endpoint is the problem; got:\n{text}",
+    );
+}
+
 /// `Bailed` is red rather than the shipped warning yellow. On the one
-/// screen that can stop forge starting, mid-flight and failed must not
+/// screen that gates forge starting, mid-flight and failed must not
 /// differ only by glyph.
 #[test]
 fn a_bailed_account_is_red_not_yellow() {
