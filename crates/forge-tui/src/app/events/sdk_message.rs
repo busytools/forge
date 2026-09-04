@@ -3941,11 +3941,30 @@ mod subagent_sentinel_tests {
             child.id.clone(),
             ToolCallScope::SubagentChild { parent_tool_use_id: root_id.to_owned() },
         );
+        let child_block = child.id.clone();
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(root)), MessageBlock::ToolCall(Box::new(child))],
         ));
-        app.insert_session_task_mapping(task_id.to_owned(), root_id.to_owned());
+        // Indexed so the TaskStarted below re-adopts the terminal card
+        // instead of synthesizing over it.
+        let root_msg = app.messages().len() - 1;
+        app.index_tool_call(root_id.to_owned(), root_msg, 0);
+        app.index_tool_call(child_block, root_msg, 1);
+        // The real producer, sticky marker and all - the map entry alone
+        // would leave the sticky-read gate in backgrounded_alive_tool_use_ids
+        // unpinned by the departure assertions below.
+        handle_sdk_message(
+            app,
+            Message::TaskStarted {
+                task_id: task_id.to_owned(),
+                description: "long-running background scan".to_owned(),
+                uuid: String::new(),
+                session_id: String::new(),
+                tool_use_id: Some(root_id.to_owned()),
+                task_type: Some("local_agent".to_owned()),
+            },
+        );
     }
 
     fn terminal_task_updated(task_id: &str) -> Message {
