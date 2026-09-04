@@ -1952,10 +1952,7 @@ async fn a_turn_error_spares_a_sticky_roots_cards() {
         },
     );
     assert!(
-        app.active_session()
-            .expect("active session")
-            .backgrounded_alive_tool_use_ids()
-            .is_empty(),
+        app.active_session().expect("active session").backgrounded_alive_tool_use_ids().is_empty(),
         "the terminal event ends the sticky liveness; got {:?}",
         app.active_session().expect("active session").backgrounded_alive_tool_use_ids(),
     );

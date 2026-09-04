@@ -1406,15 +1406,16 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         let root_id = app
             .active_session()
             .and_then(|session| session.session_task_tool_use_ids.get(&task_id).cloned());
-        match root_id {
-            Some(root_id) => app.clear_backgrounded_root(&root_id),
-            None => tracing::debug!(
+        if let Some(root_id) = root_id {
+            app.clear_backgrounded_root(&root_id);
+        } else {
+            tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "task_updated_terminal_no_sticky_match",
                 message = "terminal task_updated resolved no session-map entry; no sticky marker to clear",
                 outcome = "skipped",
                 task_id = %task_id,
-            ),
+            );
         }
     }
 
