@@ -36,16 +36,24 @@ const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
 /// `claude setup-token`). Its presence makes an Anthropic account
 /// token-mode: the probe authenticates with the token, never with the
 /// keychain entry for the account's config dir.
-pub const CLAUDE_CODE_OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+const CLAUDE_CODE_OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/// The setup token `env` carries, when non-empty.
+fn token_bearer<'a, S: std::hash::BuildHasher>(
+    env: &'a HashMap<String, String, S>,
+) -> Option<&'a str> {
+    env.get(CLAUDE_CODE_OAUTH_TOKEN_ENV)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+}
 
 /// True when `env` carries a non-empty [`CLAUDE_CODE_OAUTH_TOKEN_ENV`].
 /// A token-mode account has no keychain entry of its own - the config
 /// dir is shared - so both the probe and preflight's repair copy branch
 /// on this rather than on the provider alone.
 pub fn is_token_mode<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> bool {
-    env.get(CLAUDE_CODE_OAUTH_TOKEN_ENV)
-        .map(String::as_str)
-        .is_some_and(|token| !token.trim().is_empty())
+    token_bearer(env).is_some()
 }
 
 /// `User-Agent` native CLI sends on /api/oauth/usage, captured from
@@ -213,9 +221,10 @@ pub enum ProbePlan {
 }
 
 /// Derive the [`ProbePlan`] for an account from its declared
-/// [`Provider`]. The provider alone decides the shape; `env` is read
-/// only to fill in the base url and bearer a base-url provider
-/// authenticates with. `ANTHROPIC_BASE_URL` decides nothing, because it
+/// [`Provider`]. The provider alone decides the shape; `env` fills in
+/// the base url and bearer a base-url provider authenticates with, and
+/// a non-base-url provider's setup token flips the plan to
+/// [`ProbePlan::Token`]. `ANTHROPIC_BASE_URL` decides nothing, because it
 /// answers where the credential lives rather than what the backend
 /// bills for - Codex sets one and is still a windowed subscription.
 ///
@@ -228,12 +237,7 @@ pub fn probe_plan<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
 ) -> ProbePlan {
     if !provider.uses_base_url() {
-        return match env
-            .get(CLAUDE_CODE_OAUTH_TOKEN_ENV)
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-        {
+        return match token_bearer(env) {
             Some(bearer) => ProbePlan::Token { bearer: bearer.to_owned() },
             None => ProbePlan::Keychain,
         };
@@ -530,6 +534,16 @@ pub async fn probe(
             outcome = "ok",
             body_bytes = body.len(),
         );
+    } else if status == 403 && is_scope_refusal(&body) {
+        // The verdict on a valid setup token, not a failure: warn here
+        // would fire every 60 s per healthy token account.
+        tracing::debug!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "oauth_usage_scope_refusal",
+            status,
+            outcome = "scope_refused",
+            body_suffix = %truncated_body_suffix(&body),
+        );
     } else {
         tracing::warn!(
             target: "forge_agent::cloud::oauth_usage",
@@ -567,7 +581,7 @@ fn is_scope_refusal(body: &[u8]) -> bool {
 /// mapper turns into a barless snapshot. Every other error passes
 /// through untouched - a 401 must still reach the loader as
 /// `Unauthorized` and bail.
-pub fn accept_scope_refusal(
+fn accept_scope_refusal(
     result: Result<OauthUsage, OauthUsageError>,
 ) -> Result<OauthUsage, OauthUsageError> {
     match result {
@@ -582,7 +596,26 @@ pub fn accept_scope_refusal(
 /// belongs to whichever account logged in last, or to nobody.
 pub async fn probe_setup_token(bearer: &str) -> Result<OauthUsage, OauthUsageError> {
     let credentials = OauthCredentials { access_token: bearer.to_owned(), expires_at: None };
-    accept_scope_refusal(probe(&credentials, None).await)
+    let settled = accept_scope_refusal(probe(&credentials, None).await);
+    match &settled {
+        // Names the settle so the debug refusal line above is
+        // diagnosable in a triage grep.
+        Ok(_) => tracing::info!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "oauth_usage_setup_token_settled",
+            outcome = "ok",
+            "setup token usage probe settled",
+        ),
+        Err(OauthUsageError::Unauthorized(403)) => tracing::warn!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "oauth_usage_setup_token_unrecognized_403",
+            outcome = "non_ok",
+            "403 without the oauth_scope_insufficient shape: if the token was just \
+             re-minted, suspect a changed refusal body rather than a dead token",
+        ),
+        _ => {}
+    }
+    settled
 }
 
 async fn oauth_headers(access_token: &str) -> Result<HeaderMap, OauthUsageError> {
@@ -898,6 +931,8 @@ mod tests {
     /// token gets 403 `oauth_scope_insufficient`, a revoked one gets
     /// 401 `authentication_error` - so the two must never share a
     /// classification, or every valid token account bails at boot.
+    /// Expiry was not observed; an unseen 403 shape classifies
+    /// `Unauthorized` and bails, so an unknown shape fails safe.
     #[test]
     fn a_403_scope_refusal_body_is_recognized_and_other_403s_are_not() {
         let refused = br#"{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement user:profile","details":{"error_code":"oauth_scope_insufficient"}}}"#;
@@ -913,6 +948,12 @@ mod tests {
         assert!(
             !is_scope_refusal(br#"{"error":{"type":"permission_error","message":"no details"}}"#),
             "a permission_error without the error_code is not a scope refusal",
+        );
+        assert!(
+            !is_scope_refusal(
+                br#"{"error":{"details":{"error_code":"oauth_token_revoked"},"message":"x"}}"#
+            ),
+            "a populated but different error_code is not a scope refusal",
         );
     }
 
