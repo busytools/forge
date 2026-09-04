@@ -430,12 +430,6 @@ impl InputState {
         }
     }
 
-    pub fn move_end(&mut self) {
-        if !self.textarea_move_end() {
-            self.version += 1;
-        }
-    }
-
     pub fn measure_visual_lines(&mut self, content_width: u16, max_rows: u16) -> u16 {
         if let Some((v, w, m, result)) = self.cached_measure
             && v == self.content_version
@@ -1118,7 +1112,7 @@ mod tests {
         assert_eq!(input.version, v);
     }
 
-    // Navigation: move_home, move_end
+    // Navigation: move_home, textarea_move_end
 
     #[test]
     fn move_home_sets_col_zero() {
@@ -1129,11 +1123,11 @@ mod tests {
     }
 
     #[test]
-    fn move_end_sets_col_to_line_len() {
+    fn textarea_move_end_sets_col_to_line_len() {
         let mut input = InputState::new();
         input.insert_str("hello");
         input.move_home();
-        input.move_end();
+        input.textarea_move_end();
         assert_eq!(input.cursor_col(), 5);
     }
 
@@ -1254,7 +1248,7 @@ mod tests {
         assert_eq!(input.cursor_col(), 2);
         input.move_up(); // to row 0 "long line here", col stays 2
         assert_eq!(input.cursor_col(), 2);
-        input.move_end(); // col = 14
+        input.textarea_move_end(); // col = 14
         input.move_down(); // to row 1 "ab", col clamped to 2
         assert_eq!(input.cursor_col(), 2);
     }
@@ -1412,7 +1406,7 @@ mod tests {
         for _ in 0..50 {
             input.move_home();
             assert_eq!(input.cursor_col(), 0);
-            input.move_end();
+            input.textarea_move_end();
             assert_eq!(input.cursor_col(), 5);
         }
     }
@@ -1543,7 +1537,7 @@ mod tests {
         assert_eq!(input.text(), "hello\nworld");
 
         input.move_up();
-        input.move_end();
+        input.textarea_move_end();
         input.insert_char('!');
         assert_eq!(input.text(), "hello!\nworld");
 

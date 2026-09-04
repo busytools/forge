@@ -6717,7 +6717,6 @@ mod tests {
                 layout_generation: 0,
                 tools_collapsed: false,
                 include_trailing_separator: false,
-                suppress_group_header: false,
                 stop_hook_summary_actions: 0,
                 stop_hook_summary_expanded: false,
                 render_signature: MessageRenderSignature(0),
