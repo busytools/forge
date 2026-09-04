@@ -355,6 +355,19 @@ pub struct UiSession {
     /// `task_notification` persists until session reset - bounded and inert.
     pub session_task_tool_use_ids: std::collections::HashMap<String, String>,
 
+    /// Agent-kind tasks this session saw backgrounded and that no
+    /// terminal `task_updated` / `task_notification` has cleared. The
+    /// roster replaces wholesale and can arrive after the spawning
+    /// turn's Result, so a snapshot-only read collapses the subagent
+    /// exemption on a badly-timed frame and nothing re-registers it
+    /// (#790). This is the historical half of the liveness signal: set
+    /// when the task first reports backgrounded, cleared by a terminal
+    /// event (resolving the notification's own tool-use id when the
+    /// mapping is already gone), a roster departure that drops the
+    /// mapping, or session teardown - never by a turn boundary, a turn
+    /// error, or a card transition.
+    pub backgrounded_roots: HashSet<String>,
+
     /// Pending time-based schedules (`ScheduleWakeup` + `CronCreate`)
     /// surfaced in the Inspector SCHEDULES section. Pruned by the
     /// ~1s timer tick via `App::prune_expired_schedules`.
@@ -571,17 +584,16 @@ impl UiSession {
         !self.background_tasks.is_empty()
     }
 
-    /// Drop the CLI-fed background-task registry and its task-id ->
-    /// tool-use-id mirror. The two are cleared together because the mirror
-    /// only means anything as a lookup INTO the registry. Called on session
-    /// teardown (connection failure, reset): the CLI drains
-    /// `background_tasks` only via a terminal `background_tasks_changed`,
-    /// which never arrives for a dead/replaced session, so without this the
-    /// registry - and the activity spinner + frame-tick it drives - would
-    /// stay stale forever.
+    /// Drop the CLI-fed background-task registry, its task-id ->
+    /// tool-use-id mirror, and the sticky backgrounded roots. The three
+    /// are cleared together: on session teardown (connection failure,
+    /// reset) no terminal event can ever arrive, so without this the
+    /// registry - and the activity spinner + frame-tick it drives -
+    /// would stay stale forever.
     pub fn clear_background_task_registry(&mut self) {
         self.background_tasks.clear();
         self.session_task_tool_use_ids.clear();
+        self.backgrounded_roots.clear();
     }
 
     /// The `tool_use_id`s of every currently-backgrounded task the CLI still
@@ -590,15 +602,26 @@ impl UiSession {
     /// session task map (`task_id` -> `tool_use_id`) is the signal that
     /// survives turn finalisation; a map entry whose task already left the
     /// roster is excluded, so a leaked mapping never resurrects a phantom
-    /// live row.
+    /// live row. Sticky roots ([`Self::backgrounded_roots`]) union in on
+    /// top; each is credited only while its session-map entry still exists,
+    /// so a roster departure ends a root's liveness ahead of its terminal
+    /// event.
     pub fn backgrounded_alive_tool_use_ids(&self) -> HashSet<&str> {
         let task_ids: HashSet<&str> =
             self.background_tasks.iter().map(|task| task.task_id.as_str()).collect();
-        self.session_task_tool_use_ids
+        let mut alive: HashSet<&str> = self
+            .session_task_tool_use_ids
             .iter()
             .filter(|(task_id, _)| task_ids.contains(task_id.as_str()))
             .map(|(_, tool_use_id)| tool_use_id.as_str())
-            .collect()
+            .collect();
+        alive.extend(
+            self.backgrounded_roots
+                .iter()
+                .filter(|id| self.session_task_tool_use_ids.values().any(|v| v == *id))
+                .map(String::as_str),
+        );
+        alive
     }
 
     /// [`Self::backgrounded_alive_tool_use_ids`] plus everything hanging
@@ -622,7 +645,27 @@ impl UiSession {
                 .filter(|id| self.resolves_to_live_root(id, &roots))
                 .cloned(),
         );
+        // Field visibility for the exempt-set size, which is what the
+        // sweep-cost issues (#791, #793) scale on.
+        tracing::debug!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = "backgrounded_alive_set_built",
+            message = "derived the alive-with-children exempt set over the scope map",
+            outcome = "success",
+            entries = alive.len(),
+        );
         alive
+    }
+
+    /// Whether one tool call id is exempt from a turn-boundary sweep: a
+    /// live backgrounded root itself, or hanging off one at any depth.
+    /// Per-call form of the sweep exemption: building the live-root set
+    /// costs O(roster + map + sticky), and the chain walk on top of it
+    /// O(depth) - against the eager form's O(all scopes) per sweep
+    /// (#793).
+    pub(crate) fn is_backgrounded_alive_or_descendant(&self, id: &str) -> bool {
+        let roots = self.backgrounded_alive_tool_use_ids();
+        roots.contains(id) || self.resolves_to_live_root(id, &roots)
     }
 
     /// Whether a tool call hangs off one of `roots`, at any depth. A `Task`
@@ -645,6 +688,72 @@ impl UiSession {
             }
         }
         false
+    }
+
+    /// Whether `id` hangs off `root_id` at any depth through a chain
+    /// that touches no other live work: a self-rostered nested Task
+    /// keeps its own liveness, and its descendants', when the parent
+    /// drains.
+    fn hangs_off_departed_root(&self, id: &str, root_id: &str, live: &HashSet<&str>) -> bool {
+        let mut cursor = id;
+        // The chain cannot exceed the map, and a cycle would otherwise spin.
+        for _ in 0..self.tool_call_scopes.len() {
+            match self.tool_call_scopes.get(cursor) {
+                Some(ToolCallScope::SubagentChild { parent_tool_use_id }) => {
+                    if parent_tool_use_id.as_str() == root_id {
+                        return true;
+                    }
+                    if live.contains(parent_tool_use_id.as_str()) {
+                        return false;
+                    }
+                    cursor = parent_tool_use_id.as_str();
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Flip every open tool call that hangs off `root_id` through no
+    /// live work to `Completed`. Fired when a backgrounded root's task
+    /// departs the roster or its `task_notification` lands: descendants
+    /// with no liveness of their own have no terminal event coming and
+    /// would otherwise stay open until the next turn boundary. The root
+    /// itself is untouched, and a self-rostered descendant (a nested
+    /// backgrounded Task) keeps its own row. The drain carries no
+    /// failure signal, so settled children read Completed even when
+    /// they failed. Returns the touched (message, block) slots for
+    /// render-cache sync.
+    pub(crate) fn settle_children_of(&mut self, root_id: &str) -> Vec<(usize, usize)> {
+        let live = self.backgrounded_alive_tool_use_ids();
+        let doomed: HashSet<String> = self
+            .tool_call_scopes
+            .iter()
+            .filter(|(id, scope)| {
+                matches!(scope, ToolCallScope::SubagentChild { .. })
+                    && !live.contains(id.as_str())
+                    && self.hangs_off_departed_root(id, root_id, &live)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut settled: Vec<(usize, usize)> = Vec::new();
+        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+            for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
+                let crate::app::MessageBlock::ToolCall(tc) = block else { continue };
+                let tc = tc.as_mut();
+                if doomed.contains(tc.id.as_str())
+                    && matches!(
+                        tc.status,
+                        model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                    )
+                {
+                    tc.status = model::ToolCallStatus::Completed;
+                    tc.mark_tool_call_layout_dirty();
+                    settled.push((msg_idx, block_idx));
+                }
+            }
+        }
+        settled
     }
 }
 
@@ -735,6 +844,7 @@ impl Default for UiSession {
             key: Option::default(),
             dictate_overrides: forge_workspace::DictateOverrides::default(),
             dictate_device_pin: None,
+            backgrounded_roots: HashSet::new(),
             session_id: Option::default(),
             lifecycle_state: SessionLifecycleState::default(),
             cwd_raw: String::default(),

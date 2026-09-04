@@ -886,6 +886,191 @@ async fn backgrounded_agent_survives_real_turn_complete() {
     );
 }
 
+/// A roster frame arriving AFTER the turn's Result must not collapse the
+/// subagent exemption. At the boundary the roster is momentarily empty,
+/// so a snapshot-only liveness read drops the root + child scopes and
+/// sweeps the child, and the late frame restores nothing (#790). The
+/// sticky per-session marker set at `task_started` is the historical
+/// half of the signal that survives that window.
+#[tokio::test]
+async fn a_late_roster_frame_does_not_collapse_the_subagent_exemption() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    // Dispatch + task_started; the roster frame has NOT arrived yet.
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "bg scan",
+                "prompt": "bg scan",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "bg scan".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "x"}))],
+            "toolu_root",
+        ),
+    );
+
+    // The spawning turn completes while the roster is still empty.
+    send_msg(&mut app, result_success_message());
+
+    // The roster lands a frame late.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "bg scan",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        app.tool_call_scope("toolu_root"),
+        Some(ToolCallScope::SubagentRoot),
+        "the root's scope survives a roster that arrived late; got {:?}",
+        app.tool_call_scope("toolu_root"),
+    );
+    assert_eq!(
+        app.tool_call_scope("toolu_child"),
+        Some(ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() }),
+        "the child's scope survives too; got {:?}",
+        app.tool_call_scope("toolu_child"),
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_child").status,
+        model::ToolCallStatus::InProgress,
+        "the child was not swept by the boundary; got {:?}",
+        tool_call_block(&app, "toolu_child").status,
+    );
+    assert_eq!(
+        app.subagents_view().len(),
+        1,
+        "SUBAGENTS still shows the agent; got {:?}",
+        app.subagents_view(),
+    );
+}
+
+/// The sticky marker bridges the task_started -> first-roster-frame
+/// window, but it is liveness, not immortality: only a terminal
+/// `task_updated` (with the roster drain that accompanies it) may end
+/// it. Nothing else - not a turn boundary, not a card transition -
+/// clears it.
+#[tokio::test]
+async fn the_sticky_backgrounded_root_lasts_until_a_terminal_event() {
+    fn alive_of(app: &App) -> std::collections::HashSet<String> {
+        app.active_session()
+            .expect("active session")
+            .backgrounded_alive_tool_use_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "bg scan",
+                "prompt": "bg scan",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "bg scan".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+
+    // The turn completes before any roster frame: the sticky marker
+    // carries liveness through the boundary the empty roster would
+    // otherwise collapse.
+    send_msg(&mut app, result_success_message());
+    assert!(
+        alive_of(&app).contains("toolu_root"),
+        "the sticky root carries liveness across the boundary; got {:?}",
+        alive_of(&app),
+    );
+
+    // The late roster frame lands; liveness continues.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "bg scan",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    assert!(
+        alive_of(&app).contains("toolu_root"),
+        "rostered liveness continues; got {:?}",
+        alive_of(&app),
+    );
+
+    // True completion: terminal task_updated, then the drain frame.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskUpdated {
+            task_id: "task-root".to_owned(),
+            patch: forge_primitives::messages::TaskUpdatePatch {
+                status: Some("completed".to_owned()),
+                end_time: None,
+            },
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: Vec::new(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    assert!(
+        alive_of(&app).is_empty(),
+        "nothing may keep the root alive past its terminal event; got {:?}",
+        alive_of(&app),
+    );
+}
+
 /// The turn boundary must not force-complete a backgrounded tool call whose
 /// card is still open. Driving the REAL `Message::Result` runs the finalize
 /// sweep, but a `run_in_background` Bash still in the session roster is
@@ -1589,6 +1774,312 @@ async fn a_grandchild_of_a_live_backgrounded_subagent_is_spared() {
     );
 }
 
+/// Once a backgrounded root drains from the roster, nothing sweeps its
+/// still-open children until the next turn boundary - an idle session
+/// shows a running card and a PROCESSES row for work that is done. The
+/// roster diff itself is the settle signal: the departed root's open
+/// children go terminal at the drain, while the root keeps its card for
+/// its own `task_updated`, which lands a frame later.
+#[tokio::test]
+async fn a_roster_drain_settles_the_departed_roots_open_children() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "bg scan",
+                "prompt": "bg scan",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "bg scan".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-root",
+                "task_type": "local_agent",
+                "description": "bg scan",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "sleep"}))],
+            "toolu_root",
+        ),
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_child").status,
+        model::ToolCallStatus::InProgress,
+        "precondition: the child card is open",
+    );
+
+    // The spawning turn completes; the rostered root spares both cards.
+    send_msg(&mut app, result_success_message());
+    assert_eq!(
+        tool_call_block(&app, "toolu_child").status,
+        model::ToolCallStatus::InProgress,
+        "precondition: the rostered root's child survives the turn boundary",
+    );
+
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: Vec::new(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_child").status,
+        model::ToolCallStatus::Completed,
+        "the departed root's open child settles at the roster drain; got {:?}",
+        tool_call_block(&app, "toolu_child").status,
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_root").status,
+        model::ToolCallStatus::InProgress,
+        "the root is not swept with its children; got {:?}",
+        tool_call_block(&app, "toolu_root").status,
+    );
+}
+
+/// A turn error kills the TURN, not backgrounded work: a root marked
+/// sticky at `task_started` (and its open child) is exempt from the
+/// Failed sweep, matching the cancel path and the background-session
+/// branch. The marker is session-lifetime state - wiping it here would
+/// also unlive roots from earlier turns in the roster-lag window.
+/// Its own terminal events still settle the cards later.
+#[tokio::test]
+async fn a_turn_error_spares_a_sticky_roots_cards() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    // Dispatch + task_started; no roster frame yet, so the sticky
+    // marker is the only liveness signal in play.
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "bg scan",
+                "prompt": "bg scan",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "bg scan".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "x"}))],
+            "toolu_root",
+        ),
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_root").status,
+        model::ToolCallStatus::InProgress,
+        "precondition: the root card is open",
+    );
+
+    let key = active_session_key(&app);
+    send_client_event(
+        &mut app,
+        SessionUpdate::TurnError {
+            key,
+            message: "boom".to_owned(),
+            class: None,
+            terminal_reason: None,
+        },
+    );
+
+    assert_eq!(
+        tool_call_block(&app, "toolu_root").status,
+        model::ToolCallStatus::InProgress,
+        "the sticky root is exempt from the errored turn's sweep; got {:?}",
+        tool_call_block(&app, "toolu_root").status,
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_child").status,
+        model::ToolCallStatus::InProgress,
+        "and so is its child; got {:?}",
+        tool_call_block(&app, "toolu_child").status,
+    );
+
+    // The marker still clears on its own terminal events: the errored
+    // turn reset the turn-scoped lookup, so the session map is what
+    // resolves the terminal patch to the marker.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskUpdated {
+            task_id: "task-root".to_owned(),
+            patch: forge_primitives::messages::TaskUpdatePatch {
+                status: Some("completed".to_owned()),
+                end_time: None,
+            },
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    assert!(
+        app.active_session().expect("active session").backgrounded_alive_tool_use_ids().is_empty(),
+        "the terminal event ends the sticky liveness; got {:?}",
+        app.active_session().expect("active session").backgrounded_alive_tool_use_ids(),
+    );
+}
+
+/// A subagent's own backgrounded work is self-rostered: a nested Task
+/// carries its own roster row, its own `task_started` mapping and its
+/// own terminal events, so draining the PARENT's row must not settle it
+/// - nor anything still hanging off it. Only chains that reach the
+/// departed root through no live work settle.
+#[tokio::test]
+async fn the_roster_drain_spares_a_descendant_that_is_live_on_its_own_roster_row() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "bg scan",
+                "prompt": "bg scan",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "bg scan".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    // A plain child of the root: nothing but the root keeps it alive.
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_plain", "Bash", serde_json::json!({"command": "x"}))],
+            "toolu_root",
+        ),
+    );
+    // A nested Task issued BY the subagent - itself a backgrounded
+    // dispatch - plus a grandchild under it.
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_nested", "Task", serde_json::json!({"description": "n"}))],
+            "toolu_root",
+        ),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-nested".to_owned(),
+            description: "n".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_nested".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_gchild", "Bash", serde_json::json!({"command": "y"}))],
+            "toolu_nested",
+        ),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![
+                serde_json::json!({
+                    "task_id": "task-root",
+                    "task_type": "local_agent",
+                    "description": "bg scan",
+                }),
+                serde_json::json!({
+                    "task_id": "task-nested",
+                    "task_type": "local_agent",
+                    "description": "n",
+                }),
+            ],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    // The root's row drains; the nested task's row stays.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-nested",
+                "task_type": "local_agent",
+                "description": "n",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        tool_call_block(&app, "toolu_plain").status,
+        model::ToolCallStatus::Completed,
+        "the plain child settles at the drain; got {:?}",
+        tool_call_block(&app, "toolu_plain").status,
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_nested").status,
+        model::ToolCallStatus::InProgress,
+        "self-rostered work survives its parent's drain; got {:?}",
+        tool_call_block(&app, "toolu_nested").status,
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_gchild").status,
+        model::ToolCallStatus::InProgress,
+        "and so does everything hanging off the nested task; got {:?}",
+        tool_call_block(&app, "toolu_gchild").status,
+    );
+}
+
 /// A `Task`/`Agent` dispatch is the MAIN agent's own call, so a turn that
 /// opens with one owns its turn like any other. Classifying the root as
 /// subagent-scoped bars it from binding and reproduces the finished-turn
@@ -1720,5 +2211,79 @@ async fn a_subagent_child_follows_its_root_not_the_last_assistant() {
         app.lookup_tool_call("toolu_child").map(|(m, _)| m),
         Some(root_msg),
         "the child follows its root, not whichever assistant happens to be last",
+    );
+}
+
+/// A resumed agent's Task card replays WITHOUT a scope - resume
+/// registers none and the post-replay sweep clears the rest - so a
+/// dispatch-keyed view can never see it again, even while the resumed
+/// agent's live child frames keep naming the card. The view must derive
+/// a root from such a parent too (#808), and drain once nothing under
+/// it runs.
+///
+/// The fixture encodes the premise the PR flags as unverified: a child
+/// frame's `parent_tool_use_id` is the ORIGINAL dispatch's tool-use id
+/// (read off subagents/*.meta.json). A live capture showing children
+/// naming a different id leaves this derivation parentless and the
+/// resumed agent invisible again - the capture task decides.
+///
+/// Composition note: in this resume state nothing restores liveness.
+/// The replay walk synthesizes only User / Assistant envelopes, so no
+/// `task_started`, roster row, or session-map entry is re-delivered,
+/// and the first turn boundary sweeps the live child and drains the
+/// section. Whether the resumed CLI announces its agents is what the
+/// live capture pins; a `task_started` would re-arm the sticky marker
+/// and a roster row re-arms it through the session map.
+#[tokio::test]
+async fn a_resumed_unscoped_root_surfaces_through_its_children_frames() {
+    let mut app = test_app();
+
+    // The replayed Task card: indexed, terminal from its replayed
+    // result, no scope registered.
+    let mut root = backgrounded_bash_card("toolu_root");
+    root.sdk_tool_name = "Task".to_owned();
+    root.status = model::ToolCallStatus::Completed;
+    root.hidden = true;
+    app.active_messages_mut().push(ChatMessage::new(
+        MessageRole::Assistant,
+        vec![MessageBlock::ToolCall(Box::new(root))],
+    ));
+    let root_msg = app.messages().len() - 1;
+    app.index_tool_call("toolu_root".to_owned(), root_msg, 0);
+
+    assert!(
+        app.subagents_view().is_empty(),
+        "precondition: an unscoped card alone shows nothing; got {:?}",
+        app.subagents_view(),
+    );
+
+    // Live child traffic from the resumed agent names the card.
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "sleep"}))],
+            "toolu_root",
+        ),
+    );
+
+    let view = app.subagents_view();
+    assert_eq!(view.len(), 1, "the resumed agent surfaces through its child frame; got {view:?}",);
+    assert_eq!(view[0].tool_use_id, "toolu_root");
+    assert_eq!(
+        view[0].status,
+        model::ToolCallStatus::InProgress,
+        "it renders running on the open child; got {:?}",
+        view[0].status,
+    );
+
+    // The child settles; nothing keeps the section open.
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block("toolu_child", serde_json::json!("ok"))]),
+    );
+    assert!(
+        app.subagents_view().is_empty(),
+        "the section drains once the child settles; got {:?}",
+        app.subagents_view(),
     );
 }

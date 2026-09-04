@@ -846,27 +846,13 @@ fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallSta
     use crate::app::state::tool_call_info::is_monitor_tool_name;
     use forge_primitives::{ToolCallStatus, ToolCallUpdateFields};
 
-    // Their terminal status arrives later via `task_updated`.
-    let backgrounded_alive: std::collections::HashSet<String> = app
-        .active_session()
-        .map(crate::app::session::UiSession::backgrounded_alive_with_children)
-        .unwrap_or_default();
-    tracing::debug!(
-        target: crate::logging::targets::APP_TOOL,
-        event_name = "tool_call_sweep",
-        message = "swept open tool calls at a turn boundary",
-        outcome = "success",
-        sweep_site = "result_finalize",
-        new_status = ?status,
-        exempt_count = backgrounded_alive.len(),
-    );
-    let pending: Vec<String> = app.with_turn_state(|ts| {
+    let open_ids: Vec<String> = app.with_turn_state(|ts| {
         ts.tool_calls
             .iter()
             .filter(|(_, t)| {
                 matches!(t.status, ToolCallStatus::Pending | ToolCallStatus::InProgress)
             })
-            .filter(|(id, t)| {
+            .filter(|(_, t)| {
                 // Skip explicit persistent monitors - the docs and
                 // wire shape both say these outlive the turn that
                 // started them.
@@ -889,16 +875,25 @@ fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallSta
                 if t.raw_input.is_none() && is_monitor_tool_name(&t.title) {
                     return false;
                 }
-                // Still-running backgrounded work (bash / Task root) settles
-                // via its own task_updated, not the turn boundary.
-                if backgrounded_alive.contains(id.as_str()) {
-                    return false;
-                }
                 true
             })
             .map(|(id, _)| id.clone())
             .collect()
     });
+    // Liveness is answered per open call - O(depth) each - rather than
+    // deriving the eager exempt set off the whole scope map (#793).
+    let (pending, spared): (Vec<String>, Vec<String>) = open_ids.into_iter().partition(|id| {
+        !app.active_session().is_some_and(|session| session.is_backgrounded_alive_or_descendant(id))
+    });
+    tracing::debug!(
+        target: crate::logging::targets::APP_TOOL,
+        event_name = "tool_call_sweep",
+        message = "swept open tool calls at a turn boundary",
+        outcome = "success",
+        sweep_site = "result_finalize",
+        new_status = ?status,
+        exempt_count = spared.len(),
+    );
     for id in pending {
         apply_tool_call_update(
             app,
@@ -1299,7 +1294,7 @@ fn convert_runtime_session_state(
 }
 
 fn handle_task_started(app: &mut App, msg: Message) {
-    let Message::TaskStarted { tool_use_id, task_id, .. } = msg else { return };
+    let Message::TaskStarted { tool_use_id, task_id, task_type, .. } = msg else { return };
     let id = tool_use_id.as_deref().unwrap_or("");
     if id.is_empty() {
         return;
@@ -1314,6 +1309,24 @@ fn handle_task_started(app: &mut App, msg: Message) {
         // cross-turn resolver for backgrounded agents (SUBAGENTS) and
         // the PROCESSES local_bash feed.
         app.insert_session_task_mapping(task_id.clone(), id.to_owned());
+        // Agent-kind dispatches are backgrounded work: sticky liveness
+        // that survives a turn boundary the roster has not caught up
+        // with yet (#790).
+        if matches!(task_type.as_deref(), Some("agent" | "local_agent")) {
+            app.mark_backgrounded_root(id.to_owned());
+        } else if matches!(
+            app.tool_call_scope(id),
+            Some(crate::app::state::types::ToolCallScope::SubagentRoot)
+        ) && task_type.as_deref().is_some_and(|kind| !kind.is_empty())
+        {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "task_started_unmarked_agent_kind",
+                message = "a subagent dispatch's task_started names no known agent task_type; no sticky liveness mark is set (possible wire drift)",
+                outcome = "partial",
+                task_type = %task_type.as_deref().unwrap_or_default(),
+            );
+        }
         // stamp the wire-level task_id on the matching
         // MonitorEntry so subsequent `task_notification` / `task_updated`
         // events (keyed by task_id) can route to the right row.
@@ -1408,6 +1421,23 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         // the workflow row to its summarised one-liner. Idempotent
         // when the entry is already Completed.
         app.set_workflow_completed_by_task_id(&task_id);
+        // A terminal patch is one of the two events that may clear the
+        // sticky backgrounded marker. The turn-scoped lookup below
+        // resets every turn, so resolve through the session map.
+        let root_id = app
+            .active_session()
+            .and_then(|session| session.session_task_tool_use_ids.get(&task_id).cloned());
+        if let Some(root_id) = root_id {
+            app.clear_backgrounded_root(&root_id);
+        } else {
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "task_updated_terminal_no_sticky_match",
+                message = "terminal task_updated resolved no session-map entry; no sticky marker to clear",
+                outcome = "skipped",
+                task_id = %task_id,
+            );
+        }
     }
 
     // The standard tool-call card update still requires the
@@ -1464,7 +1494,21 @@ fn handle_task_notification(app: &mut App, msg: Message) {
     // `task_id -> tool_use_id` resolver; rostered non-agents get none and are
     // cleaned by the roster diff in `handle_background_tasks_changed` instead.
     if !task_id.is_empty() {
+        // The other event that may clear the sticky backgrounded marker:
+        // resolve before dropping the mapping, falling back to the
+        // notification's own tool_use_id.
+        let root_id = app
+            .active_session()
+            .and_then(|session| session.session_task_tool_use_ids.get(&task_id).cloned())
+            .or_else(|| (!id.is_empty()).then(|| id.to_owned()));
         app.remove_session_task_mapping(&task_id);
+        if let Some(root_id) = root_id {
+            app.clear_backgrounded_root(&root_id);
+            // The true completion settles the root's open children here,
+            // not only at the roster drain (#789): the drain frame finds
+            // no mapping after this and could not resolve them.
+            app.settle_departed_root_children(&root_id);
+        }
     }
     // stamp the `output_file` path on the matching
     // MonitorEntry (idempotent) and refresh the tail from disk.
@@ -1687,9 +1731,34 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
             .unwrap_or_default()
     };
     for task_id in &departed {
+        // Resolve the root before dropping the mapping, so its open
+        // children settle now rather than waiting for the next turn
+        // boundary (#789). The root's own card stays open for its
+        // terminal `task_updated`, which lands a frame after the drain.
+        let root_id = app
+            .active_session()
+            .and_then(|session| session.session_task_tool_use_ids.get(task_id).cloned());
         app.remove_session_task_mapping(task_id);
+        if let Some(root_id) = root_id {
+            app.clear_backgrounded_root(&root_id);
+            app.settle_departed_root_children(&root_id);
+        }
     }
+    // Agent-kind roster rows extend the sticky backgrounded-marker set
+    // (#790): a task whose `task_started` named no agent-kind type is
+    // still backgrounded work once the roster lists it.
+    let seeded_roots: Vec<String> = parsed
+        .iter()
+        .filter(|task| matches!(task.task_type.as_str(), "agent" | "local_agent"))
+        .filter_map(|task| {
+            app.active_session()
+                .and_then(|session| session.session_task_tool_use_ids.get(&task.task_id).cloned())
+        })
+        .collect();
     *app.background_tasks_mut() = parsed;
+    for root_id in seeded_roots {
+        app.mark_backgrounded_root(root_id);
+    }
 }
 
 /// Refresh the active session's slash-command list from a
@@ -3918,11 +3987,30 @@ mod subagent_sentinel_tests {
             child.id.clone(),
             ToolCallScope::SubagentChild { parent_tool_use_id: root_id.to_owned() },
         );
+        let child_block = child.id.clone();
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(root)), MessageBlock::ToolCall(Box::new(child))],
         ));
-        app.insert_session_task_mapping(task_id.to_owned(), root_id.to_owned());
+        // Indexed so the TaskStarted below re-adopts the terminal card
+        // instead of synthesizing over it.
+        let root_msg = app.messages().len() - 1;
+        app.index_tool_call(root_id.to_owned(), root_msg, 0);
+        app.index_tool_call(child_block, root_msg, 1);
+        // The real producer, sticky marker and all - the map entry alone
+        // would leave the sticky-read gate in backgrounded_alive_tool_use_ids
+        // unpinned by the departure assertions below.
+        handle_sdk_message(
+            app,
+            Message::TaskStarted {
+                task_id: task_id.to_owned(),
+                description: "long-running background scan".to_owned(),
+                uuid: String::new(),
+                session_id: String::new(),
+                tool_use_id: Some(root_id.to_owned()),
+                task_type: Some("local_agent".to_owned()),
+            },
+        );
     }
 
     fn terminal_task_updated(task_id: &str) -> Message {
@@ -4048,6 +4136,47 @@ mod subagent_sentinel_tests {
         );
         assert!(map_has(&app, "task-a"), "the still-listed subagent keeps its map entry");
         assert!(!map_has(&app, "task-b"), "the departed subagent loses its map entry");
+    }
+
+    fn card_status(app: &App, id: &str) -> ToolCallStatus {
+        let (mi, bi) = app.lookup_tool_call(id).expect("indexed");
+        match app.messages().get(mi).and_then(|m| m.blocks.get(bi)) {
+            Some(MessageBlock::ToolCall(tc)) => tc.status,
+            _ => panic!("expected ToolCall block for {id}"),
+        }
+    }
+
+    /// The notification is the subagent's true completion, and it can
+    /// land while the task is still rostered. Its open children settle
+    /// here too: the later drain frame finds no mapping left to resolve
+    /// and would otherwise strand them open until the next turn
+    /// boundary (#789, second trigger).
+    #[test]
+    fn task_notification_settles_the_roots_open_children() {
+        let mut app = App::test_default();
+        seed_subagent(&mut app, "task-sub", "tu-root-sub", "tu-child-1");
+        // Reopen the child: the shape where the notification is the only
+        // settle signal left.
+        let (mi, bi) = app.lookup_tool_call("tu-child-1").expect("child indexed");
+        match app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi)) {
+            Some(MessageBlock::ToolCall(tc)) => tc.as_mut().status = ToolCallStatus::InProgress,
+            _ => panic!("expected ToolCall block for tu-child-1"),
+        }
+        handle_sdk_message(&mut app, roster_changed(&["task-sub"]));
+        assert_eq!(
+            card_status(&app, "tu-child-1"),
+            ToolCallStatus::InProgress,
+            "precondition: the child is open before the notification",
+        );
+
+        handle_sdk_message(&mut app, task_notification("task-sub", "tu-root-sub"));
+
+        assert_eq!(
+            card_status(&app, "tu-child-1"),
+            ToolCallStatus::Completed,
+            "the true completion settles the root's open children; got {:?}",
+            card_status(&app, "tu-child-1"),
+        );
     }
 }
 

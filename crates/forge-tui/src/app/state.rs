@@ -2283,11 +2283,44 @@ impl App {
         self.active_bucket_mut().session_task_tool_use_ids.remove(task_id);
     }
 
+    /// Settle the open descendants of a backgrounded root that just left
+    /// the roster on the active session. See
+    /// [`UiSession::settle_children_of`].
+    pub(crate) fn settle_departed_root_children(&mut self, root_id: &str) {
+        let settled = self.active_bucket_mut().settle_children_of(root_id);
+        if settled.is_empty() {
+            return;
+        }
+        let mut changed_messages: Vec<usize> = Vec::new();
+        for (msg_idx, block_idx) in &settled {
+            self.sync_render_cache_slot(*msg_idx, *block_idx);
+            if changed_messages.last() != Some(msg_idx) {
+                changed_messages.push(*msg_idx);
+            }
+        }
+        for msg_idx in &changed_messages {
+            self.recompute_message_retained_bytes(*msg_idx);
+        }
+        self.invalidate_message_set(changed_messages);
+    }
+
     /// Clear the active session's background-task registry (and its
     /// task-id mirror) on teardown. See
     /// [`UiSession::clear_background_task_registry`].
     pub(crate) fn clear_active_session_background_task_registry(&mut self) {
         self.active_bucket_mut().clear_background_task_registry();
+    }
+
+    /// Mark a tool-use id as a backgrounded agent root on the active
+    /// session. See [`UiSession::backgrounded_roots`].
+    pub(crate) fn mark_backgrounded_root(&mut self, tool_use_id: String) {
+        self.active_bucket_mut().backgrounded_roots.insert(tool_use_id);
+    }
+
+    /// Clear one sticky backgrounded root - the terminal
+    /// `task_updated` / `task_notification` path.
+    pub(crate) fn clear_backgrounded_root(&mut self, tool_use_id: &str) {
+        self.active_bucket_mut().backgrounded_roots.remove(tool_use_id);
     }
 
     /// Active session's SCHEDULES entries (Inspector SCHEDULES
@@ -2767,24 +2800,35 @@ impl App {
 
     /// Whether `subagents_view` would return anything, without building it.
     /// Short-circuits on the first live root instead of indexing every tool
-    /// call in the session.
+    /// call in the session. Root derivation mirrors `subagents_view`,
+    /// including the unscoped parents of registered child scopes (#808).
     pub fn has_active_subagent_root(&self) -> bool {
         let Some(session) = self.active_session() else {
             return false;
         };
-        // No root registered means no entries, so skip the message walk
-        // entirely - the common case for a session that never dispatched one.
-        if !session
-            .tool_call_scopes
-            .values()
-            .any(|scope| matches!(scope, crate::app::state::types::ToolCallScope::SubagentRoot))
-        {
+        // No scopes at all means no roots and no child frames, so skip
+        // the message walk entirely - the common case for a session that
+        // never dispatched one.
+        if session.tool_call_scopes.is_empty() {
             return false;
         }
         let backgrounded_alive = session.backgrounded_alive_tool_use_ids();
+        // Parents named by child scopes; the ones carrying no scope of
+        // their own are root candidates alongside registered roots.
+        let mut referenced_parents: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for scope in session.tool_call_scopes.values() {
+            if let crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } =
+                scope
+            {
+                referenced_parents.insert(parent_tool_use_id.as_str());
+            }
+        }
         // First occurrence of an id wins, mirroring the `by_id` index the
         // view builds, so a duplicate cannot revive a drained root.
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut open_child_parents: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
         for msg in &session.messages {
             for block in &msg.blocks {
                 let crate::app::MessageBlock::ToolCall(tc) = block else {
@@ -2793,24 +2837,39 @@ impl App {
                 if !seen.insert(tc.id.as_str()) {
                     continue;
                 }
-                if !matches!(
-                    session.tool_call_scopes.get(tc.id.as_str()),
-                    Some(crate::app::state::types::ToolCallScope::SubagentRoot)
-                ) {
-                    continue;
-                }
-                if backgrounded_alive.contains(tc.id.as_str())
-                    || matches!(
-                        tc.status,
-                        crate::agent::model::ToolCallStatus::InProgress
-                            | crate::agent::model::ToolCallStatus::Pending
-                    )
-                {
+                let id = tc.id.as_str();
+                let is_open = matches!(
+                    tc.status,
+                    crate::agent::model::ToolCallStatus::InProgress
+                        | crate::agent::model::ToolCallStatus::Pending
+                );
+                let scope = session.tool_call_scopes.get(id);
+                let is_root =
+                    matches!(scope, Some(crate::app::state::types::ToolCallScope::SubagentRoot))
+                        || (scope.is_none() && referenced_parents.contains(id));
+                if is_root && (backgrounded_alive.contains(id) || is_open) {
                     return true;
+                }
+                if is_open
+                    && let Some(crate::app::state::types::ToolCallScope::SubagentChild {
+                        parent_tool_use_id,
+                    }) = scope
+                {
+                    open_child_parents.insert(parent_tool_use_id.as_str());
                 }
             }
         }
-        false
+        // A root kept open only by its children (#808): the parent must
+        // be among the walked cards, and either a registered root or an
+        // unscoped parent candidate.
+        open_child_parents.iter().any(|parent| {
+            seen.contains(*parent)
+                && match session.tool_call_scopes.get(*parent) {
+                    Some(crate::app::state::types::ToolCallScope::SubagentRoot) => true,
+                    Some(_) => false,
+                    None => referenced_parents.contains(parent),
+                }
+        })
     }
 
     /// Active-session SUBAGENTS Inspector view. Derives one entry
@@ -2844,30 +2903,42 @@ impl App {
             }
         }
 
-        // Walk in block order: collect roots first (so the order in
-        // the Inspector mirrors the chat scrollback's dispatch order)
-        // and a flat list of children per-root-id.
-        let mut roots: Vec<&crate::app::ToolCallInfo> = Vec::new();
+        // Children per parent id from the registered child scopes; a
+        // parent is keyed only when its own card is in the index.
         let mut children_by_parent: std::collections::HashMap<
             &str,
             Vec<&crate::app::ToolCallInfo>,
         > = std::collections::HashMap::new();
         for id in &ordered_tool_ids {
             let Some(tc) = by_id.get(id) else { continue };
-            match self.tool_call_scope(id) {
-                Some(crate::app::state::types::ToolCallScope::SubagentRoot) => roots.push(tc),
-                Some(crate::app::state::types::ToolCallScope::SubagentChild {
-                    parent_tool_use_id,
-                }) => {
-                    // The parent's id is in the registered scope -
-                    // copy a stable str borrow off the indexed map
-                    // (its keys outlive the children vec).
-                    if let Some((&parent_key, _)) = by_id.get_key_value(parent_tool_use_id.as_str())
-                    {
-                        children_by_parent.entry(parent_key).or_default().push(tc);
-                    }
-                }
-                Some(crate::app::state::types::ToolCallScope::MainAgent) | None => {}
+            if let Some(crate::app::state::types::ToolCallScope::SubagentChild {
+                parent_tool_use_id,
+            }) = self.tool_call_scope(id)
+                && let Some((&parent_key, _)) = by_id.get_key_value(parent_tool_use_id.as_str())
+            {
+                // The parent's id is in the registered scope - copy a
+                // stable str borrow off the indexed map (its keys
+                // outlive the children vec).
+                children_by_parent.entry(parent_key).or_default().push(tc);
+            }
+        }
+        // A resumed agent's replayed Task card carries no scope (resume
+        // registers none), but its live child frames still name the
+        // card - such a parent is a root too (#808).
+        let unscoped_parents: std::collections::HashSet<&str> = children_by_parent
+            .keys()
+            .filter(|id| self.tool_call_scope(id).is_none())
+            .copied()
+            .collect();
+        // Roots in dispatch order, scoped and unscoped alike.
+        let mut roots: Vec<&crate::app::ToolCallInfo> = Vec::new();
+        for id in &ordered_tool_ids {
+            let scope = self.tool_call_scope(id);
+            let is_root =
+                matches!(scope, Some(crate::app::state::types::ToolCallScope::SubagentRoot))
+                    || (scope.is_none() && unscoped_parents.contains(*id));
+            if is_root && let Some(tc) = by_id.get(id) {
+                roots.push(tc);
             }
         }
 
@@ -2881,8 +2952,27 @@ impl App {
         // and covers every backgrounded kind. A genuinely running
         // non-backgrounded root still surfaces via its own in-flight status.
         let backgrounded_alive = session.backgrounded_alive_tool_use_ids();
+        // A root kept open by its children: a resumed agent's own card is
+        // terminal from the replay, so an open child under it is the only
+        // running evidence (#808).
+        let open_child_roots: std::collections::HashSet<&str> = children_by_parent
+            .iter()
+            .filter_map(|(parent, children)| {
+                children
+                    .iter()
+                    .any(|c| {
+                        matches!(
+                            c.status,
+                            crate::agent::model::ToolCallStatus::InProgress
+                                | crate::agent::model::ToolCallStatus::Pending
+                        )
+                    })
+                    .then_some(*parent)
+            })
+            .collect();
         let root_is_active = |root: &&crate::app::ToolCallInfo| {
             backgrounded_alive.contains(root.id.as_str())
+                || open_child_roots.contains(root.id.as_str())
                 || matches!(
                     root.status,
                     crate::agent::model::ToolCallStatus::InProgress
@@ -3378,6 +3468,21 @@ impl App {
             })
     }
 
+    /// The positive form: the card exists AND has reached a terminal
+    /// status. An id with no card in the message list has no evidence
+    /// either way and reads as not settled (#791).
+    fn tool_call_is_settled(&self, id: &str) -> bool {
+        self.lookup_tool_call(id)
+            .and_then(|(mi, bi)| self.messages().get(mi)?.blocks.get(bi))
+            .is_some_and(|block| match block {
+                MessageBlock::ToolCall(tc) => !matches!(
+                    tc.status,
+                    model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                ),
+                _ => false,
+            })
+    }
+
     pub fn clear_tool_scope_tracking(&mut self) {
         // Preserve scope tracking for still-running backgrounded roots and
         // their children so a backgrounded subagent stays identifiable in
@@ -3411,10 +3516,24 @@ impl App {
                 tool_call_id = %id,
             );
         }
+        // A child whose own card is terminal cannot be swept into anything,
+        // so holding its scope only grows the map with the subagent's total
+        // tool-call count (#791). A live grandchild behind such a child is
+        // still spared: a terminal-yet-running nested Task carries its own
+        // roster row and is a live root in `alive` itself.
+        let settled_children: HashSet<String> = self
+            .tool_call_scopes()
+            .iter()
+            .filter(|(id, scope)| {
+                matches!(scope, crate::app::state::types::ToolCallScope::SubagentChild { .. })
+                    && self.tool_call_is_settled(id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
         self.tool_call_scopes_mut().retain(|id, scope| match scope {
             crate::app::state::types::ToolCallScope::SubagentRoot => alive.contains(id.as_str()),
             crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } => {
-                alive.contains(parent_tool_use_id.as_str())
+                alive.contains(parent_tool_use_id.as_str()) && !settled_children.contains(id)
             }
             crate::app::state::types::ToolCallScope::MainAgent => false,
         });
@@ -3561,10 +3680,33 @@ impl App {
         let mut changed = 0usize;
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
-        let exempt: std::collections::HashSet<String> = self
-            .active_session()
-            .map(super::session::UiSession::backgrounded_alive_with_children)
-            .unwrap_or_default();
+        // Open calls first, so liveness is answered per call - O(depth)
+        // each - instead of deriving the eager exempt set off the whole
+        // scope map (#793).
+        let open_ids: Vec<String> = self
+            .messages()
+            .iter()
+            .flat_map(|msg| &msg.blocks)
+            .filter_map(|block| match block {
+                MessageBlock::ToolCall(tc)
+                    if matches!(
+                        tc.status,
+                        model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                    ) =>
+                {
+                    Some(tc.id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let exempt: std::collections::HashSet<&str> = open_ids
+            .iter()
+            .filter(|id| {
+                self.active_session()
+                    .is_some_and(|session| session.is_backgrounded_alive_or_descendant(id))
+            })
+            .map(String::as_str)
+            .collect();
 
         for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
@@ -7825,6 +7967,202 @@ mod tests {
         assert!(app.tool_call_scope("toolu_child").is_none(), "orphaned child scope dropped");
     }
 
+    /// A backgrounded subagent's children used to hold their scopes until
+    /// the ROOT settled, so the scope map grew with the subagent's total
+    /// tool-call count (#791). A child whose own card is terminal cannot
+    /// be swept into anything - sweeps only touch open calls - so its
+    /// scope drops at the turn boundary; the root and still-open
+    /// children stay.
+    #[test]
+    fn terminal_children_drop_their_scope_at_the_turn_boundary() {
+        use crate::app::state::types::{BackgroundTask, ToolCallScope};
+
+        let mut app = make_test_app();
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_root", model::ToolCallStatus::Completed));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_open_child", model::ToolCallStatus::InProgress));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_done_child", model::ToolCallStatus::Completed));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_dead_child", model::ToolCallStatus::Failed));
+        for (idx, id) in ["toolu_root", "toolu_open_child", "toolu_done_child", "toolu_dead_child"]
+            .into_iter()
+            .enumerate()
+        {
+            app.index_tool_call(id.to_owned(), idx, 0);
+        }
+        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        for id in ["toolu_open_child", "toolu_done_child", "toolu_dead_child"] {
+            app.tool_call_scopes_mut().insert(
+                id.to_owned(),
+                ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
+            );
+        }
+        app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-root".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: String::new(),
+        }];
+
+        app.clear_tool_scope_tracking();
+
+        assert!(app.tool_call_scope("toolu_root").is_some(), "live root kept");
+        assert!(
+            app.tool_call_scope("toolu_open_child").is_some(),
+            "the open child keeps its scope - it still needs the sweep exemption",
+        );
+        assert!(
+            app.tool_call_scope("toolu_done_child").is_none(),
+            "a terminal child's scope drops at the boundary",
+        );
+        assert!(
+            app.tool_call_scope("toolu_dead_child").is_none(),
+            "a failed child's scope drops too",
+        );
+    }
+
+    /// The pin behind the rule above: a terminal nested Task may drop its
+    /// scope, but a grandchild still running under it must not lose its
+    /// sweep exemption - a nested Task that is terminal-yet-backgrounded
+    /// carries its own roster row, so the grandchild resolves to IT as a
+    /// live root, not through the dropped scope.
+    #[test]
+    fn a_live_grandchild_is_not_stranded_behind_its_terminal_nested_parent() {
+        use crate::app::state::types::{BackgroundTask, ToolCallScope};
+
+        let mut app = make_test_app();
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_root", model::ToolCallStatus::Completed));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_nested", model::ToolCallStatus::Completed));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_gchild", model::ToolCallStatus::InProgress));
+        for (idx, id) in ["toolu_root", "toolu_nested", "toolu_gchild"].into_iter().enumerate() {
+            app.index_tool_call(id.to_owned(), idx, 0);
+        }
+        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        app.tool_call_scopes_mut().insert(
+            "toolu_nested".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
+        );
+        app.tool_call_scopes_mut().insert(
+            "toolu_gchild".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_nested".to_owned() },
+        );
+        app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
+        app.insert_session_task_mapping("task-nested".to_owned(), "toolu_nested".to_owned());
+        *app.background_tasks_mut() = vec![
+            BackgroundTask {
+                task_id: "task-root".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: String::new(),
+            },
+            BackgroundTask {
+                task_id: "task-nested".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: String::new(),
+            },
+        ];
+
+        app.clear_tool_scope_tracking();
+        assert!(
+            app.tool_call_scope("toolu_gchild").is_some(),
+            "the grandchild's scope survives its parent's drop",
+        );
+        assert_eq!(
+            app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed),
+            0,
+            "and the sweep spares it while it runs",
+        );
+    }
+
+    /// The turn-boundary sweeps answer liveness per open call (#793);
+    /// they must not derive the eager alive-with-children set off the
+    /// whole scope map - that cost scales with the map #791 just
+    /// bounded. The debug record in `backgrounded_alive_with_children`
+    /// is the probe: a sweep site must not emit it, while the sweep
+    /// still spares exactly the live work. The probe is introduced by
+    /// this PR, so this test is mutation-verified rather than red on
+    /// main - deleting the eager call cannot exist as a prior state.
+    #[test]
+    fn the_turn_boundary_sweep_does_not_build_the_eager_exempt_set() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default, Clone)]
+        struct EventNames(Arc<Mutex<Vec<String>>>);
+
+        struct CollectEventName(String);
+
+        impl tracing::field::Visit for CollectEventName {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "event_name" {
+                    self.0 = format!("{value:?}").trim_matches('"').to_owned();
+                }
+            }
+        }
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventNames {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut visitor = CollectEventName(String::new());
+                event.record(&mut visitor);
+                if !visitor.0.is_empty() {
+                    self.0.lock().expect("capture").push(visitor.0);
+                }
+            }
+        }
+
+        use crate::app::state::types::{BackgroundTask, ToolCallScope};
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let names = EventNames::default();
+        let mut app = make_test_app();
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_root", model::ToolCallStatus::Completed));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_child", model::ToolCallStatus::InProgress));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_plain_bash", model::ToolCallStatus::InProgress));
+        for (idx, id) in ["toolu_root", "toolu_child", "toolu_plain_bash"].into_iter().enumerate() {
+            app.index_tool_call(id.to_owned(), idx, 0);
+        }
+        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        app.tool_call_scopes_mut().insert(
+            "toolu_child".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
+        );
+        app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "task-root".to_owned(),
+            task_type: "local_agent".to_owned(),
+            description: String::new(),
+        }];
+
+        let subscriber = tracing_subscriber::registry().with(names.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            assert_eq!(
+                app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed),
+                1,
+                "only the unrelated bash sweeps; the live child is exempt either way",
+            );
+        });
+        assert!(
+            !names
+                .0
+                .lock()
+                .expect("capture")
+                .iter()
+                .any(|name| name == "backgrounded_alive_set_built"),
+            "the sweep derived the eager exempt set off the scope map; saw {:?}",
+            names.0.lock().expect("capture"),
+        );
+    }
+
     #[test]
     fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
         let mut app = make_test_app();
@@ -9945,6 +10283,41 @@ mod tests {
             Vec::new(),
         );
         check("every root terminal", &all_terminal);
+
+        // Resumed shape (#808): the root card replays unscoped and a
+        // live child frame names it. The two walks are separately
+        // implemented, so the new derivation is agreed on exactly here.
+        let resumed_with = |child_status: model::ToolCallStatus| {
+            let mut app = App::test_default();
+            let mut child = make_subagent_child_tc("tu-resumed-c", "Bash", "sleep");
+            child.status = child_status;
+            app.active_messages_mut().push(ChatMessage::new(
+                MessageRole::Assistant,
+                vec![MessageBlock::ToolCall(Box::new(make_subagent_root_tc(
+                    "tu-resumed",
+                    "Explore",
+                    "resumed",
+                    model::ToolCallStatus::Completed,
+                )))],
+            ));
+            app.register_tool_call_scope(
+                "tu-resumed-c".to_owned(),
+                ToolCallScope::SubagentChild { parent_tool_use_id: "tu-resumed".to_owned() },
+            );
+            app.active_messages_mut().push(ChatMessage::new(
+                MessageRole::Assistant,
+                vec![MessageBlock::ToolCall(Box::new(child))],
+            ));
+            app
+        };
+        check(
+            "resumed unscoped root, live child",
+            &resumed_with(model::ToolCallStatus::InProgress),
+        );
+        check(
+            "resumed unscoped root, settled child",
+            &resumed_with(model::ToolCallStatus::Completed),
+        );
 
         let mut mixed = App::test_default();
         push_subagent_session(
