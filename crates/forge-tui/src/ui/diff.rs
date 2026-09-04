@@ -1,7 +1,9 @@
 use crate::agent::model;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
-use crate::ui::wrap::{StyledChunk, display_width, expand_tabs, wrap_styled_chunks};
+use crate::ui::wrap::{
+    StyledChunk, display_width, expand_tabs, replace_control_chars, wrap_styled_chunks,
+};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
@@ -105,7 +107,7 @@ pub fn render_diff(
             // Split leading whitespace; `wrap_styled_chunks` drops
             // leading spaces at wrap boundaries, so the indent column
             // is rendered explicitly (matches pre-syntect behavior).
-            let expanded = expand_tabs(value);
+            let expanded = replace_control_chars(expand_tabs(value));
             let (leading_indent, content) = split_leading_whitespace(&expanded);
             let highlighted = row_is_highlighted(row_idx, row_total, highlight_window);
             row_idx += 1;
@@ -238,8 +240,8 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
     // Every marker is one ASCII byte, so the split is always on a
     // boundary when `carries_source` holds.
     let text = match carries_source.then(|| line.split_at(1)) {
-        Some((marker, body)) => format!("{marker}{}", expand_tabs(body)),
-        None => expand_tabs(line).into_owned(),
+        Some((marker, body)) => format!("{marker}{}", replace_control_chars(expand_tabs(body))),
+        None => replace_control_chars(expand_tabs(line)).into_owned(),
     };
     let mut rendered = Line::from(Span::styled(text, style));
     if let Some(bg) = row_bg {
@@ -692,6 +694,78 @@ mod tests {
         assert!(
             grapheme.iter().any(|line| line.contains("\u{2764}\u{fe0f}  x = 1")),
             "a 2-column grapheme leaves the tab advancing 2: {grapheme:?}"
+        );
+    }
+
+    /// A control character is charged a column by `Span::width` and
+    /// painted by nothing (`styled_graphemes` drops it), so a row
+    /// carrying one wraps early and every width derived from the
+    /// measurement drifts. All three content-to-span paths substitute
+    /// the Control Pictures glyph, one column wide, closing the split
+    /// while keeping the byte visible.
+    #[test]
+    fn diff_rows_picture_control_chars_so_measured_width_equals_painted() {
+        let assert_pictured = |lines: &[Line<'static>], needle: &str| -> String {
+            let row = lines
+                .iter()
+                .find(|line| line.spans.iter().any(|span| span.content.contains(needle)))
+                .unwrap_or_else(|| panic!("no row containing `{needle}`"));
+            let painted: usize = row
+                .styled_graphemes(Style::default())
+                .map(|grapheme| display_width(grapheme.symbol))
+                .sum();
+            let measured: usize = row.spans.iter().map(Span::width).sum();
+            assert_eq!(
+                measured, painted,
+                "`{needle}` row charges a column it does not paint: {row:?}"
+            );
+            let joined: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+            assert!(
+                !joined.chars().any(char::is_control),
+                "no raw control character may reach a span: {joined:?}"
+            );
+            joined
+        };
+
+        // The syntect highlight arm. The form feed must paint its
+        // picture, not vanish.
+        let highlighted = render_diff(&model::Diff::new("tmp.rs", "before\u{c}after\n"), 80, None);
+        let highlighted_text = assert_pictured(&highlighted, "before");
+        assert!(
+            highlighted_text.contains('\u{240c}'),
+            "a form feed must paint its Control Pictures glyph, not be dropped: {highlighted_text:?}"
+        );
+
+        // The non-highlighted Span::raw fallback. C1 rides in beside the
+        // SOH so its replacement-character fallback is pinned through a
+        // full render too.
+        let raw_fallback = render_diff(
+            &model::Diff::new("tmp.rs", "before\u{1}\u{85}after\n"),
+            80,
+            Some(HighlightWindow { head_rows: 0, tail_rows: 0 }),
+        );
+        let raw_fallback_text = assert_pictured(&raw_fallback, "before");
+        assert!(
+            raw_fallback_text.contains('\u{2401}'),
+            "SOH must paint its Control Pictures glyph, not be dropped: {raw_fallback_text:?}"
+        );
+        assert!(
+            raw_fallback_text.contains('\u{fffd}'),
+            "C1 must fall back to the replacement character, not ride raw: {raw_fallback_text:?}"
+        );
+
+        // The unified-diff fallback. The second row carries no marker,
+        // so it rides render_raw_diff_line's markerless arm.
+        let raw_unified = render_raw_unified_diff("+before\u{7f}after\nplain\u{1}line\n");
+        let raw_unified_text = assert_pictured(&raw_unified, "before");
+        assert!(
+            raw_unified_text.contains('\u{2421}'),
+            "DEL must paint its Control Pictures glyph, not be dropped: {raw_unified_text:?}"
+        );
+        let markerless_text = assert_pictured(&raw_unified, "plain");
+        assert!(
+            markerless_text.contains('\u{2401}'),
+            "a markerless row's SOH must paint its picture too: {markerless_text:?}"
         );
     }
 

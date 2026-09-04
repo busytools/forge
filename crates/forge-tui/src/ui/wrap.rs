@@ -69,6 +69,9 @@ pub(crate) fn expand_tabs(text: &str) -> Cow<'_, str> {
 /// under-fills its row by a column and shifts everything downstream of the
 /// padding arithmetic. A picture is one column wide too, which is why the
 /// substitution moves nothing: it changes what paints, not what measures.
+/// C1 has no picture and falls back to U+FFFD, which is East-Asian-Width
+/// Ambiguous: an ambiguous-wide terminal paints it 2 cells against the
+/// buffer's 1.
 ///
 /// Takes a `Cow` so it composes with [`expand_tabs`] without a second
 /// allocation. Run it after that one - a tab reaching here pictures as
