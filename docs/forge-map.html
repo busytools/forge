@@ -1004,14 +1004,16 @@ chat continues here...
   excludes it, the pollers keep re-probing it, and its row names the
   failure. Every failure state names its exits rather than leaving the
   reader on a screen with nothing to press.
-  <strong>Fixing the auth needs no restart; dropping the account does.</strong>
-  Both pollers run throughout preflight and re-probe a bailed account, so
-  repairing it out of band clears the row in place - the 30 s recovery
+  <strong>Repairing the auth on a keychain account needs no restart;
+  anything that edits <code>forge.toml</code> does.</strong> Both pollers
+  run throughout preflight and re-probe a bailed account, so a repair
+  that does not touch config clears the row in place - the 30 s recovery
   poll for a keychain account, the 60 s usage poll for a base-url one,
   which that poll deliberately skips because it gates on
-  <code>claude auth status</code>. Dropping the account edits
-  <code>forge.toml</code>, which is read at boot, so that one does need a
-  restart. The screen states the no-restart half without a number,
+  <code>claude auth status</code>. Editing the account's env, or dropping
+  the account, edits <code>forge.toml</code>, which is read once at boot
+  - the pollers keep probing what they loaded until forge restarts. The
+  screen states the no-restart half without a number,
   because the two classes do not share one.
 </p>
 
@@ -1130,6 +1132,8 @@ chat continues here...
         <span class="bold">Check the endpoint</span>
           ANTHROPIC_BASE_URL in [accounts.env], or the
           endpoint itself
+          <span class="dim">editing forge.toml needs a restart; fixing the</span>
+          <span class="dim">endpoint does not</span>
 
         <span class="bold">Or drop the account</span>
           delete its [[accounts]] block from

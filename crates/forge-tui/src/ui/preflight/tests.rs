@@ -381,6 +381,11 @@ fn an_unreachable_bail_names_the_endpoint_not_the_auth() {
         "the repair is the endpoint, never the auth; got:\n{text}",
     );
     assert!(
+        text.contains("needs a restart"),
+        "the env is read once at boot, so an edited base url does nothing until restart - \
+         the screen has to say so; got:\n{text}",
+    );
+    assert!(
         text.contains("Or drop the account") && text.contains("[[accounts]]"),
         "dropping the account stays as the second way out; got:\n{text}",
     );

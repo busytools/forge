@@ -12,13 +12,14 @@
 //! it, and the pollers keep re-probing it, so holding the screen waits
 //! on nothing that could change it.
 //!
-//! Repairing the auth needs no restart; dropping the account does. Both
-//! pollers re-probe a bailed account throughout preflight, so a repair
-//! made out of band clears this screen in place - on the 30 s recovery
-//! poll for a keychain account, on the 60 s usage poll for a base-url
-//! one, which the recovery poll skips because it gates on `claude auth
-//! status`. Dropping the account edits config, which is read at boot.
-//! The screen offers them in that order for that reason.
+//! Repairing the auth on a keychain account needs no restart; anything
+//! that edits forge.toml - the account's env, or dropping the account -
+//! does, because config is read once at boot and the pollers keep
+//! probing what they loaded. What needs no restart is picked up in
+//! place - on the 30 s recovery poll for a keychain account, on the
+//! 60 s usage poll for a base-url one, which the recovery poll skips
+//! because it gates on `claude auth status`. The screen offers the
+//! repairs in that order for that reason.
 //!
 //! Geometry matches [`super::launchpad`]: same wordmark, same
 //! `PICKER_WIDTH` panel, so handing over to the project picker is a
@@ -372,10 +373,11 @@ fn failure_label(failure: Option<&DictateFailure>) -> &'static str {
 
 /// The account that failed, and both ways past it.
 ///
-/// Both, in that order, because they are not equivalent: a repair made
-/// out of band is picked up in place, while dropping the account edits
-/// config, which is read at boot and so needs a restart. Naming only one
-/// would leave a reader who cannot take that route with nowhere to go.
+/// Both, in that order, because they are not equivalent: a repair that
+/// does not touch forge.toml is picked up in place, while dropping the
+/// account or editing its env edits config, which is read once at boot
+/// and so needs a restart. Naming only one would leave a reader who
+/// cannot take that route with nowhere to go.
 ///
 /// The head and the repair line key on the failure class: an auth
 /// problem, a rate limit, and an endpoint that is down or answering
@@ -450,6 +452,15 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
                 ));
             }
         }
+        // The account's env is read from forge.toml once at boot, so an
+        // edited base url changes nothing for the pollers until restart.
+        // Wrapped, never truncated: it is guidance the reader acts on.
+        lines.extend(wrapped(
+            4,
+            "editing forge.toml needs a restart; fixing the endpoint does not",
+            dim(),
+            width,
+        ));
     } else if rate_limited {
         lines.push(text_row(4, "Waiting clears it - the pollers keep retrying", dim(), width));
     } else {
