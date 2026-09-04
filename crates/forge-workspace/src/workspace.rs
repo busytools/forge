@@ -90,8 +90,12 @@ const KICK_DISPATCH_INTERVAL: Duration = Duration::from_millis(750);
 /// Matches the shipped-prompt constants in `forge-agent`: one escaped
 /// literal, no runtime assembly.
 const LEAD_DELEGATION_PREAMBLE: &str = "\
-You can delegate work to peer worker sessions via the \
-mcp__forge__workers__ tools. Spawn one with \
+You can delegate work to worker sessions via the \
+mcp__forge__workers__ tools. These tools manage THIS project's worker \
+sessions only. The peers__* family is a different one: it addresses \
+other projects' agents (list / ask / tell) and never creates a worker \
+in YOUR project - if you mean to spawn a worker, emit workers__spawn, \
+never a peers call. Spawn one with \
 workers__spawn(label=\"<name>\", charter=\"<its mission>\") - the charter \
 is required and is what defines that worker; talk to it with \
 workers__tell / workers__ask; list live workers with workers__list; \
@@ -11222,7 +11226,9 @@ mod worker_respawn_tests {
         let mut lead = SessionLaunchSettings::default();
         Workspace::apply_lead_delegation(&mut lead, crate::mcp::SessionKind::Lead);
         assert!(
-            lead.delegation_preamble.is_some_and(|t| t.contains("workers__spawn")),
+            lead.delegation_preamble.is_some_and(|t| {
+                t.contains("workers__spawn") && t.contains("never a peers call")
+            }),
             "a lead does get it",
         );
     }
