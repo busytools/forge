@@ -1293,6 +1293,18 @@ fn handle_task_started(app: &mut App, msg: Message) {
         // with yet (#790).
         if matches!(task_type.as_deref(), Some("agent" | "local_agent")) {
             app.mark_backgrounded_root(id.to_owned());
+        } else if matches!(
+            app.tool_call_scope(id),
+            Some(crate::app::state::types::ToolCallScope::SubagentRoot)
+        ) && task_type.as_deref().is_some_and(|kind| !kind.is_empty())
+        {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "task_started_unmarked_agent_kind",
+                message = "a subagent dispatch's task_started names no known agent task_type; no sticky liveness mark is set (possible wire drift)",
+                outcome = "partial",
+                task_type = %task_type.as_deref().unwrap_or_default(),
+            );
         }
         // stamp the wire-level task_id on the matching
         // MonitorEntry so subsequent `task_notification` / `task_updated`
@@ -1394,8 +1406,15 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         let root_id = app
             .active_session()
             .and_then(|session| session.session_task_tool_use_ids.get(&task_id).cloned());
-        if let Some(root_id) = root_id {
-            app.clear_backgrounded_root(&root_id);
+        match root_id {
+            Some(root_id) => app.clear_backgrounded_root(&root_id),
+            None => tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "task_updated_terminal_no_sticky_match",
+                message = "terminal task_updated resolved no session-map entry; no sticky marker to clear",
+                outcome = "skipped",
+                task_id = %task_id,
+            ),
         }
     }
 
@@ -1699,6 +1718,7 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
             .and_then(|session| session.session_task_tool_use_ids.get(task_id).cloned());
         app.remove_session_task_mapping(task_id);
         if let Some(root_id) = root_id {
+            app.clear_backgrounded_root(&root_id);
             app.settle_departed_root_children(&root_id);
         }
     }
