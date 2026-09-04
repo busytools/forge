@@ -711,5 +711,4 @@ mod tests {
             "terminal event must re-flip the replay-restored entry",
         );
     }
-
 }
