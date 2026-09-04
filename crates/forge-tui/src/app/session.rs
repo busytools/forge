@@ -355,6 +355,16 @@ pub struct UiSession {
     /// `task_notification` persists until session reset - bounded and inert.
     pub session_task_tool_use_ids: std::collections::HashMap<String, String>,
 
+    /// Agent-kind tasks this session saw backgrounded and that no
+    /// terminal `task_updated` / `task_notification` has cleared. The
+    /// roster replaces wholesale and can arrive after the spawning
+    /// turn's Result, so a snapshot-only read collapses the subagent
+    /// exemption on a badly-timed frame and nothing re-registers it
+    /// (#790). This is the historical half of the liveness signal: set
+    /// when the task first reports backgrounded, cleared only by a
+    /// terminal event, session teardown, or a turn error.
+    pub backgrounded_roots: HashSet<String>,
+
     /// Pending time-based schedules (`ScheduleWakeup` + `CronCreate`)
     /// surfaced in the Inspector SCHEDULES section. Pruned by the
     /// ~1s timer tick via `App::prune_expired_schedules`.
@@ -571,17 +581,16 @@ impl UiSession {
         !self.background_tasks.is_empty()
     }
 
-    /// Drop the CLI-fed background-task registry and its task-id ->
-    /// tool-use-id mirror. The two are cleared together because the mirror
-    /// only means anything as a lookup INTO the registry. Called on session
-    /// teardown (connection failure, reset): the CLI drains
-    /// `background_tasks` only via a terminal `background_tasks_changed`,
-    /// which never arrives for a dead/replaced session, so without this the
-    /// registry - and the activity spinner + frame-tick it drives - would
-    /// stay stale forever.
+    /// Drop the CLI-fed background-task registry, its task-id ->
+    /// tool-use-id mirror, and the sticky backgrounded roots. The three
+    /// are cleared together: on session teardown (connection failure,
+    /// reset) no terminal event can ever arrive, so without this the
+    /// registry - and the activity spinner + frame-tick it drives -
+    /// would stay stale forever.
     pub fn clear_background_task_registry(&mut self) {
         self.background_tasks.clear();
         self.session_task_tool_use_ids.clear();
+        self.backgrounded_roots.clear();
     }
 
     /// The `tool_use_id`s of every currently-backgrounded task the CLI still
@@ -590,15 +599,26 @@ impl UiSession {
     /// session task map (`task_id` -> `tool_use_id`) is the signal that
     /// survives turn finalisation; a map entry whose task already left the
     /// roster is excluded, so a leaked mapping never resurrects a phantom
-    /// live row.
+    /// live row. Sticky roots ([`Self::backgrounded_roots`]) union in on
+    /// top; each is credited only while its session-map entry still exists,
+    /// so a roster departure ends a root's liveness ahead of its terminal
+    /// event.
     pub fn backgrounded_alive_tool_use_ids(&self) -> HashSet<&str> {
         let task_ids: HashSet<&str> =
             self.background_tasks.iter().map(|task| task.task_id.as_str()).collect();
-        self.session_task_tool_use_ids
+        let mut alive: HashSet<&str> = self
+            .session_task_tool_use_ids
             .iter()
             .filter(|(task_id, _)| task_ids.contains(task_id.as_str()))
             .map(|(_, tool_use_id)| tool_use_id.as_str())
-            .collect()
+            .collect();
+        alive.extend(
+            self.backgrounded_roots
+                .iter()
+                .filter(|id| self.session_task_tool_use_ids.values().any(|v| v == *id))
+                .map(|id| id.as_str()),
+        );
+        alive
     }
 
     /// [`Self::backgrounded_alive_tool_use_ids`] plus everything hanging
@@ -773,6 +793,7 @@ impl Default for UiSession {
             key: Option::default(),
             dictate_overrides: forge_workspace::DictateOverrides::default(),
             dictate_device_pin: None,
+            backgrounded_roots: HashSet::new(),
             session_id: Option::default(),
             lifecycle_state: SessionLifecycleState::default(),
             cwd_raw: String::default(),

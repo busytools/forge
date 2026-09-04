@@ -714,6 +714,7 @@ fn apply_turn_error_presentation(
         }
         TurnErrorClass::Other => {}
     }
+    app.clear_backgrounded_roots();
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.input_mut().clear();
     *app.pending_submit_mut() = None;

@@ -2311,6 +2311,24 @@ impl App {
         self.active_bucket_mut().clear_background_task_registry();
     }
 
+    /// Mark a tool-use id as a backgrounded agent root on the active
+    /// session. See [`UiSession::backgrounded_roots`].
+    pub(crate) fn mark_backgrounded_root(&mut self, tool_use_id: String) {
+        self.active_bucket_mut().backgrounded_roots.insert(tool_use_id);
+    }
+
+    /// Clear one sticky backgrounded root - the terminal
+    /// `task_updated` / `task_notification` path.
+    pub(crate) fn clear_backgrounded_root(&mut self, tool_use_id: &str) {
+        self.active_bucket_mut().backgrounded_roots.remove(tool_use_id);
+    }
+
+    /// Clear every sticky backgrounded root on the active session - a
+    /// turn error settles all of the turn's work.
+    pub(crate) fn clear_backgrounded_roots(&mut self) {
+        self.active_bucket_mut().backgrounded_roots.clear();
+    }
+
     /// Active session's SCHEDULES entries (Inspector SCHEDULES
     /// section). Pruned by the ~1s timer tick.
     pub fn schedules(&self) -> &[crate::app::state::types::ScheduleEntry] {

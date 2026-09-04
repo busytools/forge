@@ -1278,7 +1278,7 @@ fn convert_runtime_session_state(
 }
 
 fn handle_task_started(app: &mut App, msg: Message) {
-    let Message::TaskStarted { tool_use_id, task_id, .. } = msg else { return };
+    let Message::TaskStarted { tool_use_id, task_id, task_type, .. } = msg else { return };
     let id = tool_use_id.as_deref().unwrap_or("");
     if id.is_empty() {
         return;
@@ -1293,6 +1293,12 @@ fn handle_task_started(app: &mut App, msg: Message) {
         // cross-turn resolver for backgrounded agents (SUBAGENTS) and
         // the PROCESSES local_bash feed.
         app.insert_session_task_mapping(task_id.clone(), id.to_owned());
+        // Agent-kind dispatches are backgrounded work: sticky liveness
+        // that survives a turn boundary the roster has not caught up
+        // with yet (#790).
+        if matches!(task_type.as_deref(), Some("agent" | "local_agent")) {
+            app.mark_backgrounded_root(id.to_owned());
+        }
         // stamp the wire-level task_id on the matching
         // MonitorEntry so subsequent `task_notification` / `task_updated`
         // events (keyed by task_id) can route to the right row.
@@ -1387,6 +1393,15 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         // the workflow row to its summarised one-liner. Idempotent
         // when the entry is already Completed.
         app.set_workflow_completed_by_task_id(&task_id);
+        // A terminal patch is one of the two events that may clear the
+        // sticky backgrounded marker. The turn-scoped lookup below
+        // resets every turn, so resolve through the session map.
+        let root_id = app
+            .active_session()
+            .and_then(|session| session.session_task_tool_use_ids.get(&task_id).cloned());
+        if let Some(root_id) = root_id {
+            app.clear_backgrounded_root(&root_id);
+        }
     }
 
     // The standard tool-call card update still requires the
@@ -1443,7 +1458,17 @@ fn handle_task_notification(app: &mut App, msg: Message) {
     // `task_id -> tool_use_id` resolver; rostered non-agents get none and are
     // cleaned by the roster diff in `handle_background_tasks_changed` instead.
     if !task_id.is_empty() {
+        // The other event that may clear the sticky backgrounded marker:
+        // resolve before dropping the mapping, falling back to the
+        // notification's own tool_use_id.
+        let root_id = app
+            .active_session()
+            .and_then(|session| session.session_task_tool_use_ids.get(&task_id).cloned())
+            .or_else(|| (!id.is_empty()).then(|| id.to_owned()));
         app.remove_session_task_mapping(&task_id);
+        if let Some(root_id) = root_id {
+            app.clear_backgrounded_root(&root_id);
+        }
     }
     // stamp the `output_file` path on the matching
     // MonitorEntry (idempotent) and refresh the tail from disk.
@@ -1678,7 +1703,21 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
             app.settle_departed_root_children(&root_id);
         }
     }
+    // Agent-kind roster rows extend the sticky backgrounded-marker set
+    // (#790): a task whose `task_started` named no agent-kind type is
+    // still backgrounded work once the roster lists it.
+    let seeded_roots: Vec<String> = parsed
+        .iter()
+        .filter(|task| matches!(task.task_type.as_str(), "agent" | "local_agent"))
+        .filter_map(|task| {
+            app.active_session()
+                .and_then(|session| session.session_task_tool_use_ids.get(&task.task_id).cloned())
+        })
+        .collect();
     *app.background_tasks_mut() = parsed;
+    for root_id in seeded_roots {
+        app.mark_backgrounded_root(root_id);
+    }
 }
 
 /// Refresh the active session's slash-command list from a
