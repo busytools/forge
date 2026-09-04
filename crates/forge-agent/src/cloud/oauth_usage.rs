@@ -1,23 +1,17 @@
 //! Provider probe entry points not yet behind the forge-providers
-//! backends: the [`ProbePlan`] decision, the windowed
-//! `/api/oauth/usage` probe the codex base-url arm drives, and the
-//! OpenRouter key + Z.ai monitor probes. Each PR of #873 moves an arm
-//! into forge-providers; this module shrinks until `ProbePlan` is
-//! deleted.
+//! backends: the [`ProbePlan`] decision and the OpenRouter key + Z.ai
+//! monitor probes. Each PR of #873 moves an arm into forge-providers;
+//! this module shrinks until `ProbePlan` is deleted.
 
 use std::collections::HashMap;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
 
 pub use forge_primitives::account::Provider;
-pub use forge_primitives::usage::oauth::{OauthUsage, OauthUsageError};
+pub use forge_primitives::usage::oauth::OauthUsageError;
 use forge_primitives::usage::zai::{QuotaLimitData, QuotaLimitResponse};
 
-use super::oauth_credentials::OauthCredentials;
-use forge_providers::ProviderHost;
-use forge_providers::helpers::{
-    OAUTH_TIMEOUT, anthropic_windowed_probe, parse_retry_after, truncated_body_suffix,
-};
+use forge_providers::helpers::{OAUTH_TIMEOUT, parse_retry_after, truncated_body_suffix};
 use forge_providers::token_bearer;
 
 /// True when `env` carries a non-empty `CLAUDE_CODE_OAUTH_TOKEN`.
@@ -33,23 +27,16 @@ pub fn is_token_mode<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>
 /// decision so the probe source AND the response-mapping strictness
 /// stay in lockstep.
 ///
-/// Deliberately not [`Provider`] itself: the `BaseUrl` variant carries
-/// a bearer, so this type must not cross into a view the TUI renders.
+/// Deliberately not [`Provider`] itself: several variants carry a
+/// bearer, so this type must not cross into a view the TUI renders.
 /// `forge_workspace::AccountAuth` is the secret-free counterpart.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProbePlan {
-    /// Base-url provider: probe `{base_url}/api/oauth/usage`
-    /// with the env `ANTHROPIC_AUTH_TOKEN` bearer (the macOS keychain is
-    /// skipped - a base-url account has no keychain entry), and map the
-    /// response leniently
-    /// (each window independently optional). A base-url auth failure
-    /// must NOT trigger the keychain CLI-spawn refresh: the probe never
-    /// reads that token, so refreshing it burns billed `claude -p hi`
-    /// spawns to no effect.
-    BaseUrl { base_url: String, bearer: String },
     /// Normal Anthropic account: default host + macOS keychain bearer,
     /// strict mapping (a 200 must carry the five-hour window), and the
-    /// CLI-spawn auth-recovery refresh on a 401.
+    /// CLI-spawn auth-recovery refresh on a 401. Codex returns this
+    /// too, as a bare route selector for its backend - see
+    /// [`probe_plan`].
     Keychain,
     /// Token-mode Anthropic account: default host + the
     /// `CLAUDE_CODE_OAUTH_TOKEN` setup token from `[accounts.env]`, no
@@ -78,9 +65,15 @@ pub enum ProbePlan {
 /// [`Provider`]. The provider alone decides the shape; `env` fills in
 /// the base url and bearer a base-url provider authenticates with, and
 /// a non-base-url provider's setup token flips the plan to
-/// [`ProbePlan::Token`]. `ANTHROPIC_BASE_URL` decides nothing, because it
-/// answers where the credential lives rather than what the backend
-/// bills for - Codex sets one and is still a windowed subscription.
+/// [`ProbePlan::Token`]. `ANTHROPIC_BASE_URL` decides nothing, because
+/// it answers where the credential lives rather than what the backend
+/// bills for.
+///
+/// Codex has no plan of its own: its forge-providers backend derives
+/// the base-url credential from `env` itself, so it returns a bare
+/// [`ProbePlan::Keychain`] that only selects the caller's backend-
+/// routed arm. The env-bearer repair class is derived from the
+/// provider + env, never from this value.
 ///
 /// Config load rejects a base-url provider with no `ANTHROPIC_BASE_URL`
 /// (`WorkspaceError::AccountProviderNeedsBaseUrl`), so the empty-base
@@ -96,6 +89,9 @@ pub fn probe_plan<S: std::hash::BuildHasher>(
             None => ProbePlan::Keychain,
         };
     }
+    if provider == Provider::Codex {
+        return ProbePlan::Keychain;
+    }
     let Some(base_url) =
         env.get("ANTHROPIC_BASE_URL").map(|value| value.trim()).filter(|value| !value.is_empty())
     else {
@@ -110,7 +106,9 @@ pub fn probe_plan<S: std::hash::BuildHasher>(
     match provider {
         Provider::Openrouter => ProbePlan::OpenRouterKey { base_url, bearer },
         Provider::Zai => ProbePlan::ZaiMonitor { base_url, bearer },
-        Provider::Anthropic | Provider::Codex => ProbePlan::BaseUrl { base_url, bearer },
+        // Unreachable: anthropic took the !uses_base_url return above
+        // and codex the backend-selector return above.
+        Provider::Anthropic | Provider::Codex => ProbePlan::Keychain,
     }
 }
 
@@ -323,27 +321,6 @@ fn zai_quota_from_body(body: &[u8]) -> Result<QuotaLimitData, OauthUsageError> {
         .ok_or_else(|| OauthUsageError::Decode("Z.ai monitor 200 carried no data".to_owned()))
 }
 
-/// One round-trip against `/api/oauth/usage` with the given bearer, on
-/// the default host or a `base_url` override. The codex base-url
-/// arm's engine: the request, status classification and scope-refusal
-/// detection live in `forge_providers::helpers`; this wrapper adds the
-/// host-resolved UA and the extra-roots client the backends receive
-/// through the host port.
-pub async fn probe(
-    credentials: &OauthCredentials,
-    base_url: Option<&str>,
-) -> Result<OauthUsage, OauthUsageError> {
-    let ua = crate::cloud::provider_host::AgentHost
-        .user_agent()
-        .await
-        .map_err(OauthUsageError::UaProbe)?;
-    let client =
-        crate::http_trust::with_extra_roots(reqwest::Client::builder().timeout(OAUTH_TIMEOUT))
-            .build()
-            .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
-    anthropic_windowed_probe(&client, &ua, base_url, &credentials.access_token).await
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -384,27 +361,19 @@ mod tests {
         );
     }
 
+    /// Codex has no plan of its own since its backend took the probe
+    /// over: the value only selects the caller's backend-routed arm,
+    /// so a base url in env does not produce a base-url plan.
     #[test]
-    fn probe_plan_codex_reads_base_and_token_from_env() {
+    fn probe_plan_codex_is_a_bare_backend_route_selector() {
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
-        // A stray setup token must not outrank the provider: the
-        // provider is decided first, so a base-url account keeps its
-        // endpoint probe even with this key present.
-        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
-        assert_eq!(
-            probe_plan(Provider::Codex, &env),
-            ProbePlan::BaseUrl {
-                base_url: "http://localhost:18765".to_owned(),
-                bearer: "sk-codex".to_owned(),
-            },
-        );
+        assert_eq!(probe_plan(Provider::Codex, &env), ProbePlan::Keychain);
     }
 
-    /// Same env, two providers, two plans: a base url cannot decide the
-    /// probe, because it answers where the credential lives rather than
-    /// what the backend bills for.
+    /// A base url cannot decide the probe, because it answers where
+    /// the credential lives rather than what the backend bills for.
     #[test]
     fn probe_plan_keys_on_provider_not_on_base_url() {
         let mut env = HashMap::new();
@@ -414,10 +383,6 @@ mod tests {
             probe_plan(Provider::Anthropic, &env),
             ProbePlan::Keychain,
             "an Anthropic account keeps the keychain even with a base url set",
-        );
-        assert!(
-            matches!(probe_plan(Provider::Codex, &env), ProbePlan::BaseUrl { .. }),
-            "the same env under Codex probes the base url",
         );
     }
 
@@ -452,21 +417,6 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "  ".to_owned());
         assert_eq!(probe_plan(Provider::Anthropic, &env), ProbePlan::Keychain);
-    }
-
-    #[test]
-    fn probe_plan_codex_missing_token_defaults_to_empty_bearer() {
-        // A proxy on localhost ignores the bearer; an absent
-        // ANTHROPIC_AUTH_TOKEN must not suppress the base-url probe.
-        let mut env = HashMap::new();
-        env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
-        assert_eq!(
-            probe_plan(Provider::Codex, &env),
-            ProbePlan::BaseUrl {
-                base_url: "http://localhost:18765".to_owned(),
-                bearer: String::new(),
-            },
-        );
     }
 
     #[test]

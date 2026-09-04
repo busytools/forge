@@ -2063,27 +2063,13 @@ impl Workspace {
         let mut any_success = false;
         for (key, dir, provider, env) in entries {
             // One decision (probe_plan) drives both the probe source and
-            // the response-mapping strictness. A base-url provider
-            // probes its own endpoint with the env bearer (skipping the
-            // keychain + the auth-refresh wrapper) and maps leniently
-            // (each window independent; cold `{}` -> n/a); an Anthropic
-            // account keeps the keychain + default host + strict mapping.
+            // the response-mapping strictness. The backend-routed plans
+            // (anthropic keychain/token, and codex, whose plan died with
+            // its arm) hand credential resolution, the probe and the
+            // mapping to the provider backend; the keychain arm keeps
+            // the 401 refresh gate.
             let plan = forge_agent::cloud::oauth_usage::probe_plan(provider, &env);
             let fetch_result = match &plan {
-                forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
-                    let creds = forge_agent::cloud::oauth_credentials::OauthCredentials {
-                        access_token: bearer.clone(),
-                        expires_at: None,
-                    };
-                    forge_agent::cloud::oauth_usage::probe(&creds, Some(base_url)).await.map(
-                        |payload| {
-                            Ok(forge_providers::helpers::snapshot_from_payload_lenient(payload))
-                        },
-                    )
-                }
-                // The anthropic-shaped arms run through the provider
-                // backend; the keychain arm keeps the 401 refresh gate
-                // the boot loader handles through its own Refresh action.
                 forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
                     crate::provider_probe::flatten_probe_error(
                         crate::provider_probe::probe_with_keychain_recovery(provider, &dir, &env)
@@ -2162,7 +2148,10 @@ impl Workspace {
                                 forge_agent::cloud::oauth_usage::ProbePlan::Token { .. } => {
                                     "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
                                 }
-                                forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { .. } => {
+                                // Codex has no plan variant since its
+                                // backend took the probe over; its bearer
+                                // is the env ANTHROPIC_AUTH_TOKEN.
+                                _ if provider == forge_primitives::account::Provider::Codex => {
                                     "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
                                 }
                                 _ => {

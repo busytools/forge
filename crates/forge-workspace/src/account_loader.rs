@@ -14,8 +14,8 @@
 //!    it is token-mode (`ProbePlan::Token`; the endpoint's
 //!    `oauth_scope_insufficient` refusal is the valid-token verdict
 //!    and settles to a barless Ready snapshot).
-//! 2. Probe through the backend (the not-yet-migrated base-url /
-//!    openrouter / zai arms still probe via `oauth_usage` directly).
+//! 2. Probe through the backend (the not-yet-migrated openrouter /
+//!    zai arms still probe via `oauth_usage` directly).
 //! 3. Branch on the probe result:
 //!    - 200 -> snapshot stored via `set_usage`, transitions to
 //!      `Ready`, task exits.
@@ -190,21 +190,12 @@ pub async fn run_account_loading(
             )
         };
         let plan = oauth_usage::probe_plan(provider, &account_env);
-        let env_bearer = !matches!(plan, oauth_usage::ProbePlan::Keychain);
+        let env_bearer = crate::provider_probe::env_bearer(provider, &account_env);
         // Probe and map together: each plan returns a different body.
         let probe_result = match &plan {
-            oauth_usage::ProbePlan::BaseUrl { base_url, bearer } => {
-                let creds = oauth_credentials::OauthCredentials {
-                    access_token: bearer.clone(),
-                    expires_at: None,
-                };
-                oauth_usage::probe(&creds, Some(base_url)).await.map(|payload| {
-                    Ok(forge_providers::helpers::snapshot_from_payload_lenient(payload))
-                })
-            }
-            // The anthropic-shaped arms run through the provider
-            // backend: credential resolution, the probe and the
-            // strict-vs-lenient mapping are its business.
+            // The backend-routed plans (anthropic keychain/token, and
+            // codex, whose plan died with its arm): credential
+            // resolution, the probe and the mapping are the backend's.
             oauth_usage::ProbePlan::Keychain | oauth_usage::ProbePlan::Token { .. } => {
                 crate::provider_probe::flatten_probe_error(
                     crate::provider_probe::probe_via_backend(provider, &config_dir, &account_env)
@@ -494,7 +485,7 @@ pub async fn run_recovery_poll(workspace_weak: Weak<Workspace>) {
 mod tests {
     // End-to-end behavior tests (probe → branch → refresh + retry)
     // require either a mock claude binary on PATH or a substitution
-    // layer over oauth_usage::probe + refresh_via_cli_spawn. Both
+    // layer over the forge-providers probe + refresh_via_cli_spawn. Both
     // approaches add significant test infrastructure; the planner
     // approved deferring these to manual smoke against a real
     // expired-token account.

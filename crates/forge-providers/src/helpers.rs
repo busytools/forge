@@ -2,6 +2,7 @@
 //! the windowed `/api/oauth/usage` round-trip, the payload-to-window
 //! mappers, and the timestamp parsing the keychain reader shares.
 
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
@@ -17,6 +18,41 @@ pub const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
 
 const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
+
+/// The base-url credential an account's `env` carries: the
+/// `ANTHROPIC_BASE_URL` endpoint and the `ANTHROPIC_AUTH_TOKEN` bearer
+/// beside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BaseUrlCredential {
+    pub base_url: String,
+    pub bearer: String,
+}
+
+/// The read of a base-url credential that found no usable
+/// `ANTHROPIC_BASE_URL`.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("no usable ANTHROPIC_BASE_URL in the account env for the base-url plan")]
+pub struct MissingBase;
+
+/// The base-url credential shared by every provider that authenticates
+/// from `[accounts.env]`: `ANTHROPIC_BASE_URL` (trimmed, empty after
+/// trim = missing) and `ANTHROPIC_AUTH_TOKEN`, absent = empty bearer -
+/// a localhost proxy ignores the bearer and the probe must still fire.
+pub fn base_url_credential<S: std::hash::BuildHasher>(
+    env: &HashMap<String, String, S>,
+) -> Result<BaseUrlCredential, MissingBase> {
+    let Some(base_url) =
+        env.get("ANTHROPIC_BASE_URL").map(|value| value.trim()).filter(|value| !value.is_empty())
+    else {
+        // Config load rejects a base-url provider with no
+        // ANTHROPIC_BASE_URL (WorkspaceError::AccountProviderNeedsBaseUrl),
+        // so this arm is unreachable in production; the tests below pin
+        // it instead of a debug_assert, which would fire under them.
+        return Err(MissingBase);
+    };
+    let bearer = env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str).unwrap_or_default();
+    Ok(BaseUrlCredential { base_url: base_url.to_owned(), bearer: bearer.to_owned() })
+}
 
 /// Parse a JSON value (string OR number) as a `SystemTime`. Accepts:
 /// - ISO-8601 datetime strings (e.g. `"2025-12-25T12:00:00.000Z"`).
@@ -344,6 +380,48 @@ mod tests {
             "http://localhost:18765/api/oauth/usage",
             "trailing slash trimmed so host and host/ behave identically",
         );
+    }
+
+    #[test]
+    fn base_url_credential_reads_the_base_and_bearer_pair() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
+        // A stray setup token must not leak into the base-url pair: the
+        // base-url providers authenticate with ANTHROPIC_AUTH_TOKEN only.
+        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
+        assert_eq!(
+            base_url_credential(&env),
+            Ok(BaseUrlCredential {
+                base_url: "http://localhost:18765".to_owned(),
+                bearer: "sk-codex".to_owned(),
+            }),
+        );
+    }
+
+    #[test]
+    fn base_url_credential_trims_whitespace_around_the_base() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "  http://localhost:18765  ".to_owned());
+        let credential = base_url_credential(&env).expect("credential");
+        assert_eq!(credential.base_url, "http://localhost:18765");
+    }
+
+    /// An absent or blank ANTHROPIC_AUTH_TOKEN must not suppress the
+    /// probe: an empty bearer goes out and a localhost proxy ignores it.
+    #[test]
+    fn base_url_credential_defaults_the_bearer_to_empty() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
+        assert_eq!(base_url_credential(&env).expect("credential").bearer, "");
+        assert_eq!(base_url_credential(&HashMap::new()).expect_err("no base"), MissingBase);
+    }
+
+    #[test]
+    fn base_url_credential_rejects_a_base_that_is_empty_after_trim() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "   ".to_owned());
+        assert_eq!(base_url_credential(&env), Err(MissingBase));
     }
 
     /// A down endpoint must surface as the Network class and the probe

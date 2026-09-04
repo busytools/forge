@@ -152,7 +152,7 @@ pub enum AccountBudget {
 /// changes what preflight tells you to do about a failed one.
 ///
 /// Deliberately not [`forge_agent::cloud::oauth_usage::ProbePlan`],
-/// whose `BaseUrl` variant carries the bearer: this crosses into a view
+/// several of whose variants carry a bearer: this crosses into a view
 /// the TUI renders, so it carries the distinction and none of the
 /// secret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
