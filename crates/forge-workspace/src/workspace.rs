@@ -6179,7 +6179,9 @@ pub(crate) fn classify_oauth_usage_error(
         OauthUsageError::Unauthorized(_) => UsageFetchStatus::Unauthorized,
         OauthUsageError::NoCredentials | OauthUsageError::Expired => UsageFetchStatus::Expired,
         OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
-        OauthUsageError::HttpStatus(_, _) | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
+        OauthUsageError::UaProbe(_)
+        | OauthUsageError::HttpStatus(_, _)
+        | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
     }
 }
 
@@ -11634,6 +11636,13 @@ provider = "anthropic"
         );
         assert_eq!(
             classify_oauth_usage_error(&OauthUsageError::Decode("bad json".to_owned())),
+            UsageFetchStatus::Other,
+        );
+        // A failed `claude --version` shell-out is a local exec problem,
+        // not a reachability verdict, so it must not land in
+        // NetworkFailed.
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::UaProbe("no binary".to_owned())),
             UsageFetchStatus::Other,
         );
     }

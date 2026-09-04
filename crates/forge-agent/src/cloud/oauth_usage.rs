@@ -56,10 +56,10 @@ async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
         tokio::task::spawn_blocking(|| forge_sdk::transport::process::query_cli_version("claude"))
             .await
             .map_err(|e| {
-                OauthUsageError::Network(format!("UA probe spawn_blocking panicked: {e}"))
+                OauthUsageError::UaProbe(format!("UA probe spawn_blocking panicked: {e}"))
             })?
             .map_err(|e| {
-                OauthUsageError::Network(format!("claude --version probe failed for UA: {e}"))
+                OauthUsageError::UaProbe(format!("claude --version probe failed for UA: {e}"))
             })?;
     let ua = format!("claude-code/{version}");
     // get_or_init isn't `Result`-friendly. set/get pair: if another
@@ -68,7 +68,7 @@ async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
     // result for the same machine) so the race is benign.
     let _ = UA.set(ua);
     UA.get().map(String::as_str).ok_or_else(|| {
-        OauthUsageError::Network("UA cache disappeared after set; impossible".to_owned())
+        OauthUsageError::UaProbe("UA cache disappeared after set; impossible".to_owned())
     })
 }
 

@@ -402,8 +402,10 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
                 row.display_name
             )
         } else {
+            // `Other` covers an endpoint that answered badly and a probe
+            // that could not run at all, so the head claims neither.
             format!(
-                "{} keeps answering with errors. forge starts without it and keeps retrying.",
+                "{} keeps failing its probe. forge starts without it and keeps retrying.",
                 row.display_name
             )
         };
@@ -432,12 +434,12 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
         lines.push(text_row(2, "Check the endpoint", head, width));
         match row.auth {
             AccountAuth::Keychain => {
-                lines.push(text_row(
-                    4,
-                    "the Anthropic API is unreachable or erroring",
-                    Style::default(),
-                    width,
-                ));
+                let line = if row.last_error == Some(UsageFetchStatus::NetworkFailed) {
+                    "the probe could not run or reach the Anthropic API"
+                } else {
+                    "the Anthropic API keeps failing its probe"
+                };
+                lines.push(text_row(4, line, Style::default(), width));
             }
             AccountAuth::BaseUrl => {
                 lines.push(text_row(

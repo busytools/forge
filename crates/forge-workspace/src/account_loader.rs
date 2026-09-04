@@ -111,6 +111,7 @@ fn boot_probe_action(env_bearer: bool, err: &OauthUsageError) -> BootProbeAction
             BootProbeAction::RetryLoop(status, *retry_after)
         }
         OauthUsageError::Network(_)
+        | OauthUsageError::UaProbe(_)
         | OauthUsageError::HttpStatus(_, _)
         | OauthUsageError::Decode(_) => BootProbeAction::RetryLoop(status, None),
     }

@@ -405,8 +405,9 @@ fn an_erroring_endpoint_is_not_an_auth_failure_either() {
     .join("\n");
 
     assert!(
-        text.contains("Subspace keeps answering with errors"),
-        "the head says the endpoint answered and failed, not that it was unreachable; got:\n{text}",
+        text.contains("Subspace keeps failing its probe"),
+        "the head claims only that the probe failed - the class covers endpoints that \
+         answered badly and probes that could not run; got:\n{text}",
     );
     assert!(
         text.contains("Check the endpoint")
