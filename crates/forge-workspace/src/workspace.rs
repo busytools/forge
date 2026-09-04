@@ -2186,16 +2186,21 @@ impl Workspace {
                         }
                         account::UsageFetchStatus::Expired
                         | account::UsageFetchStatus::Unauthorized => {
-                            // A token account's credential is the setup
-                            // token, which /login cannot repair - the
-                            // shared dir's keychain belongs to a sibling.
-                            if matches!(
-                                plan,
-                                forge_agent::cloud::oauth_usage::ProbePlan::Token { .. }
-                            ) {
-                                "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
-                            } else {
-                                "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
+                            // Env credentials are boot-frozen and, on a
+                            // shared dir, /login repairs whichever
+                            // sibling last logged in - so both env
+                            // classes get their own repair, never
+                            // /login.
+                            match &plan {
+                                forge_agent::cloud::oauth_usage::ProbePlan::Token { .. } => {
+                                    "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
+                                }
+                                forge_agent::cloud::oauth_usage::ProbePlan::BaseUrl { .. } => {
+                                    "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
+                                }
+                                _ => {
+                                    "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
+                                }
                             }
                         }
                         account::UsageFetchStatus::NetworkFailed => {
