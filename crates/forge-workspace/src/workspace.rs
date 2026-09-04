@@ -1274,7 +1274,7 @@ impl Workspace {
             }
             pool.insert(
                 session_key.clone(),
-                PooledAgent { handle: Arc::clone(&arc), account: account_key },
+                PooledAgent { handle: Arc::clone(&arc), account: account_key.clone() },
             );
         }
 
@@ -1311,6 +1311,7 @@ impl Workspace {
                 domain,
                 update_tx: self.update_tx.clone(),
                 spawn_key,
+                account: Some(account_key),
                 // An account switch replaces a live session's agent, so
                 // the new task's first Connected must emit SessionReplaced
                 // (reset chat, then the --resume backfill re-seeds it).
@@ -6192,8 +6193,9 @@ pub(crate) fn classify_oauth_usage_error(
         OauthUsageError::UaProbe(_)
         | OauthUsageError::HttpStatus(_, _)
         // The token-mode arms convert a scope refusal before it gets
-        // here; reaching this arm means it arrived on the keychain
-        // path, which is not an auth failure either.
+        // here; reaching this arm means it arrived on a non-token
+        // path (keychain or base-url), which is not an auth failure
+        // either.
         | OauthUsageError::ScopeInsufficient
         | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
     }
@@ -11311,6 +11313,7 @@ provider = "anthropic"
             domain,
             update_tx,
             spawn_key: None,
+            account: None,
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };
