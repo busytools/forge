@@ -206,7 +206,7 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
 
 /// Resolve a left-click in the diff body to the row it landed on,
 /// and for a split row to the old or new side of it.
-pub(super) fn handle_body_click(
+fn handle_body_click(
     overlay: &mut DiffOverlayState,
     column: u16,
     row: u16,
@@ -332,12 +332,11 @@ fn toggle_deleted_collapse(overlay: &mut DiffOverlayState, file_idx: usize) -> M
     MouseEffect { redraw: true, thread_action: None }
 }
 
-/// Open a fresh editor on the line `key`. If an editor is already open
-/// at the same key, no-op so the click doesn't reset its in-progress
-/// text. If at a different key, abandon the in-progress edit (UI
-/// matches what GitHub does - clicking elsewhere closes the open
-/// editor without saving).
 pub(super) fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
+    // If an editor is already open at the same key, no-op so the
+    // click doesn't reset its in-progress text. If at a different
+    // key, abandon the in-progress edit (UI matches what GitHub does
+    // - clicking elsewhere closes the open editor without saving).
     if let Some(existing) = overlay.active_input.as_ref()
         && existing.key == key
     {
