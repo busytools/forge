@@ -818,12 +818,9 @@ fn a_cancelled_transfer_does_not_read_as_a_finished_one() {
     );
 }
 
-/// A failed row wears its own cause, never the snapshot's. The reason
-/// used to live once on the screen-wide snapshot and be read through
-/// this per-model function, so a second failed row would have carried
-/// the first model's label and byte counts. Each row here is rendered
-/// against a snapshot naming the OTHER model's cause: nothing the row
-/// renders may come from it.
+/// A failed row wears its own cause, never the snapshot's. Each row
+/// here is rendered against a snapshot naming the OTHER model's cause:
+/// nothing the row renders may come from it.
 #[test]
 fn a_failed_row_wears_its_own_cause_not_the_snapshots() {
     let cancelled = DictateFailure::Cancelled { kept: 592_000_000, total: 1_558_162_944 };
