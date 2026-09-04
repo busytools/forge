@@ -488,7 +488,7 @@ pub fn drain_events(app: &mut App) {
 /// Kick off the lazy scan for `scope` against the overlay's cwd/target,
 /// reusing the current scan seq (no bump - it's the same overlay
 /// session, not a fresh `/diff`).
-pub(super) fn spawn_scope_scan(app: &App, scope: DiffScope) {
+pub(super) fn spawn_scope_scan(app: &mut App, scope: DiffScope) {
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
     let cwd = overlay.cwd.clone();
     let target = overlay.target.clone();
