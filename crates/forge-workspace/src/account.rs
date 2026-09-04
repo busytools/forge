@@ -574,6 +574,15 @@ impl AccountStateMap {
         self.by_key.get(key).and_then(|s| s.last_error)
     }
 
+    /// Drop the recorded failure for `key`, so a bail that never
+    /// recorded its own cause falls back to the unrecorded default
+    /// rather than wearing a stale class.
+    pub fn clear_last_error(&mut self, key: &AccountKey) {
+        if let Some(state) = self.by_key.get_mut(key) {
+            state.last_error = None;
+        }
+    }
+
     /// Pick an account within the project's `allowed` subset using
     /// tier-gated round-robin (see module docs).
     ///

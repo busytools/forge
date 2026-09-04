@@ -131,6 +131,12 @@ pub async fn run_account_loading(
     workspace_weak: Weak<Workspace>,
 ) {
     let mut iteration = 0u32;
+    // Whether the previous iteration recorded its own failure class.
+    // The retry-loop arm does (it is the class the budget was burned
+    // on); the refresh and 200-mapping paths leave any earlier record
+    // stale, so the cap must fall back to the unrecorded default
+    // rather than bail an auth problem wearing a network label.
+    let mut last_iteration_recorded = false;
     loop {
         iteration += 1;
         if iteration > MAX_LOADING_ITERATIONS {
@@ -146,7 +152,12 @@ pub async fn run_account_loading(
                     iterations = MAX_LOADING_ITERATIONS,
                     "loading task hit retry cap without reaching terminal; transitioning to Bailed",
                 );
-                workspace.account_states().lock().set_loading(&account_key, LoadingState::Bailed);
+                let mut states = workspace.account_states().lock();
+                if !last_iteration_recorded {
+                    states.clear_last_error(&account_key);
+                }
+                states.set_loading(&account_key, LoadingState::Bailed);
+                drop(states);
                 workspace.recompute_plan_if_ready();
             }
             return;
@@ -211,6 +222,7 @@ pub async fn run_account_loading(
                             error = ?err,
                             "boot probe returned 200 but snapshot mapping failed; retrying",
                         );
+                        last_iteration_recorded = false;
                         tokio::time::sleep(PROBE_RETRY_INTERVAL).await;
                         continue;
                     }
@@ -241,6 +253,7 @@ pub async fn run_account_loading(
                                 .account_states()
                                 .lock()
                                 .set_loading(&account_key, LoadingState::Loading);
+                            last_iteration_recorded = false;
                         }
                         Err(refresh_err) => {
                             tracing::warn!(
@@ -249,6 +262,17 @@ pub async fn run_account_loading(
                                 error = %refresh_err,
                                 "refresh_via_cli_spawn failed during boot loading; account Bailed",
                             );
+                            // Record the probe error that triggered the
+                            // refresh, not just the bail: a boot where the
+                            // network flapped and then the token 401'd must
+                            // render as the auth problem it ended on.
+                            let mut states = workspace.account_states().lock();
+                            states.set_last_error(
+                                &account_key,
+                                crate::workspace::classify_oauth_usage_error(&err),
+                                None,
+                            );
+                            drop(states);
                             workspace
                                 .account_states()
                                 .lock()
@@ -291,6 +315,7 @@ pub async fn run_account_loading(
                         status,
                         retry_after,
                     );
+                    last_iteration_recorded = true;
                     tokio::time::sleep(retry_after.unwrap_or(PROBE_RETRY_INTERVAL)).await;
                 }
             },
