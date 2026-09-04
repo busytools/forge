@@ -2323,12 +2323,6 @@ impl App {
         self.active_bucket_mut().backgrounded_roots.remove(tool_use_id);
     }
 
-    /// Clear every sticky backgrounded root on the active session - a
-    /// turn error settles all of the turn's work.
-    pub(crate) fn clear_backgrounded_roots(&mut self) {
-        self.active_bucket_mut().backgrounded_roots.clear();
-    }
-
     /// Active session's SCHEDULES entries (Inspector SCHEDULES
     /// section). Pruned by the ~1s timer tick.
     pub fn schedules(&self) -> &[crate::app::state::types::ScheduleEntry] {

@@ -361,8 +361,11 @@ pub struct UiSession {
     /// turn's Result, so a snapshot-only read collapses the subagent
     /// exemption on a badly-timed frame and nothing re-registers it
     /// (#790). This is the historical half of the liveness signal: set
-    /// when the task first reports backgrounded, cleared only by a
-    /// terminal event, session teardown, or a turn error.
+    /// when the task first reports backgrounded, cleared by a terminal
+    /// event (resolving the notification's own tool-use id when the
+    /// mapping is already gone), a roster departure that drops the
+    /// mapping, or session teardown - never by a turn boundary, a turn
+    /// error, or a card transition.
     pub backgrounded_roots: HashSet<String>,
 
     /// Pending time-based schedules (`ScheduleWakeup` + `CronCreate`)

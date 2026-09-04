@@ -1863,12 +1863,14 @@ async fn a_roster_drain_settles_the_departed_roots_open_children() {
     );
 }
 
-/// The turn-error path clears the sticky markers BEFORE the Failed
-/// sweep: flipped the other way round, a marker set at `task_started`
-/// would exempt the failed turn's own root and child from settling and
-/// their cards would strand open on an errored turn.
+/// A turn error kills the TURN, not backgrounded work: a root marked
+/// sticky at `task_started` (and its open child) is exempt from the
+/// Failed sweep, matching the cancel path and the background-session
+/// branch. The marker is session-lifetime state - wiping it here would
+/// also unlive roots from earlier turns in the roster-lag window.
+/// Its own terminal events still settle the cards later.
 #[tokio::test]
-async fn a_turn_error_settles_a_sticky_root_despite_its_marker() {
+async fn a_turn_error_spares_a_sticky_roots_cards() {
     let mut app = test_app();
     app.status = AppStatus::Thinking;
 
@@ -1923,15 +1925,39 @@ async fn a_turn_error_settles_a_sticky_root_despite_its_marker() {
 
     assert_eq!(
         tool_call_block(&app, "toolu_root").status,
-        model::ToolCallStatus::Failed,
-        "the sticky marker must not exempt the errored turn's root; got {:?}",
+        model::ToolCallStatus::InProgress,
+        "the sticky root is exempt from the errored turn's sweep; got {:?}",
         tool_call_block(&app, "toolu_root").status,
     );
     assert_eq!(
         tool_call_block(&app, "toolu_child").status,
-        model::ToolCallStatus::Failed,
-        "nor its child; got {:?}",
+        model::ToolCallStatus::InProgress,
+        "and so is its child; got {:?}",
         tool_call_block(&app, "toolu_child").status,
+    );
+
+    // The marker still clears on its own terminal events: the errored
+    // turn reset the turn-scoped lookup, so the session map is what
+    // resolves the terminal patch to the marker.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskUpdated {
+            task_id: "task-root".to_owned(),
+            patch: forge_primitives::messages::TaskUpdatePatch {
+                status: Some("completed".to_owned()),
+                end_time: None,
+            },
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    assert!(
+        app.active_session()
+            .expect("active session")
+            .backgrounded_alive_tool_use_ids()
+            .is_empty(),
+        "the terminal event ends the sticky liveness; got {:?}",
+        app.active_session().expect("active session").backgrounded_alive_tool_use_ids(),
     );
 }
 
