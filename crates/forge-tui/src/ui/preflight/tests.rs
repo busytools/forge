@@ -454,6 +454,10 @@ fn a_bailed_token_account_names_the_re_mint_not_login() {
         "a 401 on a setup token is an auth failure; got:\n{text}",
     );
     assert!(
+        text.contains("restart forge to pick"),
+        "a token repair is an env edit, so the head line cannot promise in-place recovery; got:\n{text}",
+    );
+    assert!(
         !text.contains("/login"),
         "`/login` repairs the shared dir's keychain account, never this one; got:\n{text}",
     );

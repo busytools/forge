@@ -420,12 +420,17 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
             width,
         )
     } else {
+        // A token repair is an env edit, so "recovers in place" would
+        // promise a recovery the pollers cannot deliver until restart.
+        let tail = match row.auth {
+            AccountAuth::Token => "fix the auth and restart forge to pick the re-mint up",
+            _ => "fix the auth and it recovers in place",
+        };
         wrapped(
             2,
             &format!(
-                "{} will not start a session. forge starts without it; fix the auth and it \
-                 recovers in place.",
-                row.display_name
+                "{} will not start a session. forge starts without it; {}.",
+                row.display_name, tail
             ),
             error,
             width,
