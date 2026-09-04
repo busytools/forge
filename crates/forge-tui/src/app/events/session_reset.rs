@@ -112,7 +112,7 @@ fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
 }
 
 fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) {
-    let model::ContentBlock::Text(text) = &chunk.content else {
+    let model::RenderContentBlock::Text(text) = &chunk.content else {
         return;
     };
     if text.text.is_empty() {
@@ -457,7 +457,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                     if crate::ui::peer_block::detect_inbound(text).is_some() {
                         continue;
                     }
-                    let chunk = model::ContentChunk::new(model::ContentBlock::Text(
+                    let chunk = model::ContentChunk::new(model::RenderContentBlock::Text(
                         model::TextContent::new(text.clone()),
                     ));
                     append_resume_user_message_chunk(app, &chunk);

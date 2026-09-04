@@ -22,7 +22,7 @@ use crate::app::MessageBlock;
 ///   default). The diff-content check below catches the same set
 ///   once the result lands; the name-based check covers the
 ///   in-flight window before the diff content arrives.
-/// - Any tool whose `content` carries a `ToolCallContent::Diff`
+/// - Any tool whose `content` carries a `RenderToolCallContent::Diff`
 ///   entry (Edit / Write / MultiEdit / NotebookEdit post-result).
 /// - Tools that actually RENDER as a lifecycle block
 ///   (`ui/message.rs::renders_as_lifecycle_block`). Keyed on the render,
@@ -59,7 +59,7 @@ pub fn is_run_breaker(block: &MessageBlock) -> bool {
         return true;
     }
     let has_diff =
-        tc.content.iter().any(|c| matches!(c, crate::agent::model::ToolCallContent::Diff(_)));
+        tc.content.iter().any(|c| matches!(c, crate::agent::model::RenderToolCallContent::Diff(_)));
     if has_diff {
         return true;
     }
@@ -833,13 +833,14 @@ mod tests {
     }
 
     fn diff_tool_call_block(id: &str, sdk_tool_name: &str) -> MessageBlock {
-        // A tool call whose content carries a `ToolCallContent::Diff`
+        // A tool call whose content carries a `RenderToolCallContent::Diff`
         // entry. The `is_run_breaker` predicate keys off this variant
         // to recognize diff-rendering tools (Edit / Write /
         // MultiEdit / NotebookEdit) and treat them as breakers.
         let mut block = tool_call_block(id, sdk_tool_name);
         if let MessageBlock::ToolCall(tc) = &mut block {
-            tc.content = vec![model::ToolCallContent::Diff(model::Diff::new("/tmp/dummy.rs", ""))];
+            tc.content =
+                vec![model::RenderToolCallContent::Diff(model::Diff::new("/tmp/dummy.rs", ""))];
         }
         block
     }

@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn layout_dirty_invalidates_measure_fast_path() {
         let mut tc = test_tool_call("tc-dirty", "Read", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::from("one line")];
+        tc.content = vec![model::RenderToolCallContent::from("one line")];
 
         let (first_height, first_lines) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
@@ -638,7 +638,7 @@ mod tests {
     fn mcp_resource_body_renders_saved_path_hint_when_text_omits_it() {
         let mut tc =
             test_tool_call("tc-mcp-resource", "ReadMcpResource", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::McpResource(
+        tc.content = vec![model::RenderToolCallContent::McpResource(
             model::McpResource::new("file://manual.pdf")
                 .mime_type(Some("application/pdf".to_owned()))
                 .text(Some("Binary resource downloaded successfully.".to_owned()))
@@ -664,7 +664,7 @@ mod tests {
             "ReadMcpResource",
             model::ToolCallStatus::Completed,
         );
-        tc.content = vec![model::ToolCallContent::McpResource(
+        tc.content = vec![model::RenderToolCallContent::McpResource(
             model::McpResource::new("file://manual.pdf")
                 .mime_type(Some("application/pdf".to_owned()))
                 .text(Some(
@@ -689,7 +689,7 @@ mod tests {
     #[test]
     fn completed_non_execute_collapse_changes_visible_body_without_hiding_the_title() {
         let mut tc = test_tool_call("tc-collapse", "Read", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::from("alpha\nbeta".to_owned())];
+        tc.content = vec![model::RenderToolCallContent::from("alpha\nbeta".to_owned())];
 
         let mut expanded = Vec::new();
         render_tool_call_cached_with_tools_collapsed(
@@ -730,7 +730,8 @@ mod tests {
     fn completed_non_execute_measurement_changes_with_session_collapse_preference() {
         let mut tc =
             test_tool_call("tc-measure-collapse", "Read", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::from("alpha\nbeta\ngamma\ndelta".to_owned())];
+        tc.content =
+            vec![model::RenderToolCallContent::from("alpha\nbeta\ngamma\ndelta".to_owned())];
 
         let (expanded_h, _) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
@@ -762,7 +763,7 @@ mod tests {
 
         // What an expanded measurement costs from cold.
         let mut cold = test_tool_call("tc-key-cold", "Read", model::ToolCallStatus::Completed);
-        cold.content = vec![model::ToolCallContent::from(body.clone())];
+        cold.content = vec![model::RenderToolCallContent::from(body.clone())];
         let (expanded_from_cold, _) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut cold,
             ToolCallRenderContext::default(),
@@ -775,7 +776,7 @@ mod tests {
         // The same tool measured collapsed first, then expanded with
         // nothing else changed.
         let mut tc = test_tool_call("tc-key-reused", "Read", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::from(body)];
+        tc.content = vec![model::RenderToolCallContent::from(body)];
         let (collapsed, _) = measure_tool_call_height_cached_with_tools_collapsed(
             &mut tc,
             ToolCallRenderContext::default(),
@@ -806,7 +807,7 @@ mod tests {
     #[test]
     fn diff_tool_stays_expanded_when_session_prefers_collapsed() {
         let mut tc = test_tool_call("tc-diff", "Write", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::Diff(
+        tc.content = vec![model::RenderToolCallContent::Diff(
             model::Diff::new("src/main.rs", "new".to_owned()).old_text(Some("old".to_owned())),
         )];
 
@@ -833,7 +834,7 @@ mod tests {
     #[test]
     fn diff_tool_body_adds_nested_indent_inside_tool_prefix() {
         let mut tc = test_tool_call("tc-diff-indent", "Edit", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::Diff(
+        tc.content = vec![model::RenderToolCallContent::Diff(
             model::Diff::new("src/main.rs", "new".to_owned())
                 .old_text(Some("old".to_owned()))
                 .repository(Some("stargate/project".to_owned())),
@@ -856,7 +857,7 @@ mod tests {
     fn diff_tool_body_preserves_source_code_indentation() {
         let mut tc =
             test_tool_call("tc-diff-code-indent", "Edit", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::Diff(model::Diff::new(
+        tc.content = vec![model::RenderToolCallContent::Diff(model::Diff::new(
             "src/main.rs",
             "fn main() {\n    if true {\n        return;\n    }\n}\n".to_owned(),
         ))];
@@ -874,7 +875,7 @@ mod tests {
     #[test]
     fn diff_tool_body_preserves_nested_indent_for_wrapped_continuations() {
         let mut tc = test_tool_call("tc-diff-wrap", "Edit", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::Diff(model::Diff::new(
+        tc.content = vec![model::RenderToolCallContent::Diff(model::Diff::new(
             "src/main.rs",
             "        This is a long added line that should wrap onto another visual line.\n"
                 .to_owned(),
@@ -902,7 +903,8 @@ mod tests {
             text
         });
         let mut tc = test_tool_call("tc-diff-cap", "Write", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::Diff(model::Diff::new("src/main.rs", new_text))];
+        tc.content =
+            vec![model::RenderToolCallContent::Diff(model::Diff::new("src/main.rs", new_text))];
 
         let body = standard::render_tool_call_body(&tc, 80);
         let rendered: Vec<String> = body
@@ -928,7 +930,7 @@ mod tests {
             "Write",
             model::ToolCallStatus::Completed,
         );
-        tc.content = vec![model::ToolCallContent::Diff(
+        tc.content = vec![model::RenderToolCallContent::Diff(
             model::Diff::new(
                 ".claude/plans/launch.md",
                 "# Launch Plan\n\n- Ship aliases\n- Render plan markdown\n".to_owned(),
@@ -1054,7 +1056,7 @@ mod tests {
     fn content_summary_keeps_normal_limit_for_completed_agent() {
         let mut tc = test_tool_call("tc-agent-done", "Agent", model::ToolCallStatus::Completed);
         let long_line = "a".repeat(150);
-        tc.content = vec![model::ToolCallContent::from(long_line)];
+        tc.content = vec![model::RenderToolCallContent::from(long_line)];
 
         let summary = content_summary(&tc);
         assert_eq!(summary.chars().count(), 60);

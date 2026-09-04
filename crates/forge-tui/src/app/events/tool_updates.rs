@@ -10,7 +10,7 @@ use crate::app::todos::{
     parse_task_create_input, parse_task_create_result_id, parse_task_update_input,
 };
 
-pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCallUpdate) {
+pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::RenderToolCallUpdate) {
     let id_str = tcu.tool_call_id.clone();
     let Some((mi, bi)) = app.lookup_tool_call(&id_str) else {
         tracing::warn!(
@@ -178,7 +178,7 @@ fn apply_tool_call_update_to_indexed_block(
     app: &mut App,
     mi: usize,
     bi: usize,
-    tcu: &model::ToolCallUpdate,
+    tcu: &model::RenderToolCallUpdate,
 ) -> ToolCallUpdateApplyOutcome {
     let mut out = ToolCallUpdateApplyOutcome {
         changed: false,
@@ -258,14 +258,14 @@ fn apply_tool_call_title_update(tc: &mut ToolCallInfo, title: Option<&str>, cwd_
 
 fn apply_tool_call_content_update(
     tc: &mut ToolCallInfo,
-    content: Option<&[model::ToolCallContent]>,
+    content: Option<&[model::RenderToolCallContent]>,
 ) -> bool {
     let Some(content) = content else {
         return false;
     };
     let mut changed = false;
     for cb in content {
-        if let model::ToolCallContent::Terminal(t) = cb {
+        if let model::RenderToolCallContent::Terminal(t) = cb {
             let tid = t.terminal_id.clone();
             if tc.terminal_id.as_deref() != Some(tid.as_str()) {
                 tc.terminal_id = Some(tid);
@@ -282,13 +282,13 @@ fn apply_tool_call_content_update(
     // overwrite the diff with the error text - losing the green/red
     // diff coloring the user expects to still see after declining.
     let preserve_diff = matches!(tc.sdk_tool_name.as_str(), "Edit" | "Write")
-        && !content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)))
-        && tc.content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)));
-    let new_content: Vec<model::ToolCallContent> = if preserve_diff {
-        let mut combined: Vec<model::ToolCallContent> = tc
+        && !content.iter().any(|c| matches!(c, model::RenderToolCallContent::Diff(_)))
+        && tc.content.iter().any(|c| matches!(c, model::RenderToolCallContent::Diff(_)));
+    let new_content: Vec<model::RenderToolCallContent> = if preserve_diff {
+        let mut combined: Vec<model::RenderToolCallContent> = tc
             .content
             .iter()
-            .filter(|c| matches!(c, model::ToolCallContent::Diff(_)))
+            .filter(|c| matches!(c, model::RenderToolCallContent::Diff(_)))
             .cloned()
             .collect();
         combined.extend_from_slice(content);
@@ -433,15 +433,15 @@ fn extract_task_delta_from_tool_call_update(tc: &ToolCallInfo) -> Option<TaskDel
     }
 }
 
-/// Concatenate every `ToolCallContent::Content(Text)` block on the
+/// Concatenate every `RenderToolCallContent::Content(Text)` block on the
 /// tool call into a single `String`. Non-text blocks (diff, terminal,
 /// mcp resource, image) are skipped - `TaskCreate`'s assigned id
 /// always lives in a Text block per core-v1's wire capture.
 fn tool_call_text_output(tc: &ToolCallInfo) -> Option<String> {
     let mut parts: Vec<&str> = Vec::new();
     for content in &tc.content {
-        if let model::ToolCallContent::Content(inner) = content
-            && let model::ContentBlock::Text(text) = &inner.content
+        if let model::RenderToolCallContent::Content(inner) = content
+            && let model::RenderContentBlock::Text(text) = &inner.content
         {
             parts.push(text.text.as_str());
         }
@@ -474,7 +474,7 @@ fn extract_text_field(value: &serde_json::Value) -> Option<&str> {
 fn log_tool_call_update_applied(
     app: &App,
     id_str: &str,
-    tcu: &model::ToolCallUpdate,
+    tcu: &model::RenderToolCallUpdate,
     tool_scope: Option<&ToolCallScope>,
     previous_status: Option<model::ToolCallStatus>,
     update_outcome: &ToolCallUpdateApplyOutcome,
@@ -593,7 +593,7 @@ struct ToolUpdateLogSpec {
 
 fn tool_update_log_spec(
     tc: &ToolCallInfo,
-    tcu: &model::ToolCallUpdate,
+    tcu: &model::RenderToolCallUpdate,
     previous_status: Option<model::ToolCallStatus>,
 ) -> ToolUpdateLogSpec {
     match tc.status {
@@ -882,9 +882,9 @@ mod tests {
 
         assert_eq!(app.subagents_view()[0].label, "Explore \u{b7} Map the pipeline");
 
-        let update = model::ToolCallUpdate::new(
+        let update = model::RenderToolCallUpdate::new(
             root_id,
-            model::ToolCallUpdateFields::new().raw_input(serde_json::json!({})),
+            model::RenderToolCallUpdateFields::new().raw_input(serde_json::json!({})),
         );
         handle_tool_call_update_session(&mut app, &update);
 
@@ -898,7 +898,8 @@ mod tests {
     #[test]
     fn repeated_completed_status_update_does_not_log_a_second_completion() {
         let tc = make_bash_tool_call("tool-1", model::ToolCallStatus::Completed, None);
-        let update = model::ToolCallUpdate::new("tool-1", model::ToolCallUpdateFields::new());
+        let update =
+            model::RenderToolCallUpdate::new("tool-1", model::RenderToolCallUpdateFields::new());
 
         let spec = tool_update_log_spec(&tc, &update, Some(model::ToolCallStatus::Completed));
 
@@ -910,9 +911,9 @@ mod tests {
     #[test]
     fn first_completed_status_update_logs_completion() {
         let tc = make_bash_tool_call("tool-1", model::ToolCallStatus::Completed, None);
-        let update = model::ToolCallUpdate::new(
+        let update = model::RenderToolCallUpdate::new(
             "tool-1",
-            model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
+            model::RenderToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
         );
 
         let spec = tool_update_log_spec(&tc, &update, Some(model::ToolCallStatus::InProgress));
@@ -935,9 +936,9 @@ mod tests {
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
 
-        let update = model::ToolCallUpdate::new(
+        let update = model::RenderToolCallUpdate::new(
             tool_id,
-            model::ToolCallUpdateFields::new().task_metadata(
+            model::RenderToolCallUpdateFields::new().task_metadata(
                 model::TaskMetadata::new()
                     .error(Some("Task paused".to_owned()))
                     .backgrounded(Some(true)),
@@ -972,16 +973,16 @@ mod tests {
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
 
-        let backgrounded_update = model::ToolCallUpdate::new(
+        let backgrounded_update = model::RenderToolCallUpdate::new(
             tool_id,
-            model::ToolCallUpdateFields::new()
+            model::RenderToolCallUpdateFields::new()
                 .task_metadata(model::TaskMetadata::new().backgrounded(Some(true))),
         );
         handle_tool_call_update_session(&mut app, &backgrounded_update);
 
-        let timing_update = model::ToolCallUpdate::new(
+        let timing_update = model::RenderToolCallUpdate::new(
             tool_id,
-            model::ToolCallUpdateFields::new().task_metadata(
+            model::RenderToolCallUpdateFields::new().task_metadata(
                 model::TaskMetadata::new()
                     .error(Some("Task stopped by parent agent".to_owned()))
                     .end_time(Some(1234))
@@ -1020,9 +1021,9 @@ mod tests {
         app.register_tool_call_scope(tool_id.to_owned(), ToolCallScope::SubagentRoot);
         app.insert_active_task(tool_id.to_owned());
 
-        let update = model::ToolCallUpdate::new(
+        let update = model::RenderToolCallUpdate::new(
             tool_id,
-            model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Killed),
+            model::RenderToolCallUpdateFields::new().status(model::ToolCallStatus::Killed),
         );
 
         handle_tool_call_update_session(&mut app, &update);
