@@ -14,13 +14,12 @@
 //! without dragging in a Linux-keyring shim).
 //!
 //! Two readers turn them into a Bearer header: the forge-providers
-//! Anthropic backend, via [`crate::cloud::provider_host::AgentHost`],
-//! and [`crate::cloud::oauth_usage::probe`] (the codex base-url arm).
-//! The others: [`refresh_via_cli_spawn`] below, before and after its
-//! spawn; `ForgeSdkBridge`; and forge-workspace's usage-poll 401 gate.
-//! Note that `probe` skips this loader entirely on the
-//! `ProbePlan::BaseUrl` path, building credentials from
-//! `ANTHROPIC_AUTH_TOKEN` instead.
+//! Anthropic and Codex backends, via
+//! [`crate::cloud::provider_host::AgentHost`]. The codex backend skips
+//! this loader entirely, building its credential from
+//! `ANTHROPIC_AUTH_TOKEN` in `[accounts.env]` instead. The others:
+//! [`refresh_via_cli_spawn`] below, before and after its spawn;
+//! `ForgeSdkBridge`; and forge-workspace's usage-poll 401 gate.
 //!
 //! When the keychain token is past its `expires_at` and the live probe
 //! returns 401, callers can fire [`refresh_via_cli_spawn`] to nudge the

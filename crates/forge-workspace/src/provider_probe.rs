@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use forge_agent::cloud::AgentHost;
 use forge_agent::cloud::oauth::OauthFetchError;
 use forge_agent::cloud::oauth_credentials::{load_oauth_credentials, refresh_via_cli_spawn};
+use forge_agent::cloud::oauth_usage::is_token_mode;
 use forge_primitives::account::Provider;
 use forge_primitives::usage::oauth::OauthUsageError;
 use forge_providers::{AccountEnv, ProbeError, ProviderBackend, UsageSnapshot};
@@ -36,6 +37,16 @@ pub(crate) async fn probe_via_backend(
     backend.probe(&account_env, &AgentHost).await
 }
 
+/// Whether the account's probe authenticates from `[accounts.env]`
+/// rather than the keychain: an env-bearer auth failure must never
+/// fire the keychain CLI-spawn refresh, which burns billed
+/// `claude -p hi` spawns against a token the probe never reads. The
+/// base-url providers authenticate from env by definition; a
+/// token-mode anthropic account carries its setup token there.
+pub(crate) fn env_bearer(provider: Provider, env: &HashMap<String, String>) -> bool {
+    provider.uses_base_url() || is_token_mode(env)
+}
+
 /// The 60 s poller's keychain recovery, over the backend: on a 401
 /// whose keychain token is locally expired (or undated), fire the
 /// CLI-spawn refresh once and re-probe; any refresh failure surfaces
@@ -47,6 +58,10 @@ pub(crate) async fn probe_with_keychain_recovery(
     env: &HashMap<String, String>,
 ) -> Result<UsageSnapshot, ProbeError> {
     let first = probe_via_backend(provider, config_dir, env).await;
+    // The refresh can only repair a keychain-authenticated probe.
+    if env_bearer(provider, env) {
+        return first;
+    }
     let Err(ProbeError::Fetch(OauthUsageError::Unauthorized(_))) = &first else {
         return first;
     };
@@ -128,5 +143,22 @@ mod tests {
     #[test]
     fn anthropic_backend_always_resolves() {
         assert!(backend_for(Provider::Anthropic).is_ok());
+    }
+
+    /// The repair-class pin: every non-keychain credential source
+    /// counts as env-bearer, so its auth failures terminal instead of
+    /// firing billed keychain refreshes. Only keychain-mode anthropic
+    /// is refreshable.
+    #[test]
+    fn env_bearer_covers_every_non_keychain_credential_source() {
+        assert!(!env_bearer(Provider::Anthropic, &HashMap::new()));
+
+        let mut token = HashMap::new();
+        token.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
+        assert!(env_bearer(Provider::Anthropic, &token));
+
+        for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
+            assert!(env_bearer(provider, &HashMap::new()), "{provider:?}");
+        }
     }
 }
