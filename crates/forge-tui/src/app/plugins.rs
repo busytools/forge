@@ -1154,7 +1154,7 @@ pub(crate) fn normalize_single_line_input(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', " ")
 }
 
-fn reset_selection_for_active_tab(app: &mut App) {
+pub(crate) fn reset_selection_for_active_tab(app: &mut App) {
     app.plugins.set_selected_index_for(app.plugins.active_tab, 0);
     clamp_selection(app);
 }
@@ -1288,6 +1288,42 @@ mod tests {
             app.plugins.installed_search_query.text(),
             "retry guard alpha beta gamma delta",
             "dictated newlines flatten instead of entering the one-line query"
+        );
+    }
+
+    /// A take landing in the search field shrinks the filtered list
+    /// like any other query edit, so the row selection resets too.
+    #[test]
+    fn a_take_landing_in_the_search_field_resets_the_selection() {
+        let (mut app, key) = plugins_view_with_live_take();
+        app.plugins.installed.clear();
+        for id in ["sample-alpha@one", "sample-beta@two", "gamma@three"] {
+            app.plugins.installed.push(InstalledPluginEntry {
+                id: id.to_owned(),
+                version: None,
+                scope: "user".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: None,
+                capability: PluginCapability::Skill,
+            });
+        }
+        app.plugins.installed_selected_index = 2;
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateEnded {
+                key,
+                generation: 1,
+                outcome: DictateOutcome::Landed { text: "sample".to_owned(), truncated: false },
+            },
+        );
+
+        assert_eq!(app.plugins.installed_search_query.text(), "sample");
+        assert_eq!(
+            app.plugins.installed_selected_index, 0,
+            "the landing filtered the list to two rows; index 2 points past them"
         );
     }
 
