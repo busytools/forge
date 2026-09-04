@@ -75,11 +75,7 @@ fn fire(app: &mut App, key: &SessionKey) {
     let status = bucket.last_api_retry.and_then(|(_, status)| status);
 
     let Some(workspace) = app.workspace.as_ref() else { return };
-    if let Err(err) = workspace.dispatch(forge_workspace::Command::Prompt {
-        key: key.clone(),
-        text: continuation_prompt(status),
-        attachments: Vec::new(),
-    }) {
+    if let Err(err) = workspace.dispatch_workspace_prompt(key, continuation_prompt(status)) {
         // The session is gone rather than merely erroring: spend the
         // budget and let the band surface it.
         tracing::warn!(
@@ -361,5 +357,50 @@ mod tests {
         note_turn_completed(&mut app, &key);
 
         assert_eq!(app.sessions.get(&key).expect("bucket").auto_continue_attempts, 0);
+    }
+
+    /// A continuation is a mid-turn-capable dispatch: when any turn
+    /// (typed, or a counted cron/peer/gotify fire) starts inside the
+    /// backoff window, the helper signals `PromptQueuedWhileBusy` and
+    /// the TUI counts the continuation into the bridge; an idle fire
+    /// stays silent.
+    #[test]
+    fn mid_turn_continuation_counts_as_a_queued_send_and_idle_fire_is_silent() {
+        use super::super::apply_session_update;
+        use forge_workspace::SessionUpdate;
+
+        let mut app = App::test_default();
+        let (ws, mut updates) = forge_workspace::Workspace::testing_stub();
+        app.workspace = Some(ws);
+        let _rx = app.install_testing_stub();
+        let key = app.active_session_key.clone().expect("active key");
+
+        app.sessions.get_mut(&key).expect("bucket").auto_continue_due_at =
+            Some(SystemTime::now() - Duration::from_secs(1));
+        maybe_fire(&mut app);
+        assert!(
+            updates.try_recv().is_err(),
+            "an idle continuation must not signal PromptQueuedWhileBusy",
+        );
+
+        app.workspace
+            .as_ref()
+            .expect("workspace")
+            .domain_session_for(&key)
+            .expect("domain session")
+            .lock()
+            .turn_pending = true;
+        app.sessions.get_mut(&key).expect("bucket").auto_continue_due_at =
+            Some(SystemTime::now() - Duration::from_secs(1));
+        maybe_fire(&mut app);
+
+        let signal = updates.try_recv().expect("a mid-turn continuation signals");
+        assert!(
+            matches!(signal, SessionUpdate::PromptQueuedWhileBusy { .. }),
+            "the signal carries the queue event, got {signal:?}",
+        );
+        apply_session_update(&mut app, signal);
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(bucket.queued_turn_sends, 1, "the continuation counts as one queued send");
     }
 }
