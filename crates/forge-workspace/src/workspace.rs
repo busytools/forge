@@ -865,6 +865,55 @@ impl Workspace {
         self.config.dictate.enabled
     }
 
+    /// The `[plugins]` auto-update policy from forge.toml. Read by the
+    /// plugins pane for boot auto-update and to show marketplace trust.
+    pub fn plugin_settings(&self) -> &crate::config::PluginSettings {
+        &self.config.plugins
+    }
+
+    /// Remember plugin updates applied by a pane run or by boot
+    /// auto-update: the visible record of what moved, from where, and
+    /// the ref a rollback restores. One transaction for the whole
+    /// batch. A no-op with a warn when the store is closed.
+    pub fn record_plugin_updates(&self, records: &[forge_primitives::plugins::PluginUpdateRecord]) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::plugins::record_updates(db, records)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                count = records.len(),
+                error = %error,
+                "failed to persist the plugin update records",
+            );
+        }
+    }
+
+    /// Every remembered plugin update, latest write per installed
+    /// entry. Empty when the store is closed or unreadable.
+    pub fn plugin_update_records(&self) -> Vec<forge_primitives::plugins::PluginUpdateRecord> {
+        self.db
+            .lock()
+            .as_ref()
+            .and_then(|db| crate::store::plugins::update_records(db).ok())
+            .map(|records| records.into_values().collect())
+            .unwrap_or_default()
+    }
+
+    /// Forget the record for one installed entry after its rollback
+    /// ran: the previous version it named is now current.
+    pub fn clear_plugin_update_record(&self, plugin_id: &str, scope: &str) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::plugins::clear_update_record(db, plugin_id, scope)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                plugin = %plugin_id,
+                error = %error,
+                "failed to clear a plugin update record",
+            );
+        }
+    }
+
     /// The `[gotify]` server connection from forge.toml, or `None`
     /// when the section is absent. `None` keeps the Gotify subsystem
     /// dormant and makes `gotify__subscribe` error. Read-only - forge

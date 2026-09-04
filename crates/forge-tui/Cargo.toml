@@ -79,6 +79,7 @@ forge-workspace = { workspace = true, features = ["test-helpers", "testing"] }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]
 workspace = true

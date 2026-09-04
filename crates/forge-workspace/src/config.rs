@@ -54,6 +54,10 @@ struct ForgeToml {
     /// stays dormant.
     #[serde(default)]
     gotify: Option<GotifyConfig>,
+    /// Optional `[plugins]` section - opt-in plugin auto-update.
+    /// Absent section → all defaults, which leaves auto-update off.
+    #[serde(default)]
+    plugins: PluginSettings,
     /// Optional top-level `[env]` table - the BASE every session
     /// starts from, overridden per key by `[accounts.env]` and then by
     /// `[projects.<name>.env]`. Merged into `LoadedAccount.env` at
@@ -155,6 +159,41 @@ pub(crate) struct LoadedAccount {
     pub permission_mode: Option<PermissionMode>,
 }
 
+/// The `[plugins]` section. Unknown fields are rejected so a mistyped
+/// key cannot silently leave auto-update doing nothing.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PluginSettings {
+    /// Update installed plugins once at forge boot. Off by default:
+    /// an auto-applied plugin update can break a load-bearing session
+    /// mid-day, so forge only ever moves a plugin the user opted in.
+    #[serde(default)]
+    pub auto_update: bool,
+    /// Marketplaces auto-update may touch. Trust gates at the
+    /// marketplace: nothing here means nothing auto-updates, whatever
+    /// `auto_update` says.
+    #[serde(default)]
+    pub trusted_marketplaces: Vec<String>,
+    /// Plugin ids (`name@marketplace`) held at their current version -
+    /// never auto-updated, manual updates still work.
+    #[serde(default)]
+    pub pins: Vec<String>,
+}
+
+impl PluginSettings {
+    /// A plugin auto-updates only when the switch is on, its
+    /// marketplace is trusted and it is not pinned.
+    pub fn allows_auto_update(&self, plugin_id: &str) -> bool {
+        if !self.auto_update {
+            return false;
+        }
+        let marketplace = forge_primitives::plugins::plugin_marketplace(plugin_id);
+        !marketplace.is_empty()
+            && self.trusted_marketplaces.iter().any(|trusted| trusted == marketplace)
+            && !self.pins.iter().any(|pin| pin == plugin_id)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
@@ -174,6 +213,9 @@ pub(crate) struct LoadedConfig {
     /// `[gotify]` server connection, or `None` when the section is
     /// absent (Gotify disabled).
     pub gotify: Option<GotifyConfig>,
+    /// `[plugins]` section knobs. Absent section means auto-update is
+    /// off and nothing is trusted or pinned.
+    pub plugins: PluginSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +292,7 @@ impl LoadedConfig {
             ui: UiSettings::default(),
             dictate: crate::dictate::DictateSettings::default(),
             gotify: None,
+            plugins: PluginSettings::default(),
         }
     }
 }
@@ -491,6 +534,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         ui: parsed.ui,
         dictate: parsed.dictate,
         gotify: parsed.gotify,
+        plugins: parsed.plugins,
     })
 }
 
@@ -1442,6 +1486,55 @@ provider = "anthropic"
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("happy path");
         assert_eq!(config.gotify, None);
+    }
+
+    #[test]
+    fn the_plugins_section_reaches_the_loaded_config() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[plugins]\nauto_update = true\ntrusted_marketplaces = \
+                 [\"claude-plugins-official\"]\npins = [\"pensive@claude-night-market\"]\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert!(config.plugins.auto_update);
+        assert_eq!(config.plugins.trusted_marketplaces, vec!["claude-plugins-official"]);
+        assert_eq!(config.plugins.pins, vec!["pensive@claude-night-market"]);
+
+        assert!(config.plugins.allows_auto_update("supabase@claude-plugins-official"));
+        assert!(
+            !config.plugins.allows_auto_update("pensive@claude-night-market"),
+            "a pinned plugin never auto-updates"
+        );
+        assert!(
+            !config.plugins.allows_auto_update("leyline@claude-night-market"),
+            "an untrusted marketplace never auto-updates"
+        );
+    }
+
+    #[test]
+    fn absent_plugins_section_auto_update_is_off() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert!(!config.plugins.auto_update);
+        assert!(config.plugins.trusted_marketplaces.is_empty());
+        assert!(config.plugins.pins.is_empty());
+        assert!(!config.plugins.allows_auto_update("anything@claude-plugins-official"));
+    }
+
+    #[test]
+    fn an_unknown_plugins_key_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[plugins]\ntrust_markets = [\"x\"]\n", minimal_config()),
+        );
+        let error = load_from_dir(dir.path()).expect_err("unknown key must fail loudly");
+        assert!(error.to_string().contains("trust_markets"), "names the key: {error}");
     }
 
     #[test]

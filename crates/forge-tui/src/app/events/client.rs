@@ -279,10 +279,22 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);
             });
         }
-        SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message } => {
-            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_failure_dropped", |app| {
+        SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message, trigger } => {
+            // A boot auto-update run is app-scoped (see the run arms
+            // below): its failure must unpin the seeded run whatever
+            // session holds the focus.
+            if trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
                 crate::app::plugins::apply_inventory_refresh_failure(app, message);
-            });
+            } else {
+                dispatch_if_cwd_matches(
+                    app,
+                    &cwd_raw,
+                    "plugins_inventory_failure_dropped",
+                    |app| {
+                        crate::app::plugins::apply_inventory_refresh_failure(app, message);
+                    },
+                );
+            }
         }
         SessionUpdate::PluginsCliActionSucceeded { cwd_raw, result } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_cli_success_dropped", |app| {
@@ -292,6 +304,66 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::PluginsCliActionFailed { cwd_raw, message } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_cli_failure_dropped", |app| {
                 crate::app::plugins::apply_cli_action_failure(app, message);
+            });
+        }
+        SessionUpdate::PluginsUpdateRunProgress { cwd_raw, run } => {
+            // A boot auto-update run is app-scoped: it borrows a
+            // project cwd that need not match the focused session, so
+            // its events bypass the cwd gate.
+            if run.trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
+                crate::app::plugins::apply_update_run_progress(app, run);
+            } else {
+                dispatch_if_cwd_matches(
+                    app,
+                    &cwd_raw,
+                    "plugins_update_run_progress_dropped",
+                    |app| {
+                        crate::app::plugins::apply_update_run_progress(app, run);
+                    },
+                );
+            }
+        }
+        SessionUpdate::PluginsUpdateRunFinished { cwd_raw, run, snapshot, claude_path } => {
+            if run.trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
+                crate::app::plugins::apply_update_run_finished(app, &run, snapshot, claude_path);
+            } else {
+                dispatch_if_cwd_matches(
+                    app,
+                    &cwd_raw,
+                    "plugins_update_run_finished_dropped",
+                    |app| {
+                        crate::app::plugins::apply_update_run_finished(
+                            app,
+                            &run,
+                            snapshot,
+                            claude_path,
+                        );
+                    },
+                );
+            }
+        }
+        SessionUpdate::PluginsRollbackSucceeded {
+            cwd_raw,
+            plugin_id,
+            scope,
+            message,
+            snapshot,
+            claude_path,
+        } => {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_rollback_success_dropped", |app| {
+                crate::app::plugins::apply_rollback_success(
+                    app,
+                    &plugin_id,
+                    &scope,
+                    message,
+                    snapshot,
+                    claude_path,
+                );
+            });
+        }
+        SessionUpdate::PluginsRollbackFailed { cwd_raw, plugin_id, message, snapshot } => {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_rollback_failure_dropped", |app| {
+                crate::app::plugins::apply_rollback_failure(app, &plugin_id, &message, snapshot);
             });
         }
         SessionUpdate::PeerInflightStatsChanged { key, stats } => {

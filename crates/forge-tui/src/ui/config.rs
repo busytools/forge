@@ -426,6 +426,7 @@ mod tests {
             name: "claude-plugins-official".to_owned(),
             source: Some("github".to_owned()),
             repo: Some("anthropics/claude-plugins-official".to_owned()),
+            install_location: None,
         }];
 
         terminal
