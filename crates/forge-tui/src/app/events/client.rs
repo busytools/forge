@@ -492,7 +492,17 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 );
                 let landing = dictate_landing(app, &key);
                 match dictate_destination(app, &key) {
-                    Some(editor) => editor.insert_str(text),
+                    Some(editor) => {
+                        if landing == DictateLanding::PluginsField {
+                            // The plugins targets are single-line fields;
+                            // dictated newlines flatten like a paste.
+                            editor.insert_str(&crate::app::plugins::normalize_single_line_input(
+                                text,
+                            ));
+                        } else {
+                            editor.insert_str(text);
+                        }
+                    }
                     None => {
                         if let Some(bucket) = app.session_mut(&key) {
                             bucket.input.insert_str(text);

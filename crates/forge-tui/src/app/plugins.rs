@@ -1150,7 +1150,7 @@ fn normalize_project_path(path: &str) -> String {
     path.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
 }
 
-fn normalize_single_line_input(text: &str) -> String {
+pub(crate) fn normalize_single_line_input(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', " ")
 }
 
@@ -1254,14 +1254,15 @@ mod tests {
     }
 
     /// A take resolved while a plugins search field is focused lands
-    /// its words into that field's query.
+    /// its words into that field's query, newlines flattened like a
+    /// paste so the field stays one line.
     #[test]
     fn a_take_lands_in_the_focused_search_field() {
         let (mut app, key) = plugins_view_with_live_take();
         apply_session_update(
             &mut app,
             SessionUpdate::DictateEnded {
-                key,
+                key: key.clone(),
                 generation: 1,
                 outcome: DictateOutcome::Landed {
                     text: "retry guard".to_owned(),
@@ -1271,6 +1272,23 @@ mod tests {
         );
         assert_eq!(app.plugins.installed_search_query.text(), "retry guard");
         assert!(app.input().text().is_empty(), "the chat draft keeps nothing");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateEnded {
+                key,
+                generation: 2,
+                outcome: DictateOutcome::Landed {
+                    text: " alpha\nbeta\r\ngamma\rdelta".to_owned(),
+                    truncated: false,
+                },
+            },
+        );
+        assert_eq!(
+            app.plugins.installed_search_query.text(),
+            "retry guard alpha beta gamma delta",
+            "dictated newlines flatten instead of entering the one-line query"
+        );
     }
 
     /// Esc on the plugins view abandons the take before any closing
@@ -1299,7 +1317,8 @@ mod tests {
     }
 
     /// A take resolved while the add-marketplace overlay is up lands
-    /// its words into the marketplace field.
+    /// its words into the marketplace field, newlines flattened like a
+    /// paste so the draft stays one line.
     #[test]
     fn a_take_lands_in_the_marketplace_field() {
         let mut app = app_with_add_marketplace_open();
@@ -1313,13 +1332,31 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::DictateEnded {
-                key,
+                key: key.clone(),
                 generation: 1,
                 outcome: DictateOutcome::Landed { text: "owner/repo".to_owned(), truncated: false },
             },
         );
         let overlay = app.config.add_marketplace_overlay_mut().expect("overlay still up");
         assert_eq!(overlay.editor.text(), "owner/repo");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateEnded {
+                key,
+                generation: 2,
+                outcome: DictateOutcome::Landed {
+                    text: " alpha\nbeta\r\ngamma\rdelta".to_owned(),
+                    truncated: false,
+                },
+            },
+        );
+        let overlay = app.config.add_marketplace_overlay_mut().expect("overlay still up");
+        assert_eq!(
+            overlay.editor.text(),
+            "owner/repo alpha beta gamma delta",
+            "dictated newlines flatten instead of splitting the draft"
+        );
     }
 
     /// Esc on the add-marketplace overlay abandons a live take before
