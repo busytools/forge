@@ -2,6 +2,7 @@ use super::diff;
 use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::borrow::Cow;
 use std::sync::LazyLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Color as SyntectColor, FontStyle, Theme, ThemeSet};
@@ -64,12 +65,38 @@ pub(crate) fn strip_ansi(text: &str) -> String {
     out
 }
 
+/// Drop control characters from produced spans - never from the input,
+/// where a control byte terminates an escape sequence (BEL ends OSC).
+fn strip_control_chars(text: &str) -> Cow<'_, str> {
+    if !text.contains(char::is_control) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(text.chars().filter(|ch| !ch.is_control()).collect())
+}
+
+/// Newlines never reach this: ansi-to-tui stops at them and
+/// plain_text_lines splits first.
+fn strip_line_controls(line: Line<'static>) -> Line<'static> {
+    let spans: Vec<_> = line
+        .spans
+        .into_iter()
+        .map(|span| match strip_control_chars(&span.content) {
+            Cow::Borrowed(_) => span,
+            Cow::Owned(content) => Span::styled(content, span.style),
+        })
+        .collect();
+    Line::from(spans)
+}
+
 pub(crate) fn render_terminal_output(text: &str) -> Vec<Line<'static>> {
     let stripped = strip_ansi(text);
     if diff::looks_like_unified_diff(&stripped) {
         return diff::render_raw_unified_diff(&stripped);
     }
-    ansi_text_lines(text).unwrap_or_else(|| plain_text_lines(&stripped))
+    ansi_text_lines(text).map_or_else(
+        || plain_text_lines(&stripped),
+        |lines| lines.into_iter().map(strip_line_controls).collect(),
+    )
 }
 
 pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'static>> {
@@ -197,7 +224,7 @@ fn plain_text_lines(text: &str) -> Vec<Line<'static>> {
         return vec![Line::default()];
     }
     let mut lines: Vec<Line<'static>> =
-        text.split('\n').map(|line| Line::from(line.to_owned())).collect();
+        text.split('\n').map(|line| Line::from(strip_control_chars(line).into_owned())).collect();
     if lines.is_empty() {
         lines.push(Line::default());
     }
@@ -275,6 +302,48 @@ mod tests {
         assert_eq!(rendered[0].spans[0].content.as_ref(), "red");
         assert_eq!(rendered[0].spans[0].style.fg, Some(Color::Red));
         assert_eq!(rendered[0].spans[1].content.as_ref(), " plain");
+    }
+
+    #[test]
+    fn terminal_output_control_chars_do_not_drift_measured_width() {
+        use crate::ui::wrap::display_width;
+
+        fn assert_no_drift(lines: &[Line<'static>], label: &str) {
+            for line in lines {
+                let measured: usize = line.spans.iter().map(Span::width).sum();
+                let painted: usize = line
+                    .spans
+                    .iter()
+                    .map(|span| {
+                        span.styled_graphemes(Style::default())
+                            .map(|grapheme| display_width(grapheme.symbol))
+                            .sum::<usize>()
+                    })
+                    .sum();
+                assert_eq!(
+                    measured, painted,
+                    "{label}: row charges a column it does not paint: {line:?}"
+                );
+                for span in &line.spans {
+                    assert!(
+                        !span.content.contains(char::is_control),
+                        "{label}: raw control character reached a span: {:?}",
+                        span.content
+                    );
+                }
+            }
+        }
+
+        assert_no_drift(
+            &render_terminal_output("before\u{7}after\nplain\u{8}text\n"),
+            "bel/backspace body",
+        );
+        assert_no_drift(
+            &render_terminal_output("\u{1b}[31mred\u{7}\u{1b}[0m tail\n"),
+            "bel beside sgr",
+        );
+        assert_no_drift(&render_terminal_output("50%\r75%\r\n"), "crlf");
+        assert_no_drift(&plain_text_lines("before\u{7}after"), "plain fallback");
     }
 
     #[test]
