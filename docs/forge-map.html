@@ -1395,7 +1395,7 @@ chat continues here...
       <pre class="indent">
   I'll fold the earlier context down before carrying on.
 
-  <span class="dim">&#x280b; Compacting context...</span>
+  <span class="accent">&#x280b; Compacting context...</span>
   <span class="dim">&#x280b; 4m 42s &#xb7; thinking 434 &#xb7; 45&#x2191; &#xb7; 95% cached &#xb7; 135k written [&#x25b6; expand]</span></pre>
     </div>
     <p>The count-up needs the turn to own its message, and one shape does not: a turn opening with a <code>tool_use</code> is appended to the previous turn's message instead of starting its own, and both live writers skip a settled row, so it shows the previous turn's figures frozen until its own Result lands and replaces them. That is the same appending described under <a href="https://github.com/busytools/forge/issues/777">#777</a>, and it is why the promise above is about the ordinary shape rather than every turn. A resumed session renders no turn-info row at all: replay synthesises only assistant and user messages, so no Result reaches the reducer and neither half of the row is ever known.</p>
@@ -1510,6 +1510,26 @@ chat continues here...
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::subagent_running_line</code> · derived in <code>chat.rs::build_base_spinner</code> from <code>App::subagents_view</code>'s first entry's label + total count · the active-turn restriction is enforced at the render site in <code>ui/message.rs</code> (the <code>is_active_turn_assistant</code> conjunct guarding the row, and the matching one in the idle-suppression check), not in <code>chat.rs::msg_spinner</code>, which passes <code>running_subagents</code> through its struct-update base unchanged. Turn end needs no gate of its own: <code>finish_ready_turn_exit</code> clears the active-turn binding and nothing rebinds it <em>to that message</em> (the streaming path keys turn-end on a different predicate; see #792), so an ended turn owns no message and renders no indicator</dd>
       <dt>color</dt><dd>spinner + body: <code>theme::DIM</code>; <code>◇</code> kind glyph matches the <a href="#inspector-subagents">Inspector SUBAGENTS section</a>'s root chrome</dd>
       <dt>data source</dt><dd>reuses <code>App::subagents_view</code> (already the Inspector section's source) - no new wire surface, no new state. Non-empty <code>Vec&lt;SubagentEntry&gt;</code> means at least one root is non-terminal; the first entry's <code>label</code> is the single-subagent text. Count comes from the Vec's length.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Compacting indicator</h4>
+    <div class="when">visible: on the active turn's assistant message, while the session is compacting</div>
+  </div>
+  <div class="surface-body">
+    <p>The third line of the active assistant message's status slot: <code>&#x280b; Compacting context...</code>, the leading glyph in the session's active spinner frame and the whole line in <span class="accent">RUST_ORANGE</span> - the only one of the slot's lines that is not <code>DIM</code>. It trails the message body, after a blank line when the body has content; on a body-less placeholder it is the whole body. Arming is wire-driven, never optimistic: <code>status:"compacting"</code> arrives through <code>apply_session_status_update</code> and each typed <code>compact_boundary</code> re-arms it via <code>handle_compaction_boundary_update</code> (recording the trigger and pre-tokens); it clears when the CLI reports the settle (<code>status:null</code>), which is also when a manual <code>/compact</code> emits its success notice.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent">&#x280b; Compacting context...</span></pre>
+    </div>
+    <p><strong>It replaces the subagent line, not the turn info row.</strong> While it is up, the running-subagents indicator is suppressed - one line saying what is happening beats two saying different things - but a turn info row that already has figures still renders beneath it, the two-spinner case shown under <a href="#chat">Assistant message</a>.</p>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::compacting_line</code>, pushed from <code>append_assistant_blocks</code> (body-less message) and <code>build_message_layout</code> (after the body); the active-turn restriction rides the same <code>msg_spinner</code> gate as the rest of the slot</dd>
+      <dt>color</dt><dd>glyph + text: <code>RUST_ORANGE</code></dd>
+      <dt>data source</dt><dd><code>App::is_compacting</code>, driven by the CLI's session-status stream (<code>status:"compacting"</code>) and <code>compact_boundary</code> events; the glyph frame is the shared spinner (see <a href="#spinner-picker">[ui] spinner</a>)</dd>
     </dl>
   </div>
 </div>
