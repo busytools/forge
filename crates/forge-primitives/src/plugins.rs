@@ -165,17 +165,17 @@ impl PluginUpdateRun {
 /// The CLI marker printed when an update finds nothing to do.
 const ALREADY_CURRENT_MARKER: &str = "is already at the latest version";
 
-/// Classify one update call from its output and the observed version
-/// change. The CLI exits 0 on some failures, so neither signal alone
-/// decides: a non-zero exit is a failure, the marker means current, a
-/// version change means updated, and anything else is a failure whose
-/// detail is the output tail.
+/// Classify one update call from the CLI's output and the observed
+/// version change. The CLI exits 0 on some failures, so neither
+/// signal alone decides: the marker means current, a version change
+/// means updated, and anything else - including a silent exit 0 - is
+/// a failure whose detail is the output tail. Failures that exit
+/// non-zero never reach here: the runner reports them as errors.
 pub fn classify_update_row(
     plugin_id: &str,
     scope: &str,
     version_before: Option<&str>,
     version_after: Option<&str>,
-    exit_ok: bool,
     output: &str,
 ) -> PluginUpdateRunRow {
     let mut row = PluginUpdateRunRow::queued(
@@ -185,10 +185,7 @@ pub fn classify_update_row(
         version_before.map(str::to_owned),
     );
     row.installed_version = version_after.map(str::to_owned);
-    row.status = if !exit_ok {
-        row.detail = Some(output_tail(output));
-        PluginRunRowStatus::Failed
-    } else if output.contains(ALREADY_CURRENT_MARKER) {
+    row.status = if output.contains(ALREADY_CURRENT_MARKER) {
         PluginRunRowStatus::AlreadyCurrent
     } else if version_before != version_after {
         PluginRunRowStatus::Updated
@@ -322,7 +319,6 @@ mod tests {
             "user",
             Some("0.2.0"),
             Some("0.3.0"),
-            true,
             "Plugin \"hello\" updated from 0.2.0 to 0.3.0 for scope user.",
         );
         assert_eq!(updated.status, PluginRunRowStatus::Updated);
@@ -334,33 +330,35 @@ mod tests {
             "user",
             Some("0.2.0"),
             Some("0.2.0"),
-            true,
             "hello is already at the latest version (0.2.0).",
         );
         assert_eq!(current.status, PluginRunRowStatus::AlreadyCurrent);
 
-        // The CLI exits 0 with no marker when the update silently
-        // fails: unchanged version reads as failure, not as current.
-        let silent_failure = classify_update_row(
+        // Probed CLI behaviour: a missing plugin exits 0 with failure
+        // prose and no version change. That reads as failed, never as
+        // current.
+        let exit_zero_failure = classify_update_row(
             "hello@probe-market",
             "user",
             Some("0.2.0"),
             Some("0.2.0"),
-            true,
-            "Something went wrong",
+            "✘ Failed to update plugin \"hello\": Plugin \"hello\" not found",
         );
-        assert_eq!(silent_failure.status, PluginRunRowStatus::Failed);
-        assert_eq!(silent_failure.detail.as_deref(), Some("Something went wrong"));
+        assert_eq!(exit_zero_failure.status, PluginRunRowStatus::Failed);
+        assert!(
+            exit_zero_failure
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("not found")),
+            "the failure prose is the row detail"
+        );
 
-        let exit_failure = classify_update_row(
-            "hello@probe-market",
-            "user",
-            Some("0.2.0"),
-            None,
-            false,
-            "network unreachable",
-        );
-        assert_eq!(exit_failure.status, PluginRunRowStatus::Failed);
+        // An empty success output with an unchanged version is
+        // undecidable and reads as failed; the runner no longer
+        // produces it (it always hands over the CLI's output).
+        let silent_failure =
+            classify_update_row("hello@probe-market", "user", Some("0.2.0"), Some("0.2.0"), "");
+        assert_eq!(silent_failure.status, PluginRunRowStatus::Failed);
     }
 
     #[test]

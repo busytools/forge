@@ -216,16 +216,35 @@ fn run_command(claude_path: &Path, cwd_raw: &str, args: &[String]) -> Result<(),
 /// Run one `claude plugin ...` action without the trailing inventory
 /// refresh, so a section-level run can interleave per-plugin work with
 /// progress updates and refresh once at the end. Returns the resolved
-/// claude path so callers reuse it across a run.
+/// claude path (reuse it across a run) plus the CLI's combined
+/// stdout+stderr - the update classifier needs the output, because the
+/// CLI exits 0 on some failures.
 pub async fn run_cli_command(
     cwd_raw: String,
     cached_claude_path: Option<PathBuf>,
     args: Vec<String>,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, String), String> {
     tokio::task::spawn_blocking(move || {
         let claude_path = resolve_claude_path(cached_claude_path)?;
-        run_command(&claude_path, &cwd_raw, &args)?;
-        Ok(claude_path)
+        let output = Command::new(&claude_path)
+            .args(&args)
+            .current_dir(&cwd_raw)
+            .output()
+            .map_err(|error| format!("Failed to run `claude {}`: {error}", args.join(" ")))?;
+        let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+        combined.push_str(&String::from_utf8_lossy(&output.stderr));
+        if output.status.success() {
+            return Ok((claude_path, combined));
+        }
+        let stderr = combined.trim().to_owned();
+        let exit_code =
+            output.status.code().map_or_else(|| "unknown".to_owned(), |code| code.to_string());
+        let detail = if stderr.is_empty() {
+            format!("exit code {exit_code}")
+        } else {
+            stderr
+        };
+        Err(format!("`claude {}` failed: {detail}", args.join(" ")))
     })
     .await
     .map_err(|error| format!("Plugin CLI task failed: {error}"))?
@@ -286,6 +305,23 @@ fn rollback_git_args(install_location: &str, ref_before: &str) -> Vec<Vec<String
     ]
 }
 
+/// The two `claude plugin` steps of a rollback, in order: install the
+/// version the rolled-back manifest points at, then move the
+/// marketplace clone forward again so other plugins keep tracking the
+/// latest. Swapping them would silently re-pin the clone at the old
+/// ref.
+fn rollback_claude_args(record: &PluginUpdateRecord) -> Vec<Vec<String>> {
+    vec![
+        plugin_update_args(&record.plugin_id, &record.scope),
+        vec![
+            "plugin".to_owned(),
+            "marketplace".to_owned(),
+            "update".to_owned(),
+            record.marketplace.clone(),
+        ],
+    ]
+}
+
 /// Roll one plugin back to its recorded previous version: restore the
 /// marketplace clone to the pre-update ref, let `claude plugin update`
 /// install the version that manifest points at, then move the clone
@@ -303,10 +339,7 @@ pub async fn run_plugin_rollback(
         .clone()
         .ok_or_else(|| "no pre-update marketplace ref recorded for this plugin".to_owned())?;
     let git_steps = rollback_git_args(&install_location, &ref_before);
-    let marketplace_name = record.marketplace.clone();
-    let plugin_update = plugin_update_args(&record.plugin_id, &record.scope);
-    let marketplace_update =
-        vec!["plugin".to_owned(), "marketplace".to_owned(), "update".to_owned(), marketplace_name];
+    let claude_steps = rollback_claude_args(&record);
     tokio::task::spawn_blocking(move || {
         for args in &git_steps {
             let output = Command::new("git")
@@ -318,8 +351,10 @@ pub async fn run_plugin_rollback(
                 return Err(format!("git {} failed: {stderr}", args.join(" ")));
             }
         }
-        run_command(&claude_path, &cwd_raw, &plugin_update)?;
-        run_command(&claude_path, &cwd_raw, &marketplace_update)
+        for args in &claude_steps {
+            run_command(&claude_path, &cwd_raw, args)?;
+        }
+        Ok(())
     })
     .await
     .map_err(|error| format!("Plugin rollback task failed: {error}"))?
@@ -349,6 +384,44 @@ mod tests {
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0], vec!["-C", "/clone/path", "fetch", "origin", "2d7d4c6"]);
         assert_eq!(steps[1], vec!["-C", "/clone/path", "checkout", "--detach", "2d7d4c6"]);
+    }
+
+    /// Install-from-the-old-manifest must run BEFORE the marketplace
+    /// clone moves forward again; swapped, the rollback would silently
+    /// re-update the plugin to the new version.
+    #[test]
+    fn rollback_claude_steps_update_then_restore_the_clone() {
+        let record = PluginUpdateRecord {
+            plugin_id: "hello@probe-market".to_owned(),
+            marketplace: "probe-market".to_owned(),
+            scope: "user".to_owned(),
+            from_version: Some("0.1.0".to_owned()),
+            to_version: Some("0.2.0".to_owned()),
+            marketplace_ref_before: Some("2d7d4c6".to_owned()),
+            updated_at: String::new(),
+            trigger: forge_primitives::plugins::PluginUpdateTrigger::Manual,
+        };
+        let steps = rollback_claude_args(&record);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[0],
+            vec![
+                "plugin".to_owned(),
+                "update".to_owned(),
+                "hello@probe-market".to_owned(),
+                "--scope".to_owned(),
+                "user".to_owned(),
+            ]
+        );
+        assert_eq!(
+            steps[1],
+            vec![
+                "plugin".to_owned(),
+                "marketplace".to_owned(),
+                "update".to_owned(),
+                "probe-market".to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -435,7 +508,8 @@ mod tests {
   {
     "name": "claude-plugins-official",
     "source": "github",
-    "repo": "anthropics/claude-plugins-official"
+    "repo": "anthropics/claude-plugins-official",
+    "installLocation": "/tmp/claude/plugins/marketplaces/claude-plugins-official"
   }
 ]
 "#;
@@ -452,5 +526,10 @@ mod tests {
         );
         assert_eq!(parsed_available.available[0].install_count, Some(42));
         assert_eq!(parsed_sources[0].repo.as_deref(), Some("anthropics/claude-plugins-official"));
+        assert_eq!(
+            parsed_sources[0].install_location.as_deref(),
+            Some("/tmp/claude/plugins/marketplaces/claude-plugins-official"),
+            "rollback and ref recording need the clone location"
+        );
     }
 }
