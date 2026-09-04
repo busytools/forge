@@ -1823,11 +1823,7 @@ async fn a_roster_drain_settles_the_departed_roots_open_children() {
     send_msg(
         &mut app,
         assistant_message_with_parent(
-            vec![tool_use_block(
-                "toolu_child",
-                "Bash",
-                serde_json::json!({"command": "sleep"}),
-            )],
+            vec![tool_use_block("toolu_child", "Bash", serde_json::json!({"command": "sleep"}))],
             "toolu_root",
         ),
     );
@@ -2040,11 +2036,7 @@ async fn a_resumed_unscoped_root_surfaces_through_its_children_frames() {
     );
 
     let view = app.subagents_view();
-    assert_eq!(
-        view.len(),
-        1,
-        "the resumed agent surfaces through its child frame; got {view:?}",
-    );
+    assert_eq!(view.len(), 1, "the resumed agent surfaces through its child frame; got {view:?}",);
     assert_eq!(view[0].tool_use_id, "toolu_root");
     assert_eq!(
         view[0].status,

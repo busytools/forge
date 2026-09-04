@@ -2824,9 +2824,8 @@ impl App {
         let mut referenced_parents: std::collections::HashSet<&str> =
             std::collections::HashSet::new();
         for scope in session.tool_call_scopes.values() {
-            if let crate::app::state::types::ToolCallScope::SubagentChild {
-                parent_tool_use_id,
-            } = scope
+            if let crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } =
+                scope
             {
                 referenced_parents.insert(parent_tool_use_id.as_str());
             }
@@ -2851,10 +2850,9 @@ impl App {
                         | crate::agent::model::ToolCallStatus::Pending
                 );
                 let scope = session.tool_call_scopes.get(id);
-                let is_root = matches!(
-                    scope,
-                    Some(crate::app::state::types::ToolCallScope::SubagentRoot)
-                ) || (scope.is_none() && referenced_parents.contains(id));
+                let is_root =
+                    matches!(scope, Some(crate::app::state::types::ToolCallScope::SubagentRoot))
+                        || (scope.is_none() && referenced_parents.contains(id));
                 if is_root && (backgrounded_alive.contains(id) || is_open) {
                     return true;
                 }
@@ -2942,13 +2940,10 @@ impl App {
         let mut roots: Vec<&crate::app::ToolCallInfo> = Vec::new();
         for id in &ordered_tool_ids {
             let scope = self.tool_call_scope(id);
-            let is_root = matches!(
-                scope,
-                Some(crate::app::state::types::ToolCallScope::SubagentRoot)
-            ) || (scope.is_none() && unscoped_parents.contains(*id));
-            if is_root
-                && let Some(tc) = by_id.get(id)
-            {
+            let is_root =
+                matches!(scope, Some(crate::app::state::types::ToolCallScope::SubagentRoot))
+                    || (scope.is_none() && unscoped_parents.contains(*id));
+            if is_root && let Some(tc) = by_id.get(id) {
                 roots.push(tc);
             }
         }
@@ -3536,10 +3531,8 @@ impl App {
             .tool_call_scopes()
             .iter()
             .filter(|(id, scope)| {
-                matches!(
-                    scope,
-                    crate::app::state::types::ToolCallScope::SubagentChild { .. }
-                ) && self.tool_call_is_settled(id)
+                matches!(scope, crate::app::state::types::ToolCallScope::SubagentChild { .. })
+                    && self.tool_call_is_settled(id)
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -7999,10 +7992,9 @@ mod tests {
             .push(assistant_tool_message("toolu_done_child", model::ToolCallStatus::Completed));
         app.active_messages_mut()
             .push(assistant_tool_message("toolu_dead_child", model::ToolCallStatus::Failed));
-        for (idx, id) in
-            ["toolu_root", "toolu_open_child", "toolu_done_child", "toolu_dead_child"]
-                .into_iter()
-                .enumerate()
+        for (idx, id) in ["toolu_root", "toolu_open_child", "toolu_done_child", "toolu_dead_child"]
+            .into_iter()
+            .enumerate()
         {
             app.index_tool_call(id.to_owned(), idx, 0);
         }
@@ -8051,10 +8043,8 @@ mod tests {
             .push(assistant_tool_message("toolu_root", model::ToolCallStatus::Completed));
         app.active_messages_mut()
             .push(assistant_tool_message("toolu_nested", model::ToolCallStatus::Completed));
-        app.active_messages_mut().push(assistant_tool_message(
-            "toolu_gchild",
-            model::ToolCallStatus::InProgress,
-        ));
+        app.active_messages_mut()
+            .push(assistant_tool_message("toolu_gchild", model::ToolCallStatus::InProgress));
         for (idx, id) in ["toolu_root", "toolu_nested", "toolu_gchild"].into_iter().enumerate() {
             app.index_tool_call(id.to_owned(), idx, 0);
         }
@@ -8110,11 +8100,7 @@ mod tests {
         struct CollectEventName(String);
 
         impl tracing::field::Visit for CollectEventName {
-            fn record_debug(
-                &mut self,
-                field: &tracing::field::Field,
-                value: &dyn std::fmt::Debug,
-            ) {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                 if field.name() == "event_name" {
                     self.0 = format!("{value:?}").trim_matches('"').to_owned();
                 }
@@ -8146,8 +8132,7 @@ mod tests {
             .push(assistant_tool_message("toolu_child", model::ToolCallStatus::InProgress));
         app.active_messages_mut()
             .push(assistant_tool_message("toolu_plain_bash", model::ToolCallStatus::InProgress));
-        for (idx, id) in ["toolu_root", "toolu_child", "toolu_plain_bash"].into_iter().enumerate()
-        {
+        for (idx, id) in ["toolu_root", "toolu_child", "toolu_plain_bash"].into_iter().enumerate() {
             app.index_tool_call(id.to_owned(), idx, 0);
         }
         app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);

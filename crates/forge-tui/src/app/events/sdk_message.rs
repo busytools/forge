@@ -862,9 +862,7 @@ fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallSta
     // Liveness is answered per open call - O(depth) each - rather than
     // deriving the eager exempt set off the whole scope map (#793).
     let (pending, spared): (Vec<String>, Vec<String>) = open_ids.into_iter().partition(|id| {
-        !app.active_session().is_some_and(|session| {
-            session.is_backgrounded_alive_or_descendant(id)
-        })
+        !app.active_session().is_some_and(|session| session.is_backgrounded_alive_or_descendant(id))
     });
     tracing::debug!(
         target: crate::logging::targets::APP_TOOL,

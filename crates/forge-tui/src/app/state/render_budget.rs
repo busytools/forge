@@ -513,10 +513,9 @@ impl super::App {
                 .map(|block| Self::block_is_render_cache_protected(tail_protected, Some(block)))
                 .collect();
             let message_protected = tail_protected
-                || msg
-                    .blocks
-                    .iter()
-                    .any(|block| Self::block_is_render_cache_protected(tail_protected, Some(block)));
+                || msg.blocks.iter().any(|block| {
+                    Self::block_is_render_cache_protected(tail_protected, Some(block))
+                });
             block_protections.push(row);
             message_protections.push(message_protected);
         }
