@@ -2253,6 +2253,17 @@ mod tests {
             .collect()
     }
 
+    /// The pane test derives its expected row from this same fitter, so a
+    /// fitter that cuts the version instead of the sha still passes it.
+    #[test]
+    fn the_fitter_shortens_the_sha_never_the_version() {
+        let fitted = fit_version_to_budget("1.0.36+abcdef0123", 13);
+        assert_eq!(
+            fitted, "v1.0.36+abcde",
+            "the version survives whole, the sha carries the cut: [{fitted}]",
+        );
+    }
+
     /// #679: at Medium the forge version row ran to 26 columns in a
     /// 24-column pane, so the paint dropped the last two hex digits of
     /// the sha with no ellipsis and nothing to show it had happened.
