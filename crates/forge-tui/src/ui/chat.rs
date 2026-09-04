@@ -375,7 +375,6 @@ fn measure_message_height_at(
     let msg_count = app.messages().len();
     let is_last_message = idx + 1 == msg_count;
     let sp = msg_spinner(base, idx, active_turn_assistant, &app.messages()[idx]);
-    let suppress_group_header = message::compute_suppress_group_header(app.messages(), idx);
     // #273: read the snapshot up-front so the immutable borrow of
     // `app` releases before the `active_messages_mut()` mutable
     // borrow further down. Owned clone of the hooks list keeps the
@@ -389,7 +388,6 @@ fn measure_message_height_at(
     let options = message::MessageRenderOptions {
         tools_collapsed: invariants.tools_collapsed,
         include_trailing_separator: !is_last_message,
-        suppress_group_header,
         stop_hook_summary_actions: stop_hook_snapshot.actions,
         stop_hook_summary_expanded: stop_hook_snapshot.expanded,
     };
@@ -943,12 +941,10 @@ fn render_message_range(
         let sp = msg_spinner(base, i, active_turn_assistant, &app.messages()[i]);
         let before = out.len();
         let message_height = app.viewport().message_height(i);
-        let suppress_group_header = message::compute_suppress_group_header(app.messages(), i);
         let stop_hook = stop_hook_summary_for(app, i);
         let options = message::MessageRenderOptions {
             tools_collapsed,
             include_trailing_separator: i + 1 != msg_count,
-            suppress_group_header,
             stop_hook_summary_actions: stop_hook.actions,
             stop_hook_summary_expanded: stop_hook.expanded,
         };
@@ -2908,7 +2904,6 @@ mod tests {
                 message::MessageRenderOptions {
                     tools_collapsed,
                     include_trailing_separator: false,
-                    suppress_group_header: false,
                     stop_hook_summary_actions: 0,
                     stop_hook_summary_expanded: false,
                 },
@@ -2970,7 +2965,6 @@ mod tests {
                 message::MessageRenderOptions {
                     tools_collapsed,
                     include_trailing_separator: false,
-                    suppress_group_header: false,
                     stop_hook_summary_actions: 0,
                     stop_hook_summary_expanded: false,
                 },

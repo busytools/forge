@@ -333,9 +333,7 @@ fn build_message_layout(
     if renders_bare_role_label_only(msg, spinner, &render_context) {
         return layout;
     }
-    if !render_context.options.suppress_group_header
-        && let Some(label) = role_label_line(msg)
-    {
+    if let Some(label) = role_label_line(msg) {
         layout.push_wrapped_line(label, render_context.width);
     }
 
@@ -1626,7 +1624,6 @@ pub(crate) fn render_message_from_offset_with_tools_collapsed(
         MessageRenderOptions {
             tools_collapsed,
             include_trailing_separator: true,
-            suppress_group_header: false,
             stop_hook_summary_actions: 0,
             stop_hook_summary_expanded: false,
         },
@@ -1744,20 +1741,6 @@ fn render_cached_message(segments: &[CachedMessageSegment], out: &mut Vec<Line<'
 pub(crate) struct MessageRenderOptions {
     pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
-    /// True when this message is a peer-MCP / worker-MCP envelope and
-    /// the prior message in the FULL chat list had the same
-    /// `sender_org`. Suppressed a `forge` role label at the top that no
-    /// longer exists, so the flag has no render effect today (#769).
-    /// Computed by the chat iterator (see `crate::ui::chat`) from the
-    /// chat-wide previous message's envelope org.
-    ///
-    /// Sticky-header for scroll-back is NOT implemented: when the user
-    /// scrolls past a streak's first envelope, the new first-visible
-    /// envelope shows no label. The viewport-anchor alternative
-    /// (re-render the header for the first visible mid-group envelope)
-    /// would split the cache key per scroll position and flap entries
-    /// on every viewport change. Filed as v2 if user feedback warrants.
-    pub suppress_group_header: bool,
     /// #273: Action count from the `Message::StopHookSummary` bound
     /// to this message. `0` -> no chip rendered. Non-zero -> render
     /// the collapsed `↳ hook summary · N actions [▶ expand]` line at
@@ -1800,7 +1783,6 @@ fn build_message_render_cache_key(
         layout_generation: render_context.layout_generation,
         tools_collapsed: render_context.options.tools_collapsed,
         include_trailing_separator: render_context.options.include_trailing_separator,
-        suppress_group_header: render_context.options.suppress_group_header,
         stop_hook_summary_actions: render_context.options.stop_hook_summary_actions,
         stop_hook_summary_expanded: render_context.options.stop_hook_summary_expanded,
         render_signature: build_message_render_signature(
@@ -2163,74 +2145,6 @@ fn is_gotify_envelope_user_message(msg: &ChatMessage) -> bool {
 /// `CronPromptAppended` path, mirroring [`is_gotify_envelope_user_message`].
 fn is_cron_envelope_user_message(msg: &ChatMessage) -> bool {
     msg.is_cron_envelope
-}
-
-/// Extract the `sender_org` tag from this message's peer envelope,
-/// if any. Drives the same-project envelope grouping at
-/// `compute_suppress_group_header` (chat-iteration level).
-///
-/// Two envelope shapes count:
-/// - **Inbound** (User role): a `[Question id=...]` / `[Message id=...]`
-///   bracket whose `(org '...')` field is the wire-level sender_org.
-/// - **Assistant peer-outbound**: an Assistant turn carrying a
-///   `mcp__forge__peers__{ask,tell}_agent` /
-///   `mcp__forge__workers__{ask,tell}` tool_use card. Synthesise the
-///   lead's `PERSONAL_ORG` so the worker-chat case (inbound from
-///   lead with `"Personal"` org, interleaved with outbound to lead)
-///   folds under one header. The synthetic org is hard-coded rather
-///   than derived from the call's target, so a cross-project peer
-///   outbound to a non-Personal target won't fold against its own
-///   surrounding inbound; that case is rare today and left to a
-///   follow-up if it shows up in practice.
-///
-/// Returns `None` for everything else: plain user input, regular
-/// assistant text, system notices, non-peer tool_use cards.
-pub(crate) fn message_envelope_org(msg: &ChatMessage) -> Option<String> {
-    use crate::ui::peer_block::{detect_inbound, detect_outbound};
-    match msg.role {
-        MessageRole::User => msg.blocks.iter().find_map(|block| match block {
-            MessageBlock::Text(text) => {
-                // Peer/worker envelopes group by sender_org; a Gotify
-                // notification is an external event with no peer identity
-                // (peer_sender_identity None), so it never folds under a
-                // shared group header.
-                let kind = detect_inbound(&text.text);
-                kind.as_ref()
-                    .filter(|k| k.peer_sender_identity().is_some())
-                    .map(|k| k.org().to_owned())
-            }
-            _ => None,
-        }),
-        MessageRole::Assistant => msg.blocks.iter().find_map(|block| match block {
-            MessageBlock::ToolCall(tc) => {
-                detect_outbound(tc).map(|_| forge_workspace::PERSONAL_ORG.to_owned())
-            }
-            _ => None,
-        }),
-        _ => None,
-    }
-}
-
-/// Returns `true` iff the message AND its immediate predecessor are
-/// both peer/worker envelopes carrying the same `sender_org`. Threaded
-/// by chat.rs as `suppress_group_header` through both the measure and
-/// render passes so the `MessageRenderCacheKey` stays stable per
-/// message.
-///
-/// Suppressed the envelope role label, which no longer exists - the
-/// only kinds this can fire for are the ones `role_label_line` now
-/// returns `None` for, so nothing downstream reads it (#769).
-pub(crate) fn compute_suppress_group_header(messages: &[ChatMessage], idx: usize) -> bool {
-    if idx == 0 {
-        return false;
-    }
-    let Some(cur) = message_envelope_org(&messages[idx]) else {
-        return false;
-    };
-    let Some(prev) = message_envelope_org(&messages[idx - 1]) else {
-        return false;
-    };
-    cur == prev
 }
 
 /// Position of one envelope inside a same-project envelope streak.
@@ -3196,7 +3110,6 @@ mod tests {
         let options = MessageRenderOptions {
             tools_collapsed: false,
             include_trailing_separator: false,
-            suppress_group_header: false,
             stop_hook_summary_actions: 0,
             stop_hook_summary_expanded: false,
         };
@@ -3588,7 +3501,6 @@ mod tests {
         MessageRenderOptions {
             tools_collapsed: true,
             include_trailing_separator: true,
-            suppress_group_header: false,
             stop_hook_summary_actions: 0,
             stop_hook_summary_expanded: false,
         }
@@ -3598,7 +3510,6 @@ mod tests {
         MessageRenderOptions {
             tools_collapsed: true,
             include_trailing_separator: false,
-            suppress_group_header: false,
             stop_hook_summary_actions: 0,
             stop_hook_summary_expanded: false,
         }
@@ -3907,7 +3818,6 @@ mod tests {
             MessageRenderOptions {
                 tools_collapsed: true,
                 include_trailing_separator: false,
-                suppress_group_header: false,
                 stop_hook_summary_actions: 0,
                 stop_hook_summary_expanded: false,
             },
@@ -3943,7 +3853,6 @@ mod tests {
             MessageRenderOptions {
                 tools_collapsed: true,
                 include_trailing_separator: false,
-                suppress_group_header: false,
                 stop_hook_summary_actions: 0,
                 stop_hook_summary_expanded: false,
             },
@@ -4145,7 +4054,6 @@ mod tests {
                     MessageRenderOptions {
                         tools_collapsed,
                         include_trailing_separator: true,
-                        suppress_group_header: false,
                         stop_hook_summary_actions: 0,
                         stop_hook_summary_expanded: false,
                     },
@@ -4440,72 +4348,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Same-project envelope grouping (#158). Tests cover the
-    // grouping-decision helper + the render-time suppression flow.
-    // -----------------------------------------------------------------
-
-    /// Build a User-role message whose first text block is a peer
-    /// envelope so `detect_inbound` + `message_envelope_org` recognise
-    /// it. Reuses the existing `peer_block` to_prose shape so the test
-    /// doesn't have to hand-roll the bracket format.
-    fn make_peer_envelope_message(sender: &str, org: &str, body: &str) -> ChatMessage {
-        let text = format!("[Message id=t-12345678 from agent '{sender}' (org '{org}')]\n\n{body}");
-        ChatMessage::new_peer_envelope(
-            MessageRole::User,
-            vec![MessageBlock::Text(TextBlock::from_complete(&text))],
-        )
-    }
-
-    #[test]
-    fn compute_suppress_group_header_is_false_for_first_message() {
-        let messages = vec![make_peer_envelope_message("forge", "Personal", "hi")];
-        assert!(!compute_suppress_group_header(&messages, 0));
-    }
-
-    #[test]
-    fn compute_suppress_group_header_is_false_for_non_envelope() {
-        let messages = vec![
-            make_peer_envelope_message("forge", "Personal", "first"),
-            make_text_message(MessageRole::User, "plain user text"),
-        ];
-        assert!(!compute_suppress_group_header(&messages, 1));
-    }
-
-    #[test]
-    fn compute_suppress_group_header_is_false_when_prev_is_not_envelope() {
-        let messages = vec![
-            make_text_message(MessageRole::User, "first user input"),
-            make_peer_envelope_message("forge", "Personal", "envelope"),
-        ];
-        assert!(!compute_suppress_group_header(&messages, 1));
-    }
-
-    #[test]
-    fn compute_suppress_group_header_is_true_for_consecutive_same_org() {
-        let messages = vec![
-            make_peer_envelope_message("forge", "Personal", "first"),
-            make_peer_envelope_message("forge", "Personal", "second"),
-            make_peer_envelope_message("forge", "Personal", "third"),
-        ];
-        assert!(!compute_suppress_group_header(&messages, 0));
-        assert!(compute_suppress_group_header(&messages, 1));
-        assert!(compute_suppress_group_header(&messages, 2));
-    }
-
-    #[test]
-    fn compute_suppress_group_header_is_false_when_org_differs() {
-        let messages = vec![
-            make_peer_envelope_message("forge", "Personal", "lead msg"),
-            make_peer_envelope_message("reviewer", "worker in forge", "worker msg"),
-            make_peer_envelope_message("forge", "Personal", "lead again"),
-        ];
-        // (1) is an envelope with a different org from (0) → no suppress
-        assert!(!compute_suppress_group_header(&messages, 1));
-        // (2) is an envelope with a different org from (1) → no suppress
-        assert!(!compute_suppress_group_header(&messages, 2));
-    }
-
-    // -----------------------------------------------------------------
     // #163: envelope streak position helpers.
     // -----------------------------------------------------------------
 
@@ -4614,98 +4456,6 @@ mod tests {
             &mut lines,
         );
         insta::assert_snapshot!(render_lines_to_strings(&lines).join("\n"));
-    }
-
-    #[test]
-    fn compute_suppress_group_header_breaks_on_assistant_turn() {
-        let messages = vec![
-            make_peer_envelope_message("forge", "Personal", "first envelope"),
-            make_text_message(MessageRole::Assistant, "assistant reply"),
-            make_peer_envelope_message("forge", "Personal", "second envelope"),
-        ];
-        // Non-User assistant turn between envelopes breaks the group.
-        assert!(!compute_suppress_group_header(&messages, 2));
-    }
-
-    /// An envelope carries no role label to suppress, so the flag is
-    /// inert here and the two renders agree line for line.
-    #[test]
-    fn envelope_renders_its_own_sender_row_and_no_role_label() {
-        let mut msg = make_peer_envelope_message("forge", "Personal", "hello");
-        let spinner = idle_spinner();
-        let options_with_label = MessageRenderOptions {
-            tools_collapsed: true,
-            include_trailing_separator: false,
-            suppress_group_header: false,
-            stop_hook_summary_actions: 0,
-            stop_hook_summary_expanded: false,
-        };
-        let mut lines_with = Vec::new();
-        render_message(
-            &mut msg,
-            &spinner,
-            MessageRenderContext::new(None, 80, 0, options_with_label),
-            &mut lines_with,
-        );
-        let with_label = render_lines_to_strings(&lines_with);
-        // Invalidate the cache between the two render calls so the
-        // second one rebuilds against the new options (the cache key
-        // already distinguishes the two, but we want to be explicit).
-        msg.invalidate_render_cache();
-        let options_no_label = MessageRenderOptions {
-            tools_collapsed: true,
-            include_trailing_separator: false,
-            suppress_group_header: true,
-            stop_hook_summary_actions: 0,
-            stop_hook_summary_expanded: false,
-        };
-        let mut lines_without = Vec::new();
-        render_message(
-            &mut msg,
-            &spinner,
-            MessageRenderContext::new(None, 80, 0, options_no_label),
-            &mut lines_without,
-        );
-        let without_label = render_lines_to_strings(&lines_without);
-
-        assert_eq!(
-            with_label, without_label,
-            "an envelope has no role label, so suppress_group_header changes nothing",
-        );
-        assert!(
-            with_label.first().is_some_and(|row| row.contains("Message forge")),
-            "the envelope's own row names the kind and the sender: {with_label:?}",
-        );
-    }
-
-    /// Build an Assistant message that carries a peer-outbound
-    /// `mcp__forge__workers__tell` tool_use card. Mirrors what the
-    /// worker emits when its LLM calls `workers__tell(target, msg)`.
-    fn make_assistant_with_workers_tell(target: &str, body: &str) -> ChatMessage {
-        let mut tc = make_tool_call_info(
-            "tc-tell",
-            "mcp__forge__workers__tell",
-            crate::agent::model::ToolCallStatus::Completed,
-            "",
-        );
-        tc.raw_input = Some(serde_json::json!({ "label": target, "message": body }));
-        ChatMessage::new(MessageRole::Assistant, vec![MessageBlock::ToolCall(Box::new(tc))])
-    }
-
-    #[test]
-    fn compute_suppress_group_header_folds_across_assistant_peer_outbound() {
-        // A worker's chat interleaves inbound envelopes (from lead)
-        // with Assistant turns carrying the worker's own outbound
-        // `workers__tell` / `workers__ask` tool_use cards. The
-        // streak should fold into one group rather than re-printing
-        // a header on every other row.
-        let messages = vec![
-            make_peer_envelope_message("forge", "Personal", "first inbound"),
-            make_assistant_with_workers_tell("lead", "outbound to lead"),
-            make_peer_envelope_message("forge", "Personal", "second inbound"),
-        ];
-        assert!(compute_suppress_group_header(&messages, 1));
-        assert!(compute_suppress_group_header(&messages, 2));
     }
 
     // ----------------------------------------------------------------

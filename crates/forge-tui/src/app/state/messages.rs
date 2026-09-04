@@ -292,7 +292,6 @@ pub struct MessageRenderCacheKey {
     pub layout_generation: u64,
     pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
-    pub suppress_group_header: bool,
     /// #273: Action count from the `Message::StopHookSummary` bound
     /// to this message (`0` when no summary applies). Folded into the
     /// cache key so a fresh summary event reliably invalidates the
