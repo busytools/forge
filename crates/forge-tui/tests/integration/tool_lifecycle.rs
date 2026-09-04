@@ -1935,6 +1935,128 @@ async fn a_turn_error_settles_a_sticky_root_despite_its_marker() {
     );
 }
 
+/// A subagent's own backgrounded work is self-rostered: a nested Task
+/// carries its own roster row, its own `task_started` mapping and its
+/// own terminal events, so draining the PARENT's row must not settle it
+/// - nor anything still hanging off it. Only chains that reach the
+/// departed root through no live work settle.
+#[tokio::test]
+async fn the_roster_drain_spares_a_descendant_that_is_live_on_its_own_roster_row() {
+    let mut app = test_app();
+    app.status = AppStatus::Thinking;
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "bg scan",
+                "prompt": "bg scan",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "bg scan".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    // A plain child of the root: nothing but the root keeps it alive.
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_plain", "Bash", serde_json::json!({"command": "x"}))],
+            "toolu_root",
+        ),
+    );
+    // A nested Task issued BY the subagent - itself a backgrounded
+    // dispatch - plus a grandchild under it.
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_nested", "Task", serde_json::json!({"description": "n"}))],
+            "toolu_root",
+        ),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-nested".to_owned(),
+            description: "n".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_nested".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+        },
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block("toolu_gchild", "Bash", serde_json::json!({"command": "y"}))],
+            "toolu_nested",
+        ),
+    );
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![
+                serde_json::json!({
+                    "task_id": "task-root",
+                    "task_type": "local_agent",
+                    "description": "bg scan",
+                }),
+                serde_json::json!({
+                    "task_id": "task-nested",
+                    "task_type": "local_agent",
+                    "description": "n",
+                }),
+            ],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    // The root's row drains; the nested task's row stays.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::BackgroundTasksChanged {
+            tasks: vec![serde_json::json!({
+                "task_id": "task-nested",
+                "task_type": "local_agent",
+                "description": "n",
+            })],
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        tool_call_block(&app, "toolu_plain").status,
+        model::ToolCallStatus::Completed,
+        "the plain child settles at the drain; got {:?}",
+        tool_call_block(&app, "toolu_plain").status,
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_nested").status,
+        model::ToolCallStatus::InProgress,
+        "self-rostered work survives its parent's drain; got {:?}",
+        tool_call_block(&app, "toolu_nested").status,
+    );
+    assert_eq!(
+        tool_call_block(&app, "toolu_gchild").status,
+        model::ToolCallStatus::InProgress,
+        "and so does everything hanging off the nested task; got {:?}",
+        tool_call_block(&app, "toolu_gchild").status,
+    );
+}
+
 /// A `Task`/`Agent` dispatch is the MAIN agent's own call, so a turn that
 /// opens with one owns its turn like any other. Classifying the root as
 /// subagent-scoped bars it from binding and reproduces the finished-turn

@@ -685,21 +685,49 @@ impl UiSession {
         false
     }
 
-    /// Flip every open tool call hanging off `root_id` at any depth to
-    /// `Completed`. Fired by the roster diff when a backgrounded root
-    /// departs: its children have no terminal event of their own and
+    /// Whether `id` hangs off `root_id` at any depth through a chain
+    /// that touches no other live work: a self-rostered nested Task
+    /// keeps its own liveness, and its descendants', when the parent
+    /// drains.
+    fn hangs_off_departed_root(&self, id: &str, root_id: &str, live: &HashSet<&str>) -> bool {
+        let mut cursor = id;
+        // The chain cannot exceed the map, and a cycle would otherwise spin.
+        for _ in 0..self.tool_call_scopes.len() {
+            match self.tool_call_scopes.get(cursor) {
+                Some(ToolCallScope::SubagentChild { parent_tool_use_id }) => {
+                    if parent_tool_use_id.as_str() == root_id {
+                        return true;
+                    }
+                    if live.contains(parent_tool_use_id.as_str()) {
+                        return false;
+                    }
+                    cursor = parent_tool_use_id.as_str();
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Flip every open tool call that hangs off `root_id` through no
+    /// live work to `Completed`. Fired when a backgrounded root's task
+    /// departs the roster or its `task_notification` lands: descendants
+    /// with no liveness of their own have no terminal event coming and
     /// would otherwise stay open until the next turn boundary. The root
-    /// itself is untouched - its own `task_updated` lands a frame after
-    /// the drain. Returns the touched (message, block) slots for
+    /// itself is untouched, and a self-rostered descendant (a nested
+    /// backgrounded Task) keeps its own row. The drain carries no
+    /// failure signal, so settled children read Completed even when
+    /// they failed. Returns the touched (message, block) slots for
     /// render-cache sync.
     pub(crate) fn settle_children_of(&mut self, root_id: &str) -> Vec<(usize, usize)> {
-        let roots: HashSet<&str> = std::iter::once(root_id).collect();
+        let live = self.backgrounded_alive_tool_use_ids();
         let doomed: HashSet<String> = self
             .tool_call_scopes
             .iter()
             .filter(|(id, scope)| {
                 matches!(scope, ToolCallScope::SubagentChild { .. })
-                    && self.resolves_to_live_root(id, &roots)
+                    && !live.contains(id.as_str())
+                    && self.hangs_off_departed_root(id, root_id, &live)
             })
             .map(|(id, _)| id.clone())
             .collect();
