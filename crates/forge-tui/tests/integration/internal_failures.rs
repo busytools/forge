@@ -120,9 +120,9 @@ fn tool_call_text_payload(app: &forge_tui::app::App, tool_id: &str) -> Option<St
         return None;
     };
     tc.content.iter().find_map(|content| match content {
-        model::ToolCallContent::Content(c) => match &c.content {
-            model::ContentBlock::Text(t) => Some(t.text.clone()),
-            model::ContentBlock::Image(_) => None,
+        model::RenderToolCallContent::Content(c) => match &c.content {
+            model::RenderContentBlock::Text(t) => Some(t.text.clone()),
+            model::RenderContentBlock::Image(_) => None,
         },
         _ => None,
     })

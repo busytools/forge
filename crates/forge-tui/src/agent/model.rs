@@ -58,23 +58,23 @@ impl ImageContent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ContentBlock {
+pub enum RenderContentBlock {
     Text(TextContent),
     Image(ImageContent),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentChunk {
-    pub content: ContentBlock,
+    pub content: RenderContentBlock,
 }
 
 impl ContentChunk {
-    pub fn new(content: ContentBlock) -> Self {
+    pub fn new(content: RenderContentBlock) -> Self {
         Self { content }
     }
 }
 
-/// Alias retained for the `ToolCallContent::Content(...)` variant
+/// Alias retained for the `RenderToolCallContent::Content(...)` variant
 /// payload - same shape as `ContentChunk`.
 pub type Content = ContentChunk;
 
@@ -146,32 +146,32 @@ impl McpResource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ToolCallContent {
+pub enum RenderToolCallContent {
     Content(Content),
     Diff(Diff),
     McpResource(McpResource),
     Terminal(TerminalToolCallContent),
 }
 
-impl From<&str> for ToolCallContent {
+impl From<&str> for RenderToolCallContent {
     fn from(value: &str) -> Self {
-        Self::Content(Content::new(ContentBlock::Text(TextContent::new(value))))
+        Self::Content(Content::new(RenderContentBlock::Text(TextContent::new(value))))
     }
 }
 
-impl From<String> for ToolCallContent {
+impl From<String> for RenderToolCallContent {
     fn from(value: String) -> Self {
         Self::from(value.as_str())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolCall {
+pub struct RenderToolCall {
     pub tool_call_id: String,
     pub title: String,
     pub kind: ToolKind,
     pub status: ToolCallStatus,
-    pub content: Vec<ToolCallContent>,
+    pub content: Vec<RenderToolCallContent>,
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<serde_json::Value>,
     pub output_metadata: Option<ToolOutputMetadata>,
@@ -180,7 +180,7 @@ pub struct ToolCall {
     pub meta: Option<serde_json::Value>,
 }
 
-impl ToolCall {
+impl RenderToolCall {
     pub fn new(tool_call_id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
             tool_call_id: tool_call_id.into(),
@@ -207,7 +207,7 @@ impl ToolCall {
         self
     }
 
-    pub fn content(mut self, content: Vec<ToolCallContent>) -> Self {
+    pub fn content(mut self, content: Vec<RenderToolCallContent>) -> Self {
         self.content = content;
         self
     }
@@ -244,11 +244,11 @@ impl ToolCall {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct ToolCallUpdateFields {
+pub struct RenderToolCallUpdateFields {
     pub title: Option<String>,
     pub kind: Option<ToolKind>,
     pub status: Option<ToolCallStatus>,
-    pub content: Option<Vec<ToolCallContent>>,
+    pub content: Option<Vec<RenderToolCallContent>>,
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<serde_json::Value>,
     pub output_metadata: Option<ToolOutputMetadata>,
@@ -256,7 +256,7 @@ pub struct ToolCallUpdateFields {
     pub locations: Option<Vec<ToolCallLocation>>,
 }
 
-impl ToolCallUpdateFields {
+impl RenderToolCallUpdateFields {
     pub fn new() -> Self {
         Self::default()
     }
@@ -276,7 +276,7 @@ impl ToolCallUpdateFields {
         self
     }
 
-    pub fn content(mut self, content: Vec<ToolCallContent>) -> Self {
+    pub fn content(mut self, content: Vec<RenderToolCallContent>) -> Self {
         self.content = Some(content);
         self
     }
@@ -308,14 +308,14 @@ impl ToolCallUpdateFields {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolCallUpdate {
+pub struct RenderToolCallUpdate {
     pub tool_call_id: String,
-    pub fields: ToolCallUpdateFields,
+    pub fields: RenderToolCallUpdateFields,
     pub meta: Option<serde_json::Value>,
 }
 
-impl ToolCallUpdate {
-    pub fn new(tool_call_id: impl Into<String>, fields: ToolCallUpdateFields) -> Self {
+impl RenderToolCallUpdate {
+    pub fn new(tool_call_id: impl Into<String>, fields: RenderToolCallUpdateFields) -> Self {
         Self { tool_call_id: tool_call_id.into(), fields, meta: None }
     }
 

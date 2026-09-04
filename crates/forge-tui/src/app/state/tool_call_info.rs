@@ -13,7 +13,7 @@ pub struct ToolCallInfo {
     pub output_metadata: Option<model::ToolOutputMetadata>,
     pub task_metadata: Option<model::TaskMetadata>,
     pub status: model::ToolCallStatus,
-    pub content: Vec<model::ToolCallContent>,
+    pub content: Vec<model::RenderToolCallContent>,
     /// Hidden tool calls are subagent children - not rendered directly.
     pub hidden: bool,
     /// Terminal ID if this is a Bash-like SDK tool call with a running/completed terminal.

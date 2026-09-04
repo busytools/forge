@@ -699,8 +699,9 @@ mod tests {
         if let MessageBlock::ToolCall(tc) = &mut msg.blocks[0] {
             tc.sdk_tool_name = "Edit".to_owned();
             tc.title = format!("Edit {id}");
-            tc.content =
-                vec![model::ToolCallContent::from("alpha\nbeta\ngamma\ndelta\nepsilon".to_owned())];
+            tc.content = vec![model::RenderToolCallContent::from(
+                "alpha\nbeta\ngamma\ndelta\nepsilon".to_owned(),
+            )];
         }
         msg
     }

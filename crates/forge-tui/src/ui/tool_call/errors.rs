@@ -38,9 +38,9 @@ pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
     }
 
     let Some(text_payload) = tc.content.iter().find_map(|content| match content {
-        model::ToolCallContent::Content(c) => match &c.content {
-            model::ContentBlock::Text(t) => Some(t.text.as_str().to_owned()),
-            model::ContentBlock::Image(_) => None,
+        model::RenderToolCallContent::Content(c) => match &c.content {
+            model::RenderContentBlock::Text(t) => Some(t.text.as_str().to_owned()),
+            model::RenderContentBlock::Image(_) => None,
         },
         _ => None,
     }) else {

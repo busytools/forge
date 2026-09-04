@@ -2998,7 +2998,7 @@ mod tests {
             content: if text.is_empty() {
                 Vec::new()
             } else {
-                vec![crate::agent::model::ToolCallContent::from(text.to_owned())]
+                vec![crate::agent::model::RenderToolCallContent::from(text.to_owned())]
             },
             hidden: false,
             terminal_id: None,
