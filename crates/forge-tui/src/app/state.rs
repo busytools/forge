@@ -872,7 +872,7 @@ impl App {
             target: crate::logging::targets::APP_SESSION,
             event_name = "active_session_switched",
             outcome = "success",
-            from = ?self.active_session_key.as_ref().map(forge_workspace::SessionKey::as_str),
+            from = %self.active_session_key.as_ref().map_or("<none>", |k| k.as_str()),
             to = %key.as_str(),
         );
 
