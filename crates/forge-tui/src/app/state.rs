@@ -500,7 +500,7 @@ pub struct App {
     #[cfg(any(test, feature = "testing"))]
     pub last_invalidation_level: std::cell::Cell<Option<crate::app::InvalidationLevel>>,
     /// Whether the Wide-tier Projects pane is currently visible.
-    /// Toggled by Ctrl+B at Wide / Medium tiers. In-memory only -
+    /// Toggled by Cmd+Left (Ctrl+Left elsewhere) at Wide / Medium tiers. In-memory only -
     /// each launch starts visible. Has no effect at Narrow tier -
     /// that tier renders the top bar unconditionally and uses
     /// [`Self::projects_pane_overlay_open`] for the on-demand
@@ -516,20 +516,20 @@ pub struct App {
     pub projects_pane_scroll_offset: u16,
     /// Whether the Narrow-tier Projects overlay is currently open.
     /// Transient - NOT persisted; each launch starts closed. Toggled
-    /// by Ctrl+B at Narrow tier or by clicking the `▤` icon in the
+    /// by the same chord at Narrow tier or by clicking the `▤` icon in the
     /// top bar; closed by clicking the overlay's `✕` glyph, by Esc,
     /// or by switching to a project / session row inside the overlay.
     pub projects_pane_overlay_open: bool,
     /// Whether the Wide/Medium-tier Inspector pane is currently
     /// visible (right side, mirror of [`Self::projects_pane_visible`]).
-    /// Toggled by Ctrl+E. In-memory only - each launch starts visible.
+    /// Toggled by Cmd+Right (Ctrl+Right elsewhere). In-memory only - each launch starts visible.
     /// Has no effect at Narrow tier - that tier uses
     /// [`Self::inspector_pane_overlay_open`] for the on-demand
     /// overlay.
     pub inspector_pane_visible: bool,
     /// Whether the Narrow-tier Inspector overlay is currently open.
     /// Transient - NOT persisted; each launch starts closed. Toggled
-    /// by Ctrl+E at Narrow tier or by clicking the `▦` icon in the
+    /// by the same chord at Narrow tier or by clicking the `▦` icon in the
     /// top bar; closed by clicking the overlay's `✕` glyph or by
     /// Esc. Mutually exclusive with `projects_pane_overlay_open` -
     /// opening one closes the other.

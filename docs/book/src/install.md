@@ -57,6 +57,9 @@ builds and tests on Linux, but two things behave differently:
   is unaffected, because those paths carry their own bearer token and
   never consult the keychain. `provider` is what decides that, not the
   presence of `ANTHROPIC_BASE_URL`.
+- **App-level chords use Cmd on macOS, Ctrl elsewhere.** The pane
+  toggles (`Cmd+Left`/`Cmd+Right` vs `Ctrl+Left`/`Ctrl+Right`) and
+  toggle-all-tool-calls (`Cmd+X` vs `Ctrl+X`) swap their modifier.
 
 ## Build and check
 

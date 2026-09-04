@@ -18,7 +18,9 @@ const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
 
 // Platform-aware modifier conventions. macOS native shortcuts use Cmd
 // (SUPER) for app-level actions like Cmd+C / Cmd+V / Cmd+Z, and Option
-// (ALT) for word navigation. Linux/Windows fall back to Ctrl for both.
+// (ALT) for word navigation. Linux/Windows fall back to Ctrl for the
+// app-level actions; word navigation stays Alt everywhere (see
+// WORD_NAV_MOD).
 //
 // Reaching the app: SUPER only arrives when the terminal speaks the
 // kitty enhanced-keyboard protocol (Ghostty, kitty, WezTerm). forge-tui
@@ -255,7 +257,8 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
     }
 
     // Launchpad has its own keymap and intentionally swallows every
-    // other key (including Ctrl+B / Ctrl+E and printable input) so
+    // other key (including the pane-toggle chords and printable
+    // input) so
     // nothing leaks into the chat input or pane toggles while the
     // picker is the active view. `Ctrl+Q` is handled by the
     // always-allowed shortcuts above so the user can still quit.
@@ -591,11 +594,11 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        // Word left: Alt+Left on macOS, Ctrl+Left elsewhere.
+        // Word left: Alt+Left on every platform (WORD_NAV_MOD).
         (KeyCode::Left, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
             app.input_mut().textarea_move_word_left()
         }
-        // Word right: Alt+Right on macOS, Ctrl+Right elsewhere.
+        // Word right: Alt+Right on every platform.
         (KeyCode::Right, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
             app.input_mut().textarea_move_word_right()
         }
@@ -809,7 +812,7 @@ pub(super) fn is_clipboard_paste_shortcut(key: KeyEvent) -> bool {
 
 fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        // Delete word backward: Alt+Backspace on macOS, Ctrl+Backspace elsewhere.
+        // Delete word backward: Alt+Backspace on every platform.
         (KeyCode::Backspace, m)
             if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
@@ -818,7 +821,7 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
             }
             app.input_mut().textarea_delete_word_before()
         }
-        // Delete word forward: Alt+Delete on macOS, Ctrl+Delete elsewhere.
+        // Delete word forward: Alt+Delete on every platform.
         (KeyCode::Delete, m)
             if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
@@ -1217,7 +1220,7 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
     app.invalidate_background_session_layouts();
 }
 
-/// Tier-aware Ctrl+B handler.
+/// Tier-aware pane toggle - Cmd+Left on macOS, Ctrl+Left elsewhere.
 ///
 /// At Wide / Medium tiers (terminal width ≥ `MEDIUM_TIER_MIN_WIDTH`)
 /// this toggles the inline pane's visibility. At Narrow
@@ -1245,8 +1248,9 @@ pub(super) fn toggle_projects_pane(app: &mut App) {
     app.needs_redraw = true;
 }
 
-/// Tier-aware Ctrl+E handler - mirror of [`toggle_projects_pane`]
-/// for the right Inspector pane. At Wide / Medium tiers flips the
+/// Tier-aware pane toggle - Cmd+Right on macOS, Ctrl+Right
+/// elsewhere. Mirror of [`toggle_projects_pane`] for the right
+/// Inspector pane. At Wide / Medium tiers flips the
 /// in-memory `inspector_pane_visible` flag. At Narrow tier flips
 /// the transient `inspector_pane_overlay_open` flag and closes any
 /// open Projects overlay (mutually exclusive).
