@@ -1,8 +1,8 @@
 //! Z.ai GLM coding plan monitor response shapes.
 //!
-//! Type-only - the HTTP fetcher lives in
-//! `forge_agent::cloud::oauth_usage`. These are the JSON wire shapes;
-//! the fetcher deserializes into them.
+//! Type-only - the HTTP fetcher lives in the forge-providers Zai
+//! backend. These are the JSON wire shapes; the fetcher deserializes
+//! into them.
 //!
 //! Every Z.ai monitor endpoint answers HTTP 200 regardless of outcome
 //! (a wrong key, a wrong path and a healthy response share the

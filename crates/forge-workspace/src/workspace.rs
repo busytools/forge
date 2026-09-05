@@ -2063,11 +2063,11 @@ impl Workspace {
         let mut any_success = false;
         for (key, dir, provider, env) in entries {
             // One decision (probe_plan) drives both the probe source and
-            // the response-mapping strictness. The backend-routed plans
-            // (anthropic keychain/token, and codex + openrouter, whose
-            // plans died with their arms) hand credential resolution, the
-            // probe and the mapping to the provider backend; the keychain
-            // arm keeps the 401 refresh gate.
+            // the response-mapping strictness. Every plan routes through
+            // the provider backend now - credential resolution, the probe
+            // and the mapping are its business; the keychain arm keeps
+            // the 401 refresh gate (an env-bearer provider's 401 never
+            // fires one).
             let plan = forge_agent::cloud::oauth_usage::probe_plan(provider, &env);
             let fetch_result = match &plan {
                 forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
@@ -2080,11 +2080,6 @@ impl Workspace {
                     crate::provider_probe::flatten_probe_error(
                         crate::provider_probe::probe_via_backend(provider, &dir, &env).await,
                     )
-                }
-                forge_agent::cloud::oauth_usage::ProbePlan::ZaiMonitor { base_url, bearer } => {
-                    forge_agent::cloud::oauth_usage::probe_zai_monitor(base_url, bearer)
-                        .await
-                        .map(forge_agent::cloud::oauth::snapshot_from_zai_quota)
                 }
             };
             match fetch_result {
@@ -2149,7 +2144,7 @@ impl Workspace {
                                 _ if provider == forge_primitives::account::Provider::Codex => {
                                     "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
                                 }
-                                _ => {
+                                forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
                                     "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
                                 }
                             }
