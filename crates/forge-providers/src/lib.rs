@@ -29,7 +29,7 @@ pub use forge_primitives::usage::oauth::OauthUsageError;
 
 pub use crate::model_catalog::ModelCatalog;
 
-pub use crate::anthropic::{Anthropic, is_token_mode};
+pub use crate::anthropic::{Anthropic, CLAUDE_CODE_OAUTH_TOKEN_ENV, is_token_mode, token_bearer};
 pub use crate::codex::Codex;
 pub use crate::openrouter::Openrouter;
 pub use crate::zai::Zai;
