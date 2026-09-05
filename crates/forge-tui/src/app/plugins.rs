@@ -197,7 +197,9 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Enter, KeyModifiers::NONE) => {
             if app.plugins.search_focused {
-                false
+                // The \r flavour of a newline arrives as Enter, so it is
+                // swallowed here like Char('\r') below.
+                true
             } else {
                 match app.plugins.active_tab {
                     PluginsViewTab::Installed => open_installed_actions_overlay(app),
@@ -2545,6 +2547,38 @@ mod tests {
             "a b c de",
             "typing still appends after a rejection"
         );
+    }
+
+    /// The \r flavour of a newline arrives as KeyCode::Enter (Ctrl+M,
+    /// or any pasted \r with bracketed paste off), so a focused filter
+    /// consumes it rather than letting it fall through to the view
+    /// closer; Esc alone closes.
+    #[test]
+    fn focused_filter_consumes_enter_and_esc_alone_closes() {
+        let mut app = app_with_focused_search(PluginsViewTab::Installed);
+        app.active_view = crate::app::ActiveView::Plugins;
+        let _ = press(&mut app, KeyCode::Char('a'));
+
+        crate::app::config::handle_plugins_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        assert_eq!(
+            app.active_view,
+            crate::app::ActiveView::Plugins,
+            "Enter with the filter focused does not close the view"
+        );
+        assert_eq!(
+            app.plugins.search_query_for(PluginsViewTab::Installed),
+            "a",
+            "Enter inserts nothing into the filter"
+        );
+
+        crate::app::config::handle_plugins_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        );
+        assert_eq!(app.active_view, crate::app::ActiveView::Chat, "Esc still closes the view");
     }
 
     #[test]
