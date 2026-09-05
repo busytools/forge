@@ -259,10 +259,10 @@ mod tests {
     }
 
     fn budget_snapshot(
+        future: std::time::SystemTime,
         source: UsageSourceKind,
         spend: Option<forge_primitives::usage::ApiSpend>,
     ) -> UsageSnapshot {
-        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
         let window = |utilization| forge_primitives::usage::UsageWindow {
             utilization,
             resets_at: Some(future),
@@ -290,6 +290,7 @@ mod tests {
     fn budget_covers_every_backend_and_source_pair() {
         use forge_primitives::usage::ApiSpend;
 
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
         let spend = ApiSpend {
             daily: 0.5,
             weekly: 1.0,
@@ -313,13 +314,13 @@ mod tests {
                 UsageSourceKind::OpenRouterKey,
                 UsageSourceKind::ZaiMonitor,
             ] {
-                let snapshot = budget_snapshot(source, Some(spend.clone()));
+                let snapshot = budget_snapshot(future, source, Some(spend.clone()));
                 let expected = if source == backend.source() {
                     match backend.billing() {
                         BillingModel::Windows => AccountBudget::Subscription {
                             five_hour_util: Some(100.0),
                             seven_day_util: Some(20.0),
-                            resets_at: snapshot.binding_reset_at(),
+                            resets_at: Some(future),
                         },
                         BillingModel::Spend => {
                             AccountBudget::Api { daily: 0.5, weekly: 1.0, monthly: 2.0 }
@@ -342,7 +343,7 @@ mod tests {
             // refuses such a body, so this takes the same warn path a
             // stale row takes.
             if spend_billed {
-                let bare = budget_snapshot(backend.source(), None);
+                let bare = budget_snapshot(future, backend.source(), None);
                 assert_eq!(backend.budget("Acct", Some(&bare)), unknown);
             }
         }
