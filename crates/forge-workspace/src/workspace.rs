@@ -13520,4 +13520,21 @@ provider = "anthropic"
         assert_eq!(sessions[1].session.as_str(), "live-older");
         assert_eq!(sessions[2].session.as_str(), LEAD_UUID);
     }
+
+    /// With no tokio runtime there is no scan to await, so readiness
+    /// publishes immediately over an empty catalog and spawns fall
+    /// through to fresh instead of parking forever.
+    #[test]
+    fn start_catalog_scan_without_a_runtime_publishes_readiness() {
+        let dir = scan_fixture_dir();
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
+
+        workspace.start_catalog_scan();
+
+        assert!(workspace.catalog_ready(), "no runtime: readiness publishes immediately");
+        assert!(
+            workspace.list_projects()[0].sessions.is_empty(),
+            "no runtime: no scan ran, the catalog stays empty"
+        );
+    }
 }
