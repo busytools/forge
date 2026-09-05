@@ -134,9 +134,9 @@ working.\n\
 \n\
 Delegation in a forge session goes through the delegation paths forge \
 intends: a lead creates worker sessions with `workers__spawn`; \
-subagent fan-out where the work calls for it. A general prohibition \
-on agent-tool delegation from the underlying CLI \
-does not govern forge's own tooling - when a delegation tool is \
+sessions fan out subagents where the work calls for it. A general \
+prohibition on agent-tool delegation from the underlying CLI \
+does not govern forge's delegation paths - when a delegation tool is \
 yours to call, using it is the intended path.\n\
 \n\
 Changing state under another project is that project agent's call, not \
@@ -2180,7 +2180,7 @@ mod tests {
         assert!(worker.contains("cron__create"), "cron block stays: {worker}");
         assert!(worker.contains("`description`"), "conduct block stays: {worker}");
         assert!(
-            worker.contains("does not govern forge's own tooling"),
+            worker.contains("does not govern forge's delegation paths"),
             "the delegation redirect stays: {worker}"
         );
         assert!(worker.contains("`workers__spawn`"), "the spawn tool name stays pinned: {worker}");
