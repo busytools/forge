@@ -756,5 +756,9 @@ mod tests {
         assert_eq!(delivered.len(), 3, "one more delivery on the second message");
         assert_eq!(delivered[1].0, "p");
         assert_eq!(delivered[2].1.as_deref(), Some("reviewer"));
+        assert_eq!(
+            delivered[1].2, "alerts",
+            "a resolved appid delivers its NAME, not the id string",
+        );
     }
 }
