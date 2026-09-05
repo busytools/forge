@@ -2183,7 +2183,10 @@ mod tests {
             worker.contains("does not govern forge's delegation paths"),
             "the delegation redirect stays: {worker}"
         );
-        assert!(worker.contains("`workers__spawn`"), "the spawn tool name stays pinned: {worker}");
+        assert!(
+            worker.contains("worker sessions with `workers__spawn`"),
+            "the spawn tool name stays: {worker}"
+        );
     }
 
     /// The gate reads the registered server's own tool surface, not a
