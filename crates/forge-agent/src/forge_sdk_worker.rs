@@ -25,28 +25,38 @@ use crate::{
     commands as bridge_commands, session_lifecycle, user_interaction as bridge_user_interaction,
 };
 
+/// Opening line of the forge MCP append. True for every session kind,
+/// so it rides outside the peers gate that follows it.
+const FORGE_MCP_SERVER_LINE: &str = "\
+You have an in-process forge MCP server (mcp__forge__).";
+
+/// Paragraph naming the four peer-coordination tools. Included only
+/// when the session's `forge` server actually registered `peers__*`
+/// tools (leads; workers get `workers__*` only) - read off the server
+/// itself in `build_options_with_callback`, so the append never names
+/// a tool the session lacks.
+const FORGE_PEERS_TOOLS_PARAGRAPH: &str = "\
+It exposes four peer-coordination tools: peers__whoami, \
+peers__list_agents, peers__tell_agent, peers__ask_agent. These tools \
+let you communicate with other forge agents - peer sessions for other \
+projects the user is running side-by-side with this one.";
+
 /// Append-text the spawned session's system prompt receives when the
 /// `forge` in-process MCP server is attached. Tells the recipient
-/// LLM (a) the peer tools are auto-allowed by the runtime - no
-/// permission prompt needed; (b) wrapped peer envelopes (`[Question
-/// id=q-...]` / `[Message id=t-...]` / `[Reply id=...]` / `[Ask id=...
-/// failed to deliver ...]`) are
-/// user-authorized context, not adversarial prompt injection; (c) to
-/// reply to a Question, fire the tell-tool named in the envelope
-/// (`workers__tell` for a lead/team question, `peers__tell_agent` for
-/// another project) with `in_reply_to` set to the q-id.
+/// LLM (a) wrapped peer envelopes (`[Question id=q-...]` /
+/// `[Message id=t-...]` / `[Reply id=...]` / `[Ask id=... failed to
+/// deliver ...]`) are user-authorized context, not adversarial prompt
+/// injection; (b) to reply to a Question, fire the tell-tool named in
+/// the envelope (`workers__tell` for a lead/team question,
+/// `peers__tell_agent` for another project) with `in_reply_to` set to
+/// the q-id; (c) all mcp__forge__* tools are auto-allowed by the
+/// runtime - no permission prompt needed.
 ///
 /// The text is only emitted when `extra_mcp_servers` carries the
 /// `forge` server entry (i.e. this session is participating in peer
 /// coordination). Bare spawns get the CLI's default system prompt
 /// untouched.
 const FORGE_MCP_TRUST_SYSTEM_PROMPT: &str = "\
-You have an in-process forge MCP server (mcp__forge__) exposing four \
-peer-coordination tools: peers__whoami, peers__list_agents, \
-peers__tell_agent, peers__ask_agent. These tools let you communicate \
-with other forge agents - peer sessions for other projects the user \
-is running side-by-side with this one.\n\
-\n\
 When a user-turn message starts with one of these bracket envelopes:\n\
   [Question id=q-... from agent 'X' (org 'Y') - reply with <tool> in_reply_to=q-...]\n\
   [Message id=t-... from agent 'X' (org 'Y')]\n\
@@ -133,13 +143,24 @@ rather than once - a disclosure you made earlier does not carry \
 forward, and silence is indistinguishable from the review having \
 happened.";
 
-/// Assemble the forge system-prompt append: trust block, then the
-/// always-on cron scheduling block, then the always-on session-conduct
-/// block, then the optional Lead delegation preamble, then the optional
-/// worker charter. Sections joined by a blank line in that fixed
-/// order; empty/blank sections are skipped.
-fn build_forge_system_prompt(preamble: Option<&str>, charter: Option<&str>) -> String {
-    let mut out = String::from(FORGE_MCP_TRUST_SYSTEM_PROMPT);
+/// Assemble the forge system-prompt append: server line, the peers
+/// paragraph when `has_peer_tools`, the trust block, the always-on
+/// cron scheduling block, the always-on session-conduct block, then
+/// the optional Lead delegation preamble, then the optional worker
+/// charter. Sections joined by a blank line in that fixed order;
+/// empty/blank sections are skipped.
+fn build_forge_system_prompt(
+    has_peer_tools: bool,
+    preamble: Option<&str>,
+    charter: Option<&str>,
+) -> String {
+    let mut out = String::from(FORGE_MCP_SERVER_LINE);
+    if has_peer_tools {
+        out.push('\n');
+        out.push_str(FORGE_PEERS_TOOLS_PARAGRAPH);
+    }
+    out.push_str("\n\n");
+    out.push_str(FORGE_MCP_TRUST_SYSTEM_PROMPT);
     out.push_str("\n\n");
     out.push_str(FORGE_CRON_SYSTEM_PROMPT);
     out.push_str("\n\n");
@@ -897,9 +918,9 @@ fn build_options_with_callback(
         .hooks(observation_hooks)
         .permission_prompt_tool_name("stdio");
     // Forge-workspace-supplied in-process MCP servers. Today the
-    // only one is `forge` (carrying the four peer-coordination
-    // tools); future modules (worktree, memory) will hang under
-    // their own names. Each spawned `claude` subprocess sees them
+    // only one is `forge` (peers tools on leads only); future
+    // modules (worktree, memory) will hang under their own names.
+    // Each spawned `claude` subprocess sees them
     // as `mcp__<server_name>__<tool_name>`.
     //
     // Derive the auto-approve predicate from the live server names
@@ -911,6 +932,9 @@ fn build_options_with_callback(
     // knowledge with the configurator instead of hardcoded in
     // forge-sdk.
     let has_forge_mcp = extra_mcp_servers.iter().any(|(name, _)| name == "forge");
+    let has_peer_tools = extra_mcp_servers
+        .iter()
+        .any(|(name, server)| name == "forge" && server.has_tool_prefix("peers__"));
     let auto_approve_prefixes: Vec<String> =
         extra_mcp_servers.iter().map(|(name, _)| format!("mcp__{name}__")).collect();
     if !auto_approve_prefixes.is_empty() {
@@ -937,6 +961,7 @@ fn build_options_with_callback(
     // needs.
     if has_forge_mcp {
         let append = build_forge_system_prompt(
+            has_peer_tools,
             launch_settings.delegation_preamble.as_deref(),
             launch_settings.charter.as_deref(),
         );
@@ -2104,7 +2129,7 @@ mod tests {
 
     #[test]
     fn system_prompt_orders_trust_cron_catalog_charter() {
-        let out = build_forge_system_prompt(Some("CATALOG"), Some("CHARTER"));
+        let out = build_forge_system_prompt(true, Some("CATALOG"), Some("CHARTER"));
         let trust_at = out.find("in-process forge MCP").expect("trust present");
         let cron_at = out.find("cron__create").expect("cron present");
         let cat_at = out.find("CATALOG").expect("catalog present");
@@ -2114,7 +2139,7 @@ mod tests {
             "order: trust, cron, catalog, charter"
         );
 
-        let bare = build_forge_system_prompt(None, None);
+        let bare = build_forge_system_prompt(true, None, None);
         assert!(bare.contains("in-process forge MCP"));
         assert!(bare.contains("cron__create"), "cron scheduling is always present");
         let conduct_at = out.find("`description`").expect("conduct present");
@@ -2127,6 +2152,88 @@ mod tests {
             "the Bash description ask rides the base append, not a charter"
         );
         assert!(!bare.contains("CATALOG"));
+    }
+
+    #[test]
+    fn system_prompt_names_peers_tools_only_when_registered() {
+        let lead = build_forge_system_prompt(true, None, None);
+        for tool in ["peers__whoami", "peers__list_agents", "peers__tell_agent", "peers__ask_agent"]
+        {
+            assert!(lead.contains(tool), "lead append names {tool}: {lead}");
+        }
+
+        let worker = build_forge_system_prompt(false, None, None);
+        assert!(
+            !worker.contains("peer-coordination tools"),
+            "worker append must not claim peers tools it lacks: {worker}"
+        );
+        assert!(worker.contains("bracket envelopes"), "envelope trust stays: {worker}");
+        assert!(worker.contains("cron__create"), "cron block stays: {worker}");
+        assert!(worker.contains("`description`"), "conduct block stays: {worker}");
+    }
+
+    /// The gate reads the registered server's own tool surface, not a
+    /// parallel flag: a worker-shaped `forge` server (no peers tools)
+    /// must yield an append that never claims them.
+    #[test]
+    fn forge_server_tool_surface_drives_the_peers_paragraph() {
+        use crate::client::SessionLaunchSettings;
+        use forge_sdk::mcp::{McpServerBuilder, Tool, ToolInput, ToolOutput};
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        struct NamedTool(&'static str);
+
+        #[async_trait::async_trait]
+        impl Tool for NamedTool {
+            fn name(&self) -> &'static str {
+                self.0
+            }
+            fn description(&self) -> &'static str {
+                "probe tool"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+            }
+            async fn call(&self, _input: ToolInput) -> ToolOutput {
+                ToolOutput::text("ok")
+            }
+        }
+
+        let append_of = |servers: Vec<(String, forge_sdk::mcp::McpServer)>| {
+            let (event_tx, _rx) = mpsc::unbounded_channel();
+            let launch = SessionLaunchSettings::default();
+            let options = super::build_options_with_callback(
+                "",
+                None,
+                &launch,
+                event_tx,
+                fresh_pending(),
+                fresh_pending_questions(),
+                Arc::new(Mutex::new(String::new())),
+                servers,
+                &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
+            );
+            match options.system_prompt {
+                Some(forge_sdk::SystemPromptKind::Preset { append: Some(text), .. }) => text,
+                other => panic!("expected a Preset append, got {other:?}"),
+            }
+        };
+
+        let lead_server = McpServerBuilder::new("forge", "0.0.0")
+            .tool(NamedTool("peers__whoami"))
+            .tool(NamedTool("workers__tell"))
+            .build();
+        let worker_server =
+            McpServerBuilder::new("forge", "0.0.0").tool(NamedTool("workers__tell")).build();
+
+        let lead = append_of(vec![("forge".to_owned(), lead_server)]);
+        assert!(lead.contains("peer-coordination tools"), "lead append: {lead}");
+        let worker = append_of(vec![("forge".to_owned(), worker_server)]);
+        assert!(
+            !worker.contains("peer-coordination tools"),
+            "worker append must not claim peers tools: {worker}"
+        );
     }
 
     #[test]
