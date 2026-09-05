@@ -3142,8 +3142,8 @@ mod lead_charter_tests {
             "the despawn point is the chain node, not the last PR: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
-            DEFAULT_LEAD_CHARTER.contains("re-armed by the next stage's kick"),
-            "idle chain-stage workers re-arm on the next kick: {DEFAULT_LEAD_CHARTER}",
+            DEFAULT_LEAD_CHARTER.contains("only when the next stage needs the context back"),
+            "chain despawn closes at absorption; re-spawn waits for the next stage: {DEFAULT_LEAD_CHARTER}",
         );
     }
 }
