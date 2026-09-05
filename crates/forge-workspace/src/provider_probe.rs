@@ -7,14 +7,12 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use forge_agent::cloud::AgentHost;
-use forge_agent::cloud::oauth::OauthFetchError;
 use forge_agent::cloud::oauth_credentials::{load_oauth_credentials, refresh_via_cli_spawn};
-use forge_agent::cloud::oauth_usage::is_token_mode;
 use forge_primitives::account::Provider;
 use forge_primitives::usage::oauth::OauthUsageError;
-use forge_providers::{AccountEnv, ProbeError, ProviderBackend, UsageSnapshot};
+use forge_providers::{AccountEnv, ProbeError, ProviderBackend, RepairAction, UsageSnapshot};
 
-fn backend_for(provider: Provider) -> Result<&'static dyn ProviderBackend, ProbeError> {
+pub(crate) fn backend_for(provider: Provider) -> Result<&'static dyn ProviderBackend, ProbeError> {
     if let Some(backend) = forge_providers::backend(provider) {
         return Ok(backend);
     }
@@ -37,30 +35,20 @@ pub(crate) async fn probe_via_backend(
     backend.probe(&account_env, &AgentHost).await
 }
 
-/// Whether the account's probe authenticates from `[accounts.env]`
-/// rather than the keychain: an env-bearer auth failure must never
-/// fire the keychain CLI-spawn refresh, which burns billed
-/// `claude -p hi` spawns against a token the probe never reads. The
-/// base-url providers authenticate from env by definition; a
-/// token-mode anthropic account carries its setup token there.
-pub(crate) fn env_bearer(provider: Provider, env: &HashMap<String, String>) -> bool {
-    provider.uses_base_url() || is_token_mode(env)
-}
-
 /// Whether a failed first probe should move on to the CLI-spawn
-/// refresh: only a keychain-authenticated probe whose failure is a
-/// 401, the one class a rotated keychain token repairs. An env-bearer
-/// probe is never refresh-eligible - refreshing would burn billed
-/// `claude -p hi` spawns against a token the probe never reads.
+/// refresh: a 401 - the one class a rotated keychain token repairs -
+/// that the backend's repair policy actually routes to the keychain.
+/// An env-bearer probe is never refresh-eligible: refreshing would
+/// burn billed `claude -p hi` spawns against a credential the probe
+/// never reads.
 fn should_attempt_keychain_refresh(
-    provider: Provider,
-    env: &HashMap<String, String>,
+    backend: &dyn ProviderBackend,
+    account: &AccountEnv<'_>,
     first: &Result<UsageSnapshot, ProbeError>,
 ) -> bool {
-    if env_bearer(provider, env) {
-        return false;
-    }
-    matches!(first, Err(ProbeError::Fetch(OauthUsageError::Unauthorized(_))))
+    let Err(err) = first else { return false };
+    matches!(err, ProbeError::Fetch(OauthUsageError::Unauthorized(_)))
+        && backend.repair(account, err) == RepairAction::Refresh
 }
 
 /// The 60 s poller's keychain recovery, over the backend: on a 401
@@ -73,8 +61,10 @@ pub(crate) async fn probe_with_keychain_recovery(
     config_dir: &Path,
     env: &HashMap<String, String>,
 ) -> Result<UsageSnapshot, ProbeError> {
-    let first = probe_via_backend(provider, config_dir, env).await;
-    if !should_attempt_keychain_refresh(provider, env, &first) {
+    let backend = backend_for(provider)?;
+    let account = AccountEnv { config_dir, env };
+    let first = backend.probe(&account, &AgentHost).await;
+    if !should_attempt_keychain_refresh(backend, &account, &first) {
         return first;
     }
     // Treating an absent expires_at as expired is deliberate: refresh
@@ -102,52 +92,9 @@ pub(crate) async fn probe_with_keychain_recovery(
     }
 }
 
-/// Fold a backend result into the (mapping, transport) pair the
-/// loader and poller predate, so their shared branches keep
-/// classifying and retrying exactly as before.
-pub(crate) fn flatten_probe_error(
-    result: Result<UsageSnapshot, ProbeError>,
-) -> Result<Result<UsageSnapshot, OauthFetchError>, OauthUsageError> {
-    match result {
-        Ok(snapshot) => Ok(Ok(snapshot)),
-        Err(ProbeError::Fetch(err)) => Err(err),
-        Err(ProbeError::NoCredentials) => Err(OauthUsageError::NoCredentials),
-        Err(ProbeError::Unmappable(message)) => Ok(Err(OauthFetchError::Failed(message))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn flatten_keeps_the_transport_classes_the_loader_branches_on() {
-        let transport = flatten_probe_error(Err(ProbeError::Fetch(OauthUsageError::RateLimited {
-            retry_after: None,
-        })));
-        assert!(
-            matches!(transport, Err(OauthUsageError::RateLimited { retry_after: None })),
-            "wire classes must reach boot_probe_action unchanged, got {transport:?}",
-        );
-
-        let no_creds = flatten_probe_error(Err(ProbeError::NoCredentials));
-        assert!(
-            matches!(no_creds, Err(OauthUsageError::NoCredentials)),
-            "the loader's Refresh decision keys on NoCredentials; got {no_creds:?}",
-        );
-    }
-
-    #[test]
-    fn flatten_reports_an_unmappable_200_as_a_mapping_failure_not_transport() {
-        let mapped = flatten_probe_error(Err(ProbeError::Unmappable("no window".to_owned())));
-        assert!(
-            matches!(
-                &mapped,
-                Ok(Err(OauthFetchError::Failed(message))) if message == "no window",
-            ),
-            "a 200 that maps to nothing retries instead of bailing; got {mapped:?}",
-        );
-    }
 
     /// The registry holds every token the anthropic-shaped arms can
     /// reach; a missing registration is the one error this module
@@ -157,21 +104,8 @@ mod tests {
         assert!(backend_for(Provider::Anthropic).is_ok());
     }
 
-    /// The repair-class pin: every non-keychain credential source
-    /// counts as env-bearer, so its auth failures terminal instead of
-    /// firing billed keychain refreshes. Only keychain-mode anthropic
-    /// is refreshable.
-    #[test]
-    fn env_bearer_covers_every_non_keychain_credential_source() {
-        assert!(!env_bearer(Provider::Anthropic, &HashMap::new()));
-
-        let mut token = HashMap::new();
-        token.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
-        assert!(env_bearer(Provider::Anthropic, &token));
-
-        for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
-            assert!(env_bearer(provider, &HashMap::new()), "{provider:?}");
-        }
+    fn gate_account(env: &HashMap<String, String>) -> AccountEnv<'_> {
+        AccountEnv { config_dir: Path::new("/tmp/unused"), env }
     }
 
     /// The refresh-gate pin: a 401 on a keychain-authenticated probe
@@ -183,27 +117,28 @@ mod tests {
         let unauthorized = Err(ProbeError::Fetch(OauthUsageError::Unauthorized(401)));
         let network = Err(ProbeError::Fetch(OauthUsageError::Network("dns".to_owned())));
 
-        assert!(should_attempt_keychain_refresh(
-            Provider::Anthropic,
-            &HashMap::new(),
-            &unauthorized
-        ));
+        let empty = HashMap::new();
+        let keychain = gate_account(&empty);
+        let anthropic = backend_for(Provider::Anthropic).expect("registered");
+        assert!(should_attempt_keychain_refresh(anthropic, &keychain, &unauthorized));
+        assert!(!should_attempt_keychain_refresh(anthropic, &keychain, &network));
 
         let mut token = HashMap::new();
         token.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
-        assert!(!should_attempt_keychain_refresh(Provider::Anthropic, &token, &unauthorized));
+        let token_mode = gate_account(&token);
+        assert!(!should_attempt_keychain_refresh(anthropic, &token_mode, &unauthorized));
 
         let mut base = HashMap::new();
         base.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         base.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
+        let base_acct = gate_account(&base);
         for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
+            let resolved = backend_for(provider).expect("registered");
             assert!(
-                !should_attempt_keychain_refresh(provider, &base, &unauthorized),
+                !should_attempt_keychain_refresh(resolved, &base_acct, &unauthorized),
                 "{provider:?}",
             );
         }
-
-        assert!(!should_attempt_keychain_refresh(Provider::Anthropic, &HashMap::new(), &network));
     }
 
     /// The production wiring through the real backend and host: an

@@ -3,9 +3,7 @@
 //! claude CLI subprocess).
 
 pub mod auth_status;
-pub mod oauth;
 pub mod oauth_credentials;
-pub mod oauth_usage;
 pub mod provider_host;
 pub mod service_status;
 

@@ -28,7 +28,7 @@
 //! (`refresh_status_snapshot`, `refresh_oauth_credentials_snapshot`,
 //! `refresh_context_usage`, `reload_plugins`, `refresh_mcp_snapshot`)
 //! and direct accessors (`settings_documents`,
-//! `project_memory_path`, `config_dir_for`, `oauth_usage`) live as
+//! `project_memory_path`, `config_dir_for`) live as
 //! inherent methods on [`Workspace`]. The handle stays on the
 //! workspace's [`DomainSession`].
 //!
@@ -53,7 +53,8 @@
 //! workspace exposes forge-agent's submodules verbatim via
 //! pass-through `pub use` (see `cloud`, `commands`, `env::git_diff`,
 //! `session_lifecycle`, `tooling`, `translate`, `userdata` below).
-//! Types like `forge_workspace::cloud::oauth::Token` are *defined* in
+//! Types like `forge_workspace::cloud::oauth_credentials::OauthCredentials`
+//! are *defined* in
 //! forge-agent - the workspace just exposes them under the workspace
 //! name so TUI can keep its dep graph clean.
 
