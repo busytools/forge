@@ -50,7 +50,7 @@ Work top-down; the first match wins.
    scenario.
 5. **Live state about the user's environment** (git watching, cwd
    resolution, environment probes, OAuth, plugins, settings I/O,
-   catalog scans) goes in `forge-agent`.
+   plugin catalog scans) goes in `forge-agent`.
 6. **Orchestration across projects, sessions, accounts, `forge.toml`
    or the command bus** goes in `forge-workspace`.
 7. **A widget, screen, key binding, mouse handler or per-session

@@ -80,7 +80,8 @@ Work top-down; first match wins.
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.
 5. **Live state about the user's environment?** (git watcher, cwd
-   resolution, env probes, OAuth, plugins, settings IO, catalog scan)
+   resolution, env probes, OAuth, plugins, settings IO, plugin catalog
+   scan)
    -> `forge-agent`: `env::*` for environment, `cloud::*` for Anthropic
    API / OAuth, `userdata::*` for `~/.claude*` files. Async, may shell
    out.
