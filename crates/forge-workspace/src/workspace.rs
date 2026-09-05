@@ -2129,26 +2129,7 @@ impl Workspace {
                         }
                         account::UsageFetchStatus::Expired
                         | account::UsageFetchStatus::Unauthorized => {
-                            // Env credentials are boot-frozen and, on a
-                            // shared dir, /login repairs whichever
-                            // sibling last logged in - so both env
-                            // classes get their own repair, never
-                            // /login.
-                            match &plan {
-                                forge_agent::cloud::oauth_usage::ProbePlan::Token { .. } => {
-                                    "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
-                                }
-                                // The base-url providers have no plan
-                                // variant since their backends took the
-                                // probe over; their bearer is the env
-                                // ANTHROPIC_AUTH_TOKEN.
-                                _ if provider.uses_base_url() => {
-                                    "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
-                                }
-                                forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
-                                    "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
-                                }
-                            }
+                            auth_repair_hint(&plan, provider)
                         }
                         account::UsageFetchStatus::NetworkFailed => {
                             "usage_poll fetch failed with network error; will retry on next tick"
@@ -4951,6 +4932,33 @@ impl Workspace {
     }
 }
 
+/// The repair line the 60 s poller logs under an auth-classified
+/// failure, keyed on how the account authenticates. Env credentials
+/// are boot-frozen and, on a shared dir, `/login` repairs whichever
+/// sibling last logged in - so both env classes get their own repair,
+/// never `/login`.
+///
+/// The base-url guard must precede the Keychain arm: those providers
+/// return a bare Keychain route selector since their backends took
+/// the probe over, so falling through would log the `/login` advice
+/// against a credential `/login` never writes.
+fn auth_repair_hint(
+    plan: &forge_agent::cloud::oauth_usage::ProbePlan,
+    provider: forge_primitives::account::Provider,
+) -> &'static str {
+    match plan {
+        forge_agent::cloud::oauth_usage::ProbePlan::Token { .. } => {
+            "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
+        }
+        _ if provider.uses_base_url() => {
+            "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
+        }
+        forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
+            "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
+        }
+    }
+}
+
 /// The [`crate::views::AccountBudget`] shape for an account, resolved
 /// through its provider's forge-providers backend. The stale-cache
 /// refusal and its warn live on the backend's `budget`.
@@ -5997,6 +6005,46 @@ mod tests {
             extra_usage: None,
             spend: None,
         }
+    }
+
+    /// Every credential shape logs the repair line that can actually
+    /// repair it. The arm order is load-bearing: the base-url
+    /// providers carry a bare Keychain plan, so a Keychain-first order
+    /// would send a zai/openrouter/codex 401 to the /login advice
+    /// against a credential /login never writes.
+    #[test]
+    fn auth_repair_hint_keys_on_the_credential_shape() {
+        use forge_agent::cloud::oauth_usage::{ProbePlan, probe_plan};
+        use forge_primitives::account::Provider;
+
+        let keychain = ProbePlan::Keychain;
+        let mut base_env = std::collections::HashMap::new();
+        base_env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
+        base_env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-key".to_owned());
+
+        for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
+            let plan = probe_plan(provider, &base_env);
+            assert_eq!(plan, ProbePlan::Keychain, "{provider:?} carries a bare Keychain plan");
+            assert_eq!(
+                auth_repair_hint(&plan, provider),
+                "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in \
+                 [accounts.env] and restart forge",
+                "{provider:?} is repaired by an env token edit, never /login",
+            );
+        }
+
+        assert_eq!(
+            auth_repair_hint(&keychain, Provider::Anthropic),
+            "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via \
+             /login",
+        );
+
+        let token = ProbePlan::Token { bearer: "setup-token".to_owned() };
+        assert_eq!(
+            auth_repair_hint(&token, Provider::Anthropic),
+            "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] \
+             (claude setup-token)",
+        );
     }
 
     /// `project_accounts_snapshot` returns one row per allow-list entry
