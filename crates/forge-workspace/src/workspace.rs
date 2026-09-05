@@ -459,9 +459,16 @@ async fn run_background_catalog_scan(
     loaded: Arc<std::sync::atomic::AtomicBool>,
     notify: Arc<tokio::sync::Notify>,
 ) {
-    // Unreadable-as-given falls back to the raw path: the scan still
-    // walks the same tree it would have before canonicalization.
-    let scan_root = std::fs::canonicalize(&config_dir).unwrap_or(config_dir.clone());
+    // Same root derivation as distinct_catalog_roots, so the tag-cache
+    // keys this scan writes are the strings the respawn scan reads even
+    // when `projects` is a symlink to a tree outside the config dir.
+    // Unresolvable falls back to the canonical config dir, then the raw
+    // path: the scan still walks the tree it would have before
+    // canonicalization.
+    let scan_root = match std::fs::canonicalize(config_dir.join("projects")) {
+        Ok(projects) => projects.parent().map_or_else(|| config_dir.clone(), PathBuf::from),
+        Err(_) => std::fs::canonicalize(&config_dir).unwrap_or(config_dir.clone()),
+    };
     let tag_cache = std::sync::Arc::new(load_session_tag_cache(db.lock().as_ref()));
     let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
         &scan_root,
@@ -13284,6 +13291,12 @@ provider = "anthropic"
     #[tokio::test]
     async fn boot_scan_warms_the_respawn_scan_and_prunes_stale_rows() {
         let real = scan_fixture_dir();
+        write_session_fixture(
+            real.path(),
+            &real.path().join("proj").display().to_string(),
+            WORKER_UUID,
+            Some("forge:worker:implementer"),
+        );
         let link_dir = tempfile::tempdir().expect("tempdir");
         let link = link_dir.path().join("cfg");
         std::os::unix::fs::symlink(real.path(), &link).expect("symlink config dir");
@@ -13321,12 +13334,17 @@ provider = "anthropic"
         assert!(!prior.is_empty(), "the boot scan persisted cache rows");
 
         let cache = Arc::new(forge_agent::userdata::catalog::scan::SessionTagCache::new(prior));
-        let _resume = scan_worker_resume_map(
+        let resume = scan_worker_resume_map(
             &[real.path().to_path_buf()],
             &real.path().join("proj"),
             Some(&cache),
         )
         .await;
+        assert_eq!(
+            resume.get("implementer").map(String::as_str),
+            Some(WORKER_UUID),
+            "the respawn scan read the transcripts boot warmed"
+        );
         assert_eq!(
             cache.updates().len(),
             0,
@@ -13339,6 +13357,75 @@ provider = "anthropic"
                 .expect("reload cache")
         };
         assert!(!after.contains_key("/gone/deleted.jsonl"), "the boot scan pruned the stale row");
+    }
+
+    /// The boot and respawn scans share one key space even when the
+    /// config dir's `projects` is an outbound symlink to a tree that
+    /// lives elsewhere: the respawn scan re-reads nothing after boot
+    /// and still resolves the worker through the shared tree.
+    #[tokio::test]
+    async fn boot_scan_warms_the_respawn_scan_across_an_outbound_projects_symlink() {
+        let cfg = tempdir().expect("cfg tempdir");
+        let tree = tempdir().expect("tree tempdir");
+        let project_path = cfg.path().join("proj");
+        fs::create_dir_all(&project_path).expect("project dir");
+        let toml = format!(
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "proj"
+path = "{}"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+provider = "anthropic"
+"#,
+            project_path.display()
+        );
+        fs::write(forge_toml_path(cfg.path()), toml).expect("write forge.toml");
+        write_session_fixture(
+            tree.path(),
+            &project_path.display().to_string(),
+            WORKER_UUID,
+            Some("forge:worker:implementer"),
+        );
+        std::os::unix::fs::symlink(tree.path().join("projects"), cfg.path().join("projects"))
+            .expect("outbound projects symlink");
+
+        let workspace = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("new"));
+        workspace.start_catalog_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !workspace.catalog_ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scan finishes");
+
+        let prior = {
+            let db = workspace.db.lock();
+            crate::store::session_tags::load_all(db.as_ref().expect("test db present"))
+                .expect("load persisted cache")
+        };
+        assert!(!prior.is_empty(), "the boot scan persisted cache rows");
+
+        let cache = Arc::new(forge_agent::userdata::catalog::scan::SessionTagCache::new(prior));
+        let resume = scan_worker_resume_map(&[cfg.path().to_path_buf()], &project_path, Some(&cache))
+            .await;
+        assert_eq!(
+            resume.get("implementer").map(String::as_str),
+            Some(WORKER_UUID),
+            "the respawn scan read the external tree"
+        );
+        assert_eq!(
+            cache.updates().len(),
+            0,
+            "the respawn scan re-read nothing: boot's keys are keyed on the canonical tree"
+        );
     }
 
     /// A session recorded live before the scan lands survives the
