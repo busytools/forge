@@ -88,7 +88,7 @@ const RECENT_FETCH_WINDOW: u32 = 200;
 
 /// Connection-lifecycle + message events from the stream task to the
 /// subsystem pump.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 enum GotifyEvent {
     Connected,
     Disconnected,
