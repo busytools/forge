@@ -2980,6 +2980,48 @@ mod tests {
             "the marker survives the report"
         );
 
+        // A refresh with the same stale state keeps the marker, freshly
+        // recomputed - not merely left behind.
+        apply_inventory_refresh_success(
+            &mut app,
+            PluginsInventorySnapshot {
+                installed: vec![InstalledPluginEntry {
+                    id: "supabase@claude-plugins-official".to_owned(),
+                    version: Some("1.0.0".to_owned()),
+                    scope: "user".to_owned(),
+                    enabled: true,
+                    installed_at: None,
+                    last_updated: None,
+                    project_path: None,
+                    capability: PluginCapability::Skill,
+                }],
+                marketplace: vec![MarketplaceEntry {
+                    plugin_id: "supabase@claude-plugins-official".to_owned(),
+                    name: "Supabase".to_owned(),
+                    description: None,
+                    marketplace_name: Some("claude-plugins-official".to_owned()),
+                    version: Some("2.0.0".to_owned()),
+                    install_count: None,
+                    source: None,
+                }],
+                marketplaces: Vec::new(),
+            },
+            PathBuf::new(),
+        );
+        assert_eq!(
+            app.plugins
+                .update_availability
+                .iter()
+                .map(|availability| (
+                    availability.plugin_id.as_str(),
+                    availability.installed_version.as_deref(),
+                    availability.available_version.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("supabase@claude-plugins-official", Some("1.0.0"), Some("2.0.0"))],
+            "a refresh recomputes the marker from its snapshot"
+        );
+
         apply_inventory_refresh_success(
             &mut app,
             PluginsInventorySnapshot {
@@ -2989,7 +3031,29 @@ mod tests {
             },
             PathBuf::new(),
         );
-        assert!(app.plugins.update_availability.is_empty(), "refresh recomputes from its snapshot");
+        assert!(
+            app.plugins.update_availability.is_empty(),
+            "an empty inventory truthfully yields no markers"
+        );
+    }
+
+    /// The plugins failure handlers mirror into the config feedback
+    /// pair, which is what the pane's footer renders;
+    /// plugins.last_error has no reader.
+    #[test]
+    fn plugin_failures_surface_on_the_footer_pair() {
+        let mut app = App::test_default();
+
+        apply_inventory_refresh_failure(&mut app, "refresh blew up".to_owned());
+        assert_eq!(app.config.last_error.as_deref(), Some("refresh blew up"));
+        assert!(app.config.status_message.is_none());
+
+        apply_rollback_failure(&mut app, "p@market", "boom", None);
+        assert_eq!(
+            app.config.last_error.as_deref(),
+            Some("Rollback of P From Market failed: boom")
+        );
+        assert!(app.config.status_message.is_none());
     }
 
     /// After an update run the markers describe the run's post-run
