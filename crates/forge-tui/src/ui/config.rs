@@ -76,7 +76,7 @@ fn render_view(
 fn plugins_help_text(app: &App) -> String {
     if crate::app::plugins::search_enabled(app.plugins.active_tab) {
         if app.plugins.search_focused {
-            "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Enter close | Esc close".to_owned()
+            "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Esc close".to_owned()
         } else if matches!(
             app.plugins.active_tab,
             crate::app::plugins::PluginsViewTab::Installed
@@ -446,6 +446,21 @@ mod tests {
         assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
         assert!(rendered.contains("SKILL"));
         assert!(rendered.contains("Left/Right switch list"));
+    }
+
+    /// The focused filter consumes Enter, so the hint bar must not
+    /// advertise a close key it does not have.
+    #[test]
+    fn focused_plugins_filter_hint_advertises_esc_alone_to_close() {
+        let mut app = App::test_default();
+        app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Installed;
+        app.plugins.search_focused = true;
+
+        assert_eq!(
+            super::plugins_help_text(&app),
+            "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Esc close",
+            "the focused filter hint offers Esc alone to close"
+        );
     }
 
     #[test]
