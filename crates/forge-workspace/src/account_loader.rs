@@ -14,8 +14,8 @@
 //!    it is token-mode (`ProbePlan::Token`; the endpoint's
 //!    `oauth_scope_insufficient` refusal is the valid-token verdict
 //!    and settles to a barless Ready snapshot).
-//! 2. Probe through the backend (the not-yet-migrated openrouter /
-//!    zai arms still probe via `oauth_usage` directly).
+//! 2. Probe through the backend (the not-yet-migrated zai arm still
+//!    probes via `oauth_usage` directly).
 //! 3. Branch on the probe result:
 //!    - 200 -> snapshot stored via `set_usage`, transitions to
 //!      `Ready`, task exits.
@@ -194,18 +194,14 @@ pub async fn run_account_loading(
         // Probe and map together: each plan returns a different body.
         let probe_result = match &plan {
             // The backend-routed plans (anthropic keychain/token, and
-            // codex, whose plan died with its arm): credential
-            // resolution, the probe and the mapping are the backend's.
+            // codex + openrouter, whose plans died with their arms):
+            // credential resolution, the probe and the mapping are the
+            // backend's.
             oauth_usage::ProbePlan::Keychain | oauth_usage::ProbePlan::Token { .. } => {
                 crate::provider_probe::flatten_probe_error(
                     crate::provider_probe::probe_via_backend(provider, &config_dir, &account_env)
                         .await,
                 )
-            }
-            oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
-                oauth_usage::probe_openrouter_key(base_url, bearer)
-                    .await
-                    .map(oauth::snapshot_from_openrouter_key)
             }
             oauth_usage::ProbePlan::ZaiMonitor { base_url, bearer } => {
                 oauth_usage::probe_zai_monitor(base_url, bearer)

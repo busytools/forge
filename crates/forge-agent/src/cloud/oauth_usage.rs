@@ -1,7 +1,7 @@
 //! Provider probe entry points not yet behind the forge-providers
-//! backends: the [`ProbePlan`] decision and the OpenRouter key + Z.ai
-//! monitor probes. Each PR of #873 moves an arm into forge-providers;
-//! this module shrinks until `ProbePlan` is deleted.
+//! backends: the [`ProbePlan`] decision and the Z.ai monitor probe.
+//! Each PR of #873 moves an arm into forge-providers; this module
+//! shrinks until `ProbePlan` is deleted.
 
 use std::collections::HashMap;
 
@@ -11,7 +11,7 @@ pub use forge_primitives::account::Provider;
 pub use forge_primitives::usage::oauth::OauthUsageError;
 use forge_primitives::usage::zai::{QuotaLimitData, QuotaLimitResponse};
 
-use forge_providers::helpers::{OAUTH_TIMEOUT, parse_retry_after, truncated_body_suffix};
+use forge_providers::helpers::{OAUTH_TIMEOUT, truncated_body_suffix};
 use forge_providers::token_bearer;
 
 /// True when `env` carries a non-empty `CLAUDE_CODE_OAUTH_TOKEN`.
@@ -34,9 +34,9 @@ pub fn is_token_mode<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>
 pub enum ProbePlan {
     /// Normal Anthropic account: default host + macOS keychain bearer,
     /// strict mapping (a 200 must carry the five-hour window), and the
-    /// CLI-spawn auth-recovery refresh on a 401. Codex returns this
-    /// too, as a bare route selector for its backend - see
-    /// [`probe_plan`].
+    /// CLI-spawn auth-recovery refresh on a 401. Codex and OpenRouter
+    /// return this too, as a bare route selector for their backend -
+    /// see [`probe_plan`].
     Keychain,
     /// Token-mode Anthropic account: default host + the
     /// `CLAUDE_CODE_OAUTH_TOKEN` setup token from `[accounts.env]`, no
@@ -47,11 +47,6 @@ pub enum ProbePlan {
     /// which maps leniently to a barless Ready snapshot. A 401 is a
     /// genuinely rejected token and still classifies `Unauthorized`.
     Token { bearer: String },
-    /// OpenRouter: probe `{base_url}/v1/key` with the env
-    /// `ANTHROPIC_AUTH_TOKEN` bearer and map the per-key spend. No
-    /// windows, so nothing about this plan can go through the
-    /// window-shaped mappers.
-    OpenRouterKey { base_url: String, bearer: String },
     /// Z.ai GLM coding plan: probe
     /// `{host_root}/api/monitor/usage/quota/limit` where `host_root`
     /// is the scheme+host of the account's `ANTHROPIC_BASE_URL` (the
@@ -69,11 +64,11 @@ pub enum ProbePlan {
 /// it answers where the credential lives rather than what the backend
 /// bills for.
 ///
-/// Codex has no plan of its own: its forge-providers backend derives
-/// the base-url credential from `env` itself, so it returns a bare
-/// [`ProbePlan::Keychain`] that only selects the caller's backend-
-/// routed arm. The env-bearer repair class is derived from the
-/// provider + env, never from this value.
+/// Codex and OpenRouter have no plan of their own: their
+/// forge-providers backends derive the base-url credential from `env`
+/// itself, so they return a bare [`ProbePlan::Keychain`] that only
+/// selects the caller's backend-routed arm. The env-bearer repair
+/// class is derived from the provider + env, never from this value.
 ///
 /// Config load rejects a base-url provider with no `ANTHROPIC_BASE_URL`
 /// (`WorkspaceError::AccountProviderNeedsBaseUrl`), so the empty-base
@@ -89,7 +84,7 @@ pub fn probe_plan<S: std::hash::BuildHasher>(
             None => ProbePlan::Keychain,
         };
     }
-    if provider == Provider::Codex {
+    if provider == Provider::Codex || provider == Provider::Openrouter {
         return ProbePlan::Keychain;
     }
     let Some(base_url) =
@@ -104,104 +99,10 @@ pub fn probe_plan<S: std::hash::BuildHasher>(
     let bearer = env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str).unwrap_or_default();
     let (base_url, bearer) = (base_url.to_owned(), bearer.to_owned());
     match provider {
-        Provider::Openrouter => ProbePlan::OpenRouterKey { base_url, bearer },
         Provider::Zai => ProbePlan::ZaiMonitor { base_url, bearer },
-        // Unreachable: anthropic took the !uses_base_url return above
-        // and codex the backend-selector return above.
-        Provider::Anthropic | Provider::Codex => ProbePlan::Keychain,
-    }
-}
-
-/// OpenRouter's per-key endpoint. The documented path is `/api/v1/key`
-/// relative to the site root, but `ANTHROPIC_BASE_URL` already ends in
-/// `/api` because that is what the chat API wants, so only the `/v1/key`
-/// tail is appended. Measured: appending the documented path to that
-/// base yields `/api/api/v1/key`, which 404s.
-fn key_url(base_url: &str) -> String {
-    format!("{}/v1/key", base_url.trim_end_matches('/'))
-}
-
-/// One round-trip against `{base_url}/v1/key` for a pay-per-token
-/// account. Shares [`OauthUsageError`] with the window probe so the
-/// loader and poller classify a 401 / 429 / network failure the same
-/// way regardless of billing kind.
-pub async fn probe_openrouter_key(
-    base_url: &str,
-    bearer: &str,
-) -> Result<forge_primitives::usage::openrouter::KeyResponse, OauthUsageError> {
-    let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    let auth = HeaderValue::from_str(&format!("Bearer {bearer}"))
-        .map_err(|error| OauthUsageError::Network(format!("bad bearer header: {error}")))?;
-    headers.insert(AUTHORIZATION, auth);
-
-    let client = crate::http_trust::with_extra_roots(
-        reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
-    )
-    .build()
-    .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
-
-    let response = client
-        .get(key_url(base_url))
-        .send()
-        .await
-        .map_err(|error| OauthUsageError::Network(error.to_string()))?;
-
-    let status = response.status().as_u16();
-    let retry_after = if status == 429 {
-        response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_retry_after)
-    } else {
-        None
-    };
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
-
-    // Body is logged only on a non-200, and only as a truncated
-    // suffix. A 200 here carries a truncated copy of the key itself.
-    if status == 200 {
-        tracing::trace!(
-            target: "forge_agent::cloud::oauth_usage",
-            event_name = "openrouter_key_response",
-            status,
-            outcome = "ok",
-            body_bytes = body.len(),
-        );
-    } else {
-        tracing::warn!(
-            target: "forge_agent::cloud::oauth_usage",
-            event_name = "openrouter_key_response",
-            status,
-            outcome = "non_ok",
-            retry_after_secs = ?retry_after.map(|d| d.as_secs()),
-            body_suffix = %truncated_body_suffix(&body),
-        );
-    }
-
-    match status {
-        200 => serde_json::from_slice(&body).map_err(|error| {
-            // A 200 that will not parse is the shape a wrong base url
-            // takes: the bare host answers 200 with an HTML page. Name
-            // the URL and show the body, or the only evidence is a byte
-            // count on a trace line nobody has enabled.
-            tracing::warn!(
-                target: "forge_agent::cloud::oauth_usage",
-                event_name = "openrouter_key_decode_failed",
-                url = %key_url(base_url),
-                error = %error,
-                body_suffix = %truncated_body_suffix(&body),
-                "200 from the key endpoint did not decode; check the base url is the API root",
-            );
-            OauthUsageError::Decode(error.to_string())
-        }),
-        401 | 403 => Err(OauthUsageError::Unauthorized(status)),
-        429 => Err(OauthUsageError::RateLimited { retry_after }),
-        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+        // Unreachable: anthropic took the !uses_base_url return above;
+        // codex and openrouter took the backend-selector return above.
+        Provider::Anthropic | Provider::Codex | Provider::Openrouter => ProbePlan::Keychain,
     }
 }
 
@@ -326,39 +227,15 @@ mod tests {
 
     use super::*;
 
-    /// OpenRouter documents the endpoint as `/api/v1/key` relative to
-    /// the site root, but the configured base url already ends in
-    /// `/api`, so the documented path appended to it 404s. Measured:
-    /// `https://openrouter.ai/api/api/v1/key` is 404 and
-    /// `https://openrouter.ai/api/v1/key` is 401, i.e. the endpoint
-    /// exists and only auth is missing.
+    /// OpenRouter has no plan of its own since its backend took the
+    /// probe over: the value only selects the caller's backend-routed
+    /// arm, so a base url in env does not produce a plan of its own.
     #[test]
-    fn key_url_joins_one_v1_segment_onto_the_configured_base() {
-        assert_eq!(key_url("https://openrouter.ai/api"), "https://openrouter.ai/api/v1/key");
-        assert_eq!(
-            key_url("https://openrouter.ai/api/"),
-            "https://openrouter.ai/api/v1/key",
-            "trailing slash trimmed so base and base/ behave identically",
-        );
-        assert!(
-            !key_url("https://openrouter.ai/api").contains("/api/api/"),
-            "the documented /api/v1/key path must not be appended to a base that ends in /api",
-        );
-    }
-
-    #[test]
-    fn probe_plan_openrouter_probes_its_own_key_endpoint() {
+    fn probe_plan_openrouter_is_a_bare_backend_route_selector() {
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "https://openrouter.ai/api".to_owned());
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-or-test".to_owned());
-        assert_eq!(
-            probe_plan(Provider::Openrouter, &env),
-            ProbePlan::OpenRouterKey {
-                base_url: "https://openrouter.ai/api".to_owned(),
-                bearer: "sk-or-test".to_owned(),
-            },
-            "openrouter must not share Codex's windowed plan",
-        );
+        assert_eq!(probe_plan(Provider::Openrouter, &env), ProbePlan::Keychain);
     }
 
     /// Codex has no plan of its own since its backend took the probe
