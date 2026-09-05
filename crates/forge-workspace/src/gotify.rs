@@ -16,7 +16,9 @@
 //! generic connector trait yet.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use forge_connectors::gotify::GotifyHost;
 use tokio::sync::mpsc;
 
 use crate::protocol::Command;
@@ -33,12 +35,12 @@ async fn run_gotify_subsystem(
     cfg: forge_primitives::GotifyConfig,
     mut shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
-    use forge_agent::env::gotify::GotifyEvent;
+    use forge_connectors::gotify::GotifyEvent;
 
     let (tx, mut rx) = mpsc::channel::<GotifyEvent>(64);
     // Dropping this handle at fn-end signals the stream task to exit.
     let (_run_shutdown_tx, run_shutdown_rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(forge_agent::env::gotify::run(cfg.clone(), tx, run_shutdown_rx));
+    tokio::spawn(forge_connectors::gotify::run(cfg.clone(), tx, run_shutdown_rx));
 
     loop {
         tokio::select! {
@@ -83,7 +85,8 @@ async fn refresh_gotify_app_index(
     weak: std::sync::Weak<Workspace>,
     cfg: forge_primitives::GotifyConfig,
 ) {
-    match forge_agent::env::gotify::app_index(&cfg).await {
+    let Some(ws) = weak.upgrade() else { return };
+    match forge_connectors::gotify::app_index(ws.as_ref(), &cfg).await {
         Ok(index) => {
             if let Some(ws) = weak.upgrade() {
                 *ws.gotify_app_index.lock() = index;
@@ -321,6 +324,14 @@ impl Workspace {
             let _ = shutdown_tx.send(());
             *self.gotify_connected.lock() = false;
         }
+    }
+}
+
+impl GotifyHost for Workspace {
+    fn http_client(&self, timeout: Duration) -> Result<reqwest::Client, String> {
+        forge_agent::http_trust::with_extra_roots(reqwest::Client::builder().timeout(timeout))
+            .build()
+            .map_err(|error| error.to_string())
     }
 }
 

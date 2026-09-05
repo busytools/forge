@@ -1,0 +1,24 @@
+[package]
+name = "forge-connectors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "One module per inbound connector: stream client, REST lookups and subscription matching for one external integration."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+forge-primitives = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }

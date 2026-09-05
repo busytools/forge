@@ -1,9 +1,10 @@
-//! Gotify WebSocket client + `/application` name->id resolution.
+//! The Gotify connector: WebSocket receive stream, `/application` +
+//! `/message` REST lookups, and the subscription matcher.
 //!
-//! Lives under `env` (network-side environment state the agent
-//! observes) even though the Gotify server is external:
-//! forge-workspace owns the long-lived [`run`] task and consumes the
-//! [`GotifyEvent`]s it emits, which is a legal agent->workspace flow.
+//! Everything the connector needs from the workspace (the TLS-trusted
+//! HTTP client, and once the subsystem pump moves in, state and
+//! delivery) arrives through the [`GotifyHost`] port, so this module
+//! stays stream + mapping and is testable offline.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -17,7 +18,14 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-use crate::logging::targets::GOTIFY;
+/// The host port, implemented by forge-workspace. The only
+/// workspace-side plumbing a connector may reach, so this crate stays
+/// stream + mapping and never builds its own TLS-trust client.
+pub trait GotifyHost: Send + Sync {
+    /// A reqwest client with the NODE_EXTRA_CA_CERTS roots applied
+    /// and the caller's timeout baked in.
+    fn http_client(&self, timeout: Duration) -> Result<reqwest::Client, String>;
+}
 
 /// Reconnect backoff: starts at 500ms, doubles per failed/short-lived
 /// connect, caps at 30s, and resets to the floor only after a connection
@@ -98,17 +106,16 @@ pub struct GotifyRecent {
 
 /// A reqwest client for the read-only REST lookups, carrying the shared
 /// native-roots trust extension every forge HTTPS site uses.
-fn rest_client() -> anyhow::Result<reqwest::Client> {
-    crate::http_trust::with_extra_roots(reqwest::Client::builder().timeout(REST_TIMEOUT))
-        .build()
-        .context("build Gotify http client")
+fn rest_client(host: &dyn GotifyHost) -> anyhow::Result<reqwest::Client> {
+    host.http_client(REST_TIMEOUT)
+        .map_err(|error| anyhow::anyhow!("build Gotify http client: {error}"))
 }
 
 /// GET the server's application list. Shared by the name->id index, the
 /// `gotify__apps` name list, and `gotify__recent`'s appid->name resolution.
-async fn fetch_apps(cfg: &GotifyConfig) -> anyhow::Result<Vec<GotifyApp>> {
+async fn fetch_apps(host: &dyn GotifyHost, cfg: &GotifyConfig) -> anyhow::Result<Vec<GotifyApp>> {
     let url = format!("{}/application", cfg.url.trim_end_matches('/'));
-    rest_client()?
+    rest_client(host)?
         .get(url)
         .header("X-Gotify-Key", &cfg.client_token)
         .send()
@@ -124,8 +131,11 @@ async fn fetch_apps(cfg: &GotifyConfig) -> anyhow::Result<Vec<GotifyApp>> {
 /// Fetch the server's application list and fold it into a name->appid
 /// map. Inbound stream messages carry the numeric appid, so the map
 /// resolves an `application` name filter to the id to match against.
-pub async fn app_index(cfg: &GotifyConfig) -> anyhow::Result<HashMap<String, u64>> {
-    Ok(build_app_index(fetch_apps(cfg).await?))
+pub async fn app_index(
+    host: &dyn GotifyHost,
+    cfg: &GotifyConfig,
+) -> anyhow::Result<HashMap<String, u64>> {
+    Ok(build_app_index(fetch_apps(host, cfg).await?))
 }
 
 fn build_app_index(apps: Vec<GotifyApp>) -> HashMap<String, u64> {
@@ -135,8 +145,8 @@ fn build_app_index(apps: Vec<GotifyApp>) -> HashMap<String, u64> {
 /// The server's application NAMEs (from `GET /application`), in the order
 /// the server returns them. Backs `gotify__apps` so a session can
 /// self-discover which apps it may subscribe to.
-pub async fn app_names(cfg: &GotifyConfig) -> anyhow::Result<Vec<String>> {
-    Ok(build_app_names(fetch_apps(cfg).await?))
+pub async fn app_names(host: &dyn GotifyHost, cfg: &GotifyConfig) -> anyhow::Result<Vec<String>> {
+    Ok(build_app_names(fetch_apps(host, cfg).await?))
 }
 
 fn build_app_names(apps: Vec<GotifyApp>) -> Vec<String> {
@@ -152,19 +162,24 @@ fn build_id_index(apps: Vec<GotifyApp>) -> HashMap<u64, String> {
 /// Fetches the newest `/message` window plus `/application` (for appid->
 /// name), then narrows locally - Gotify's `/message` filters by neither.
 pub async fn recent_messages(
+    host: &dyn GotifyHost,
     cfg: &GotifyConfig,
     applications: &[String],
     min_priority: Option<u8>,
     limit: usize,
 ) -> anyhow::Result<Vec<GotifyRecent>> {
-    let messages = fetch_messages(cfg, RECENT_FETCH_WINDOW).await?;
-    let id_index = build_id_index(fetch_apps(cfg).await?);
+    let messages = fetch_messages(host, cfg, RECENT_FETCH_WINDOW).await?;
+    let id_index = build_id_index(fetch_apps(host, cfg).await?);
     Ok(filter_recent(messages, &id_index, applications, min_priority, limit))
 }
 
-async fn fetch_messages(cfg: &GotifyConfig, limit: u32) -> anyhow::Result<Vec<GotifyMessage>> {
+async fn fetch_messages(
+    host: &dyn GotifyHost,
+    cfg: &GotifyConfig,
+    limit: u32,
+) -> anyhow::Result<Vec<GotifyMessage>> {
     let url = format!("{}/message?limit={limit}", cfg.url.trim_end_matches('/'));
-    let page: GotifyMessages = rest_client()?
+    let page: GotifyMessages = rest_client(host)?
         .get(url)
         .header("X-Gotify-Key", &cfg.client_token)
         .send()
@@ -266,7 +281,7 @@ impl GotifyStream {
                     }
                     if idle_past_deadline(last_activity, Instant::now()) {
                         tracing::warn!(
-                            target: GOTIFY,
+                            target: "forge_connectors::gotify",
                             idle_secs = IDLE_DEADLINE.as_secs(),
                             "Gotify stream idle past deadline; treating path as dead",
                         );
@@ -283,13 +298,13 @@ impl GotifyStream {
                                 }
                             }
                             Err(error) => {
-                                tracing::warn!(target: GOTIFY, %error, "skipping unparseable stream frame");
+                                tracing::warn!(target: "forge_connectors::gotify", %error, "skipping unparseable stream frame");
                             }
                         }
                     }
                     Some(Ok(_)) => last_activity = Instant::now(),
                     Some(Err(error)) => {
-                        tracing::warn!(target: GOTIFY, %error, "Gotify stream read error");
+                        tracing::warn!(target: "forge_connectors::gotify", %error, "Gotify stream read error");
                         return PumpOutcome::Reconnect;
                     }
                     None => return PumpOutcome::Reconnect,
@@ -357,13 +372,13 @@ pub async fn run(
                 connected_at.elapsed() >= MIN_HEALTHY_UPTIME
             }
             Ok(Err(error)) => {
-                tracing::warn!(target: GOTIFY, %error, "Gotify connect failed; backing off");
+                tracing::warn!(target: "forge_connectors::gotify", %error, "Gotify connect failed; backing off");
                 let _ = tx.send(GotifyEvent::Disconnected).await;
                 false
             }
             Err(_) => {
                 tracing::warn!(
-                    target: GOTIFY,
+                    target: "forge_connectors::gotify",
                     timeout_secs = CONNECT_TIMEOUT.as_secs(),
                     "Gotify connect timed out; backing off",
                 );

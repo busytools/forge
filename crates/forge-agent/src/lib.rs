@@ -28,7 +28,7 @@ pub mod commands;
 pub mod env;
 pub(crate) mod forge_sdk_bridge;
 pub(crate) mod forge_sdk_worker;
-pub(crate) mod http_trust;
+pub mod http_trust;
 pub mod logging;
 pub(crate) mod replay;
 pub mod session_lifecycle;

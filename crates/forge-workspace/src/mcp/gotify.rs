@@ -18,7 +18,7 @@ use std::sync::Arc;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
-use forge_agent::env::gotify::GotifyRecent;
+use forge_connectors::gotify::GotifyRecent;
 use forge_primitives::GotifySubscription;
 use uuid::Uuid;
 

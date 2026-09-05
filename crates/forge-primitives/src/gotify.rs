@@ -3,7 +3,7 @@
 //! A forge session subscribes to a Gotify server via the
 //! `mcp__forge__gotify__*` tool family; matching notifications deliver
 //! as a user-turn into the durable subscriber. These are pure data
-//! shapes - the WebSocket client lives in `forge-agent::env::gotify`,
+//! shapes - the WebSocket client lives in `forge-connectors::gotify`,
 //! the subscription store in `forge-workspace::store::gotify`, and the
 //! match-and-route logic in `forge-workspace`.
 
