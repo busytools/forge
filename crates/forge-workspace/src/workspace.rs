@@ -505,7 +505,9 @@ async fn run_background_catalog_scan(
         let mut current = catalog.lock();
         for (key, entries) in current.drain() {
             let slot = grouped.entry(key).or_default();
-            for entry in entries {
+            // The recorded list is newest-first; inserting each at the
+            // head in reverse lands the newest back on top.
+            for entry in entries.into_iter().rev() {
                 if !slot.iter().any(|s| s.session_id == entry.session_id) {
                     slot.insert(0, entry);
                 }
@@ -13457,5 +13459,36 @@ provider = "anthropic"
             sessions.iter().any(|s| s.session.as_str() == LEAD_UUID),
             "the on-disk session is present alongside it"
         );
+    }
+
+    /// Live-recorded sessions keep their recorded (newest-first) order
+    /// at the head of the merged catalog. The Projects pane reads
+    /// `sessions.first()` for the row's relative time, so a reversed
+    /// head shows the oldest connection's recency.
+    #[tokio::test]
+    async fn scan_swap_keeps_recorded_sessions_newest_first() {
+        let dir = scan_fixture_dir();
+        let project_dir = dir.path().join("proj");
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+
+        workspace.record_connected_session(&project_dir.display().to_string(), "live-older", None);
+        workspace.record_connected_session(&project_dir.display().to_string(), "live-newer", None);
+        workspace.start_catalog_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !workspace.catalog_ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scan finishes");
+
+        let sessions = &workspace.list_projects()[0].sessions;
+        assert_eq!(
+            sessions[0].session.as_str(),
+            "live-newer",
+            "the latest connection leads the project"
+        );
+        assert_eq!(sessions[1].session.as_str(), "live-older");
+        assert_eq!(sessions[2].session.as_str(), LEAD_UUID);
     }
 }
