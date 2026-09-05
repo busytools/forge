@@ -1015,4 +1015,92 @@ mod tests {
             "a recurring cron with no upcoming occurrence is removed, not left stuck",
         );
     }
+
+    /// The swap-once guard: the first `start_cron_scheduler` flips
+    /// `cron_scheduler_started` and runs exactly one tick loop, and a
+    /// second call is a no-op. The due cron is the observable that the
+    /// guard opens - a guard that never opens fires nothing.
+    #[tokio::test(start_paused = true)]
+    async fn start_cron_scheduler_fires_a_due_cron_once_despite_a_second_start() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/wc-scheduler-once");
+
+        ws.push_cron(CronEntry {
+            id: CronId::from("due"),
+            project_name: "proj".to_owned(),
+            kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+            prompt: "tick".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: None,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH, // overdue -> due at the first tick
+            team_role: None,
+        });
+
+        ws.enable_test_dispatch_intercept();
+        ws.start_cron_scheduler();
+        assert!(
+            ws.cron_scheduler_started.load(std::sync::atomic::Ordering::Acquire),
+            "the first start flips the swap-once guard",
+        );
+
+        // Let the spawned task poll once so its interval is registered
+        // at t=0 (first tick at +60s) before the clock moves.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(CRON_TICK_INTERVAL).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        let first_tick = count_proj_spawns(&ws);
+        assert_eq!(
+            first_tick, 1,
+            "the first start runs the scheduler; a guard that never opens fires nothing",
+        );
+
+        // A second start must not spawn a second tick loop. Fires
+        // cannot tell two loops apart - ticks run sequentially here and
+        // the first loop's advance hides every due cron from the second
+        // (on the multi-thread runtime their ticks race, which is what
+        // the guard prevents) - so its only trace is another task-held
+        // Weak.
+        let weak_before = Arc::downgrade(&ws).weak_count();
+        ws.start_cron_scheduler();
+        let weak_after = Arc::downgrade(&ws).weak_count();
+        assert_eq!(weak_after, weak_before, "a second start must not spawn a second tick loop");
+    }
+
+    fn count_proj_spawns(ws: &Workspace) -> usize {
+        ws.drain_test_dispatch_buffer()
+            .iter()
+            .filter(|c| {
+                matches!(c, crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "proj")
+            })
+            .count()
+    }
+
+    /// The tick loop holds the workspace only weakly: once the caller's
+    /// `Arc` is gone the workspace drops even though the task is parked
+    /// on its next tick. Advancing past a tick drives the
+    /// upgrade-failure exit; a task that moved a strong `Arc` in would
+    /// keep the workspace alive and fail the upgrade assert.
+    #[tokio::test(start_paused = true)]
+    async fn the_scheduler_task_does_not_hold_the_workspace_alive() {
+        let dir = tempdir().expect("tempdir");
+        let weak = {
+            let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+            ws.start_cron_scheduler();
+            // Poll the task once so its interval is registered and it
+            // sits parked on the next tick, holding only the Weak.
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+            Arc::downgrade(&ws)
+        };
+        tokio::time::advance(CRON_TICK_INTERVAL * 2).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(weak.upgrade().is_none(), "the scheduler task must hold only a Weak");
+    }
 }

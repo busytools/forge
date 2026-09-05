@@ -59,6 +59,13 @@ fn req(id: i64, method: &str, params: serde_json::Value) -> JsonRpcRequest {
     .unwrap()
 }
 
+#[test]
+fn has_tool_prefix_matches_registered_names_only() {
+    let server = McpServerBuilder::new("forge", "0.0.0").tool(NamedTool("workers__list")).build();
+    assert!(server.has_tool_prefix("workers__"));
+    assert!(!server.has_tool_prefix("peers__"), "no peers tool registered");
+}
+
 #[tokio::test]
 async fn dispatch_initialize() {
     let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();

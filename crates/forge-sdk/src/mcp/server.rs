@@ -77,6 +77,12 @@ impl std::fmt::Debug for McpServer {
 }
 
 impl McpServer {
+    /// Whether any registered tool's name starts with `prefix`, so a
+    /// host can introspect which tool group it registered.
+    pub fn has_tool_prefix(&self, prefix: &str) -> bool {
+        self.tools.keys().any(|name| name.starts_with(prefix))
+    }
+
     /// Dispatch one JSON-RPC request to the appropriate handler.
     ///
     /// Returns `None` for JSON-RPC notifications (no `id`) - notifications
