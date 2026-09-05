@@ -45,6 +45,10 @@ impl ProviderBackend for Anthropic {
         BillingModel::Windows
     }
 
+    fn source(&self) -> UsageSourceKind {
+        UsageSourceKind::Oauth
+    }
+
     async fn probe(
         &self,
         account: &AccountEnv<'_>,

@@ -4950,90 +4950,19 @@ impl Workspace {
     }
 }
 
-/// Pick the [`crate::views::AccountBudget`] shape for an account from
-/// its declared provider and whatever snapshot is cached.
-///
-/// A snapshot whose source disagrees with the provider is treated as
-/// absent: the cache survives a `forge.toml` edit, so an account whose
-/// `provider` changed still has a row in the old shape, and rendering
-/// windows as money (or the reverse) is worse than saying nothing.
+/// The [`crate::views::AccountBudget`] shape for an account, resolved
+/// through its provider's forge-providers backend. The stale-cache
+/// refusal and its warn live on the backend's `budget`.
 fn account_budget(
     account: &str,
     provider: forge_primitives::account::Provider,
     snapshot: Option<&forge_primitives::usage::UsageSnapshot>,
 ) -> crate::views::AccountBudget {
-    use forge_primitives::account::Provider;
-    use forge_primitives::usage::UsageSourceKind;
-
-    let unknown = crate::views::AccountBudget::Unknown { spend_billed: provider.bills_by_spend() };
-    let Some(snapshot) = snapshot else {
-        return unknown;
+    let Some(backend) = forge_providers::backend(provider) else {
+        debug_assert!(false, "no backend registered for {provider:?}");
+        return crate::views::AccountBudget::Unknown { spend_billed: false };
     };
-    // Written out pair by pair rather than with a catch-all, so a new
-    // variant on either enum is a compile error here. This is the one
-    // place that decides which shape a row takes, and defaulting a new
-    // provider to "unknown forever" is exactly the silent wrong answer
-    // the type exists to prevent.
-    match (provider, snapshot.source) {
-        (Provider::Anthropic | Provider::Codex, UsageSourceKind::Oauth) => {
-            crate::views::AccountBudget::Subscription {
-                five_hour_util: snapshot.five_hour_util(),
-                seven_day_util: snapshot.seven_day_util(),
-                resets_at: snapshot.binding_reset_at(),
-            }
-        }
-        (Provider::Zai, UsageSourceKind::ZaiMonitor) => crate::views::AccountBudget::Subscription {
-            five_hour_util: snapshot.five_hour_util(),
-            seven_day_util: snapshot.seven_day_util(),
-            resets_at: snapshot.binding_reset_at(),
-        },
-        (Provider::Openrouter, UsageSourceKind::OpenRouterKey) => {
-            match snapshot.spend.as_ref() {
-                Some(spend) => crate::views::AccountBudget::Api {
-                    daily: spend.daily,
-                    weekly: spend.weekly,
-                    monthly: spend.monthly,
-                },
-                // Unreachable from today's mapper, which refuses a body
-                // with no figures - same warn as a source mismatch
-                // rather than a second silent path.
-                None => unreadable_snapshot(account, provider, snapshot, unknown),
-            }
-        }
-        (
-            Provider::Anthropic | Provider::Codex,
-            UsageSourceKind::OpenRouterKey | UsageSourceKind::ZaiMonitor,
-        )
-        | (Provider::Zai, UsageSourceKind::OpenRouterKey | UsageSourceKind::Oauth)
-        | (Provider::Openrouter, UsageSourceKind::ZaiMonitor | UsageSourceKind::Oauth) => {
-            unreadable_snapshot(account, provider, snapshot, unknown)
-        }
-    }
-}
-
-/// A cached snapshot the renderer cannot use under the account's
-/// declared provider.
-///
-/// Warns rather than falling back quietly: the redb row is rewritten
-/// only after a successful poll, so a stale one outlives a `forge.toml`
-/// edit and is re-seeded every boot. An account whose provider changed
-/// and whose new endpoint is failing would otherwise show empty columns
-/// indefinitely with nothing anywhere saying why.
-fn unreadable_snapshot(
-    account: &str,
-    provider: forge_primitives::account::Provider,
-    snapshot: &forge_primitives::usage::UsageSnapshot,
-    unknown: crate::views::AccountBudget,
-) -> crate::views::AccountBudget {
-    tracing::warn!(
-        target: "forge_workspace::account",
-        account = %account,
-        provider = ?provider,
-        source = snapshot.source.label(),
-        "cached usage snapshot does not fit the account's provider; showing no figures until a \
-         fresh probe lands",
-    );
-    unknown
+    backend.budget(account, snapshot)
 }
 
 /// Map an [`OauthUsageError`] to the renderer-facing
@@ -6067,104 +5996,6 @@ mod tests {
             extra_usage: None,
             spend: None,
         }
-    }
-
-    /// Every `(provider, source)` pair `account_budget` can be handed.
-    /// The mismatch pairs are the reason the function exists - a stale
-    /// cached row survives a `forge.toml` provider change and is
-    /// re-seeded at every boot - and simplifying the function to match
-    /// on provider alone would render windows as money with every other
-    /// test still green.
-    #[test]
-    fn account_budget_covers_every_provider_and_source_pair() {
-        use crate::views::AccountBudget;
-        use forge_primitives::account::Provider;
-        use forge_primitives::usage::{ApiSpend, UsageSourceKind};
-
-        let oauth = account_usage_snapshot(10.0, 20.0, None);
-        let mut key = account_usage_snapshot(0.0, 0.0, None);
-        key.source = UsageSourceKind::OpenRouterKey;
-        key.five_hour = None;
-        key.seven_day = None;
-        key.spend = Some(ApiSpend {
-            daily: 0.5,
-            weekly: 1.0,
-            monthly: 2.0,
-            limit: None,
-            limit_remaining: None,
-            limit_reset: None,
-            expires_at: None,
-        });
-
-        for provider in [Provider::Anthropic, Provider::Codex] {
-            assert!(
-                matches!(
-                    account_budget("Acct", provider, Some(&oauth)),
-                    AccountBudget::Subscription { .. }
-                ),
-                "{provider:?} with an oauth snapshot renders windows",
-            );
-            assert_eq!(
-                account_budget("Acct", provider, Some(&key)),
-                AccountBudget::Unknown { spend_billed: false },
-                "{provider:?} must not render a spend snapshot as its own",
-            );
-        }
-
-        assert!(
-            matches!(
-                account_budget("Acct", Provider::Openrouter, Some(&key)),
-                AccountBudget::Api { .. }
-            ),
-            "openrouter with a key snapshot renders spend",
-        );
-        assert_eq!(
-            account_budget("Acct", Provider::Openrouter, Some(&oauth)),
-            AccountBudget::Unknown { spend_billed: true },
-            "a stale windowed row must not render as money",
-        );
-
-        // Zai bills windows, so a monitor snapshot renders as a
-        // subscription and every other source under it is a stale row.
-        let mut zai = account_usage_snapshot(34.0, 63.0, None);
-        zai.source = UsageSourceKind::ZaiMonitor;
-        assert!(
-            matches!(
-                account_budget("Acct", Provider::Zai, Some(&zai)),
-                AccountBudget::Subscription { .. }
-            ),
-            "zai with a monitor snapshot renders windows",
-        );
-        assert_eq!(
-            account_budget("Acct", Provider::Zai, Some(&key)),
-            AccountBudget::Unknown { spend_billed: false },
-            "zai must not render a spend snapshot as its own",
-        );
-        assert_eq!(
-            account_budget("Acct", Provider::Anthropic, Some(&zai)),
-            AccountBudget::Unknown { spend_billed: false },
-            "a stale zai row must not render under an anthropic account",
-        );
-        assert_eq!(
-            account_budget("Acct", Provider::Openrouter, Some(&zai)),
-            AccountBudget::Unknown { spend_billed: true },
-            "a stale zai row must not render as money",
-        );
-
-        // No snapshot still carries the billing model, so the empty row
-        // sits under the labels the account would really have.
-        assert_eq!(
-            account_budget("Acct", Provider::Anthropic, None),
-            AccountBudget::Unknown { spend_billed: false },
-        );
-        assert_eq!(
-            account_budget("Acct", Provider::Openrouter, None),
-            AccountBudget::Unknown { spend_billed: true },
-        );
-        assert_eq!(
-            account_budget("Acct", Provider::Zai, None),
-            AccountBudget::Unknown { spend_billed: false },
-        );
     }
 
     /// `project_accounts_snapshot` returns one row per allow-list entry

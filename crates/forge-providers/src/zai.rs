@@ -35,6 +35,10 @@ impl ProviderBackend for Zai {
         BillingModel::Windows
     }
 
+    fn source(&self) -> UsageSourceKind {
+        UsageSourceKind::ZaiMonitor
+    }
+
     async fn probe(
         &self,
         account: &AccountEnv<'_>,

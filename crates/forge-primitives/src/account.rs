@@ -37,23 +37,10 @@ impl Provider {
     /// beside an `ANTHROPIC_BASE_URL` in `[accounts.env]` rather than a
     /// keychain entry. Both the probe and preflight's repair copy branch
     /// on this rather than on the provider itself, because every
-    /// non-Anthropic provider repairs the same way.
+    /// non-Anthropic provider repairs the same way. The billing model
+    /// lives on the provider's forge-providers backend instead.
     pub const fn uses_base_url(self) -> bool {
         matches!(self, Self::Codex | Self::Openrouter | Self::Zai)
-    }
-
-    /// `true` when this backend charges per token rather than against a
-    /// plan allowance, so its usage is money over a period and it has
-    /// no window to be a percentage of.
-    ///
-    /// Written out per variant rather than with `matches!`, so a new
-    /// provider has to state its billing model instead of defaulting to
-    /// windows and rendering `5h` / `7d` labels it may not have.
-    pub const fn bills_by_spend(self) -> bool {
-        match self {
-            Self::Anthropic | Self::Codex | Self::Zai => false,
-            Self::Openrouter => true,
-        }
     }
 }
 
@@ -93,11 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn zai_bills_as_a_subscription_over_a_base_url() {
-        assert!(
-            !Provider::Zai.bills_by_spend(),
-            "the GLM coding plan is a windowed subscription, not pay-per-token spend",
-        );
+    fn zai_rides_the_base_url_credential_shape() {
         assert!(
             Provider::Zai.uses_base_url(),
             "the credential is an ANTHROPIC_AUTH_TOKEN beside an ANTHROPIC_BASE_URL",
