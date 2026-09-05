@@ -10175,7 +10175,8 @@ mod worker_respawn_tests {
     /// reader to call `workers__spawn`, which is lead-only, so a worker
     /// given it would be told to call a tool that refuses it. The lead
     /// half is the control: without it, a helper that did nothing at all
-    /// would still satisfy the assertion above.
+    /// would still satisfy the assertion above. The negative pin keeps
+    /// the charter the sole carrier of the delegation default.
     #[test]
     fn only_a_lead_session_gets_the_delegation_block() {
         let mut worker = SessionLaunchSettings::default();
@@ -10184,13 +10185,16 @@ mod worker_respawn_tests {
 
         let mut lead = SessionLaunchSettings::default();
         Workspace::apply_lead_delegation(&mut lead, crate::mcp::SessionKind::Lead);
+        let preamble = lead.delegation_preamble.expect("a lead does get it");
         assert!(
-            lead.delegation_preamble.is_some_and(|t| {
-                t.contains("workers__spawn")
-                    && t.contains("never a peers call")
-                    && t.contains("Workers build; subagents review")
-            }),
+            preamble.contains("workers__spawn")
+                && preamble.contains("never a peers call")
+                && preamble.contains("Workers build; subagents review"),
             "a lead does get it",
+        );
+        assert!(
+            !preamble.contains("doing the work yourself"),
+            "the charter, not this block, carries the delegation default",
         );
     }
 
