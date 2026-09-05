@@ -1713,8 +1713,7 @@ provider = "anthropic"
     async fn spawn_project_unknown_project_emits_no_update() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default());
@@ -1738,8 +1737,7 @@ provider = "anthropic"
     async fn spawn_project_known_project_emits_spawning_with_synth_key() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
@@ -1766,8 +1764,7 @@ provider = "anthropic"
     async fn start_default_failure_is_fatal() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         // Drive a failure by passing a project name that doesn't
@@ -1806,8 +1803,7 @@ provider = "anthropic"
     async fn spawn_session_unknown_session_emits_no_fatal() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         handle_spawn_session(&workspace, "no-such-session-id", SessionLaunchSettings::default());
@@ -1846,8 +1842,7 @@ provider = "anthropic"
     async fn handle_deliver_peer_prompt_unknown_target_is_no_op() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         let caller = SessionKey::from_str_for_test("caller-1");
@@ -1896,8 +1891,7 @@ provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let caller = SessionKey::from_str_for_test("caller-sleep");
         let w = fixture_wrapped();
 
@@ -1959,8 +1953,7 @@ provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         let caller = SessionKey::from_str_for_test("caller-tell");
@@ -2202,7 +2195,7 @@ provider = "anthropic"
     /// `worker_tag_dir` resolves to the exact on-disk worktree (avoids
     /// the macOS /tmp symlink mismatch). Returns the pieces the test
     /// asserts on plus the tempdir guards (which must outlive the test).
-    async fn git_despawn_fixture(
+    fn git_despawn_fixture(
         label: &str,
     ) -> (Arc<Workspace>, ProjectKey, std::path::PathBuf, tempfile::TempDir, tempfile::TempDir)
     {
@@ -2224,9 +2217,8 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
 
-        let workspace = Arc::new(
-            Workspace::new_for_test(config.path().to_owned()).await.expect("workspace new"),
-        );
+        let workspace =
+            Arc::new(Workspace::new_for_test(config.path().to_owned()).expect("workspace new"));
         let view = workspace.list_projects().into_iter().next().expect("one project");
         let project_key = view.key.clone();
         let project_path = view.path.clone();
@@ -2256,7 +2248,7 @@ provider = "anthropic"
     /// worktree AND reaps the `worktree-<label>` branch behind it.
     #[tokio::test]
     async fn despawn_git_worker_removes_clean_worktree() {
-        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         assert!(wt.exists(), "worktree exists before despawn");
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
@@ -2299,7 +2291,7 @@ provider = "anthropic"
     /// reports it intact.
     #[tokio::test]
     async fn close_worker_reports_the_worktree_intact() {
-        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer");
         let mut rx = workspace.subscribe().expect("subscribe");
 
         handle_close_worker(&workspace, &project_key, "reviewer");
@@ -2312,7 +2304,7 @@ provider = "anthropic"
     /// close toast is built from.
     #[tokio::test]
     async fn despawn_reports_the_worktree_removed() {
-        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer");
         let mut rx = workspace.subscribe().expect("subscribe");
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -2327,7 +2319,7 @@ provider = "anthropic"
     /// event separates that from a successful removal.
     #[tokio::test]
     async fn despawn_reports_a_failed_removal_apart_from_a_successful_one() {
-        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         // Deregister only. `git worktree remove` would also delete the
         // directory, which is the case that reads as Removed.
         std::fs::remove_dir_all(repo.path().join(".git").join("worktrees").join("reviewer"))
@@ -2353,7 +2345,7 @@ provider = "anthropic"
     /// code says - the toast's only claim is about the directory.
     #[tokio::test]
     async fn despawn_reports_removed_when_the_worktree_is_already_off_disk() {
-        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         run_git(repo.path(), &["worktree", "remove", wt.to_str().expect("utf8 path")]);
         assert!(!wt.exists(), "nothing on disk before the despawn");
         let mut rx = workspace.subscribe().expect("subscribe");
@@ -2382,9 +2374,8 @@ provider = "anthropic"
     async fn spawn_rollback_reports_no_worktree_to_preserve() {
         let config = tempdir().expect("config tempdir");
         write_forge_toml(config.path());
-        let workspace = Arc::new(
-            Workspace::new_for_test(config.path().to_owned()).await.expect("workspace new"),
-        );
+        let workspace =
+            Arc::new(Workspace::new_for_test(config.path().to_owned()).expect("workspace new"));
 
         let repo = tempdir().expect("repo tempdir");
         run_git(repo.path(), &["init", "-q"]);
@@ -2430,7 +2421,7 @@ provider = "anthropic"
     /// to, and names it in a warning rather than discarding the commits.
     #[tokio::test]
     async fn despawn_keeps_a_worktree_branch_holding_unique_commits() {
-        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         std::fs::write(wt.join("work.txt"), "a worker committed here").expect("write work");
         run_git(&wt, &["add", "."]);
         run_git(&wt, &["commit", "-q", "-m", "real work"]);
@@ -2480,7 +2471,7 @@ provider = "anthropic"
     /// work on that one.
     #[tokio::test]
     async fn despawn_reaps_the_conventional_branch_not_the_checked_out_one() {
-        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         run_git(&wt, &["checkout", "-q", "-b", "feature-x"]);
         std::fs::write(wt.join("work.txt"), "the worker's real work").expect("write work");
         run_git(&wt, &["add", "."]);
@@ -2538,7 +2529,7 @@ provider = "anthropic"
     /// despawn.
     #[tokio::test]
     async fn despawn_keeps_review_state_for_a_branch_that_still_exists() {
-        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         run_git(&wt, &["checkout", "-q", "-b", "feature-x"]);
         std::fs::write(wt.join("work.txt"), "the worker's real work").expect("write work");
         run_git(&wt, &["add", "."]);
@@ -2570,7 +2561,7 @@ provider = "anthropic"
     /// rather than the local head that the reap just removed.
     #[tokio::test]
     async fn despawn_keeps_review_state_for_a_branch_pushed_to_a_remote() {
-        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         let remote = tempdir().expect("remote tempdir");
         run_git(remote.path(), &["init", "-q", "--bare"]);
         run_git(&wt, &["remote", "add", "origin", remote.path().to_str().expect("utf8 path")]);
@@ -2601,7 +2592,7 @@ provider = "anthropic"
     /// branch inherits phantoms).
     #[tokio::test]
     async fn despawn_deletes_that_branch_reviews_and_threads() {
-        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         let branch = forge_agent::env::worktree::worktree_branch(&wt).expect("worktree branch");
         let thread = review_thread;
         workspace.save_review_threads("forge", &branch, &[thread("a")]);
@@ -2645,7 +2636,7 @@ provider = "anthropic"
     /// unrelated branches' threads intact.
     #[tokio::test]
     async fn despawn_with_detached_head_skips_cleanup_gracefully() {
-        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer");
         run_git(&wt, &["checkout", "--detach"]);
         workspace.save_review_threads("forge", "survivor", &[review_thread("a")]);
 
@@ -2664,7 +2655,7 @@ provider = "anthropic"
     /// torn down, the worker stays live, the worktree is intact.
     #[tokio::test]
     async fn despawn_dirty_worktree_without_force_blocks() {
-        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer");
         std::fs::write(wt.join("scratch.txt"), "uncommitted").expect("write scratch");
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
@@ -2684,7 +2675,7 @@ provider = "anthropic"
     /// A dirty worktree WITH `force` tears down + discards the worktree.
     #[tokio::test]
     async fn despawn_dirty_worktree_force_discards() {
-        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer");
         std::fs::write(wt.join("scratch.txt"), "uncommitted").expect("write scratch");
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", true, tx);
@@ -2823,8 +2814,7 @@ provider = "anthropic"
             ),
         )
         .expect("write forge.toml");
-        let workspace =
-            Arc::new(Workspace::new_for_test(toml_dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(toml_dir.path().to_owned()).expect("new"));
 
         // Resolve the project's key + path from list_projects (matches
         // what the spawn handler will look up).

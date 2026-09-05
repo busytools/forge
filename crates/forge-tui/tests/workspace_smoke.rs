@@ -44,7 +44,6 @@ async fn forge_tui_starts_against_fixture_default_project() {
 
     let workspace = Arc::new(
         Workspace::new_for_test(dir.path().to_owned())
-            .await
             .expect("workspace constructs against fixture forge.toml"),
     );
 
@@ -58,7 +57,7 @@ async fn forge_tui_starts_against_fixture_default_project() {
 #[tokio::test]
 async fn missing_forge_toml_fails_workspace_new() {
     let dir = tempdir().expect("tempdir");
-    let result = Workspace::new_for_test(dir.path().to_owned()).await;
+    let result = Workspace::new_for_test(dir.path().to_owned());
     assert!(
         matches!(result, Err(WorkspaceError::ConfigMissing { .. })),
         "missing forge.toml should produce ConfigMissing",

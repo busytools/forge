@@ -175,6 +175,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::ServiceStatus { severity, message } => {
             session::apply_session_update_service_status(app, severity, &message);
         }
+        SessionUpdate::CatalogLoaded => {
+            app.needs_redraw = true;
+        }
         SessionUpdate::FatalError(error) => {
             session::apply_session_update_fatal_error(app, error);
         }
@@ -1686,6 +1689,19 @@ mod tests {
             None,
             "a failed take copies nothing"
         );
+    }
+
+    /// The catalog-loaded event carries no session key, so it rides
+    /// the global-event path and wakes the render loop - the frame the
+    /// launchpad's session counts appear on.
+    #[test]
+    fn catalog_loaded_flips_needs_redraw() {
+        let mut app = App::test_default();
+        app.needs_redraw = false;
+
+        apply_session_update(&mut app, forge_workspace::SessionUpdate::CatalogLoaded);
+
+        assert!(app.needs_redraw, "the scan landing must trigger the frame that shows its counts");
     }
 
     /// The echo is the only source the dialog's markers and reset row

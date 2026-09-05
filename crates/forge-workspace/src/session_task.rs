@@ -1556,7 +1556,7 @@ mod tests {
         assert!(rate_limit_hit_from_message(&api_retry(529, "server_error")).is_none());
     }
 
-    async fn workspace_with_account_config_dir(
+    fn workspace_with_account_config_dir(
         config_dir: &str,
     ) -> (tempfile::TempDir, Arc<crate::Workspace>) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1572,7 +1572,7 @@ mod tests {
         )
         .expect("write forge.toml");
         let workspace =
-            Arc::new(crate::Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+            Arc::new(crate::Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         (dir, workspace)
     }
 
@@ -1825,7 +1825,7 @@ mod tests {
     /// expiry backstop fires.
     #[tokio::test]
     async fn connection_failed_releases_registrations_and_terminates() {
-        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let key = SessionKey::from_str_for_test("dead-spawn");
         let (handle, _cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
@@ -1876,7 +1876,7 @@ mod tests {
     /// may still route to, and the resolved key the pool holds.
     #[tokio::test]
     async fn connection_failed_releases_spawn_key_registrations_too() {
-        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let key = SessionKey::from_str_for_test("real-key");
         let spawn_key = SessionKey::from_str_for_test("__spawn_proj__");
         let (handle, _cmds) = Agent::testing_stub();
@@ -1922,7 +1922,7 @@ mod tests {
     /// happy path of the can_use_tool parking lot.
     #[tokio::test]
     async fn respond_permission_round_trips_to_the_agent() {
-        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let (handle, mut agent_rx) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let key = SessionKey::from_session_id("perm");
@@ -1982,7 +1982,7 @@ mod tests {
     /// the REAL waiter (the question's oneshot) preserved.
     #[tokio::test]
     async fn respond_permission_against_a_question_slot_is_dropped() {
-        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let (handle, mut agent_rx) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let key = SessionKey::from_session_id("xkind");
@@ -2072,7 +2072,7 @@ mod tests {
     /// `TurnError` (the committed-turn unwind).
     #[tokio::test]
     async fn set_model_failed_and_turn_error_map_to_keyed_updates() {
-        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let (mut task, mut update_rx) =
             review_task_for(&workspace, &SessionKey::from_session_id("m"));
 
@@ -2127,7 +2127,7 @@ mod tests {
     #[tokio::test]
     async fn note_rate_limit_rotates_the_sessions_own_account() {
         use crate::account::AccountKey;
-        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let key = AccountKey("Acct".to_owned());
         assert!(workspace.account_states().lock().is_account_usable(&key), "usable before the 429");
 
@@ -2145,7 +2145,7 @@ mod tests {
     #[tokio::test]
     async fn note_rate_limit_leaves_untracked_config_dir_accounts_alone() {
         use crate::account::AccountKey;
-        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-test-rl-other").await;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-test-rl-other");
         let key = AccountKey("Acct".to_owned());
         assert!(workspace.account_states().lock().is_account_usable(&key));
 
@@ -2176,7 +2176,7 @@ mod tests {
         )
         .expect("write forge.toml");
         let workspace =
-            Arc::new(crate::Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+            Arc::new(crate::Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let session_account = AccountKey("Acct".to_owned());
         let sibling = AccountKey("Sibling".to_owned());
         assert!(workspace.account_states().lock().is_account_usable(&sibling));

@@ -161,15 +161,16 @@ pub struct Workspace {
     /// `pub(crate)` so the impl block in [`crate::gotify`] can read the
     /// `[gotify]` section.
     pub(crate) config: LoadedConfig,
-    /// Catalog of sessions per project. Seeded from
-    /// `userdata::catalog::scan::list_sessions` at `new`; mutated
-    /// in-place by [`Workspace::record_connected_session`] each time a
-    /// freshly spawned session reaches `Connected`, so the Projects
-    /// pane's drilldown stays current without forcing a full disk
-    /// re-scan. Held under a Mutex because multiple in-process tasks
-    /// (the pane render, the connect-flow event handler) reach for it
-    /// across `await` points.
-    catalog: Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>,
+    /// Catalog of sessions per project. Populated by the background
+    /// catalog scan once [`Workspace::start_catalog_scan`] runs;
+    /// mutated in-place by [`Workspace::record_connected_session`]
+    /// each time a freshly spawned session reaches `Connected`, so the
+    /// Projects pane's drilldown stays current without forcing a full
+    /// disk re-scan. Held under a Mutex because multiple in-process
+    /// tasks (the pane render, the connect-flow event handler) reach
+    /// for it across `await` points; `Arc` so the scan task can swap
+    /// its contents without holding an `Arc<Workspace>` cycle.
+    catalog: Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
     /// Live Agents keyed by session id. `parking_lot::Mutex` so the
     /// public methods can take `&self`. `pub(crate)` so sibling
     /// modules (`spawn::handle_deliver_worker_prompt_to_lead`,
@@ -308,7 +309,16 @@ pub struct Workspace {
     /// open (degrade to in-memory-only, no persistence) or in
     /// `testing_stub`. `pub(crate)` so the impl block in
     /// [`crate::review`] can reach it.
-    pub(crate) db: Mutex<Option<crate::store::Db>>,
+    pub(crate) db: Arc<Mutex<Option<crate::store::Db>>>,
+    /// Whether the boot catalog scan has populated `catalog`. The scan
+    /// runs in the background off the boot path; spawn paths that read
+    /// the catalog for a resume decision gate on this via
+    /// [`Workspace::wait_catalog_ready`].
+    catalog_loaded: Arc<std::sync::atomic::AtomicBool>,
+    /// Wakes `wait_catalog_ready` waiters when the scan lands.
+    catalog_ready_notify: Arc<tokio::sync::Notify>,
+    /// Idempotence guard for [`Workspace::start_catalog_scan`].
+    catalog_scan_started: std::sync::atomic::AtomicBool,
     /// Whether the Gotify stream is currently connected. Set by the
     /// subsystem pump on `Connected` / `Disconnected`; read by the
     /// Inspector's status line.
@@ -383,11 +393,145 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
         .or_else(|| latest_with(|s| s.tag.is_none()))
 }
 
-/// Open the machine-local redb store at `<app_support>/db.redb`,
-/// creating the app-support dir first. Returns `None` (with a warn) when
-/// the dir can't be created or the DB can't open - forge then runs
-/// without durable Gotify subscriptions or dynamic workers this session
-/// (hard rule #14: no cwd fallback).
+/// Kick off the catalog scan on the tokio runtime. Idempotent via
+/// `started`; a caller with no runtime gets a warn and an
+/// immediately-ready flag with an empty catalog rather than a scan
+/// nobody can await. A monitor on the scan task publishes readiness
+/// even if the scan dies, so held spawns fall through instead of
+/// hanging on a readiness that will never come.
+fn spawn_background_catalog_scan(
+    catalog: &Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
+    db: &Arc<Mutex<Option<crate::store::Db>>>,
+    config_dir: &Path,
+    update_tx: &mpsc::UnboundedSender<SessionUpdate>,
+    loaded: &Arc<std::sync::atomic::AtomicBool>,
+    notify: &Arc<tokio::sync::Notify>,
+    started: &std::sync::atomic::AtomicBool,
+) {
+    if started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let run = run_background_catalog_scan(
+        Arc::clone(catalog),
+        Arc::clone(db),
+        config_dir.to_path_buf(),
+        update_tx.clone(),
+        Arc::clone(loaded),
+        Arc::clone(notify),
+    );
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let task = handle.spawn(run);
+        let loaded = Arc::clone(loaded);
+        let notify = Arc::clone(notify);
+        handle.spawn(async move {
+            if let Err(error) = task.await {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "catalog scan task died; publishing readiness so held spawns fall through to fresh",
+                );
+                loaded.store(true, std::sync::atomic::Ordering::Release);
+                notify.notify_waiters();
+            }
+        });
+    } else {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            config_dir = %config_dir.display(),
+            "no tokio runtime at construction; the catalog scan is skipped, the catalog starts empty and resume decisions fall back to fresh",
+        );
+        loaded.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// The boot catalog scan, off the boot path. Reads the workspace's own
+/// `config_dir` (canonicalized, so the redb tag-cache keys are the same
+/// ones the respawn scan writes even when the config dir path carries a
+/// symlink component) with the redb tag cache - only bytes appended
+/// since the last scan are read end to end - swaps the grouped catalog
+/// in one lock, prunes cache rows of transcripts that no longer exist,
+/// and only then publishes readiness and `SessionUpdate::CatalogLoaded`.
+async fn run_background_catalog_scan(
+    catalog: Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
+    db: Arc<Mutex<Option<crate::store::Db>>>,
+    config_dir: PathBuf,
+    update_tx: mpsc::UnboundedSender<SessionUpdate>,
+    loaded: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+) {
+    // One root derivation with the resume scan, so the tag cache is
+    // one key space. Without a projects tree the scan still runs and
+    // finds an empty catalog.
+    let scan_root = catalog_scan_root(&config_dir)
+        .unwrap_or_else(|| std::fs::canonicalize(&config_dir).unwrap_or(config_dir.clone()));
+    let tag_cache = std::sync::Arc::new(load_session_tag_cache(db.lock().as_ref()));
+    let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
+        &scan_root,
+        None, // every project in the catalog
+        None, // no limit
+        0,
+        false, // hide worker-tagged sessions from default catalog
+        Some(&tag_cache),
+    )
+    .await;
+    persist_session_tag_cache(db.lock().as_ref(), &tag_cache);
+
+    // Group sessions by project key derived from each session's cwd.
+    // Sessions without a cwd are skipped - they can't be associated
+    // with a project view.
+    let mut grouped: HashMap<ProjectKey, Vec<SDKSessionInfo>> = HashMap::new();
+    for entry in catalog_entries {
+        if let Some(cwd) = entry.cwd.as_deref() {
+            let key = ProjectKey::new(
+                forge_agent::userdata::catalog::scan::project_key_for_directory(Some(cwd)),
+            );
+            grouped.entry(key).or_default().push(entry);
+        }
+    }
+    // The catalog scan returns entries sorted by `last_modified`
+    // descending; the per-project Vec inherits that ordering thanks
+    // to push order being preserved.
+    //
+    // Sessions recorded live while the scan ran sit in the catalog
+    // already (record_connected_session) and their transcripts may not
+    // be on disk yet, so the disk-built map absorbs them rather than
+    // replacing them.
+    {
+        let mut current = catalog.lock();
+        for (key, entries) in current.drain() {
+            let slot = grouped.entry(key).or_default();
+            // The recorded list is newest-first; inserting each at the
+            // head in reverse lands the newest back on top.
+            for entry in entries.into_iter().rev() {
+                if !slot.iter().any(|s| s.session_id == entry.session_id) {
+                    slot.insert(0, entry);
+                }
+            }
+        }
+        *current = grouped;
+    }
+
+    if let Some(db) = db.lock().as_ref() {
+        match crate::store::session_tags::prune_missing(db) {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(
+                target: "forge_workspace::workspace",
+                count,
+                "pruned session tag rows whose transcripts no longer exist",
+            ),
+            Err(error) => tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "pruning stale session tag rows failed; the table keeps rows of deleted transcripts",
+            ),
+        }
+    }
+
+    loaded.store(true, std::sync::atomic::Ordering::Release);
+    notify.notify_waiters();
+    let _ = update_tx.send(SessionUpdate::CatalogLoaded);
+}
+
 /// The previous run's tag scans, or an empty cache when there is no
 /// store: a missing cache costs a full re-scan, never a wrong answer.
 fn load_session_tag_cache(
@@ -424,6 +568,11 @@ fn persist_session_tag_cache(
     }
 }
 
+/// Open the machine-local redb store at `<app_support>/db.redb`,
+/// creating the app-support dir first. Returns `None` (with a warn) when
+/// the dir can't be created or the DB can't open - forge then runs
+/// without durable Gotify subscriptions or dynamic workers this session
+/// (hard rule #14: no cwd fallback).
 fn open_db(app_support: &Path) -> Option<crate::store::Db> {
     if let Err(error) = std::fs::create_dir_all(app_support) {
         tracing::warn!(
@@ -468,27 +617,82 @@ fn open_db(app_support: &Path) -> Option<crate::store::Db> {
 /// are filtered out. Untagged or `forge:lead`-tagged sessions are
 /// filtered out by the tag-prefix check.
 ///
-/// Scans every account's `config_dir`: workers pick their account
-/// from the assignment-plan rotation, so a prior worker session can
-/// live under any account, not just the workspace's canonical dir.
+/// Scans every account's `config_dir` (one per distinct physical
+/// `projects` tree, carrying the redb tag cache so already-scanned
+/// transcripts are not re-read): workers pick their account from the
+/// assignment-plan rotation, so a prior worker session can live under
+/// any account, not just the workspace's canonical dir.
 async fn scan_worker_resume_map(
     config_dirs: &[PathBuf],
     project_dir: &std::path::Path,
+    tag_cache: Option<&std::sync::Arc<forge_agent::userdata::catalog::scan::SessionTagCache>>,
 ) -> HashMap<String, String> {
     let mut sessions: Vec<SDKSessionInfo> = Vec::new();
-    for config_dir in config_dirs {
+    for config_dir in distinct_catalog_roots(config_dirs) {
         sessions.extend(
-            // Uncached: this runs on worker respawn rather than at boot,
-            // and reaching the store from here means threading a handle
-            // through for a scan nobody is waiting on a frame for.
             forge_agent::userdata::catalog::scan::list_sessions(
-                config_dir, None, None, 0, true, None,
+                &config_dir,
+                None,
+                None,
+                0,
+                true,
+                tag_cache,
             )
             .await,
         );
     }
     let is_git_repo = forge_agent::env::worktree::is_git_repo(project_dir);
     build_resume_map_from_sessions(&sessions, project_dir, is_git_repo)
+}
+
+/// One config_dir per distinct physical `projects` tree. Accounts'
+/// config dirs commonly symlink `projects` back to one shared tree, so
+/// scanning per account would read the same transcripts once per
+/// prefix; a dir with no projects tree is skipped, as before.
+fn distinct_catalog_roots(config_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for config_dir in config_dirs {
+        if let Some(root) = catalog_scan_root(config_dir)
+            && seen.insert(root.clone())
+        {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
+/// The scan root for one config dir: the canonical parent of its
+/// resolved `projects` dir, or the canonical config dir itself when
+/// the resolved tree is not named `projects` (the walk descends into
+/// `<root>/projects`, so the target's parent would miss it). `None`
+/// when there is no projects tree.
+fn catalog_scan_root(config_dir: &std::path::Path) -> Option<PathBuf> {
+    let projects = match std::fs::canonicalize(config_dir.join("projects")) {
+        Ok(projects) => projects,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(
+                target: "forge_workspace::workspace",
+                config_dir = %config_dir.display(),
+                "no projects tree; the catalog scan finds nothing here",
+            );
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                config_dir = %config_dir.display(),
+                %error,
+                "cannot resolve this config dir's projects tree; its sessions are invisible to the scan",
+            );
+            return None;
+        }
+    };
+    if projects.file_name().is_some_and(|name| name.to_str() == Some("projects")) {
+        Some(projects.parent().map_or_else(|| config_dir.to_path_buf(), PathBuf::from))
+    } else {
+        Some(std::fs::canonicalize(config_dir).unwrap_or_else(|_| config_dir.to_path_buf()))
+    }
 }
 
 /// Pure-function inner of [`scan_worker_resume_map`] - pulls the
@@ -535,33 +739,75 @@ fn build_resume_map_from_sessions(
 }
 
 impl Workspace {
-    /// Builds a Workspace, runs the catalog scan, and loads
-    /// `<config_dir>/forge.toml`. Errors if `forge.toml` is missing
-    /// or malformed (e.g. no `[[orgs]]` entries, no
+    /// Builds a Workspace, kicks off the background catalog scan, and
+    /// loads `<config_dir>/forge.toml`. Errors if `forge.toml` is
+    /// missing or malformed (e.g. no `[[orgs]]` entries, no
     /// `[[orgs.projects]]` entries, unknown account references). No
-    /// Agents are spawned on success.
-    pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
-        Self::new_impl(config_dir, None).await
+    /// Agents are spawned on success. The session catalog starts empty
+    /// and fills when the scan lands - see [`Workspace::start_catalog_scan`].
+    pub fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
+        Self::new_impl(config_dir, None, true)
     }
 
     /// Like [`Workspace::new`] but puts forge's whole app-support base -
     /// the redb store and the single-instance lock - under a tempdir
     /// inside `config_dir` rather than the real machine
     /// `app_support_dir`, so tests never touch the user's durable store
-    /// or contend for their live lock.
+    /// or contend for their live lock. The catalog scan does NOT
+    /// auto-start; tests opt in via [`Workspace::start_catalog_scan`]
+    /// so a fixture can dispatch spawns against an unloaded catalog.
     #[cfg(any(test, feature = "testing"))]
-    pub async fn new_for_test(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
+    pub fn new_for_test(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let app_support = config_dir.join("app-support");
-        Self::new_impl(config_dir, Some(app_support)).await
+        Self::new_impl(config_dir, Some(app_support), false)
+    }
+
+    /// Run the catalog scan in the background and signal readiness
+    /// when it lands. `[`Workspace::new`] calls this during
+    /// construction; tests built on `new_for_test` opt in explicitly
+    /// so a fixture can dispatch spawns against an unloaded catalog.
+    /// Idempotent - a second call is a no-op.
+    pub fn start_catalog_scan(&self) {
+        spawn_background_catalog_scan(
+            &self.catalog,
+            &self.db,
+            &self.config_dir,
+            &self.update_tx,
+            &self.catalog_loaded,
+            &self.catalog_ready_notify,
+            &self.catalog_scan_started,
+        );
+    }
+
+    /// Whether the background catalog scan has populated the catalog.
+    /// False from construction until the scan lands; always true when
+    /// constructed without a tokio runtime (nothing could wait).
+    pub fn catalog_ready(&self) -> bool {
+        self.catalog_loaded.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Resolve once the background catalog scan has populated the
+    /// catalog. Spawn paths that read the catalog for a resume
+    /// decision await this first, so a spawn dispatched before the
+    /// scan lands still resumes rather than falling back to fresh.
+    pub(crate) async fn wait_catalog_ready(&self) {
+        while !self.catalog_ready() {
+            let notified = self.catalog_ready_notify.notified();
+            if self.catalog_ready() {
+                return;
+            }
+            notified.await;
+        }
     }
 
     /// Shared constructor body. `app_support` supplies the app-support
     /// base dir; `None` resolves the real machine `app_support_dir` and
     /// degrades to no lock and no durable store on failure (hard rule
     /// #14: no cwd fallback).
-    async fn new_impl(
+    fn new_impl(
         config_dir: PathBuf,
         app_support: Option<PathBuf>,
+        auto_start_scan: bool,
     ) -> Result<Self, WorkspaceError> {
         let mut config = load_from_dir(&config_dir)?;
 
@@ -657,37 +903,12 @@ impl Workspace {
         // `config_dir` (where forge.toml lives). Each spawn binds to
         // its own account `config_dir` separately; multi-account
         // catalog merge is a separate concern.
-        // This scan is the bulk of boot before the first frame, and
-        // almost all of it is reading transcripts end to end for their
-        // worker tag. The cache carries the last run's answers in so
-        // only bytes appended since are read.
-        let tag_cache = std::sync::Arc::new(load_session_tag_cache(db.as_ref()));
-        let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
-            &config_dir,
-            None, // every project in the catalog
-            None, // no limit
-            0,
-            false, // hide worker-tagged sessions from default catalog
-            Some(&tag_cache),
-        )
-        .await;
-        persist_session_tag_cache(db.as_ref(), &tag_cache);
-
-        // Group sessions by project key derived from each session's cwd.
-        // Sessions without a cwd are skipped - they can't be associated
-        // with a project view.
-        let mut catalog: HashMap<ProjectKey, Vec<SDKSessionInfo>> = HashMap::new();
-        for entry in catalog_entries {
-            if let Some(cwd) = entry.cwd.as_deref() {
-                let key = ProjectKey::new(
-                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(cwd)),
-                );
-                catalog.entry(key).or_default().push(entry);
-            }
-        }
-        // The catalog scan returns entries sorted by `last_modified`
-        // descending; the per-project Vec inherits that ordering thanks
-        // to push order being preserved.
+        // The scan itself runs in the background (#794): reading every
+        // transcript end to end for its worker tag was the bulk of the
+        // pre-paint pause. The catalog starts empty and fills when the
+        // scan lands; spawn paths that read it for a resume decision
+        // gate on `catalog_loaded` via `wait_catalog_ready`.
+        let catalog = Arc::new(Mutex::new(HashMap::new()));
 
         let mut accounts = AccountStateMap::new(&config.accounts);
 
@@ -713,10 +934,25 @@ impl Workspace {
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
+        let db = Arc::new(Mutex::new(db));
+        let catalog_loaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let catalog_ready_notify = Arc::new(tokio::sync::Notify::new());
+        let catalog_scan_started = std::sync::atomic::AtomicBool::new(false);
+        if auto_start_scan {
+            spawn_background_catalog_scan(
+                &catalog,
+                &db,
+                &config_dir,
+                &update_tx,
+                &catalog_loaded,
+                &catalog_ready_notify,
+                &catalog_scan_started,
+            );
+        }
         let workspace = Self {
             config_dir,
             config,
-            catalog: Mutex::new(catalog),
+            catalog,
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(accounts),
             assignment_plan: Mutex::new(None),
@@ -739,7 +975,10 @@ impl Workspace {
             crons: Mutex::new(crons),
             pending_cron_by_owner: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(gotify_subs),
-            db: Mutex::new(db),
+            db,
+            catalog_loaded,
+            catalog_ready_notify,
+            catalog_scan_started,
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
@@ -2804,6 +3043,43 @@ impl Workspace {
                 Err(DispatchError::UnknownSession(key))
             }
         } else {
+            // Project leads resume from the session catalog, which the
+            // background scan fills a beat after boot. Hold a catalog-
+            // reading spawn until it lands (re-dispatching from a
+            // detached task) so the resume decision never reads an
+            // empty catalog and fall back to fresh. `--new` spawns
+            // never consult the catalog and skip the hold. Every other
+            // caller of get_agent_handle is user-paced and lands long
+            // after the scan.
+            let reads_catalog = match &cmd {
+                Command::SpawnProject { launch_settings, .. }
+                | Command::StartDefault { launch_settings, .. } => !launch_settings.force_new,
+                _ => false,
+            };
+            if reads_catalog && !self.catalog_ready() {
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        let workspace = Arc::clone(self);
+                        handle.spawn(async move {
+                            workspace.wait_catalog_ready().await;
+                            if let Err(error) = workspace.dispatch(cmd) {
+                                tracing::warn!(
+                                    target: "forge_workspace::workspace",
+                                    %error,
+                                    "re-dispatching a catalog-deferred spawn failed",
+                                );
+                            }
+                        });
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            target: "forge_workspace::workspace",
+                            "no tokio runtime; spawning against an unloaded catalog - the resume decision falls back to fresh",
+                        );
+                    }
+                }
+            }
             // App-level commands. The `spawn::*` handlers are sync -
             // they emit one event, kick off `get_agent_handle_with_spawn_key`
             // (which internally tokio::spawns the agent), and return.
@@ -3156,6 +3432,7 @@ impl Workspace {
             return;
         };
         let workspace = Arc::clone(self);
+        let tag_cache = std::sync::Arc::new(load_session_tag_cache(self.db.lock().as_ref()));
         let config_dirs = {
             let mut dirs = self.accounts.lock().config_dirs();
             if !dirs.contains(&self.config_dir) {
@@ -3164,7 +3441,9 @@ impl Workspace {
             dirs
         };
         handle.spawn(async move {
-            let resume_map = scan_worker_resume_map(&config_dirs, &project_dir).await;
+            let resume_map =
+                scan_worker_resume_map(&config_dirs, &project_dir, Some(&tag_cache)).await;
+            persist_session_tag_cache(workspace.db.lock().as_ref(), &tag_cache);
             tracing::info!(
                 target: "forge_workspace::workers",
                 project = %project_key.as_str(),
@@ -5491,7 +5770,7 @@ impl Workspace {
         let workspace = Self {
             config_dir,
             config,
-            catalog: Mutex::new(HashMap::new()),
+            catalog: Arc::new(Mutex::new(HashMap::new())),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(AccountStateMap::empty_for_test()),
             assignment_plan: Mutex::new(None),
@@ -5514,7 +5793,10 @@ impl Workspace {
             crons: Mutex::new(Vec::new()),
             pending_cron_by_owner: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(Vec::new()),
-            db: Mutex::new(None),
+            db: Arc::new(Mutex::new(None)),
+            catalog_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            catalog_ready_notify: Arc::new(tokio::sync::Notify::new()),
+            catalog_scan_started: std::sync::atomic::AtomicBool::new(false),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
@@ -7537,8 +7819,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn new_for_test_opens_redb_under_the_tempdir() {
         let dir = make_workspace_dir();
-        let _workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let _workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         // The test constructor redirects redb into the config dir's own
         // tempdir, so no test ever opens the real machine store (#392).
         let redirected = dir.path().join("app-support").join("db.redb");
@@ -7548,8 +7829,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn new_for_test_writes_the_lock_under_the_tempdir() {
         let dir = make_workspace_dir();
-        let _workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let _workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         // Everything under the app-support base follows the same
         // redirect as redb, so a test run leaves the real directory
         // untouched.
@@ -7563,8 +7843,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn get_agent_handle_default_is_idempotent() {
         let dir = make_workspace_dir();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let settings = SessionLaunchSettings::default();
 
         let handle1 =
@@ -7578,8 +7857,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn distinct_targets_pool_distinct_entries() {
         let dir = make_workspace_dir();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let settings = SessionLaunchSettings::default();
 
         let _ =
@@ -7598,8 +7876,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn shutdown_drains_pool() {
         let dir = make_workspace_dir();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let handle = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default");
@@ -7651,8 +7928,7 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
 
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default");
@@ -7688,8 +7964,7 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
 
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let result = workspace.get_agent_handle(
             SessionTarget::Named("nonexistent".to_owned()),
             SessionLaunchSettings::default(),
@@ -7734,8 +8009,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn pool_records_picked_account() {
         let dir = make_workspace_dir_with_two_accounts();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default");
@@ -7755,8 +8029,7 @@ provider = "anthropic"
         // so even cold-cache spawns spread load rather than always
         // hammering the first account.
         let dir = make_workspace_dir_with_two_accounts();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
@@ -7817,8 +8090,7 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
 
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default spawn");
@@ -8570,7 +8842,7 @@ provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
-        let workspace = Workspace::new_for_test(dir.path().to_owned()).await.expect("new");
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
 
         let rows = workspace.account_loading_snapshot();
         assert_eq!(rows.len(), 1, "the fixture has one account; got {rows:?}");
@@ -8623,8 +8895,7 @@ provider = "anthropic"
     async fn expire_inflight_ask_failed_removes_entry_and_is_idempotent() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
         let dir = forge_toml_with_two_projects();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
         let caller = SessionKey::from_str_for_test("caller-1");
         let id = CorrelationId::new_ask();
@@ -8657,8 +8928,7 @@ provider = "anthropic"
     async fn expire_inflight_ask_failed_dispatches_failure_notice() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
         let dir = forge_toml_with_two_projects();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         let caller = SessionKey::from_str_for_test("caller-notice");
@@ -8696,8 +8966,7 @@ provider = "anthropic"
             AskChannel, CorrelationId, InflightAsk, PeerFailureReason, WrappedKind,
         };
         let dir = forge_toml_with_two_projects();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         let caller = SessionKey::from_str_for_test("caller-notice-echo");
@@ -8738,8 +9007,7 @@ provider = "anthropic"
     async fn expire_target_inflight_matches_worker_asks_by_target_session() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
         let dir = forge_toml_with_two_projects();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
         let worker_key = SessionKey::from_str_for_test("worker-sess-1");
         let id = CorrelationId::new_ask();
@@ -8826,8 +9094,7 @@ provider = "anthropic"
     async fn expire_inflight_ask_failed_clears_target_incoming() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
         let dir = forge_toml_with_two_projects();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
         let caller = SessionKey::from_str_for_test("asker");
         let target = SessionKey::from_str_for_test("replier");
@@ -8989,10 +9256,9 @@ provider = "anthropic"
     /// `expire_target_inflight` resolves the closing key's project via
     /// `list_projects()` (catalog-backed), so a fully-in-memory
     /// workspace would early-return.
-    async fn peer_mcp_workspace_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+    fn peer_mcp_workspace_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = forge_toml_with_two_projects();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         (workspace, dir)
     }
 
@@ -9022,7 +9288,7 @@ provider = "anthropic"
     async fn expire_target_inflight_drains_only_targeted_asks() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
 
-        let (workspace, _dir) = peer_mcp_workspace_fixture().await;
+        let (workspace, _dir) = peer_mcp_workspace_fixture();
 
         // Seed catalog so list_projects() sees a session under
         // "gateway-backend". The session_id is what we'll feed to
@@ -9446,8 +9712,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn release_session_on_lead_cascades_workers() {
         let dir = make_workspace_dir();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         // Seed the catalog with a lead session at the project key so
@@ -9493,8 +9758,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn release_session_on_non_lead_does_not_cascade() {
         let dir = make_workspace_dir();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
         let project_key = workspace.list_projects().into_iter().next().expect("forge").key;
         workspace.insert_live_worker(&project_key, fake_entry("r1", "worker-1"));
@@ -9518,8 +9782,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn release_session_cascades_when_worker_sits_at_catalog_head() {
         let dir = make_workspace_dir();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
         let project = workspace.list_projects().into_iter().next().expect("forge project");
         let project_key = project.key.clone();
@@ -10569,7 +10832,7 @@ mod worker_respawn_tests {
     /// project's key and path, and the session_id the scan should pick.
     ///
     /// Both tempdirs must outlive the caller.
-    async fn resumable_worker_fixture(
+    fn resumable_worker_fixture(
         project: &tempfile::TempDir,
         cfg: &tempfile::TempDir,
     ) -> (Arc<Workspace>, crate::target::ProjectKey, PathBuf, String) {
@@ -10614,7 +10877,7 @@ provider = "anthropic"
         )
         .expect("write tagged jsonl");
 
-        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).await.expect("boot"));
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
         let view = ws.list_projects().into_iter().find(|v| v.name == "demo").expect("project");
         let _ = ws.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
             project_key: view.key.as_str().to_owned(),
@@ -10649,7 +10912,7 @@ provider = "anthropic"
     async fn catalog_scan_resumes_a_worker_onto_its_tagged_session() {
         let project = tempfile::tempdir().expect("project dir");
         let cfg = tempfile::tempdir().expect("cfg dir");
-        let (ws, key, path, session_id) = resumable_worker_fixture(&project, &cfg).await;
+        let (ws, key, path, session_id) = resumable_worker_fixture(&project, &cfg);
 
         ws.respawn_workers_for_lead("lead-uuid".to_owned(), key, path, false);
 
@@ -10668,6 +10931,35 @@ provider = "anthropic"
         );
     }
 
+    /// The respawn scan writes its tag rows back to redb, so the next
+    /// boot starts warm instead of re-reading every transcript end to
+    /// end.
+    #[tokio::test]
+    async fn respawn_scan_persists_the_tag_cache() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, path, session_id) = resumable_worker_fixture(&project, &cfg);
+
+        ws.respawn_workers_for_lead("lead-uuid".to_owned(), key, path, false);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let cached = {
+                let db = ws.db.lock();
+                crate::store::session_tags::load_all(db.as_ref().expect("test db present"))
+                    .expect("load persisted cache")
+            };
+            if cached.keys().any(|key| key.contains(&session_id)) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the respawn scan never persisted the transcript's tag row"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     /// `--new`: the same fixture skips the scan entirely, so the worker
     /// that WOULD have resumed spawns fresh. Paired with the test above
     /// deliberately - against a fixture with nothing resumable both
@@ -10676,7 +10968,7 @@ provider = "anthropic"
     async fn force_new_spawns_fresh_the_worker_the_scan_would_have_resumed() {
         let project = tempfile::tempdir().expect("project dir");
         let cfg = tempfile::tempdir().expect("cfg dir");
-        let (ws, key, path, _session_id) = resumable_worker_fixture(&project, &cfg).await;
+        let (ws, key, path, _session_id) = resumable_worker_fixture(&project, &cfg);
 
         ws.respawn_workers_for_lead("lead-uuid".to_owned(), key, path, true);
 
@@ -11966,8 +12258,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn plan_assignment_resolves_a_resumed_worker_to_its_own_account() {
         let dir = make_workspace_dir_lead_and_worker();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
@@ -12063,8 +12354,7 @@ provider = "anthropic"
         // account (Alpha), not whatever HashMap iteration would surface
         // - reverting `ordered_keys` to `by_key` makes this flaky.
         let dir = make_workspace_dir_246_two_accounts();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             for name in ["Alpha", "Beta"] {
@@ -12103,8 +12393,7 @@ provider = "anthropic"
         // lead binds to Alpha (the non-experimental account), never to
         // definition-order pool[0] = Exp.
         let dir = make_workspace_dir_experimental();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             for name in ["Exp", "Alpha"] {
@@ -12143,8 +12432,7 @@ provider = "anthropic"
         // resolve_account_for_switch feeds forced_account, which bypasses
         // the picker/plan entirely.
         let dir = make_workspace_dir_experimental();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let resolved = workspace.resolve_account_for_switch("Exp");
         assert_eq!(
             resolved.map(|(key, _)| key),
@@ -12156,8 +12444,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn recompute_plan_if_ready_noop_while_loading() {
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         // Fresh workspace: account starts in `Loading`. all_loaded
         // returns false; recompute must not populate the plan.
         workspace.recompute_plan_if_ready();
@@ -12168,8 +12455,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn recompute_plan_if_ready_populates_plan_when_all_ready() {
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         // Transition the lone account to Ready by injecting a snapshot.
         {
             let mut accounts = workspace.account_states().lock();
@@ -12202,8 +12488,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn recompute_plan_if_ready_uses_frozen_overlay_on_recompute() {
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -12253,8 +12538,7 @@ provider = "anthropic"
         // Before the plan is populated, the helper must be a no-op
         // (doesn't panic; doesn't side-effect through to lookups).
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
@@ -12266,8 +12550,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn extend_plan_for_adhoc_worker_extends_when_plan_populated() {
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -12327,8 +12610,7 @@ provider = "anthropic"
         // the saturated account it landed on so the spawn path can
         // surface the rate-limited state.
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace
             .account_states()
             .lock()
@@ -12354,8 +12636,7 @@ provider = "anthropic"
         // must walk off the now-saturated slot onto the still-usable
         // Alpha and return None (a usable assignment, nothing to surface).
         let dir = make_workspace_dir_246_two_accounts();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
@@ -12390,8 +12671,7 @@ provider = "anthropic"
         // re-check must NOT re-home the pin, but extend_plan still
         // surfaces the now-unusable state by returning the account.
         let dir = make_workspace_dir_246_two_accounts();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
@@ -12440,8 +12720,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn session_chip_for_returns_none_when_plan_unpopulated() {
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
@@ -12462,8 +12741,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_worker_spawned_before_the_plan_populates_still_gets_chipped() {
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
@@ -12491,8 +12769,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn session_chip_for_normal_branch_for_ready_account() {
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -12532,8 +12809,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn plan_chips_a_spawned_worker_but_not_a_never_spawned_one() {
         let dir = make_workspace_dir_no_auto_start();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -12569,8 +12845,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn session_chip_for_at_cap_branch() {
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -12606,8 +12881,7 @@ provider = "anthropic"
         // A weekly (7-day) cap alone, 5h window clear, must still flag
         // the chip AtCap - saturation is any-window, not 5h-only.
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -12640,8 +12914,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn session_chip_for_bailed_branch() {
         let dir = make_workspace_dir_246();
-        let workspace =
-            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         // Plan needs SOMETHING in it for session_chip_for to look up.
         // Snapshot first then transition to Bailed (preserves plan
         // assignment, just changes loading state).
@@ -12830,5 +13103,521 @@ mod kick_dispatcher_tests {
         // A future change that makes enqueue_kick require a started
         // dispatcher would fail this test.
         let _ = Duration::from_millis(0); // touch Duration to keep the use site live
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod catalog_scan_tests {
+    use super::*;
+    use crate::protocol::Command;
+    use forge_agent::client::SessionLaunchSettings;
+    use std::fs;
+    use tempfile::tempdir;
+
+    const LEAD_UUID: &str = "00000000-0000-4000-8000-000000000001";
+    const WORKER_UUID: &str = "00000000-0000-4000-8000-000000000002";
+
+    /// One project rooted inside the tempdir plus a transcript whose
+    /// head carries that cwd, so the scan groups the session under the
+    /// project's key the same way boot did.
+    fn scan_fixture_dir() -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        let project_path = dir.path().join("proj");
+        let toml = format!(
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "proj"
+path = "{}"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+provider = "anthropic"
+"#,
+            project_path.display()
+        );
+        fs::write(forge_toml_path(dir.path()), toml).expect("write forge.toml");
+        write_session_fixture(dir.path(), &project_path.display().to_string(), LEAD_UUID, None);
+        dir
+    }
+
+    fn write_session_fixture(
+        config_dir: &std::path::Path,
+        project_path: &str,
+        session_id: &str,
+        tag: Option<&str>,
+    ) {
+        let key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(project_path));
+        let project_dir = config_dir.join("projects").join(key);
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let mut body = format!(
+            "{{\"type\":\"user\",\"timestamp\":\"2026-09-05T00:00:00.000Z\",\"cwd\":\"{project_path}\",\"message\":{{\"content\":\"opening prompt\"}}}}\n"
+        );
+        if let Some(tag) = tag {
+            body = format!(
+                "{body}{{\"type\":\"tag\",\"tag\":\"{tag}\",\"sessionId\":\"{session_id}\"}}\n"
+            );
+        }
+        fs::write(project_dir.join(format!("{session_id}.jsonl")), body).expect("write jsonl");
+    }
+
+    /// A spawn dispatched while the background catalog scan is still
+    /// running must not decide the resume against an empty catalog:
+    /// it is parked, then re-dispatched once the scan lands, and the
+    /// re-dispatched spawn keys to the lead's session id - not the
+    /// `__fresh__:` fallback a gate-less spawn would produce. The
+    /// dispatch intercept catches the re-dispatched commands so the
+    /// assertion does not race the ConnectionFailed release of a spawn
+    /// that cannot complete (no `claude` binary, as on CI).
+    #[tokio::test]
+    async fn spawn_dispatched_before_the_scan_still_resumes_the_lead() {
+        let dir = scan_fixture_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        assert!(!workspace.catalog_ready(), "new_for_test leaves the scan unstarted");
+
+        workspace
+            .dispatch(Command::StartDefault {
+                project_name: Some("proj".to_owned()),
+                launch_settings: SessionLaunchSettings::default(),
+            })
+            .expect("dispatch");
+        workspace
+            .dispatch(Command::SpawnProject {
+                project_name: "proj".to_owned(),
+                launch_settings: SessionLaunchSettings::default(),
+            })
+            .expect("dispatch");
+
+        // The spawns are parked on the scan: no pool entry, however
+        // long the runtime schedules around it.
+        for _ in 0..32 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            workspace.pool.lock().is_empty(),
+            "a spawn parked on the catalog scan must not reach the pool"
+        );
+
+        // From here the re-dispatched commands are captured instead of
+        // handled, so the assertion survives environments where the
+        // spawn itself cannot complete.
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_catalog_scan();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let drained = workspace.drain_test_dispatch_buffer();
+            let re_dispatched = drained.iter().any(|cmd| {
+                matches!(cmd, Command::StartDefault { .. } | Command::SpawnProject { .. })
+            });
+            if re_dispatched {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the parked spawn was never re-dispatched after the scan landed"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // The re-dispatched spawn keys to the lead's session id: this
+        // is the lookup `get_agent_handle_with_spawn_key` pools under.
+        assert_eq!(
+            workspace
+                .resolve_target(&SessionTarget::Named("proj".to_owned()))
+                .expect("project resolves")
+                .as_str(),
+            LEAD_UUID,
+            "the re-dispatched spawn keys to the lead, not the fresh fallback"
+        );
+    }
+
+    /// The background scan swaps the catalog in and announces it: the
+    /// update arrives, readiness flips, and the default catalog hides
+    /// worker-tagged sessions exactly as the synchronous scan did.
+    #[tokio::test]
+    async fn catalog_scan_reports_loaded_and_fills_project_views() {
+        let dir = scan_fixture_dir();
+        write_session_fixture(
+            dir.path(),
+            &dir.path().join("proj").display().to_string(),
+            WORKER_UUID,
+            Some("forge:worker:implementer"),
+        );
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut update_rx = workspace.subscribe().expect("single subscriber");
+        assert!(workspace.list_projects()[0].sessions.is_empty(), "catalog starts empty");
+
+        workspace.start_catalog_scan();
+
+        let update = tokio::time::timeout(Duration::from_secs(5), update_rx.recv())
+            .await
+            .expect("scan finishes")
+            .expect("channel open");
+        assert!(
+            matches!(update, SessionUpdate::CatalogLoaded),
+            "expected CatalogLoaded, got {update:?}"
+        );
+        assert!(workspace.catalog_ready());
+
+        let projects = workspace.list_projects();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            projects[0].sessions.len(),
+            1,
+            "worker-tagged sessions stay hidden from the default catalog"
+        );
+        assert_eq!(projects[0].sessions[0].session.as_str(), LEAD_UUID);
+    }
+
+    /// Two account config_dirs whose `projects` trees are one physical
+    /// tree via symlink are scanned once, not once per prefix: the
+    /// worker is found through either prefix and the tag cache writes
+    /// each transcript's row exactly once. Without the dedupe the same
+    /// physical files produce twice the cache updates under the second
+    /// prefix.
+    #[tokio::test]
+    async fn respawn_scan_dedupes_symlinked_account_trees() {
+        let dir = scan_fixture_dir();
+        let project_dir = dir.path().join("proj");
+        write_session_fixture(
+            dir.path(),
+            &project_dir.display().to_string(),
+            WORKER_UUID,
+            Some("forge:worker:implementer"),
+        );
+        let account_b = dir.path().join("account-b");
+        fs::create_dir_all(&account_b).expect("account dir");
+        std::os::unix::fs::symlink(dir.path().join("projects"), account_b.join("projects"))
+            .expect("symlink projects tree");
+
+        let cache = std::sync::Arc::new(
+            forge_agent::userdata::catalog::scan::SessionTagCache::new(HashMap::new()),
+        );
+        let map = scan_worker_resume_map(
+            &[dir.path().to_path_buf(), account_b],
+            &project_dir,
+            Some(&cache),
+        )
+        .await;
+
+        assert_eq!(
+            map.get("implementer").map(String::as_str),
+            Some(WORKER_UUID),
+            "the worker is resolvable from the shared tree"
+        );
+        assert_eq!(
+            cache.updates().len(),
+            2,
+            "one row per distinct transcript, not one per config-dir prefix"
+        );
+    }
+
+    /// A --new spawn never consults the catalog, so it must not be
+    /// held: it lands immediately against the empty catalog as a fresh
+    /// session. Deleting the force_new arm from the hold reintroduces
+    /// boot-scan latency on the boot wave's --new path.
+    #[tokio::test]
+    async fn force_new_spawn_skips_the_catalog_hold() {
+        let dir = scan_fixture_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        assert!(!workspace.catalog_ready());
+
+        let launch_settings = SessionLaunchSettings { force_new: true, ..Default::default() };
+        workspace
+            .dispatch(Command::StartDefault {
+                project_name: Some("proj".to_owned()),
+                launch_settings,
+            })
+            .expect("dispatch");
+
+        assert!(
+            workspace.pool.lock().keys().any(|key| key.as_str().starts_with("__fresh__:")),
+            "a --new spawn runs immediately, unparked",
+        );
+    }
+
+    /// The boot scan and the respawn scan share one tag-cache key space
+    /// even when the config dir is reached through a symlink: a respawn
+    /// scan reloaded from the store right after boot re-reads nothing.
+    /// The same boot pass pruned the seeded row whose transcript is
+    /// gone - the prune is part of the scan, not only of the store fn.
+    #[tokio::test]
+    async fn boot_scan_warms_the_respawn_scan_and_prunes_stale_rows() {
+        let real = scan_fixture_dir();
+        write_session_fixture(
+            real.path(),
+            &real.path().join("proj").display().to_string(),
+            WORKER_UUID,
+            Some("forge:worker:implementer"),
+        );
+        let link_dir = tempfile::tempdir().expect("tempdir");
+        let link = link_dir.path().join("cfg");
+        std::os::unix::fs::symlink(real.path(), &link).expect("symlink config dir");
+
+        let workspace = Arc::new(Workspace::new_for_test(link).expect("new"));
+        {
+            let db = workspace.db.lock();
+            crate::store::session_tags::store_all(
+                db.as_ref().expect("test db present"),
+                &[(
+                    "/gone/deleted.jsonl".to_owned(),
+                    forge_agent::userdata::catalog::scan::SessionTagScan {
+                        tag: None,
+                        scanned_len: 10,
+                    },
+                )],
+            )
+            .expect("seed stale row");
+        }
+
+        workspace.start_catalog_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !workspace.catalog_ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scan finishes");
+
+        let prior = {
+            let db = workspace.db.lock();
+            crate::store::session_tags::load_all(db.as_ref().expect("test db present"))
+                .expect("load persisted cache")
+        };
+        assert!(!prior.is_empty(), "the boot scan persisted cache rows");
+
+        let cache = Arc::new(forge_agent::userdata::catalog::scan::SessionTagCache::new(prior));
+        let resume = scan_worker_resume_map(
+            &[real.path().to_path_buf()],
+            &real.path().join("proj"),
+            Some(&cache),
+        )
+        .await;
+        assert_eq!(
+            resume.get("implementer").map(String::as_str),
+            Some(WORKER_UUID),
+            "the respawn scan read the transcripts boot warmed"
+        );
+        assert_eq!(
+            cache.updates().len(),
+            0,
+            "the respawn scan re-read nothing: boot's canonical keys matched"
+        );
+
+        let after = {
+            let db = workspace.db.lock();
+            crate::store::session_tags::load_all(db.as_ref().expect("test db present"))
+                .expect("reload cache")
+        };
+        assert!(!after.contains_key("/gone/deleted.jsonl"), "the boot scan pruned the stale row");
+    }
+
+    /// The boot and respawn scans share one key space even when the
+    /// config dir's `projects` is an outbound symlink to a tree that
+    /// lives elsewhere: the respawn scan re-reads nothing after boot
+    /// and still resolves the worker through the shared tree.
+    #[tokio::test]
+    async fn boot_scan_warms_the_respawn_scan_across_an_outbound_projects_symlink() {
+        let cfg = tempdir().expect("cfg tempdir");
+        let tree = tempdir().expect("tree tempdir");
+        let project_path = cfg.path().join("proj");
+        fs::create_dir_all(&project_path).expect("project dir");
+        let toml = format!(
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "proj"
+path = "{}"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+provider = "anthropic"
+"#,
+            project_path.display()
+        );
+        fs::write(forge_toml_path(cfg.path()), toml).expect("write forge.toml");
+        write_session_fixture(
+            tree.path(),
+            &project_path.display().to_string(),
+            WORKER_UUID,
+            Some("forge:worker:implementer"),
+        );
+        std::os::unix::fs::symlink(tree.path().join("projects"), cfg.path().join("projects"))
+            .expect("outbound projects symlink");
+
+        let workspace = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("new"));
+        workspace.start_catalog_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !workspace.catalog_ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scan finishes");
+
+        let prior = {
+            let db = workspace.db.lock();
+            crate::store::session_tags::load_all(db.as_ref().expect("test db present"))
+                .expect("load persisted cache")
+        };
+        assert!(!prior.is_empty(), "the boot scan persisted cache rows");
+
+        let cache = Arc::new(forge_agent::userdata::catalog::scan::SessionTagCache::new(prior));
+        let resume =
+            scan_worker_resume_map(&[cfg.path().to_path_buf()], &project_path, Some(&cache)).await;
+        assert_eq!(
+            resume.get("implementer").map(String::as_str),
+            Some(WORKER_UUID),
+            "the respawn scan read the external tree"
+        );
+        assert_eq!(
+            cache.updates().len(),
+            0,
+            "the respawn scan re-read nothing: boot's keys are keyed on the canonical tree"
+        );
+    }
+
+    /// An outbound symlink whose target is not named `projects` still
+    /// scans: the walk descends into `<root>/projects`, so a root
+    /// derived from the target's parent would miss the tree entirely
+    /// and the catalog would sit empty. The derivation falls back to
+    /// the config dir, whose `projects` link resolves to the tree.
+    #[tokio::test]
+    async fn boot_scan_reaches_an_outbound_tree_not_named_projects() {
+        let cfg = tempdir().expect("cfg tempdir");
+        let tree = tempdir().expect("tree tempdir");
+        let project_path = cfg.path().join("proj");
+        fs::create_dir_all(&project_path).expect("project dir");
+        let toml = format!(
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "proj"
+path = "{}"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+provider = "anthropic"
+"#,
+            project_path.display()
+        );
+        fs::write(forge_toml_path(cfg.path()), toml).expect("write forge.toml");
+        write_session_fixture(tree.path(), &project_path.display().to_string(), LEAD_UUID, None);
+        // The fixture writes a literal `projects` dir; the layout under
+        // test is one that is NOT named that.
+        fs::rename(tree.path().join("projects"), tree.path().join("sessions"))
+            .expect("rename the tree to an odd name");
+        std::os::unix::fs::symlink(tree.path().join("sessions"), cfg.path().join("projects"))
+            .expect("outbound projects symlink to an oddly named dir");
+
+        let workspace = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("new"));
+        workspace.start_catalog_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !workspace.catalog_ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scan finishes");
+
+        let sessions = &workspace.list_projects()[0].sessions;
+        assert_eq!(
+            sessions.first().map(|s| s.session.as_str()),
+            Some(LEAD_UUID),
+            "the session behind the oddly named link is in the catalog"
+        );
+    }
+
+    /// A session recorded live before the scan lands survives the
+    /// scan's catalog swap: its transcript may not exist on disk yet,
+    /// so the disk-built map absorbs the recorded rows rather than
+    /// replacing them.
+    #[tokio::test]
+    async fn scan_swap_preserves_live_recorded_sessions() {
+        let dir = scan_fixture_dir();
+        let project_dir = dir.path().join("proj");
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+
+        workspace.record_connected_session(&project_dir.display().to_string(), "live-uuid", None);
+        workspace.start_catalog_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !workspace.catalog_ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scan finishes");
+
+        let sessions = &workspace.list_projects()[0].sessions;
+        assert!(
+            sessions.iter().any(|s| s.session.as_str() == "live-uuid"),
+            "the live-recorded session survives the scan swap"
+        );
+        assert!(
+            sessions.iter().any(|s| s.session.as_str() == LEAD_UUID),
+            "the on-disk session is present alongside it"
+        );
+    }
+
+    /// Live-recorded sessions keep their recorded (newest-first) order
+    /// at the head of the merged catalog. The Projects pane reads
+    /// `sessions.first()` for the row's relative time, so a reversed
+    /// head shows the oldest connection's recency.
+    #[tokio::test]
+    async fn scan_swap_keeps_recorded_sessions_newest_first() {
+        let dir = scan_fixture_dir();
+        let project_dir = dir.path().join("proj");
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+
+        workspace.record_connected_session(&project_dir.display().to_string(), "live-older", None);
+        workspace.record_connected_session(&project_dir.display().to_string(), "live-newer", None);
+        workspace.start_catalog_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !workspace.catalog_ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scan finishes");
+
+        let sessions = &workspace.list_projects()[0].sessions;
+        assert_eq!(
+            sessions[0].session.as_str(),
+            "live-newer",
+            "the latest connection leads the project"
+        );
+        assert_eq!(sessions[1].session.as_str(), "live-older");
+        assert_eq!(sessions[2].session.as_str(), LEAD_UUID);
+    }
+
+    /// With no tokio runtime there is no scan to await, so readiness
+    /// publishes immediately over an empty catalog and spawns fall
+    /// through to fresh instead of parking forever.
+    #[test]
+    fn start_catalog_scan_without_a_runtime_publishes_readiness() {
+        let dir = scan_fixture_dir();
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
+
+        workspace.start_catalog_scan();
+
+        assert!(workspace.catalog_ready(), "no runtime: readiness publishes immediately");
+        assert!(
+            workspace.list_projects()[0].sessions.is_empty(),
+            "no runtime: no scan ran, the catalog stays empty"
+        );
     }
 }

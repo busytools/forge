@@ -924,6 +924,12 @@ pub enum SessionUpdate {
         severity: ServiceSeverity,
         message: String,
     },
+    /// The background catalog scan finished and `Workspace`'s project
+    /// catalog is populated. The launchpad and Projects pane read
+    /// `list_projects()` per frame, so nothing needs carrying: the
+    /// event exists to wake the render loop so session counts appear
+    /// when the scan lands rather than on the next unrelated frame.
+    CatalogLoaded,
     PluginsInventoryUpdated {
         cwd_raw: String,
         snapshot: PluginsInventorySnapshot,
@@ -1146,6 +1152,7 @@ impl SessionUpdate {
             Self::KeyRenamed { .. }
             | Self::SpawnBucketRetired { .. }
             | Self::ServiceStatus { .. }
+            | Self::CatalogLoaded
             | Self::PluginsInventoryUpdated { .. }
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
@@ -1367,6 +1374,7 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("outcome", outcome)
                 .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
+            Self::CatalogLoaded => f.write_str("CatalogLoaded"),
         }
     }
 }

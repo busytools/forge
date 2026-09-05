@@ -57,7 +57,7 @@ provider = "anthropic"
     )
     .expect("write forge.toml");
 
-    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
     let h1 = workspace
         .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
@@ -109,7 +109,7 @@ provider = "anthropic"
     )
     .expect("write forge.toml");
 
-    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
     // Cold cache → both spawns pick Stargate (first in pin). The
     // important assertion here is that the bridge actually carries
@@ -177,7 +177,7 @@ AIRMAIL_TOKEN = "forge-value"
     )
     .expect("write forge.toml");
 
-    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
     let handle = workspace
         .get_agent_handle(

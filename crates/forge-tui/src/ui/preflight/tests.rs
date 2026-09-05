@@ -47,7 +47,7 @@ fn model(role: DictateRole, file: &str, state: DictateModelState) -> DictateMode
 /// An `App` whose workspace carries `snapshot` as its dictate state,
 /// for assertions that read through the workspace rather than a bare
 /// snapshot.
-async fn app_with_dictate(snapshot: DictateSnapshot) -> App {
+fn app_with_dictate(snapshot: DictateSnapshot) -> App {
     let config_dir = tempfile::tempdir().expect("tempdir");
     let forge = config_dir.path().join("forge");
     std::fs::create_dir_all(&forge).expect("forge/");
@@ -58,9 +58,8 @@ async fn app_with_dictate(snapshot: DictateSnapshot) -> App {
          [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
     )
     .expect("write forge.toml");
-    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-        .await
-        .expect("workspace");
+    let workspace =
+        forge_workspace::Workspace::new_for_test(config_dir.path().to_owned()).expect("workspace");
     workspace.seed_test_dictate_snapshot(snapshot);
     let mut app = App::test_default();
     app.workspace = Some(std::sync::Arc::new(workspace));
@@ -291,9 +290,8 @@ async fn preflight_hands_over_when_an_account_settles_bailed() {
          [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
     )
     .expect("write forge.toml");
-    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-        .await
-        .expect("workspace");
+    let workspace =
+        forge_workspace::Workspace::new_for_test(config_dir.path().to_owned()).expect("workspace");
     let mut app = App::test_default();
     app.workspace = Some(std::sync::Arc::new(workspace));
     app.active_view = crate::app::ActiveView::Launchpad;
@@ -362,9 +360,8 @@ async fn the_recorded_failure_rides_the_snapshot_to_the_row() {
          [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
     )
     .expect("write forge.toml");
-    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-        .await
-        .expect("workspace");
+    let workspace =
+        forge_workspace::Workspace::new_for_test(config_dir.path().to_owned()).expect("workspace");
     workspace.seed_test_account_state("Subspace", LoadingState::Bailed);
     workspace
         .seed_test_account_failure("Subspace", forge_workspace::UsageFetchStatus::NetworkFailed);
@@ -697,7 +694,6 @@ async fn preflight_renders_on_both_routes_and_hands_over_to_each() {
         )
         .expect("write forge.toml");
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
 
         let mut app = App::test_default();
@@ -767,9 +763,8 @@ async fn forge_does_not_quit_on_cancel_until_the_copy_is_on_screen() {
          [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
     )
     .expect("write forge.toml");
-    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-        .await
-        .expect("workspace");
+    let workspace =
+        forge_workspace::Workspace::new_for_test(config_dir.path().to_owned()).expect("workspace");
     workspace.seed_test_account_state("Subspace", LoadingState::Ready);
     workspace.seed_test_dictate_snapshot(DictateSnapshot {
         models: vec![model(
@@ -980,8 +975,7 @@ async fn the_escape_hint_tracks_whether_there_is_anything_to_cancel() {
             DictateModelState::Downloading { downloaded: 0, total: 1, resumed_from: Some(0) },
         )],
         failure: None,
-    })
-    .await;
+    });
     assert_eq!(
         footer_hint(&transferring),
         " esc  cancel     ctrl+q  quit",
@@ -991,8 +985,7 @@ async fn the_escape_hint_tracks_whether_there_is_anything_to_cancel() {
     let cancelled = app_with_dictate(DictateSnapshot {
         models: Vec::new(),
         failure: Some(DictateFailure::Cancelled { kept: 0, total: 0 }),
-    })
-    .await;
+    });
     assert_eq!(
         footer_hint(&cancelled),
         " quitting\u{2026}",
@@ -1122,9 +1115,8 @@ async fn a_short_terminal_drops_the_wordmark_rather_than_the_exits() {
     )
     .expect("write forge.toml");
 
-    let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-        .await
-        .expect("workspace");
+    let workspace =
+        forge_workspace::Workspace::new_for_test(config_dir.path().to_owned()).expect("workspace");
     for name in ["Subspace", "Granite", "Personal", "Codex"] {
         workspace.seed_test_account_state(name, LoadingState::Ready);
     }

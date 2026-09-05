@@ -542,7 +542,6 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
 
         let cli = cli_with(None);
@@ -571,7 +570,6 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
 
         let cli = cli_with(Some("forge-test"));
@@ -595,7 +593,6 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
         let cli = cli_with(None);
         let local = tokio::task::LocalSet::new();
@@ -615,7 +612,6 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
         workspace.enable_test_dispatch_intercept();
         if accounts_ready {
@@ -699,7 +695,6 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
         workspace.enable_test_dispatch_intercept();
 
@@ -749,7 +744,6 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
         let cli = cli_with(Some("forge-test"));
         let local = tokio::task::LocalSet::new();
@@ -776,7 +770,6 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
         let mut cli = cli_with(Some("forge-test"));
         cli.new = true;
@@ -800,7 +793,6 @@ mod tests {
         )
         .expect("write forge.toml");
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
         let cli = cli_with(None);
         let local = tokio::task::LocalSet::new();
@@ -821,7 +813,6 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
         let cli = cli_with(None);
         let local = tokio::task::LocalSet::new();
