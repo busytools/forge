@@ -2183,6 +2183,7 @@ mod tests {
             worker.contains("does not govern forge's own tooling"),
             "the delegation redirect stays: {worker}"
         );
+        assert!(worker.contains("`workers__spawn`"), "the spawn tool name stays pinned: {worker}");
     }
 
     /// The gate reads the registered server's own tool surface, not a
