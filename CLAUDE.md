@@ -344,16 +344,19 @@ inspected.
     each surface's own history before calling the shipped side wrong.
 
     **Divergence counts, not just absence - and a divergence can be the
-    correct state.** The despawn trigger is the worked example. Some
-    surfaces name a merged PR among examples; some stop at "truly done",
-    including `workers__spawn`, in the same file well above the hunk
-    #717 edited; and the charter separately says "once they have
-    delivered". #717 wrote both the first of those and the last: it
-    removed "once its work is merged" because that exempted every worker
-    whose output was not a PR, and cited `LEAD_DELEGATION_PREAMBLE`'s
-    softer wording without adopting it, leaving the preamble untouched.
-    An odd phrasing is not evidence it was overlooked; check each site's
-    history rather than its wording.
+    correct state.** The despawn trigger is the worked example. The
+    two-case structure now lives in `workers__spawn`, the
+    `workers__despawn` description and the charter's despawn step, while
+    `LEAD_DELEGATION_PREAMBLE` stops at "truly done"; the charter
+    separately says "once they have delivered". The preamble's softness
+    is #717's: it removed "once its work is merged" because that
+    exempted every worker whose output was not a PR, and cited
+    `LEAD_DELEGATION_PREAMBLE`'s softer wording without adopting it,
+    leaving the preamble untouched, while `workers__spawn`'s old clause
+    was text #717 never decided - #750 settled it, and #820 carried the
+    same structure into `workers__despawn`. An odd phrasing is not
+    evidence it was overlooked; check each site's history rather than
+    its wording.
 
     **Placement decides whether the text fires at all**, and the
     audience is a forge SESSION at runtime. The shipped surfaces are a
