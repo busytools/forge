@@ -150,6 +150,21 @@ pub fn account_info_from_shell(config_dir: &Path) -> Option<AccountInfo> {
     parse_auth_status(&output.stdout)
 }
 
+/// The identity a session falls back to when its init frame carried no
+/// account. Token-mode sessions get `None`: the only other source, the
+/// shell probe below, reads the shared config dir's login - whichever
+/// sibling last logged in interactively - and would put another
+/// account's identity on this session's chip.
+pub fn shell_identity_fallback<S: std::hash::BuildHasher>(
+    config_dir: &Path,
+    env: &std::collections::HashMap<String, String, S>,
+) -> Option<AccountInfo> {
+    if forge_providers::is_token_mode(env) {
+        return None;
+    }
+    account_info_from_shell(config_dir)
+}
+
 fn parse_auth_status(stdout: &[u8]) -> Option<AccountInfo> {
     let parsed: ClaudeAuthStatus = match serde_json::from_slice(stdout) {
         Ok(p) => p,

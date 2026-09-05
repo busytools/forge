@@ -619,21 +619,15 @@ impl ForgeSdkBridge {
         let display_name = self.inner.display_name.clone();
         let env = self.inner.env.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
-            // account_info_from_shell shells out to `claude auth
-            // status`; wrap in spawn_blocking so this dispatched task
-            // doesn't park its tokio worker for the ~50ms probe.
+            // The shell fallback shells out to `claude auth status`;
+            // wrap in spawn_blocking so this dispatched task doesn't
+            // park its tokio worker for the ~50ms probe.
             let account = if let Some(account) = client.account_info_from_init() {
                 account
-            } else if forge_providers::is_token_mode(&env) {
-                // The shell probe reads the shared config dir's login -
-                // whichever sibling last logged in interactively - so it
-                // would put another account's identity on this token
-                // session's chip.
-                forge_primitives::AccountInfo::default()
             } else {
                 let cd = config_dir.clone();
                 match tokio::task::spawn_blocking(move || {
-                    crate::cloud::auth_status::account_info_from_shell(&cd)
+                    crate::cloud::auth_status::shell_identity_fallback(&cd, &env)
                 })
                 .await
                 {
