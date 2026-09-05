@@ -667,7 +667,7 @@ mod tests {
     /// Multiple matching subscriptions all come back: the caller fans a
     /// message out to every subscriber.
     #[test]
-    fn matching_subscriptions_fans_out_across_projects() {
+    fn matching_subscriptions_returns_every_matching_subscription() {
         let subs = [sub(&[], None), sub(&[], None), sub(&[], Some(9))];
         assert_eq!(matching_subscriptions(&subs, None, 5).len(), 2);
     }
