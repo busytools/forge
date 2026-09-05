@@ -188,8 +188,8 @@ impl Workspace {
                     } else {
                         // A recurring expr that parses but never matches
                         // (e.g. "0 0 30 2 *") - reachable via a hand-edited
-                        // cron.toml. Don't silently drop it (hard
-                        // rule #13).
+                        // cron.toml. Don't drop it silently; the warning
+                        // below is the only trace.
                         let removed = crons.remove(pos);
                         let expr = if let forge_primitives::CronKind::Recurring(e) = &removed.kind {
                             e.as_str()
