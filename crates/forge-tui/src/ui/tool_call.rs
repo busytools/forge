@@ -1060,6 +1060,15 @@ mod tests {
     fn content_summary_pictures_control_chars_in_last_terminal_line() {
         let tc = terminal_tool_call("tc-4", model::ToolCallStatus::Completed, "term-4", "a\rb");
         assert_eq!(content_summary(&tc), "a\u{240d}b");
+
+        // The truncation branch wraps too: a CR inside the kept 77 chars
+        // pictures rather than vanishing into the short form.
+        let long = format!("{}\r{}", "x".repeat(10), "y".repeat(71));
+        let tc = terminal_tool_call("tc-5", model::ToolCallStatus::Completed, "term-5", &long);
+        assert_eq!(
+            content_summary(&tc),
+            format!("{}\u{240d}{}...", "x".repeat(10), "y".repeat(66))
+        );
     }
 
     #[test]
