@@ -1353,7 +1353,7 @@ mod tests {
         (bridge, events)
     }
 
-    /// The #910 contract at the surface the user sees: a token
+    /// The token-mode contract at the surface the user sees: a token
     /// session whose init frame carries no account snapshots the
     /// default identity, never a `claude auth status` read - that
     /// probe keys on the shared config dir and would describe
