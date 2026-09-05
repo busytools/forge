@@ -23,10 +23,11 @@ forge-test-harness ─→ primitives + sdk + workspace
   session is a bug.
 - **`forge-providers`** - one backend per `forge.toml` provider token:
   credential resolution, the usage probe's HTTP + payload mapping,
-  billing shape. Depends on forge-primitives only; the keychain, the
-  `claude --version` user agent and the TLS-trust client arrive
-  through the `ProviderHost` port forge-agent implements, so the
-  crate stays HTTP + mapping and never spawns the CLI.
+  billing shape, the OpenRouter model catalog. Depends on
+  forge-primitives only; the keychain, the `claude --version` user
+  agent and the TLS-trust client arrive through the `ProviderHost`
+  port forge-agent implements, so the crate stays HTTP + mapping and
+  never spawns the CLI.
 - **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
 - **`forge-agent`** - drives one SDK Client behind a channel-based

@@ -23,9 +23,9 @@ pub enum OauthFetchError {
 /// `nextResetTime`, the steady state before the first successful
 /// request, maps to a window with no reset moment.
 ///
-/// Fallible like [`snapshot_from_openrouter_key`]: a payload with no
-/// mappable window entries is a response forge cannot read rather
-/// than a bill of zero.
+/// Fallible like the forge-providers spend and window mappers: a
+/// payload with no mappable window entries is a response forge cannot
+/// read rather than a bill of zero.
 pub fn snapshot_from_zai_quota(
     payload: forge_primitives::usage::zai::QuotaLimitData,
 ) -> Result<UsageSnapshot, OauthFetchError> {
@@ -188,4 +188,3 @@ mod tests {
         );
     }
 }
-

@@ -3,13 +3,13 @@
 //! One row per `ANTHROPIC_BASE_URL`, so a second openrouter-shaped
 //! base caches independently. The value is the parsed catalog plus its
 //! `fetched_at`; the 24h freshness decision lives in
-//! [`forge_agent::cloud::model_catalog`].
+//! [`forge_providers::model_catalog`].
 
 use anyhow::Context;
 use redb::TableDefinition;
 
 use super::Db;
-pub use forge_agent::cloud::model_catalog::CachedCatalog;
+pub use forge_providers::model_catalog::CachedCatalog;
 
 const MODEL_CATALOG: TableDefinition<&str, &[u8]> = TableDefinition::new("model_catalog");
 
@@ -48,7 +48,7 @@ mod tests {
     use std::time::Duration;
     use tempfile::tempdir;
 
-    use forge_agent::cloud::model_catalog::CatalogModel;
+    use forge_providers::model_catalog::CatalogModel;
 
     fn open_db() -> (tempfile::TempDir, Db) {
         let dir = tempdir().expect("tempdir");
@@ -64,12 +64,12 @@ mod tests {
                     id: format!("vendor/model-{index}"),
                     name: format!("Model {index}"),
                     context_length: 1_048_576,
-                    pricing: forge_agent::cloud::model_catalog::CatalogPricing {
+                    pricing: forge_providers::model_catalog::CatalogPricing {
                         prompt: "0.0000014".to_owned(),
                         completion: "0.0000044".to_owned(),
                     },
                     supported_parameters: vec!["tools".to_owned()],
-                    architecture: forge_agent::cloud::model_catalog::CatalogArchitecture {
+                    architecture: forge_providers::model_catalog::CatalogArchitecture {
                         modality: "text->text".to_owned(),
                     },
                 })

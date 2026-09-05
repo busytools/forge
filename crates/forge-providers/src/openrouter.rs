@@ -1,21 +1,26 @@
 //! The OpenRouter backend: the per-key spend probe against
-//! `{base}/v1/key`. The configured base url already ends in `/api`
-//! (that is what the chat API wants), so only the `/v1/key` tail is
-//! appended; appending the documented site-relative `/api/v1/key`
-//! yields `/api/api/v1/key`, which 404s.
+//! `{base}/v1/key`, plus the public `/v1/models` catalog behind the
+//! [`ModelCatalog`] half. The configured base url already ends in
+//! `/api` (that is what the chat API wants), so only the `/v1/...`
+//! tails are appended; appending the documented site-relative paths
+//! yields `/api/api/...`, which 404s.
 
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
 
-use forge_primitives::usage::openrouter::KeyResponse;
 use forge_primitives::usage::oauth::OauthUsageError;
+use forge_primitives::usage::openrouter::KeyResponse;
 use forge_primitives::usage::{ApiSpend, UsageSnapshot, UsageSourceKind};
 
 use crate::helpers::{
     BaseUrlCredential, MissingBase, OAUTH_TIMEOUT, base_url_credential, parse_retry_after,
     truncated_body_suffix,
+};
+use crate::model_catalog::{
+    self, CATALOG_TIMEOUT, CachedCatalog, CatalogDecision, CatalogModel, ModelCatalog,
+    ModelCatalogError,
 };
 use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, ProviderHost};
 
@@ -30,6 +35,10 @@ impl ProviderBackend for Openrouter {
 
     fn billing(&self) -> BillingModel {
         BillingModel::Spend
+    }
+
+    fn model_catalog(&self) -> Option<&'static dyn ModelCatalog> {
+        Some(&Openrouter)
     }
 
     async fn probe(
@@ -74,6 +83,26 @@ enum Mapper {
 /// trimmed so base and base/ behave identically.
 fn key_url(base_url: &str) -> String {
     format!("{}/v1/key", base_url.trim_end_matches('/'))
+}
+
+#[async_trait]
+impl ModelCatalog for Openrouter {
+    async fn fetch(
+        &self,
+        base_url: &str,
+        host: &dyn ProviderHost,
+    ) -> Result<Vec<CatalogModel>, ModelCatalogError> {
+        let client = host.http_client(CATALOG_TIMEOUT).map_err(ModelCatalogError::Network)?;
+        model_catalog::fetch_catalog(&client, base_url).await
+    }
+
+    fn curated(&self, models: &[CatalogModel]) -> Vec<forge_primitives::AvailableModel> {
+        model_catalog::curated_available_models(models)
+    }
+
+    fn decision(&self, cached: Option<CachedCatalog>, now: SystemTime) -> CatalogDecision {
+        model_catalog::catalog_decision(cached, now)
+    }
 }
 
 /// One round-trip against `{base_url}/v1/key` for a pay-per-token
@@ -331,10 +360,7 @@ mod tests {
         }
 
         fn http_client(&self, timeout: Duration) -> Result<reqwest::Client, String> {
-            reqwest::Client::builder()
-                .timeout(timeout)
-                .build()
-                .map_err(|e| e.to_string())
+            reqwest::Client::builder().timeout(timeout).build().map_err(|e| e.to_string())
         }
 
         async fn user_agent(&self) -> Result<String, String> {

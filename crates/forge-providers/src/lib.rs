@@ -10,6 +10,7 @@
 mod anthropic;
 mod codex;
 pub mod helpers;
+pub mod model_catalog;
 mod openrouter;
 
 use std::collections::HashMap;
@@ -21,6 +22,8 @@ pub use forge_primitives::account::Provider;
 pub use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 pub use forge_primitives::usage::UsageSnapshot;
 pub use forge_primitives::usage::oauth::OauthUsageError;
+
+pub use crate::model_catalog::ModelCatalog;
 
 pub use crate::anthropic::{Anthropic, token_bearer};
 pub use crate::codex::Codex;
@@ -91,6 +94,12 @@ pub trait ProviderBackend: Send + Sync {
 
     /// Billing shape.
     fn billing(&self) -> BillingModel;
+
+    /// The provider's model picker rows, or None to keep the
+    /// discovered list. Today: openrouter only.
+    fn model_catalog(&self) -> Option<&'static dyn ModelCatalog> {
+        None
+    }
 }
 
 static ANTHROPIC: Anthropic = Anthropic;
