@@ -175,11 +175,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::ServiceStatus { severity, message } => {
             session::apply_session_update_service_status(app, severity, &message);
         }
-        SessionUpdate::CatalogLoaded => {
-            // The launchpad and Projects pane read list_projects() per
-            // frame; the event's job is to trigger this frame.
-            app.needs_redraw = true;
-        }
+        // No session key: the post-match flip already wakes the render
+        // loop.
+        SessionUpdate::CatalogLoaded => {}
         SessionUpdate::FatalError(error) => {
             session::apply_session_update_fatal_error(app, error);
         }
@@ -1693,9 +1691,9 @@ mod tests {
         );
     }
 
-    /// The catalog-loaded event exists only to wake the render loop, so
-    /// the launchpad's session counts appear on the frame after the
-    /// background scan lands.
+    /// The catalog-loaded event carries no session key, so it rides
+    /// the global-event path and wakes the render loop - the frame the
+    /// launchpad's session counts appear on.
     #[test]
     fn catalog_loaded_flips_needs_redraw() {
         let mut app = App::test_default();
