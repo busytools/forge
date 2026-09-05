@@ -585,27 +585,52 @@ fn open_db(app_support: &Path) -> Option<crate::store::Db> {
 /// are filtered out. Untagged or `forge:lead`-tagged sessions are
 /// filtered out by the tag-prefix check.
 ///
-/// Scans every account's `config_dir`: workers pick their account
-/// from the assignment-plan rotation, so a prior worker session can
-/// live under any account, not just the workspace's canonical dir.
+/// Scans every account's `config_dir` (one per distinct physical
+/// `projects` tree, carrying the redb tag cache so already-scanned
+/// transcripts are not re-read): workers pick their account from the
+/// assignment-plan rotation, so a prior worker session can live under
+/// any account, not just the workspace's canonical dir.
 async fn scan_worker_resume_map(
     config_dirs: &[PathBuf],
     project_dir: &std::path::Path,
+    tag_cache: Option<&std::sync::Arc<forge_agent::userdata::catalog::scan::SessionTagCache>>,
 ) -> HashMap<String, String> {
     let mut sessions: Vec<SDKSessionInfo> = Vec::new();
-    for config_dir in config_dirs {
+    for config_dir in distinct_catalog_roots(config_dirs) {
         sessions.extend(
-            // Uncached: this runs on worker respawn rather than at boot,
-            // and reaching the store from here means threading a handle
-            // through for a scan nobody is waiting on a frame for.
             forge_agent::userdata::catalog::scan::list_sessions(
-                config_dir, None, None, 0, true, None,
+                &config_dir,
+                None,
+                None,
+                0,
+                true,
+                tag_cache,
             )
             .await,
         );
     }
     let is_git_repo = forge_agent::env::worktree::is_git_repo(project_dir);
     build_resume_map_from_sessions(&sessions, project_dir, is_git_repo)
+}
+
+/// One config_dir per distinct physical `projects` tree. Accounts'
+/// config dirs commonly symlink `projects` back to one shared tree, so
+/// scanning per account would read the same transcripts once per
+/// prefix; a dir with no projects tree is skipped, as before. The kept
+/// root is the canonical path, so the redb tag-cache keys match the
+/// ones the boot scan wrote.
+fn distinct_catalog_roots(config_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for config_dir in config_dirs {
+        let Ok(projects) = std::fs::canonicalize(config_dir.join("projects")) else {
+            continue;
+        };
+        if seen.insert(projects.clone()) {
+            roots.push(projects.parent().map_or_else(|| config_dir.clone(), PathBuf::from));
+        }
+    }
+    roots
 }
 
 /// Pure-function inner of [`scan_worker_resume_map`] - pulls the
@@ -3337,6 +3362,7 @@ impl Workspace {
             return;
         };
         let workspace = Arc::clone(self);
+        let tag_cache = std::sync::Arc::new(load_session_tag_cache(self.db.lock().as_ref()));
         let config_dirs = {
             let mut dirs = self.accounts.lock().config_dirs();
             if !dirs.contains(&self.config_dir) {
@@ -3345,7 +3371,9 @@ impl Workspace {
             dirs
         };
         handle.spawn(async move {
-            let resume_map = scan_worker_resume_map(&config_dirs, &project_dir).await;
+            let resume_map =
+                scan_worker_resume_map(&config_dirs, &project_dir, Some(&tag_cache)).await;
+            persist_session_tag_cache(workspace.db.lock().as_ref(), &tag_cache);
             tracing::info!(
                 target: "forge_workspace::workers",
                 project = %project_key.as_str(),
@@ -13122,6 +13150,49 @@ provider = "anthropic"
             "worker-tagged sessions stay hidden from the default catalog"
         );
         assert_eq!(projects[0].sessions[0].session.as_str(), LEAD_UUID);
+    }
+
+    /// Two account config_dirs whose `projects` trees are one physical
+    /// tree via symlink are scanned once, not once per prefix: the
+    /// worker is found through either prefix and the tag cache writes
+    /// each transcript's row exactly once. Without the dedupe the same
+    /// physical files produce twice the cache updates under the second
+    /// prefix.
+    #[tokio::test]
+    async fn respawn_scan_dedupes_symlinked_account_trees() {
+        let dir = scan_fixture_dir();
+        let project_dir = dir.path().join("proj");
+        write_session_fixture(
+            dir.path(),
+            &project_dir.display().to_string(),
+            WORKER_UUID,
+            Some("forge:worker:implementer"),
+        );
+        let account_b = dir.path().join("account-b");
+        fs::create_dir_all(&account_b).expect("account dir");
+        std::os::unix::fs::symlink(dir.path().join("projects"), account_b.join("projects"))
+            .expect("symlink projects tree");
+
+        let cache = std::sync::Arc::new(
+            forge_agent::userdata::catalog::scan::SessionTagCache::new(HashMap::new()),
+        );
+        let map = scan_worker_resume_map(
+            &[dir.path().to_path_buf(), account_b],
+            &project_dir,
+            Some(&cache),
+        )
+        .await;
+
+        assert_eq!(
+            map.get("implementer").map(String::as_str),
+            Some(WORKER_UUID),
+            "the worker is resolvable from the shared tree"
+        );
+        assert_eq!(
+            cache.updates().len(),
+            2,
+            "one row per distinct transcript, not one per config-dir prefix"
+        );
     }
 
     /// A session recorded live before the scan lands survives the

@@ -70,10 +70,8 @@ pub fn store_all(db: &Db, scans: &[(String, SessionTagScan)]) -> anyhow::Result<
 /// cannot be stat'd is dropped - a missing file is stale by
 /// definition, and an unreadable one only costs a re-scan.
 pub fn prune_missing(db: &Db) -> anyhow::Result<usize> {
-    let paths: Vec<String> = load_all(db)?
-        .into_keys()
-        .filter(|path| std::fs::metadata(path).is_err())
-        .collect();
+    let paths: Vec<String> =
+        load_all(db)?.into_keys().filter(|path| std::fs::metadata(path).is_err()).collect();
     if paths.is_empty() {
         return Ok(0);
     }
