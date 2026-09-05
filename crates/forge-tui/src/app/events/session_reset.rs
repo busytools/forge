@@ -120,7 +120,14 @@ fn tail_renders_as_envelope_card(msg: &ChatMessage) -> bool {
         if crate::ui::peer_block::detect_inbound(&block.text).is_some())
 }
 
-fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) {
+/// Append one replayed user text chunk. `continues_previous` carries
+/// the loop's block boundary: only a later Text block of the same
+/// envelope glues into the bubble before it.
+fn append_resume_user_message_chunk(
+    app: &mut App,
+    chunk: &model::ContentChunk,
+    continues_previous: bool,
+) {
     let model::RenderContentBlock::Text(text) = &chunk.content else {
         return;
     };
@@ -128,7 +135,8 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
         return;
     }
 
-    if let Some(last) = app.active_messages_mut().last_mut()
+    if continues_previous
+        && let Some(last) = app.active_messages_mut().last_mut()
         && matches!(last.role, MessageRole::User)
         && !tail_renders_as_envelope_card(last)
     {
@@ -453,6 +461,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                     if is_suppressed_user_scaffolding(text) {
                         continue;
                     }
+                    let continues_previous = rendered_user_text;
                     if !rendered_user_text {
                         app.clear_active_turn_assistant();
                         tracing::debug!(
@@ -470,7 +479,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                     let chunk = model::ContentChunk::new(model::RenderContentBlock::Text(
                         model::TextContent::new(text.clone()),
                     ));
-                    append_resume_user_message_chunk(app, &chunk);
+                    append_resume_user_message_chunk(app, &chunk, continues_previous);
                 }
             }
         }
@@ -1641,6 +1650,55 @@ mod tests {
         assert_eq!(user_msgs.len(), 1, "adjacent envelopes merge into one stamped streak");
         assert!(user_msgs[0].is_peer_envelope);
         assert_eq!(user_msgs[0].blocks.len(), 2, "one block per delivered envelope");
+    }
+
+    /// Two adjacent plain user envelopes are two distinct turns: the
+    /// chunk merge glues the Text blocks of one envelope, never a
+    /// chunk from the next one, or the second turn vanishes as its
+    /// own bubble.
+    #[test]
+    fn adjacent_plain_user_turns_stay_distinct_bubbles() {
+        let mut app = App::test_default();
+        load_resume_history(
+            &mut app,
+            &[historical_user_text("first prompt"), historical_user_text("second prompt")],
+        );
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 2, "each plain user envelope is its own bubble");
+        let texts: Vec<&str> = user_msgs
+            .iter()
+            .filter_map(|m| match &m.blocks[0] {
+                MessageBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["first prompt", "second prompt"], "no text crosses envelopes");
+    }
+
+    /// A queued-command row and the plain turn after it are two
+    /// distinct turns: the echo bubble and the replayed text must not
+    /// glue into one bubble.
+    #[test]
+    fn queued_command_then_plain_turn_stay_distinct_bubbles() {
+        let mut app = App::test_default();
+        load_resume_history(
+            &mut app,
+            &[synthesized_queued("mid-turn queue"), historical_user_text("the next prompt")],
+        );
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 2, "queued echo and the next turn are two bubbles");
+        let texts: Vec<&str> = user_msgs
+            .iter()
+            .filter_map(|m| match &m.blocks[0] {
+                MessageBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["mid-turn queue", "the next prompt"]);
     }
 
     /// An envelope entry followed by a separate plain user turn must
