@@ -314,8 +314,8 @@ being ignored. Keys an older forge read here (`trusted_marketplaces`,
 
 The top-level document does not reject unknown tables, so a section
 forge no longer reads is ignored rather than failing the load. The
-places that do reject unknown fields are `[projects.<name>]`,
-`[dictate]` and `[plugins]`.
+places that do reject unknown fields are `[[accounts]]`,
+`[projects.<name>.env]`, `[dictate]` and `[plugins]`.
 
 ## A complete example
 
