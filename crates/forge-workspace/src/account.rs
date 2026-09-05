@@ -605,8 +605,8 @@ impl AccountStateMap {
         // unusable_reason can see the full picture - an account whose
         // boot-time loading task ended in `Bailed` (auth_status said
         // logged-out, refresh failed, etc.) must NOT be picked even
-        // if its last_error is None - tier_of's existing inputs
-        // wouldn't catch a Bailed-without-recent-error case, which
+        // if its last_error is None - unusable_reason's existing
+        // inputs wouldn't catch a Bailed-without-recent-error case, which
         // is the exact shape after the recovery poll transitions
         // Loading -> Bailed without firing set_last_error.
         let candidates: Vec<(
@@ -1876,8 +1876,8 @@ mod tests {
     fn pick_for_project_skips_bailed_accounts() {
         // Bailed account is in the allow list with no last_error (the
         // recovery poll explicitly transitioned via set_loading, not
-        // set_last_error). Without the LoadingState filter, tier_of
-        // would classify it as tier 0 (usable=true) because both
+        // set_last_error). Without the LoadingState filter,
+        // unusable_reason would classify it as usable because both
         // usage and last_error are None. The picker must NOT return
         // it; the Ready account must win.
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
