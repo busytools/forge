@@ -3128,4 +3128,22 @@ mod lead_charter_tests {
             );
         }
     }
+
+    /// The token test above checks absence only; these pin the decided
+    /// despawn wording against silent softening in either direction.
+    #[test]
+    fn lead_charter_carries_the_despawn_trigger() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("despawn at the chain node"),
+            "the chain-node despawn rule stays: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("NOT when the last downstream PR closes"),
+            "the despawn point is the chain node, not the last PR: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("re-armed by the next stage's kick"),
+            "idle chain-stage workers re-arm on the next kick: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
 }
