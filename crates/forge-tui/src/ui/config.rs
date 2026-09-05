@@ -443,6 +443,10 @@ mod tests {
             rendered.contains("Type to filter this list"),
             "the search field reads its placeholder now that the title row is gone"
         );
+        assert!(
+            rendered.contains("Update all (u)"),
+            "the action row rides the full render path, not just its own line builder"
+        );
         assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
         assert!(rendered.contains("SKILL"));
         assert!(rendered.contains("Left/Right switch list"));
