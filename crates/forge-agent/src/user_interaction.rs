@@ -46,7 +46,12 @@ pub struct AskUserQuestionOption {
 
 #[derive(Debug)]
 pub struct AskUserQuestionPrompt {
+    /// Trimmed text; what the TUI displays.
     pub question: String,
+    /// The untrimmed wire text. The CLI looks answers and annotations
+    /// up by this exact string, so this is the only valid answers-map
+    /// key.
+    pub question_key: String,
     pub header: String,
     pub multi_select: bool,
     pub options: Vec<AskUserQuestionOption>,
@@ -65,7 +70,8 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
     let mut prompts: Vec<AskUserQuestionPrompt> = Vec::new();
     for raw in questions {
         let Some(q) = raw.as_object() else { continue };
-        let question = q.get("question").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+        let question_key = q.get("question").and_then(Value::as_str).unwrap_or("").to_owned();
+        let question = question_key.trim().to_owned();
         if question.is_empty() {
             continue;
         }
@@ -103,7 +109,13 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
         if options.len() < 2 {
             continue;
         }
-        prompts.push(AskUserQuestionPrompt { question, header, multi_select, options });
+        prompts.push(AskUserQuestionPrompt {
+            question,
+            question_key,
+            header,
+            multi_select,
+            options,
+        });
     }
     prompts
 }
@@ -323,6 +335,7 @@ mod tests {
     fn build_request_carries_index_and_total() {
         let prompt = AskUserQuestionPrompt {
             question: "Q?".to_owned(),
+            question_key: "Q?".to_owned(),
             header: "H".to_owned(),
             multi_select: false,
             options: vec![
@@ -430,6 +443,7 @@ mod tests {
     fn build_request_propagates_recommended_flag_to_wire_option() {
         let prompt = AskUserQuestionPrompt {
             question: "Q?".to_owned(),
+            question_key: "Q?".to_owned(),
             header: "H".to_owned(),
             multi_select: false,
             options: vec![

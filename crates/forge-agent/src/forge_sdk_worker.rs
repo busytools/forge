@@ -1207,13 +1207,13 @@ async fn run_ask_user_question(
                     // Other is the always-available custom-text option).
                     if notes_provided {
                         answers.insert(
-                            prompt.question.clone(),
+                            prompt.question_key.clone(),
                             serde_json::Value::String("Other".to_owned()),
                         );
                         if let Some(ann) = annotation {
                             match serde_json::to_value(&ann) {
                                 Ok(v) => {
-                                    annotations.insert(prompt.question.clone(), v);
+                                    annotations.insert(prompt.question_key.clone(), v);
                                 }
                                 Err(err) => {
                                     tracing::warn!(
@@ -1234,13 +1234,13 @@ async fn run_ask_user_question(
                 }
                 let answer =
                     selected.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(", ");
-                answers.insert(prompt.question.clone(), serde_json::Value::String(answer));
+                answers.insert(prompt.question_key.clone(), serde_json::Value::String(answer));
                 if let Some(annotation) =
                     bridge_user_interaction::derive_annotation(&selected, annotation.as_ref())
                 {
                     match serde_json::to_value(&annotation) {
                         Ok(v) => {
-                            annotations.insert(prompt.question.clone(), v);
+                            annotations.insert(prompt.question_key.clone(), v);
                         }
                         Err(err) => {
                             tracing::warn!(
@@ -1261,6 +1261,13 @@ async fn run_ask_user_question(
 
     let updated_input =
         bridge_user_interaction::build_updated_input(&ctx.tool_input, answers, annotations);
+    tracing::debug!(
+        target: "forge_agent::forge_sdk_worker",
+        tool_use_id = %ctx.tool_use_id,
+        answer_keys = ?updated_input.get("answers").and_then(serde_json::Value::as_object)
+            .map(|a| a.keys().collect::<Vec<_>>()),
+        "ask_user_question answered; keys must equal the untrimmed wire question text",
+    );
     PermissionDecision::allow_with_input(updated_input)
 }
 
@@ -1638,7 +1645,7 @@ mod tests {
     use super::{
         PendingQuestions, PendingResponses, build_forge_system_prompt, deliver_permission_response,
         deliver_question_response, frame_session_id, initial_mode_state, log_failed_mcp_servers,
-        synth_permission_request,
+        run_ask_user_question, synth_permission_request,
     };
 
     /// Buffer tracing output so an emitted record can be read back.
@@ -2391,6 +2398,108 @@ mod tests {
         let pending = fresh_pending_questions();
         deliver_question_response(&pending, "missing", QuestionOutcome::Cancelled);
         assert!(pending.lock().is_empty());
+    }
+
+    /// The CLI looks answers up by the question text EXACTLY as it
+    /// arrived on the wire, so trimming that string for the answers/
+    /// annotations keys silently loses the answer.
+    #[tokio::test]
+    async fn ask_user_question_keys_answers_by_original_wire_text() {
+        let dirty_pick = "\r\r#887: pick one  ";
+        let dirty_note = " notes only?\r";
+        let input = json!({"questions": [
+            {
+                "question": dirty_pick,
+                "header": "H",
+                "options": [
+                    {"label": "One", "description": ""},
+                    {"label": "Two", "description": ""},
+                ],
+            },
+            {
+                "question": dirty_note,
+                "header": "H",
+                "options": [
+                    {"label": "Yes", "description": ""},
+                    {"label": "No", "description": ""},
+                ],
+            },
+        ]});
+        let (event_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let pending = fresh_pending_questions();
+        let task_pending = pending.clone();
+        let task = tokio::spawn(async move {
+            run_ask_user_question(
+                ctx("AskUserQuestion", "tu_keys", input),
+                "sess".to_owned(),
+                &event_tx,
+                &task_pending,
+            )
+            .await
+        });
+
+        match events.recv().await.expect("first question request") {
+            AgentEvent::QuestionRequest { request, .. } => {
+                assert_eq!(request.question_index, 0);
+                deliver_question_response(
+                    &pending,
+                    "tu_keys",
+                    QuestionOutcome::Answered {
+                        selected_option_ids: vec!["question_0".to_owned()],
+                        annotation: None,
+                    },
+                );
+            }
+            other => panic!("expected QuestionRequest, got {other:?}"),
+        }
+        match events.recv().await.expect("second question request") {
+            AgentEvent::QuestionRequest { request, .. } => {
+                assert_eq!(request.question_index, 1);
+                deliver_question_response(
+                    &pending,
+                    "tu_keys",
+                    QuestionOutcome::Answered {
+                        selected_option_ids: Vec::new(),
+                        annotation: Some(forge_primitives::QuestionAnnotation {
+                            preview: None,
+                            notes: Some("keep both".to_owned()),
+                        }),
+                    },
+                );
+            }
+            other => panic!("expected QuestionRequest, got {other:?}"),
+        }
+
+        let decision = task.await.expect("ask task joins");
+        assert!(decision.is_allow(), "expected allow, got {decision:?}");
+        let updated = decision.updated_input().expect("updated input present");
+        let questions =
+            updated.get("questions").and_then(serde_json::Value::as_array).expect("questions");
+        assert_eq!(
+            questions[0].get("question").and_then(serde_json::Value::as_str),
+            Some(dirty_pick),
+            "questions array must keep the original wire text"
+        );
+        assert_eq!(
+            questions[1].get("question").and_then(serde_json::Value::as_str),
+            Some(dirty_note),
+            "questions array must keep the original wire text"
+        );
+        let answers =
+            updated.get("answers").and_then(serde_json::Value::as_object).expect("answers");
+        assert_eq!(answers.len(), 2, "both answers present");
+        assert_eq!(answers.get(dirty_pick).and_then(serde_json::Value::as_str), Some("One"));
+        assert_eq!(answers.get(dirty_note).and_then(serde_json::Value::as_str), Some("Other"));
+        let annotations =
+            updated.get("annotations").and_then(serde_json::Value::as_object).expect("annotations");
+        assert_eq!(
+            annotations
+                .get(dirty_note)
+                .and_then(|a| a.get("notes"))
+                .and_then(serde_json::Value::as_str),
+            Some("keep both"),
+            "annotations keyed by the original wire text"
+        );
     }
 
     #[test]
