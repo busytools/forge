@@ -68,7 +68,9 @@ pub enum UsageFetchStatus {
 /// Why the `/account` picker holds an account out of the usable tier.
 /// Which reason can apply is keyed on the account's billing kind: only
 /// a window-billed account can saturate, so on a spend row an unusable
-/// account can only be probe-blocked.
+/// account can only be probe-blocked. A snapshot whose source is not
+/// the account backend's is ignored here, so a cache surviving a
+/// `forge.toml` provider edit cannot saturate the row it landed on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unusable {
     /// A plan window is at or over its cap and has not reset yet.
@@ -497,12 +499,20 @@ impl AccountStateMap {
     /// per-key shape behind [`Self::is_account_usable`]. `Bailed`
     /// outranks the probe classes: it is the loading task's terminal
     /// verdict, and a bailed account has no cached windows to saturate
-    /// with.
+    /// with. A snapshot whose source is not the account backend's is
+    /// treated as absent, the same refusal `budget()` applies - the
+    /// redb cache survives a provider edit and is re-seeded at boot,
+    /// and without this a stale windowed snapshot would tag a spend
+    /// row `limit hit`.
     pub fn unusable_reason(&self, key: &AccountKey) -> Option<Unusable> {
         if self.loading_state(key) == LoadingState::Bailed {
             return Some(Unusable::Bailed);
         }
-        unusable_reason(self.usage(key), self.usage_error(key))
+        let usage = self
+            .provider(key)
+            .and_then(forge_providers::backend)
+            .and_then(|backend| self.usage(key).filter(|s| s.source == backend.source()));
+        unusable_reason(usage, self.usage_error(key))
     }
 
     /// Snapshot the current `LoadingState` for `key`. Returns
@@ -967,6 +977,35 @@ mod tests {
         assert_eq!(map.unusable_reason(&key("probe-blocked")), Some(Unusable::ProbeBlocked));
         assert_eq!(map.unusable_reason(&key("bailed")), Some(Unusable::Bailed));
         assert_eq!(map.unusable_reason(&key("both")), Some(Unusable::Saturated));
+    }
+
+    /// The redb cache survives a `forge.toml` provider edit, so a
+    /// spend-billed account can boot holding a windowed snapshot under
+    /// another backend's source. That snapshot must not classify
+    /// Saturated: spend rows have no window to hit, and the tag would
+    /// assert a spent allowance the account does not have.
+    #[test]
+    fn a_source_mismatched_snapshot_cannot_saturate_a_spend_row() {
+        let mut router = make_account("Router");
+        router.provider = forge_primitives::account::Provider::Openrouter;
+        let mut map = AccountStateMap::new(&[router]);
+        // The snapshot helper stamps Oauth; the Openrouter backend's
+        // source is OpenRouterKey, so the cached windows are refused.
+        map.set_usage(&key("Router"), snapshot(Some(100.0), Some(100.0)));
+        assert_eq!(
+            map.unusable_reason(&key("Router")),
+            None,
+            "stale cache alone must not tag the spend row at all",
+        );
+
+        // With the probe also failing, the row wears the probe class -
+        // never the saturated one.
+        map.set_last_error(&key("Router"), UsageFetchStatus::RateLimited, None);
+        assert_eq!(
+            map.unusable_reason(&key("Router")),
+            Some(Unusable::ProbeBlocked),
+            "the stale snapshot falls through to the probe class",
+        );
     }
 
     #[test]

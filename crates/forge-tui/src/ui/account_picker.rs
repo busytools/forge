@@ -129,10 +129,10 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     };
     let sep = " \u{00B7} ";
     let tag_w = display_len(tag);
-    // The amber prefix is the first thing to give way on a narrow row:
-    // the EXPERIMENTAL header above the group already says why these
-    // rows sit apart, and the widest tag would otherwise push the row
-    // past the pane.
+    // The amber prefix gives way only after the budget block and the
+    // name column, and before the tag ever would: the EXPERIMENTAL
+    // header above the group already says why these rows sit apart,
+    // so a squeezed row loses nothing the header does not carry.
     let show_prefix = row.experimental
         && used + display_len("experimental") + display_len(sep) + tag_w + TAG_GAP <= inner_w;
     let tag_block =
