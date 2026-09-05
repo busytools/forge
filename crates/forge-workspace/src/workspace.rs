@@ -95,8 +95,8 @@ coming back on every restart. Default to doing the work yourself; \
 delegate only substantial or parallelizable work. A PR review loop \
 fans out as ephemeral in-session subagents, not workers - a reviewer \
 spawned as a worker lingers as a durable row and worktree after its \
-round ends. Workers build; subagents review, unless a reviewer is \
-deliberately kept on as a long-lived worker.";
+round ends. Workers build; subagents review, unless the user wants a \
+reviewer kept on as a long-lived worker.";
 
 /// Forge-supplied resume kick for a worker whose row carries no
 /// `resume_kick` of its own. On a resuming re-spawn forge delivers this
