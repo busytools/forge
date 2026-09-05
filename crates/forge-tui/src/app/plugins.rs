@@ -2834,6 +2834,13 @@ mod tests {
     #[test]
     fn cli_action_success_without_active_session_keeps_success_message() {
         let mut app = App::test_default();
+        app.plugins.update_availability = vec![PluginUpdateAvailability {
+            plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+            scope: "user".to_owned(),
+            marketplace: "claude-plugins-official".to_owned(),
+            installed_version: Some("1.0.0".to_owned()),
+            available_version: Some("2.0.0".to_owned()),
+        }];
 
         apply_cli_action_success(
             &mut app,
@@ -2848,6 +2855,10 @@ mod tests {
         assert_eq!(app.config.status_message.as_deref(), Some("Updated plugin"));
         assert!(app.config.last_error.is_none());
         assert!(app.plugins.pending_runtime_reload_success_message.is_none());
+        assert!(
+            app.plugins.update_availability.is_empty(),
+            "markers recompute from the action's snapshot, whose marketplace copy is empty"
+        );
     }
 
     fn seeded_installed(app: &mut App) {
@@ -3178,6 +3189,79 @@ mod tests {
         assert!(
             app.plugins.update_availability.is_empty(),
             "no post-run snapshot means no truthful markers"
+        );
+    }
+
+    /// A rollback's post-rollback snapshot recomputes the markers like
+    /// every sibling handler: the moved installed version shows until
+    /// the marketplace copy catches up, and an equal version drops the
+    /// marker.
+    #[test]
+    fn a_rollback_success_recomputes_markers_from_its_snapshot() {
+        let mut app = App::test_default();
+        app.plugins.update_availability = vec![PluginUpdateAvailability {
+            plugin_id: "pensive@claude-night-market".to_owned(),
+            scope: "user".to_owned(),
+            marketplace: "claude-night-market".to_owned(),
+            installed_version: Some("1.7.2".to_owned()),
+            available_version: Some("2.0.0".to_owned()),
+        }];
+        let entry = |version: &str| PluginsInventorySnapshot {
+            installed: vec![InstalledPluginEntry {
+                id: "pensive@claude-night-market".to_owned(),
+                version: Some(version.to_owned()),
+                scope: "user".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: None,
+                capability: PluginCapability::Skill,
+            }],
+            marketplace: vec![MarketplaceEntry {
+                plugin_id: "pensive@claude-night-market".to_owned(),
+                name: "Pensive".to_owned(),
+                description: None,
+                marketplace_name: Some("claude-night-market".to_owned()),
+                version: Some("2.0.0".to_owned()),
+                install_count: None,
+                source: None,
+            }],
+            marketplaces: Vec::new(),
+        };
+
+        apply_rollback_success(
+            &mut app,
+            "pensive@claude-night-market",
+            "user",
+            "Rolled back".to_owned(),
+            entry("1.7.1"),
+            PathBuf::new(),
+        );
+        assert_eq!(
+            app.plugins
+                .update_availability
+                .iter()
+                .map(|availability| (
+                    availability.plugin_id.as_str(),
+                    availability.installed_version.as_deref(),
+                    availability.available_version.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("pensive@claude-night-market", Some("1.7.1"), Some("2.0.0"))],
+            "the marker recomputes to the rolled-back version"
+        );
+
+        apply_rollback_success(
+            &mut app,
+            "pensive@claude-night-market",
+            "user",
+            "Rolled forward".to_owned(),
+            entry("2.0.0"),
+            PathBuf::new(),
+        );
+        assert!(
+            app.plugins.update_availability.is_empty(),
+            "an installed version equal to the marketplace copy wears no marker"
         );
     }
 
