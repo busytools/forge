@@ -195,19 +195,17 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             }
             true
         }
-        (KeyCode::Enter, KeyModifiers::NONE) => {
-            if app.plugins.search_focused {
-                // The \r flavour of a newline arrives as Enter, so it is
-                // swallowed here like Char('\r') below.
-                true
-            } else {
-                match app.plugins.active_tab {
-                    PluginsViewTab::Installed => open_installed_actions_overlay(app),
-                    PluginsViewTab::Plugins => open_plugin_install_overlay(app),
-                    PluginsViewTab::Marketplace => open_marketplace_overlay(app),
-                }
-            }
+        (KeyCode::Enter, _) if app.plugins.search_focused => {
+            // Enter reaches the filter in several flavours, from the
+            // \r newline to chords and paste-attached modifiers; none
+            // of them may fall through to the view closer.
+            true
         }
+        (KeyCode::Enter, KeyModifiers::NONE) => match app.plugins.active_tab {
+            PluginsViewTab::Installed => open_installed_actions_overlay(app),
+            PluginsViewTab::Plugins => open_plugin_install_overlay(app),
+            PluginsViewTab::Marketplace => open_marketplace_overlay(app),
+        },
         (KeyCode::Backspace, KeyModifiers::NONE) => {
             if search_enabled(app.plugins.active_tab)
                 && app.plugins.search_focused
@@ -2549,10 +2547,10 @@ mod tests {
         );
     }
 
-    /// The \r flavour of a newline arrives as KeyCode::Enter (Ctrl+M,
-    /// or any pasted \r with bracketed paste off), so a focused filter
-    /// consumes it rather than letting it fall through to the view
-    /// closer; Esc alone closes.
+    /// Enter reaches a focused filter in several flavours - the \r
+    /// newline (Ctrl+M, or any pasted \r with bracketed paste off),
+    /// chords, paste-attached modifiers - and none of them may fall
+    /// through to the view closer; Esc alone closes.
     #[test]
     fn focused_filter_consumes_enter_and_esc_alone_closes() {
         let mut app = app_with_focused_search(PluginsViewTab::Installed);
@@ -2573,6 +2571,23 @@ mod tests {
             "a",
             "Enter inserts nothing into the filter"
         );
+
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::SHIFT] {
+            crate::app::config::handle_plugins_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, modifiers),
+            );
+            assert_eq!(
+                app.active_view,
+                crate::app::ActiveView::Plugins,
+                "a modified Enter with the filter focused does not close the view"
+            );
+            assert_eq!(
+                app.plugins.search_query_for(PluginsViewTab::Installed),
+                "a",
+                "a modified Enter inserts nothing into the filter"
+            );
+        }
 
         crate::app::config::handle_plugins_key(
             &mut app,
