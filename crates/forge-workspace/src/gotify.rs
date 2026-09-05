@@ -91,7 +91,7 @@ async fn refresh_gotify_app_index(
         }
         Err(error) => {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::gotify",
                 %error,
                 "Gotify /application lookup failed; application-name filters will not match until the next reconnect",
             );
@@ -121,7 +121,7 @@ impl Workspace {
             && let Err(error) = crate::store::gotify::insert(db, &sub)
         {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::gotify",
                 %error,
                 "persisting a Gotify subscription failed",
             );
@@ -156,7 +156,7 @@ impl Workspace {
             && let Err(error) = crate::store::gotify::remove(db, id)
         {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::gotify",
                 %error,
                 "removing a persisted Gotify subscription failed",
             );
@@ -180,7 +180,7 @@ impl Workspace {
             self.list_projects().into_iter().find(|v| v.key == *project_key).map(|v| v.name)
         else {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::gotify",
                 project = %project_key.as_str(),
                 label = %label,
                 "could not resolve a project name at worker teardown; its Gotify subs may be stranded",
@@ -208,7 +208,7 @@ impl Workspace {
                     // Same zombie-durable-state class as a stranded
                     // dynamic-worker row: match its error! severity.
                     tracing::error!(
-                        target: "forge_workspace::workspace",
+                        target: "forge_workspace::gotify",
                         %error,
                         id = %id,
                         project = %project_name,
@@ -269,7 +269,7 @@ impl Workspace {
                 notification,
             }) {
                 tracing::warn!(
-                    target: "forge_workspace::workspace",
+                    target: "forge_workspace::gotify",
                     project = %sub.project,
                     error = ?err,
                     "gotify DeliverGotifyMessage dispatch failed",

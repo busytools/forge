@@ -52,7 +52,7 @@ impl Workspace {
             && let Err(error) = crate::store::cron::replace_all(db, &crons)
         {
             tracing::error!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::crons",
                 %error,
                 "persisting crons to the store failed; a scheduled cron may be lost on restart",
             );
@@ -106,7 +106,7 @@ impl Workspace {
             self.list_projects().into_iter().find(|v| v.key == *project_key).map(|v| v.name)
         else {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::crons",
                 project = %project_key.as_str(),
                 label = %label,
                 "could not resolve a project name at worker teardown; its crons may be stranded",
@@ -197,7 +197,7 @@ impl Workspace {
                             ""
                         };
                         tracing::warn!(
-                            target: "forge_workspace::workspace",
+                            target: "forge_workspace::crons",
                             cron_id = %removed.id,
                             project = %removed.project_name,
                             expr = %expr,
@@ -243,7 +243,7 @@ impl Workspace {
                 // remove the cron rather than advance a dead entry forever.
                 CronFireOutcome::TargetGone => {
                     tracing::warn!(
-                        target: "forge_workspace::workspace",
+                        target: "forge_workspace::crons",
                         project = %cron.project_name,
                         cron_id = %id,
                         "cron owner gone; removing the cron",
@@ -255,7 +255,7 @@ impl Workspace {
                 // a fire that never handed off.
                 CronFireOutcome::DispatchFailed => {
                     tracing::warn!(
-                        target: "forge_workspace::workspace",
+                        target: "forge_workspace::crons",
                         project = %cron.project_name,
                         cron_id = %id,
                         "cron fire dispatch failed; leaving it due for the next boot",

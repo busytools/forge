@@ -43,7 +43,7 @@ impl Workspace {
         };
         crate::store::review::load(db, project, branch).map_err(|error| {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::review",
                 %error,
                 project = %project,
                 branch = %branch,
@@ -61,7 +61,7 @@ impl Workspace {
             && let Err(error) = crate::store::review::save(db, project, branch, threads)
         {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::review",
                 %error,
                 project = %project,
                 branch = %branch,
@@ -83,7 +83,7 @@ impl Workspace {
             Ok(()) => true,
             Err(error) => {
                 tracing::warn!(
-                    target: "forge_workspace::workspace",
+                    target: "forge_workspace::review",
                     %error,
                     project = %project,
                     branch = %branch,
@@ -106,7 +106,7 @@ impl Workspace {
             Ok(removed) => removed,
             Err(error) => {
                 tracing::warn!(
-                    target: "forge_workspace::workspace",
+                    target: "forge_workspace::review",
                     %error,
                     project = %project,
                     branch = %branch,
@@ -130,7 +130,7 @@ impl Workspace {
             && let Err(error) = crate::store::review::set_status(db, project, branch, id, status)
         {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::review",
                 %error,
                 project = %project,
                 branch = %branch,
@@ -150,7 +150,7 @@ impl Workspace {
             && let Err(error) = crate::store::review::delete_branch_state(db, project, branch)
         {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::review",
                 %error,
                 project = %project,
                 branch = %branch,
@@ -212,7 +212,7 @@ impl Workspace {
                     Ok(stored) => stored,
                     Err(error) => {
                         tracing::warn!(
-                            target: "forge_workspace::workspace",
+                            target: "forge_workspace::review",
                             %error,
                             project = %view.name,
                             "review-branch sweep skipped: listing stored branches failed",
@@ -241,7 +241,7 @@ impl Workspace {
             }
             if dead.len() * 2 > stored.len() && repo.ref_count < Self::MIN_POPULATED_REFS {
                 tracing::warn!(
-                    target: "forge_workspace::workspace",
+                    target: "forge_workspace::review",
                     project = %view.name,
                     dead = dead.len(),
                     stored = stored.len(),
@@ -258,7 +258,7 @@ impl Workspace {
                 match crate::store::review::delete_branch_state(db, &view.name, branch) {
                     Ok(()) => {
                         tracing::info!(
-                            target: "forge_workspace::workspace",
+                            target: "forge_workspace::review",
                             project = %view.name,
                             branch = %branch,
                             "dropped review state for a branch that no longer exists",
@@ -266,7 +266,7 @@ impl Workspace {
                         cleared += 1;
                     }
                     Err(error) => tracing::warn!(
-                        target: "forge_workspace::workspace",
+                        target: "forge_workspace::review",
                         %error,
                         project = %view.name,
                         branch = %branch,
@@ -287,7 +287,7 @@ impl Workspace {
             let cleared = workspace.sweep_dead_review_branches();
             if cleared > 0 {
                 tracing::info!(
-                    target: "forge_workspace::workspace",
+                    target: "forge_workspace::review",
                     cleared,
                     "review-branch sweep cleared orphaned branches",
                 );
@@ -310,7 +310,7 @@ impl Workspace {
         };
         crate::store::review::load_reviews(db, project, branch).map_err(|error| {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::review",
                 %error,
                 project = %project,
                 branch = %branch,
@@ -364,7 +364,7 @@ impl Workspace {
         };
         crate::store::review::review_branches(db, project).map_err(|error| {
             tracing::warn!(
-                target: "forge_workspace::workspace",
+                target: "forge_workspace::review",
                 %error,
                 project = %project,
                 "listing review branches failed",
@@ -399,7 +399,7 @@ impl Workspace {
                 Ok(review) => review,
                 Err(error) => {
                     tracing::warn!(
-                        target: "forge_workspace::workspace",
+                        target: "forge_workspace::review",
                         %error,
                         project = %project,
                         branch = %branch,
@@ -474,7 +474,7 @@ impl Workspace {
             )
             .map_err(|error| {
                 tracing::warn!(
-                    target: "forge_workspace::workspace",
+                    target: "forge_workspace::review",
                     %error,
                     project = %project,
                     branch = %branch,
@@ -515,7 +515,7 @@ impl Workspace {
                 }
                 Err(error) => {
                     tracing::warn!(
-                        target: "forge_workspace::workspace",
+                        target: "forge_workspace::review",
                         %error,
                         project = %project,
                         branch = %branch,
@@ -549,7 +549,7 @@ impl Workspace {
                 Ok(None) => None,
                 Err(error) => {
                     tracing::warn!(
-                        target: "forge_workspace::workspace",
+                        target: "forge_workspace::review",
                         %error,
                         "resolving a review comment's owning review failed",
                     );
@@ -616,7 +616,7 @@ impl Workspace {
                     // Surface the decode / IO failure rather than swallowing
                     // it into a silently-skipped notice.
                     tracing::warn!(
-                        target: "forge_workspace::workspace",
+                        target: "forge_workspace::review",
                         %error,
                         project = %project,
                         branch = %branch,
@@ -657,7 +657,7 @@ impl Workspace {
                     })
                 } else {
                     tracing::debug!(
-                        target: "forge_workspace::workspace",
+                        target: "forge_workspace::review",
                         project = %scope.0,
                         branch = %scope.1,
                         caller = %caller.as_str(),
