@@ -149,7 +149,9 @@ pub async fn run_account_loading(
                 return;
             }
             // A 200 whose body maps to nothing is transient response-
-            // shape drift; back off + retry.
+            // shape drift; back off + retry. Deliberately handled
+            // before the repair verdict: unlike Retry, this arm
+            // records no last_error and no iteration-cap record.
             Err(ProbeError::Unmappable(message)) => {
                 tracing::warn!(
                     target: "forge_workspace::account_loader",
