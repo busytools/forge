@@ -1451,10 +1451,7 @@ impl Workspace {
                 config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
                 auth: if accounts.provider_or_anthropic(k).uses_base_url() {
                     crate::views::AccountAuth::BaseUrl
-                } else if accounts
-                    .env(k)
-                    .is_some_and(forge_agent::cloud::oauth_usage::is_token_mode)
-                {
+                } else if accounts.env(k).is_some_and(forge_providers::is_token_mode) {
                     crate::views::AccountAuth::Token
                 } else {
                     crate::views::AccountAuth::Keychain
@@ -2062,46 +2059,29 @@ impl Workspace {
         // (~hundreds of ms), within the 60 s poll interval.
         let mut any_success = false;
         for (key, dir, provider, env) in entries {
-            // One decision (probe_plan) drives both the probe source and
-            // the response-mapping strictness. Every plan routes through
-            // the provider backend now - credential resolution, the probe
-            // and the mapping are its business; the keychain arm keeps
-            // the 401 refresh gate (an env-bearer provider's 401 never
-            // fires one).
-            let plan = forge_agent::cloud::oauth_usage::probe_plan(provider, &env);
-            let fetch_result = match &plan {
-                forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
-                    crate::provider_probe::flatten_probe_error(
-                        crate::provider_probe::probe_with_keychain_recovery(provider, &dir, &env)
-                            .await,
-                    )
-                }
-                forge_agent::cloud::oauth_usage::ProbePlan::Token { .. } => {
-                    crate::provider_probe::flatten_probe_error(
-                        crate::provider_probe::probe_via_backend(provider, &dir, &env).await,
-                    )
-                }
-            };
+            // The backend owns the probe; the keychain recovery wrapper
+            // keeps its 401 refresh gate, and an env-bearer provider's
+            // 401 never fires one.
+            let fetch_result =
+                crate::provider_probe::probe_with_keychain_recovery(provider, &dir, &env).await;
             match fetch_result {
-                Ok(mapped) => match mapped {
-                    Ok(snapshot) => {
-                        self.accounts.lock().set_usage(&key, snapshot);
-                        any_success = true;
-                    }
-                    Err(err) => {
-                        self.accounts.lock().set_last_error(
-                            &key,
-                            crate::account::UsageFetchStatus::Other,
-                            None,
-                        );
-                        tracing::debug!(
-                            target: "forge_workspace::account",
-                            account = %key.0,
-                            error = ?err,
-                            "usage_poll snapshot mapping failed",
-                        );
-                    }
-                },
+                Ok(snapshot) => {
+                    self.accounts.lock().set_usage(&key, snapshot);
+                    any_success = true;
+                }
+                Err(forge_providers::ProbeError::Unmappable(message)) => {
+                    self.accounts.lock().set_last_error(
+                        &key,
+                        crate::account::UsageFetchStatus::Other,
+                        None,
+                    );
+                    tracing::debug!(
+                        target: "forge_workspace::account",
+                        account = %key.0,
+                        error = %message,
+                        "usage_poll snapshot mapping failed",
+                    );
+                }
                 Err(err) => {
                     let status = classify_oauth_usage_error(&err);
                     // Pull the server-provided Retry-After out of the
@@ -2109,9 +2089,11 @@ impl Workspace {
                     // Anthropic's actual reset time rather than our
                     // local guess.
                     let retry_after = match &err {
-                        forge_primitives::usage::oauth::OauthUsageError::RateLimited {
-                            retry_after,
-                        } => *retry_after,
+                        forge_providers::ProbeError::Fetch(
+                            forge_primitives::usage::oauth::OauthUsageError::RateLimited {
+                                retry_after,
+                            },
+                        ) => *retry_after,
                         _ => None,
                     };
                     self.accounts.lock().set_last_error(&key, status, retry_after);
@@ -2129,7 +2111,7 @@ impl Workspace {
                         }
                         account::UsageFetchStatus::Expired
                         | account::UsageFetchStatus::Unauthorized => {
-                            auth_repair_hint(&plan, provider)
+                            auth_repair_hint(provider, &env)
                         }
                         account::UsageFetchStatus::NetworkFailed => {
                             "usage_poll fetch failed with network error; will retry on next tick"
@@ -4938,24 +4920,19 @@ impl Workspace {
 /// sibling last logged in - so both env classes get their own repair,
 /// never `/login`.
 ///
-/// The base-url guard must precede the Keychain arm: those providers
-/// return a bare Keychain route selector since their backends took
-/// the probe over, so falling through would log the `/login` advice
-/// against a credential `/login` never writes.
+/// The base-url test must stay first: a global `[env]` setup token
+/// reaches base-url accounts too, and the re-mint advice is for a
+/// credential that account never reads.
 fn auth_repair_hint(
-    plan: &forge_agent::cloud::oauth_usage::ProbePlan,
     provider: forge_primitives::account::Provider,
+    env: &HashMap<String, String>,
 ) -> &'static str {
-    match plan {
-        forge_agent::cloud::oauth_usage::ProbePlan::Token { .. } => {
-            "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
-        }
-        _ if provider.uses_base_url() => {
-            "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
-        }
-        forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
-            "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
-        }
+    if provider.uses_base_url() {
+        "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
+    } else if forge_providers::is_token_mode(env) {
+        "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
+    } else {
+        "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
     }
 }
 
@@ -4974,33 +4951,38 @@ fn account_budget(
     backend.budget(account, snapshot)
 }
 
-/// Map an [`OauthUsageError`] to the renderer-facing
+/// Map a failed probe to the renderer-facing
 /// [`account::UsageFetchStatus`] bucket. Separates HTTP 429 (the
 /// common multi-instance throttle case) from the auth-related
 /// failures (`Expired` / `NoCredentials` / `Unauthorized`) and
 /// transport failures (`Network`), so the TUI's bottom-panel hint
 /// can tell the user something specific rather than a generic
-/// "fetch error".
+/// "fetch error". `Unmappable` never reaches the classifiers - both
+/// callers handle a 200 that maps to nothing before classifying.
 pub(crate) fn classify_oauth_usage_error(
-    err: &forge_primitives::usage::oauth::OauthUsageError,
+    err: &forge_providers::ProbeError,
 ) -> account::UsageFetchStatus {
     use account::UsageFetchStatus;
     use forge_primitives::usage::oauth::OauthUsageError;
     match err {
-        OauthUsageError::RateLimited { .. } | OauthUsageError::HttpStatus(429, _) => {
-            UsageFetchStatus::RateLimited
-        }
-        OauthUsageError::Unauthorized(_) => UsageFetchStatus::Unauthorized,
-        OauthUsageError::NoCredentials | OauthUsageError::Expired => UsageFetchStatus::Expired,
-        OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
-        OauthUsageError::UaProbe(_)
-        | OauthUsageError::HttpStatus(_, _)
-        // The token-mode arms convert a scope refusal before it gets
-        // here; reaching this arm means it arrived on a non-token
-        // path (keychain or base-url), which is not an auth failure
-        // either.
-        | OauthUsageError::ScopeInsufficient
-        | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
+        forge_providers::ProbeError::NoCredentials => UsageFetchStatus::Expired,
+        forge_providers::ProbeError::Unmappable(_) => UsageFetchStatus::Other,
+        forge_providers::ProbeError::Fetch(err) => match err {
+            OauthUsageError::RateLimited { .. } | OauthUsageError::HttpStatus(429, _) => {
+                UsageFetchStatus::RateLimited
+            }
+            OauthUsageError::Unauthorized(_) => UsageFetchStatus::Unauthorized,
+            OauthUsageError::NoCredentials | OauthUsageError::Expired => UsageFetchStatus::Expired,
+            OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
+            OauthUsageError::UaProbe(_)
+            | OauthUsageError::HttpStatus(_, _)
+            // The token-mode arms convert a scope refusal before it gets
+            // here; reaching this arm means it arrived on a non-token
+            // path (keychain or base-url), which is not an auth failure
+            // either.
+            | OauthUsageError::ScopeInsufficient
+            | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
+        },
     }
 }
 
@@ -6008,25 +5990,21 @@ mod tests {
     }
 
     /// Every credential shape logs the repair line that can actually
-    /// repair it. The arm order is load-bearing: the base-url
-    /// providers carry a bare Keychain plan, so a Keychain-first order
-    /// would send a zai/openrouter/codex 401 to the /login advice
-    /// against a credential /login never writes.
+    /// repair it. The base-url arm is load-bearing: a global `[env]`
+    /// setup token reaches base-url accounts too, and a token-first
+    /// order would send their 401 to the re-mint advice against a
+    /// credential those providers never read.
     #[test]
     fn auth_repair_hint_keys_on_the_credential_shape() {
-        use forge_agent::cloud::oauth_usage::{ProbePlan, probe_plan};
         use forge_primitives::account::Provider;
 
-        let keychain = ProbePlan::Keychain;
         let mut base_env = std::collections::HashMap::new();
         base_env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
         base_env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-key".to_owned());
 
         for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
-            let plan = probe_plan(provider, &base_env);
-            assert_eq!(plan, ProbePlan::Keychain, "{provider:?} carries a bare Keychain plan");
             assert_eq!(
-                auth_repair_hint(&plan, provider),
+                auth_repair_hint(provider, &base_env),
                 "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in \
                  [accounts.env] and restart forge",
                 "{provider:?} is repaired by an env token edit, never /login",
@@ -6034,16 +6012,27 @@ mod tests {
         }
 
         assert_eq!(
-            auth_repair_hint(&keychain, Provider::Anthropic),
+            auth_repair_hint(Provider::Anthropic, &std::collections::HashMap::new()),
             "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via \
              /login",
         );
 
-        let token = ProbePlan::Token { bearer: "setup-token".to_owned() };
+        let mut token = std::collections::HashMap::new();
+        token.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
         assert_eq!(
-            auth_repair_hint(&token, Provider::Anthropic),
+            auth_repair_hint(Provider::Anthropic, &token),
             "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] \
              (claude setup-token)",
+        );
+
+        let mut codex_with_global_token = base_env.clone();
+        codex_with_global_token
+            .insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
+        assert_eq!(
+            auth_repair_hint(Provider::Codex, &codex_with_global_token),
+            "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in \
+             [accounts.env] and restart forge",
+            "the base-url arm must precede the token check",
         );
     }
 
@@ -8470,61 +8459,74 @@ provider = "anthropic"
     fn classify_oauth_usage_error_buckets_known_variants() {
         use crate::account::UsageFetchStatus;
         use forge_primitives::usage::oauth::OauthUsageError;
+        use forge_providers::ProbeError;
 
+        let fetch = |err| ProbeError::Fetch(err);
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::HttpStatus(429, String::new())),
+            classify_oauth_usage_error(&fetch(OauthUsageError::HttpStatus(429, String::new()))),
             UsageFetchStatus::RateLimited,
         );
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::RateLimited {
+            classify_oauth_usage_error(&fetch(OauthUsageError::RateLimited {
                 retry_after: Some(std::time::Duration::from_secs(60)),
-            }),
+            })),
             UsageFetchStatus::RateLimited,
             "new dedicated 429 variant also maps to RateLimited",
         );
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::RateLimited { retry_after: None }),
+            classify_oauth_usage_error(&fetch(OauthUsageError::RateLimited { retry_after: None })),
             UsageFetchStatus::RateLimited,
         );
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::Unauthorized(401)),
+            classify_oauth_usage_error(&fetch(OauthUsageError::Unauthorized(401))),
             UsageFetchStatus::Unauthorized,
         );
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::Expired),
+            classify_oauth_usage_error(&fetch(OauthUsageError::Expired)),
             UsageFetchStatus::Expired,
         );
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::NoCredentials),
+            classify_oauth_usage_error(&fetch(OauthUsageError::NoCredentials)),
             UsageFetchStatus::Expired,
         );
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::Network("dns".to_owned())),
+            classify_oauth_usage_error(&fetch(OauthUsageError::Network("dns".to_owned()))),
             UsageFetchStatus::NetworkFailed,
         );
         // Non-429 HTTP errors and decode failures fall through to the
         // generic `Other` bucket - renderers show "fetch failed" so
         // the user can tell something's wrong without naming a cause.
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::HttpStatus(500, String::new())),
+            classify_oauth_usage_error(&fetch(OauthUsageError::HttpStatus(500, String::new()))),
             UsageFetchStatus::Other,
         );
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::Decode("bad json".to_owned())),
+            classify_oauth_usage_error(&fetch(OauthUsageError::Decode("bad json".to_owned()))),
             UsageFetchStatus::Other,
         );
         // A failed `claude --version` shell-out is a local exec problem,
         // not a reachability verdict, so it must not land in
         // NetworkFailed.
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::UaProbe("no binary".to_owned())),
+            classify_oauth_usage_error(&fetch(OauthUsageError::UaProbe("no binary".to_owned()))),
             UsageFetchStatus::Other,
         );
         // A scope refusal on the keychain path is anomalous (keychain
         // tokens carry user:profile) and must not render as an auth
         // failure; the token-mode paths convert it before classification.
         assert_eq!(
-            classify_oauth_usage_error(&OauthUsageError::ScopeInsufficient),
+            classify_oauth_usage_error(&fetch(OauthUsageError::ScopeInsufficient)),
+            UsageFetchStatus::Other,
+        );
+        // The backend's own credential miss rides the same Expired
+        // bucket as the wire class, and the unmappable 200 - which the
+        // callers handle before classifying - keeps the match total.
+        assert_eq!(
+            classify_oauth_usage_error(&ProbeError::NoCredentials),
+            UsageFetchStatus::Expired,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&ProbeError::Unmappable("no window".to_owned())),
             UsageFetchStatus::Other,
         );
     }

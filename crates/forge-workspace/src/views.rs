@@ -114,12 +114,9 @@ pub struct AccountRow {
 }
 
 /// How an account proves who it is, which is the only thing that
-/// changes what preflight tells you to do about a failed one.
-///
-/// Deliberately not [`forge_agent::cloud::oauth_usage::ProbePlan`],
-/// several of whose variants carry a bearer: this crosses into a view
-/// the TUI renders, so it carries the distinction and none of the
-/// secret.
+/// changes what preflight tells you to do about a failed one. Derived
+/// from the provider plus the account's merged env; it carries the
+/// distinction and none of the secret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountAuth {
     /// Credentials in the macOS keychain. Repaired with `claude /login`,

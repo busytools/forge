@@ -2,10 +2,11 @@
 //! token.
 //!
 //! Each [`ProviderBackend`] owns credential resolution, the probe
-//! request and its payload mapping, and the billing shape for one
-//! provider. The [`ProviderHost`] port, implemented by forge-agent,
-//! is the only filesystem, keychain or process plumbing a backend may
-//! reach, so this crate stays HTTP + mapping and is testable offline.
+//! request and its payload mapping, the billing shape, and what repair
+//! a failed probe allows for one provider. The [`ProviderHost`] port,
+//! implemented by forge-agent, is the only filesystem, keychain or
+//! process plumbing a backend may reach, so this crate stays HTTP +
+//! mapping and is testable offline.
 
 mod anthropic;
 mod codex;
@@ -28,7 +29,7 @@ pub use forge_primitives::usage::oauth::OauthUsageError;
 
 pub use crate::model_catalog::ModelCatalog;
 
-pub use crate::anthropic::{Anthropic, token_bearer};
+pub use crate::anthropic::{Anthropic, is_token_mode};
 pub use crate::codex::Codex;
 pub use crate::openrouter::Openrouter;
 pub use crate::zai::Zai;
@@ -49,9 +50,9 @@ pub enum BillingModel {
     Spend,
 }
 
-/// Why a probe did not produce a snapshot. `Fetch` keeps the wire
-/// error classes shared with the providers not yet migrated behind
-/// the trait; `Unmappable` is a 200 whose body maps to nothing.
+/// Why a probe did not produce a snapshot: a credential miss, a wire
+/// error class from the round-trip, or a 200 whose body maps to
+/// nothing.
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
     #[error("no credentials for the keychain plan")]
@@ -60,6 +61,23 @@ pub enum ProbeError {
     Fetch(#[from] OauthUsageError),
     #[error("probe returned 200 but the body maps to nothing: {0}")]
     Unmappable(String),
+}
+
+/// What a backend allows after one of its probes failed, decided by
+/// [`ProviderBackend::repair`]. The boot loader executes the verdict
+/// against its state machine and the poller's keychain-refresh gate
+/// consults it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RepairAction {
+    /// Rotate the keychain credential (the CLI-spawn refresh), then
+    /// re-probe.
+    Refresh,
+    /// Auth failure a keychain rotation cannot repair: the account
+    /// bails and the poller re-probes it later.
+    Terminal,
+    /// Transient failure: record it, back off, and retry. Carries the
+    /// server `Retry-After` for a 429.
+    Retry { retry_after: Option<Duration> },
 }
 
 /// The host port, implemented by forge-agent. The only filesystem,
@@ -98,6 +116,36 @@ pub trait ProviderBackend: Send + Sync {
 
     /// Billing shape.
     fn billing(&self) -> BillingModel;
+
+    /// What this backend allows after a failed probe. The shared
+    /// default is the boot loader's table: the auth classes refresh on
+    /// a keychain route and are terminal on an env-bearer one, where a
+    /// refresh would burn billed `claude -p hi` spawns against a
+    /// credential the probe never read; everything else retries.
+    /// Backends whose provider repairs differently override this.
+    fn repair(&self, account: &AccountEnv<'_>, err: &ProbeError) -> RepairAction {
+        let env_bearer = self.token().uses_base_url() || is_token_mode(account.env);
+        match err {
+            ProbeError::NoCredentials
+            | ProbeError::Fetch(
+                OauthUsageError::NoCredentials
+                | OauthUsageError::Expired
+                | OauthUsageError::Unauthorized(_),
+            ) => {
+                if env_bearer {
+                    RepairAction::Terminal
+                } else {
+                    RepairAction::Refresh
+                }
+            }
+            ProbeError::Fetch(OauthUsageError::RateLimited { retry_after }) => {
+                RepairAction::Retry { retry_after: *retry_after }
+            }
+            ProbeError::Fetch(_) | ProbeError::Unmappable(_) => {
+                RepairAction::Retry { retry_after: None }
+            }
+        }
+    }
 
     /// The source kind this backend's probe stamps on the snapshots
     /// it returns; `budget` refuses a cached snapshot of any other
@@ -256,6 +304,108 @@ mod tests {
         assert_eq!(backend.token(), Provider::Zai);
         assert_eq!(backend.billing(), BillingModel::Windows);
         assert_eq!(backend.source(), UsageSourceKind::ZaiMonitor);
+    }
+
+    fn repair_account(env: &HashMap<String, String>) -> AccountEnv<'_> {
+        AccountEnv { config_dir: Path::new("/tmp/unused"), env }
+    }
+
+    /// The repair pin: the three auth classes refresh on a keychain
+    /// route and are terminal on every env-bearer one. Inverting this
+    /// fires billed `claude -p hi` spawns against a credential the
+    /// probe never read.
+    #[test]
+    fn repair_refreshes_keychain_auth_failures_and_terminals_env_bearer_ones() {
+        let empty = HashMap::new();
+        let keychain = repair_account(&empty);
+        let auth_classes = [
+            ProbeError::NoCredentials,
+            ProbeError::Fetch(OauthUsageError::Expired),
+            ProbeError::Fetch(OauthUsageError::Unauthorized(401)),
+        ];
+        for err in &auth_classes {
+            let anthropic = backend(Provider::Anthropic).expect("registered");
+            assert_eq!(
+                anthropic.repair(&keychain, err),
+                RepairAction::Refresh,
+                "{err:?} on a keychain route is refresh-eligible",
+            );
+            for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
+                let resolved = backend(provider).expect("registered");
+                assert_eq!(
+                    resolved.repair(&keychain, err),
+                    RepairAction::Terminal,
+                    "{provider:?} is env-bearer; {err:?} must not fire a refresh",
+                );
+            }
+        }
+
+        let mut token = HashMap::new();
+        token.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
+        let token_mode = repair_account(&token);
+        for err in &auth_classes {
+            let anthropic = backend(Provider::Anthropic).expect("registered");
+            assert_eq!(
+                anthropic.repair(&token_mode, err),
+                RepairAction::Terminal,
+                "token-mode anthropic cannot be repaired by rotating the keychain; {err:?}",
+            );
+        }
+    }
+
+    /// A base url in env cannot flip an Anthropic account onto the
+    /// env-bearer route: it answers where the credential lives, and
+    /// Anthropic's credential is still the keychain.
+    #[test]
+    fn repair_keeps_anthropic_on_the_keychain_route_despite_a_base_url() {
+        let mut base = HashMap::new();
+        base.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
+        base.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
+        let account = repair_account(&base);
+        let anthropic = backend(Provider::Anthropic).expect("registered");
+        assert_eq!(
+            anthropic.repair(&account, &ProbeError::Fetch(OauthUsageError::Unauthorized(401))),
+            RepairAction::Refresh,
+        );
+    }
+
+    /// Every non-auth class retries: the network class on either route,
+    /// a 429 carrying the server Retry-After, the scope refusal (the
+    /// token arms convert it before classification) and a 200 that
+    /// maps to nothing - mapping drift is not an auth failure.
+    #[test]
+    fn repair_retries_every_transient_class() {
+        let empty = HashMap::new();
+        let keychain = repair_account(&empty);
+        for provider in [Provider::Anthropic, Provider::Codex] {
+            let resolved = backend(provider).expect("registered");
+            assert_eq!(
+                resolved.repair(
+                    &keychain,
+                    &ProbeError::Fetch(OauthUsageError::Network("dns".to_owned()))
+                ),
+                RepairAction::Retry { retry_after: None },
+                "{provider:?}",
+            );
+        }
+
+        let anthropic = backend(Provider::Anthropic).expect("registered");
+        let retry_after = Some(Duration::from_secs(60));
+        assert_eq!(
+            anthropic.repair(
+                &keychain,
+                &ProbeError::Fetch(OauthUsageError::RateLimited { retry_after })
+            ),
+            RepairAction::Retry { retry_after },
+        );
+        assert_eq!(
+            anthropic.repair(&keychain, &ProbeError::Fetch(OauthUsageError::ScopeInsufficient)),
+            RepairAction::Retry { retry_after: None },
+        );
+        assert_eq!(
+            anthropic.repair(&keychain, &ProbeError::Unmappable("no window".to_owned())),
+            RepairAction::Retry { retry_after: None },
+        );
     }
 
     fn budget_snapshot(

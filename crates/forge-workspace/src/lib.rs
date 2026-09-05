@@ -53,7 +53,8 @@
 //! workspace exposes forge-agent's submodules verbatim via
 //! pass-through `pub use` (see `cloud`, `commands`, `env::git_diff`,
 //! `session_lifecycle`, `tooling`, `translate`, `userdata` below).
-//! Types like `forge_workspace::cloud::oauth::Token` are *defined* in
+//! Types like `forge_workspace::cloud::oauth_credentials::OauthCredentials`
+//! are *defined* in
 //! forge-agent - the workspace just exposes them under the workspace
 //! name so TUI can keep its dep graph clean.
 

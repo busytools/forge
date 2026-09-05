@@ -32,6 +32,15 @@ pub fn token_bearer<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>)
         .filter(|token| !token.is_empty())
 }
 
+/// True when `env` carries a non-empty setup token, making an
+/// Anthropic account token-mode. A token-mode account has no keychain
+/// entry of its own - the config dir is shared - so the mapper choice
+/// and the repair policy branch on this rather than on the provider
+/// alone.
+pub fn is_token_mode<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> bool {
+    token_bearer(env).is_some()
+}
+
 /// The Anthropic `[[accounts]] provider` token.
 pub struct Anthropic;
 
