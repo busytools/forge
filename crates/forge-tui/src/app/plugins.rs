@@ -3272,6 +3272,26 @@ mod tests {
             app.plugins.update_availability.is_empty(),
             "an installed version equal to the marketplace copy wears no marker"
         );
+
+        // The failure twin: a failed rollback whose failure snapshot
+        // moved the install recomputes the markers the same way.
+        app.plugins.update_availability = vec![PluginUpdateAvailability {
+            plugin_id: "pensive@claude-night-market".to_owned(),
+            scope: "user".to_owned(),
+            marketplace: "claude-night-market".to_owned(),
+            installed_version: Some("2.0.0".to_owned()),
+            available_version: Some("2.1.0".to_owned()),
+        }];
+        apply_rollback_failure(
+            &mut app,
+            "pensive@claude-night-market",
+            "boom",
+            Some(entry("2.0.0")),
+        );
+        assert!(
+            app.plugins.update_availability.is_empty(),
+            "the failure snapshot's install matches the marketplace copy: no marker"
+        );
     }
 
     /// A finished run settles the pane: the report stands, the loading
