@@ -3302,7 +3302,7 @@ mod tests {
 
         assert!(!app.plugins.loading);
         assert_eq!(
-            app.plugins.update_run.map(|run| run.summary()),
+            app.plugins.update_run.as_ref().map(PluginUpdateRun::summary),
             Some("1 updated, 0 failed, 0 current".to_owned())
         );
         assert!(app.plugins.update_records.is_empty());
@@ -3313,6 +3313,33 @@ mod tests {
         assert_eq!(
             app.config.status_message.as_deref(),
             Some("Plugin auto-update finished: 1 updated, 0 failed, 0 current")
+        );
+
+        // The plain manual arm - nothing applied, not a check - syncs
+        // the footer pair itself rather than riding the runtime reload.
+        let current = PluginUpdateRun {
+            trigger: PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: vec![PluginUpdateRunRow {
+                plugin_id: "supabase@claude-plugins-official".to_owned(),
+                scope: "user".to_owned(),
+                cwd_raw: app.cwd_raw(),
+                marketplace: "claude-plugins-official".to_owned(),
+                status: PluginRunRowStatus::AlreadyCurrent,
+                installed_version: Some("1.1.0".to_owned()),
+                available_version: None,
+                detail: None,
+            }],
+        };
+        app.config.last_error = Some("stale".to_owned());
+        apply_update_run_finished(&mut app, &current, None, None);
+        assert!(app.config.last_error.is_none(), "a finished manual run clears a mirrored error");
+        assert!(
+            app.config
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("Update run finished: ")),
+            "the manual summary lands on the footer pair"
         );
     }
 
