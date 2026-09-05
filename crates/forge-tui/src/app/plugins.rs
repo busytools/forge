@@ -87,8 +87,8 @@ pub struct PluginsState {
     /// Latest recorded update per installed entry, read from the
     /// store; feeds the rollback affordance.
     pub update_records: Vec<PluginUpdateRecord>,
-    /// Out-of-date entries from the last finished check; survives the
-    /// report being cleared, dropped when the inventory changes.
+    /// Out-of-date entries in the current inventory; recomputed on
+    /// every refresh so the row markers stay truthful.
     pub update_availability: Vec<PluginUpdateAvailability>,
     /// Test seam: the per-run CLI surface a run uses. `None` means
     /// the real `claude` subprocess calls.
@@ -347,7 +347,8 @@ pub(crate) fn apply_inventory_refresh_success(
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(claude_path);
     refresh_update_records(app);
-    app.plugins.update_availability.clear();
+    app.plugins.update_availability =
+        update_availability(&app.plugins.installed, &app.plugins.marketplace);
     clamp_selection(app);
     if should_reload_runtime {
         start_runtime_reload(app, "Plugin inventory refreshed".to_owned());
@@ -369,7 +370,11 @@ pub(crate) fn apply_inventory_refresh_failure(app: &mut App, message: String) {
     {
         app.plugins.update_run = None;
     }
-    app.plugins.last_error = Some(message);
+    app.plugins.last_error = Some(message.clone());
+    // The pane's footer renders the config feedback pair, so the
+    // failure mirrors there like every sibling failure handler.
+    app.config.status_message = None;
+    app.config.last_error = Some(message);
 }
 
 pub(crate) fn reset_for_session_change(app: &mut App) {
@@ -945,7 +950,8 @@ pub(crate) fn apply_cli_action_success(app: &mut App, result: PluginsCliActionSu
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(result.claude_path);
     refresh_update_records(app);
-    app.plugins.update_availability.clear();
+    app.plugins.update_availability =
+        update_availability(&app.plugins.installed, &app.plugins.marketplace);
     clamp_selection(app);
     start_runtime_reload(app, result.message);
 }
@@ -1632,10 +1638,15 @@ pub(crate) fn apply_update_run_progress(app: &mut App, run: PluginUpdateRun) {
     app.needs_redraw = true;
 }
 
-/// A finished check's rows ARE the out-of-date set; any other finished
-/// run (an update moved versions, or tried to) expires what a previous
-/// check saw.
-fn apply_check_markers(app: &mut App, run: &PluginUpdateRun) {
+/// A finished check's rows ARE the out-of-date set. For any other
+/// finished run the post-run snapshot recomputes them; when that
+/// refresh failed the versions are unknown, so the markers drop
+/// rather than lie.
+fn apply_check_markers(
+    app: &mut App,
+    run: &PluginUpdateRun,
+    snapshot: Option<&PluginsInventorySnapshot>,
+) {
     if is_check_run(run) {
         app.plugins.update_availability = run
             .rows
@@ -1649,6 +1660,9 @@ fn apply_check_markers(app: &mut App, run: &PluginUpdateRun) {
                 available_version: row.available_version.clone(),
             })
             .collect();
+    } else if let Some(snapshot) = snapshot {
+        app.plugins.update_availability =
+            update_availability(&snapshot.installed, &snapshot.marketplace);
     } else {
         app.plugins.update_availability.clear();
     }
@@ -1661,7 +1675,7 @@ pub(crate) fn apply_update_run_finished(
     claude_path: Option<PathBuf>,
 ) {
     app.plugins.update_run = Some(run.clone());
-    apply_check_markers(app, run);
+    apply_check_markers(app, run, snapshot.as_ref());
     if let Some(snapshot) = snapshot {
         app.plugins.installed = snapshot.installed;
         app.plugins.marketplace = snapshot.marketplace;
@@ -1696,7 +1710,9 @@ pub(crate) fn apply_update_run_finished(
 }
 
 /// A finished run made only of check rows is the report-only `c`
-/// flow; an update run whose plugins all failed is not a check.
+/// flow; an update run whose plugins all failed is not a check. An
+/// empty-rows run classifies as a check - the nothing-found `c`
+/// result - so its markers read empty rather than going stale.
 fn is_check_run(run: &PluginUpdateRun) -> bool {
     run.rows.iter().all(|row| row.status == PluginRunRowStatus::UpdateAvailable)
 }
@@ -1718,7 +1734,8 @@ pub(crate) fn apply_rollback_success(
         workspace.clear_plugin_update_record(plugin_id, scope);
     }
     refresh_update_records(app);
-    app.plugins.update_availability.clear();
+    app.plugins.update_availability =
+        update_availability(&app.plugins.installed, &app.plugins.marketplace);
     clamp_selection(app);
     start_runtime_reload(app, message);
 }
@@ -1734,13 +1751,16 @@ pub(crate) fn apply_rollback_failure(
         app.plugins.marketplace = snapshot.marketplace;
         app.plugins.marketplaces = snapshot.marketplaces;
         app.plugins.last_inventory_refresh_at = Some(Instant::now());
-        app.plugins.update_availability.clear();
+        app.plugins.update_availability =
+            update_availability(&app.plugins.installed, &app.plugins.marketplace);
         clamp_selection(app);
     }
     app.plugins.loading = false;
     app.plugins.status_message = None;
-    app.plugins.last_error =
-        Some(format!("Rollback of {} failed: {message}", display_label(plugin_id)));
+    app.config.status_message = None;
+    let failure = format!("Rollback of {} failed: {message}", display_label(plugin_id));
+    app.plugins.last_error = Some(failure.clone());
+    app.config.last_error = Some(failure);
     app.needs_redraw = true;
 }
 
@@ -2969,7 +2989,120 @@ mod tests {
             },
             PathBuf::new(),
         );
-        assert!(app.plugins.update_availability.is_empty(), "refresh drops stale markers");
+        assert!(app.plugins.update_availability.is_empty(), "refresh recomputes from its snapshot");
+    }
+
+    /// After an update run the markers describe the run's post-run
+    /// inventory; when that refresh failed the run could not see any
+    /// version, so the markers drop rather than name stale deltas.
+    #[test]
+    fn an_update_run_recomputes_markers_from_its_post_run_inventory() {
+        let mut app = App::test_default();
+        let stale = || PluginUpdateRun {
+            trigger: PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: vec![
+                PluginUpdateRunRow {
+                    plugin_id: "supabase@claude-plugins-official".to_owned(),
+                    scope: "user".to_owned(),
+                    cwd_raw: String::new(),
+                    marketplace: "claude-plugins-official".to_owned(),
+                    status: PluginRunRowStatus::UpdateAvailable,
+                    installed_version: Some("1.0.0".to_owned()),
+                    available_version: Some("2.0.0".to_owned()),
+                    detail: None,
+                },
+                PluginUpdateRunRow {
+                    plugin_id: "pensive@claude-night-market".to_owned(),
+                    scope: "user".to_owned(),
+                    cwd_raw: String::new(),
+                    marketplace: "claude-night-market".to_owned(),
+                    status: PluginRunRowStatus::UpdateAvailable,
+                    installed_version: Some("1.7.2".to_owned()),
+                    available_version: Some("2.0.0".to_owned()),
+                    detail: None,
+                },
+            ],
+        };
+        apply_update_run_finished(&mut app, &stale(), None, None);
+        assert_eq!(app.plugins.update_availability.len(), 2, "the check left both markers");
+
+        // The update moved pensive; supabase stayed at 1.0.0.
+        let snapshot = PluginsInventorySnapshot {
+            installed: vec![
+                InstalledPluginEntry {
+                    id: "supabase@claude-plugins-official".to_owned(),
+                    version: Some("1.0.0".to_owned()),
+                    scope: "user".to_owned(),
+                    enabled: true,
+                    installed_at: None,
+                    last_updated: None,
+                    project_path: None,
+                    capability: PluginCapability::Skill,
+                },
+                InstalledPluginEntry {
+                    id: "pensive@claude-night-market".to_owned(),
+                    version: Some("2.0.0".to_owned()),
+                    scope: "user".to_owned(),
+                    enabled: true,
+                    installed_at: None,
+                    last_updated: None,
+                    project_path: None,
+                    capability: PluginCapability::Skill,
+                },
+            ],
+            marketplace: vec![
+                MarketplaceEntry {
+                    plugin_id: "supabase@claude-plugins-official".to_owned(),
+                    name: "Supabase".to_owned(),
+                    description: None,
+                    marketplace_name: Some("claude-plugins-official".to_owned()),
+                    version: Some("2.0.0".to_owned()),
+                    install_count: None,
+                    source: None,
+                },
+                MarketplaceEntry {
+                    plugin_id: "pensive@claude-night-market".to_owned(),
+                    name: "Pensive".to_owned(),
+                    description: None,
+                    marketplace_name: Some("claude-night-market".to_owned()),
+                    version: Some("2.0.0".to_owned()),
+                    install_count: None,
+                    source: None,
+                },
+            ],
+            marketplaces: Vec::new(),
+        };
+        let update = PluginUpdateRun {
+            trigger: PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: vec![PluginUpdateRunRow {
+                plugin_id: "pensive@claude-night-market".to_owned(),
+                scope: "user".to_owned(),
+                cwd_raw: app.cwd_raw(),
+                marketplace: "claude-night-market".to_owned(),
+                status: PluginRunRowStatus::Updated,
+                installed_version: Some("2.0.0".to_owned()),
+                available_version: None,
+                detail: None,
+            }],
+        };
+        apply_update_run_finished(&mut app, &update, Some(snapshot.clone()), None);
+        assert_eq!(
+            app.plugins
+                .update_availability
+                .iter()
+                .map(|availability| availability.plugin_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["supabase@claude-plugins-official"],
+            "markers recompute: the updated plugin drops, the stale one stays"
+        );
+
+        apply_update_run_finished(&mut app, &update, None, None);
+        assert!(
+            app.plugins.update_availability.is_empty(),
+            "no post-run snapshot means no truthful markers"
+        );
     }
 
     /// A finished run settles the pane: the report stands, the loading
@@ -3278,9 +3411,9 @@ mod tests {
         assert!(app.update_rx.try_recv().is_err());
     }
 
-    /// The boot gate: trusted, unpinned plugins update from their own
-    /// entry cwd; everything else is skipped with the reason. The run
-    /// is seeded synchronously so a manual `u` cannot race it.
+    /// Boot auto-update updates every installed plugin from its own
+    /// entry cwd. The run is seeded synchronously so a manual `u`
+    /// cannot race it.
     #[tokio::test(flavor = "current_thread")]
     async fn boot_auto_update_runs_every_installed_plugin() {
         let mut app = App::test_default();

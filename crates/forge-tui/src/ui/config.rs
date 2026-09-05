@@ -82,7 +82,7 @@ fn plugins_help_text(app: &App) -> String {
             crate::app::plugins::PluginsViewTab::Installed
                 | crate::app::plugins::PluginsViewTab::Plugins
         ) {
-            "Left/Right switch list | Up search | Up/Down move | Enter actions | U update all | C check updates | Esc close"
+            "Left/Right switch list | Up search | Up/Down move | Enter actions | u update all | c check updates | Esc close"
                 .to_owned()
         } else {
             "Left/Right switch list | Up search | Up/Down move | Enter close | Esc close".to_owned()
@@ -460,6 +460,13 @@ mod tests {
             super::plugins_help_text(&app),
             "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Esc close",
             "the focused filter hint offers Esc alone to close"
+        );
+
+        app.plugins.search_focused = false;
+        assert_eq!(
+            super::plugins_help_text(&app),
+            "Left/Right switch list | Up search | Up/Down move | Enter actions | u update all | c check updates | Esc close",
+            "the list hint names the update and check keys"
         );
     }
 

@@ -103,6 +103,8 @@ fn create_app_impl(
     } else {
         cwd_raw.clone()
     };
+    // Cloned: the borrow would outlive the `workspace` move into the
+    // App below, since the boot gate runs after it.
     let boot_settings = workspace.plugin_settings().clone();
     let boot_cli = crate::app::plugins::UpdateCli::real();
     let boot_workspace = workspace.clone();
