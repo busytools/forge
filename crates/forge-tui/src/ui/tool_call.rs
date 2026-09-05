@@ -1053,6 +1053,15 @@ mod tests {
         assert_eq!(content_summary(&tc), "Exit code 1");
     }
 
+    /// The non-failed execute summary drops the last terminal line into
+    /// the collapsed span raw; a control char must picture like the
+    /// failed path does.
+    #[test]
+    fn content_summary_pictures_control_chars_in_last_terminal_line() {
+        let tc = terminal_tool_call("tc-4", model::ToolCallStatus::Completed, "term-4", "a\rb");
+        assert_eq!(content_summary(&tc), "a\u{240d}b");
+    }
+
     #[test]
     fn content_summary_keeps_normal_limit_for_completed_agent() {
         let mut tc = test_tool_call("tc-agent-done", "Agent", model::ToolCallStatus::Completed);
