@@ -610,8 +610,7 @@ mod tests {
     fn a_token_session_snapshots_its_env_token_not_the_shared_keychain() {
         let mut env = HashMap::new();
         env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "  setup-token  ".to_owned());
-        let credentials =
-            session_oauth_credentials(Path::new("/tmp/forge-testing-stub"), &env);
+        let credentials = session_oauth_credentials(Path::new("/tmp/forge-testing-stub"), &env);
         assert_eq!(
             credentials,
             Some(OauthCredentials { access_token: "setup-token".to_owned(), expires_at: None }),

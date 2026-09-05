@@ -1799,8 +1799,8 @@ fn spend_secondary(
     let style = usage_error.map_or(dim, |s| {
         if needs_user_recovery(s) { Style::default().fg(theme::STATUS_WARNING) } else { dim }
     });
-    let text =
-        usage_error.map_or_else(|| "no limit set".to_owned(), |s| usage_error_label(s, false, auth));
+    let text = usage_error
+        .map_or_else(|| "no limit set".to_owned(), |s| usage_error_label(s, false, auth));
     (text, style)
 }
 
@@ -3198,7 +3198,8 @@ mod tests {
 
     #[test]
     fn usage_error_label_expired_unchanged() {
-        let label = usage_error_label(forge_workspace::UsageFetchStatus::Expired, false, keychain());
+        let label =
+            usage_error_label(forge_workspace::UsageFetchStatus::Expired, false, keychain());
         assert_eq!(label, "⚠ expired - /login");
     }
 
