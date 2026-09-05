@@ -271,6 +271,7 @@ fn tool_display_title<'a>(
 mod tests {
     use super::*;
     use crate::app::BlockCache;
+    use crate::ui::wrap::display_width;
     use pretty_assertions::assert_eq;
     use std::fmt::Write as _;
 
@@ -1091,6 +1092,49 @@ mod tests {
             .collect();
         assert!(rendered.iter().any(|line| line.contains("Exit code 1")));
         assert!(!rendered.iter().any(|line| line.contains("more detail")));
+    }
+
+    /// A failed run's first output line is often a progress meter: a
+    /// raw control character is charged a column by `Span::width` and
+    /// painted by nothing, so the line is pictured like the other
+    /// metadata spans.
+    #[test]
+    fn failed_execute_error_line_pictures_control_chars_so_measured_width_equals_painted() {
+        let mut tc = terminal_tool_call(
+            "tc-4",
+            model::ToolCallStatus::Failed,
+            "term-4",
+            "50%\r75%\r100%\nbash: line 1: cd: too many arguments",
+        );
+
+        let mut out = Vec::new();
+        render_tool_call_cached_with_tools_collapsed(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            120,
+            '\u{280B}',
+            false,
+            &mut out,
+        );
+
+        let rows: Vec<&Line<'static>> = out
+            .iter()
+            .filter(|line| line.spans.iter().any(|span| span.content.contains("50%")))
+            .collect();
+        assert!(!rows.is_empty(), "the failed run's first output line renders");
+        for row in rows {
+            let painted: usize = row
+                .styled_graphemes(Style::default())
+                .map(|grapheme| display_width(grapheme.symbol))
+                .sum();
+            let measured: usize = row.spans.iter().map(Span::width).sum();
+            assert_eq!(measured, painted, "error line charges a column it does not paint: {row:?}");
+            let joined: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+            assert!(
+                joined.contains('\u{240d}'),
+                "CR must paint its Control Pictures glyph, not ride raw: {joined:?}"
+            );
+        }
     }
 
     #[test]

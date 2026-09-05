@@ -3,6 +3,7 @@
 use crate::agent::model;
 use crate::app::ToolCallInfo;
 use crate::ui::theme;
+use crate::ui::wrap::replace_control_chars;
 use forge_workspace::translate::error_handling::{extract_xml_tag_value, truncate_for_log};
 pub(super) use forge_workspace::translate::error_handling::{
     looks_like_internal_error, summarize_internal_error,
@@ -75,10 +76,10 @@ pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
 // from there). Consume directly via the imports above.
 
 pub(super) fn failed_execute_first_line(output: &str) -> Option<String> {
-    if let Some(msg) = extract_tool_use_error_message(output) {
-        return Some(msg);
-    }
-    output.lines().find(|line| !line.trim().is_empty()).map(str::trim).map(str::to_owned)
+    let first_line = extract_tool_use_error_message(output).or_else(|| {
+        output.lines().find(|line| !line.trim().is_empty()).map(str::trim).map(str::to_owned)
+    })?;
+    Some(replace_control_chars(first_line.into()).into_owned())
 }
 
 pub(super) fn extract_tool_use_error_message(input: &str) -> Option<String> {
