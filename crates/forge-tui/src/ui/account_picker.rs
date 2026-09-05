@@ -3,10 +3,11 @@
 //! A centered modal listing the active session's project accounts,
 //! one row each: a current marker `●`, the account name, a budget
 //! block whose shape follows the account's `AccountBudget`, and a
-//! trailing `usable` / `rate limited` tag. State + key handling live in
+//! trailing status tag (`usable`, `limit hit`, or
+//! `auth failed or expired`). State + key handling live in
 //! [`crate::app::account_picker`].
 
-use forge_workspace::{AccountBudget, AccountRow};
+use forge_workspace::{AccountBudget, AccountRow, Unusable};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -119,14 +120,23 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     // grouped is legible even without the section header. Measured
     // before the name, because on a narrow row the name is what gives
     // way to keep it.
-    let (tag, tag_color) =
-        if row.usable { ("usable", Color::Green) } else { ("rate limited", theme::STATUS_ERROR) };
-    let sep = " \u{00B7} ";
-    let tag_block = if row.experimental {
-        display_len("experimental") + display_len(sep) + display_len(tag)
-    } else {
-        display_len(tag)
+    let (tag, tag_color) = match row.unusable {
+        None => ("usable", Color::Green),
+        Some(Unusable::Saturated) => ("limit hit", theme::STATUS_ERROR),
+        Some(Unusable::ProbeBlocked | Unusable::Bailed) => {
+            ("auth failed or expired", theme::STATUS_ERROR)
+        }
     };
+    let sep = " \u{00B7} ";
+    let tag_w = display_len(tag);
+    // The amber prefix is the first thing to give way on a narrow row:
+    // the EXPERIMENTAL header above the group already says why these
+    // rows sit apart, and the widest tag would otherwise push the row
+    // past the pane.
+    let show_prefix = row.experimental
+        && used + display_len("experimental") + display_len(sep) + tag_w + TAG_GAP <= inner_w;
+    let tag_block =
+        if show_prefix { display_len("experimental") + display_len(sep) + tag_w } else { tag_w };
 
     // Name, padded, then a separator column - `truncate_pad` pads TO
     // its width, so a name that already fills it would otherwise run
@@ -142,9 +152,9 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     used += display_len(&name);
     spans.push(Span::styled(name, name_style));
 
-    // Both the tag (`rate limited` is six wider than `usable`) and the
-    // figures vary with the data, so the block is sized against what is
-    // left rather than a fixed count.
+    // Both the tag (`auth failed or expired` is sixteen wider than
+    // `usable`) and the figures vary with the data, so the block is
+    // sized against what is left rather than a fixed count.
     let budget_room = inner_w.saturating_sub(used + tag_block + TAG_GAP);
     let budget = budget_spans(&row.budget, budget_room);
     let budget_w: usize = budget.iter().map(|s| display_len(&s.content)).sum();
@@ -153,7 +163,7 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
 
     let pad = inner_w.saturating_sub(used + tag_block);
     spans.push(Span::raw(" ".repeat(pad)));
-    if row.experimental {
+    if show_prefix {
         spans.push(Span::styled("experimental", Style::default().fg(theme::EXPERIMENTAL)));
         spans.push(Span::styled(sep.to_owned(), Style::default().fg(theme::DIM)));
     }
@@ -425,7 +435,7 @@ mod tests {
             display_name: "Router".to_owned(),
             config_dir: PathBuf::from("/c/router"),
             is_current: false,
-            usable: true,
+            unusable: None,
             budget: AccountBudget::Api { daily: 0.56, weekly: 1.25, monthly: 20.30 },
             experimental: true,
         }];
@@ -452,7 +462,7 @@ mod tests {
                 display_name: "Unprobed".to_owned(),
                 config_dir: PathBuf::from("/c/unprobed"),
                 is_current: false,
-                usable: true,
+                unusable: None,
                 budget: AccountBudget::Unknown { spend_billed: false },
                 experimental: false,
             },
@@ -460,7 +470,7 @@ mod tests {
                 display_name: "NoFigures".to_owned(),
                 config_dir: PathBuf::from("/c/nofigures"),
                 is_current: false,
-                usable: true,
+                unusable: None,
                 // The lenient mapper's documented steady state: a 200
                 // that carried no windows at all.
                 budget: AccountBudget::Subscription {
@@ -474,7 +484,7 @@ mod tests {
                 display_name: "HalfKnown".to_owned(),
                 config_dir: PathBuf::from("/c/halfknown"),
                 is_current: false,
-                usable: true,
+                unusable: None,
                 // The strict mapper requires five_hour only, so a 200
                 // with just the session window lands here.
                 budget: AccountBudget::Subscription {
@@ -488,7 +498,7 @@ mod tests {
                 display_name: "Fresh".to_owned(),
                 config_dir: PathBuf::from("/c/fresh"),
                 is_current: false,
-                usable: true,
+                unusable: None,
                 budget: AccountBudget::Subscription {
                     five_hour_util: Some(0.0),
                     seven_day_util: Some(0.0),
@@ -529,9 +539,9 @@ mod tests {
         );
     }
 
-    /// The layout property, over every budget variant crossed with both
-    /// tags and both experimental flags: a row never exceeds the width
-    /// it is given, and its status tag survives intact with a gap
+    /// The layout property, over every budget variant crossed with the
+    /// three tags and both experimental flags: a row never exceeds the
+    /// width it is given, and its status tag survives intact with a gap
     /// before it.
     ///
     /// The fixtures span the shapes the data can take: a three-digit
@@ -575,22 +585,33 @@ mod tests {
         // overlay, so the row has to hold at whatever it is given.
         for inner_w in [30usize, 44, 54, 60] {
             for (label, budget) in &budgets {
-                for usable in [true, false] {
+                for unusable in [
+                    None,
+                    Some(Unusable::Saturated),
+                    Some(Unusable::ProbeBlocked),
+                    Some(Unusable::Bailed),
+                ] {
                     for experimental in [true, false] {
                         let row = AccountRow {
                             display_name: "OpenRouter".to_owned(),
                             config_dir: PathBuf::from("/c/x"),
                             is_current: true,
-                            usable,
+                            unusable,
                             budget: budget.clone(),
                             experimental,
                         };
                         let line = account_row_line(&row, true, inner_w);
                         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
                         let width = Span::raw(text.clone()).width();
-                        let tag = if usable { "usable" } else { "rate limited" };
+                        let tag = match unusable {
+                            None => "usable",
+                            Some(Unusable::Saturated) => "limit hit",
+                            Some(Unusable::ProbeBlocked | Unusable::Bailed) => {
+                                "auth failed or expired"
+                            }
+                        };
                         let case =
-                            format!("{label} w={inner_w} usable={usable} exp={experimental}");
+                            format!("{label} w={inner_w} unusable={unusable:?} exp={experimental}");
 
                         assert!(
                             width <= inner_w,
@@ -598,12 +619,16 @@ mod tests {
                         );
                         assert!(text.ends_with(tag), "{case} lost its tag: |{text}|");
                         // What precedes the tag: the dim separator on an
-                        // experimental row, otherwise the padding gap.
-                        // The experimental shape is the one where
-                        // welding is possible at all, so it must not be
-                        // excused.
+                        // experimental row, otherwise the padding gap -
+                        // which is also what an experimental row falls
+                        // back to when it is too narrow to carry the
+                        // amber prefix beside the tag. The experimental
+                        // shape is the one where welding is possible at
+                        // all, so it must not be excused.
                         let before = &text[..text.len() - tag.len()];
-                        let expected_lead = if experimental { " \u{00B7} " } else { " " };
+                        let prefix_fits = experimental
+                            && 2 + display_len("experimental") + 3 + tag.len() + TAG_GAP <= inner_w;
+                        let expected_lead = if prefix_fits { " \u{00B7} " } else { " " };
                         assert!(
                             before.ends_with(expected_lead),
                             "{case} welded the tag onto the budget: |{text}|",
@@ -625,7 +650,7 @@ mod tests {
                 display_name: "Gateway".to_owned(),
                 config_dir: PathBuf::from("/c/gateway"),
                 is_current: true,
-                usable: false,
+                unusable: Some(Unusable::Saturated),
                 budget: AccountBudget::Subscription {
                     five_hour_util: Some(100.0),
                     seven_day_util: Some(63.0),
@@ -641,7 +666,7 @@ mod tests {
                 .find(|l| l.contains("Gateway"))
                 .unwrap_or_else(|| panic!("row present at {term_w} columns"));
             assert!(
-                row.contains("rate limited"),
+                row.contains("limit hit"),
                 "at {term_w} columns the status tag is missing entirely: |{row}|",
             );
         }
@@ -659,7 +684,7 @@ mod tests {
                     .to_owned(),
             config_dir: PathBuf::from("/c/wide"),
             is_current: false,
-            usable: false,
+            unusable: Some(Unusable::Saturated),
             budget: AccountBudget::Subscription {
                 five_hour_util: Some(100.0),
                 seven_day_util: Some(63.0),
@@ -672,14 +697,16 @@ mod tests {
         let lines = render_picker(&app, 80, 16);
         let row = lines.iter().find(|l| l.contains('\u{4e2d}')).expect("row present");
         assert!(
-            row.contains("rate limited"),
+            row.contains("limit hit"),
             "a wide-glyph name must not push the tag off the row: |{row}|",
         );
     }
 
     /// An API budget under the widest tag block, `experimental` plus
-    /// `rate limited`. Reachable on any spend value, because a 429 from
-    /// the key endpoint preserves the snapshot.
+    /// `auth failed or expired`. Reachable on any spend value, because
+    /// a 429 from the key endpoint preserves the snapshot; on a spend
+    /// row this is the only unusable shape there is, since spend carries
+    /// no window to saturate.
     #[test]
     fn the_widest_api_row_keeps_its_tag_separate_and_uncut() {
         let mut app = App::test_default();
@@ -687,7 +714,7 @@ mod tests {
             display_name: "Router".to_owned(),
             config_dir: PathBuf::from("/c/router"),
             is_current: false,
-            usable: false,
+            unusable: Some(Unusable::ProbeBlocked),
             budget: AccountBudget::Api { daily: 0.0, weekly: 0.0, monthly: 0.0 },
             experimental: true,
         }];
@@ -697,7 +724,7 @@ mod tests {
         let row = lines.iter().find(|l| l.contains("Router")).expect("row present");
 
         assert!(
-            row.contains("rate limited"),
+            row.contains("auth failed or expired"),
             "the status tag must not be clipped off the end: {row}",
         );
         assert!(
@@ -716,7 +743,7 @@ mod tests {
             display_name: "OpenRouter".to_owned(),
             config_dir: PathBuf::from("/c/openrouter"),
             is_current: false,
-            usable: true,
+            unusable: None,
             budget: AccountBudget::Subscription {
                 five_hour_util: Some(20.0),
                 seven_day_util: Some(8.0),
@@ -748,7 +775,7 @@ mod tests {
                 display_name: "Gateway".to_owned(),
                 config_dir: PathBuf::from("/c/gateway"),
                 is_current: true,
-                usable: false,
+                unusable: Some(Unusable::Saturated),
                 budget: AccountBudget::Subscription {
                     five_hour_util: Some(100.0),
                     seven_day_util: Some(63.0),
@@ -760,7 +787,7 @@ mod tests {
                 display_name: "Gateway1".to_owned(),
                 config_dir: PathBuf::from("/c/gateway1"),
                 is_current: false,
-                usable: true,
+                unusable: None,
                 budget: AccountBudget::Subscription {
                     five_hour_util: Some(34.0),
                     seven_day_util: Some(22.0),
@@ -779,7 +806,7 @@ mod tests {
         assert!(joined.contains('\u{25CF}'), "current account marked with a dot");
         assert!(joined.contains("100%") && joined.contains("63%"), "capped account windows");
         assert!(joined.contains("34%") && joined.contains("22%"), "usable account windows");
-        assert!(joined.contains("rate limited"), "capped account tagged rate limited");
+        assert!(joined.contains("limit hit"), "capped account tagged limit hit");
         assert!(joined.contains("usable"), "usable account tagged usable");
         assert!(joined.contains("move") && joined.contains("switch"), "footer hint");
 
@@ -801,7 +828,7 @@ mod tests {
                 display_name: "Gateway".to_owned(),
                 config_dir: PathBuf::from("/c/gateway"),
                 is_current: true,
-                usable: true,
+                unusable: None,
                 budget: AccountBudget::Subscription {
                     five_hour_util: Some(10.0),
                     seven_day_util: Some(5.0),
@@ -813,7 +840,7 @@ mod tests {
                 display_name: "Codex".to_owned(),
                 config_dir: PathBuf::from("/c/codex"),
                 is_current: false,
-                usable: true,
+                unusable: None,
                 budget: AccountBudget::Subscription {
                     five_hour_util: Some(20.0),
                     seven_day_util: Some(8.0),
