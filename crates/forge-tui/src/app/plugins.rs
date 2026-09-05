@@ -58,9 +58,9 @@ impl PluginsViewTab {
 // re-exported here so the existing forge-tui import paths resolve.
 pub use forge_primitives::plugins::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
-    PluginRunRowStatus, PluginUpdateRecord, PluginUpdateRun, PluginUpdateRunRow,
-    PluginUpdateTrigger, PluginsCliActionSuccess, PluginsInventorySnapshot, classify_update_row,
-    update_availability,
+    PluginRunRowStatus, PluginUpdateAvailability, PluginUpdateRecord, PluginUpdateRun,
+    PluginUpdateRunRow, PluginUpdateTrigger, PluginsCliActionSuccess, PluginsInventorySnapshot,
+    classify_update_row, update_availability,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -87,6 +87,9 @@ pub struct PluginsState {
     /// Latest recorded update per installed entry, read from the
     /// store; feeds the rollback affordance.
     pub update_records: Vec<PluginUpdateRecord>,
+    /// Out-of-date entries from the last finished check; survives the
+    /// report being cleared, dropped when the inventory changes.
+    pub update_availability: Vec<PluginUpdateAvailability>,
     /// Test seam: the per-run CLI surface a run uses. `None` means
     /// the real `claude` subprocess calls.
     pub(crate) update_cli: Option<UpdateCli>,
@@ -344,6 +347,7 @@ pub(crate) fn apply_inventory_refresh_success(
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(claude_path);
     refresh_update_records(app);
+    app.plugins.update_availability.clear();
     clamp_selection(app);
     if should_reload_runtime {
         start_runtime_reload(app, "Plugin inventory refreshed".to_owned());
@@ -381,6 +385,7 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     app.plugins.pending_runtime_reload_success_message = None;
     app.plugins.update_run = None;
     app.plugins.update_records.clear();
+    app.plugins.update_availability.clear();
     clamp_selection(app);
 }
 
@@ -436,6 +441,19 @@ pub(crate) fn filtered_marketplace_plugins(state: &PluginsState) -> Vec<&Marketp
 
 pub(crate) fn visible_marketplaces(state: &PluginsState) -> Vec<&MarketplaceSourceEntry> {
     state.marketplaces.iter().collect()
+}
+
+/// The out-of-date marker a finished check left for one installed
+/// entry, if any.
+pub(crate) fn availability_for<'a>(
+    state: &'a PluginsState,
+    plugin_id: &str,
+    scope: &str,
+) -> Option<&'a PluginUpdateAvailability> {
+    state
+        .update_availability
+        .iter()
+        .find(|availability| availability.plugin_id == plugin_id && availability.scope == scope)
 }
 
 pub(crate) fn display_label(raw: &str) -> String {
@@ -927,6 +945,7 @@ pub(crate) fn apply_cli_action_success(app: &mut App, result: PluginsCliActionSu
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(result.claude_path);
     refresh_update_records(app);
+    app.plugins.update_availability.clear();
     clamp_selection(app);
     start_runtime_reload(app, result.message);
 }
@@ -975,16 +994,15 @@ fn start_runtime_reload(app: &mut App, success_message: String) {
     }
 }
 
-/// Queue one row per installed entry. With the `Auto` trigger, rows a
-/// plugin policy excludes (untrusted marketplace, pinned, or no
-/// marketplace) are marked `Skipped` up front instead of queued.
+/// Queue one row per installed entry. With the `Auto` trigger, rows
+/// whose plugin id carries no marketplace are marked `Skipped` up
+/// front instead of queued - there is nothing to update them from.
 /// Shared by the manual `u` run and boot auto-update so both shape
 /// rows - including each entry's working directory - identically.
 fn build_rows_from_entries(
     entries: &[InstalledPluginEntry],
     base_cwd: &str,
     trigger: PluginUpdateTrigger,
-    settings: &forge_workspace::PluginSettings,
 ) -> Vec<PluginUpdateRunRow> {
     entries
         .iter()
@@ -995,35 +1013,20 @@ fn build_rows_from_entries(
                 action_cwd_for(base_cwd, &entry.scope, entry.project_path.as_deref()),
                 entry.version.clone(),
             );
-            if trigger == PluginUpdateTrigger::Auto && !settings.allows_auto_update(&entry.id) {
+            if trigger == PluginUpdateTrigger::Auto
+                && forge_primitives::plugins::plugin_marketplace(&entry.id).is_empty()
+            {
                 row.status = PluginRunRowStatus::Skipped;
-                row.detail = Some(skip_reason(settings, &entry.id));
+                row.detail = Some("plugin id carries no marketplace".to_owned());
             }
             row
         })
         .collect()
 }
 
-fn build_update_rows(
-    app: &App,
-    trigger: PluginUpdateTrigger,
-    settings: &forge_workspace::PluginSettings,
-) -> Vec<PluginUpdateRunRow> {
+fn build_update_rows(app: &App, trigger: PluginUpdateTrigger) -> Vec<PluginUpdateRunRow> {
     let cwd = app.cwd_raw();
-    build_rows_from_entries(&app.plugins.installed, &cwd, trigger, settings)
-}
-
-fn skip_reason(settings: &forge_workspace::PluginSettings, plugin_id: &str) -> String {
-    let marketplace = forge_primitives::plugins::plugin_marketplace(plugin_id);
-    if settings.pins.iter().any(|pin| pin == plugin_id) {
-        "pinned in forge.toml".to_owned()
-    } else if marketplace.is_empty() {
-        "plugin id carries no marketplace".to_owned()
-    } else if !settings.trusted_marketplaces.iter().any(|t| t == marketplace) {
-        format!("marketplace {marketplace} is not trusted for auto-update")
-    } else {
-        "not eligible for auto-update".to_owned()
-    }
+    build_rows_from_entries(&app.plugins.installed, &cwd, trigger)
 }
 
 fn action_cwd_for(app_cwd: &str, scope: &str, project_path: Option<&str>) -> String {
@@ -1097,12 +1100,7 @@ pub(crate) fn start_update_run(app: &mut App, trigger: PluginUpdateTrigger) {
     if app.plugins.loading || app.plugins.update_run.as_ref().is_some_and(|run| !run.finished) {
         return;
     }
-    let settings = app
-        .workspace
-        .as_ref()
-        .map(|workspace| workspace.plugin_settings().clone())
-        .unwrap_or_default();
-    let rows = build_update_rows(app, trigger, &settings);
+    let rows = build_update_rows(app, trigger);
     if rows.is_empty() {
         app.plugins.status_message =
             Some("No installed plugins are eligible for update".to_owned());
@@ -1402,10 +1400,10 @@ pub(crate) fn maybe_spawn_boot_auto_update(
     workspace: &std::sync::Arc<forge_workspace::Workspace>,
     app: &mut App,
     cwd_raw: String,
-    settings: forge_workspace::PluginSettings,
+    settings: &forge_workspace::PluginSettings,
     cli: UpdateCli,
 ) {
-    if !settings.auto_update || settings.trusted_marketplaces.is_empty() {
+    if !settings.auto_update {
         return;
     }
     if cwd_raw.is_empty() {
@@ -1448,12 +1446,8 @@ pub(crate) fn maybe_spawn_boot_auto_update(
                     return;
                 }
             };
-            let rows = build_rows_from_entries(
-                &snapshot.installed,
-                &cwd_raw,
-                PluginUpdateTrigger::Auto,
-                &settings,
-            );
+            let rows =
+                build_rows_from_entries(&snapshot.installed, &cwd_raw, PluginUpdateTrigger::Auto);
             let plan = UpdateRunPlan {
                 cwd_context: cwd_raw,
                 claude_path: Some(claude_path),
@@ -1638,6 +1632,28 @@ pub(crate) fn apply_update_run_progress(app: &mut App, run: PluginUpdateRun) {
     app.needs_redraw = true;
 }
 
+/// A finished check's rows ARE the out-of-date set; any other finished
+/// run (an update moved versions, or tried to) expires what a previous
+/// check saw.
+fn apply_check_markers(app: &mut App, run: &PluginUpdateRun) {
+    if is_check_run(run) {
+        app.plugins.update_availability = run
+            .rows
+            .iter()
+            .filter(|row| row.status == PluginRunRowStatus::UpdateAvailable)
+            .map(|row| PluginUpdateAvailability {
+                plugin_id: row.plugin_id.clone(),
+                scope: row.scope.clone(),
+                marketplace: row.marketplace.clone(),
+                installed_version: row.installed_version.clone(),
+                available_version: row.available_version.clone(),
+            })
+            .collect();
+    } else {
+        app.plugins.update_availability.clear();
+    }
+}
+
 pub(crate) fn apply_update_run_finished(
     app: &mut App,
     run: &PluginUpdateRun,
@@ -1645,6 +1661,7 @@ pub(crate) fn apply_update_run_finished(
     claude_path: Option<PathBuf>,
 ) {
     app.plugins.update_run = Some(run.clone());
+    apply_check_markers(app, run);
     if let Some(snapshot) = snapshot {
         app.plugins.installed = snapshot.installed;
         app.plugins.marketplace = snapshot.marketplace;
@@ -1701,6 +1718,7 @@ pub(crate) fn apply_rollback_success(
         workspace.clear_plugin_update_record(plugin_id, scope);
     }
     refresh_update_records(app);
+    app.plugins.update_availability.clear();
     clamp_selection(app);
     start_runtime_reload(app, message);
 }
@@ -1716,6 +1734,7 @@ pub(crate) fn apply_rollback_failure(
         app.plugins.marketplace = snapshot.marketplace;
         app.plugins.marketplaces = snapshot.marketplaces;
         app.plugins.last_inventory_refresh_at = Some(Instant::now());
+        app.plugins.update_availability.clear();
         clamp_selection(app);
     }
     app.plugins.loading = false;
@@ -2838,45 +2857,45 @@ mod tests {
         ];
     }
 
-    fn auto_settings() -> forge_workspace::PluginSettings {
-        forge_workspace::PluginSettings {
-            auto_update: true,
-            trusted_marketplaces: vec!["claude-plugins-official".to_owned()],
-            pins: vec!["pensive@claude-night-market".to_owned()],
-        }
+    fn push_no_marketplace_entry(app: &mut App) {
+        app.plugins.installed.push(InstalledPluginEntry {
+            id: "scratch-tools".to_owned(),
+            version: Some("0.2.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        });
     }
 
-    /// Boot auto-update queues trusted, unpinned plugins and marks the
-    /// rest skipped with the reason, so the report shows why nothing
-    /// happened to them.
+    /// Boot auto-update queues every marketplace-carrying entry and
+    /// marks an entry with no marketplace skipped with the reason, so
+    /// the report shows why nothing happened to it.
     #[test]
-    fn auto_rows_mark_policy_exclusions_skipped() {
+    fn auto_rows_skip_entries_with_no_marketplace() {
         let mut app = App::test_default();
         seeded_installed(&mut app);
-        let settings = auto_settings();
+        push_no_marketplace_entry(&mut app);
 
-        let rows = build_update_rows(&app, PluginUpdateTrigger::Auto, &settings);
+        let rows = build_update_rows(&app, PluginUpdateTrigger::Auto);
 
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].status, PluginRunRowStatus::Queued);
-        assert_eq!(rows[1].status, PluginRunRowStatus::Skipped);
-        assert_eq!(rows[1].detail.as_deref(), Some("pinned in forge.toml"));
-        assert_eq!(rows[2].status, PluginRunRowStatus::Skipped);
-        assert_eq!(
-            rows[2].detail.as_deref(),
-            Some("marketplace claude-night-market is not trusted for auto-update")
-        );
+        assert_eq!(rows.len(), 4);
+        assert!(rows[..3].iter().all(|row| row.status == PluginRunRowStatus::Queued));
+        assert_eq!(rows[3].status, PluginRunRowStatus::Skipped);
+        assert_eq!(rows[3].detail.as_deref(), Some("plugin id carries no marketplace"));
     }
 
-    /// The same entries under the manual `u` key queue without policy
-    /// filtering: trust gates auto-update only.
+    /// The same entries under the manual `u` key queue everything:
+    /// the no-marketplace skip is an auto-update-only affordance.
     #[test]
     fn manual_rows_queue_everything() {
         let mut app = App::test_default();
         seeded_installed(&mut app);
-        let settings = auto_settings();
+        push_no_marketplace_entry(&mut app);
 
-        let rows = build_update_rows(&app, PluginUpdateTrigger::Manual, &settings);
+        let rows = build_update_rows(&app, PluginUpdateTrigger::Manual);
 
         assert!(rows.iter().all(|row| row.status == PluginRunRowStatus::Queued));
     }
@@ -2903,6 +2922,54 @@ mod tests {
         app.plugins.update_run = Some(run);
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.plugins.update_run.is_none(), "a finished report clears on Esc");
+    }
+
+    /// The check's markers outlive the report (Esc) and die with an
+    /// inventory refresh: rows keep naming the delta until the data
+    /// underneath changes.
+    #[test]
+    fn check_markers_outlive_the_report_but_not_the_inventory() {
+        let mut app = App::test_default();
+        let run = PluginUpdateRun {
+            trigger: PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: vec![PluginUpdateRunRow {
+                plugin_id: "supabase@claude-plugins-official".to_owned(),
+                scope: "user".to_owned(),
+                cwd_raw: String::new(),
+                marketplace: "claude-plugins-official".to_owned(),
+                status: PluginRunRowStatus::UpdateAvailable,
+                installed_version: Some("1.0.0".to_owned()),
+                available_version: Some("2.0.0".to_owned()),
+                detail: None,
+            }],
+        };
+
+        apply_update_run_finished(&mut app, &run, None, None);
+        assert_eq!(
+            availability_for(&app.plugins, "supabase@claude-plugins-official", "user")
+                .and_then(|availability| availability.available_version.as_deref()),
+            Some("2.0.0"),
+            "a finished check leaves the marker"
+        );
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.plugins.update_run.is_none(), "Esc clears the report");
+        assert!(
+            availability_for(&app.plugins, "supabase@claude-plugins-official", "user").is_some(),
+            "the marker survives the report"
+        );
+
+        apply_inventory_refresh_success(
+            &mut app,
+            PluginsInventorySnapshot {
+                installed: Vec::new(),
+                marketplace: Vec::new(),
+                marketplaces: Vec::new(),
+            },
+            PathBuf::new(),
+        );
+        assert!(app.plugins.update_availability.is_empty(), "refresh drops stale markers");
     }
 
     /// A finished run settles the pane: the report stands, the loading
@@ -3085,8 +3152,8 @@ mod tests {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))
     }
 
-    /// Skipped rows are policy decisions made before any CLI call; a
-    /// run with one must invoke the CLI exactly once.
+    /// Skipped rows are decisions made before any CLI call; a run with
+    /// one must invoke the CLI exactly once.
     #[tokio::test(flavor = "current_thread")]
     async fn skipped_rows_never_reach_the_cli() {
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -3096,12 +3163,23 @@ mod tests {
             &two_plugin_snapshot(),
             &calls,
         );
-        let rows = build_rows_from_entries(
-            &two_plugin_snapshot().installed,
-            "/proj",
-            PluginUpdateTrigger::Auto,
-            &auto_settings(),
+        let mut skipped = PluginUpdateRunRow::queued(
+            "scratch-tools".to_owned(),
+            "user".to_owned(),
+            "/proj".to_owned(),
+            Some("0.2.0".to_owned()),
         );
+        skipped.status = PluginRunRowStatus::Skipped;
+        skipped.detail = Some("plugin id carries no marketplace".to_owned());
+        let rows = vec![
+            PluginUpdateRunRow::queued(
+                "supabase@claude-plugins-official".to_owned(),
+                "user".to_owned(),
+                "/proj".to_owned(),
+                Some("1.0.0".to_owned()),
+            ),
+            skipped,
+        ];
         let run = PluginUpdateRun { trigger: PluginUpdateTrigger::Auto, finished: false, rows };
         let plan = UpdateRunPlan {
             cwd_context: "/proj".to_owned(),
@@ -3127,7 +3205,7 @@ mod tests {
         }
         let run = finished.expect("the finished event lands");
         let skipped =
-            run.rows.iter().find(|row| row.plugin_id.starts_with("pensive")).expect("row");
+            run.rows.iter().find(|row| row.plugin_id.starts_with("scratch-tools")).expect("row");
         assert_eq!(skipped.status, PluginRunRowStatus::Skipped);
         let ran = run.rows.iter().find(|row| row.plugin_id.starts_with("supabase")).expect("row");
         assert_eq!(ran.status, PluginRunRowStatus::AlreadyCurrent);
@@ -3186,7 +3264,7 @@ mod tests {
                     &workspace,
                     &mut app,
                     "/proj".to_owned(),
-                    forge_workspace::PluginSettings::default(),
+                    &forge_workspace::PluginSettings::default(),
                     cli,
                 );
                 for _ in 0..20 {
@@ -3204,7 +3282,7 @@ mod tests {
     /// entry cwd; everything else is skipped with the reason. The run
     /// is seeded synchronously so a manual `u` cannot race it.
     #[tokio::test(flavor = "current_thread")]
-    async fn boot_auto_update_skips_untrusted_and_runs_trusted() {
+    async fn boot_auto_update_runs_every_installed_plugin() {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace");
         let calls = call_log();
@@ -3213,11 +3291,7 @@ mod tests {
             &two_plugin_snapshot(),
             &calls,
         );
-        let settings = forge_workspace::PluginSettings {
-            auto_update: true,
-            trusted_marketplaces: vec!["claude-plugins-official".to_owned()],
-            pins: Vec::new(),
-        };
+        let settings = forge_workspace::PluginSettings { auto_update: true };
 
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -3225,7 +3299,7 @@ mod tests {
                     &workspace,
                     &mut app,
                     "/test".to_owned(),
-                    settings,
+                    &settings,
                     cli,
                 );
                 assert!(
@@ -3247,24 +3321,19 @@ mod tests {
         let log = calls.lock().expect("call log").clone();
         let update_calls: Vec<&String> =
             log.iter().filter(|call| !call.starts_with("refresh")).collect();
-        assert_eq!(update_calls.len(), 1, "only the trusted plugin updates: {log:?}");
+        assert_eq!(update_calls.len(), 3, "every installed plugin updates: {log:?}");
         assert!(
             log.iter().any(|call| call.starts_with("/test:")),
-            "the trusted user-scoped plugin updates from the boot cwd: {log:?}"
+            "user-scoped plugins update from the boot cwd: {log:?}"
         );
 
         let run = app.plugins.update_run.as_ref().expect("the report stands");
         assert!(run.finished);
-        let pensive =
-            run.rows.iter().find(|row| row.plugin_id.starts_with("pensive")).expect("row");
-        assert_eq!(pensive.status, PluginRunRowStatus::Skipped);
-        assert_eq!(
-            pensive.detail.as_deref(),
-            Some("marketplace claude-night-market is not trusted for auto-update")
+        assert!(
+            run.rows.iter().all(|row| row.status == PluginRunRowStatus::AlreadyCurrent),
+            "the fake CLI reports every plugin current: {:?}",
+            run.rows
         );
-        let supabase =
-            run.rows.iter().find(|row| row.plugin_id.starts_with("supabase")).expect("row");
-        assert_eq!(supabase.status, PluginRunRowStatus::AlreadyCurrent);
     }
 
     /// Records persist in the run task, not the event handler: a
@@ -3349,7 +3418,6 @@ mod tests {
             &two_plugin_snapshot().installed,
             "/proj",
             PluginUpdateTrigger::Manual,
-            &forge_workspace::PluginSettings::default(),
         );
         let plan = UpdateRunPlan {
             cwd_context: "/proj".to_owned(),
@@ -3396,7 +3464,6 @@ mod tests {
             &two_plugin_snapshot().installed,
             "/proj",
             PluginUpdateTrigger::Manual,
-            &forge_workspace::PluginSettings::default(),
         );
         let plan = UpdateRunPlan {
             cwd_context: "/proj".to_owned(),
@@ -3443,12 +3510,8 @@ mod tests {
                 Box::pin(std::future::pending::<RollbackResult>())
             }),
         };
-        let rows = build_rows_from_entries(
-            &snapshot.installed,
-            "/proj",
-            PluginUpdateTrigger::Manual,
-            &forge_workspace::PluginSettings::default(),
-        );
+        let rows =
+            build_rows_from_entries(&snapshot.installed, "/proj", PluginUpdateTrigger::Manual);
         let plan = UpdateRunPlan {
             cwd_context: "/proj".to_owned(),
             claude_path: None,
@@ -3504,12 +3567,8 @@ mod tests {
                 Box::pin(std::future::pending::<RollbackResult>())
             }),
         };
-        let rows = build_rows_from_entries(
-            &snapshot.installed,
-            "/proj",
-            PluginUpdateTrigger::Manual,
-            &forge_workspace::PluginSettings::default(),
-        );
+        let rows =
+            build_rows_from_entries(&snapshot.installed, "/proj", PluginUpdateTrigger::Manual);
         let plan = UpdateRunPlan {
             cwd_context: "/proj".to_owned(),
             claude_path: None,
@@ -3556,11 +3615,7 @@ mod tests {
                 Box::pin(std::future::pending::<RollbackResult>())
             }),
         };
-        let settings = forge_workspace::PluginSettings {
-            auto_update: true,
-            trusted_marketplaces: vec!["claude-plugins-official".to_owned()],
-            pins: Vec::new(),
-        };
+        let settings = forge_workspace::PluginSettings { auto_update: true };
 
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -3568,7 +3623,7 @@ mod tests {
                     &workspace,
                     &mut app,
                     "/proj".to_owned(),
-                    settings,
+                    &settings,
                     cli,
                 );
                 for _ in 0..200 {
@@ -3779,11 +3834,7 @@ mod tests {
             &two_plugin_snapshot(),
             &calls,
         );
-        let settings = forge_workspace::PluginSettings {
-            auto_update: true,
-            trusted_marketplaces: vec!["claude-plugins-official".to_owned()],
-            pins: Vec::new(),
-        };
+        let settings = forge_workspace::PluginSettings { auto_update: true };
 
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -3791,7 +3842,7 @@ mod tests {
                     &workspace,
                     &mut app,
                     "/proj".to_owned(),
-                    settings,
+                    &settings,
                     cli,
                 );
                 for _ in 0..200 {

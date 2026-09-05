@@ -82,7 +82,7 @@ fn plugins_help_text(app: &App) -> String {
             crate::app::plugins::PluginsViewTab::Installed
                 | crate::app::plugins::PluginsViewTab::Plugins
         ) {
-            "Left/Right switch list | Up search | Up/Down move | Enter actions | Esc close"
+            "Left/Right switch list | Up search | Up/Down move | Enter actions | U update all | C check updates | Esc close"
                 .to_owned()
         } else {
             "Left/Right switch list | Up search | Up/Down move | Enter close | Esc close".to_owned()

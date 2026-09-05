@@ -1,9 +1,9 @@
 use super::theme;
 use crate::app::App;
 use crate::app::plugins::{
-    PluginCapability, PluginRunRowStatus, PluginUpdateRunRow, PluginsViewTab, display_label,
-    filtered_installed, filtered_marketplace_plugins, ordered_installed, relevant_installed_count,
-    search_enabled, visible_marketplaces,
+    InstalledPluginEntry, PluginCapability, PluginRunRowStatus, PluginUpdateRunRow, PluginsViewTab,
+    availability_for, display_label, filtered_installed, filtered_marketplace_plugins,
+    ordered_installed, relevant_installed_count, search_enabled, visible_marketplaces,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -26,8 +26,33 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         .split(body);
 
     frame.render_widget(Paragraph::new(tab_header_line(app)), sections[0]);
+    if search_enabled(app.plugins.active_tab) {
+        frame.render_widget(Paragraph::new(action_row_line(app)), sections[1]);
+    }
     render_top_region(frame, sections[2], app);
     render_list_region(frame, sections[3], app);
+}
+
+/// The action row: the visible update-all button plus the
+/// `[plugins] auto_update` state, which is the whole of that config
+/// surface - the switch alone governs.
+fn action_row_line(app: &App) -> Line<'static> {
+    let auto_update =
+        app.workspace.as_ref().is_some_and(|workspace| workspace.plugin_settings().auto_update);
+    let mut spans = vec![Span::styled(
+        " Update all (u) ",
+        Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+    )];
+    spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
+    if auto_update {
+        spans.push(Span::styled(
+            "auto-update: on",
+            Style::default().fg(theme::REVIEW_RESOLVED).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        spans.push(Span::styled("auto-update: off", Style::default().fg(theme::DIM)));
+    }
+    Line::from(spans)
 }
 
 fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
@@ -268,7 +293,7 @@ fn installed_list(app: &App, viewport_width: u16, viewport_height: u16) -> Rende
             let selected =
                 index == app.plugins.installed_selected_index && !app.plugins.search_focused;
             let mut lines = vec![
-                title_line_with_badge(&display_label(&entry.id), Some(entry.capability), selected),
+                installed_title_line(app, entry, selected),
                 meta_line(
                     &format!(
                         "{} | {}{}",
@@ -356,21 +381,12 @@ fn marketplace_list(app: &App, viewport_width: u16, viewport_height: u16) -> Ren
     if entries.is_empty() && app.plugins.loading {
         return RenderedList::single("Loading configured marketplaces...", viewport_height);
     }
-    let trusted = app
-        .workspace
-        .as_ref()
-        .map(|workspace| workspace.plugin_settings().trusted_marketplaces.clone())
-        .unwrap_or_default();
     let mut blocks = entries
         .iter()
         .enumerate()
         .map(|(index, marketplace)| {
             let selected = index == app.plugins.marketplace_selected_index;
-            let mut lines = vec![marketplace_title_line(
-                &display_label(&marketplace.name),
-                trusted.iter().any(|name| name == &marketplace.name),
-                selected,
-            )];
+            let mut lines = vec![title_line(&display_label(&marketplace.name), selected)];
             if let Some(source) = marketplace.source.as_deref() {
                 lines.push(meta_line(&format!("Source: {source}"), selected));
             }
@@ -401,17 +417,22 @@ fn title_line(text: &str, selected: bool) -> Line<'static> {
     title_line_with_badge(text, None, selected)
 }
 
-/// A marketplace row title; a green AUTO badge marks the marketplaces
-/// `[plugins] trusted_marketplaces` lets auto-update touch.
-fn marketplace_title_line(text: &str, trusted: bool, selected: bool) -> Line<'static> {
-    let mut line = title_line(text, selected);
-    if trusted {
+/// An installed row title: name, capability badge, and the
+/// out-of-date marker a finished check left for this entry.
+fn installed_title_line(app: &App, entry: &InstalledPluginEntry, selected: bool) -> Line<'static> {
+    let mut line =
+        title_line_with_badge(&display_label(&entry.id), Some(entry.capability), selected);
+    if let Some(availability) = availability_for(&app.plugins, &entry.id, &entry.scope) {
         line.spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
         line.spans.push(Span::styled(
-            " AUTO ",
+            format!(
+                " {} -> {} ",
+                availability.installed_version.as_deref().unwrap_or("?"),
+                availability.available_version.as_deref().unwrap_or("?")
+            ),
             Style::default()
                 .fg(Color::Black)
-                .bg(theme::REVIEW_RESOLVED)
+                .bg(theme::STATUS_WARNING)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -589,11 +610,13 @@ fn divider_line(viewport_width: u16, label: &str) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use super::{search_field_line, top_region_height, update_report_lines};
+    use super::{
+        action_row_line, installed_list, search_field_line, top_region_height, update_report_lines,
+    };
     use crate::app::App;
     use crate::app::plugins::{
-        PluginRunRowStatus, PluginUpdateRun, PluginUpdateRunRow, PluginUpdateTrigger,
-        PluginsViewTab,
+        InstalledPluginEntry, PluginCapability, PluginRunRowStatus, PluginUpdateAvailability,
+        PluginUpdateRun, PluginUpdateRunRow, PluginUpdateTrigger, PluginsViewTab,
     };
     use crate::ui::theme;
     use ratatui::style::Style;
@@ -657,6 +680,58 @@ mod tests {
         assert!(text.contains("pensive@claude-night-market"), "row names plugin + market: {text}");
         assert!(text.contains("updated to 1.8.0"), "updated row shows the new version: {text}");
         assert!(text.contains("(network unreachable)"), "failed row shows why: {text}");
+    }
+
+    /// The action row is the visible update-all affordance and names
+    /// the auto-update switch state.
+    #[test]
+    fn the_action_row_carries_the_button_and_the_switch_state() {
+        let app = App::test_default();
+        let text: String =
+            action_row_line(&app).spans.into_iter().map(|span| span.content.to_string()).collect();
+        assert!(text.contains("Update all (u)"), "button present: {text}");
+        assert!(text.contains("auto-update: off"), "switch state present: {text}");
+    }
+
+    /// An entry the last check found out of date wears the version
+    /// delta on its title line; without check data there is no badge.
+    #[test]
+    fn installed_rows_wear_the_out_of_date_marker_from_the_last_check() {
+        let mut app = App::test_default();
+        app.plugins.installed = vec![InstalledPluginEntry {
+            id: "supabase@claude-plugins-official".to_owned(),
+            version: Some("2.0.9".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Mcp,
+        }];
+        app.plugins.update_availability = vec![PluginUpdateAvailability {
+            plugin_id: "supabase@claude-plugins-official".to_owned(),
+            scope: "user".to_owned(),
+            marketplace: "claude-plugins-official".to_owned(),
+            installed_version: Some("2.0.9".to_owned()),
+            available_version: Some("2.1.0".to_owned()),
+        }];
+
+        let text: String = installed_list(&app, 80, 24)
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains(" 2.0.9 -> 2.1.0 "), "marker badge: {text}");
+
+        app.plugins.update_availability.clear();
+        let text: String = installed_list(&app, 80, 24)
+            .lines
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter().map(|span| span.content.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("-> 2.1.0"), "no marker without check data: {text}");
     }
 
     /// A focused search field embeds the query in the one-row thick

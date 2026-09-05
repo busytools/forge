@@ -326,7 +326,7 @@ fn create_app_impl(
         &boot_workspace,
         &mut app,
         boot_cwd_raw,
-        boot_settings,
+        &boot_settings,
         boot_cli,
     );
 

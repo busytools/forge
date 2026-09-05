@@ -164,34 +164,13 @@ pub(crate) struct LoadedAccount {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PluginSettings {
-    /// Update installed plugins once at forge boot. Off by default:
-    /// an auto-applied plugin update can break a load-bearing session
-    /// mid-day, so forge only ever moves a plugin the user opted in.
+    /// Update every installed plugin once at forge boot - the switch
+    /// alone governs, there is no per-marketplace or per-plugin opt-out.
+    /// Off by default: an auto-applied plugin update can break a
+    /// load-bearing session mid-day, so forge only ever moves a plugin
+    /// the user opted in.
     #[serde(default)]
     pub auto_update: bool,
-    /// Marketplaces auto-update may touch. Trust gates at the
-    /// marketplace: nothing here means nothing auto-updates, whatever
-    /// `auto_update` says.
-    #[serde(default)]
-    pub trusted_marketplaces: Vec<String>,
-    /// Plugin ids (`name@marketplace`) held at their current version -
-    /// never auto-updated, manual updates still work.
-    #[serde(default)]
-    pub pins: Vec<String>,
-}
-
-impl PluginSettings {
-    /// A plugin auto-updates only when the switch is on, its
-    /// marketplace is trusted and it is not pinned.
-    pub fn allows_auto_update(&self, plugin_id: &str) -> bool {
-        if !self.auto_update {
-            return false;
-        }
-        let marketplace = forge_primitives::plugins::plugin_marketplace(plugin_id);
-        !marketplace.is_empty()
-            && self.trusted_marketplaces.iter().any(|trusted| trusted == marketplace)
-            && !self.pins.iter().any(|pin| pin == plugin_id)
-    }
 }
 
 #[derive(Debug)]
@@ -214,7 +193,7 @@ pub(crate) struct LoadedConfig {
     /// absent (Gotify disabled).
     pub gotify: Option<GotifyConfig>,
     /// `[plugins]` section knobs. Absent section means auto-update is
-    /// off and nothing is trusted or pinned.
+    /// off.
     pub plugins: PluginSettings,
 }
 
@@ -1546,27 +1525,25 @@ provider = "anthropic"
     #[test]
     fn the_plugins_section_reaches_the_loaded_config() {
         let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &format!("{}\n[plugins]\nauto_update = true\n", minimal_config()));
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert!(config.plugins.auto_update);
+    }
+
+    #[test]
+    fn a_stale_plugins_key_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
             &format!(
                 "{}\n[plugins]\nauto_update = true\ntrusted_marketplaces = \
-                 [\"claude-plugins-official\"]\npins = [\"pensive@claude-night-market\"]\n",
+                 [\"claude-plugins-official\"]\n",
                 minimal_config()
             ),
         );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        assert!(config.plugins.auto_update);
-        assert_eq!(config.plugins.trusted_marketplaces, vec!["claude-plugins-official"]);
-        assert_eq!(config.plugins.pins, vec!["pensive@claude-night-market"]);
-
-        assert!(config.plugins.allows_auto_update("supabase@claude-plugins-official"));
         assert!(
-            !config.plugins.allows_auto_update("pensive@claude-night-market"),
-            "a pinned plugin never auto-updates"
-        );
-        assert!(
-            !config.plugins.allows_auto_update("leyline@claude-night-market"),
-            "an untrusted marketplace never auto-updates"
+            load_from_dir(dir.path()).is_err(),
+            "removed keys are rejected, not silently ignored"
         );
     }
 
@@ -1576,9 +1553,6 @@ provider = "anthropic"
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("happy path");
         assert!(!config.plugins.auto_update);
-        assert!(config.plugins.trusted_marketplaces.is_empty());
-        assert!(config.plugins.pins.is_empty());
-        assert!(!config.plugins.allows_auto_update("anything@claude-plugins-official"));
     }
 
     #[test]
