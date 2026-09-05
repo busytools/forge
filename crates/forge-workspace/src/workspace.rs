@@ -653,10 +653,10 @@ fn distinct_catalog_roots(config_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut roots: Vec<PathBuf> = Vec::new();
     for config_dir in config_dirs {
-        if let Some(root) = catalog_scan_root(config_dir) {
-            if seen.insert(root.clone()) {
-                roots.push(root);
-            }
+        if let Some(root) = catalog_scan_root(config_dir)
+            && seen.insert(root.clone())
+        {
+            roots.push(root);
         }
     }
     roots
@@ -13173,10 +13173,15 @@ provider = "anthropic"
     /// would produce.
     #[tokio::test]
     async fn spawn_dispatched_before_the_scan_still_resumes_the_lead() {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_max_level(tracing::Level::DEBUG)
+            .try_init();
         let dir = scan_fixture_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut update_rx = workspace.subscribe().expect("diag: subscribe");
         assert!(!workspace.catalog_ready(), "new_for_test leaves the scan unstarted");
+        eprintln!("[diag] constructed, ready={}", workspace.catalog_ready());
 
         workspace
             .dispatch(Command::StartDefault {
@@ -13184,27 +13189,37 @@ provider = "anthropic"
                 launch_settings: SessionLaunchSettings::default(),
             })
             .expect("dispatch");
+        eprintln!("[diag] StartDefault dispatched");
         workspace
             .dispatch(Command::SpawnProject {
                 project_name: "proj".to_owned(),
                 launch_settings: SessionLaunchSettings::default(),
             })
             .expect("dispatch");
+        eprintln!("[diag] SpawnProject dispatched");
 
         // The spawns are parked on the scan: no pool entry, however
         // long the runtime schedules around it.
         for _ in 0..32 {
             tokio::task::yield_now().await;
         }
+        eprintln!(
+            "[diag] yields done, pool={:?}",
+            workspace.pool.lock().keys().cloned().collect::<Vec<_>>()
+        );
         assert!(
             workspace.pool.lock().is_empty(),
             "a spawn parked on the catalog scan must not reach the pool"
         );
 
         workspace.start_catalog_scan();
+        eprintln!("[diag] scan started");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut iterations: usize = 0;
         loop {
+            iterations += 1;
             if workspace.pool.lock().keys().any(|key| key.as_str() == LEAD_UUID) {
+                eprintln!("[diag] lead pooled after {iterations} iterations");
                 break;
             }
             assert!(
@@ -13230,6 +13245,14 @@ provider = "anthropic"
                     events
                 },
             );
+            if iterations % 100 == 0 {
+                eprintln!(
+                    "[diag] iter {iterations} ready={} pool={:?} catalog_keys={:?}",
+                    workspace.catalog_ready(),
+                    workspace.pool.lock().keys().cloned().collect::<Vec<_>>(),
+                    workspace.catalog.lock().keys().cloned().collect::<Vec<_>>(),
+                );
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
@@ -13517,12 +13540,7 @@ provider = "anthropic"
             project_path.display()
         );
         fs::write(forge_toml_path(cfg.path()), toml).expect("write forge.toml");
-        write_session_fixture(
-            tree.path(),
-            &project_path.display().to_string(),
-            LEAD_UUID,
-            None,
-        );
+        write_session_fixture(tree.path(), &project_path.display().to_string(), LEAD_UUID, None);
         // The fixture writes a literal `projects` dir; the layout under
         // test is one that is NOT named that.
         fs::rename(tree.path().join("projects"), tree.path().join("sessions"))
