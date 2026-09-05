@@ -13175,6 +13175,7 @@ provider = "anthropic"
     async fn spawn_dispatched_before_the_scan_still_resumes_the_lead() {
         let dir = scan_fixture_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut update_rx = workspace.subscribe().expect("diag: subscribe");
         assert!(!workspace.catalog_ready(), "new_for_test leaves the scan unstarted");
 
         workspace
@@ -13208,7 +13209,26 @@ provider = "anthropic"
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "the parked spawn never resumed the lead session"
+                "the parked spawn never resumed the lead session\n\
+                 DIAG ready={} catalog={:?}\n\
+                 DIAG projects={:?}\n\
+                 DIAG pool={:?}\n\
+                 DIAG updates={:?}",
+                workspace.catalog_ready(),
+                workspace.catalog.lock().clone().into_keys().collect::<Vec<_>>(),
+                workspace
+                    .list_projects()
+                    .into_iter()
+                    .map(|p| (p.name.clone(), p.sessions.len()))
+                    .collect::<Vec<_>>(),
+                workspace.pool.lock().keys().cloned().collect::<Vec<_>>(),
+                {
+                    let mut events = Vec::new();
+                    while let Ok(update) = update_rx.try_recv() {
+                        events.push(format!("{update:?}"));
+                    }
+                    events
+                },
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
