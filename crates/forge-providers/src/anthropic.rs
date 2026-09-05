@@ -15,8 +15,8 @@ use forge_primitives::usage::oauth::{OauthUsage, OauthUsageError};
 use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
 
 use crate::helpers::{
-    OAUTH_BETA_HEADER, OAUTH_TIMEOUT, anthropic_windowed_probe, map_extra_usage, map_window,
-    parse_retry_after, system_time_from_epoch, truncated_body_suffix,
+    OAUTH_TIMEOUT, anthropic_windowed_probe, map_extra_usage, map_window, parse_retry_after,
+    system_time_from_epoch, truncated_body_suffix,
 };
 use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, ProviderHost};
 
@@ -136,7 +136,6 @@ fn messages_headers(user_agent: &str, access_token: &str) -> Result<HeaderMap, O
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-    headers.insert("anthropic-beta", HeaderValue::from_static(OAUTH_BETA_HEADER));
     let ua = HeaderValue::from_str(user_agent)
         .map_err(|error| OauthUsageError::Network(format!("bad UA header: {error}")))?;
     headers.insert(USER_AGENT, ua);
@@ -198,8 +197,8 @@ async fn messages_probe(
             body_bytes = body.len(),
             five_hour_status = %unified_header_value(&headers, "5h-status"),
             seven_day_status = %unified_header_value(&headers, "7d-status"),
-            unified_status = %unified_header_value(&headers, "unified-status"),
-            unified_fallback_percentage = %unified_header_value(&headers, "unified-fallback-percentage"),
+            unified_status = %unified_header_value(&headers, "status"),
+            unified_fallback = %unified_header_value(&headers, "fallback"),
             overage_status = %unified_header_value(&headers, "overage-status"),
         );
     } else {
@@ -393,6 +392,9 @@ mod tests {
     const PROBE_RESPONSE_429: &str =
         "HTTP/1.1 429 Too Many Requests\r\nretry-after: 30\r\ncontent-length: 0\r\n\r\n";
 
+    const PROBE_RESPONSE_401: &str =
+        "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: 0\r\n\r\n";
+
     /// Answer one request, then hand the raw request text back so a
     /// test can pin the probe's request shape. The request body is
     /// drained before answering: closing with unread bytes pending
@@ -439,7 +441,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let requests = serve_one(listener, PROBE_RESPONSE_200);
-        let client = reqwest::Client::builder().build().expect("client");
+        let client = reqwest::Client::builder().no_proxy().build().expect("client");
         let headers = tokio::time::timeout(
             Duration::from_secs(5),
             messages_probe(
@@ -476,7 +478,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let _requests = serve_one(listener, PROBE_RESPONSE_429);
-        let client = reqwest::Client::builder().build().expect("client");
+        let client = reqwest::Client::builder().no_proxy().build().expect("client");
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             messages_probe(&client, "claude-code/1.0.0", Some(&format!("http://{addr}")), "tok"),
@@ -491,6 +493,75 @@ mod tests {
             ),
             "got {result:?}",
         );
+    }
+
+    /// A rejected token reaches the loader as Unauthorized - the
+    /// re-mint repair hinges on the classification.
+    #[tokio::test]
+    async fn a_401_is_an_unauthorized_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let _requests = serve_one(listener, PROBE_RESPONSE_401);
+        let client = reqwest::Client::builder().no_proxy().build().expect("client");
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            messages_probe(&client, "claude-code/1.0.0", Some(&format!("http://{addr}")), "tok"),
+        )
+        .await
+        .expect("the probe returns");
+        assert!(matches!(result, Err(OauthUsageError::Unauthorized(401))), "got {result:?}");
+    }
+
+    /// The full unified family the CLI binary enumerates; only the
+    /// two windows map out of it, the rest are ignored.
+    #[test]
+    fn the_complete_unified_family_maps_only_the_two_windows() {
+        let mut headers = unified_header_map();
+        for (name, value) in [
+            ("anthropic-ratelimit-unified-5h-status", "ok"),
+            ("anthropic-ratelimit-unified-7d-status", "ok"),
+            ("anthropic-ratelimit-unified-status", "ok"),
+            ("anthropic-ratelimit-unified-reset", "1767268800"),
+            ("anthropic-ratelimit-unified-representative-claim", "5h"),
+            ("anthropic-ratelimit-unified-fallback", "0"),
+            ("anthropic-ratelimit-unified-overage-status", "active"),
+            ("anthropic-ratelimit-unified-overage-disabled-reason", ""),
+            ("anthropic-ratelimit-unified-grace-status", "none"),
+            ("anthropic-ratelimit-unified-grace-5h-utilization", "0"),
+            ("anthropic-ratelimit-unified-grace-7d-utilization", "0"),
+            ("anthropic-ratelimit-unified-upgrade-paths", "x"),
+        ] {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+        let snapshot = snapshot_from_unified_headers(&headers);
+        let five_hour = snapshot.five_hour.expect("five hour window");
+        assert!((five_hour.utilization - 53.0).abs() < 1e-9, "got {}", five_hour.utilization);
+        let seven_day = snapshot.seven_day.expect("seven day window");
+        assert!((seven_day.utilization - 6.0).abs() < 1e-9, "got {}", seven_day.utilization);
+        assert!(snapshot.seven_day_opus.is_none());
+        assert!(snapshot.seven_day_sonnet.is_none());
+        assert!(snapshot.extra_usage.is_none());
+        assert!(snapshot.spend.is_none());
+    }
+
+    /// Either header alone is a legal shape: utilization without a
+    /// reset maps a window with no reset instant, and a reset without
+    /// utilization maps no window at all.
+    #[test]
+    fn a_partial_window_maps_what_is_present() {
+        let mut utilization_only = HeaderMap::new();
+        utilization_only
+            .insert("anthropic-ratelimit-unified-5h-utilization", HeaderValue::from_static("0.2"));
+        let snapshot = snapshot_from_unified_headers(&utilization_only);
+        let five_hour = snapshot.five_hour.expect("window from utilization alone");
+        assert!((five_hour.utilization - 20.0).abs() < 1e-9, "got {}", five_hour.utilization);
+        assert_eq!(five_hour.resets_at, None);
+
+        let mut reset_only = HeaderMap::new();
+        reset_only
+            .insert("anthropic-ratelimit-unified-7d-reset", HeaderValue::from_static("1767268800"));
+        let snapshot = snapshot_from_unified_headers(&reset_only);
+        assert!(snapshot.seven_day.is_none(), "a reset without utilization maps no window");
     }
 
     #[test]
