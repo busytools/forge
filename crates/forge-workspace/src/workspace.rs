@@ -10921,6 +10921,35 @@ provider = "anthropic"
         );
     }
 
+    /// The respawn scan writes its tag rows back to redb, so the next
+    /// boot starts warm instead of re-reading every transcript end to
+    /// end.
+    #[tokio::test]
+    async fn respawn_scan_persists_the_tag_cache() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, path, session_id) = resumable_worker_fixture(&project, &cfg);
+
+        ws.respawn_workers_for_lead("lead-uuid".to_owned(), key, path, false);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let cached = {
+                let db = ws.db.lock();
+                crate::store::session_tags::load_all(db.as_ref().expect("test db present"))
+                    .expect("load persisted cache")
+            };
+            if cached.keys().any(|key| key.contains(&session_id)) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the respawn scan never persisted the transcript's tag row"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     /// `--new`: the same fixture skips the scan entirely, so the worker
     /// that WOULD have resumed spawns fresh. Paired with the test above
     /// deliberately - against a fixture with nothing resumable both
