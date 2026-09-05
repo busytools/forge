@@ -11,9 +11,8 @@
 //! Outline of one iteration:
 //! 1. The account's provider backend resolves the credential: the
 //!    macOS keychain, or the account's `CLAUDE_CODE_OAUTH_TOKEN` when
-//!    it is token-mode (the endpoint's `oauth_scope_insufficient`
-//!    refusal is the valid-token verdict and settles to a barless
-//!    Ready snapshot).
+//!    it is token-mode (a valid token is probed via a minimal billed
+//!    messages call whose headers carry the usage windows).
 //! 2. Probe through the backend.
 //! 3. Branch on the probe result:
 //!    - 200 -> snapshot stored via `set_usage`, transitions to

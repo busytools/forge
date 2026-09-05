@@ -1,18 +1,22 @@
-//! The Anthropic backend: macOS keychain or setup-token credentials
-//! against the default-host `/api/oauth/usage` endpoint. The keychain
-//! path maps strictly (a 200 must carry the five-hour window); the
-//! token path settles the endpoint's scope refusal and maps leniently.
+//! The Anthropic backend. Keychain credentials probe the default-host
+//! `/api/oauth/usage` endpoint with strict mapping. Token-mode
+//! credentials probe a minimal billed `/v1/messages` call instead -
+//! the usage endpoint refuses setup tokens, while a 200 response
+//! there carries the `anthropic-ratelimit-unified-*` windows as
+//! headers.
 
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
+use serde_json::json;
 
 use forge_primitives::usage::oauth::{OauthUsage, OauthUsageError};
-use forge_primitives::usage::{UsageSnapshot, UsageSourceKind};
+use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
 
 use crate::helpers::{
-    OAUTH_TIMEOUT, anthropic_windowed_probe, map_extra_usage, map_window,
-    snapshot_from_payload_lenient,
+    OAUTH_TIMEOUT, anthropic_windowed_probe, map_extra_usage, map_window, parse_retry_after,
+    system_time_from_epoch, truncated_body_suffix,
 };
 use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, ProviderHost};
 
@@ -64,32 +68,20 @@ impl ProviderBackend for Anthropic {
         host: &dyn ProviderHost,
     ) -> Result<UsageSnapshot, ProbeError> {
         match choose_mapper(token_bearer(account.env)) {
-            Mapper::Lenient(bearer) => {
+            Mapper::Token(bearer) => {
                 let ua = host.user_agent().await.map_err(OauthUsageError::UaProbe)?;
                 let client = host.http_client(OAUTH_TIMEOUT).map_err(OauthUsageError::Network)?;
-                let settled = accept_scope_refusal(
-                    anthropic_windowed_probe(&client, &ua, None, bearer).await,
+                let headers =
+                    messages_probe(&client, &ua, None, bearer).await.map_err(ProbeError::Fetch)?;
+                tracing::info!(
+                    target: "forge_providers::anthropic",
+                    event_name = "unified_usage_probe_settled",
+                    outcome = "ok",
+                    "token account unified usage probe settled",
                 );
-                match &settled {
-                    Ok(_) => tracing::info!(
-                        target: "forge_providers::anthropic",
-                        event_name = "oauth_usage_setup_token_settled",
-                        outcome = "ok",
-                        "setup token usage probe settled",
-                    ),
-                    Err(OauthUsageError::Unauthorized(403)) => tracing::warn!(
-                        target: "forge_providers::anthropic",
-                        event_name = "oauth_usage_setup_token_unrecognized_403",
-                        outcome = "non_ok",
-                        "403 without the oauth_scope_insufficient shape: if the token was just \
-                         re-minted, suspect a changed refusal body rather than a dead token",
-                    ),
-                    _ => {}
-                }
-                let payload = settled.map_err(ProbeError::Fetch)?;
-                Ok(snapshot_from_payload_lenient(payload))
+                Ok(snapshot_from_unified_headers(&headers))
             }
-            Mapper::Strict => {
+            Mapper::Keychain => {
                 let Some(credentials) = host.keychain(account.config_dir) else {
                     return Err(ProbeError::NoCredentials);
                 };
@@ -105,37 +97,168 @@ impl ProviderBackend for Anthropic {
     }
 }
 
-/// The mapper an arm applies, paired with the credential that earns
-/// it: the token arm maps leniently (the settled empty payload must
-/// map), the keychain arm strictly (a 200 without the session window
-/// is response-shape drift). Pure so the routing stays unit-pinned -
-/// routing the seven-day-only shape to the strict mapper is a bug that
-/// has shipped before and flipped accounts to fetch errors every 5h
-/// cycle.
+/// The arm an account's credentials earn, paired with the credential
+/// that earns it: the token arm runs the minimal messages probe, the
+/// keychain arm the windowed `/api/oauth/usage` probe. Pure so the
+/// routing stays unit-pinned - routing a keychain account onto the
+/// token arm bills probe calls against a credential it does not own.
 fn choose_mapper(token: Option<&str>) -> Mapper<'_> {
     match token {
-        Some(bearer) => Mapper::Lenient(bearer),
-        None => Mapper::Strict,
+        Some(bearer) => Mapper::Token(bearer),
+        None => Mapper::Keychain,
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum Mapper<'a> {
-    Lenient(&'a str),
-    Strict,
+    Token(&'a str),
+    Keychain,
 }
 
-/// Settle a token-mode probe result: the scope refusal is the verdict
-/// on a valid setup token, so it becomes the empty payload the lenient
-/// mapper turns into a barless snapshot. Every other error passes
-/// through untouched - a 401 must still reach the loader as
-/// `Unauthorized` and bail.
-fn accept_scope_refusal(
-    result: Result<OauthUsage, OauthUsageError>,
-) -> Result<OauthUsage, OauthUsageError> {
-    match result {
-        Err(OauthUsageError::ScopeInsufficient) => Ok(OauthUsage::default()),
-        other => other,
+/// The token probe's model: the cheapest haiku-class ID; its retired
+/// predecessor 404s, and 404s carry no headers.
+const PROBE_MODEL: &str = "claude-haiku-4-5";
+
+const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
+const UNIFIED_PREFIX: &str = "anthropic-ratelimit-unified-";
+
+/// `/v1/messages` on the official host, or an override with any
+/// trailing slash trimmed. Production always passes `None`: the
+/// unified headers only ride the official base.
+fn messages_url(base_url: Option<&str>) -> String {
+    match base_url {
+        Some(base) => format!("{}/v1/messages", base.trim_end_matches('/')),
+        None => MESSAGES_URL.to_owned(),
+    }
+}
+
+fn messages_headers(user_agent: &str, access_token: &str) -> Result<HeaderMap, OauthUsageError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    let ua = HeaderValue::from_str(user_agent)
+        .map_err(|error| OauthUsageError::Network(format!("bad UA header: {error}")))?;
+    headers.insert(USER_AGENT, ua);
+    let bearer = HeaderValue::from_str(&format!("Bearer {access_token}"))
+        .map_err(|error| OauthUsageError::Network(format!("bad bearer header: {error}")))?;
+    headers.insert(AUTHORIZATION, bearer);
+    Ok(headers)
+}
+
+/// One round-trip against `/v1/messages` with the minimal probe call:
+/// the cheapest haiku model, `max_tokens` 1, a tiny input - about
+/// nine billed tokens. On a 200 the response headers carry the
+/// unified windows, so the HeaderMap is the payload; every other
+/// status classifies exactly like the windowed probe so the loader
+/// and poller treat both probes alike.
+async fn messages_probe(
+    client: &reqwest::Client,
+    user_agent: &str,
+    base_url: Option<&str>,
+    access_token: &str,
+) -> Result<HeaderMap, OauthUsageError> {
+    let payload = json!({
+        "model": PROBE_MODEL,
+        "max_tokens": 1,
+        "messages": [{ "role": "user", "content": "hi" }],
+    });
+    let response = client
+        .post(messages_url(base_url))
+        .headers(messages_headers(user_agent, access_token)?)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| OauthUsageError::Network(error.to_string()))?;
+
+    let status = response.status().as_u16();
+    // Parse Retry-After BEFORE consuming the response body - once we
+    // call .bytes() the response object is moved.
+    let retry_after = if status == 429 {
+        response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_retry_after)
+    } else {
+        None
+    };
+    let headers = response.headers().clone();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
+
+    if status == 200 {
+        tracing::debug!(
+            target: "forge_providers::anthropic",
+            event_name = "unified_usage_response",
+            status,
+            outcome = "ok",
+            body_bytes = body.len(),
+            five_hour_status = %unified_header_value(&headers, "5h-status"),
+            seven_day_status = %unified_header_value(&headers, "7d-status"),
+            unified_status = %unified_header_value(&headers, "status"),
+            unified_fallback = %unified_header_value(&headers, "fallback"),
+            overage_status = %unified_header_value(&headers, "overage-status"),
+        );
+    } else {
+        tracing::warn!(
+            target: "forge_providers::anthropic",
+            event_name = "unified_usage_response",
+            status,
+            outcome = "non_ok",
+            retry_after_secs = ?retry_after.map(|duration| duration.as_secs()),
+            body_suffix = %truncated_body_suffix(&body),
+        );
+    }
+
+    match status {
+        200 => Ok(headers),
+        401 | 403 => Err(OauthUsageError::Unauthorized(status)),
+        429 => Err(OauthUsageError::RateLimited { retry_after }),
+        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+    }
+}
+
+fn unified_header_value(headers: &HeaderMap, suffix: &str) -> String {
+    headers
+        .get(format!("{UNIFIED_PREFIX}{suffix}"))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// One unified window off the 200's headers: utilization arrives on a
+/// 0..1 scale and maps into the snapshot's percentage scale, the reset
+/// arrives as an epoch. Each header is independently optional.
+fn unified_window(headers: &HeaderMap, window: &str) -> Option<UsageWindow> {
+    let utilization = headers
+        .get(format!("{UNIFIED_PREFIX}{window}-utilization"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .map(|raw| (raw * 100.0).clamp(0.0, 100.0))?;
+    let resets_at = headers
+        .get(format!("{UNIFIED_PREFIX}{window}-reset"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .and_then(system_time_from_epoch);
+    Some(UsageWindow { utilization, resets_at, reset_description: None })
+}
+
+/// Map a 200's unified headers into a snapshot. Lenient by design: a
+/// 200 without the unified headers (an API-key bearer rather than a
+/// plan credential, or a plan without unified limits) is the barless
+/// row the scope refusal used to settle to, not a fetch error.
+fn snapshot_from_unified_headers(headers: &HeaderMap) -> UsageSnapshot {
+    UsageSnapshot {
+        source: UsageSourceKind::Oauth,
+        fetched_at: std::time::SystemTime::now(),
+        five_hour: unified_window(headers, "5h"),
+        seven_day: unified_window(headers, "7d"),
+        seven_day_opus: None,
+        seven_day_sonnet: None,
+        extra_usage: None,
+        spend: None,
     }
 }
 
@@ -164,7 +287,7 @@ fn snapshot_from_payload(payload: OauthUsage) -> Result<UsageSnapshot, ProbeErro
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use async_trait::async_trait;
 
@@ -188,39 +311,257 @@ mod tests {
         assert_eq!(token_bearer(&HashMap::new()), None);
     }
 
-    /// The arm-routing pin: a token credential earns the lenient
-    /// mapper, the keychain earns the strict one. Inverting this sent
-    /// the seven-day-only shape to the strict mapper and flipped
-    /// accounts to fetch errors every 5h cycle.
+    /// The arm-routing pin: a token credential earns the token arm
+    /// (the minimal messages probe), the keychain the windowed
+    /// `/api/oauth/usage` probe. Inverting this bills probe calls
+    /// against a credential the account does not own.
     #[test]
-    fn token_bearer_earns_the_lenient_mapper_and_keychain_the_strict() {
-        assert_eq!(choose_mapper(Some("tok")), Mapper::Lenient("tok"));
-        assert_eq!(choose_mapper(None), Mapper::Strict);
+    fn token_bearer_earns_the_token_arm_and_keychain_the_windowed_arm() {
+        assert_eq!(choose_mapper(Some("tok")), Mapper::Token("tok"));
+        assert_eq!(choose_mapper(None), Mapper::Keychain);
     }
 
-    /// The neutral settlement: a scope refusal maps to the empty
-    /// payload the lenient mapper turns into an all-absent snapshot,
-    /// while every other error passes through untouched - a revoked
-    /// token must reach the loader as Unauthorized and bail.
-    #[test]
-    fn accept_scope_refusal_neutralizes_only_the_scope_refusal() {
-        let refused = accept_scope_refusal(Err(OauthUsageError::ScopeInsufficient));
-        assert_eq!(
-            refused,
-            Ok(OauthUsage::default()),
-            "a scope refusal settles to the empty payload"
-        );
+    fn unified_header_map() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in [
+            ("anthropic-ratelimit-unified-5h-utilization", "0.53"),
+            ("anthropic-ratelimit-unified-5h-reset", "1766664000"),
+            ("anthropic-ratelimit-unified-7d-utilization", "0.06"),
+            ("anthropic-ratelimit-unified-7d-reset", "1767268800"),
+        ] {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+        headers
+    }
 
-        let rejected = accept_scope_refusal(Err(OauthUsageError::Unauthorized(401)));
-        assert!(
-            matches!(rejected, Err(OauthUsageError::Unauthorized(401))),
-            "a rejected token stays an auth error; got {rejected:?}",
+    /// The unified utilization rides the headers on a 0..1 scale; the
+    /// snapshot's windows are percentages, so the mapping scales it
+    /// and the reset epoch lands on SystemTime.
+    #[test]
+    fn unified_headers_map_both_windows() {
+        let snapshot = snapshot_from_unified_headers(&unified_header_map());
+        let five_hour = snapshot.five_hour.expect("five hour window");
+        assert!((five_hour.utilization - 53.0).abs() < 1e-9, "got {}", five_hour.utilization);
+        assert_eq!(
+            five_hour.resets_at,
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_766_664_000)),
         );
-        let transient = accept_scope_refusal(Err(OauthUsageError::HttpStatus(500, String::new())));
-        assert!(
-            matches!(transient, Err(OauthUsageError::HttpStatus(500, _))),
-            "a transient error keeps its class; got {transient:?}",
+        let seven_day = snapshot.seven_day.expect("seven day window");
+        assert!((seven_day.utilization - 6.0).abs() < 1e-9, "got {}", seven_day.utilization);
+        assert_eq!(
+            seven_day.resets_at,
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_767_268_800)),
         );
+        assert!(snapshot.seven_day_opus.is_none());
+        assert!(snapshot.seven_day_sonnet.is_none());
+        assert_eq!(snapshot.source, UsageSourceKind::Oauth);
+    }
+
+    #[test]
+    fn unified_utilization_clamps_to_the_percentage_range() {
+        let mut headers = HeaderMap::new();
+        headers
+            .insert("anthropic-ratelimit-unified-5h-utilization", HeaderValue::from_static("1.4"));
+        let window = unified_window(&headers, "5h").expect("window");
+        assert!((window.utilization - 100.0).abs() < f64::EPSILON, "got {}", window.utilization);
+    }
+
+    /// A 200 without the unified headers - an API-key bearer rather
+    /// than a plan credential, or a plan without unified limits -
+    /// maps to the barless snapshot the scope refusal used to settle
+    /// to, not a fetch error.
+    #[test]
+    fn a_200_without_unified_headers_maps_to_a_barless_snapshot() {
+        let snapshot = snapshot_from_unified_headers(&HeaderMap::new());
+        assert!(snapshot.five_hour.is_none());
+        assert!(snapshot.seven_day.is_none());
+        assert_eq!(snapshot.source, UsageSourceKind::Oauth);
+    }
+
+    const PROBE_RESPONSE_200: &str = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "content-type: application/json\r\n",
+        "anthropic-ratelimit-unified-5h-status: ok\r\n",
+        "anthropic-ratelimit-unified-5h-utilization: 0.21\r\n",
+        "anthropic-ratelimit-unified-5h-reset: 1766664000\r\n",
+        "anthropic-ratelimit-unified-7d-utilization: 0.15\r\n",
+        "anthropic-ratelimit-unified-7d-reset: 1767268800\r\n",
+        "content-length: 2\r\n\r\n{}",
+    );
+
+    const PROBE_RESPONSE_429: &str =
+        "HTTP/1.1 429 Too Many Requests\r\nretry-after: 30\r\ncontent-length: 0\r\n\r\n";
+
+    const PROBE_RESPONSE_401: &str =
+        "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: 0\r\n\r\n";
+
+    /// Answer one request, then hand the raw request text back so a
+    /// test can pin the probe's request shape. The request body is
+    /// drained before answering: closing with unread bytes pending
+    /// sends an RST that can destroy the in-flight response.
+    fn serve_one(
+        listener: std::net::TcpListener,
+        response: &'static str,
+    ) -> std::sync::mpsc::Receiver<String> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write as _};
+            let Ok((mut sock, _)) = listener.accept() else { return };
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                match sock.read(&mut byte) {
+                    Ok(1) => request.push(byte[0]),
+                    _ => return,
+                }
+            }
+            let length: usize = String::from_utf8_lossy(&request)
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or(0);
+            for _ in 0..length {
+                match sock.read(&mut byte) {
+                    Ok(1) => request.push(byte[0]),
+                    _ => return,
+                }
+            }
+            let _ = sock.write_all(response.as_bytes());
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+            let _ = sender.send(String::from_utf8_lossy(&request).to_string());
+        });
+        receiver
+    }
+
+    /// The offline round-trip: the probe posts the minimal call to
+    /// /v1/messages and the 200's headers map into windows. The
+    /// bearer here is a fake; no credential material is printed.
+    #[tokio::test]
+    async fn the_messages_probe_posts_the_minimal_call_and_maps_the_headers() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let requests = serve_one(listener, PROBE_RESPONSE_200);
+        let client = reqwest::Client::builder().no_proxy().build().expect("client");
+        let headers = tokio::time::timeout(
+            Duration::from_secs(5),
+            messages_probe(
+                &client,
+                "claude-code/1.0.0",
+                Some(&format!("http://{addr}")),
+                "probe-token",
+            ),
+        )
+        .await
+        .expect("the probe returns")
+        .expect("probe");
+        let request =
+            requests.recv_timeout(Duration::from_secs(5)).expect("the server saw a request");
+        assert!(request.starts_with("POST /v1/messages "), "got {request:?}");
+        assert!(request.contains("anthropic-version: 2023-06-01"));
+        assert!(request.contains("authorization: Bearer probe-token"));
+        assert!(request.contains("user-agent: claude-code/1.0.0"));
+        assert!(request.contains("\"max_tokens\":1"));
+        assert!(request.contains("\"model\":\"claude-haiku-4-5\""));
+
+        let snapshot = snapshot_from_unified_headers(&headers);
+        let five_hour = snapshot.five_hour.expect("five hour window");
+        assert!((five_hour.utilization - 21.0).abs() < 1e-9, "got {}", five_hour.utilization);
+        let seven_day = snapshot.seven_day.expect("seven day window");
+        assert!((seven_day.utilization - 15.0).abs() < 1e-9, "got {}", seven_day.utilization);
+    }
+
+    /// A 429 classifies as RateLimited carrying the server Retry-After
+    /// - the headers-only-on-200 contract means an error response can
+    /// never be read as a window.
+    #[tokio::test]
+    async fn a_429_is_a_rate_limited_error_with_the_retry_after() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let _requests = serve_one(listener, PROBE_RESPONSE_429);
+        let client = reqwest::Client::builder().no_proxy().build().expect("client");
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            messages_probe(&client, "claude-code/1.0.0", Some(&format!("http://{addr}")), "tok"),
+        )
+        .await
+        .expect("the probe returns");
+        assert!(
+            matches!(
+                result,
+                Err(OauthUsageError::RateLimited { retry_after: Some(retry_after) })
+                    if retry_after == Duration::from_secs(30)
+            ),
+            "got {result:?}",
+        );
+    }
+
+    /// A rejected token reaches the loader as Unauthorized - the
+    /// re-mint repair hinges on the classification.
+    #[tokio::test]
+    async fn a_401_is_an_unauthorized_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let _requests = serve_one(listener, PROBE_RESPONSE_401);
+        let client = reqwest::Client::builder().no_proxy().build().expect("client");
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            messages_probe(&client, "claude-code/1.0.0", Some(&format!("http://{addr}")), "tok"),
+        )
+        .await
+        .expect("the probe returns");
+        assert!(matches!(result, Err(OauthUsageError::Unauthorized(401))), "got {result:?}");
+    }
+
+    /// The full unified family the CLI binary enumerates; only the
+    /// two windows map out of it, the rest are ignored.
+    #[test]
+    fn the_complete_unified_family_maps_only_the_two_windows() {
+        let mut headers = unified_header_map();
+        for (name, value) in [
+            ("anthropic-ratelimit-unified-5h-status", "ok"),
+            ("anthropic-ratelimit-unified-7d-status", "ok"),
+            ("anthropic-ratelimit-unified-status", "ok"),
+            ("anthropic-ratelimit-unified-reset", "1767268800"),
+            ("anthropic-ratelimit-unified-representative-claim", "5h"),
+            ("anthropic-ratelimit-unified-fallback", "0"),
+            ("anthropic-ratelimit-unified-overage-status", "active"),
+            ("anthropic-ratelimit-unified-overage-disabled-reason", ""),
+            ("anthropic-ratelimit-unified-grace-status", "none"),
+            ("anthropic-ratelimit-unified-grace-5h-utilization", "0"),
+            ("anthropic-ratelimit-unified-grace-7d-utilization", "0"),
+            ("anthropic-ratelimit-unified-upgrade-paths", "x"),
+        ] {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+        let snapshot = snapshot_from_unified_headers(&headers);
+        let five_hour = snapshot.five_hour.expect("five hour window");
+        assert!((five_hour.utilization - 53.0).abs() < 1e-9, "got {}", five_hour.utilization);
+        let seven_day = snapshot.seven_day.expect("seven day window");
+        assert!((seven_day.utilization - 6.0).abs() < 1e-9, "got {}", seven_day.utilization);
+        assert!(snapshot.seven_day_opus.is_none());
+        assert!(snapshot.seven_day_sonnet.is_none());
+        assert!(snapshot.extra_usage.is_none());
+        assert!(snapshot.spend.is_none());
+    }
+
+    /// Either header alone is a legal shape: utilization without a
+    /// reset maps a window with no reset instant, and a reset without
+    /// utilization maps no window at all.
+    #[test]
+    fn a_partial_window_maps_what_is_present() {
+        let mut utilization_only = HeaderMap::new();
+        utilization_only
+            .insert("anthropic-ratelimit-unified-5h-utilization", HeaderValue::from_static("0.2"));
+        let snapshot = snapshot_from_unified_headers(&utilization_only);
+        let five_hour = snapshot.five_hour.expect("window from utilization alone");
+        assert!((five_hour.utilization - 20.0).abs() < 1e-9, "got {}", five_hour.utilization);
+        assert_eq!(five_hour.resets_at, None);
+
+        let mut reset_only = HeaderMap::new();
+        reset_only
+            .insert("anthropic-ratelimit-unified-7d-reset", HeaderValue::from_static("1767268800"));
+        let snapshot = snapshot_from_unified_headers(&reset_only);
+        assert!(snapshot.seven_day.is_none(), "a reset without utilization maps no window");
     }
 
     #[test]

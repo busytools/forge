@@ -4976,10 +4976,10 @@ pub(crate) fn classify_oauth_usage_error(
             OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
             OauthUsageError::UaProbe(_)
             | OauthUsageError::HttpStatus(_, _)
-            // The token-mode arms convert a scope refusal before it gets
-            // here; reaching this arm means it arrived on a non-token
-            // path (keychain or base-url), which is not an auth failure
-            // either.
+            // No probe converts a scope refusal any more - the token
+            // arm calls /v1/messages, which has no scope refusal - so
+            // this arrives from the keychain or base-url path, which
+            // is not an auth failure either.
             | OauthUsageError::ScopeInsufficient
             | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
         },
