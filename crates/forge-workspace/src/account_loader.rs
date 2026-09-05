@@ -14,8 +14,7 @@
 //!    it is token-mode (`ProbePlan::Token`; the endpoint's
 //!    `oauth_scope_insufficient` refusal is the valid-token verdict
 //!    and settles to a barless Ready snapshot).
-//! 2. Probe through the backend (the not-yet-migrated zai arm still
-//!    probes via `oauth_usage` directly).
+//! 2. Probe through the backend.
 //! 3. Branch on the probe result:
 //!    - 200 -> snapshot stored via `set_usage`, transitions to
 //!      `Ready`, task exits.
@@ -39,7 +38,7 @@ use std::time::Duration;
 
 use tracing::Instrument;
 
-use forge_agent::cloud::{auth_status, oauth, oauth_credentials, oauth_usage};
+use forge_agent::cloud::{auth_status, oauth_credentials, oauth_usage};
 use forge_primitives::usage::oauth::OauthUsageError;
 
 use crate::account::{AccountKey, LoadingState, UsageFetchStatus};
@@ -191,22 +190,15 @@ pub async fn run_account_loading(
         };
         let plan = oauth_usage::probe_plan(provider, &account_env);
         let env_bearer = crate::provider_probe::env_bearer(provider, &account_env);
-        // Probe and map together: each plan returns a different body.
+        // Probe and map together: every plan routes through the
+        // backend now - credential resolution, the probe and the
+        // mapping are its business.
         let probe_result = match &plan {
-            // The backend-routed plans (anthropic keychain/token, and
-            // codex + openrouter, whose plans died with their arms):
-            // credential resolution, the probe and the mapping are the
-            // backend's.
             oauth_usage::ProbePlan::Keychain | oauth_usage::ProbePlan::Token { .. } => {
                 crate::provider_probe::flatten_probe_error(
                     crate::provider_probe::probe_via_backend(provider, &config_dir, &account_env)
                         .await,
                 )
-            }
-            oauth_usage::ProbePlan::ZaiMonitor { base_url, bearer } => {
-                oauth_usage::probe_zai_monitor(base_url, bearer)
-                    .await
-                    .map(oauth::snapshot_from_zai_quota)
             }
         };
 

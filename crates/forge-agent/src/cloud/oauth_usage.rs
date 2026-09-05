@@ -1,17 +1,13 @@
 //! Provider probe entry points not yet behind the forge-providers
-//! backends: the [`ProbePlan`] decision and the Z.ai monitor probe.
-//! Each PR of #873 moves an arm into forge-providers; this module
-//! shrinks until `ProbePlan` is deleted.
+//! backends: the [`ProbePlan`] decision that routes each caller to
+//! its backend. Each PR of #873 moves an arm into forge-providers;
+//! this module shrinks until `ProbePlan` is deleted.
 
 use std::collections::HashMap;
 
-use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
-
 pub use forge_primitives::account::Provider;
 pub use forge_primitives::usage::oauth::OauthUsageError;
-use forge_primitives::usage::zai::{QuotaLimitData, QuotaLimitResponse};
 
-use forge_providers::helpers::{OAUTH_TIMEOUT, truncated_body_suffix};
 use forge_providers::token_bearer;
 
 /// True when `env` carries a non-empty `CLAUDE_CODE_OAUTH_TOKEN`.
@@ -27,16 +23,16 @@ pub fn is_token_mode<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>
 /// decision so the probe source AND the response-mapping strictness
 /// stay in lockstep.
 ///
-/// Deliberately not [`Provider`] itself: several variants carry a
+/// Deliberately not [`Provider`] itself: the Token variant carries a
 /// bearer, so this type must not cross into a view the TUI renders.
 /// `forge_workspace::AccountAuth` is the secret-free counterpart.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProbePlan {
     /// Normal Anthropic account: default host + macOS keychain bearer,
     /// strict mapping (a 200 must carry the five-hour window), and the
-    /// CLI-spawn auth-recovery refresh on a 401. Codex and OpenRouter
-    /// return this too, as a bare route selector for their backend -
-    /// see [`probe_plan`].
+    /// CLI-spawn auth-recovery refresh on a 401. Codex, OpenRouter and
+    /// Zai return this too, as a bare route selector for their backend
+    /// - see [`probe_plan`].
     Keychain,
     /// Token-mode Anthropic account: default host + the
     /// `CLAUDE_CODE_OAUTH_TOKEN` setup token from `[accounts.env]`, no
@@ -47,33 +43,19 @@ pub enum ProbePlan {
     /// which maps leniently to a barless Ready snapshot. A 401 is a
     /// genuinely rejected token and still classifies `Unauthorized`.
     Token { bearer: String },
-    /// Z.ai GLM coding plan: probe
-    /// `{host_root}/api/monitor/usage/quota/limit` where `host_root`
-    /// is the scheme+host of the account's `ANTHROPIC_BASE_URL` (the
-    /// base itself carries `/api/anthropic` for the chat API; the
-    /// monitor paths live off the site root). The key is sent raw,
-    /// without a Bearer prefix.
-    ZaiMonitor { base_url: String, bearer: String },
 }
 
 /// Derive the [`ProbePlan`] for an account from its declared
-/// [`Provider`]. The provider alone decides the shape; `env` fills in
-/// the base url and bearer a base-url provider authenticates with, and
-/// a non-base-url provider's setup token flips the plan to
-/// [`ProbePlan::Token`]. `ANTHROPIC_BASE_URL` decides nothing, because
-/// it answers where the credential lives rather than what the backend
-/// bills for.
+/// [`Provider`]. The provider alone decides the shape; a non-base-url
+/// provider's setup token flips the plan to [`ProbePlan::Token`].
+/// `ANTHROPIC_BASE_URL` decides nothing, because it answers where the
+/// credential lives rather than what the backend bills for.
 ///
-/// Codex and OpenRouter have no plan of their own: their
+/// Codex, OpenRouter and Zai have no plan of their own: their
 /// forge-providers backends derive the base-url credential from `env`
 /// itself, so they return a bare [`ProbePlan::Keychain`] that only
 /// selects the caller's backend-routed arm. The env-bearer repair
 /// class is derived from the provider + env, never from this value.
-///
-/// Config load rejects a base-url provider with no `ANTHROPIC_BASE_URL`
-/// (`WorkspaceError::AccountProviderNeedsBaseUrl`), so the empty-base
-/// case here is unreachable in production and falls back to the
-/// keychain rather than probing a malformed url.
 pub fn probe_plan<S: std::hash::BuildHasher>(
     provider: Provider,
     env: &HashMap<String, String, S>,
@@ -84,142 +66,7 @@ pub fn probe_plan<S: std::hash::BuildHasher>(
             None => ProbePlan::Keychain,
         };
     }
-    if provider == Provider::Codex || provider == Provider::Openrouter {
-        return ProbePlan::Keychain;
-    }
-    let Some(base_url) =
-        env.get("ANTHROPIC_BASE_URL").map(|value| value.trim()).filter(|value| !value.is_empty())
-    else {
-        // Falling back to Keychain here would send a base-url account
-        // down the keychain path, where a 401 fires billed `claude -p hi`
-        // refreshes against a token its probe never reads.
-        debug_assert!(false, "config load rejects a base-url provider with no ANTHROPIC_BASE_URL");
-        return ProbePlan::Keychain;
-    };
-    let bearer = env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str).unwrap_or_default();
-    let (base_url, bearer) = (base_url.to_owned(), bearer.to_owned());
-    match provider {
-        Provider::Zai => ProbePlan::ZaiMonitor { base_url, bearer },
-        // Unreachable: anthropic took the !uses_base_url return above;
-        // codex and openrouter took the backend-selector return above.
-        Provider::Anthropic | Provider::Codex | Provider::Openrouter => ProbePlan::Keychain,
-    }
-}
-
-/// The scheme+host of an account's `ANTHROPIC_BASE_URL` - everything
-/// before the first path segment. The Z.ai monitor paths live off the
-/// site root (`https://api.z.ai`), never under the `/api/anthropic`
-/// chat prefix the base carries.
-fn zai_monitor_host(base_url: &str) -> &str {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    let after = trimmed.split_once("://").map_or(trimmed, |(_, rest)| rest);
-    let host = after.split('/').next().unwrap_or_default();
-    if host.is_empty() {
-        return trimmed;
-    }
-    &trimmed[..trimmed.len() - after.len() + host.len()]
-}
-
-fn zai_monitor_url(base_url: &str) -> String {
-    format!("{}/api/monitor/usage/quota/limit", zai_monitor_host(base_url))
-}
-
-fn zai_headers(key: &str) -> Result<HeaderMap, OauthUsageError> {
-    let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    let auth = HeaderValue::from_str(key)
-        .map_err(|error| OauthUsageError::Network(format!("bad auth header: {error}")))?;
-    headers.insert(AUTHORIZATION, auth);
-    Ok(headers)
-}
-
-/// One round-trip against `{host_root}/api/monitor/usage/quota/limit`
-/// for a Z.ai GLM coding plan account. Shares [`OauthUsageError`] with
-/// the window probes so the loader and poller classify failures the
-/// same way regardless of provider.
-pub async fn probe_zai_monitor(
-    base_url: &str,
-    bearer: &str,
-) -> Result<QuotaLimitData, OauthUsageError> {
-    let headers = zai_headers(bearer)?;
-    let client = crate::http_trust::with_extra_roots(
-        reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
-    )
-    .build()
-    .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
-
-    let response = client
-        .get(zai_monitor_url(base_url))
-        .send()
-        .await
-        .map_err(|error| OauthUsageError::Network(error.to_string()))?;
-
-    let status = response.status().as_u16();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
-
-    if status == 200 {
-        tracing::trace!(
-            target: "forge_agent::cloud::oauth_usage",
-            event_name = "zai_monitor_response",
-            status,
-            outcome = "ok",
-            body_bytes = body.len(),
-        );
-    } else {
-        tracing::warn!(
-            target: "forge_agent::cloud::oauth_usage",
-            event_name = "zai_monitor_response",
-            status,
-            outcome = "non_ok",
-            body_suffix = %truncated_body_suffix(&body),
-        );
-    }
-
-    match status {
-        200 => zai_quota_from_body(&body),
-        401 | 403 => Err(OauthUsageError::Unauthorized(status)),
-        429 => Err(OauthUsageError::RateLimited { retry_after: None }),
-        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
-    }
-}
-
-/// Parse a Z.ai monitor body. The HTTP layer carries no verdict - a
-/// wrong key and a wrong path arrive as HTTP 200 - so the envelope is
-/// decoded unconditionally and keyed on `success`/`code`. A body-level
-/// 401 (wrong key) surfaces as [`OauthUsageError::Unauthorized`] so it
-/// bails the boot probe like a real auth rejection; every other
-/// failure keeps the envelope's `msg`.
-fn zai_quota_from_body(body: &[u8]) -> Result<QuotaLimitData, OauthUsageError> {
-    if String::from_utf8_lossy(body).trim().is_empty() {
-        return Err(OauthUsageError::Decode(
-            "Z.ai monitor answered 200 with an empty body".to_owned(),
-        ));
-    }
-    let envelope: QuotaLimitResponse = serde_json::from_slice(body).map_err(|error| {
-        OauthUsageError::Decode(format!("Z.ai monitor body did not decode: {error}"))
-    })?;
-    let msg = envelope.msg.as_deref().unwrap_or("no msg");
-    if !envelope.success {
-        if envelope.code == Some(401) {
-            return Err(OauthUsageError::Unauthorized(401));
-        }
-        return Err(OauthUsageError::Decode(format!(
-            "Z.ai monitor reported failure (code {}): {msg}",
-            envelope.code.unwrap_or(0),
-        )));
-    }
-    if envelope.code != Some(200) {
-        return Err(OauthUsageError::Decode(format!(
-            "Z.ai monitor reported code {}: {msg}",
-            envelope.code.unwrap_or(0),
-        )));
-    }
-    envelope
-        .data
-        .ok_or_else(|| OauthUsageError::Decode("Z.ai monitor 200 carried no data".to_owned()))
+    ProbePlan::Keychain
 }
 
 #[cfg(test)]
@@ -296,104 +143,14 @@ mod tests {
         assert_eq!(probe_plan(Provider::Anthropic, &env), ProbePlan::Keychain);
     }
 
+    /// Zai has no plan of its own since its backend took the monitor
+    /// probe over: the value only selects the caller's backend-routed
+    /// arm, so a base url in env does not produce a plan of its own.
     #[test]
-    fn probe_plan_zai_probes_its_monitor_host() {
+    fn probe_plan_zai_is_a_bare_backend_route_selector() {
         let mut env = HashMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "https://api.z.ai/api/anthropic".to_owned());
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "zai-key".to_owned());
-        assert_eq!(
-            probe_plan(Provider::Zai, &env),
-            ProbePlan::ZaiMonitor {
-                base_url: "https://api.z.ai/api/anthropic".to_owned(),
-                bearer: "zai-key".to_owned(),
-            },
-            "zai must not share Codex's windowed /api/oauth/usage plan",
-        );
-    }
-
-    #[test]
-    fn zai_monitor_url_derives_the_host_root() {
-        assert_eq!(
-            zai_monitor_url("https://api.z.ai/api/anthropic"),
-            "https://api.z.ai/api/monitor/usage/quota/limit",
-        );
-        assert_eq!(
-            zai_monitor_url("https://api.z.ai/api/anthropic/"),
-            "https://api.z.ai/api/monitor/usage/quota/limit",
-            "trailing slash trimmed so base and base/ behave identically",
-        );
-    }
-
-    #[test]
-    fn zai_headers_send_the_key_raw_without_a_bearer_prefix() {
-        let headers = zai_headers("zai-key").expect("headers");
-        let auth = headers
-            .get(AUTHORIZATION)
-            .expect("auth header set")
-            .to_str()
-            .expect("ascii header value");
-        assert_eq!(auth, "zai-key", "the key goes out raw; no Bearer prefix");
-    }
-
-    /// The verified fresh-account shape: HTTP 200, envelope green, two
-    /// CREDIT_LIMIT windows, 5h entry without a nextResetTime.
-    #[test]
-    fn zai_quota_from_body_maps_the_fresh_account_envelope() {
-        let body = br#"{
-            "code": 200,
-            "msg": "success",
-            "data": {
-                "limits": [
-                    {"type":"CREDIT_LIMIT","unit":3,"number":5,"usage":28000,
-                     "remaining":28000,"percentage":0,"currentValue":0},
-                    {"type":"CREDIT_LIMIT","unit":6,"number":1,"usage":140000,
-                     "remaining":140000,"percentage":0,"currentValue":0,
-                     "nextResetTime":1757000000000}
-                ],
-                "level": "max"
-            },
-            "success": true
-        }"#;
-        let data = zai_quota_from_body(body).expect("a green envelope parses");
-        assert_eq!(data.limits.len(), 2);
-        assert_eq!(data.level.as_deref(), Some("max"));
-    }
-
-    #[test]
-    fn zai_quota_from_body_fails_on_wrong_key_inside_a_200() {
-        let err = zai_quota_from_body(
-            br#"{"code":401,"msg":"token expired or incorrect","success":false}"#,
-        )
-        .expect_err("wrong key fails");
-        assert!(
-            matches!(err, OauthUsageError::Unauthorized(401)),
-            "a body-level 401 must classify as unauthorized, got {err:?}",
-        );
-    }
-
-    #[test]
-    fn zai_quota_from_body_fails_on_wrong_path_inside_a_200() {
-        let err = zai_quota_from_body(br#"{"code":500,"msg":"404 NOT_FOUND","success":false}"#)
-            .expect_err("a wrong path fails");
-        assert!(err.to_string().contains("404 NOT_FOUND"), "the msg reaches the log: {err}");
-    }
-
-    /// A silent empty 200 (observed on the model-usage endpoint) is a
-    /// failure, not a bill of zero.
-    #[test]
-    fn zai_quota_from_body_fails_on_empty_body() {
-        let err = zai_quota_from_body(b"").expect_err("empty body fails");
-        assert!(err.to_string().contains("empty"), "got {err}");
-    }
-
-    /// The success verdict is `success: true && code == 200`; a body
-    /// with the right code but no success flag is not a green envelope.
-    #[test]
-    fn zai_quota_from_body_requires_the_success_flag() {
-        let err = zai_quota_from_body(
-            br#"{"code":200,"msg":"success","data":{"limits":[],"level":"max"}}"#,
-        )
-        .expect_err("no success flag fails");
-        assert!(matches!(err, OauthUsageError::Decode(_)), "got {err:?}");
+        assert_eq!(probe_plan(Provider::Zai, &env), ProbePlan::Keychain);
     }
 }
