@@ -111,6 +111,15 @@ fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
     app.needs_redraw = true;
 }
 
+/// True when the message's tail Text block renders as an inbound
+/// envelope card: `detect_inbound` matches on the text prefix, so a
+/// chunk merged into that block would paint inside the card body
+/// rather than as its own turn.
+fn tail_renders_as_envelope_card(msg: &ChatMessage) -> bool {
+    matches!(msg.blocks.last(), Some(MessageBlock::Text(block))
+        if crate::ui::peer_block::detect_inbound(&block.text).is_some())
+}
+
 fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) {
     let model::RenderContentBlock::Text(text) = &chunk.content else {
         return;
@@ -121,6 +130,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 
     if let Some(last) = app.active_messages_mut().last_mut()
         && matches!(last.role, MessageRole::User)
+        && !tail_renders_as_envelope_card(last)
     {
         if let Some(MessageBlock::Text(block)) = last.blocks.last_mut() {
             block.text.push_str(&text.text);
@@ -1631,6 +1641,32 @@ mod tests {
         assert_eq!(user_msgs.len(), 1, "adjacent envelopes merge into one stamped streak");
         assert!(user_msgs[0].is_peer_envelope);
         assert_eq!(user_msgs[0].blocks.len(), 2, "one block per delivered envelope");
+    }
+
+    /// An envelope entry followed by a separate plain user turn must
+    /// stay two messages: the chunk merge pushes into the stamped
+    /// card's text block, whose prefix the renderer still detects as
+    /// an envelope, so the merged plain turn would paint inside the
+    /// card body and vanish as its own turn.
+    #[test]
+    fn resumed_plain_turn_after_an_envelope_stays_a_distinct_message() {
+        let mut app = App::test_default();
+        load_resume_history(
+            &mut app,
+            &[
+                historical_user_text(&peer_envelope_text("t-1")),
+                historical_user_text("retype after the interruption"),
+            ],
+        );
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 2, "envelope card and plain turn stay distinct messages");
+        assert!(user_msgs[0].is_peer_envelope, "the envelope entry is the stamped card");
+        let MessageBlock::Text(plain) = &user_msgs[1].blocks[0] else {
+            panic!("the plain turn is a text block");
+        };
+        assert_eq!(plain.text, "retype after the interruption", "the retype keeps its own text");
     }
 
     #[test]
