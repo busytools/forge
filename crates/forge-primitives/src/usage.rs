@@ -111,7 +111,7 @@ pub struct ExtraUsage {
 }
 
 /// Snapshot of the user's Anthropic plan utilization at a point in time.
-/// Composed by the cloud module's `oauth` fetcher and rendered by
+/// Composed by the forge-providers backends and rendered by
 /// forge-tui's usage view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageSnapshot {
