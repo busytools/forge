@@ -1,25 +1,29 @@
 //! OpenRouter's public model catalog: fetch, parse, and the curated
-//! `/model` list built on top of it.
+//! `/model` list built on top of it, behind the [`ModelCatalog`] trait
+//! a backend exposes through
+//! [`ProviderBackend::model_catalog`](crate::ProviderBackend::model_catalog).
 //!
 //! `GET {base}/v1/models` is public (no auth, free) and carries every
 //! model the account can name. forge serves only the curated ten - a
 //! maintained constant in this module - enriched with live price and
-//! context figures from the fetch. Same URL-join lesson as
-//! [`super::oauth_usage`]'s key url: `ANTHROPIC_BASE_URL` already ends
+//! context figures from the fetch. Same URL-join lesson as the
+//! openrouter backend's key url: `ANTHROPIC_BASE_URL` already ends
 //! in `/api`, so only the `/v1/models` tail is appended.
 
 use std::time::{Duration, SystemTime};
 
+use async_trait::async_trait;
+
 use forge_primitives::AvailableModel;
-use forge_providers::helpers::truncated_body_suffix;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::http_trust;
+use crate::ProviderHost;
+use crate::helpers::truncated_body_suffix;
 
-/// Timeout for one catalog round-trip. Matches [`super::oauth_usage`]'s
-/// probe budget; the endpoint is a static public list.
-const CATALOG_TIMEOUT: Duration = Duration::from_secs(8);
+/// Timeout for one catalog round-trip. Matches the probe budget; the
+/// endpoint is a static public list.
+pub const CATALOG_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// How long a cached catalog is served without a refetch.
 pub const CATALOG_TTL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -28,6 +32,24 @@ pub const CATALOG_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// costs its timeout at most once per window instead of on every
 /// connect.
 pub const CATALOG_FAILURE_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// The catalog half of a backend: fetch + parse + the curated merge.
+/// The workspace glue owns the redb cache and the fresh/stale/miss
+/// orchestration; these three are the provider-owned pieces.
+#[async_trait]
+pub trait ModelCatalog: Send + Sync {
+    /// One round-trip against `{base}/v1/models`.
+    async fn fetch(
+        &self,
+        base_url: &str,
+        host: &dyn ProviderHost,
+    ) -> Result<Vec<CatalogModel>, ModelCatalogError>;
+    /// Curated picker rows from a fetched catalog; the caller falls
+    /// back to the discovered list when the merge is empty.
+    fn curated(&self, models: &[CatalogModel]) -> Vec<AvailableModel>;
+    /// What the cache says for a base url, judged at `now`.
+    fn decision(&self, cached: Option<CachedCatalog>, now: SystemTime) -> CatalogDecision;
+}
 
 #[derive(Debug, Error)]
 pub enum ModelCatalogError {
@@ -279,10 +301,10 @@ fn price_label(per_token_price: &str) -> Option<String> {
     Some(format!("${text}"))
 }
 
-pub async fn fetch_catalog(base_url: &str) -> Result<Vec<CatalogModel>, ModelCatalogError> {
-    let client = http_trust::with_extra_roots(reqwest::Client::builder().timeout(CATALOG_TIMEOUT))
-        .build()
-        .map_err(|error| ModelCatalogError::Network(format!("client build: {error}")))?;
+pub(crate) async fn fetch_catalog(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<Vec<CatalogModel>, ModelCatalogError> {
     let response = client
         .get(models_url(base_url))
         .send()
@@ -298,7 +320,7 @@ pub async fn fetch_catalog(base_url: &str) -> Result<Vec<CatalogModel>, ModelCat
             // A 200 that will not parse is the shape a wrong base url
             // takes: the bare host answers 200 with an HTML page.
             tracing::warn!(
-                target: "forge_agent::cloud::model_catalog",
+                target: "forge_providers::model_catalog",
                 url = %models_url(base_url),
                 error = %error,
                 body_suffix = %truncated_body_suffix(&body),
@@ -320,7 +342,7 @@ pub async fn fetch_catalog(base_url: &str) -> Result<Vec<CatalogModel>, ModelCat
 /// is cached. A pathological `200` with zero models is stored the same
 /// way and gets the same short retry cadence rather than a full-day
 /// Fresh.
-pub fn catalog_decision(cached: Option<CachedCatalog>, now: SystemTime) -> CatalogDecision {
+pub(crate) fn catalog_decision(cached: Option<CachedCatalog>, now: SystemTime) -> CatalogDecision {
     let Some(cached) = cached else {
         return CatalogDecision::Miss;
     };
@@ -335,7 +357,7 @@ pub fn catalog_decision(cached: Option<CachedCatalog>, now: SystemTime) -> Catal
     }
 }
 
-pub fn curated_available_models(catalog: &[CatalogModel]) -> Vec<AvailableModel> {
+pub(crate) fn curated_available_models(catalog: &[CatalogModel]) -> Vec<AvailableModel> {
     CURATED
         .iter()
         .filter_map(|entry| {
@@ -597,8 +619,9 @@ mod tests {
             );
             reply_ok(&mut stream, &body);
         });
+        let client = reqwest::Client::builder().build().expect("client");
         let models =
-            fetch_catalog(&format!("http://127.0.0.1:{port}")).await.expect("fetch succeeds");
+            fetch_catalog(&client, &format!("http://127.0.0.1:{port}")).await.expect("fetch");
         assert_eq!(models.len(), 12);
     }
 

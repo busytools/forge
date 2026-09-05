@@ -2064,10 +2064,10 @@ impl Workspace {
         for (key, dir, provider, env) in entries {
             // One decision (probe_plan) drives both the probe source and
             // the response-mapping strictness. The backend-routed plans
-            // (anthropic keychain/token, and codex, whose plan died with
-            // its arm) hand credential resolution, the probe and the
-            // mapping to the provider backend; the keychain arm keeps
-            // the 401 refresh gate.
+            // (anthropic keychain/token, and codex + openrouter, whose
+            // plans died with their arms) hand credential resolution, the
+            // probe and the mapping to the provider backend; the keychain
+            // arm keeps the 401 refresh gate.
             let plan = forge_agent::cloud::oauth_usage::probe_plan(provider, &env);
             let fetch_result = match &plan {
                 forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
@@ -2080,11 +2080,6 @@ impl Workspace {
                     crate::provider_probe::flatten_probe_error(
                         crate::provider_probe::probe_via_backend(provider, &dir, &env).await,
                     )
-                }
-                forge_agent::cloud::oauth_usage::ProbePlan::OpenRouterKey { base_url, bearer } => {
-                    forge_agent::cloud::oauth_usage::probe_openrouter_key(base_url, bearer)
-                        .await
-                        .map(forge_agent::cloud::oauth::snapshot_from_openrouter_key)
                 }
                 forge_agent::cloud::oauth_usage::ProbePlan::ZaiMonitor { base_url, bearer } => {
                     forge_agent::cloud::oauth_usage::probe_zai_monitor(base_url, bearer)
@@ -3855,18 +3850,18 @@ impl Workspace {
     }
 
     /// The `/model` picker rows for a session's account: the curated
-    /// OpenRouter catalog on an `openrouter` account, `discovered`
-    /// unchanged for every other provider. Cache-first - a fresh row
-    /// serves without network, a stale row serves and refreshes in the
-    /// background, and a miss fetches inline. Fetch failure or an empty
-    /// merge falls back to `discovered`, so the picker is never empty.
+    /// catalog of whichever backend carries a model catalog (today,
+    /// openrouter), `discovered` unchanged for every other provider.
+    /// Cache-first - a fresh row serves without network, a stale row
+    /// serves and refreshes in the background, and a miss fetches
+    /// inline. Fetch failure or an empty merge falls back to
+    /// `discovered`, so the picker is never empty.
     pub(crate) async fn catalog_available_models(
         self: &Arc<Self>,
         account_display_name: &str,
         discovered: Vec<forge_primitives::runtime::AvailableModel>,
     ) -> Vec<forge_primitives::runtime::AvailableModel> {
-        use forge_agent::cloud::model_catalog::{self, CatalogDecision};
-        use forge_primitives::account::Provider;
+        use forge_providers::model_catalog::CatalogDecision;
 
         let key = AccountKey(account_display_name.to_owned());
         let (provider, base_url) = {
@@ -3878,9 +3873,11 @@ impl Workspace {
                 .unwrap_or_default();
             (accounts.provider_or_anthropic(&key), base_url)
         };
-        if provider != Provider::Openrouter {
+        let Some(catalog) = forge_providers::backend(provider)
+            .and_then(forge_providers::ProviderBackend::model_catalog)
+        else {
             return discovered;
-        }
+        };
         if base_url.is_empty() {
             tracing::warn!(
                 target: "forge_workspace::workspace",
@@ -3891,14 +3888,16 @@ impl Workspace {
         }
 
         let cached = self.load_model_catalog(&base_url);
-        match model_catalog::catalog_decision(cached, SystemTime::now()) {
-            CatalogDecision::Fresh(models) => Self::curated_or_discovered(&models, discovered),
+        match catalog.decision(cached, SystemTime::now()) {
+            CatalogDecision::Fresh(models) => {
+                Self::curated_or_discovered(catalog, &models, discovered)
+            }
             CatalogDecision::Stale(models) => {
                 let workspace = Arc::clone(self);
                 let base = base_url.clone();
                 let stale_empty = models.is_empty();
                 tokio::spawn(async move {
-                    if let Err(error) = workspace.refresh_model_catalog(&base).await {
+                    if let Err(error) = workspace.refresh_model_catalog(catalog, &base).await {
                         tracing::warn!(
                             target: "forge_workspace::workspace",
                             %error,
@@ -3914,10 +3913,10 @@ impl Workspace {
                         }
                     }
                 });
-                Self::curated_or_discovered(&models, discovered)
+                Self::curated_or_discovered(catalog, &models, discovered)
             }
-            CatalogDecision::Miss => match self.refresh_model_catalog(&base_url).await {
-                Ok(models) => Self::curated_or_discovered(&models, discovered),
+            CatalogDecision::Miss => match self.refresh_model_catalog(catalog, &base_url).await {
+                Ok(models) => Self::curated_or_discovered(catalog, &models, discovered),
                 Err(error) => {
                     tracing::warn!(
                         target: "forge_workspace::workspace",
@@ -3935,10 +3934,11 @@ impl Workspace {
     /// Curated rows for `models`, or `discovered` when the merge yields
     /// nothing (a catalog with no curated slug must not empty the picker).
     fn curated_or_discovered(
-        models: &[forge_agent::cloud::model_catalog::CatalogModel],
+        catalog: &dyn forge_providers::ModelCatalog,
+        models: &[forge_providers::model_catalog::CatalogModel],
         discovered: Vec<forge_primitives::runtime::AvailableModel>,
     ) -> Vec<forge_primitives::runtime::AvailableModel> {
-        let rows = forge_agent::cloud::model_catalog::curated_available_models(models);
+        let rows = catalog.curated(models);
         if rows.is_empty() { discovered } else { rows }
     }
 
@@ -3947,15 +3947,16 @@ impl Workspace {
     /// session event loop.
     async fn refresh_model_catalog(
         self: &Arc<Self>,
+        catalog: &dyn forge_providers::ModelCatalog,
         base_url: &str,
     ) -> Result<
-        Vec<forge_agent::cloud::model_catalog::CatalogModel>,
-        forge_agent::cloud::model_catalog::ModelCatalogError,
+        Vec<forge_providers::model_catalog::CatalogModel>,
+        forge_providers::model_catalog::ModelCatalogError,
     > {
-        let models = forge_agent::cloud::model_catalog::fetch_catalog(base_url).await?;
+        let models = catalog.fetch(base_url, &forge_agent::cloud::AgentHost).await?;
         let workspace = Arc::clone(self);
         let base = base_url.to_owned();
-        let entry = forge_agent::cloud::model_catalog::CachedCatalog {
+        let entry = forge_providers::model_catalog::CachedCatalog {
             fetched_at: SystemTime::now(),
             models: models.clone(),
         };
@@ -3984,7 +3985,7 @@ impl Workspace {
     fn load_model_catalog(
         &self,
         base_url: &str,
-    ) -> Option<forge_agent::cloud::model_catalog::CachedCatalog> {
+    ) -> Option<forge_providers::model_catalog::CachedCatalog> {
         let guard = self.db.lock();
         let db = guard.as_ref()?;
         crate::store::model_catalog::load(db, base_url).unwrap_or_else(|error| {
@@ -4000,7 +4001,7 @@ impl Workspace {
     fn store_model_catalog(
         &self,
         base_url: &str,
-        entry: &forge_agent::cloud::model_catalog::CachedCatalog,
+        entry: &forge_providers::model_catalog::CachedCatalog,
     ) -> bool {
         if let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::model_catalog::store(db, base_url, entry)
@@ -4016,15 +4017,15 @@ impl Workspace {
     }
 
     /// Record that a fetch just failed by writing an empty-catalog row,
-    /// the failure marker [`forge_agent::cloud::model_catalog::
-    /// catalog_decision`] reads. Converts a recurring inline-fetch stall
-    /// on every connect into one inline fetch per base url, with
-    /// retries afterwards happening in the background at most once per
-    /// [`forge_agent::cloud::model_catalog::CATALOG_FAILURE_TTL`].
+    /// the failure marker [`forge_providers::ModelCatalog::decision`]
+    /// reads. Converts a recurring inline-fetch stall on every connect
+    /// into one inline fetch per base url, with retries afterwards
+    /// happening in the background at most once per
+    /// [`forge_providers::model_catalog::CATALOG_FAILURE_TTL`].
     async fn mark_catalog_fetch_failed(self: &Arc<Self>, base_url: &str) {
         let workspace = Arc::clone(self);
         let base = base_url.to_owned();
-        let entry = forge_agent::cloud::model_catalog::CachedCatalog {
+        let entry = forge_providers::model_catalog::CachedCatalog {
             fetched_at: SystemTime::now(),
             models: Vec::new(),
         };
@@ -6608,12 +6609,18 @@ mod tests {
 
     // -- /model catalog merge (openrouter sessions) ------------------
 
-    /// The trimmed live capture beside forge-agent's module.
-    fn fixture_catalog_models() -> Vec<forge_agent::cloud::model_catalog::CatalogModel> {
+    /// The trimmed live capture beside forge-providers' module.
+    fn fixture_catalog_models() -> Vec<forge_providers::model_catalog::CatalogModel> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../forge-agent/fixtures/model_catalog.json");
+            .join("../forge-providers/fixtures/model_catalog.json");
         let body = std::fs::read_to_string(path).expect("fixture readable");
-        forge_agent::cloud::model_catalog::parse_catalog(body.as_bytes()).expect("fixture parses")
+        forge_providers::model_catalog::parse_catalog(body.as_bytes()).expect("fixture parses")
+    }
+
+    fn openrouter_catalog() -> &'static dyn forge_providers::ModelCatalog {
+        forge_providers::backend(forge_primitives::account::Provider::Openrouter)
+            .and_then(forge_providers::ProviderBackend::model_catalog)
+            .expect("the openrouter backend carries the model catalog")
     }
 
     fn discovered_models() -> Vec<forge_primitives::runtime::AvailableModel> {
@@ -6624,7 +6631,7 @@ mod tests {
     }
 
     fn expected_curated() -> Vec<forge_primitives::runtime::AvailableModel> {
-        forge_agent::cloud::model_catalog::curated_available_models(&fixture_catalog_models())
+        openrouter_catalog().curated(&fixture_catalog_models())
     }
 
     fn seed_catalog_account(
@@ -6766,7 +6773,7 @@ mod tests {
     /// fetch and its failure is remembered, so connects within the
     /// failure window serve the discovered list without touching the
     /// endpoint again. (The window's expiry is covered by the
-    /// decision-boundary test in forge-agent.)
+    /// decision-boundary test in forge-providers.)
     #[tokio::test]
     async fn failed_fetch_is_negatively_cached_for_the_failure_window() {
         let (base_url, hits) = counting_error_server();

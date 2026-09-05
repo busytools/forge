@@ -10,6 +10,8 @@
 mod anthropic;
 mod codex;
 pub mod helpers;
+pub mod model_catalog;
+mod openrouter;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -21,8 +23,11 @@ pub use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 pub use forge_primitives::usage::UsageSnapshot;
 pub use forge_primitives::usage::oauth::OauthUsageError;
 
+pub use crate::model_catalog::ModelCatalog;
+
 pub use crate::anthropic::{Anthropic, token_bearer};
 pub use crate::codex::Codex;
+pub use crate::openrouter::Openrouter;
 
 /// Everything a backend may read about one account. `env` is the
 /// merged global `[env]` + `[accounts.env]` block; the merge happens
@@ -89,11 +94,18 @@ pub trait ProviderBackend: Send + Sync {
 
     /// Billing shape.
     fn billing(&self) -> BillingModel;
+
+    /// The provider's model picker rows, or None to keep the
+    /// discovered list. Today: openrouter only.
+    fn model_catalog(&self) -> Option<&'static dyn ModelCatalog> {
+        None
+    }
 }
 
 static ANTHROPIC: Anthropic = Anthropic;
 static CODEX: Codex = Codex;
-static BACKENDS: &[&dyn ProviderBackend] = &[&ANTHROPIC, &CODEX];
+static OPENROUTER: Openrouter = Openrouter;
+static BACKENDS: &[&dyn ProviderBackend] = &[&ANTHROPIC, &CODEX, &OPENROUTER];
 
 /// The backend registered for `token`, or None while the wave that
 /// migrates each provider onto the trait is still in flight.
@@ -101,7 +113,8 @@ pub fn backend(token: Provider) -> Option<&'static dyn ProviderBackend> {
     match token {
         Provider::Anthropic => Some(&ANTHROPIC),
         Provider::Codex => Some(&CODEX),
-        Provider::Openrouter | Provider::Zai => None,
+        Provider::Openrouter => Some(&OPENROUTER),
+        Provider::Zai => None,
     }
 }
 
@@ -142,7 +155,6 @@ mod tests {
 
     #[test]
     fn unregistered_tokens_resolve_none() {
-        assert!(backend(Provider::Openrouter).is_none());
         assert!(backend(Provider::Zai).is_none());
     }
 }
