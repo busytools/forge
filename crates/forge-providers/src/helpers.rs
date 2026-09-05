@@ -17,7 +17,7 @@ use forge_primitives::usage::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageW
 pub const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
 
 const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
-const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
+pub(crate) const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
 
 /// The base-url credential an account's `env` carries: the
 /// `ANTHROPIC_BASE_URL` endpoint and the `ANTHROPIC_AUTH_TOKEN` bearer

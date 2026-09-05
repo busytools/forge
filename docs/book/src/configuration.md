@@ -216,9 +216,12 @@ makes the account token-mode: the token, minted by
 `claude setup-token`, is the credential, the keychain is never read,
 and several accounts can share one config dir. The usage endpoint
 refuses setup tokens (they lack the `user:profile` scope), so a valid
-token settles as usable with no usage bars; a rejected token renders
-as an auth failure whose repair is a re-mint. Like every env key, it
-is read once at boot, so replacing the token needs a restart.
+token is probed with a minimal billed messages call instead - its
+response headers carry the same 5-hour and 7-day usage windows
+keychain accounts render, at roughly nine tokens per account per
+usage poll; a rejected token renders as an auth failure whose repair
+is a re-mint. Like every env key, it is read once at boot, so
+replacing the token needs a restart.
 
 Only key names, never values, are recorded in forge's per-spawn log
 line. These tables hold tokens.
