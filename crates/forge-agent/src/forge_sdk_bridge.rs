@@ -1327,6 +1327,17 @@ mod tests {
             .to_owned()
     }
 
+    /// Fixture variant whose init frame omits `apiKeySource`, so
+    /// `account_info_from_init` answers None and the status
+    /// snapshot's fallback arm answers.
+    fn no_api_key_mock_binary() -> String {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../forge-sdk/tests/fixtures/mock_claude_no_api_key.sh"
+        )
+        .to_owned()
+    }
+
     async fn bridge_with_mock_client() -> (ForgeSdkBridge, mpsc::UnboundedReceiver<AgentEvent>) {
         bridge_with_mock_client_opts(forge_sdk::OptionsBuilder::new()).await
     }
@@ -1340,6 +1351,37 @@ mod tests {
         let (client, _client_events) = forge_sdk::Client::spawn(opts).await.expect("mock client");
         bridge.set_client(client);
         (bridge, events)
+    }
+
+    /// The #910 contract at the surface the user sees: a token
+    /// session whose init frame carries no account snapshots the
+    /// default identity, never a `claude auth status` read - that
+    /// probe keys on the shared config dir and would describe
+    /// whichever sibling last logged in interactively.
+    #[tokio::test]
+    async fn token_session_snapshots_the_default_identity() {
+        let mut env = HashMap::new();
+        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
+        let bridge =
+            ForgeSdkBridge::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, Vec::new(), env);
+        let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
+        let opts = forge_sdk::OptionsBuilder::new().binary(no_api_key_mock_binary()).build();
+        let (client, _client_events) = forge_sdk::Client::spawn(opts).await.expect("mock client");
+        bridge.set_client(client);
+
+        bridge.get_status_snapshot("session-1".to_owned()).expect("dispatch");
+
+        match tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await {
+            Ok(Some(AgentEvent::StatusSnapshot { account, forge_account, .. })) => {
+                assert_eq!(
+                    account,
+                    forge_primitives::AccountInfo::default(),
+                    "a token session's fallback identity is the default, never a shell-probe sibling",
+                );
+                assert!(forge_account.is_none(), "no forge account was bound");
+            }
+            other => panic!("expected a StatusSnapshot, got {other:?}"),
+        }
     }
 
     /// A failure inside the spawned dispatch future reaches the App as
