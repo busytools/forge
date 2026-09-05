@@ -329,6 +329,14 @@ inspected.
     which qualifies regardless of whether the right behaviour was
     independently reachable.
 
+    **A third question decides what a fix can look like: who authored
+    the depended-on text?** Text forge owns can be edited in place.
+    Text forge inherits from the `claude` binary arrives first in the
+    prompt and can be appended to but never removed, so it can only be
+    addressed by forge's own text stating which instruction governs;
+    quoting the inherited line verbatim creates a wording dependency
+    forge does not control.
+
     **Establish every claim about shipped text by grep, when you write
     it.** The same instruction recurs across surfaces at different
     strengths, so read every hit, not the first; these constants wrap
