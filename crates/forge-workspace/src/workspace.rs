@@ -393,14 +393,12 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
         .or_else(|| latest_with(|s| s.tag.is_none()))
 }
 
-/// Open the machine-local redb store at `<app_support>/db.redb`,
-/// creating the app-support dir first. Returns `None` (with a warn) when
-/// the dir can't be created or the DB can't open - forge then runs
-/// without durable Gotify subscriptions or dynamic workers this session
-/// (hard rule #14: no cwd fallback).
 /// Kick off the catalog scan on the tokio runtime. Idempotent via
-/// `started`; a caller with no runtime gets an immediately-ready flag
-/// and an empty catalog rather than a scan nobody can await.
+/// `started`; a caller with no runtime gets a warn and an
+/// immediately-ready flag with an empty catalog rather than a scan
+/// nobody can await. A monitor on the scan task publishes readiness
+/// even if the scan dies, so held spawns fall through instead of
+/// hanging on a readiness that will never come.
 fn spawn_background_catalog_scan(
     catalog: &Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
     db: &Arc<Mutex<Option<crate::store::Db>>>,
@@ -422,21 +420,37 @@ fn spawn_background_catalog_scan(
         Arc::clone(notify),
     );
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(run);
+        let task = handle.spawn(run);
+        let loaded = Arc::clone(loaded);
+        let notify = Arc::clone(notify);
+        handle.spawn(async move {
+            if let Err(error) = task.await {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "catalog scan task died; publishing readiness so held spawns fall through to fresh",
+                );
+                loaded.store(true, std::sync::atomic::Ordering::Release);
+                notify.notify_waiters();
+            }
+        });
     } else {
-        tracing::debug!(
+        tracing::warn!(
             target: "forge_workspace::workspace",
-            "no tokio runtime at construction; the catalog scan is skipped and the catalog starts empty",
+            config_dir = %config_dir.display(),
+            "no tokio runtime at construction; the catalog scan is skipped, the catalog starts empty and resume decisions fall back to fresh",
         );
         loaded.store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
 /// The boot catalog scan, off the boot path. Reads the workspace's own
-/// `config_dir` with the redb tag cache (only bytes appended since the
-/// last scan are read end to end), swaps the grouped catalog in one
-/// lock, prunes cache rows of transcripts that no longer exist, and
-/// only then publishes readiness and `SessionUpdate::CatalogLoaded`.
+/// `config_dir` (canonicalized, so the redb tag-cache keys are the same
+/// ones the respawn scan writes even when the config dir path carries a
+/// symlink component) with the redb tag cache - only bytes appended
+/// since the last scan are read end to end - swaps the grouped catalog
+/// in one lock, prunes cache rows of transcripts that no longer exist,
+/// and only then publishes readiness and `SessionUpdate::CatalogLoaded`.
 async fn run_background_catalog_scan(
     catalog: Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
     db: Arc<Mutex<Option<crate::store::Db>>>,
@@ -445,9 +459,12 @@ async fn run_background_catalog_scan(
     loaded: Arc<std::sync::atomic::AtomicBool>,
     notify: Arc<tokio::sync::Notify>,
 ) {
+    // Unreadable-as-given falls back to the raw path: the scan still
+    // walks the same tree it would have before canonicalization.
+    let scan_root = std::fs::canonicalize(&config_dir).unwrap_or(config_dir.clone());
     let tag_cache = std::sync::Arc::new(load_session_tag_cache(db.lock().as_ref()));
     let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
-        &config_dir,
+        &scan_root,
         None, // every project in the catalog
         None, // no limit
         0,
@@ -490,14 +507,20 @@ async fn run_background_catalog_scan(
         *current = grouped;
     }
 
-    if let Some(db) = db.lock().as_ref()
-        && let Err(error) = crate::store::session_tags::prune_missing(db)
-    {
-        tracing::warn!(
-            target: "forge_workspace::workspace",
-            %error,
-            "pruning stale session tag rows failed; the table keeps rows of deleted transcripts",
-        );
+    if let Some(db) = db.lock().as_ref() {
+        match crate::store::session_tags::prune_missing(db) {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(
+                target: "forge_workspace::workspace",
+                count,
+                "pruned session tag rows whose transcripts no longer exist",
+            ),
+            Err(error) => tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "pruning stale session tag rows failed; the table keeps rows of deleted transcripts",
+            ),
+        }
     }
 
     loaded.store(true, std::sync::atomic::Ordering::Release);
@@ -541,6 +564,11 @@ fn persist_session_tag_cache(
     }
 }
 
+/// Open the machine-local redb store at `<app_support>/db.redb`,
+/// creating the app-support dir first. Returns `None` (with a warn) when
+/// the dir can't be created or the DB can't open - forge then runs
+/// without durable Gotify subscriptions or dynamic workers this session
+/// (hard rule #14: no cwd fallback).
 fn open_db(app_support: &Path) -> Option<crate::store::Db> {
     if let Err(error) = std::fs::create_dir_all(app_support) {
         tracing::warn!(
@@ -623,11 +651,27 @@ fn distinct_catalog_roots(config_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut roots: Vec<PathBuf> = Vec::new();
     for config_dir in config_dirs {
-        let Ok(projects) = std::fs::canonicalize(config_dir.join("projects")) else {
-            continue;
-        };
-        if seen.insert(projects.clone()) {
-            roots.push(projects.parent().map_or_else(|| config_dir.clone(), PathBuf::from));
+        match std::fs::canonicalize(config_dir.join("projects")) {
+            Ok(projects) => {
+                if seen.insert(projects.clone()) {
+                    roots.push(projects.parent().map_or_else(|| config_dir.clone(), PathBuf::from));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!(
+                    target: "forge_workspace::workspace",
+                    config_dir = %config_dir.display(),
+                    "no projects tree; skipping this account dir in the resume scan",
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    config_dir = %config_dir.display(),
+                    %error,
+                    "cannot resolve this account's projects tree; its sessions are invisible to this respawn scan",
+                );
+            }
         }
     }
     roots
@@ -2993,22 +3037,29 @@ impl Workspace {
                 | Command::StartDefault { launch_settings, .. } => !launch_settings.force_new,
                 _ => false,
             };
-            if reads_catalog
-                && !self.catalog_ready()
-                && tokio::runtime::Handle::try_current().is_ok()
-            {
-                let workspace = Arc::clone(self);
-                tokio::runtime::Handle::current().spawn(async move {
-                    workspace.wait_catalog_ready().await;
-                    if let Err(error) = workspace.dispatch(cmd) {
+            if reads_catalog && !self.catalog_ready() {
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        let workspace = Arc::clone(self);
+                        handle.spawn(async move {
+                            workspace.wait_catalog_ready().await;
+                            if let Err(error) = workspace.dispatch(cmd) {
+                                tracing::warn!(
+                                    target: "forge_workspace::workspace",
+                                    %error,
+                                    "re-dispatching a catalog-deferred spawn failed",
+                                );
+                            }
+                        });
+                        return Ok(());
+                    }
+                    Err(_) => {
                         tracing::warn!(
                             target: "forge_workspace::workspace",
-                            %error,
-                            "re-dispatching a catalog-deferred spawn failed",
+                            "no tokio runtime; spawning against an unloaded catalog - the resume decision falls back to fresh",
                         );
                     }
-                });
-                return Ok(());
+                }
             }
             // App-level commands. The `spawn::*` handlers are sync -
             // they emit one event, kick off `get_agent_handle_with_spawn_key`
@@ -13085,9 +13136,15 @@ provider = "anthropic"
                 launch_settings: SessionLaunchSettings::default(),
             })
             .expect("dispatch");
+        workspace
+            .dispatch(Command::SpawnProject {
+                project_name: "proj".to_owned(),
+                launch_settings: SessionLaunchSettings::default(),
+            })
+            .expect("dispatch");
 
-        // The spawn is parked on the scan: no pool entry, however long
-        // the runtime schedules around it.
+        // The spawns are parked on the scan: no pool entry, however
+        // long the runtime schedules around it.
         for _ in 0..32 {
             tokio::task::yield_now().await;
         }
@@ -13193,6 +13250,95 @@ provider = "anthropic"
             2,
             "one row per distinct transcript, not one per config-dir prefix"
         );
+    }
+
+    /// A --new spawn never consults the catalog, so it must not be
+    /// held: it lands immediately against the empty catalog as a fresh
+    /// session. Deleting the force_new arm from the hold reintroduces
+    /// boot-scan latency on the boot wave's --new path.
+    #[tokio::test]
+    async fn force_new_spawn_skips_the_catalog_hold() {
+        let dir = scan_fixture_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        assert!(!workspace.catalog_ready());
+
+        let launch_settings = SessionLaunchSettings { force_new: true, ..Default::default() };
+        workspace
+            .dispatch(Command::StartDefault {
+                project_name: Some("proj".to_owned()),
+                launch_settings,
+            })
+            .expect("dispatch");
+
+        assert!(
+            workspace.pool.lock().keys().any(|key| key.as_str().starts_with("__fresh__:")),
+            "a --new spawn runs immediately, unparked",
+        );
+    }
+
+    /// The boot scan and the respawn scan share one tag-cache key space
+    /// even when the config dir is reached through a symlink: a respawn
+    /// scan reloaded from the store right after boot re-reads nothing.
+    /// The same boot pass pruned the seeded row whose transcript is
+    /// gone - the prune is part of the scan, not only of the store fn.
+    #[tokio::test]
+    async fn boot_scan_warms_the_respawn_scan_and_prunes_stale_rows() {
+        let real = scan_fixture_dir();
+        let link_dir = tempfile::tempdir().expect("tempdir");
+        let link = link_dir.path().join("cfg");
+        std::os::unix::fs::symlink(real.path(), &link).expect("symlink config dir");
+
+        let workspace = Arc::new(Workspace::new_for_test(link).expect("new"));
+        {
+            let db = workspace.db.lock();
+            crate::store::session_tags::store_all(
+                db.as_ref().expect("test db present"),
+                &[(
+                    "/gone/deleted.jsonl".to_owned(),
+                    forge_agent::userdata::catalog::scan::SessionTagScan {
+                        tag: None,
+                        scanned_len: 10,
+                    },
+                )],
+            )
+            .expect("seed stale row");
+        }
+
+        workspace.start_catalog_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !workspace.catalog_ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scan finishes");
+
+        let prior = {
+            let db = workspace.db.lock();
+            crate::store::session_tags::load_all(db.as_ref().expect("test db present"))
+                .expect("load persisted cache")
+        };
+        assert!(!prior.is_empty(), "the boot scan persisted cache rows");
+
+        let cache = Arc::new(forge_agent::userdata::catalog::scan::SessionTagCache::new(prior));
+        let _resume = scan_worker_resume_map(
+            &[real.path().to_path_buf()],
+            &real.path().join("proj"),
+            Some(&cache),
+        )
+        .await;
+        assert_eq!(
+            cache.updates().len(),
+            0,
+            "the respawn scan re-read nothing: boot's canonical keys matched"
+        );
+
+        let after = {
+            let db = workspace.db.lock();
+            crate::store::session_tags::load_all(db.as_ref().expect("test db present"))
+                .expect("reload cache")
+        };
+        assert!(!after.contains_key("/gone/deleted.jsonl"), "the boot scan pruned the stale row");
     }
 
     /// A session recorded live before the scan lands survives the
