@@ -1108,8 +1108,10 @@ pub(crate) fn start_update_run(app: &mut App, trigger: PluginUpdateTrigger) {
     }
     let rows = build_update_rows(app, trigger);
     if rows.is_empty() {
-        app.plugins.status_message =
-            Some("No installed plugins are eligible for update".to_owned());
+        let message = "No installed plugins are eligible for update".to_owned();
+        app.plugins.status_message = Some(message.clone());
+        app.config.last_error = None;
+        app.config.status_message = Some(message);
         return;
     }
     let runnable = rows.iter().filter(|row| row.status == PluginRunRowStatus::Queued).count();
@@ -3202,6 +3204,7 @@ mod tests {
             }],
         };
 
+        app.config.last_error = Some("stale".to_owned());
         apply_update_run_finished(&mut app, &run, None, None);
 
         assert!(!app.plugins.loading);
@@ -3210,6 +3213,32 @@ mod tests {
             Some("1 updated, 0 failed, 0 current".to_owned())
         );
         assert!(app.plugins.update_records.is_empty());
+        // The Auto arm skips the runtime reload, so it syncs the
+        // footer pair itself: the mirrored error clears and the
+        // summary lands on the status line.
+        assert!(app.config.last_error.is_none(), "a finished boot run clears a mirrored error");
+        assert_eq!(
+            app.config.status_message.as_deref(),
+            Some("Plugin auto-update finished: 1 updated, 0 failed, 0 current")
+        );
+    }
+
+    /// A session change drops the markers with the rest of the pane's
+    /// inventory-derived state.
+    #[test]
+    fn a_session_change_clears_the_check_markers() {
+        let mut app = App::test_default();
+        app.plugins.update_availability = vec![PluginUpdateAvailability {
+            plugin_id: "supabase@claude-plugins-official".to_owned(),
+            scope: "user".to_owned(),
+            marketplace: "claude-plugins-official".to_owned(),
+            installed_version: Some("1.0.0".to_owned()),
+            available_version: Some("2.0.0".to_owned()),
+        }];
+
+        reset_for_session_change(&mut app);
+
+        assert!(app.plugins.update_availability.is_empty(), "markers die with the session");
     }
 
     #[test]
