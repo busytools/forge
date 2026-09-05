@@ -121,9 +121,12 @@ impl Tool for Spawn {
          the user anything directly - it has no AskUserQuestion - and \
          reaches them through you instead; PASS `interactive` only for a \
          worker the user asked to talk to directly. So spawn one per \
-         distinct piece of work and despawn it \
-         once that work is truly done - a forgotten worker keeps coming \
-         back on every restart. At most one live worker per label - \
+         distinct piece of work, and despawn once the worker has handed \
+         over what you spawned it to produce: a merged PR, or equally a \
+         written report, an answered question, a finished sweep - a \
+         worker whose output is not a PR has no merge to wait for and \
+         still needs closing. A forgotten worker keeps coming back on \
+         every restart. At most one live worker per label - \
          if one already exists, this errors and you should message it \
          with workers__tell / workers__ask instead of spawning again. \
          The label 'lead' is reserved (used by workers__tell / \
@@ -298,8 +301,10 @@ impl Tool for Despawn {
          survives forge restarts and re-spawns automatically, so despawn \
          is what makes it stop coming back. Closing the worker's row in \
          the Projects pane does the same. Despawn once a worker has handed \
-         over what it was spawned to produce - a merged PR, a written \
-         report, an answered question. Errors if called from \
+         over what it was spawned to produce: a worker whose output is a \
+         PR lives until that PR merges; a worker whose output is not a PR \
+         - a written report, an answered question - has no merge to wait \
+         for and is done when it hands over. Errors if called from \
          a worker session; only the project lead may despawn."
     }
 
@@ -1161,6 +1166,16 @@ mod tests {
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
         assert_eq!(tool.name(), "workers__spawn");
         assert!(tool.description().to_lowercase().contains("worker"));
+        assert!(
+            tool.description().contains("no merge to wait for"),
+            "the two-case despawn trigger stays: {}",
+            tool.description()
+        );
+        assert!(
+            tool.description().contains("a finished sweep"),
+            "non-PR outputs stay named as despawn triggers: {}",
+            tool.description()
+        );
         let schema = tool.input_schema();
         let required = schema["required"].as_array().expect("required field present");
         assert!(required.iter().any(|v| v == "label"));
@@ -1595,6 +1610,16 @@ mod tests {
         let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
         assert_eq!(tool.name(), "workers__despawn");
         assert!(tool.description().to_lowercase().contains("despawn"));
+        assert!(
+            tool.description().contains("lives until that PR merges"),
+            "the PR case waits for the merge: {}",
+            tool.description()
+        );
+        assert!(
+            tool.description().contains("done when it hands over"),
+            "the non-PR case closes at handover: {}",
+            tool.description()
+        );
         let schema = tool.input_schema();
         let required = schema["required"].as_array().expect("required field present");
         assert!(required.iter().any(|v| v == "label"));

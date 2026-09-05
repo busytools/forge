@@ -509,6 +509,10 @@ fn jump_commit_line(
     } else {
         (dim, Style::default().fg(theme::STATUS_WARNING), Style::default())
     };
+    // Picture before the pad arithmetic: a raw control char charges a
+    // column in `width()` and paints none, pulling the right cluster left.
+    let short_sha = replace_control_chars(short_sha.into());
+    let subject = replace_control_chars(subject.into());
     let index_label = format!("{index} \u{b7} ");
     let right = jump_row_marker(count, current);
     let right_w = right.width();
@@ -516,13 +520,13 @@ fn jump_commit_line(
     let gap = if right_w > 0 { 2 } else { 0 };
     let subj_budget =
         inner.saturating_sub(fixed).saturating_sub(right_w).saturating_sub(gap).max(1);
-    let subject_fitted = fit_box_content(subject, subj_budget);
+    let subject_fitted = fit_box_content(&subject, subj_budget);
     let used = fixed + subject_fitted.width() + right_w;
     let pad = inner.saturating_sub(used);
     let mut spans = vec![
         Span::styled("\u{2502} ", dim),
         Span::styled(index_label, idx_style),
-        Span::styled(short_sha.to_owned(), sha_style),
+        Span::styled(short_sha.into_owned(), sha_style),
         Span::raw(" "),
         Span::styled(subject_fitted, subj_style),
         Span::raw(" ".repeat(pad)),
@@ -1506,13 +1510,21 @@ fn commit_message_block_lines(overlay: &DiffOverlayState, pane_width: u16) -> Ve
     let content_width = usize::from(pane_width).saturating_sub(2).max(1);
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(Span::styled("\u{2500}".repeat(usize::from(pane_width)), dim)));
-    for row in wrap_chip_body(&commit.subject, content_width) {
+    // Pictured per line before the chop, so the width budget is what
+    // paints while newlines stay structural for the wrap.
+    let pictured = |text: &str| {
+        text.lines()
+            .map(|l| replace_control_chars(l.into()).into_owned())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for row in wrap_chip_body(&pictured(&commit.subject), content_width) {
         lines.push(Line::from(vec![Span::styled("\u{2502} ", rail), Span::styled(row, bold)]));
     }
     let body = commit.body.trim();
     if !body.is_empty() {
         lines.push(Line::from(Span::styled("\u{2502}", rail)));
-        for row in wrap_chip_body(body, content_width) {
+        for row in wrap_chip_body(&pictured(body), content_width) {
             if row.is_empty() {
                 lines.push(Line::from(Span::styled("\u{2502}", rail)));
             } else {
@@ -1589,7 +1601,7 @@ fn build_continuous_body(
         lines.push(Line::from(Span::styled(
             format!(
                 "  Scan failed for `{}` - see tracing logs (target: agent.env_git). Press Esc to retry.",
-                overlay.target,
+                replace_control_chars(overlay.target.clone().into()),
             ),
             Style::default().fg(theme::STATUS_ERROR),
         )));
@@ -4495,6 +4507,141 @@ mod tests {
         assert!(full.contains("HEA\u{2407}D"), "target pictured in stepper title: {full:?}");
         assert!(full.contains("a3f9\u{2407}c1e"), "short sha pictured in stepper: {full:?}");
         assert!(full.contains("sub\u{2407}ject"), "subject pictured in stepper: {full:?}");
+    }
+
+    /// Jump-dropdown rows budget and pad from the raw `short_sha` and
+    /// `subject`: a control character must picture there, or the row
+    /// paints short and the border pulls left of the box edge.
+    #[test]
+    fn jump_dropdown_row_pictures_control_chars_and_keeps_the_box_edge() {
+        use crate::app::diff_overlay::DiffScope;
+        use crate::app::diff_overlay::types::CachedScan;
+        use forge_workspace::env::git_diff::hunks::{CommitMeta, DiffLine, Hunk};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        const ROW_LEN: usize = 130;
+
+        let file = FileHunks {
+            path: "rate_limit.rs".into(),
+            status: FileStatus::Modified,
+            oversize: false,
+            hunks: vec![Hunk {
+                old_start: 65,
+                old_count: 1,
+                new_start: 65,
+                new_count: 2,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "fn is_near_threshold() {".into(),
+                    old_line: None,
+                    new_line: Some(66),
+                }],
+            }],
+        };
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![file.clone()],
+        );
+        state.commits = vec![CommitMeta {
+            sha: "a".into(),
+            short_sha: "a3f9\u{7}c1e".into(),
+            subject: "sub\u{7}ject".into(),
+            body: String::new(),
+        }];
+        state.scope = DiffScope::Commit(0);
+        state.commit_cache = vec![Some(CachedScan { files: vec![file], scanner_ok: true })];
+        state.jump_open = true;
+        let mut app = App::test_default();
+        app.diff_overlay = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(130, 20)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let symbols: Vec<&str> =
+            terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        let row_text = |row: usize| symbols[row * ROW_LEN..(row + 1) * ROW_LEN].concat();
+
+        // Scope to the dropdown box: the stepper paints the same sha and
+        // subject pictured, so whole-buffer assertions cannot tell the
+        // two apart. `┌─` picks the box border, not the page header; the
+        // corner is found in cells (byte offsets are multi-byte here).
+        let top_row = (0..20)
+            .find(|&r| row_text(r).contains("\u{250c}\u{2500}"))
+            .expect("dropdown box top border");
+        let top_text = row_text(top_row);
+        let edge_col = top_text
+            .char_indices()
+            .find(|(_, c)| *c == '\u{2510}')
+            .map(|(i, _)| top_text[..i].chars().count())
+            .expect("box corner on the border row");
+        let sha_row = (top_row + 1..=top_row + 4)
+            .map(|r| (r, row_text(r)))
+            .find(|(_, text)| text.contains("a3f9"))
+            .map(|(r, _)| r)
+            .expect("commit row inside the dropdown box");
+        let row = row_text(sha_row);
+        assert!(row.contains("a3f9\u{2407}c1e"), "sha pictured in the dropdown row: {row:?}");
+        assert!(row.contains("sub\u{2407}ject"), "subject pictured in the dropdown row: {row:?}");
+
+        // Measured == painted: a charged-but-dropped column under-fills
+        // the row and pulls the border left of the box edge.
+        assert_eq!(
+            symbols[sha_row * ROW_LEN + edge_col],
+            "\u{2502}",
+            "dropdown row fills to the box edge: {row:?}"
+        );
+    }
+
+    /// The commit-message block wraps free-form commit text, the most
+    /// plausible control-char carrier in this file: subject and body must
+    /// picture so the width chop budgets what actually paints.
+    #[test]
+    fn commit_message_block_pictures_control_chars_in_subject_and_body() {
+        use crate::ui::wrap::{display_width, line_display_width};
+
+        let state = commit_state_with_body("fix \u{7}bell", "see \u{b}logs");
+        let lines = commit_message_block_lines(&state, 80);
+        let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("fix \u{2407}bell"), "subject pictured: {text:?}");
+        assert!(text.contains("see \u{240b}logs"), "body pictured: {text:?}");
+        assert_eq!(
+            line_display_width(&lines[1]),
+            2 + display_width("fix \u{2407}bell"),
+            "the subject row measures what the pictured text paints"
+        );
+    }
+
+    /// The scanner-failure line interpolates `overlay.target` raw; it
+    /// must picture, or the dropped column quotes a target that reads as
+    /// a different string than the one tracing uses.
+    #[test]
+    fn scanner_failure_line_pictures_control_chars_in_the_target() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEA\u{7}D".to_owned(),
+            vec![FileHunks {
+                path: "a.rs".into(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                oversize: false,
+            }],
+        );
+        state.scanner_ok = false;
+        let mut app = App::test_default();
+        app.diff_overlay = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(130, 20)).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let full: String =
+            terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert!(
+            full.contains("Scan failed for `HEA\u{2407}D`"),
+            "target pictured in the failure line: {full:?}"
+        );
     }
 
     fn chip_comment(line: u32, text: &str, status: ReviewStatus) -> HunkComment {
