@@ -67,7 +67,7 @@ fn run() -> anyhow::Result<()> {
             Ok(p) => p,
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
         };
-        let workspace = match forge_workspace::Workspace::new(config_dir).await {
+        let workspace = match forge_workspace::Workspace::new(config_dir) {
             Ok(w) => Arc::new(w),
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
         };

@@ -64,6 +64,30 @@ pub fn store_all(db: &Db, scans: &[(String, SessionTagScan)]) -> anyhow::Result<
     Ok(())
 }
 
+/// Drop cached rows whose transcript no longer exists. The table only
+/// grows otherwise: a deleted session's row survives every scan, and
+/// the load cost at boot is paid per row forever. A row whose path
+/// cannot be stat'd is dropped - a missing file is stale by
+/// definition, and an unreadable one only costs a re-scan.
+pub fn prune_missing(db: &Db) -> anyhow::Result<usize> {
+    let paths: Vec<String> = load_all(db)?
+        .into_keys()
+        .filter(|path| std::fs::metadata(path).is_err())
+        .collect();
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(SESSION_TAGS)?;
+        for path in &paths {
+            table.remove(path.as_str())?;
+        }
+    }
+    txn.commit()?;
+    Ok(paths.len())
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -89,5 +113,28 @@ mod tests {
             Some(&scan(Some("forge:worker:x"), 4096)),
             "both halves must survive: a tag with no offset re-scans, an offset with no tag lies"
         );
+    }
+
+    #[test]
+    fn prune_drops_rows_of_missing_transcripts_only() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("db.redb")).unwrap();
+        let live = dir.path().join("live.jsonl");
+        std::fs::write(&live, "{}\n").unwrap();
+
+        store_all(
+            &db,
+            &[
+                (live.to_string_lossy().into_owned(), scan(None, 3)),
+                ("/p/deleted.jsonl".to_owned(), scan(None, 4096)),
+            ],
+        )
+        .unwrap();
+
+        let pruned = prune_missing(&db).unwrap();
+        assert_eq!(pruned, 1, "only the missing transcript's row goes");
+        let loaded = load_all(&db).unwrap();
+        assert_eq!(loaded.len(), 1, "the live transcript's row survives");
+        assert!(loaded.contains_key(live.to_string_lossy().as_ref()));
     }
 }

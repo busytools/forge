@@ -1227,7 +1227,7 @@ mod tests {
     /// `reviewer` and `scratch` persisted as workers, and only
     /// `reviewer` assigned in the plan: a label the plan knows (so it
     /// chips) alongside one it does not (so it does not).
-    async fn render_picker_rows() -> (Vec<String>, tempfile::TempDir, tempfile::TempDir) {
+    fn render_picker_rows() -> (Vec<String>, tempfile::TempDir, tempfile::TempDir) {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         let forge = config_dir.path().join("forge");
@@ -1244,7 +1244,6 @@ mod tests {
         .expect("write forge.toml");
 
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
         let project = workspace.list_projects().into_iter().next().expect("one project");
         workspace.seed_test_dynamic_worker(&project.key, "reviewer");
@@ -1289,7 +1288,6 @@ mod tests {
         .expect("write forge.toml");
 
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
-            .await
             .expect("workspace");
         let mut app = App::test_default();
         app.workspace = Some(std::sync::Arc::new(workspace));
@@ -1322,7 +1320,7 @@ mod tests {
     /// the index of the chip's own opening bracket.
     #[tokio::test]
     async fn worker_row_chip_opens_in_the_project_row_chip_column() {
-        let (rendered, _config_dir, _project_dir) = render_picker_rows().await;
+        let (rendered, _config_dir, _project_dir) = render_picker_rows();
         let project_row = row_containing(&rendered, "picker");
         let worker_row = row_containing(&rendered, "reviewer");
 
@@ -1350,7 +1348,7 @@ mod tests {
     /// activity placeholder with no chip at all.
     #[tokio::test]
     async fn a_never_spawned_dynamic_worker_renders_bare() {
-        let (rendered, _config_dir, _project_dir) = render_picker_rows().await;
+        let (rendered, _config_dir, _project_dir) = render_picker_rows();
         let worker_row = row_containing(&rendered, "scratch");
 
         assert!(

@@ -42,7 +42,7 @@ async fn new_loads_config_and_lists_projects() {
     let dir = tempdir().expect("tempdir");
     write_default_config(dir.path());
 
-    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
     let projects = workspace.list_projects();
     assert_eq!(projects.len(), 1, "one [[orgs.projects]] entry should yield one ProjectView");
     let project = &projects[0];
@@ -54,14 +54,14 @@ async fn new_loads_config_and_lists_projects() {
 async fn new_creates_forge_data_dir() {
     let dir = tempdir().expect("tempdir");
     write_default_config(dir.path());
-    let _workspace = Workspace::new_for_test(dir.path().to_owned()).await.expect("new");
+    let _workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
     assert!(dir.path().join("forge").is_dir(), "Workspace::new creates the forge/ subfolder");
 }
 
 #[tokio::test]
 async fn new_returns_err_when_config_missing() {
     let dir = tempdir().expect("tempdir");
-    let result = Workspace::new_for_test(dir.path().to_owned()).await;
+    let result = Workspace::new_for_test(dir.path().to_owned());
     assert!(result.is_err(), "missing forge.toml should error");
 }
 
@@ -72,11 +72,11 @@ async fn new_refuses_second_instance_on_same_config_dir() {
 
     // The first instance acquires the per-config-dir single-instance
     // lock and holds it for its lifetime.
-    let _first = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("first new"));
+    let _first = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("first new"));
 
     // A second forge on the SAME config dir is refused with the holder's
     // PID - a clean error, not a panic.
-    match Workspace::new_for_test(dir.path().to_owned()).await {
+    match Workspace::new_for_test(dir.path().to_owned()) {
         Err(forge_workspace::WorkspaceError::AlreadyRunning { pid }) => {
             assert_eq!(pid, Some(std::process::id()), "refusal names the holder's PID");
         }
@@ -95,7 +95,7 @@ async fn list_projects_includes_projects_with_no_catalog_entries() {
     let dir = tempdir().expect("tempdir");
     write_default_config(dir.path());
 
-    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
     let projects = workspace.list_projects();
     assert_eq!(projects.len(), 1, "forge.toml lists exactly one project");
 

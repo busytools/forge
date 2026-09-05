@@ -21,7 +21,7 @@ use tempfile::tempdir;
 /// Write a three-account (`Aacct` / `Bacct` / `Cacct`) forge.toml into
 /// `config_dir` and return the workspace. Cold-cache picks rotate in
 /// definition order: cursor=0 -> Aacct, cursor=1 -> Bacct, ...
-async fn three_account_workspace(dir: &std::path::Path) -> Arc<Workspace> {
+fn three_account_workspace(dir: &std::path::Path) -> Arc<Workspace> {
     let forge = dir.join("forge");
     fs::create_dir_all(&forge).expect("forge/ dir");
     fs::write(
@@ -53,7 +53,7 @@ provider = "anthropic"
 "#,
     )
     .expect("write forge.toml");
-    Arc::new(Workspace::new_for_test(dir.to_owned()).await.expect("new"))
+    Arc::new(Workspace::new_for_test(dir.to_owned()).expect("new"))
 }
 
 #[tokio::test]
@@ -63,7 +63,7 @@ async fn switch_account_respawns_same_session_under_forced_config_dir() {
     // (Bacct). The switch targets Cacct, so landing on Cacct's
     // config_dir proves the account was FORCED, not merely rotated to.
     let dir = tempdir().expect("tempdir");
-    let workspace = three_account_workspace(dir.path()).await;
+    let workspace = three_account_workspace(dir.path());
 
     // Initial spawn: cold cache -> first usable in the pin (Aacct).
     let key = SessionKey::from_str_for_test("switch-target");
@@ -103,7 +103,7 @@ async fn switch_account_refused_while_a_turn_is_in_flight() {
     // can start a turn between picker-open and Enter. handle_switch_account
     // must refuse (notice, no teardown) rather than tear down the live turn.
     let dir = tempdir().expect("tempdir");
-    let workspace = three_account_workspace(dir.path()).await;
+    let workspace = three_account_workspace(dir.path());
     let mut updates = workspace.subscribe().expect("subscribe");
 
     let key = SessionKey::from_str_for_test("switch-busy");
@@ -152,7 +152,7 @@ async fn switch_account_refused_when_a_prompt_is_routed_before_the_wire_echo() {
     // unmirrored. Only the synchronous turn_pending marker catches it -
     // the switch must refuse on turn_pending alone, without teardown.
     let dir = tempdir().expect("tempdir");
-    let workspace = three_account_workspace(dir.path()).await;
+    let workspace = three_account_workspace(dir.path());
     let mut updates = workspace.subscribe().expect("subscribe");
 
     let key = SessionKey::from_str_for_test("switch-prompt-race");

@@ -175,6 +175,11 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::ServiceStatus { severity, message } => {
             session::apply_session_update_service_status(app, severity, &message);
         }
+        SessionUpdate::CatalogLoaded => {
+            // The launchpad and Projects pane read list_projects() per
+            // frame; the event's job is to trigger this frame.
+            app.needs_redraw = true;
+        }
         SessionUpdate::FatalError(error) => {
             session::apply_session_update_fatal_error(app, error);
         }
