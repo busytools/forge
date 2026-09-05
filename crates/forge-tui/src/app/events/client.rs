@@ -1697,6 +1697,7 @@ mod tests {
     #[test]
     fn catalog_loaded_flips_needs_redraw() {
         let mut app = App::test_default();
+        app.needs_redraw = false;
 
         apply_session_update(&mut app, forge_workspace::SessionUpdate::CatalogLoaded);
 
