@@ -673,6 +673,9 @@ mod tests {
             notification.app, "alerts",
             "the connector-resolved display name becomes the notification's app",
         );
+        assert_eq!(notification.title, "Alert", "the message title rides into the wrap");
+        assert_eq!(notification.message, "body", "the message body rides into the wrap");
+        assert_eq!(notification.priority, 5, "the priority rides into the wrap");
     }
 
     #[test]
