@@ -1693,6 +1693,21 @@ mod tests {
         );
     }
 
+    /// The catalog-loaded event exists only to wake the render loop, so
+    /// the launchpad's session counts appear on the frame after the
+    /// background scan lands.
+    #[test]
+    fn catalog_loaded_flips_needs_redraw() {
+        let mut app = App::test_default();
+
+        apply_session_update(&mut app, forge_workspace::SessionUpdate::CatalogLoaded);
+
+        assert!(
+            app.needs_redraw,
+            "the scan landing must trigger the frame that shows its counts"
+        );
+    }
+
     /// The echo is the only source the dialog's markers and reset row
     /// read, so it must land on the addressed bucket and nothing else.
     #[test]
