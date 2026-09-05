@@ -81,7 +81,7 @@ pub mod ui;
 mod views;
 mod workspace;
 
-pub use account::{LoadingState, UsageFetchStatus};
+pub use account::{LoadingState, Unusable, UsageFetchStatus};
 pub use dictate::{
     DictateBind, DictateDeviceCatalog, DictateDeviceChoice, DictateFailure, DictateMode,
     DictateModel, DictateModelState, DictateOverrideUpdate, DictateOverrides, DictateRole,

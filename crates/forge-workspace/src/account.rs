@@ -65,6 +65,24 @@ pub enum UsageFetchStatus {
     Other,
 }
 
+/// Why the `/account` picker holds an account out of the usable tier.
+/// Which reason can apply is keyed on the account's billing kind: only
+/// a window-billed account can saturate, so on a spend row an unusable
+/// account can only be probe-blocked. A snapshot whose source is not
+/// the account backend's is ignored here, so a cache surviving a
+/// `forge.toml` provider edit cannot saturate the row it landed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unusable {
+    /// A plan window is at or over its cap and has not reset yet.
+    Saturated,
+    /// The last probe failed before it could read usage: throttled,
+    /// rejected, or expired credentials.
+    ProbeBlocked,
+    /// The boot-time loading task ended in `Bailed` - auth status said
+    /// logged out, or the refresh itself failed terminally.
+    Bailed,
+}
+
 /// Boot-time loading state for an account. The launchpad gates click
 /// and spawn until every account in the map has resolved to `Ready`
 /// or `Bailed`; both terminal states feed into the assignment-plan
@@ -460,8 +478,8 @@ impl AccountStateMap {
     }
 
     /// True when `key`'s loaded usage snapshot shows it at-or-beyond
-    /// the plan cap - the same saturation signal the fallback picker's
-    /// tier classification uses. A Ready-but-saturated account logs in
+    /// the plan cap - the same saturation signal `unusable_reason`
+    /// classifies on. A Ready-but-saturated account logs in
     /// fine but trips the rate limit on its next request, so the
     /// assignment plan prefers other accounts when one is available.
     pub(crate) fn is_saturated(&self, key: &AccountKey) -> bool {
@@ -474,8 +492,27 @@ impl AccountStateMap {
     /// truth for the usable filter shared by `pick_for_project` and the
     /// ad-hoc assignment guard.
     pub fn is_account_usable(&self, key: &AccountKey) -> bool {
-        tier_of(self.usage(key), self.usage_error(key)) == 0
-            && self.loading_state(key) != LoadingState::Bailed
+        self.unusable_reason(key).is_none()
+    }
+
+    /// Why `key` is out of the usable tier, `None` when pickable - the
+    /// per-key shape behind [`Self::is_account_usable`]. `Bailed`
+    /// outranks the probe classes: it is the loading task's terminal
+    /// verdict, and a bailed account has no cached windows to saturate
+    /// with. A snapshot whose source is not the account backend's is
+    /// treated as absent, the same refusal `budget()` applies - the
+    /// redb cache survives a provider edit and is re-seeded at boot,
+    /// and without this a stale windowed snapshot would tag a spend
+    /// row `limit hit`.
+    pub fn unusable_reason(&self, key: &AccountKey) -> Option<Unusable> {
+        if self.loading_state(key) == LoadingState::Bailed {
+            return Some(Unusable::Bailed);
+        }
+        let usage = self
+            .provider(key)
+            .and_then(forge_providers::backend)
+            .and_then(|backend| self.usage(key).filter(|s| s.source == backend.source()));
+        unusable_reason(usage, self.usage_error(key))
     }
 
     /// Snapshot the current `LoadingState` for `key`. Returns
@@ -575,11 +612,11 @@ impl AccountStateMap {
         debug_assert!(!allowed.is_empty(), "pick_for_project requires a non-empty allow list");
         // Resolve allow-list entries to known keys, preserving
         // allow-list order. Carry usage + last_error + loading so
-        // tier_of can see the full picture - an account whose
+        // unusable_reason can see the full picture - an account whose
         // boot-time loading task ended in `Bailed` (auth_status said
         // logged-out, refresh failed, etc.) must NOT be picked even
-        // if its last_error is None - tier_of's existing inputs
-        // wouldn't catch a Bailed-without-recent-error case, which
+        // if its last_error is None - unusable_reason's existing
+        // inputs wouldn't catch a Bailed-without-recent-error case, which
         // is the exact shape after the recovery poll transitions
         // Loading -> Bailed without firing set_last_error.
         let candidates: Vec<(
@@ -650,7 +687,7 @@ impl AccountStateMap {
         let decision_summary: Vec<String> = candidates
             .iter()
             .map(|(k, u, e, l)| {
-                let tier = tier_of(*u, *e);
+                let reason = unusable_reason(*u, *e);
                 let usage_state = match u {
                     None => "no-snapshot".to_owned(),
                     // A diagnostic line, so an absent window reads as 0
@@ -662,7 +699,7 @@ impl AccountStateMap {
                     ),
                 };
                 let err_state = e.map_or("none".to_owned(), |e| format!("{e:?}"));
-                format!("{}=tier{}({usage_state},err={err_state},loading={l:?})", k.0, tier)
+                format!("{}={reason:?}({usage_state},err={err_state},loading={l:?})", k.0)
             })
             .collect();
         tracing::debug!(
@@ -679,28 +716,36 @@ impl AccountStateMap {
     }
 }
 
-/// Two-tier classification driving the picker. Round-robin rotates
-/// among tier-0 entries; tier 1 is only used when no tier-0 candidate
-/// exists in the allow-list (the all-unusable fallback path).
+/// The tier classification behind [`AccountStateMap::unusable_reason`]
+/// for a key already resolved to its inputs. `None` is tier-0
+/// (usable): usage unknown, or under 100% on every window, or the last
+/// probe failed transiently (network / unknown HTTP - we just don't
+/// know yet). `Some` is tier-1: at the cap, or unable to
+/// authenticate. Round-robin rotates among the `None` entries; the
+/// `Some` tier is only used when no usable candidate exists (the
+/// all-unusable fallback path).
 ///
-/// - **0** Usable: usage unknown (no probe yet), OR usage known
-///   under 100% on both windows, OR last probe failed transiently
-///   (network / unknown HTTP - we just don't know yet). The picker
-///   can try this account.
-/// - **1** Unusable: usage shows 100% on at least one window, OR
-///   `/api/oauth/usage` returned 429, OR credentials are expired /
-///   unauthorized. Either at the cap or unable to authenticate.
-fn tier_of(usage: Option<&UsageSnapshot>, last_error: Option<UsageFetchStatus>) -> u8 {
-    let saturated = usage.is_some_and(is_rate_limited);
-    let probe_blocked = matches!(
+/// Saturation outranks a failed probe: the windows came from a
+/// successful read, and on an at-cap account the failed probe usually
+/// IS the cap throttling the endpoint.
+fn unusable_reason(
+    usage: Option<&UsageSnapshot>,
+    last_error: Option<UsageFetchStatus>,
+) -> Option<Unusable> {
+    if usage.is_some_and(is_rate_limited) {
+        return Some(Unusable::Saturated);
+    }
+    if matches!(
         last_error,
         Some(
             UsageFetchStatus::RateLimited
                 | UsageFetchStatus::Expired
                 | UsageFetchStatus::Unauthorized
         )
-    );
-    u8::from(saturated || probe_blocked)
+    ) {
+        return Some(Unusable::ProbeBlocked);
+    }
+    None
 }
 
 /// True when ANY window in the snapshot is currently at-or-beyond
@@ -903,6 +948,64 @@ mod tests {
         assert!(!map.is_account_usable(&AccountKey("probe-unauthorized".to_owned())));
         assert!(!map.is_account_usable(&AccountKey("bailed".to_owned())));
         assert!(map.is_account_usable(&AccountKey("refreshing".to_owned())));
+    }
+
+    #[test]
+    fn unusable_reason_names_why_the_account_is_out() {
+        let mut map = AccountStateMap::new(&[
+            make_account("saturated"),
+            make_account("probe-blocked"),
+            make_account("bailed"),
+            make_account("both"),
+        ]);
+        map.set_usage(&AccountKey("saturated".to_owned()), snapshot(Some(100.0), None));
+        // RateLimited leaves loading alone, so this isolates the probe
+        // class; an Unauthorized probe would flip loading to Bailed and
+        // read as Bailed here instead.
+        map.set_last_error(
+            &AccountKey("probe-blocked".to_owned()),
+            UsageFetchStatus::RateLimited,
+            None,
+        );
+        map.set_loading(&AccountKey("bailed".to_owned()), LoadingState::Bailed);
+        // Saturation outranks a failed probe: the windows came from a
+        // successful read.
+        map.set_usage(&AccountKey("both".to_owned()), snapshot(Some(100.0), None));
+        map.set_last_error(&AccountKey("both".to_owned()), UsageFetchStatus::RateLimited, None);
+
+        assert_eq!(map.unusable_reason(&key("saturated")), Some(Unusable::Saturated));
+        assert_eq!(map.unusable_reason(&key("probe-blocked")), Some(Unusable::ProbeBlocked));
+        assert_eq!(map.unusable_reason(&key("bailed")), Some(Unusable::Bailed));
+        assert_eq!(map.unusable_reason(&key("both")), Some(Unusable::Saturated));
+    }
+
+    /// The redb cache survives a `forge.toml` provider edit, so a
+    /// spend-billed account can boot holding a windowed snapshot under
+    /// another backend's source. That snapshot must not classify
+    /// Saturated: spend rows have no window to hit, and the tag would
+    /// assert a spent allowance the account does not have.
+    #[test]
+    fn a_source_mismatched_snapshot_cannot_saturate_a_spend_row() {
+        let mut router = make_account("Router");
+        router.provider = forge_primitives::account::Provider::Openrouter;
+        let mut map = AccountStateMap::new(&[router]);
+        // The snapshot helper stamps Oauth; the Openrouter backend's
+        // source is OpenRouterKey, so the cached windows are refused.
+        map.set_usage(&key("Router"), snapshot(Some(100.0), Some(100.0)));
+        assert_eq!(
+            map.unusable_reason(&key("Router")),
+            None,
+            "stale cache alone must not tag the spend row at all",
+        );
+
+        // With the probe also failing, the row wears the probe class -
+        // never the saturated one.
+        map.set_last_error(&key("Router"), UsageFetchStatus::RateLimited, None);
+        assert_eq!(
+            map.unusable_reason(&key("Router")),
+            Some(Unusable::ProbeBlocked),
+            "the stale snapshot falls through to the probe class",
+        );
     }
 
     #[test]
@@ -1812,8 +1915,8 @@ mod tests {
     fn pick_for_project_skips_bailed_accounts() {
         // Bailed account is in the allow list with no last_error (the
         // recovery poll explicitly transitioned via set_loading, not
-        // set_last_error). Without the LoadingState filter, tier_of
-        // would classify it as tier 0 (usable=true) because both
+        // set_last_error). Without the LoadingState filter,
+        // unusable_reason would classify it as usable because both
         // usage and last_error are None. The picker must NOT return
         // it; the Ready account must win.
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);

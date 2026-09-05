@@ -2222,7 +2222,7 @@ impl Workspace {
             .filter_map(|name| {
                 let key = AccountKey(name.clone());
                 let config_dir = accounts.config_dir(&key)?.clone();
-                let usable = accounts.is_account_usable(&key);
+                let unusable = accounts.unusable_reason(&key);
                 let is_current = current_account == Some(name.as_str());
                 let experimental = accounts.is_experimental(&key);
                 let budget = account_budget(
@@ -2234,7 +2234,7 @@ impl Workspace {
                     display_name: name,
                     config_dir,
                     is_current,
-                    usable,
+                    unusable,
                     budget,
                     experimental,
                 })
@@ -6038,7 +6038,7 @@ mod tests {
 
     /// `project_accounts_snapshot` returns one row per allow-list entry
     /// in order, each carrying the account's config_dir, is_current
-    /// marker, usable flag, 5h/7d utilization, and a reset ETA only
+    /// marker, unusable reason, 5h/7d utilization, and a reset ETA only
     /// while the account is at its cap.
     #[test]
     fn project_accounts_snapshot_reports_allowlist_order_and_state() {
@@ -6082,9 +6082,14 @@ mod tests {
         assert_eq!(rows[0].display_name, "A", "allow-list order preserved");
         assert_eq!(rows[1].display_name, "B");
 
-        // A: current + saturated -> not usable, carries a reset ETA.
+        // A: current + saturated -> unusable as Saturated, carries a
+        // reset ETA.
         assert!(rows[0].is_current, "A is the session's active account");
-        assert!(!rows[0].usable, "A saturated on 5h -> rate limited");
+        assert_eq!(
+            rows[0].unusable,
+            Some(crate::account::Unusable::Saturated),
+            "A saturated on 5h -> Saturated, not a probe failure",
+        );
         match rows[0].budget {
             crate::views::AccountBudget::Subscription {
                 five_hour_util,
@@ -6099,9 +6104,9 @@ mod tests {
         }
         assert_eq!(rows[0].config_dir, PathBuf::from("/cfg/A"));
 
-        // B: not current + usable -> no reset ETA.
+        // B: not current + under cap -> usable, no reset ETA.
         assert!(!rows[1].is_current);
-        assert!(rows[1].usable, "B under cap on both windows");
+        assert_eq!(rows[1].unusable, None, "B under cap on both windows");
         match rows[1].budget {
             crate::views::AccountBudget::Subscription { five_hour_util, resets_at, .. } => {
                 assert_eq!(five_hour_util, Some(34.0));
@@ -6223,7 +6228,7 @@ mod tests {
         let rows = ws.project_accounts_snapshot(&[], None);
         let names: Vec<&str> = rows.iter().map(|r| r.display_name.as_str()).collect();
         assert_eq!(names, vec!["One", "Two"], "empty pin lists all accounts in order");
-        assert!(rows.iter().all(|r| r.usable), "both under cap -> usable");
+        assert!(rows.iter().all(|r| r.unusable.is_none()), "both under cap -> usable");
         assert!(rows.iter().all(|r| !r.is_current), "no current account when None passed");
     }
 

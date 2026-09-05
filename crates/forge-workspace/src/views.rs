@@ -101,9 +101,11 @@ pub struct AccountRow {
     pub config_dir: PathBuf,
     /// `true` when this is the session's active account.
     pub is_current: bool,
-    /// `true` when the account is pickable now (tier-0, not bailed).
-    /// `false` renders the red `rate limited` tag.
-    pub usable: bool,
+    /// `None` when the account is pickable now (tier-0, not bailed).
+    /// The reason renders as the row's status tag: a capped window
+    /// reads `limit hit`, a blocked probe or a bail reads
+    /// `auth failed or expired`.
+    pub unusable: Option<crate::account::Unusable>,
     /// What this account has left, in whatever terms its backend bills.
     pub budget: AccountBudget,
     /// `true` for an `experimental = true` account. The picker renders

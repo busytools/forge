@@ -154,7 +154,7 @@ mod tests {
             display_name: name.to_owned(),
             config_dir: PathBuf::from(format!("/cfg/{name}")),
             is_current,
-            usable: true,
+            unusable: None,
             budget: forge_workspace::AccountBudget::Subscription {
                 five_hour_util: Some(10.0),
                 seven_day_util: Some(5.0),
@@ -211,7 +211,7 @@ mod tests {
             display_name: "Exp".to_owned(),
             config_dir: PathBuf::from("/cfg/Exp"),
             is_current: false,
-            usable: true,
+            unusable: None,
             budget: forge_workspace::AccountBudget::Subscription {
                 five_hour_util: Some(10.0),
                 seven_day_util: Some(5.0),
