@@ -92,7 +92,11 @@ automatically, resuming where they left off, until you explicitly \
 despawn them with workers__despawn (or close their row in the Projects \
 pane). Despawn a worker once its work is truly done, otherwise it keeps \
 coming back on every restart. Default to doing the work yourself; \
-delegate only substantial or parallelizable work.";
+delegate only substantial or parallelizable work. A PR review loop \
+fans out as ephemeral in-session subagents, not workers - a reviewer \
+spawned as a worker lingers as a durable row and worktree after its \
+round ends. Workers build; subagents review, unless the user wants a \
+reviewer kept on as a long-lived worker.";
 
 /// Forge-supplied resume kick for a worker whose row carries no
 /// `resume_kick` of its own. On a resuming re-spawn forge delivers this
@@ -10182,7 +10186,9 @@ mod worker_respawn_tests {
         Workspace::apply_lead_delegation(&mut lead, crate::mcp::SessionKind::Lead);
         assert!(
             lead.delegation_preamble.is_some_and(|t| {
-                t.contains("workers__spawn") && t.contains("never a peers call")
+                t.contains("workers__spawn")
+                    && t.contains("never a peers call")
+                    && t.contains("Workers build; subagents review")
             }),
             "a lead does get it",
         );
