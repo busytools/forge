@@ -12,6 +12,11 @@ use crate::{Config, Error, ModelSpec};
 /// Bytes between progress reports during a transfer.
 const PROGRESS_INTERVAL: u64 = 1 << 20;
 
+/// Bytes between cancellation checkpoints while hashing. Coarse, since
+/// a checkpoint round-trips the prepare driver: at hashing speed this
+/// keeps cancel latency near 120 ms without an event per read.
+const VERIFY_PROGRESS_INTERVAL: u64 = 64 << 20;
+
 /// The caller's progress callback as the internals pass it around.
 type Reporter<'a> = dyn FnMut(Progress) -> ControlFlow<()> + 'a;
 
@@ -140,7 +145,7 @@ fn ensure(dir: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Resul
     let target = dir.join(&spec.file);
     if target.try_exists().map_err(|source| Error::Io { path: target.clone(), source })? {
         announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
-        verify(&target, spec)?;
+        verify(&target, spec, on_progress)?;
         announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
         return Ok(());
     }
@@ -152,7 +157,7 @@ fn ensure(dir: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Resul
     // read takes seconds, and a caller left on "100%" reads it as a hang.
     announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
 
-    if let Err(failure) = verify(&partial, spec) {
+    if let Err(failure) = verify(&partial, spec, on_progress) {
         return Err(discard_unusable_partial(&partial, failure));
     }
     fs::rename(&partial, &target).map_err(|source| Error::Io { path: target, source })?;
@@ -202,14 +207,14 @@ fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
 /// `ETag`: HuggingFace answers with a chunked xet etag that is a
 /// different value from the file's SHA-256, so trusting it would reject
 /// a perfectly good file forever.
-fn verify(path: &Path, spec: &ModelSpec) -> Result<(), Error> {
+fn verify(path: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Result<(), Error> {
     let actual =
         fs::metadata(path).map_err(|source| Error::Io { path: path.into(), source })?.len();
     if actual != spec.size {
         return Err(Error::SizeMismatch { path: path.into(), expected: spec.size, actual });
     }
 
-    let digest = sha256(path)?;
+    let digest = sha256(path, spec, on_progress)?;
     if !digest.eq_ignore_ascii_case(&spec.sha256) {
         return Err(Error::HashMismatch {
             path: path.into(),
@@ -220,12 +225,62 @@ fn verify(path: &Path, spec: &ModelSpec) -> Result<(), Error> {
     Ok(())
 }
 
-fn sha256(path: &Path) -> Result<String, Error> {
+fn sha256(path: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Result<String, Error> {
     let mut file = File::open(path).map_err(|source| Error::Io { path: path.into(), source })?;
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher)
-        .map_err(|source| Error::Io { path: path.into(), source })?;
-    Ok(hex::encode(hasher.finalize()))
+    let mut sink = HashingWriter {
+        hasher: Sha256::new(),
+        name: &spec.file,
+        hashed: 0,
+        reported: 0,
+        cancelled: false,
+        interval: VERIFY_PROGRESS_INTERVAL,
+        on_progress,
+    };
+    let copied = std::io::copy(&mut file, &mut sink);
+    // Checked before the io error, because cancellation arrives AS one.
+    if sink.cancelled {
+        return Err(Error::Cancelled);
+    }
+    copied.map_err(|source| Error::Io { path: path.into(), source })?;
+    Ok(hex::encode(sink.hasher.finalize()))
+}
+
+/// Feeds bytes into the digest and checkpoints cancellation every
+/// `interval` bytes, so a cancel during verification does not wait out
+/// the whole hash.
+struct HashingWriter<'a, 'r> {
+    hasher: Sha256,
+    name: &'a str,
+    hashed: u64,
+    reported: u64,
+    cancelled: bool,
+    interval: u64,
+    on_progress: &'a mut Reporter<'r>,
+}
+
+impl std::io::Write for HashingWriter<'_, '_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.hasher.update(buf);
+        self.hashed += buf.len() as u64;
+        if self.hashed - self.reported >= self.interval && self.report().is_break() {
+            self.cancelled = true;
+            // Deliberately not `Interrupted`: write_all retries that
+            // kind, and the digest cannot un-eat bytes.
+            return Err(std::io::Error::other("cancelled by the progress callback"));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl HashingWriter<'_, '_> {
+    fn report(&mut self) -> ControlFlow<()> {
+        self.reported = self.hashed;
+        (self.on_progress)(Progress::Verifying { file: self.name.to_owned() })
+    }
 }
 
 fn download(spec: &ModelSpec, partial: &Path, on_progress: &mut Reporter<'_>) -> Result<(), Error> {
@@ -373,6 +428,7 @@ mod tests_cached_verification {
     use crate::{ConfigBuilder, ModelSpec};
     use sha2::{Digest, Sha256};
     use std::fs;
+    use std::io::Write as _;
 
     /// A spec whose URL is guaranteed unreachable, so any code path
     /// that reaches the network fails loudly as [`Error::Http`]
@@ -535,6 +591,70 @@ mod tests_cached_verification {
         assert!(
             matches!(err, Error::HashMismatch { .. }),
             "a file of the right length with the wrong bytes must be rejected on hash, got: {err:?}"
+        );
+    }
+
+    fn hashing_sink<'a, 'r>(
+        interval: u64,
+        on_progress: &'a mut Reporter<'r>,
+    ) -> HashingWriter<'a, 'r> {
+        HashingWriter {
+            hasher: Sha256::new(),
+            name: "asr.gguf",
+            hashed: 0,
+            reported: 0,
+            cancelled: false,
+            interval,
+            on_progress,
+        }
+    }
+
+    // The sink checkpoints cancellation mid-hash, so esc during
+    // verification costs one interval rather than the whole digest.
+    #[test]
+    fn the_hashing_sink_breaks_at_its_interval() {
+        let body = b"0123456789abcdefghij";
+        let events = std::cell::RefCell::new(Vec::new());
+        let mut on_progress = |p: Progress| {
+            events.borrow_mut().push(p);
+            ControlFlow::Break(())
+        };
+        let mut sink = hashing_sink(8, &mut on_progress);
+
+        // Five bytes stays under the interval: no report, no error.
+        sink.write_all(&body[..5]).unwrap();
+        assert!(events.borrow().is_empty(), "no checkpoint under the interval");
+
+        // Crossing 8 on the second write reports once, and the break
+        // surfaces as an error carrying the cancelled flag.
+        assert!(sink.write_all(&body[5..15]).is_err(), "a break must fail the write");
+        assert!(sink.cancelled, "the caller must be able to tell a break from a disk fault");
+        assert_eq!(sink.hashed, 15, "every fed byte reaches the count");
+        assert_eq!(sink.reported, 15, "the checkpoint reported what it had hashed");
+        assert_eq!(events.borrow().len(), 1, "exactly one checkpoint fired before the break");
+        let first = events.borrow()[0].clone();
+        assert!(
+            matches!(first, Progress::Verifying { ref file } if file == "asr.gguf"),
+            "the checkpoint names the file being verified, got: {first:?}"
+        );
+    }
+
+    // Uncancelled, the sink is just a hasher: the digest it accumulates
+    // over the fed bytes is the digest of those bytes.
+    #[test]
+    fn the_hashing_sink_accumulates_the_fed_digest() {
+        let body = b"pretend these are recognition weights";
+        let mut on_progress = |_| ControlFlow::Continue(());
+        let mut sink = hashing_sink(u64::MAX, &mut on_progress);
+
+        sink.write_all(body).unwrap();
+        assert_eq!(sink.hashed, body.len() as u64, "every fed byte reaches the count");
+        assert_eq!(sink.reported, 0, "an interval nothing crosses reports nothing");
+        assert!(!sink.cancelled, "a continuing callback never cancels");
+        assert_eq!(
+            hex::encode(sink.hasher.finalize()),
+            hex::encode(Sha256::digest(body)),
+            "the sink must hash exactly the bytes it is fed"
         );
     }
 }
