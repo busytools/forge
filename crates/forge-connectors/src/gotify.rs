@@ -214,8 +214,8 @@ async fn fetch_messages(
 }
 
 /// Resolve appid->name, filter by app + priority, sort newest-first (by
-/// monotonic id), and truncate to `limit`. App matching mirrors
-/// `Workspace::route_gotify_message`: an unresolved appid never matches a
+/// monotonic id), and truncate to `limit`. App matching mirrors `route`:
+/// an unresolved appid never matches a
 /// non-empty name filter (its numeric display string can't sneak past),
 /// though its display `app` still falls back to that id string.
 fn filter_recent(
