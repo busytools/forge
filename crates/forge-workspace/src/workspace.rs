@@ -91,8 +91,7 @@ Spawned workers are durable: they survive forge restarts and re-spawn \
 automatically, resuming where they left off, until you explicitly \
 despawn them with workers__despawn (or close their row in the Projects \
 pane). Despawn a worker once its work is truly done, otherwise it keeps \
-coming back on every restart. Default to doing the work yourself; \
-delegate only substantial or parallelizable work. A PR review loop \
+coming back on every restart. A PR review loop \
 fans out as ephemeral in-session subagents, not workers - a reviewer \
 spawned as a worker lingers as a durable row and worktree after its \
 round ends. Workers build; subagents review, unless the user wants a \
