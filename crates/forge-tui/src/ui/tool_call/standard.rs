@@ -10,6 +10,7 @@ use crate::ui::diff::{
 use crate::ui::highlight;
 use crate::ui::markdown;
 use crate::ui::theme;
+use crate::ui::wrap::replace_control_chars;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -166,12 +167,13 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
             }
             let last = stripped_output.lines().rev().find(|l| !l.trim().is_empty());
             if let Some(line) = last {
-                return if line.chars().count() > 80 {
+                let summary = if line.chars().count() > 80 {
                     let truncated: String = line.chars().take(77).collect();
                     format!("{truncated}...")
                 } else {
                     line.to_owned()
                 };
+                return replace_control_chars(summary.into()).into_owned();
             }
         }
         return if matches!(tc.status, model::ToolCallStatus::InProgress) {
