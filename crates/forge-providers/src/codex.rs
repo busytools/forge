@@ -6,8 +6,8 @@
 
 use async_trait::async_trait;
 
-use forge_primitives::usage::UsageSnapshot;
 use forge_primitives::usage::oauth::OauthUsageError;
+use forge_primitives::usage::{UsageSnapshot, UsageSourceKind};
 
 use crate::helpers::{
     BaseUrlCredential, MissingBase, OAUTH_TIMEOUT, anthropic_windowed_probe, base_url_credential,
@@ -26,6 +26,10 @@ impl ProviderBackend for Codex {
 
     fn billing(&self) -> BillingModel {
         BillingModel::Windows
+    }
+
+    fn source(&self) -> UsageSourceKind {
+        UsageSourceKind::Oauth
     }
 
     async fn probe(

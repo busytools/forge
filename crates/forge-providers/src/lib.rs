@@ -21,7 +21,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 pub use forge_primitives::account::Provider;
 pub use forge_primitives::cloud::oauth_credentials::OauthCredentials;
+pub use forge_primitives::usage::AccountBudget;
 pub use forge_primitives::usage::UsageSnapshot;
+pub use forge_primitives::usage::UsageSourceKind;
 pub use forge_primitives::usage::oauth::OauthUsageError;
 
 pub use crate::model_catalog::ModelCatalog;
@@ -97,11 +99,76 @@ pub trait ProviderBackend: Send + Sync {
     /// Billing shape.
     fn billing(&self) -> BillingModel;
 
+    /// The source kind this backend's probe stamps on the snapshots
+    /// it returns; `budget` refuses a cached snapshot of any other
+    /// kind.
+    fn source(&self) -> UsageSourceKind;
+
+    /// The account picker's budget shape for one account's cached
+    /// usage snapshot.
+    ///
+    /// A snapshot whose source is not this backend's is treated as
+    /// absent: the redb cache survives a `forge.toml` provider edit
+    /// and is re-seeded at every boot, so a stale row is normal, and
+    /// rendering windows as money (or the reverse) is worse than
+    /// saying nothing.
+    fn budget(&self, account: &str, snapshot: Option<&UsageSnapshot>) -> AccountBudget {
+        let unknown =
+            AccountBudget::Unknown { spend_billed: self.billing() == BillingModel::Spend };
+        let Some(snapshot) = snapshot else {
+            return unknown;
+        };
+        if snapshot.source != self.source() {
+            warn_unusable_snapshot(account, self.token(), snapshot.source);
+            return unknown;
+        }
+        match self.billing() {
+            BillingModel::Windows => AccountBudget::Subscription {
+                five_hour_util: snapshot.five_hour_util(),
+                seven_day_util: snapshot.seven_day_util(),
+                resets_at: snapshot.binding_reset_at(),
+            },
+            BillingModel::Spend => {
+                if let Some(spend) = snapshot.spend.as_ref() {
+                    AccountBudget::Api {
+                        daily: spend.daily,
+                        weekly: spend.weekly,
+                        monthly: spend.monthly,
+                    }
+                } else {
+                    // Unreachable from today's mapper, which refuses a
+                    // body with no figures - same warn as a source
+                    // mismatch rather than a second silent path.
+                    warn_unusable_snapshot(account, self.token(), snapshot.source);
+                    unknown
+                }
+            }
+        }
+    }
+
     /// The provider's model picker rows, or None to keep the
     /// discovered list. Today: openrouter only.
     fn model_catalog(&self) -> Option<&'static dyn ModelCatalog> {
         None
     }
+}
+
+/// A cached snapshot the renderer cannot use under this backend.
+///
+/// Warns rather than falling back quietly: the redb row is rewritten
+/// only after a successful poll, so a stale one outlives a `forge.toml`
+/// edit and is re-seeded every boot. An account whose provider changed
+/// and whose new endpoint is failing would otherwise show empty columns
+/// indefinitely with nothing anywhere saying why.
+fn warn_unusable_snapshot(account: &str, provider: Provider, source: UsageSourceKind) {
+    tracing::warn!(
+        target: "forge_providers",
+        account = %account,
+        provider = ?provider,
+        source = source.label(),
+        "cached usage snapshot does not fit the account's provider; showing no figures until a \
+         fresh probe lands",
+    );
 }
 
 static ANTHROPIC: Anthropic = Anthropic;
@@ -143,11 +210,28 @@ mod tests {
         }
     }
 
+    /// Every token a user may write in `forge.toml` resolves to a
+    /// backend. A missing registration is invisible at the callers:
+    /// their fallbacks render Unknown forever, and the debug_assert
+    /// guarding them compiles out in release.
+    #[test]
+    fn backend_resolves_every_accepted_token() {
+        for token in Provider::ACCEPTED.split(',').map(str::trim) {
+            let provider: Provider =
+                serde_json::from_str(token).expect("an ACCEPTED token parses to a Provider");
+            assert!(
+                backend(provider).is_some(),
+                "{provider:?} is accepted by config but has no backend registered",
+            );
+        }
+    }
+
     #[test]
     fn anthropic_backend_is_windowed() {
         let backend = backend(Provider::Anthropic).expect("registered");
         assert_eq!(backend.token(), Provider::Anthropic);
         assert_eq!(backend.billing(), BillingModel::Windows);
+        assert_eq!(backend.source(), UsageSourceKind::Oauth);
     }
 
     #[test]
@@ -155,6 +239,15 @@ mod tests {
         let backend = backend(Provider::Codex).expect("registered");
         assert_eq!(backend.token(), Provider::Codex);
         assert_eq!(backend.billing(), BillingModel::Windows);
+        assert_eq!(backend.source(), UsageSourceKind::Oauth);
+    }
+
+    #[test]
+    fn openrouter_backend_is_spend() {
+        let backend = backend(Provider::Openrouter).expect("registered");
+        assert_eq!(backend.token(), Provider::Openrouter);
+        assert_eq!(backend.billing(), BillingModel::Spend);
+        assert_eq!(backend.source(), UsageSourceKind::OpenRouterKey);
     }
 
     #[test]
@@ -162,5 +255,97 @@ mod tests {
         let backend = backend(Provider::Zai).expect("registered");
         assert_eq!(backend.token(), Provider::Zai);
         assert_eq!(backend.billing(), BillingModel::Windows);
+        assert_eq!(backend.source(), UsageSourceKind::ZaiMonitor);
+    }
+
+    fn budget_snapshot(
+        future: std::time::SystemTime,
+        source: UsageSourceKind,
+        spend: Option<forge_primitives::usage::ApiSpend>,
+    ) -> UsageSnapshot {
+        let window = |utilization| forge_primitives::usage::UsageWindow {
+            utilization,
+            resets_at: Some(future),
+            reset_description: None,
+        };
+        UsageSnapshot {
+            source,
+            fetched_at: std::time::SystemTime::UNIX_EPOCH,
+            five_hour: Some(window(100.0)),
+            seven_day: Some(window(20.0)),
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            spend,
+        }
+    }
+
+    /// Every `(backend, source)` pair `budget` can be handed. The
+    /// mismatch pairs are the reason the stale-cache refusal exists - a
+    /// stale cached row survives a `forge.toml` provider change and is
+    /// re-seeded at every boot - and a `budget` that keyed on billing
+    /// alone would render windows as money with every other test still
+    /// green.
+    #[test]
+    fn budget_covers_every_backend_and_source_pair() {
+        use forge_primitives::usage::ApiSpend;
+
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let spend = ApiSpend {
+            daily: 0.5,
+            weekly: 1.0,
+            monthly: 2.0,
+            limit: None,
+            limit_remaining: None,
+            limit_reset: None,
+            expires_at: None,
+        };
+
+        for backend in all() {
+            let spend_billed = backend.billing() == BillingModel::Spend;
+            let unknown = AccountBudget::Unknown { spend_billed };
+
+            // No snapshot still carries the billing model, so the empty
+            // row sits under the labels the account would really have.
+            assert_eq!(backend.budget("Acct", None), unknown, "{:?}", backend.token());
+
+            for source in [
+                UsageSourceKind::Oauth,
+                UsageSourceKind::OpenRouterKey,
+                UsageSourceKind::ZaiMonitor,
+            ] {
+                let snapshot = budget_snapshot(future, source, Some(spend.clone()));
+                let expected = if source == backend.source() {
+                    match backend.billing() {
+                        BillingModel::Windows => AccountBudget::Subscription {
+                            five_hour_util: Some(100.0),
+                            seven_day_util: Some(20.0),
+                            resets_at: Some(future),
+                        },
+                        BillingModel::Spend => {
+                            AccountBudget::Api { daily: 0.5, weekly: 1.0, monthly: 2.0 }
+                        }
+                    }
+                } else {
+                    unknown.clone()
+                };
+                assert_eq!(
+                    backend.budget("Acct", Some(&snapshot)),
+                    expected,
+                    "{:?} with a {:?} snapshot",
+                    backend.token(),
+                    source,
+                );
+            }
+
+            // A spend backend whose matching-source snapshot carries no
+            // figures maps to nothing - today's openrouter mapper
+            // refuses such a body, so this takes the same warn path a
+            // stale row takes.
+            if spend_billed {
+                let bare = budget_snapshot(future, backend.source(), None);
+                assert_eq!(backend.budget("Acct", Some(&bare)), unknown);
+            }
+        }
     }
 }

@@ -5,6 +5,8 @@ use std::time::SystemTime;
 
 use crate::target::{ProjectKey, SessionKey};
 
+pub use forge_primitives::usage::AccountBudget;
+
 /// One project from the catalog plus its sessions, sorted last-
 /// activity descending. `sessions[0]` is the lead. Empty `sessions`
 /// means the project has no on-disk history yet.
@@ -109,43 +111,6 @@ pub struct AccountRow {
     /// are offered globally (regardless of the project's org pin)
     /// because they are excluded from every auto-assignment path.
     pub experimental: bool,
-}
-
-/// What an account has left, in the terms its backend bills in.
-///
-/// Lives on the view rather than on `UsageSnapshot` because the
-/// snapshot is persisted and this is not: making the stored type an
-/// enum would break every cached row, while a view type can carry the
-/// discrimination for free.
-#[derive(Clone, Debug, PartialEq)]
-pub enum AccountBudget {
-    /// No usable snapshot: none has landed yet, or the cached one was
-    /// written under a different `provider` and no longer describes
-    /// this account.
-    ///
-    /// `spend_billed` carries the account's billing model anyway, so
-    /// the row's empty columns sit under the labels it would really
-    /// have rather than asserting windows an API account has none of.
-    Unknown { spend_billed: bool },
-    /// Plan windows, as percentages of an allowance that resets. Each
-    /// column is `None` when the snapshot carried no window for it -
-    /// the lenient mapper documents three states where that happens,
-    /// and the strict one requires only the five-hour window, so a
-    /// present snapshot is not a promise of a present figure.
-    Subscription {
-        five_hour_util: Option<f64>,
-        /// Binding 7-day utilization: max across the three 7-day
-        /// windows, or `None` when all three are absent.
-        seven_day_util: Option<f64>,
-        /// When the account unlocks - `Some` only while it is at its
-        /// cap, so the picker shows a reset ETA on limited rows only.
-        resets_at: Option<SystemTime>,
-    },
-    /// Per-key spend in USD over the three periods the backend
-    /// pre-computes. No allowance, so no percentage and no reset;
-    /// account-wide balance has a different scope and is not carried
-    /// here, so a row cannot imply both figures are per-key.
-    Api { daily: f64, weekly: f64, monthly: f64 },
 }
 
 /// How an account proves who it is, which is the only thing that

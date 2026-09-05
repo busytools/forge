@@ -37,6 +37,10 @@ impl ProviderBackend for Openrouter {
         BillingModel::Spend
     }
 
+    fn source(&self) -> UsageSourceKind {
+        UsageSourceKind::OpenRouterKey
+    }
+
     fn model_catalog(&self) -> Option<&'static dyn ModelCatalog> {
         Some(&Openrouter)
     }

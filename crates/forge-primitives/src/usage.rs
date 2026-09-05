@@ -1,7 +1,7 @@
 //! Anthropic plan-usage snapshot data shapes.
 //!
-//! Type-only - the fetcher impl (HTTP via `oauth_usage.rs`) lives in
-//! `forge_agent::cloud::*`. These are the wire shapes consumers see.
+//! Type-only - the fetcher impls live in the forge-providers
+//! backends. These are the wire shapes consumers see.
 //!
 //! Serde derived so the workspace can persist the latest snapshot per
 //! account to disk and rehydrate it at next boot - without the cache
@@ -111,7 +111,7 @@ pub struct ExtraUsage {
 }
 
 /// Snapshot of the user's Anthropic plan utilization at a point in time.
-/// Composed by the cloud module's `oauth` fetcher and rendered by
+/// Composed by the forge-providers backends and rendered by
 /// forge-tui's usage view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageSnapshot {
@@ -127,6 +127,84 @@ pub struct UsageSnapshot {
     /// field existed - serde decodes a missing key on an `Option` to
     /// `None`, which is what keeps the cached rows readable.
     pub spend: Option<ApiSpend>,
+}
+
+impl UsageSnapshot {
+    /// `None` when the snapshot carries no five-hour window, which is a
+    /// documented steady state on the lenient mapper rather than a zero.
+    pub fn five_hour_util(&self) -> Option<f64> {
+        self.five_hour.as_ref().map(|w| w.utilization)
+    }
+
+    /// Binding 7-day utilisation: max across the three 7-day windows
+    /// (`seven_day`, `seven_day_opus`, `seven_day_sonnet`). Whichever
+    /// is most-used is the binding constraint for "is this account
+    /// 7-day rate-limited."
+    ///
+    /// `None` when all three are absent, which a 200 carrying only the
+    /// session window produces.
+    pub fn seven_day_util(&self) -> Option<f64> {
+        let windows = [
+            self.seven_day.as_ref().map(|w| w.utilization),
+            self.seven_day_opus.as_ref().map(|w| w.utilization),
+            self.seven_day_sonnet.as_ref().map(|w| w.utilization),
+        ];
+        windows.into_iter().flatten().reduce(f64::max)
+    }
+
+    /// When a rate-limited account unlocks: the latest `resets_at` among
+    /// windows currently at-or-over the cap (per `is_currently_limited`).
+    /// `None` when no window is currently capped, so the `/account`
+    /// picker shows a reset ETA only on rate-limited rows.
+    pub fn binding_reset_at(&self) -> Option<std::time::SystemTime> {
+        [
+            self.five_hour.as_ref(),
+            self.seven_day.as_ref(),
+            self.seven_day_opus.as_ref(),
+            self.seven_day_sonnet.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|w| w.is_currently_limited())
+        .filter_map(|w| w.resets_at)
+        .max()
+    }
+}
+
+/// What an account has left, in the terms its backend bills in.
+///
+/// A view over a [`UsageSnapshot`], deliberately not part of it: the
+/// snapshot is persisted and this is not, so the stored type stays a
+/// struct and serde keeps decoding every cached row.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AccountBudget {
+    /// No usable snapshot: none has landed yet, or the cached one was
+    /// written under a different `provider` and no longer describes
+    /// this account.
+    ///
+    /// `spend_billed` carries the account's billing model anyway, so
+    /// the row's empty columns sit under the labels it would really
+    /// have rather than asserting windows an API account has none of.
+    Unknown { spend_billed: bool },
+    /// Plan windows, as percentages of an allowance that resets. Each
+    /// column is `None` when the snapshot carried no window for it -
+    /// the lenient mapper documents three states where that happens,
+    /// and the strict one requires only the five-hour window, so a
+    /// present snapshot is not a promise of a present figure.
+    Subscription {
+        five_hour_util: Option<f64>,
+        /// Binding 7-day utilization: max across the three 7-day
+        /// windows, or `None` when all three are absent.
+        seven_day_util: Option<f64>,
+        /// When the account unlocks - `Some` only while it is at its
+        /// cap, so the picker shows a reset ETA on limited rows only.
+        resets_at: Option<std::time::SystemTime>,
+    },
+    /// Per-key spend in USD over the three periods the backend
+    /// pre-computes. No allowance, so no percentage and no reset;
+    /// account-wide balance has a different scope and is not carried
+    /// here, so a row cannot imply both figures are per-key.
+    Api { daily: f64, weekly: f64, monthly: f64 },
 }
 
 #[cfg(test)]

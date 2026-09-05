@@ -1,8 +1,8 @@
 //! OpenRouter `/api/v1/key` response shapes.
 //!
-//! Type-only - the HTTP fetcher lives in
-//! `forge_agent::cloud::oauth_usage`. These are the JSON wire shapes;
-//! the fetcher deserializes into them.
+//! Type-only - the HTTP fetcher lives in the forge-providers
+//! OpenRouter backend. These are the JSON wire shapes; the fetcher
+//! deserializes into them.
 
 use serde::{Deserialize, Serialize};
 
