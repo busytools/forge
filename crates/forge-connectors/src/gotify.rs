@@ -645,6 +645,9 @@ mod tests {
         // alerts at priority 2: the app-filter subs match; the priority
         // floor does not (2 < 5).
         assert_eq!(matches(Some("alerts"), 2), [subs[0].id, subs[2].id]);
+        // The SECOND listed name matches the same set as the first, so a
+        // single-element comparison can't pass for the any-of filter.
+        assert_eq!(matches(Some("backups"), 1), [subs[2].id]);
         // Below the floor only the match-any priority set survives.
         assert_eq!(matches(Some("alerts"), 5), [subs[0].id, subs[1].id, subs[2].id]);
         // An app outside every listed set leaves only the empty filter set.
