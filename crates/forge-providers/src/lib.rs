@@ -210,6 +210,22 @@ mod tests {
         }
     }
 
+    /// Every token a user may write in `forge.toml` resolves to a
+    /// backend. A missing registration is invisible at the callers:
+    /// their fallbacks render Unknown forever, and the debug_assert
+    /// guarding them compiles out in release.
+    #[test]
+    fn backend_resolves_every_accepted_token() {
+        for token in Provider::ACCEPTED.split(',').map(str::trim) {
+            let provider: Provider =
+                serde_json::from_str(token).expect("an ACCEPTED token parses to a Provider");
+            assert!(
+                backend(provider).is_some(),
+                "{provider:?} is accepted by config but has no backend registered",
+            );
+        }
+    }
+
     #[test]
     fn anthropic_backend_is_windowed() {
         let backend = backend(Provider::Anthropic).expect("registered");
