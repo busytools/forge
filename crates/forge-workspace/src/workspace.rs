@@ -795,7 +795,8 @@ impl Workspace {
     }
 
     /// The `[plugins]` auto-update policy from forge.toml. Read by the
-    /// plugins pane for boot auto-update and to show marketplace trust.
+    /// plugins pane for the boot auto-update gate and the pane's
+    /// auto-update state display.
     pub fn plugin_settings(&self) -> &crate::config::PluginSettings {
         &self.config.plugins
     }

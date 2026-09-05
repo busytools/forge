@@ -296,30 +296,26 @@ section.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `auto_update` | boolean | `false` | Update installed plugins once at forge boot. Off unless asked for: an auto-applied update can break a load-bearing session mid-day. |
-| `trusted_marketplaces` | string list | `[]` | Marketplaces auto-update may touch, by name. Trust gates at the marketplace: nothing here means nothing auto-updates, whatever `auto_update` says. |
-| `pins` | string list | `[]` | Plugin ids (`name@marketplace`) held at their current version. Never auto-updated; manual updates still work. |
+| `auto_update` | boolean | `false` | Update every installed plugin once at forge boot. The switch alone governs. Off unless asked for: an auto-applied update can break a load-bearing session mid-day. |
 
-A plugin auto-updates only when all three agree: the switch is on, its
-marketplace is listed as trusted, and it is not pinned. When the run
-fires, the plugins pane reports what updated, from which marketplace,
-and what it skipped; forge remembers the previous version so the
-plugin's actions overlay can offer "Roll back to previous version"
-afterwards. Rollback needs the recorded pre-update marketplace ref,
-which in turn needs the marketplace to be git-backed, and the ref to
-still be fetchable; a rollback that does not actually move the plugin
-to the recorded version keeps the record so it can be retried.
+When the run fires, the plugins pane reports what updated, from which
+marketplace, and what it skipped; forge remembers the previous version
+so the plugin's actions overlay can offer "Roll back to previous
+version" afterwards. Rollback needs the recorded pre-update marketplace
+ref, which in turn needs the marketplace to be git-backed, and the ref
+to still be fetchable; a rollback that does not actually move the
+plugin to the recorded version keeps the record so it can be retried.
 
 Like `[dictate]`, an unrecognised key here fails the load rather than
-being ignored: a mistyped `trusted_marketplaces` would otherwise leave
-auto-update silently doing nothing.
+being ignored. Keys an older forge read here (`trusted_marketplaces`,
+`pins`) are rejected the same way: remove them.
 
 ## Unknown keys
 
 The top-level document does not reject unknown tables, so a section
 forge no longer reads is ignored rather than failing the load. The
-places that do reject unknown fields are `[projects.<name>]`,
-`[dictate]` and `[plugins]`.
+places that do reject unknown fields are `[[accounts]]`,
+`[projects.<name>.env]`, `[dictate]` and `[plugins]`.
 
 ## A complete example
 
@@ -394,8 +390,6 @@ client_token = "CxxxxxxxxxxxxxxxA"
 
 [plugins]
 auto_update = true
-trusted_marketplaces = ["claude-plugins-official"]
-pins = ["feature-dev@claude-plugins-official"]
 ```
 
 ## What forge does at startup

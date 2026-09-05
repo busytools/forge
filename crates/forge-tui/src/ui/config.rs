@@ -82,7 +82,7 @@ fn plugins_help_text(app: &App) -> String {
             crate::app::plugins::PluginsViewTab::Installed
                 | crate::app::plugins::PluginsViewTab::Plugins
         ) {
-            "Left/Right switch list | Up search | Up/Down move | Enter actions | Esc close"
+            "Left/Right switch list | Up search | Up/Down move | Enter actions | u update all | c check updates | Esc close"
                 .to_owned()
         } else {
             "Left/Right switch list | Up search | Up/Down move | Enter close | Esc close".to_owned()
@@ -443,6 +443,10 @@ mod tests {
             rendered.contains("Type to filter this list"),
             "the search field reads its placeholder now that the title row is gone"
         );
+        assert!(
+            rendered.contains("Update all (u)"),
+            "the action row rides the full render path, not just its own line builder"
+        );
         assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
         assert!(rendered.contains("SKILL"));
         assert!(rendered.contains("Left/Right switch list"));
@@ -460,6 +464,13 @@ mod tests {
             super::plugins_help_text(&app),
             "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Esc close",
             "the focused filter hint offers Esc alone to close"
+        );
+
+        app.plugins.search_focused = false;
+        assert_eq!(
+            super::plugins_help_text(&app),
+            "Left/Right switch list | Up search | Up/Down move | Enter actions | u update all | c check updates | Esc close",
+            "the list hint names the update and check keys"
         );
     }
 
