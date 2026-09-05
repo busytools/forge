@@ -13245,7 +13245,7 @@ provider = "anthropic"
                     events
                 },
             );
-            if iterations % 100 == 0 {
+            if iterations.is_multiple_of(100) {
                 eprintln!(
                     "[diag] iter {iterations} ready={} pool={:?} catalog_keys={:?}",
                     workspace.catalog_ready(),
