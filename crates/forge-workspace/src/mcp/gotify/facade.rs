@@ -12,6 +12,7 @@ use forge_primitives::GotifySubscription;
 use uuid::Uuid;
 
 use crate::SessionKey;
+use crate::gotify::SubsystemHost;
 use crate::mcp::caller_context::caller_context;
 use crate::workspace::Workspace;
 
@@ -142,7 +143,7 @@ impl GotifyFacade for ProdGotifyFacade {
     async fn apps(&self) -> Result<Vec<String>, GotifyReadError> {
         let ws = self.workspace.upgrade().ok_or(GotifyReadError::NotConfigured)?;
         let cfg = ws.gotify_config().ok_or(GotifyReadError::NotConfigured)?;
-        forge_connectors::gotify::app_names(ws.as_ref(), &cfg)
+        forge_connectors::gotify::app_names(&SubsystemHost::new(&ws), &cfg)
             .await
             .map_err(|err| GotifyReadError::Fetch(format!("{err:#}")))
     }
@@ -156,7 +157,7 @@ impl GotifyFacade for ProdGotifyFacade {
         let ws = self.workspace.upgrade().ok_or(GotifyReadError::NotConfigured)?;
         let cfg = ws.gotify_config().ok_or(GotifyReadError::NotConfigured)?;
         forge_connectors::gotify::recent_messages(
-            ws.as_ref(),
+            &SubsystemHost::new(&ws),
             &cfg,
             &applications,
             min_priority,
