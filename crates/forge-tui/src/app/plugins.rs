@@ -3065,6 +3065,25 @@ mod tests {
             app.plugins.update_availability.is_empty(),
             "an empty inventory truthfully yields no markers"
         );
+
+        // A zero-rows run classifies as the nothing-found check: the
+        // footer says "Update check: ", not "Update run finished: ".
+        let nothing = PluginUpdateRun {
+            trigger: PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: Vec::new(),
+        };
+        app.config.last_error = Some("stale".to_owned());
+        apply_update_run_finished(&mut app, &nothing, None, None);
+        assert!(
+            app.config
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("Update check: ")),
+            "a nothing-found run reports as a check"
+        );
+        assert!(app.config.last_error.is_none(), "the mirrored error clears");
+        assert!(app.plugins.update_availability.is_empty(), "nothing found: no markers");
     }
 
     /// The plugins failure handlers mirror into the config feedback
