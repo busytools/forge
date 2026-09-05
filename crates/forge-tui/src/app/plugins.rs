@@ -2984,12 +2984,21 @@ mod tests {
             }],
         };
 
+        app.config.last_error = Some("stale".to_owned());
         apply_update_run_finished(&mut app, &run, None, None);
         assert_eq!(
             availability_for(&app.plugins, "supabase@claude-plugins-official", "user")
                 .and_then(|availability| availability.available_version.as_deref()),
             Some("2.0.0"),
             "a finished check leaves the marker"
+        );
+        assert!(app.config.last_error.is_none(), "a finished check clears a mirrored error");
+        assert!(
+            app.config
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("Update check: ")),
+            "the check summary lands on the footer pair"
         );
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
