@@ -68,22 +68,6 @@ pub fn load_oauth_credentials(config_dir: &Path) -> Option<OauthCredentials> {
     }
 }
 
-/// `[accounts.env]` key carrying a per-account setup token (minted by
-/// `claude setup-token`). Its presence makes the account token-mode:
-/// this token is the credential, never the keychain entry for the
-/// account's config dir.
-const CLAUDE_CODE_OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
-
-/// The setup token `env` carries, trimmed and non-empty - the same
-/// read the usage probe makes, so the snapshot reports the credential
-/// the session actually authenticates with.
-fn env_setup_token<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> Option<&str> {
-    env.get(CLAUDE_CODE_OAUTH_TOKEN_ENV)
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-}
-
 /// The credential a session's OAuth snapshot reports. A token-mode
 /// account's credential is the setup token in its env - the keychain
 /// entry for its (shared) config dir belongs to whichever sibling
@@ -94,7 +78,7 @@ pub fn session_oauth_credentials<S: std::hash::BuildHasher>(
     config_dir: &Path,
     env: &HashMap<String, String, S>,
 ) -> Option<OauthCredentials> {
-    match env_setup_token(env) {
+    match forge_providers::token_bearer(env) {
         Some(token) => Some(OauthCredentials { access_token: token.to_owned(), expires_at: None }),
         None => load_oauth_credentials(config_dir),
     }
@@ -605,11 +589,13 @@ mod tests {
     /// The stub dir has no keychain entry, so `None` from this test
     /// would mean the keychain was read - which is exactly what a
     /// token-mode session must not do: the shared entry belongs to
-    /// whichever sibling logged in interactively.
+    /// whichever sibling logged in interactively. The env arrives
+    /// trimmed (the config load normalizes it), so the snapshot's
+    /// read is the plain token.
     #[test]
     fn a_token_session_snapshots_its_env_token_not_the_shared_keychain() {
         let mut env = HashMap::new();
-        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "  setup-token  ".to_owned());
+        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
         let credentials = session_oauth_credentials(Path::new("/tmp/forge-testing-stub"), &env);
         assert_eq!(
             credentials,
