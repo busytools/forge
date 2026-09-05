@@ -459,16 +459,11 @@ async fn run_background_catalog_scan(
     loaded: Arc<std::sync::atomic::AtomicBool>,
     notify: Arc<tokio::sync::Notify>,
 ) {
-    // Same root derivation as distinct_catalog_roots, so the tag-cache
-    // keys this scan writes are the strings the respawn scan reads even
-    // when `projects` is a symlink to a tree outside the config dir.
-    // Unresolvable falls back to the canonical config dir, then the raw
-    // path: the scan still walks the tree it would have before
-    // canonicalization.
-    let scan_root = match std::fs::canonicalize(config_dir.join("projects")) {
-        Ok(projects) => projects.parent().map_or_else(|| config_dir.clone(), PathBuf::from),
-        Err(_) => std::fs::canonicalize(&config_dir).unwrap_or(config_dir.clone()),
-    };
+    // One root derivation with the resume scan, so the tag cache is
+    // one key space. Without a projects tree the scan still runs and
+    // finds an empty catalog.
+    let scan_root = catalog_scan_root(&config_dir)
+        .unwrap_or_else(|| std::fs::canonicalize(&config_dir).unwrap_or(config_dir.clone()));
     let tag_cache = std::sync::Arc::new(load_session_tag_cache(db.lock().as_ref()));
     let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
         &scan_root,
@@ -653,37 +648,51 @@ async fn scan_worker_resume_map(
 /// One config_dir per distinct physical `projects` tree. Accounts'
 /// config dirs commonly symlink `projects` back to one shared tree, so
 /// scanning per account would read the same transcripts once per
-/// prefix; a dir with no projects tree is skipped, as before. The kept
-/// root is the canonical path, so the redb tag-cache keys match the
-/// ones the boot scan wrote.
+/// prefix; a dir with no projects tree is skipped, as before.
 fn distinct_catalog_roots(config_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut roots: Vec<PathBuf> = Vec::new();
     for config_dir in config_dirs {
-        match std::fs::canonicalize(config_dir.join("projects")) {
-            Ok(projects) => {
-                if seen.insert(projects.clone()) {
-                    roots.push(projects.parent().map_or_else(|| config_dir.clone(), PathBuf::from));
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!(
-                    target: "forge_workspace::workspace",
-                    config_dir = %config_dir.display(),
-                    "no projects tree; skipping this account dir in the resume scan",
-                );
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_workspace::workspace",
-                    config_dir = %config_dir.display(),
-                    %error,
-                    "cannot resolve this account's projects tree; its sessions are invisible to this respawn scan",
-                );
+        if let Some(root) = catalog_scan_root(config_dir) {
+            if seen.insert(root.clone()) {
+                roots.push(root);
             }
         }
     }
     roots
+}
+
+/// The scan root for one config dir: the canonical parent of its
+/// resolved `projects` dir, or the canonical config dir itself when
+/// the resolved tree is not named `projects` (the walk descends into
+/// `<root>/projects`, so the target's parent would miss it). `None`
+/// when there is no projects tree.
+fn catalog_scan_root(config_dir: &std::path::Path) -> Option<PathBuf> {
+    let projects = match std::fs::canonicalize(config_dir.join("projects")) {
+        Ok(projects) => projects,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(
+                target: "forge_workspace::workspace",
+                config_dir = %config_dir.display(),
+                "no projects tree; the catalog scan finds nothing here",
+            );
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                config_dir = %config_dir.display(),
+                %error,
+                "cannot resolve this config dir's projects tree; its sessions are invisible to the scan",
+            );
+            return None;
+        }
+    };
+    if projects.file_name().is_some_and(|name| name.to_str() == Some("projects")) {
+        Some(projects.parent().map_or_else(|| config_dir.to_path_buf(), PathBuf::from))
+    } else {
+        Some(std::fs::canonicalize(config_dir).unwrap_or_else(|_| config_dir.to_path_buf()))
+    }
 }
 
 /// Pure-function inner of [`scan_worker_resume_map`] - pulls the
@@ -13456,6 +13465,66 @@ provider = "anthropic"
             cache.updates().len(),
             0,
             "the respawn scan re-read nothing: boot's keys are keyed on the canonical tree"
+        );
+    }
+
+    /// An outbound symlink whose target is not named `projects` still
+    /// scans: the walk descends into `<root>/projects`, so a root
+    /// derived from the target's parent would miss the tree entirely
+    /// and the catalog would sit empty. The derivation falls back to
+    /// the config dir, whose `projects` link resolves to the tree.
+    #[tokio::test]
+    async fn boot_scan_reaches_an_outbound_tree_not_named_projects() {
+        let cfg = tempdir().expect("cfg tempdir");
+        let tree = tempdir().expect("tree tempdir");
+        let project_path = cfg.path().join("proj");
+        fs::create_dir_all(&project_path).expect("project dir");
+        let toml = format!(
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "proj"
+path = "{}"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+provider = "anthropic"
+"#,
+            project_path.display()
+        );
+        fs::write(forge_toml_path(cfg.path()), toml).expect("write forge.toml");
+        write_session_fixture(
+            tree.path(),
+            &project_path.display().to_string(),
+            LEAD_UUID,
+            None,
+        );
+        // The fixture writes a literal `projects` dir; the layout under
+        // test is one that is NOT named that.
+        fs::rename(tree.path().join("projects"), tree.path().join("sessions"))
+            .expect("rename the tree to an odd name");
+        std::os::unix::fs::symlink(tree.path().join("sessions"), cfg.path().join("projects"))
+            .expect("outbound projects symlink to an oddly named dir");
+
+        let workspace = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("new"));
+        workspace.start_catalog_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !workspace.catalog_ready() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scan finishes");
+
+        let sessions = &workspace.list_projects()[0].sessions;
+        assert_eq!(
+            sessions.first().map(|s| s.session.as_str()),
+            Some(LEAD_UUID),
+            "the session behind the oddly named link is in the catalog"
         );
     }
 
