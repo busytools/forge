@@ -1,7 +1,7 @@
 //! Anthropic plan-usage snapshot data shapes.
 //!
-//! Type-only - the fetcher impl (HTTP via `oauth_usage.rs`) lives in
-//! `forge_agent::cloud::*`. These are the wire shapes consumers see.
+//! Type-only - the fetcher impls live in the forge-providers
+//! backends. These are the wire shapes consumers see.
 //!
 //! Serde derived so the workspace can persist the latest snapshot per
 //! account to disk and rehydrate it at next boot - without the cache
