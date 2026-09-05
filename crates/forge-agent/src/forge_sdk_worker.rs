@@ -1266,7 +1266,7 @@ async fn run_ask_user_question(
         tool_use_id = %ctx.tool_use_id,
         answer_keys = ?updated_input.get("answers").and_then(serde_json::Value::as_object)
             .map(|a| a.keys().collect::<Vec<_>>()),
-        "ask_user_question answered; keys must equal the untrimmed wire question text",
+        "ask_user_question answered",
     );
     PermissionDecision::allow_with_input(updated_input)
 }
@@ -2412,7 +2412,7 @@ mod tests {
                 "question": dirty_pick,
                 "header": "H",
                 "options": [
-                    {"label": "One", "description": ""},
+                    {"label": "One", "description": "", "preview": "p1"},
                     {"label": "Two", "description": ""},
                 ],
             },
@@ -2494,11 +2494,19 @@ mod tests {
             updated.get("annotations").and_then(serde_json::Value::as_object).expect("annotations");
         assert_eq!(
             annotations
+                .get(dirty_pick)
+                .and_then(|a| a.get("preview"))
+                .and_then(serde_json::Value::as_str),
+            Some("p1"),
+            "selected-option annotation keyed by the original wire text"
+        );
+        assert_eq!(
+            annotations
                 .get(dirty_note)
                 .and_then(|a| a.get("notes"))
                 .and_then(serde_json::Value::as_str),
             Some("keep both"),
-            "annotations keyed by the original wire text"
+            "notes annotation keyed by the original wire text"
         );
     }
 
