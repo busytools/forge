@@ -100,10 +100,12 @@ Reach for this whenever the user wants recurring or deferred work - a \
 morning summary, a reminder, a follow-up check later - rather than \
 assuming you can only act in the current turn.";
 
-/// Append-text for the two things forge's own surfaces depend on and
-/// the CLI cannot know: the tool tree labels a Bash card with the
-/// `description`, and a worker reporting to its lead is the only route
-/// its output reliably takes.
+/// Append-text for the three things forge's own surfaces depend on
+/// and the CLI cannot know: the tool tree labels a Bash card with the
+/// `description`, delegation goes through forge's own tools even
+/// where the underlying CLI stamps a general prohibition, and a
+/// worker reporting to its lead is the only route its output
+/// reliably takes.
 ///
 /// Self-selecting rather than gated on `SessionKind`: a drilldown
 /// resume of a worker row carries `__resume_<id>__` and, with no live
@@ -129,6 +131,12 @@ say so to the lead - `workers__ask(\"lead\", ...)` for a question, \
 when you are answering an ask so it stops counting as inflight. Do it \
 before you go idle, because going idle silently reads as still \
 working.\n\
+\n\
+Delegation in a forge session goes through forge's own delegation \
+tools: `workers__spawn` for worker sessions, subagent fan-out where \
+the work calls for it. A general prohibition on agent-tool delegation \
+from the underlying CLI does not govern forge's own tooling - when \
+these tools are present, using them is the intended path.\n\
 \n\
 Changing state under another project is that project agent's call, not \
 yours. Before you edit a file, run a migration or push a branch outside \
@@ -2170,6 +2178,10 @@ mod tests {
         assert!(worker.contains("bracket envelopes"), "envelope trust stays: {worker}");
         assert!(worker.contains("cron__create"), "cron block stays: {worker}");
         assert!(worker.contains("`description`"), "conduct block stays: {worker}");
+        assert!(
+            worker.contains("does not govern forge's own tooling"),
+            "the delegation redirect stays: {worker}"
+        );
     }
 
     /// The gate reads the registered server's own tool surface, not a
