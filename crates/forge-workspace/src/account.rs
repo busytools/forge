@@ -308,6 +308,20 @@ impl AccountStateMap {
         })
     }
 
+    /// How the account proves who it is, which is the only thing that
+    /// changes what an auth-repair hint tells the user to do. Base-url
+    /// wins over the token check: such an account re-keys its env
+    /// token, whatever else the env carries. `None` for unknown keys.
+    pub fn auth(&self, key: &AccountKey) -> Option<crate::views::AccountAuth> {
+        if self.provider(key)?.uses_base_url() {
+            return Some(crate::views::AccountAuth::BaseUrl);
+        }
+        if self.env(key).is_some_and(forge_providers::is_token_mode) {
+            return Some(crate::views::AccountAuth::Token);
+        }
+        Some(crate::views::AccountAuth::Keychain)
+    }
+
     /// Distinct on-disk config_dirs across every known account. Used by
     /// the worker-resume scan, which must look under every account a
     /// worker could have been spawned under (the assignment-plan
@@ -898,6 +912,33 @@ mod tests {
             "account with no env -> empty map",
         );
         assert!(map.env(&AccountKey("Unknown".to_owned())).is_none(), "unknown key -> None");
+    }
+
+    /// The repair-route table every auth hint branches on. Base-url
+    /// wins over the token check: an account whose provider owns a
+    /// base url re-keys its env token, whatever else its env carries.
+    #[test]
+    fn auth_classifies_the_repair_route_per_account() {
+        let mut token = make_account("Token");
+        token.env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
+        let mut base_url = make_account("Base");
+        base_url.provider = forge_primitives::account::Provider::Openrouter;
+        base_url.env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
+        let map = AccountStateMap::new(&[token, base_url, make_account("Keychain")]);
+        assert_eq!(
+            map.auth(&AccountKey("Token".to_owned())),
+            Some(crate::views::AccountAuth::Token),
+        );
+        assert_eq!(
+            map.auth(&AccountKey("Base".to_owned())),
+            Some(crate::views::AccountAuth::BaseUrl),
+            "a base-url provider classifies BaseUrl even beside a setup token",
+        );
+        assert_eq!(
+            map.auth(&AccountKey("Keychain".to_owned())),
+            Some(crate::views::AccountAuth::Keychain),
+        );
+        assert_eq!(map.auth(&AccountKey("Unknown".to_owned())), None, "unknown key -> None");
     }
 
     #[test]

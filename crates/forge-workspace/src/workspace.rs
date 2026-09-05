@@ -1453,15 +1453,16 @@ impl Workspace {
                 state: accounts.loading_state(k),
                 last_error: accounts.usage_error(k),
                 config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
-                auth: if accounts.provider_or_anthropic(k).uses_base_url() {
-                    crate::views::AccountAuth::BaseUrl
-                } else if accounts.env(k).is_some_and(forge_providers::is_token_mode) {
-                    crate::views::AccountAuth::Token
-                } else {
-                    crate::views::AccountAuth::Keychain
-                },
+                auth: accounts.auth(k).unwrap_or(crate::views::AccountAuth::Keychain),
             })
             .collect()
+    }
+
+    /// How the account called `display_name` authenticates - the input
+    /// the auth-repair hints branch on. `None` when the name isn't a
+    /// configured account.
+    pub fn account_auth_for(&self, display_name: &str) -> Option<crate::views::AccountAuth> {
+        self.accounts.lock().auth(&AccountKey(display_name.to_owned()))
     }
 
     /// The `forge.toml` this workspace loaded. Preflight names it as

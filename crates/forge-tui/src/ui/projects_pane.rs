@@ -1472,6 +1472,17 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .zip(app.active_account_display_name())
         .and_then(|(ws, name)| ws.usage_error_for(&name));
 
+    // The account class decides what a failed-probe hint tells the
+    // reader to do: `/login` only repairs the keychain class - for a
+    // token or base-url account it would re-authenticate whichever
+    // sibling owns the shared config dir.
+    let account_auth = app
+        .workspace
+        .as_ref()
+        .zip(app.active_account_display_name())
+        .and_then(|(ws, name)| ws.account_auth_for(&name))
+        .unwrap_or(forge_workspace::AccountAuth::Keychain);
+
     // 7d cap detection: when the 7d window is at-or-near 100%
     // utilization AND the usage probe hit a 429, the 429 is a
     // downstream consequence of the cap (Anthropic 429s the probe
@@ -1500,7 +1511,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .filter(|s| s.source == crate::app::UsageSourceKind::OpenRouterKey)
         .map(|s| s.spend.as_ref());
     if let Some(spend) = spend {
-        push_spend_lines(&mut lines, spend, width, usage_error);
+        push_spend_lines(&mut lines, spend, width, usage_error, account_auth);
     } else {
         // Rows 9..=10: 5h bar + ETA row.
         push_usage_window_lines(
@@ -1510,6 +1521,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             width,
             usage_error,
             seven_day_at_cap,
+            account_auth,
         );
 
         // Row 11: blank between 5h and 7d.
@@ -1528,6 +1540,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             width,
             usage_error,
             false,
+            account_auth,
         );
     }
 
@@ -1611,6 +1624,7 @@ fn push_usage_window_lines(
     width: u16,
     usage_error: Option<forge_workspace::UsageFetchStatus>,
     seven_day_at_cap: bool,
+    auth: forge_workspace::AccountAuth,
 ) {
     let bar_cells = bar_cells_for(width);
     let pct_value = window.map_or(0.0, |w| w.utilization);
@@ -1649,8 +1663,10 @@ fn push_usage_window_lines(
                     Style::default().fg(theme::DIM)
                 }
             });
-            let text = usage_error
-                .map_or_else(|| "\u{2014}".to_owned(), |s| usage_error_label(s, seven_day_at_cap));
+            let text = usage_error.map_or_else(
+                || "\u{2014}".to_owned(),
+                |s| usage_error_label(s, seven_day_at_cap, auth),
+            );
             (text, style)
         },
         |duration| (duration, Style::default().fg(theme::DIM)),
@@ -1683,6 +1699,7 @@ fn push_spend_lines(
     spend: Option<&forge_primitives::usage::ApiSpend>,
     width: u16,
     usage_error: Option<forge_workspace::UsageFetchStatus>,
+    auth: forge_workspace::AccountAuth,
 ) {
     let right_edge = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
     let money = |amount: Option<f64>| {
@@ -1739,7 +1756,7 @@ fn push_spend_lines(
     // Secondary row, same slot the reset ETA occupies on a window row:
     // what is left of the cap when there is one, otherwise whichever
     // probe failure explains the dashes above.
-    let (text, style) = spend_secondary(spend, usage_error);
+    let (text, style) = spend_secondary(spend, usage_error, auth);
     let pad = right_edge.saturating_sub(text.chars().count());
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(text, style)]));
 }
@@ -1750,6 +1767,7 @@ fn push_spend_lines(
 fn spend_secondary(
     spend: Option<&forge_primitives::usage::ApiSpend>,
     usage_error: Option<forge_workspace::UsageFetchStatus>,
+    auth: forge_workspace::AccountAuth,
 ) -> (String, Style) {
     let dim = Style::default().fg(theme::DIM);
     let Some(spend) = spend else {
@@ -1757,8 +1775,8 @@ fn spend_secondary(
         let style = usage_error.map_or(dim, |s| {
             if needs_user_recovery(s) { Style::default().fg(theme::STATUS_WARNING) } else { dim }
         });
-        let text =
-            usage_error.map_or_else(|| "no probe yet".to_owned(), |s| usage_error_label(s, false));
+        let text = usage_error
+            .map_or_else(|| "no probe yet".to_owned(), |s| usage_error_label(s, false, auth));
         return (text, style);
     };
     if let Some(remaining) = spend.limit_remaining {
@@ -1781,8 +1799,8 @@ fn spend_secondary(
     let style = usage_error.map_or(dim, |s| {
         if needs_user_recovery(s) { Style::default().fg(theme::STATUS_WARNING) } else { dim }
     });
-    let text =
-        usage_error.map_or_else(|| "no limit set".to_owned(), |s| usage_error_label(s, false));
+    let text = usage_error
+        .map_or_else(|| "no limit set".to_owned(), |s| usage_error_label(s, false, auth));
     (text, style)
 }
 
@@ -1815,11 +1833,15 @@ fn needs_user_recovery(status: forge_workspace::UsageFetchStatus) -> bool {
 ///
 /// Network failures and the catch-all Other class collapse to
 /// " - " because they're transient and rarely require user action.
-fn usage_error_label(status: forge_workspace::UsageFetchStatus, seven_day_at_cap: bool) -> String {
+fn usage_error_label(
+    status: forge_workspace::UsageFetchStatus,
+    seven_day_at_cap: bool,
+    auth: forge_workspace::AccountAuth,
+) -> String {
     use forge_workspace::UsageFetchStatus;
     match status {
-        UsageFetchStatus::Expired => "⚠ expired - /login".to_owned(),
-        UsageFetchStatus::Unauthorized => "⚠ unauthorized - /login".to_owned(),
+        UsageFetchStatus::Expired => format!("⚠ expired - {}", repair_hint(auth)),
+        UsageFetchStatus::Unauthorized => format!("⚠ unauthorized - {}", repair_hint(auth)),
         UsageFetchStatus::RateLimited => {
             if seven_day_at_cap {
                 "7d cap".to_owned()
@@ -1828,6 +1850,19 @@ fn usage_error_label(status: forge_workspace::UsageFetchStatus, seven_day_at_cap
             }
         }
         UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other => "\u{2014}".to_owned(),
+    }
+}
+
+/// Where the repair lives, per account class. A keychain account
+/// re-authenticates with `/login`; a base-url one re-keys its env
+/// token; a token-mode one re-mints its setup token, since `/login`
+/// would only re-authenticate whichever sibling owns the shared
+/// config dir.
+fn repair_hint(auth: forge_workspace::AccountAuth) -> &'static str {
+    match auth {
+        forge_workspace::AccountAuth::Keychain => "/login",
+        forge_workspace::AccountAuth::BaseUrl => "[accounts.env]",
+        forge_workspace::AccountAuth::Token => "setup token",
     }
 }
 
@@ -3128,15 +3163,21 @@ mod tests {
     // and surfaces 7d-cap context when applicable.
     // ----------------------------------------------------------------
 
+    fn keychain() -> forge_workspace::AccountAuth {
+        forge_workspace::AccountAuth::Keychain
+    }
+
     #[test]
     fn usage_error_label_rate_limited_says_rate_limited_when_7d_below_cap() {
-        let label = usage_error_label(forge_workspace::UsageFetchStatus::RateLimited, false);
+        let label =
+            usage_error_label(forge_workspace::UsageFetchStatus::RateLimited, false, keychain());
         assert_eq!(label, "rate-limited", "429 + 7d-below-cap → rate-limited");
     }
 
     #[test]
     fn usage_error_label_rate_limited_says_7d_cap_when_7d_at_cap() {
-        let label = usage_error_label(forge_workspace::UsageFetchStatus::RateLimited, true);
+        let label =
+            usage_error_label(forge_workspace::UsageFetchStatus::RateLimited, true, keychain());
         assert_eq!(
             label, "7d cap",
             "429 + 7d-at-cap → 7d cap (budget exhaustion, not transient throttle)",
@@ -3145,27 +3186,62 @@ mod tests {
 
     #[test]
     fn usage_error_label_unauthorized_unchanged() {
-        let label = usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, false);
+        let label =
+            usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, false, keychain());
         assert_eq!(label, "⚠ unauthorized - /login");
         // 7d-at-cap flag must NOT affect auth errors - they need /login
         // regardless of the 7d window state.
-        let with_cap = usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, true);
+        let with_cap =
+            usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, true, keychain());
         assert_eq!(with_cap, "⚠ unauthorized - /login");
     }
 
     #[test]
     fn usage_error_label_expired_unchanged() {
-        let label = usage_error_label(forge_workspace::UsageFetchStatus::Expired, false);
+        let label =
+            usage_error_label(forge_workspace::UsageFetchStatus::Expired, false, keychain());
         assert_eq!(label, "⚠ expired - /login");
+    }
+
+    /// A token session sharing the config dir would re-authenticate
+    /// whichever sibling owns it, so the hint names the setup token
+    /// instead of `/login`.
+    #[test]
+    fn usage_error_label_token_account_names_the_setup_token() {
+        let token = forge_workspace::AccountAuth::Token;
+        assert_eq!(
+            usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, false, token),
+            "⚠ unauthorized - setup token",
+        );
+        assert_eq!(
+            usage_error_label(forge_workspace::UsageFetchStatus::Expired, false, token),
+            "⚠ expired - setup token",
+        );
+    }
+
+    #[test]
+    fn usage_error_label_base_url_account_names_accounts_env() {
+        let base_url = forge_workspace::AccountAuth::BaseUrl;
+        assert_eq!(
+            usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, false, base_url),
+            "⚠ unauthorized - [accounts.env]",
+        );
+        assert_eq!(
+            usage_error_label(forge_workspace::UsageFetchStatus::Expired, false, base_url),
+            "⚠ expired - [accounts.env]",
+        );
     }
 
     #[test]
     fn usage_error_label_network_and_other_collapse_to_em_dash() {
         assert_eq!(
-            usage_error_label(forge_workspace::UsageFetchStatus::NetworkFailed, false),
+            usage_error_label(forge_workspace::UsageFetchStatus::NetworkFailed, false, keychain()),
             "\u{2014}",
         );
-        assert_eq!(usage_error_label(forge_workspace::UsageFetchStatus::Other, false), "\u{2014}");
+        assert_eq!(
+            usage_error_label(forge_workspace::UsageFetchStatus::Other, false, keychain()),
+            "\u{2014}",
+        );
     }
 
     /// Seed a pooled lead bucket for `project_path` in the given lifecycle

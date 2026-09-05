@@ -19,7 +19,9 @@
 //! this loader entirely, building its credential from
 //! `ANTHROPIC_AUTH_TOKEN` in `[accounts.env]` instead. The others:
 //! [`refresh_via_cli_spawn`] below, before and after its spawn;
-//! `ForgeSdkBridge`; and forge-workspace's usage-poll 401 gate.
+//! `ForgeSdkBridge` (through [`session_oauth_credentials`], which
+//! routes token-mode accounts to their env token); and
+//! forge-workspace's usage-poll 401 gate.
 //!
 //! When the keychain token is past its `expires_at` and the live probe
 //! returns 401, callers can fire [`refresh_via_cli_spawn`] to nudge the
@@ -63,6 +65,22 @@ pub fn load_oauth_credentials(config_dir: &Path) -> Option<OauthCredentials> {
     {
         let _ = config_dir;
         None
+    }
+}
+
+/// The credential a session's OAuth snapshot reports. A token-mode
+/// account's credential is the setup token in its env - the keychain
+/// entry for its (shared) config dir belongs to whichever sibling
+/// logged in interactively - so the env token IS the snapshot, with no
+/// locally-known expiry. Every other account reads its config dir's
+/// keychain.
+pub fn session_oauth_credentials<S: std::hash::BuildHasher>(
+    config_dir: &Path,
+    env: &HashMap<String, String, S>,
+) -> Option<OauthCredentials> {
+    match forge_providers::token_bearer(env) {
+        Some(token) => Some(OauthCredentials { access_token: token.to_owned(), expires_at: None }),
+        None => load_oauth_credentials(config_dir),
     }
 }
 
@@ -566,5 +584,30 @@ mod tests {
         let missing = PathBuf::from("/tmp/forge-refresh-test-nonexistent-dir-zzzz");
         // Just verifying no panic.
         sweep_stale_jsonls(&missing);
+    }
+
+    /// The stub dir has no keychain entry, so `None` from this test
+    /// would mean the keychain was read - which is exactly what a
+    /// token-mode session must not do: the shared entry belongs to
+    /// whichever sibling logged in interactively. The env arrives
+    /// trimmed (the config load normalizes it), so the snapshot's
+    /// read is the plain token.
+    #[test]
+    fn a_token_session_snapshots_its_env_token_not_the_shared_keychain() {
+        let mut env = HashMap::new();
+        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
+        let credentials = session_oauth_credentials(Path::new("/tmp/forge-testing-stub"), &env);
+        assert_eq!(
+            credentials,
+            Some(OauthCredentials { access_token: "setup-token".to_owned(), expires_at: None }),
+            "the env token IS the session's credential, with no locally-known expiry",
+        );
+    }
+
+    #[test]
+    fn a_keychain_session_snapshots_the_config_dir_keychain() {
+        let credentials =
+            session_oauth_credentials(Path::new("/tmp/forge-testing-stub"), &HashMap::new());
+        assert_eq!(credentials, None, "the stub dir has no keychain entry");
     }
 }
