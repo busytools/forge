@@ -334,11 +334,14 @@ pub(super) fn upsert_tool_call_into_assistant_message(
     }
 
     // A main-agent call here is opening a new turn, so it may not land
-    // on a message whose turn already ended.
-    let tail_is_assistant =
-        app.messages().last().is_some_and(|m| matches!(m.role, MessageRole::Assistant));
-    let tail_turn_ended = app.messages().last().is_some_and(|m| m.turn_info.is_settled());
-    let append_to_tail = tail_is_assistant && !tail_turn_ended;
+    // on a message whose turn already ended; "unsettled" alone is not
+    // that test, since a resumed or failed turn leaves a tail that
+    // never Resulted.
+    let append_to_tail = app.messages().last().is_some_and(|m| {
+        matches!(m.role, MessageRole::Assistant)
+            && !m.turn_info.is_settled()
+            && !m.turn_info.is_empty()
+    });
 
     if append_to_tail {
         let msg_idx = app.messages().len().saturating_sub(1);
@@ -652,6 +655,7 @@ pub(super) fn tool_kind_name(kind: model::ToolKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::super::TextBlock;
     use super::*;
 
     fn subagent_root(id: &str, raw_input: Option<serde_json::Value>) -> ToolCallInfo {
@@ -855,5 +859,70 @@ mod tests {
         let info =
             build_tool_info_from_tool_call(&app, tc, "NoArg".to_owned(), &ToolCallScope::MainAgent);
         assert_eq!(info.raw_input, Some(serde_json::json!({})));
+    }
+
+    fn assistant_tail(text: &str) -> ChatMessage {
+        ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete(text))],
+        )
+    }
+
+    // Mirror of the streaming half's resumed-completed regression (events.rs):
+    // replay persists no Result records, so a resumed-completed tail is
+    // content-bearing with a default `turn_info`. A main-agent call opening
+    // the next turn must open a fresh bubble past it, never glue into it.
+    #[test]
+    fn main_agent_call_pushes_fresh_for_resumed_completed_tail() {
+        let mut app = App::test_default();
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete("q1"))],
+        ));
+        app.active_messages_mut().push(assistant_tail("prior answer"));
+        app.clear_active_turn_assistant();
+        app.status = AppStatus::Running;
+        let completed_idx = app.messages().len() - 1;
+
+        upsert_tool_call_into_assistant_message(&mut app, subagent_root("toolu_next", None), None);
+
+        assert_eq!(
+            app.messages().len(),
+            completed_idx + 2,
+            "a fresh bubble opened past the historical one",
+        );
+        assert_eq!(
+            app.messages()[completed_idx].blocks.len(),
+            1,
+            "the historical bubble must not receive the next turn's tool call",
+        );
+        assert_eq!(
+            app.active_turn_assistant_idx(),
+            Some(completed_idx + 1),
+            "the pointer binds to the fresh bubble",
+        );
+    }
+
+    // The #783 case the append branch exists for: a live turn's tail whose
+    // pointer was lost keeps receiving. `started_at` is what separates it
+    // from a resumed or failed tail.
+    #[test]
+    fn main_agent_call_still_appends_to_a_live_turn_tail() {
+        let mut app = App::test_default();
+        app.active_messages_mut().push(assistant_tail("streaming"));
+        app.active_messages_mut()[0].turn_info.started_at = Some(std::time::Instant::now());
+        app.clear_active_turn_assistant();
+        app.status = AppStatus::Running;
+        let tail_idx = app.messages().len() - 1;
+
+        upsert_tool_call_into_assistant_message(&mut app, subagent_root("toolu_live", None), None);
+
+        assert_eq!(app.messages().len(), tail_idx + 1, "no new bubble for a live tail");
+        assert_eq!(app.messages()[tail_idx].blocks.len(), 2, "the call lands on the live tail");
+        assert_eq!(
+            app.active_turn_assistant_idx(),
+            Some(tail_idx),
+            "the pointer binds to the live tail",
+        );
     }
 }
