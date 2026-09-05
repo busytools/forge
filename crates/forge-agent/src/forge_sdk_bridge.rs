@@ -617,12 +617,19 @@ impl ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         let config_dir = self.inner.config_dir.clone();
         let display_name = self.inner.display_name.clone();
+        let env = self.inner.env.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
             // account_info_from_shell shells out to `claude auth
             // status`; wrap in spawn_blocking so this dispatched task
             // doesn't park its tokio worker for the ~50ms probe.
             let account = if let Some(account) = client.account_info_from_init() {
                 account
+            } else if forge_providers::is_token_mode(&env) {
+                // The shell probe reads the shared config dir's login -
+                // whichever sibling last logged in interactively - so it
+                // would put another account's identity on this token
+                // session's chip.
+                forge_primitives::AccountInfo::default()
             } else {
                 let cd = config_dir.clone();
                 match tokio::task::spawn_blocking(move || {
@@ -658,13 +665,14 @@ impl ForgeSdkBridge {
     pub(crate) fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         let config_dir = self.inner.config_dir.clone();
+        let env = self.inner.env.clone();
         self.dispatch("get_oauth_credentials_snapshot", move |_client| async move {
             // load_oauth_credentials shells out to macOS `security
             // find-generic-password`; wrap in spawn_blocking so the
             // 30s usage-poller doesn't park N tokio workers per
             // account during keychain access.
             let credentials = match tokio::task::spawn_blocking(move || {
-                crate::cloud::oauth_credentials::load_oauth_credentials(&config_dir)
+                crate::cloud::oauth_credentials::session_oauth_credentials(&config_dir, &env)
             })
             .await
             {
