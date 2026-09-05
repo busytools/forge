@@ -373,8 +373,8 @@ pub enum Command {
     /// Deliver a matched Gotify notification into `project` as a plain
     /// user turn (spawning the project if asleep, exactly like a cron
     /// prompt). `team_role` targets a durable team worker when `Some`;
-    /// `None` targets the project lead. Dispatched by
-    /// `Workspace::route_gotify_message`, one per matching subscription;
+    /// `None` targets the project lead. Dispatched by the
+    /// `GotifyHost::deliver` port impl, one per matching subscription;
     /// handled by `spawn::deliver_gotify_message`. `notification` carries
     /// the resolved app name, title, message, and priority - its
     /// `to_prose()` is the user-turn text, and the same struct drives the

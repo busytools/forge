@@ -31,6 +31,7 @@ testing = ["forge-agent/testing"]
 [dependencies]
 forge-primitives = { workspace = true }
 forge-providers = { workspace = true }
+forge-connectors = { workspace = true }
 forge-agent = { workspace = true }
 forge-sdk = { workspace = true }
 forge-dictate = { workspace = true }
@@ -47,6 +48,7 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 dirs = { workspace = true }
 uuid = { workspace = true }
+reqwest = { workspace = true }
 rustix = { workspace = true }
 croner = { workspace = true }
 chrono = { workspace = true }

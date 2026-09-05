@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-providers", "crates/forge-agent", "crates/forge-workspace", "crates/forge-tui", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-providers", "crates/forge-connectors", "crates/forge-agent", "crates/forge-workspace", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "1.0.39"
@@ -97,6 +97,7 @@ cpal = "0.18"
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=1.0.39" }
 forge-providers = { path = "crates/forge-providers", version = "=1.0.39" }
+forge-connectors = { path = "crates/forge-connectors", version = "=1.0.39" }
 forge-sdk = { path = "crates/forge-sdk", version = "=1.0.39" }
 forge-agent = { path = "crates/forge-agent", version = "=1.0.39" }
 forge-dictate = { path = "crates/forge-dictate", version = "=1.0.39" }

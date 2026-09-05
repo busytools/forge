@@ -1,15 +1,17 @@
-//! Gotify WebSocket client + `/application` name->id resolution.
+//! The Gotify connector: WebSocket receive stream, `/application` +
+//! `/message` REST lookups, the subscription matcher, and the
+//! reconnecting subsystem pump that routes matched messages into the
+//! host's sessions.
 //!
-//! Lives under `env` (network-side environment state the agent
-//! observes) even though the Gotify server is external:
-//! forge-workspace owns the long-lived [`run`] task and consumes the
-//! [`GotifyEvent`]s it emits, which is a legal agent->workspace flow.
+//! Everything the connector needs from the workspace arrives through
+//! the [`GotifyHost`] port, so this module stays stream + mapping and
+//! is testable offline.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use forge_primitives::{GotifyConfig, GotifyMessage};
+use forge_primitives::{GotifyConfig, GotifyMessage, GotifySubscription};
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::net::TcpStream;
@@ -17,7 +19,33 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-use crate::logging::targets::GOTIFY;
+/// The host port, implemented by forge-workspace. The only
+/// workspace-side state, delivery or TLS-trust plumbing a connector
+/// may reach, so this crate stays stream + mapping.
+pub trait GotifyHost: Send + Sync {
+    /// A reqwest client with the NODE_EXTRA_CA_CERTS roots applied
+    /// and the caller's timeout baked in.
+    fn http_client(&self, timeout: Duration) -> Result<reqwest::Client, String>;
+
+    /// The active subscriptions to match inbound messages against.
+    fn subscriptions(&self) -> Vec<GotifySubscription>;
+
+    /// The application NAME for `appid` via the app index, or `None`
+    /// when the id isn't known (index not yet fetched, or a new app
+    /// the server added after the last refresh).
+    fn app_name(&self, appid: u64) -> Option<String>;
+
+    /// Replace the fetched name->appid index.
+    fn store_app_index(&self, index: HashMap<String, u64>);
+
+    /// Record stream liveness for the Inspector's GOTIFY status line.
+    fn set_connected(&self, connected: bool);
+
+    /// Deliver one matched message to its subscriber's session:
+    /// dispatch a user-turn into the running target, or buffer + spawn
+    /// the asleep one.
+    fn deliver(&self, subscription: &GotifySubscription, app: &str, message: &GotifyMessage);
+}
 
 /// Reconnect backoff: starts at 500ms, doubles per failed/short-lived
 /// connect, caps at 30s, and resets to the floor only after a connection
@@ -59,9 +87,9 @@ const REST_TIMEOUT: Duration = Duration::from_secs(10);
 const RECENT_FETCH_WINDOW: u32 = 200;
 
 /// Connection-lifecycle + message events from the stream task to the
-/// workspace subsystem.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GotifyEvent {
+/// subsystem pump.
+#[derive(Debug)]
+enum GotifyEvent {
     Connected,
     Disconnected,
     Message(GotifyMessage),
@@ -98,17 +126,16 @@ pub struct GotifyRecent {
 
 /// A reqwest client for the read-only REST lookups, carrying the shared
 /// native-roots trust extension every forge HTTPS site uses.
-fn rest_client() -> anyhow::Result<reqwest::Client> {
-    crate::http_trust::with_extra_roots(reqwest::Client::builder().timeout(REST_TIMEOUT))
-        .build()
-        .context("build Gotify http client")
+fn rest_client(host: &dyn GotifyHost) -> anyhow::Result<reqwest::Client> {
+    host.http_client(REST_TIMEOUT)
+        .map_err(|error| anyhow::anyhow!("build Gotify http client: {error}"))
 }
 
 /// GET the server's application list. Shared by the name->id index, the
 /// `gotify__apps` name list, and `gotify__recent`'s appid->name resolution.
-async fn fetch_apps(cfg: &GotifyConfig) -> anyhow::Result<Vec<GotifyApp>> {
+async fn fetch_apps(host: &dyn GotifyHost, cfg: &GotifyConfig) -> anyhow::Result<Vec<GotifyApp>> {
     let url = format!("{}/application", cfg.url.trim_end_matches('/'));
-    rest_client()?
+    rest_client(host)?
         .get(url)
         .header("X-Gotify-Key", &cfg.client_token)
         .send()
@@ -124,8 +151,11 @@ async fn fetch_apps(cfg: &GotifyConfig) -> anyhow::Result<Vec<GotifyApp>> {
 /// Fetch the server's application list and fold it into a name->appid
 /// map. Inbound stream messages carry the numeric appid, so the map
 /// resolves an `application` name filter to the id to match against.
-pub async fn app_index(cfg: &GotifyConfig) -> anyhow::Result<HashMap<String, u64>> {
-    Ok(build_app_index(fetch_apps(cfg).await?))
+pub async fn app_index(
+    host: &dyn GotifyHost,
+    cfg: &GotifyConfig,
+) -> anyhow::Result<HashMap<String, u64>> {
+    Ok(build_app_index(fetch_apps(host, cfg).await?))
 }
 
 fn build_app_index(apps: Vec<GotifyApp>) -> HashMap<String, u64> {
@@ -135,8 +165,8 @@ fn build_app_index(apps: Vec<GotifyApp>) -> HashMap<String, u64> {
 /// The server's application NAMEs (from `GET /application`), in the order
 /// the server returns them. Backs `gotify__apps` so a session can
 /// self-discover which apps it may subscribe to.
-pub async fn app_names(cfg: &GotifyConfig) -> anyhow::Result<Vec<String>> {
-    Ok(build_app_names(fetch_apps(cfg).await?))
+pub async fn app_names(host: &dyn GotifyHost, cfg: &GotifyConfig) -> anyhow::Result<Vec<String>> {
+    Ok(build_app_names(fetch_apps(host, cfg).await?))
 }
 
 fn build_app_names(apps: Vec<GotifyApp>) -> Vec<String> {
@@ -152,19 +182,24 @@ fn build_id_index(apps: Vec<GotifyApp>) -> HashMap<u64, String> {
 /// Fetches the newest `/message` window plus `/application` (for appid->
 /// name), then narrows locally - Gotify's `/message` filters by neither.
 pub async fn recent_messages(
+    host: &dyn GotifyHost,
     cfg: &GotifyConfig,
     applications: &[String],
     min_priority: Option<u8>,
     limit: usize,
 ) -> anyhow::Result<Vec<GotifyRecent>> {
-    let messages = fetch_messages(cfg, RECENT_FETCH_WINDOW).await?;
-    let id_index = build_id_index(fetch_apps(cfg).await?);
+    let messages = fetch_messages(host, cfg, RECENT_FETCH_WINDOW).await?;
+    let id_index = build_id_index(fetch_apps(host, cfg).await?);
     Ok(filter_recent(messages, &id_index, applications, min_priority, limit))
 }
 
-async fn fetch_messages(cfg: &GotifyConfig, limit: u32) -> anyhow::Result<Vec<GotifyMessage>> {
+async fn fetch_messages(
+    host: &dyn GotifyHost,
+    cfg: &GotifyConfig,
+    limit: u32,
+) -> anyhow::Result<Vec<GotifyMessage>> {
     let url = format!("{}/message?limit={limit}", cfg.url.trim_end_matches('/'));
-    let page: GotifyMessages = rest_client()?
+    let page: GotifyMessages = rest_client(host)?
         .get(url)
         .header("X-Gotify-Key", &cfg.client_token)
         .send()
@@ -179,8 +214,8 @@ async fn fetch_messages(cfg: &GotifyConfig, limit: u32) -> anyhow::Result<Vec<Go
 }
 
 /// Resolve appid->name, filter by app + priority, sort newest-first (by
-/// monotonic id), and truncate to `limit`. App matching mirrors
-/// `Workspace::route_gotify_message`: an unresolved appid never matches a
+/// monotonic id), and truncate to `limit`. App matching mirrors `route`:
+/// an unresolved appid never matches a
 /// non-empty name filter (its numeric display string can't sneak past),
 /// though its display `app` still falls back to that id string.
 fn filter_recent(
@@ -218,8 +253,28 @@ fn normalize(text: &str) -> anyhow::Result<GotifyMessage> {
     serde_json::from_str(text).context("parse Gotify stream message")
 }
 
+/// The subscriptions whose `min_priority` and `applications` filters
+/// `priority` and `resolved_app` satisfy, in set order. `resolved_app`
+/// is the message's application NAME resolved from the app index; an
+/// unresolved appid matches only an empty (match-any) filter set, never
+/// a filter that happens to list the id numerically.
+pub fn matching_subscriptions<'a>(
+    subs: &'a [GotifySubscription],
+    resolved_app: Option<&str>,
+    priority: u8,
+) -> Vec<&'a GotifySubscription> {
+    subs.iter()
+        .filter(|sub| {
+            let priority_ok = sub.min_priority.is_none_or(|floor| priority >= floor);
+            let app_ok = sub.applications.is_empty()
+                || resolved_app.is_some_and(|name| sub.applications.iter().any(|app| app == name));
+            priority_ok && app_ok
+        })
+        .collect()
+}
+
 /// An open Gotify receive stream.
-pub struct GotifyStream {
+struct GotifyStream {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
 }
 
@@ -235,7 +290,7 @@ enum PumpOutcome {
 impl GotifyStream {
     /// Open `{ws,wss}://<host>/stream?token=<client_token>` - `wss` for
     /// an `https` url, `ws` for `http`.
-    pub async fn connect(cfg: &GotifyConfig) -> anyhow::Result<Self> {
+    async fn connect(cfg: &GotifyConfig) -> anyhow::Result<Self> {
         let url = stream_url(cfg)?;
         let (ws, _resp) = connect_async(url.as_str()).await.context("connect Gotify stream")?;
         Ok(Self { ws })
@@ -266,7 +321,7 @@ impl GotifyStream {
                     }
                     if idle_past_deadline(last_activity, Instant::now()) {
                         tracing::warn!(
-                            target: GOTIFY,
+                            target: "forge_connectors::gotify",
                             idle_secs = IDLE_DEADLINE.as_secs(),
                             "Gotify stream idle past deadline; treating path as dead",
                         );
@@ -283,13 +338,13 @@ impl GotifyStream {
                                 }
                             }
                             Err(error) => {
-                                tracing::warn!(target: GOTIFY, %error, "skipping unparseable stream frame");
+                                tracing::warn!(target: "forge_connectors::gotify", %error, "skipping unparseable stream frame");
                             }
                         }
                     }
                     Some(Ok(_)) => last_activity = Instant::now(),
                     Some(Err(error)) => {
-                        tracing::warn!(target: GOTIFY, %error, "Gotify stream read error");
+                        tracing::warn!(target: "forge_connectors::gotify", %error, "Gotify stream read error");
                         return PumpOutcome::Reconnect;
                     }
                     None => return PumpOutcome::Reconnect,
@@ -331,7 +386,7 @@ fn idle_past_deadline(last_activity: Instant, now: Instant) -> bool {
 /// The backoff resets to the floor only after a healthy session (one that
 /// stayed up past `MIN_HEALTHY_UPTIME`); a fast drop or failed dial keeps
 /// it escalating. Exits when `shutdown` fires or the sender is dropped.
-pub async fn run(
+async fn run(
     cfg: GotifyConfig,
     tx: mpsc::Sender<GotifyEvent>,
     mut shutdown: oneshot::Receiver<()>,
@@ -357,13 +412,13 @@ pub async fn run(
                 connected_at.elapsed() >= MIN_HEALTHY_UPTIME
             }
             Ok(Err(error)) => {
-                tracing::warn!(target: GOTIFY, %error, "Gotify connect failed; backing off");
+                tracing::warn!(target: "forge_connectors::gotify", %error, "Gotify connect failed; backing off");
                 let _ = tx.send(GotifyEvent::Disconnected).await;
                 false
             }
             Err(_) => {
                 tracing::warn!(
-                    target: GOTIFY,
+                    target: "forge_connectors::gotify",
                     timeout_secs = CONNECT_TIMEOUT.as_secs(),
                     "Gotify connect timed out; backing off",
                 );
@@ -376,6 +431,80 @@ pub async fn run(
             _ = &mut shutdown => return,
             () = tokio::time::sleep(backoff) => {}
         }
+    }
+}
+
+/// The Gotify subsystem pump: run the reconnecting stream task and
+/// translate its events into host state + message routing. Holds the
+/// host for its lifetime - the host impl is the weak boundary, so a
+/// workspace-backed host degrades to no-ops once the workspace drops;
+/// exits when `shutdown` fires or the stream task ends, dropping its
+/// own handle to the stream task so that exits too.
+pub async fn run_subsystem(
+    host: std::sync::Arc<dyn GotifyHost>,
+    cfg: GotifyConfig,
+    mut shutdown: oneshot::Receiver<()>,
+) {
+    let (tx, mut rx) = mpsc::channel::<GotifyEvent>(64);
+    // Dropping this handle at fn-end signals the stream task to exit.
+    let (_run_shutdown_tx, run_shutdown_rx) = oneshot::channel();
+    tokio::spawn(run(cfg.clone(), tx, run_shutdown_rx));
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => break,
+            event = rx.recv() => {
+                let Some(event) = event else { break };
+                match event {
+                    GotifyEvent::Connected => {
+                        // Refresh the app index off the pump so a slow (up to
+                        // the 10s lookup timeout) or failing /application can't
+                        // block shutdown or message routing.
+                        tokio::spawn(refresh_app_index(host.clone(), cfg.clone()));
+                        host.set_connected(true);
+                    }
+                    GotifyEvent::Disconnected => {
+                        host.set_connected(false);
+                    }
+                    GotifyEvent::Message(msg) => {
+                        route(&*host, &msg);
+                    }
+                }
+            }
+        }
+    }
+
+    host.set_connected(false);
+}
+
+/// Fetch the Gotify `/application` list and store the name->appid map.
+/// Warns (never silently drops) on failure - an unresolved index would
+/// otherwise leave every application-name-filtered subscription silently
+/// matching nothing while the stream still reports connected.
+async fn refresh_app_index(host: std::sync::Arc<dyn GotifyHost>, cfg: GotifyConfig) {
+    match app_index(&*host, &cfg).await {
+        Ok(index) => host.store_app_index(index),
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_connectors::gotify",
+                %error,
+                "Gotify /application lookup failed; application-name filters will not match until the next reconnect",
+            );
+        }
+    }
+}
+
+/// Match `msg` against every active subscription and deliver one
+/// message per match. Multiple matches fan out to every subscriber.
+fn route(host: &dyn GotifyHost, msg: &GotifyMessage) {
+    let subs = host.subscriptions();
+    let resolved_name = host.app_name(msg.appid);
+    // Matching uses the resolved name only; the delivered `app` falls
+    // back to the numeric id for display, so an unresolved appid can't
+    // match a filter that happens to list that number.
+    let display_name = resolved_name.clone().unwrap_or_else(|| msg.appid.to_string());
+    for sub in matching_subscriptions(&subs, resolved_name.as_deref(), msg.priority) {
+        host.deliver(sub, &display_name, msg);
     }
 }
 
@@ -482,11 +611,154 @@ mod tests {
     fn filter_recent_unresolved_appid_shows_id_but_never_matches_a_named_filter() {
         // appid 7 isn't in the index: its display `app` falls back to "7",
         // but a filter naming "7" must NOT match it - mirrors the
-        // resolved-name-only matching in Workspace::route_gotify_message.
+        // resolved-name-only matching in `route`.
         let index = HashMap::from([(1u64, "CI".to_owned())]);
         let unfiltered = filter_recent(vec![msg(5, 7, 9)], &index, &[], None, 20);
         assert_eq!(unfiltered[0].app, "7", "unresolved appid displays as its id string");
         let named = filter_recent(vec![msg(5, 7, 9)], &index, &["7".to_owned()], None, 20);
         assert!(named.is_empty(), "a numeric-string filter can't match an unresolved appid");
+    }
+
+    fn sub(applications: &[&str], min_priority: Option<u8>) -> GotifySubscription {
+        GotifySubscription {
+            id: uuid::Uuid::new_v4(),
+            project: "p".to_owned(),
+            team_role: None,
+            applications: applications.iter().map(|s| (*s).to_owned()).collect(),
+            min_priority,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    /// Every filter dimension at once: the priority floor, the app-name
+    /// set (matching ANY listed name), and the match-any empty set.
+    #[test]
+    fn matching_subscriptions_applies_priority_and_application_filters() {
+        let subs = [sub(&["alerts"], None), sub(&[], Some(5)), sub(&["alerts", "backups"], None)];
+        let matches = |resolved: Option<&str>, priority| {
+            matching_subscriptions(&subs, resolved, priority)
+                .iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+        };
+
+        // alerts at priority 2: the app-filter subs match; the priority
+        // floor does not (2 < 5).
+        assert_eq!(matches(Some("alerts"), 2), [subs[0].id, subs[2].id]);
+        // The SECOND listed name matches the same set as the first, so a
+        // single-element comparison can't pass for the any-of filter.
+        assert_eq!(matches(Some("backups"), 1), [subs[2].id]);
+        // Below the floor only the match-any priority set survives.
+        assert_eq!(matches(Some("alerts"), 5), [subs[0].id, subs[1].id, subs[2].id]);
+        // An app outside every listed set leaves only the empty filter set.
+        assert_eq!(matches(Some("ci"), 9), [subs[1].id]);
+    }
+
+    /// The seam the route matcher pins: matching uses the RESOLVED app
+    /// name only, so an unresolved appid must not match a filter that
+    /// happens to list its numeric id as a string.
+    #[test]
+    fn matching_subscriptions_unresolved_appid_never_matches_a_numeric_filter() {
+        let subs = [sub(&["5"], None), sub(&[], None)];
+        let matches = matching_subscriptions(&subs, None, 1);
+        assert_eq!(matches.iter().map(|s| s.id).collect::<Vec<_>>(), [subs[1].id]);
+    }
+
+    /// Multiple matching subscriptions all come back: the caller fans a
+    /// message out to every subscriber.
+    #[test]
+    fn matching_subscriptions_returns_every_matching_subscription() {
+        let subs = [sub(&[], None), sub(&[], None), sub(&[], Some(9))];
+        assert_eq!(matching_subscriptions(&subs, None, 5).len(), 2);
+    }
+
+    /// Records `deliver` calls: `(project, team_role, app, priority)`.
+    type Delivery = (String, Option<String>, String, u8);
+
+    struct MockHost {
+        subs: Vec<GotifySubscription>,
+        index: HashMap<u64, String>,
+        delivered: std::sync::Mutex<Vec<Delivery>>,
+    }
+
+    impl GotifyHost for MockHost {
+        fn http_client(&self, _timeout: Duration) -> Result<reqwest::Client, String> {
+            Err("unused by route".to_owned())
+        }
+
+        fn subscriptions(&self) -> Vec<GotifySubscription> {
+            self.subs.clone()
+        }
+
+        fn app_name(&self, appid: u64) -> Option<String> {
+            self.index.get(&appid).cloned()
+        }
+
+        fn store_app_index(&self, _index: HashMap<String, u64>) {}
+
+        fn set_connected(&self, _connected: bool) {}
+
+        fn deliver(&self, subscription: &GotifySubscription, app: &str, message: &GotifyMessage) {
+            self.delivered.lock().expect("mock lock").push((
+                subscription.project.clone(),
+                subscription.team_role.clone(),
+                app.to_owned(),
+                message.priority,
+            ));
+        }
+    }
+
+    /// The seam between the matcher and the host: `route` matches on the
+    /// RESOLVED app name only, so an unresolved appid never satisfies a
+    /// filter listing its numeric id, while the delivered `app` still
+    /// falls back to that id string for display.
+    #[test]
+    fn route_matches_on_resolved_names_and_falls_back_to_the_id_for_display() {
+        let numeric_filter = sub(&["5"], None);
+        let match_any = sub(&[], None);
+        let host = MockHost {
+            subs: vec![numeric_filter, match_any],
+            index: HashMap::new(),
+            delivered: std::sync::Mutex::new(Vec::new()),
+        };
+
+        route(&host, &msg(1, 5, 1));
+
+        let delivered = host.delivered.lock().expect("mock lock").clone();
+        assert_eq!(
+            delivered.len(),
+            1,
+            "an unresolved appid matches only the empty filter set: {delivered:?}",
+        );
+        assert_eq!(delivered[0].2, "5", "the delivered app falls back to the id string");
+    }
+
+    /// Every matching subscriber receives one delivery, carrying its own
+    /// project + team role.
+    #[test]
+    fn route_fans_out_to_every_matching_subscriber() {
+        let lead = sub(&["alerts"], None);
+        let mut worker = sub(&[], Some(5));
+        worker.team_role = Some("reviewer".to_owned());
+        let host = MockHost {
+            subs: vec![lead, worker],
+            index: HashMap::from([(3u64, "alerts".to_owned())]),
+            delivered: std::sync::Mutex::new(Vec::new()),
+        };
+
+        // Priority 2 clears the app filter but not the floor.
+        route(&host, &msg(1, 3, 2));
+        assert_eq!(host.delivered.lock().expect("mock lock").len(), 1);
+
+        // Priority 5 clears both, so both subscribers deliver.
+        route(&host, &msg(2, 3, 5));
+        let delivered = host.delivered.lock().expect("mock lock").clone();
+        assert_eq!(delivered.len(), 3, "one more delivery on the second message");
+        assert_eq!(delivered[1].0, "p");
+        assert_eq!(delivered[2].1.as_deref(), Some("reviewer"));
+        assert_eq!(
+            delivered[1].2, "alerts",
+            "a resolved appid delivers its NAME, not the id string",
+        );
     }
 }

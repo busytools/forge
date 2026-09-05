@@ -1,14 +1,15 @@
 # Architecture
 
-Eight crates, layered so the dependency graph stays acyclic.
+Nine crates, layered so the dependency graph stays acyclic.
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
 forge-dictate         leaf: dictation, depends on no forge-* crate
 forge-providers   ->  primitives
+forge-connectors  ->  primitives
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + providers
-forge-workspace   ->  primitives + agent + sdk + dictate + providers
+forge-workspace   ->  primitives + agent + sdk + dictate + providers + connectors
 forge-tui         ->  primitives + workspace
 forge-test-harness->  primitives + sdk
 ```
@@ -18,6 +19,7 @@ forge-test-harness->  primitives + sdk
 | `forge-primitives` | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side view structs. No logic, no I/O, no async. |
 | `forge-dictate` | The dictation primitive: audio in, text out. Owns its model files, speech recognition and transcript normalization. Depends on no forge-* crate and knows nothing about the program embedding it. |
 | `forge-providers` | One backend per provider token: credential resolution, the usage probe's HTTP and payload mapping, billing shape, the OpenRouter model catalog. Depends on forge-primitives only; keychain, the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements. |
+| `forge-connectors` | One module per inbound connector: the stream client, REST lookups, subscription matching and subsystem pump for one external integration (Gotify today). Depends on forge-primitives only; workspace state and message dispatch arrive through the host port forge-workspace implements. |
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
@@ -44,18 +46,23 @@ Work top-down; the first match wins.
 3. **Provider credential resolution, the usage probe, payload-to-snapshot
    mapping, billing shape or repair policy** goes in `forge-providers`,
    as one backend per provider token.
-4. **Anything that speaks stream-json to the subprocess** (a decoder, a
+4. **Inbound connector work for an external integration** (its stream
+   client, REST lookups, subscription matching) goes in
+   `forge-connectors`, one module per connector. The connector holds no
+   workspace state; what it needs from the workspace arrives through
+   the `GotifyHost` port that forge-workspace implements.
+5. **Anything that speaks stream-json to the subprocess** (a decoder, a
    new control-request subtype, transport, the MCP host, the options
    builder) goes in `forge-sdk`, and ships with a wire-conformance
    scenario.
-5. **Live state about the user's environment** (git watching, cwd
+6. **Live state about the user's environment** (git watching, cwd
    resolution, environment probes, OAuth, plugins, settings I/O,
    plugin catalog scans) goes in `forge-agent`.
-6. **Orchestration across projects, sessions, accounts, `forge.toml`
+7. **Orchestration across projects, sessions, accounts, `forge.toml`
    or the command bus** goes in `forge-workspace`.
-7. **A widget, screen, key binding, mouse handler or per-session
+8. **A widget, screen, key binding, mouse handler or per-session
    presentation state** goes in `forge-tui`.
-8. **A wire-conformance scenario** goes in `forge-test-harness`.
+9. **A wire-conformance scenario** goes in `forge-test-harness`.
 
 Splits across several crates are normal; a git-diff feature naturally
 touches agent, workspace and TUI. The rule of thumb is that logic, I/O

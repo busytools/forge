@@ -7,11 +7,12 @@
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-use forge_agent::env::gotify::GotifyRecent;
-use forge_primitives::{GotifyConfig, GotifySubscription};
+use forge_connectors::gotify::GotifyRecent;
+use forge_primitives::GotifySubscription;
 use uuid::Uuid;
 
 use crate::SessionKey;
+use crate::gotify::SubsystemHost;
 use crate::mcp::caller_context::caller_context;
 use crate::workspace::Workspace;
 
@@ -85,15 +86,6 @@ impl ProdGotifyFacade {
     pub(crate) fn from_arc(workspace: &Arc<Workspace>) -> Arc<dyn GotifyFacade> {
         Arc::new(Self { workspace: Arc::downgrade(workspace) })
     }
-
-    /// The configured server, or `NotConfigured` when the `[gotify]` block
-    /// is absent (or the workspace has been dropped mid-shutdown).
-    fn config(&self) -> Result<GotifyConfig, GotifyReadError> {
-        self.workspace
-            .upgrade()
-            .and_then(|ws| ws.gotify_config())
-            .ok_or(GotifyReadError::NotConfigured)
-    }
 }
 
 #[async_trait::async_trait]
@@ -149,8 +141,9 @@ impl GotifyFacade for ProdGotifyFacade {
     }
 
     async fn apps(&self) -> Result<Vec<String>, GotifyReadError> {
-        let cfg = self.config()?;
-        forge_agent::env::gotify::app_names(&cfg)
+        let ws = self.workspace.upgrade().ok_or(GotifyReadError::NotConfigured)?;
+        let cfg = ws.gotify_config().ok_or(GotifyReadError::NotConfigured)?;
+        forge_connectors::gotify::app_names(&SubsystemHost::new(&ws), &cfg)
             .await
             .map_err(|err| GotifyReadError::Fetch(format!("{err:#}")))
     }
@@ -161,10 +154,17 @@ impl GotifyFacade for ProdGotifyFacade {
         min_priority: Option<u8>,
         limit: usize,
     ) -> Result<Vec<GotifyRecent>, GotifyReadError> {
-        let cfg = self.config()?;
-        forge_agent::env::gotify::recent_messages(&cfg, &applications, min_priority, limit)
-            .await
-            .map_err(|err| GotifyReadError::Fetch(format!("{err:#}")))
+        let ws = self.workspace.upgrade().ok_or(GotifyReadError::NotConfigured)?;
+        let cfg = ws.gotify_config().ok_or(GotifyReadError::NotConfigured)?;
+        forge_connectors::gotify::recent_messages(
+            &SubsystemHost::new(&ws),
+            &cfg,
+            &applications,
+            min_priority,
+            limit,
+        )
+        .await
+        .map_err(|err| GotifyReadError::Fetch(format!("{err:#}")))
     }
 }
 

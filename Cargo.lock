@@ -1237,12 +1237,27 @@ dependencies = [
  "time",
  "time-tz",
  "tokio",
- "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
  "uuid",
  "which",
+]
+
+[[package]]
+name = "forge-connectors"
+version = "1.0.39"
+dependencies = [
+ "anyhow",
+ "forge-primitives",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1382,6 +1397,7 @@ dependencies = [
  "croner",
  "dirs",
  "forge-agent",
+ "forge-connectors",
  "forge-dictate",
  "forge-primitives",
  "forge-providers",
@@ -1389,6 +1405,7 @@ dependencies = [
  "forge-workspace",
  "parking_lot",
  "redb",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",

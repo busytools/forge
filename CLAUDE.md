@@ -1,15 +1,16 @@
 # forge - project guide
 
 A Rust workspace that wraps Anthropic's `claude` CLI in a multi-session
-terminal UI. Eight crates, layered acyclically:
+terminal UI. Nine crates, layered acyclically:
 
 ```
 forge-primitives ───── leaf (pure data, no logic)
 forge-dictate    ───── leaf (dictation; depends on no forge-* crate)
 forge-providers  ───→ primitives
+forge-connectors ───→ primitives
 forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + providers
-forge-workspace  ───→ primitives + agent + sdk + dictate + providers
+forge-workspace  ───→ primitives + agent + sdk + dictate + providers + connectors
 forge-tui        ───→ primitives + workspace      (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```
@@ -28,6 +29,14 @@ forge-test-harness ─→ primitives + sdk + workspace
   agent and the TLS-trust client arrive through the `ProviderHost`
   port forge-agent implements, so the crate stays HTTP + mapping and
   never spawns the CLI.
+- **`forge-connectors`** - one module per inbound connector: the
+  stream client, REST lookups, subscription matching and subsystem
+  pump for one external integration (Gotify today). Depends on
+  forge-primitives only; the subscription set, the app index and
+  message dispatch into sessions arrive through the `GotifyHost` port
+  forge-workspace implements, so the crate stays stream + mapping and
+  holds no workspace state. No generic connector trait: one connector
+  exists, and a trait waits until the variety is real.
 - **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
 - **`forge-agent`** - drives one SDK Client behind a channel-based
@@ -76,22 +85,28 @@ Work top-down; first match wins.
    (how one `forge.toml` provider token authenticates, what endpoint
    its usage probe hits, how the payload maps to a snapshot, what a
    failure allows) -> `forge-providers`, one backend per token.
-4. **Speaks stream-json to the `claude` subprocess?** (decoder,
+4. **Inbound connector I/O for an external integration?** (its stream
+   client, REST lookups, subscription matching, reconnecting
+   subsystem pump) -> `forge-connectors`, one module per connector.
+   The connector holds no workspace state; what it needs from the
+   workspace arrives through the `GotifyHost` port forge-workspace
+   implements.
+5. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.
-5. **Live state about the user's environment?** (git watcher, cwd
+6. **Live state about the user's environment?** (git watcher, cwd
    resolution, env probes, OAuth, plugins, settings IO, plugin catalog
    scan)
    -> `forge-agent`: `env::*` for environment, `cloud::*` for Anthropic
    API / OAuth, `userdata::*` for `~/.claude*` files. Async, may shell
    out.
-6. **Orchestration across projects, sessions, accounts, `forge.toml`,
+7. **Orchestration across projects, sessions, accounts, `forge.toml`,
    or the command bus?** -> `forge-workspace`. Adds `Workspace` methods,
    `Command` variants, `SessionUpdate` events.
-7. **A widget, screen, key binding, mouse handler, or per-session
+8. **A widget, screen, key binding, mouse handler, or per-session
    presentation state?** -> `forge-tui`. Render in `ui/`, dispatch +
    state in `app/`.
-8. **A wire-conformance scenario?** -> `forge-test-harness`.
+9. **A wire-conformance scenario?** -> `forge-test-harness`.
 
 Legitimate splits are common (a git-diff feature touches agent +
 workspace + tui). Rule of thumb: logic/IO/subprocess -> agent;

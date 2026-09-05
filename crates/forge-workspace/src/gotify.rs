@@ -1,103 +1,27 @@
-//! The Gotify connector cluster on [`Workspace`]: the forge.toml
-//! `[gotify]` config accessor, subscription CRUD (durable rows in the
-//! redb store, ephemeral ones in memory), the reconnecting stream
-//! subsystem and its pump, the appid name index, and the matcher that
-//! fans an inbound message out to `Command::DeliverGotifyMessage`.
+//! The Gotify seam on [`Workspace`]: the forge.toml `[gotify]` config
+//! accessor, subscription CRUD (durable rows in the redb store,
+//! ephemeral ones in memory), the subsystem start/stop lifecycle, and
+//! the [`GotifyHost`] port impl the forge-connectors pump drives.
 //!
 //! Everything here stays on `Workspace` as a second `impl` block, so
 //! every caller (the boot path in [`crate::workspace`], the
 //! `mcp::gotify` facade, `spawn::deliver_gotify_message`, the
 //! Inspector GOTIFY snapshot) keeps its path. The `gotify_*` fields
 //! these methods own are `pub(crate)` for the same reason `db` is: so
-//! this sibling module can reach them without a wrapper. Store IO
-//! lives in [`crate::store::gotify`]; the MCP tool surface in
-//! [`crate::mcp::gotify`]; delivery in [`crate::spawn`]. This is the
-//! seam only: one connector exists, so there is deliberately no
-//! generic connector trait yet.
+//! this sibling module can reach them without a wrapper. Stream,
+//! matching and the pump live in `forge_connectors::gotify`; store IO
+//! in [`crate::store::gotify`]; the MCP tool surface in
+//! [`crate::mcp::gotify`]; delivery in [`crate::spawn`].
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use tokio::sync::mpsc;
+use forge_connectors::gotify::GotifyHost;
 
 use crate::protocol::Command;
 use crate::target::ProjectKey;
 use crate::workspace::Workspace;
-
-/// The Gotify subsystem pump: run the reconnecting stream task and
-/// translate its events into workspace state + message routing. Holds
-/// only a `Weak<Workspace>` (upgraded per event) so it never keeps the
-/// workspace alive; exits when `shutdown` fires or the stream task ends,
-/// dropping its own handle to the stream task so that exits too.
-async fn run_gotify_subsystem(
-    weak: std::sync::Weak<Workspace>,
-    cfg: forge_primitives::GotifyConfig,
-    mut shutdown: tokio::sync::oneshot::Receiver<()>,
-) {
-    use forge_agent::env::gotify::GotifyEvent;
-
-    let (tx, mut rx) = mpsc::channel::<GotifyEvent>(64);
-    // Dropping this handle at fn-end signals the stream task to exit.
-    let (_run_shutdown_tx, run_shutdown_rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(forge_agent::env::gotify::run(cfg.clone(), tx, run_shutdown_rx));
-
-    loop {
-        tokio::select! {
-            _ = &mut shutdown => break,
-            event = rx.recv() => {
-                let Some(event) = event else { break };
-                match event {
-                    GotifyEvent::Connected => {
-                        // Refresh the app index off the pump so a slow (up to
-                        // the 10s lookup timeout) or failing /application can't
-                        // block shutdown or message routing.
-                        tokio::spawn(refresh_gotify_app_index(weak.clone(), cfg.clone()));
-                        if let Some(ws) = weak.upgrade() {
-                            *ws.gotify_connected.lock() = true;
-                        }
-                    }
-                    GotifyEvent::Disconnected => {
-                        if let Some(ws) = weak.upgrade() {
-                            *ws.gotify_connected.lock() = false;
-                        }
-                    }
-                    GotifyEvent::Message(msg) => {
-                        if let Some(ws) = weak.upgrade() {
-                            ws.route_gotify_message(&msg);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some(ws) = weak.upgrade() {
-        *ws.gotify_connected.lock() = false;
-    }
-}
-
-/// Fetch the Gotify `/application` list and store the name->appid map.
-/// Warns (never silently drops) on failure - an unresolved index would
-/// otherwise leave every application-name-filtered subscription silently
-/// matching nothing while the stream still reports connected.
-async fn refresh_gotify_app_index(
-    weak: std::sync::Weak<Workspace>,
-    cfg: forge_primitives::GotifyConfig,
-) {
-    match forge_agent::env::gotify::app_index(&cfg).await {
-        Ok(index) => {
-            if let Some(ws) = weak.upgrade() {
-                *ws.gotify_app_index.lock() = index;
-            }
-        }
-        Err(error) => {
-            tracing::warn!(
-                target: "forge_workspace::gotify",
-                %error,
-                "Gotify /application lookup failed; application-name filters will not match until the next reconnect",
-            );
-        }
-    }
-}
 
 impl Workspace {
     /// The `[gotify]` server connection from forge.toml, or `None`
@@ -236,65 +160,12 @@ impl Workspace {
         *self.gotify_connected.lock()
     }
 
-    /// Match `msg` against every active subscription and dispatch one
-    /// `Command::DeliverGotifyMessage` per match. A subscription matches
-    /// when its `min_priority` is `None` or `<=` the message priority AND
-    /// its `applications` set is empty or contains the message's app name
-    /// (resolved from the appid via the app index; an unresolved appid
-    /// never matches a non-empty filter). Multiple matches fan out to
-    /// every subscriber.
-    pub fn route_gotify_message(self: &Arc<Self>, msg: &forge_primitives::GotifyMessage) {
-        let subs = self.gotify_subs.lock().clone();
-        let resolved_name = self.gotify_app_name(msg.appid);
-        // Matching uses the resolved name only; the notification's `app`
-        // falls back to the numeric id for display, so an unresolved appid
-        // can't match a filter that happens to list that number.
-        let display_name = resolved_name.clone().unwrap_or_else(|| msg.appid.to_string());
-        for sub in subs {
-            let priority_ok = sub.min_priority.is_none_or(|floor| msg.priority >= floor);
-            let app_ok = sub.applications.is_empty()
-                || resolved_name.as_ref().is_some_and(|name| sub.applications.contains(name));
-            if !(priority_ok && app_ok) {
-                continue;
-            }
-            let notification = crate::mcp::gotify::types::GotifyNotification {
-                app: display_name.clone(),
-                title: msg.title.clone(),
-                message: msg.message.clone(),
-                priority: msg.priority,
-            };
-            if let Err(err) = self.dispatch(Command::DeliverGotifyMessage {
-                project: sub.project.clone(),
-                team_role: sub.team_role.clone(),
-                notification,
-            }) {
-                tracing::warn!(
-                    target: "forge_workspace::gotify",
-                    project = %sub.project,
-                    error = ?err,
-                    "gotify DeliverGotifyMessage dispatch failed",
-                );
-            }
-        }
-    }
-
-    /// The application NAME for `appid` via the reverse of the app index,
-    /// or `None` when the id isn't known (index not yet fetched, or a new
-    /// app the server added after the last refresh).
-    fn gotify_app_name(&self, appid: u64) -> Option<String> {
-        self.gotify_app_index
-            .lock()
-            .iter()
-            .find(|&(_, &id)| id == appid)
-            .map(|(name, _)| name.clone())
-    }
-
     /// Start the Gotify subsystem when it's configured, has at least one
     /// active subscription, and isn't already running. Idempotent. Spawns
-    /// the reconnecting stream task plus an event pump that updates
-    /// `gotify_connected`, refreshes the app index on each connect, and
-    /// routes matched messages. Called at boot and after a subscribe grows
-    /// the active set.
+    /// the forge-connectors pump, which runs the reconnecting stream task
+    /// and translates its events into the `gotify_*` state below and
+    /// `GotifyHost::deliver` calls. Called at boot and after a subscribe
+    /// grows the active set.
     pub fn start_gotify_subsystem(self: &Arc<Self>) {
         let Some(cfg) = self.gotify_config() else { return };
         if self.gotify_subs.lock().is_empty() {
@@ -307,7 +178,8 @@ impl Workspace {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         *guard = Some(shutdown_tx);
         drop(guard);
-        tokio::spawn(run_gotify_subsystem(Arc::downgrade(self), cfg, shutdown_rx));
+        let host: Arc<dyn GotifyHost> = Arc::new(SubsystemHost::new(self));
+        tokio::spawn(forge_connectors::gotify::run_subsystem(host, cfg, shutdown_rx));
     }
 
     /// Stop the Gotify subsystem once no subscriptions remain: signal the
@@ -320,6 +192,87 @@ impl Workspace {
         if let Some(shutdown_tx) = self.gotify_subsystem.lock().take() {
             let _ = shutdown_tx.send(());
             *self.gotify_connected.lock() = false;
+        }
+    }
+}
+
+/// The [`GotifyHost`] the forge-connectors pump drives: a
+/// `Weak<Workspace>` behind the port. The pump holds the host strongly,
+/// so the wrapper stays the weak boundary - the workspace can drop while
+/// the subsystem runs, and every port call degrades to a no-op then,
+/// exactly like the per-event upgrade the pump did when it lived here.
+pub(crate) struct SubsystemHost(std::sync::Weak<Workspace>);
+
+impl SubsystemHost {
+    pub(crate) fn new(workspace: &Arc<Workspace>) -> Self {
+        Self(Arc::downgrade(workspace))
+    }
+}
+
+impl GotifyHost for SubsystemHost {
+    fn http_client(&self, timeout: Duration) -> Result<reqwest::Client, String> {
+        forge_agent::http_trust::with_extra_roots(reqwest::Client::builder().timeout(timeout))
+            .build()
+            .map_err(|error| error.to_string())
+    }
+
+    fn subscriptions(&self) -> Vec<forge_primitives::GotifySubscription> {
+        self.0.upgrade().map(|ws| ws.gotify_subs.lock().clone()).unwrap_or_default()
+    }
+
+    /// The application NAME for `appid` via the reverse of the app index,
+    /// or `None` when the id isn't known (index not yet fetched, or a new
+    /// app the server added after the last refresh).
+    fn app_name(&self, appid: u64) -> Option<String> {
+        let ws = self.0.upgrade()?;
+        ws.gotify_app_index
+            .lock()
+            .iter()
+            .find(|&(_, &id)| id == appid)
+            .map(|(name, _)| name.clone())
+    }
+
+    fn store_app_index(&self, index: HashMap<String, u64>) {
+        if let Some(ws) = self.0.upgrade() {
+            *ws.gotify_app_index.lock() = index;
+        }
+    }
+
+    fn set_connected(&self, connected: bool) {
+        if let Some(ws) = self.0.upgrade() {
+            *ws.gotify_connected.lock() = connected;
+        }
+    }
+
+    /// Wrap the matched message into the notification wire shape and
+    /// dispatch it to the subscriber. This is the only place a
+    /// forge-connectors match becomes a `GotifyNotification`, so the
+    /// prose shape stays workspace-owned (the TUI's `detect_inbound`
+    /// keys on it).
+    fn deliver(
+        &self,
+        subscription: &forge_primitives::GotifySubscription,
+        app: &str,
+        message: &forge_primitives::GotifyMessage,
+    ) {
+        let Some(ws) = self.0.upgrade() else { return };
+        let notification = crate::mcp::gotify::types::GotifyNotification {
+            app: app.to_owned(),
+            title: message.title.clone(),
+            message: message.message.clone(),
+            priority: message.priority,
+        };
+        if let Err(err) = ws.dispatch(Command::DeliverGotifyMessage {
+            project: subscription.project.clone(),
+            team_role: subscription.team_role.clone(),
+            notification,
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::gotify",
+                project = %subscription.project,
+                error = ?err,
+                "gotify DeliverGotifyMessage dispatch failed",
+            );
         }
     }
 }
@@ -412,17 +365,6 @@ mod tests {
             message: message.to_owned(),
             priority,
         }
-    }
-
-    fn gotify_deliveries(cmds: &[crate::protocol::Command]) -> Vec<(String, String)> {
-        cmds.iter()
-            .filter_map(|c| match c {
-                crate::protocol::Command::DeliverGotifyMessage {
-                    project, notification, ..
-                } => Some((project.clone(), notification.to_prose())),
-                _ => None,
-            })
-            .collect()
     }
 
     /// Drain every currently-queued `SessionUpdate` from the test rx.
@@ -688,100 +630,52 @@ mod tests {
         );
     }
 
+    /// The GotifyHost impl the forge-connectors pump drives: the port
+    /// reads the `gotify_*` state, and `deliver` wraps the matched
+    /// message into the notification wire shape addressed to the
+    /// subscriber's project + team role.
     #[test]
-    fn route_gotify_message_fans_out_to_all_matches() {
+    fn gotify_host_impl_reads_state_and_delivers_to_the_subscriber() {
+        use forge_connectors::gotify::GotifyHost as _;
+
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.add_gotify_subscription(gotify_sub("p1", &[], None), false);
+        let mut worker_sub = gotify_sub("p1", &[], None);
+        worker_sub.team_role = Some("reviewer".to_owned());
+        ws.add_gotify_subscription(worker_sub.clone(), false);
         ws.add_gotify_subscription(gotify_sub("p2", &[], None), false);
 
-        ws.enable_test_dispatch_intercept();
-        ws.route_gotify_message(&gotify_msg(3, 5));
-        let deliveries = gotify_deliveries(&ws.drain_test_dispatch_buffer());
+        let host = SubsystemHost::new(&ws);
+        host.store_app_index(HashMap::from([("alerts".to_owned(), 3u64)]));
+        assert_eq!(ws.gotify_app_index.lock().len(), 1, "the index lands on the workspace");
+        assert_eq!(host.app_name(3).as_deref(), Some("alerts"), "appid resolves via the index");
+        assert_eq!(host.app_name(9), None, "an unknown appid resolves to nothing");
 
-        assert_eq!(deliveries.len(), 2, "both matching subscriptions deliver");
-        let projects: Vec<&str> = deliveries.iter().map(|(p, _)| p.as_str()).collect();
-        assert!(projects.contains(&"p1") && projects.contains(&"p2"), "one delivery per project");
-        assert!(
-            deliveries[0].1.contains("Alert") && deliveries[0].1.contains("body"),
-            "the envelope carries the title and message",
+        host.set_connected(true);
+        assert!(ws.gotify_connected(), "liveness reaches the Inspector's flag");
+
+        assert_eq!(host.subscriptions().len(), 2, "the pump matches against the active set");
+
+        ws.enable_test_dispatch_intercept();
+        host.deliver(&worker_sub, "alerts", &gotify_msg(3, 5));
+        let dispatched = ws.drain_test_dispatch_buffer();
+        let Some(crate::protocol::Command::DeliverGotifyMessage {
+            project,
+            team_role,
+            notification,
+        }) = dispatched.first()
+        else {
+            panic!("deliver dispatches exactly one DeliverGotifyMessage: {dispatched:?}");
+        };
+        assert_eq!(project, "p1");
+        assert_eq!(team_role.as_deref(), Some("reviewer"), "the team role rides along");
+        assert_eq!(
+            notification.app, "alerts",
+            "the connector-resolved display name becomes the notification's app",
         );
-    }
-
-    #[test]
-    fn route_gotify_message_respects_priority_and_application_filters() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        *ws.gotify_app_index.lock() = HashMap::from([("alerts".to_owned(), 3u64)]);
-        ws.add_gotify_subscription(gotify_sub("p", &["alerts"], None), false);
-        ws.add_gotify_subscription(gotify_sub("p", &[], Some(5)), false);
-
-        ws.enable_test_dispatch_intercept();
-
-        // appid 3 (alerts), priority 2: the app-filter sub matches; the
-        // priority-floor sub does not (2 < 5).
-        ws.route_gotify_message(&gotify_msg(3, 2));
-        assert_eq!(gotify_deliveries(&ws.drain_test_dispatch_buffer()).len(), 1);
-
-        // appid 9 (unknown app), priority 5: the priority-floor sub matches;
-        // the app-filter sub does not (9 != 3).
-        ws.route_gotify_message(&gotify_msg(9, 5));
-        assert_eq!(gotify_deliveries(&ws.drain_test_dispatch_buffer()).len(), 1);
-    }
-
-    #[test]
-    fn route_gotify_message_no_match_delivers_nothing() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.add_gotify_subscription(gotify_sub("p", &[], Some(9)), false);
-
-        ws.enable_test_dispatch_intercept();
-        ws.route_gotify_message(&gotify_msg(3, 2));
-        assert!(
-            gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
-            "a message below the priority floor delivers nothing",
-        );
-    }
-
-    #[test]
-    fn route_gotify_message_matches_any_app_in_the_set() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        *ws.gotify_app_index.lock() =
-            HashMap::from([("alerts".to_owned(), 3u64), ("backups".to_owned(), 7u64)]);
-        ws.add_gotify_subscription(gotify_sub("p", &["alerts", "backups"], None), false);
-
-        ws.enable_test_dispatch_intercept();
-
-        // A message from either listed app matches the set.
-        ws.route_gotify_message(&gotify_msg(3, 1));
-        assert_eq!(gotify_deliveries(&ws.drain_test_dispatch_buffer()).len(), 1, "alerts matches");
-        ws.route_gotify_message(&gotify_msg(7, 1));
-        assert_eq!(gotify_deliveries(&ws.drain_test_dispatch_buffer()).len(), 1, "backups matches");
-
-        // An app outside the set is skipped.
-        ws.route_gotify_message(&gotify_msg(9, 1));
-        assert!(
-            gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
-            "an app not in the set delivers nothing",
-        );
-    }
-
-    #[test]
-    fn route_gotify_message_unresolved_appid_does_not_match_numeric_filter() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        // The app index is empty, so appid 5 resolves to no name. A filter
-        // listing the numeric id as a string must NOT match on the
-        // display-only fallback.
-        ws.add_gotify_subscription(gotify_sub("p", &["5"], None), false);
-
-        ws.enable_test_dispatch_intercept();
-        ws.route_gotify_message(&gotify_msg(5, 1));
-        assert!(
-            gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
-            "an unresolved appid must not match a filter that lists its numeric id",
-        );
+        assert_eq!(notification.title, "Alert", "the message title rides into the wrap");
+        assert_eq!(notification.message, "body", "the message body rides into the wrap");
+        assert_eq!(notification.priority, 5, "the priority rides into the wrap");
     }
 
     #[test]
