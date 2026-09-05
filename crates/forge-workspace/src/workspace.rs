@@ -2138,10 +2138,11 @@ impl Workspace {
                                 forge_agent::cloud::oauth_usage::ProbePlan::Token { .. } => {
                                     "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
                                 }
-                                // Codex has no plan variant since its
-                                // backend took the probe over; its bearer
-                                // is the env ANTHROPIC_AUTH_TOKEN.
-                                _ if provider == forge_primitives::account::Provider::Codex => {
+                                // The base-url providers have no plan
+                                // variant since their backends took the
+                                // probe over; their bearer is the env
+                                // ANTHROPIC_AUTH_TOKEN.
+                                _ if provider.uses_base_url() => {
                                     "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
                                 }
                                 forge_agent::cloud::oauth_usage::ProbePlan::Keychain => {
