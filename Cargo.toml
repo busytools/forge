@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-providers", "crates/forge-connectors", "crates/forge-agent", "crates/forge-workspace", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
-version = "1.0.41"
+version = "1.0.42"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/busytools/forge"
@@ -95,13 +95,13 @@ transcribe-cpp = "0.2.2"
 cpal = "0.18"
 
 # Workspace-internal crates
-forge-primitives = { path = "crates/forge-primitives", version = "=1.0.41" }
-forge-providers = { path = "crates/forge-providers", version = "=1.0.41" }
-forge-connectors = { path = "crates/forge-connectors", version = "=1.0.41" }
-forge-sdk = { path = "crates/forge-sdk", version = "=1.0.41" }
-forge-agent = { path = "crates/forge-agent", version = "=1.0.41" }
-forge-dictate = { path = "crates/forge-dictate", version = "=1.0.41" }
-forge-workspace = { path = "crates/forge-workspace", version = "=1.0.41" }
+forge-primitives = { path = "crates/forge-primitives", version = "=1.0.42" }
+forge-providers = { path = "crates/forge-providers", version = "=1.0.42" }
+forge-connectors = { path = "crates/forge-connectors", version = "=1.0.42" }
+forge-sdk = { path = "crates/forge-sdk", version = "=1.0.42" }
+forge-agent = { path = "crates/forge-agent", version = "=1.0.42" }
+forge-dictate = { path = "crates/forge-dictate", version = "=1.0.42" }
+forge-workspace = { path = "crates/forge-workspace", version = "=1.0.42" }
 
 # Dev-only
 pretty_assertions = "1"
