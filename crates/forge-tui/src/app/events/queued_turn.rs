@@ -8,7 +8,7 @@
 //! envelope that starts the queued turn; a force-settle sweep bounds
 //! a desync.
 
-use crate::app::{App, AppStatus, SystemSeverity};
+use crate::app::{App, AppStatus};
 use forge_workspace::SessionKey;
 use std::time::{Duration, SystemTime};
 
@@ -266,21 +266,6 @@ fn force_settle(app: &mut App, key: &SessionKey) {
     if is_active && matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         app.status = AppStatus::Ready;
     }
-    if dropped > 0 {
-        let secs = FORCE_SETTLE_AFTER.as_secs();
-        let message = if dropped == 1 {
-            format!(
-                "A queued message did not start within {secs}s; it may still run. \
-                 Resend only if nothing happens."
-            )
-        } else {
-            format!(
-                "{dropped} queued messages did not start within {secs}s; they may still run. \
-                 Resend only if nothing happens."
-            )
-        };
-        super::push_system_message_to_session(app, key, Some(SystemSeverity::Warning), &message);
-    }
     tracing::warn!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "queued_turn_force_settled",
@@ -322,6 +307,7 @@ mod tests {
     };
     use super::*;
     use crate::agent::model;
+    use crate::app::SystemSeverity;
     use crate::app::session::SessionLifecycleState;
     use forge_primitives::AgentCommand;
     use forge_primitives::{AssistantEnvelope, ContentBlock, Message};
@@ -439,8 +425,8 @@ mod tests {
     }
 
     /// The force-settle's background arm: the glyph settles to Idle,
-    /// the focused session's status is untouched, no messages are
-    /// stripped, and the expiry notice lands in the bucket.
+    /// the focused session's status is untouched, nothing is
+    /// stripped, and no expiry notice is pushed.
     #[test]
     fn force_settle_background_bucket_sets_down_quietly() {
         use crate::app::session::UiSession;
@@ -466,13 +452,9 @@ mod tests {
         );
         assert_eq!(
             bg.messages.len(),
-            2,
-            "the background bucket gets the expiry notice; nothing is stripped"
+            1,
+            "the background bucket settles quietly; no expiry notice is pushed"
         );
-        assert!(matches!(
-            bg.messages.last().expect("notice").role,
-            crate::app::MessageRole::System(Some(SystemSeverity::Warning))
-        ));
     }
 
     /// The second settling path: the wire `Idle` runtime event must
@@ -586,7 +568,7 @@ mod tests {
                     _ => false,
                 })
         });
-        assert!(dropped_notice, "the expiry names the dropped send so it can be resent");
+        assert!(!dropped_notice, "expiry settles quietly; no resend nag is pushed");
     }
 
     /// Expiry is not a verdict: when the "dead" turn's envelope
