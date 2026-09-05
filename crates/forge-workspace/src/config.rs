@@ -391,6 +391,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         };
         let mut env = global_env.clone();
         env.extend(entry.env);
+        trim_setup_token(&mut env);
         // A base-url provider probes `{ANTHROPIC_BASE_URL}/...`, so an
         // absent key would leave the probe pointed at Anthropic's host
         // with the wrong bearer. Refuse at load rather than at preflight.
@@ -541,9 +542,19 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
 /// A project's env: the `env_file` entries with the inline `env` table
 /// layered over them, since the inline form is the more explicit
 /// statement of the two.
+/// Trim the setup token once here: the probe and the spawned child
+/// both read these maps verbatim, so a padded value would authenticate
+/// one and fail the other.
+fn trim_setup_token<S: std::hash::BuildHasher>(env: &mut HashMap<String, String, S>) {
+    if let Some(token) = env.get_mut(forge_providers::CLAUDE_CODE_OAUTH_TOKEN_ENV) {
+        *token = token.trim().to_owned();
+    }
+}
+
 fn resolve_project_env(project: &str, entry: ProjectEnvEntry) -> HashMap<String, String> {
     let mut env = entry.env_file.map(|path| read_env_file(project, &path)).unwrap_or_default();
     env.extend(entry.env);
+    trim_setup_token(&mut env);
     env
 }
 
@@ -1050,6 +1061,50 @@ provider = "anthropic"
             gateway.env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").map(String::as_str),
             Some("950000"),
             "an account with no override inherits the global [env] key",
+        );
+    }
+
+    #[test]
+    fn whitespace_padded_setup_token_is_trimmed_once_at_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+provider = "anthropic"
+[accounts.env]
+CLAUDE_CODE_OAUTH_TOKEN = "  sk-ant-oat01-stargate  "
+[projects.forge.env]
+CLAUDE_CODE_OAUTH_TOKEN = "  sk-ant-oat01-project  "
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let account = &config.accounts[0];
+        // The probe reads this map through `token_bearer` and the spawn
+        // path stamps it onto the child verbatim; both must see the
+        // same credential.
+        assert_eq!(
+            account.env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
+            Some("sk-ant-oat01-stargate"),
+            "the setup token is trimmed where it enters the config",
+        );
+        assert_eq!(
+            forge_providers::token_bearer(&account.env),
+            Some("sk-ant-oat01-stargate"),
+            "the probe reads the same trimmed credential the child gets",
+        );
+        assert_eq!(
+            config.projects[0].env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
+            Some("sk-ant-oat01-project"),
+            "the project env layer is trimmed at load too - it reaches the child unmerged",
         );
     }
 
