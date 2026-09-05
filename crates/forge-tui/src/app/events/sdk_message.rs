@@ -1674,10 +1674,10 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
             })
         })
         .collect();
-    // Drift breadcrumb (Hard Rule #16): if the CLI renamed a field
-    // every entry fails the parse and the section silently never
-    // appears. An empty snapshot is a legitimate state (section
-    // auto-hides), so this only logs - the replace still applies.
+    // Drift breadcrumb: if the CLI renamed a field every entry fails
+    // the parse and the section silently never appears. An empty
+    // snapshot is a legitimate state (section auto-hides), so this
+    // only logs - the replace still applies.
     if tasks.len() != parsed.len() {
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
@@ -1688,7 +1688,7 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
             entry_count = tasks.len(),
         );
     }
-    // Drift breadcrumb (Hard Rule #16): every kind must route to a section
+    // Drift breadcrumb: every kind must route to a section
     // (local_bash -> PROCESSES; agent/local_agent -> SUBAGENTS;
     // local_workflow/workflow -> WORKFLOWS via the tool-call-driven
     // WorkflowEntry, which - unlike bash/agents - only goes terminal on
@@ -1770,7 +1770,7 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
 fn handle_commands_changed(app: &mut App, msg: Message) {
     let Message::CommandsChanged { commands, .. } = msg else { return };
     let parsed = available_commands_from_json(&commands);
-    // Drift guard (Hard Rule #16): a non-empty payload that parses to
+    // Drift guard: a non-empty payload that parses to
     // nothing means the CLI's command-entry shape changed under us.
     // Applying it would silently wipe the `/` dropdown + `/help`, so
     // skip and leave the prior list intact. A legitimately empty
@@ -4252,7 +4252,7 @@ mod commands_changed_tests {
 
     #[test]
     fn non_empty_but_unparseable_payload_keeps_prior_list() {
-        // Drift guard (Hard Rule #16): a payload that carries entries
+        // Drift guard: a payload that carries entries
         // but parses to nothing signals the CLI's entry shape changed;
         // applying it would wipe the dropdown + /help. Keep the prior
         // list instead.
