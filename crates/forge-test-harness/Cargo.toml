@@ -14,7 +14,7 @@ workspace = true
 
 [dependencies]
 forge-primitives = { workspace = true }
-forge-sdk = { path = "../forge-sdk", version = "=1.0.38" }
+forge-sdk = { path = "../forge-sdk", version = "=1.0.39" }
 tokio = { workspace = true }
 serde_json.workspace = true
 regex.workspace = true
