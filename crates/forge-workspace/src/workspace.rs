@@ -13445,8 +13445,8 @@ provider = "anthropic"
         assert!(!prior.is_empty(), "the boot scan persisted cache rows");
 
         let cache = Arc::new(forge_agent::userdata::catalog::scan::SessionTagCache::new(prior));
-        let resume = scan_worker_resume_map(&[cfg.path().to_path_buf()], &project_path, Some(&cache))
-            .await;
+        let resume =
+            scan_worker_resume_map(&[cfg.path().to_path_buf()], &project_path, Some(&cache)).await;
         assert_eq!(
             resume.get("implementer").map(String::as_str),
             Some(WORKER_UUID),

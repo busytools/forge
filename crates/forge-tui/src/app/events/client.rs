@@ -175,9 +175,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::ServiceStatus { severity, message } => {
             session::apply_session_update_service_status(app, severity, &message);
         }
-        // No session key: the post-match flip already wakes the render
-        // loop.
-        SessionUpdate::CatalogLoaded => {}
+        SessionUpdate::CatalogLoaded => {
+            app.needs_redraw = true;
+        }
         SessionUpdate::FatalError(error) => {
             session::apply_session_update_fatal_error(app, error);
         }
@@ -1701,10 +1701,7 @@ mod tests {
 
         apply_session_update(&mut app, forge_workspace::SessionUpdate::CatalogLoaded);
 
-        assert!(
-            app.needs_redraw,
-            "the scan landing must trigger the frame that shows its counts"
-        );
+        assert!(app.needs_redraw, "the scan landing must trigger the frame that shows its counts");
     }
 
     /// The echo is the only source the dialog's markers and reset row
