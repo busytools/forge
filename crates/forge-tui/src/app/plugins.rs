@@ -3325,6 +3325,25 @@ mod tests {
         assert!(app.plugins.update_availability.is_empty(), "markers die with the session");
     }
 
+    /// A `u` with nothing installed refuses the run and syncs the
+    /// footer pair itself: a mirrored failure must not outlive the
+    /// no-op.
+    #[tokio::test]
+    async fn an_empty_u_reports_nothing_eligible_and_syncs_the_footer() {
+        let mut app = App::test_default();
+        app.plugins.installed.clear();
+        app.config.last_error = Some("stale".to_owned());
+
+        start_update_run(&mut app, PluginUpdateTrigger::Manual);
+
+        assert!(app.plugins.update_run.is_none(), "no run is seeded");
+        assert!(app.config.last_error.is_none(), "the mirrored error clears");
+        assert_eq!(
+            app.config.status_message.as_deref(),
+            Some("No installed plugins are eligible for update")
+        );
+    }
+
     #[test]
     fn rollback_is_offered_only_when_a_record_exists() {
         let mut app = App::test_default();
