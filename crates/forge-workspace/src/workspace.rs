@@ -653,10 +653,10 @@ fn distinct_catalog_roots(config_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut roots: Vec<PathBuf> = Vec::new();
     for config_dir in config_dirs {
-        if let Some(root) = catalog_scan_root(config_dir) {
-            if seen.insert(root.clone()) {
-                roots.push(root);
-            }
+        if let Some(root) = catalog_scan_root(config_dir)
+            && seen.insert(root.clone())
+        {
+            roots.push(root);
         }
     }
     roots
@@ -13168,9 +13168,12 @@ provider = "anthropic"
 
     /// A spawn dispatched while the background catalog scan is still
     /// running must not decide the resume against an empty catalog:
-    /// it is parked, then re-dispatched, and lands keyed by the lead's
-    /// session id - not the `__fresh__:` fallback a gate-less spawn
-    /// would produce.
+    /// it is parked, then re-dispatched once the scan lands, and the
+    /// re-dispatched spawn keys to the lead's session id - not the
+    /// `__fresh__:` fallback a gate-less spawn would produce. The
+    /// dispatch intercept catches the re-dispatched commands so the
+    /// assertion does not race the ConnectionFailed release of a spawn
+    /// that cannot complete (no `claude` binary, as on CI).
     #[tokio::test]
     async fn spawn_dispatched_before_the_scan_still_resumes_the_lead() {
         let dir = scan_fixture_dir();
@@ -13200,21 +13203,36 @@ provider = "anthropic"
             "a spawn parked on the catalog scan must not reach the pool"
         );
 
+        // From here the re-dispatched commands are captured instead of
+        // handled, so the assertion survives environments where the
+        // spawn itself cannot complete.
+        workspace.enable_test_dispatch_intercept();
         workspace.start_catalog_scan();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            if workspace.pool.lock().keys().any(|key| key.as_str() == LEAD_UUID) {
+            let drained = workspace.drain_test_dispatch_buffer();
+            let re_dispatched = drained.iter().any(|cmd| {
+                matches!(cmd, Command::StartDefault { .. } | Command::SpawnProject { .. })
+            });
+            if re_dispatched {
                 break;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "the parked spawn never resumed the lead session"
+                "the parked spawn was never re-dispatched after the scan landed"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(
-            !workspace.pool.lock().keys().any(|key| key.as_str().starts_with("__fresh__:")),
-            "the resumed lead must not be pooled as a fresh spawn"
+
+        // The re-dispatched spawn keys to the lead's session id: this
+        // is the lookup `get_agent_handle_with_spawn_key` pools under.
+        assert_eq!(
+            workspace
+                .resolve_target(&SessionTarget::Named("proj".to_owned()))
+                .expect("project resolves")
+                .as_str(),
+            LEAD_UUID,
+            "the re-dispatched spawn keys to the lead, not the fresh fallback"
         );
     }
 
@@ -13497,12 +13515,7 @@ provider = "anthropic"
             project_path.display()
         );
         fs::write(forge_toml_path(cfg.path()), toml).expect("write forge.toml");
-        write_session_fixture(
-            tree.path(),
-            &project_path.display().to_string(),
-            LEAD_UUID,
-            None,
-        );
+        write_session_fixture(tree.path(), &project_path.display().to_string(), LEAD_UUID, None);
         // The fixture writes a literal `projects` dir; the layout under
         // test is one that is NOT named that.
         fs::rename(tree.path().join("projects"), tree.path().join("sessions"))
