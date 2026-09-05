@@ -4977,15 +4977,15 @@ fn account_budget(
     match (provider, snapshot.source) {
         (Provider::Anthropic | Provider::Codex, UsageSourceKind::Oauth) => {
             crate::views::AccountBudget::Subscription {
-                five_hour_util: account::five_hour_util(snapshot),
-                seven_day_util: account::seven_day_util(snapshot),
-                resets_at: account::binding_reset_at(snapshot),
+                five_hour_util: snapshot.five_hour_util(),
+                seven_day_util: snapshot.seven_day_util(),
+                resets_at: snapshot.binding_reset_at(),
             }
         }
         (Provider::Zai, UsageSourceKind::ZaiMonitor) => crate::views::AccountBudget::Subscription {
-            five_hour_util: account::five_hour_util(snapshot),
-            seven_day_util: account::seven_day_util(snapshot),
-            resets_at: account::binding_reset_at(snapshot),
+            five_hour_util: snapshot.five_hour_util(),
+            seven_day_util: snapshot.seven_day_util(),
+            resets_at: snapshot.binding_reset_at(),
         },
         (Provider::Openrouter, UsageSourceKind::OpenRouterKey) => {
             match snapshot.spend.as_ref() {

@@ -657,8 +657,8 @@ impl AccountStateMap {
                     // here deliberately rather than widening the format.
                     Some(s) => format!(
                         "5h={:.0}%/7d={:.0}%",
-                        five_hour_util(s).unwrap_or(0.0),
-                        seven_day_util(s).unwrap_or(0.0),
+                        s.five_hour_util().unwrap_or(0.0),
+                        s.seven_day_util().unwrap_or(0.0),
                     ),
                 };
                 let err_state = e.map_or("none".to_owned(), |e| format!("{e:?}"));
@@ -748,47 +748,6 @@ fn backoff_delay(consecutive_failures: u32) -> std::time::Duration {
     let exp = consecutive_failures.min(20); // shift saturates at 20; well under u64::MAX
     let seconds = 30_u64.saturating_mul(1_u64 << exp.saturating_sub(1));
     Duration::from_secs(seconds).min(CAP)
-}
-
-/// `None` when the snapshot carries no five-hour window, which is a
-/// documented steady state on the lenient mapper rather than a zero.
-pub(crate) fn five_hour_util(snapshot: &UsageSnapshot) -> Option<f64> {
-    snapshot.five_hour.as_ref().map(|w| w.utilization)
-}
-
-/// Binding 7-day utilisation: max across the three 7-day windows
-/// (`seven_day`, `seven_day_opus`, `seven_day_sonnet`). Whichever
-/// is most-used is the binding constraint for "is this account
-/// 7-day rate-limited."
-///
-/// `None` when all three are absent, which a 200 carrying only the
-/// session window produces.
-pub(crate) fn seven_day_util(snapshot: &UsageSnapshot) -> Option<f64> {
-    let windows = [
-        snapshot.seven_day.as_ref().map(|w| w.utilization),
-        snapshot.seven_day_opus.as_ref().map(|w| w.utilization),
-        snapshot.seven_day_sonnet.as_ref().map(|w| w.utilization),
-    ];
-    windows.into_iter().flatten().reduce(f64::max)
-}
-
-/// When a rate-limited account unlocks: the latest `resets_at` among
-/// windows currently at-or-over the cap (using the same
-/// `is_currently_limited` predicate `is_rate_limited` walks). `None`
-/// when no window is currently capped, so the `/account` picker shows
-/// a reset ETA only on rate-limited rows.
-pub(crate) fn binding_reset_at(snapshot: &UsageSnapshot) -> Option<std::time::SystemTime> {
-    [
-        snapshot.five_hour.as_ref(),
-        snapshot.seven_day.as_ref(),
-        snapshot.seven_day_opus.as_ref(),
-        snapshot.seven_day_sonnet.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|w| w.is_currently_limited())
-    .filter_map(|w| w.resets_at)
-    .max()
 }
 
 #[cfg(test)]
@@ -1307,7 +1266,7 @@ mod tests {
         let mut s = snapshot(Some(20.0), Some(30.0));
         s.seven_day_opus =
             Some(UsageWindow { utilization: 80.0, resets_at: None, reset_description: None });
-        assert_eq!(seven_day_util(&s), Some(80.0), "the most-used 7d window is the binding one");
+        assert_eq!(s.seven_day_util(), Some(80.0), "the most-used 7d window is the binding one");
     }
 
     /// An empty fold produced 0.0 with nothing that looked like a
@@ -1318,8 +1277,8 @@ mod tests {
         let mut s = snapshot(Some(20.0), None);
         s.seven_day_opus = None;
         s.seven_day_sonnet = None;
-        assert_eq!(seven_day_util(&s), None, "no 7d window means no 7d reading");
-        assert_eq!(five_hour_util(&s), Some(20.0), "the window that is present still reports");
+        assert_eq!(s.seven_day_util(), None, "no 7d window means no 7d reading");
+        assert_eq!(s.five_hour_util(), Some(20.0), "the window that is present still reports");
     }
 
     #[test]
