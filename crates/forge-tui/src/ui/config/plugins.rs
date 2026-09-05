@@ -698,16 +698,28 @@ mod tests {
     #[test]
     fn installed_rows_wear_the_out_of_date_marker_from_the_last_check() {
         let mut app = App::test_default();
-        app.plugins.installed = vec![InstalledPluginEntry {
-            id: "supabase@claude-plugins-official".to_owned(),
-            version: Some("2.0.9".to_owned()),
-            scope: "user".to_owned(),
-            enabled: true,
-            installed_at: None,
-            last_updated: None,
-            project_path: None,
-            capability: PluginCapability::Mcp,
-        }];
+        app.plugins.installed = vec![
+            InstalledPluginEntry {
+                id: "supabase@claude-plugins-official".to_owned(),
+                version: Some("2.0.9".to_owned()),
+                scope: "user".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: None,
+                capability: PluginCapability::Mcp,
+            },
+            InstalledPluginEntry {
+                id: "supabase@claude-plugins-official".to_owned(),
+                version: Some("2.0.9".to_owned()),
+                scope: "project".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: None,
+                capability: PluginCapability::Mcp,
+            },
+        ];
         app.plugins.update_availability = vec![PluginUpdateAvailability {
             plugin_id: "supabase@claude-plugins-official".to_owned(),
             scope: "user".to_owned(),
@@ -723,6 +735,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains(" 2.0.9 -> 2.1.0 "), "marker badge: {text}");
+        assert_eq!(
+            text.matches(" -> ").count(),
+            1,
+            "the badge keys on scope: the project-scope row wears none: {text}"
+        );
 
         app.plugins.update_availability.clear();
         let text: String = installed_list(&app, 80, 24)

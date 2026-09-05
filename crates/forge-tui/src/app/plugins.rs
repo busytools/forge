@@ -1690,22 +1690,28 @@ pub(crate) fn apply_update_run_finished(
     app.plugins.loading = false;
     app.needs_redraw = true;
     let applied = run.rows.iter().any(|row| row.status == PluginRunRowStatus::Updated);
-    match run.trigger {
+    let summary = match run.trigger {
         // Boot runs never reload runtimes: no session may exist yet,
         // and the ones that spawn afterwards pick the new plugins up.
         PluginUpdateTrigger::Auto => {
-            app.plugins.status_message =
-                Some(format!("Plugin auto-update finished: {}", run.summary()));
+            Some(format!("Plugin auto-update finished: {}", run.summary()))
         }
         PluginUpdateTrigger::Manual if applied => {
             start_runtime_reload(app, format!("Update run finished: {}", run.summary()));
+            None
         }
         PluginUpdateTrigger::Manual if is_check_run(run) => {
-            app.plugins.status_message = Some(format!("Update check: {}", run.summary()));
+            Some(format!("Update check: {}", run.summary()))
         }
-        PluginUpdateTrigger::Manual => {
-            app.plugins.status_message = Some(format!("Update run finished: {}", run.summary()));
-        }
+        PluginUpdateTrigger::Manual => Some(format!("Update run finished: {}", run.summary())),
+    };
+    // Arms that skip the runtime reload sync the footer pair
+    // themselves, so a mirrored failure does not outlive a successful
+    // run.
+    if let Some(message) = summary {
+        app.plugins.status_message = Some(message.clone());
+        app.config.last_error = None;
+        app.config.status_message = Some(message);
     }
 }
 
@@ -2980,8 +2986,9 @@ mod tests {
             "the marker survives the report"
         );
 
-        // A refresh with the same stale state keeps the marker, freshly
-        // recomputed - not merely left behind.
+        // A refresh that still finds the plugin stale recomputes the
+        // marker to the fresh marketplace version - the moved version
+        // rules out both a clear and a left-behind marker.
         apply_inventory_refresh_success(
             &mut app,
             PluginsInventorySnapshot {
@@ -3000,7 +3007,7 @@ mod tests {
                     name: "Supabase".to_owned(),
                     description: None,
                     marketplace_name: Some("claude-plugins-official".to_owned()),
-                    version: Some("2.0.0".to_owned()),
+                    version: Some("2.1.0".to_owned()),
                     install_count: None,
                     source: None,
                 }],
@@ -3014,11 +3021,12 @@ mod tests {
                 .iter()
                 .map(|availability| (
                     availability.plugin_id.as_str(),
+                    availability.scope.as_str(),
                     availability.installed_version.as_deref(),
                     availability.available_version.as_deref()
                 ))
                 .collect::<Vec<_>>(),
-            vec![("supabase@claude-plugins-official", Some("1.0.0"), Some("2.0.0"))],
+            vec![("supabase@claude-plugins-official", "user", Some("1.0.0"), Some("2.1.0"))],
             "a refresh recomputes the marker from its snapshot"
         );
 
@@ -3043,17 +3051,19 @@ mod tests {
     #[test]
     fn plugin_failures_surface_on_the_footer_pair() {
         let mut app = App::test_default();
+        app.config.status_message = Some("stale".to_owned());
 
         apply_inventory_refresh_failure(&mut app, "refresh blew up".to_owned());
         assert_eq!(app.config.last_error.as_deref(), Some("refresh blew up"));
-        assert!(app.config.status_message.is_none());
+        assert!(app.config.status_message.is_none(), "the stale status clears");
 
+        app.config.status_message = Some("stale".to_owned());
         apply_rollback_failure(&mut app, "p@market", "boom", None);
         assert_eq!(
             app.config.last_error.as_deref(),
             Some("Rollback of P From Market failed: boom")
         );
-        assert!(app.config.status_message.is_none());
+        assert!(app.config.status_message.is_none(), "the stale status clears");
     }
 
     /// After an update run the markers describe the run's post-run
@@ -3062,7 +3072,7 @@ mod tests {
     #[test]
     fn an_update_run_recomputes_markers_from_its_post_run_inventory() {
         let mut app = App::test_default();
-        let stale = || PluginUpdateRun {
+        let stale = PluginUpdateRun {
             trigger: PluginUpdateTrigger::Manual,
             finished: true,
             rows: vec![
@@ -3088,7 +3098,7 @@ mod tests {
                 },
             ],
         };
-        apply_update_run_finished(&mut app, &stale(), None, None);
+        apply_update_run_finished(&mut app, &stale, None, None);
         assert_eq!(app.plugins.update_availability.len(), 2, "the check left both markers");
 
         // The update moved pensive; supabase stayed at 1.0.0.
@@ -3156,9 +3166,9 @@ mod tests {
             app.plugins
                 .update_availability
                 .iter()
-                .map(|availability| availability.plugin_id.as_str())
+                .map(|availability| (availability.plugin_id.as_str(), availability.scope.as_str()))
                 .collect::<Vec<_>>(),
-            vec!["supabase@claude-plugins-official"],
+            vec![("supabase@claude-plugins-official", "user")],
             "markers recompute: the updated plugin drops, the stale one stays"
         );
 
