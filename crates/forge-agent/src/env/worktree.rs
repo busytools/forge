@@ -1350,6 +1350,7 @@ mod tests {
     fn completed_agent_worktree_rejects_paths_outside_the_managed_layout() {
         for path in [
             "/repo/other/agent-abc123",
+            "/repo/worktrees/agent-abc123",
             "/repo/.claude/worktrees/worker-abc123",
             ".claude/worktrees/agent-abc123",
         ] {
