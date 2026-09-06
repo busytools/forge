@@ -2280,6 +2280,46 @@ max_workers = {limit}
         );
     }
 
+    /// The override raises as well as lowers: a cap above the default
+    /// admits past 2. Every other cap test also passes if the
+    /// resolution clamps the override to the default, and the raise
+    /// direction is the one the forge project's own config depends on.
+    #[tokio::test]
+    async fn a_cap_above_the_default_admits_past_two() {
+        let (workspace, _config_dir) = stub_with_project_cap(3);
+        let project = seeded_project(&workspace);
+        workspace.insert_live_worker(&project, fake_worker_entry("w1", "w1"));
+        workspace.insert_live_worker(&project, fake_worker_entry("w2", "w2"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w3",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("reply");
+        assert!(
+            reply.is_ok(),
+            "the override must raise the cap past the default: {:?}",
+            reply.err()
+        );
+        assert_eq!(
+            workspace.list_live_workers(&project).len(),
+            3,
+            "the admitted spawn creates its worker"
+        );
+        if let Ok(reply) = reply {
+            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+        }
+    }
+
     /// The atomicity pin, at the layer it lives: concurrent
     /// `insert_live_worker_if_label_absent` calls at cap 1 admit
     /// exactly one and refuse the rest, whatever order the lock grants.
