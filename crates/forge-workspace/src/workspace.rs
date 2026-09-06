@@ -7808,7 +7808,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 "#,
         )
@@ -7922,7 +7922,7 @@ path = "~/Projects/dotfiles"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 "#,
         )
@@ -7958,7 +7958,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 "#,
         )
@@ -7993,7 +7993,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 
 [[accounts]]
@@ -8074,7 +8074,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 
 [[accounts]]
@@ -8879,7 +8879,7 @@ auto_start = false
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 "#,
         )
@@ -9697,7 +9697,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 "#,
         )
@@ -12147,7 +12147,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 "#,
         )
@@ -12172,7 +12172,7 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 "#,
         )
@@ -13136,7 +13136,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 "#,
             project_path.display()
@@ -13440,7 +13440,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 "#,
             project_path.display()
@@ -13510,7 +13510,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-workspace-stargate"
 provider = "anthropic"
 "#,
             project_path.display()

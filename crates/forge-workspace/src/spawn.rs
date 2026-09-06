@@ -1649,7 +1649,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-spawn-stargate"
 provider = "anthropic"
 "#,
         )
@@ -1886,7 +1886,7 @@ auto_start = false
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-spawn-stargate"
 provider = "anthropic"
 "#,
         )
@@ -1948,7 +1948,7 @@ auto_start = false
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-spawn-stargate"
 provider = "anthropic"
 "#,
         )
@@ -2808,7 +2808,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-spawn-stargate"
 provider = "anthropic"
 "#,
             ),
