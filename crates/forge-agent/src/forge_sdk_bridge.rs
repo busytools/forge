@@ -696,13 +696,14 @@ impl ForgeSdkBridge {
     pub(crate) fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_context_usage", move |client| async move {
-            // The footer poll fires this every few seconds; a wedged
-            // CLI must cost one skipped poll, not a parked task per
-            // poll with the Ctx bar frozen. Accept-and-document: the
-            // expiry stays log-only (no typed event), so the TUI's
-            // in-flight flag never clears and later refreshes coalesce
-            // behind the dead probe - the bar wedges rather than
-            // flashing an error.
+            // Refreshes arrive at turn end, session switch, connect
+            // and post-compaction; a wedged CLI must cost one
+            // timed-out probe, not a parked task per refresh with the
+            // Ctx bar frozen. Accept-and-document: the expiry stays
+            // log-only (no typed event), so the TUI's in-flight flag
+            // never clears and later refreshes coalesce behind the
+            // dead probe - the bar wedges rather than flashing an
+            // error.
             let usage = match tokio::time::timeout(
                 Self::CONTROL_RESPONSE_TIMEOUT,
                 client.get_context_usage(),
