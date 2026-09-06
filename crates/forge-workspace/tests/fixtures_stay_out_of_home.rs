@@ -11,9 +11,13 @@
 use std::path::{Path, PathBuf};
 
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = std::fs::read_dir(dir).expect("walking the workspace crates/ tree");
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => panic!("walking the workspace crates/ tree: {err}"),
+    };
     for entry in entries {
-        let path = entry.expect("dir entry").path();
+        let Ok(entry) = entry else { panic!("unreadable entry under {}", dir.display()) };
+        let path = entry.path();
         if path.is_dir() {
             collect_rs_files(&path, out);
         } else if path.extension().is_some_and(|ext| ext == "rs") {
