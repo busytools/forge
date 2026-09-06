@@ -2134,7 +2134,7 @@ max_concurrent = {limit}
 
         let err = rx.await.expect("reply").expect_err("at-limit spawn must refuse");
         assert!(err.contains("worker limit reached"), "names the refusal: {err}");
-        assert!(err.contains('2'), "names the limit: {err}");
+        assert!(err.contains("cap is 2"), "names the cap: {err}");
         assert_eq!(
             workspace.list_live_workers(&project).len(),
             2,
