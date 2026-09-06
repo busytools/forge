@@ -107,7 +107,10 @@ impl ReplayHarness {
     /// requested dimensions. Returns the rendered text-only multi-line
     /// String suitable for `insta::assert_snapshot!`.
     pub(crate) fn snapshot_inspector(&mut self, width: u16, height: u16) -> String {
-        self.snapshot_with(width, height, crate::ui::inspector_pane::render)
+        self.snapshot_with(width, height, |frame, area, app| {
+            let subagents = app.subagents_view();
+            crate::ui::inspector_pane::render(frame, area, app, &subagents);
+        })
     }
 
     /// Render the chat block into a `TestBackend` buffer at the
@@ -121,16 +124,15 @@ impl ReplayHarness {
         &mut self,
         width: u16,
         height: u16,
-        render: fn(&mut Frame, Rect, &mut App, &[crate::app::SubagentEntry]),
+        render: impl Fn(&mut Frame, Rect, &mut App),
     ) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal =
             ratatui::Terminal::new(backend).expect("TestBackend::new always succeeds");
-        let subagents = self.app.subagents_view();
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, width, height);
-                render(frame, area, &mut self.app, &subagents);
+                render(frame, area, &mut self.app);
             })
             .expect("TestBackend draw never fails");
         buffer_to_text(terminal.backend().buffer())

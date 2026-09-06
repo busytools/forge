@@ -14,7 +14,7 @@ use std::sync::Arc;
 use forge_primitives::{PermissionDecision, ToolPermissionContext};
 use forge_sdk::{
     Client, HookContext, HookDecision, HooksBuilder, Options, OptionsBuilder, PermissionMode,
-    PreToolUseInput,
+    PostToolUseInput, PreToolUseInput,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
@@ -239,6 +239,7 @@ pub(crate) async fn spawn_session(
         &AccountBinding { config_dir: &config_dir, env: &account_env },
     );
     let (client, events) = Client::spawn(options).await?;
+    sweep_agent_worktrees(cwd);
     // For resume sessions the CLI flag carried the real session id -
     // prefer that over `Client::session_id()`, which is empty until
     // `system/init` lands on the wire (per `Client::spawn` docs, after
@@ -880,6 +881,173 @@ pub(crate) struct AccountBinding<'a> {
     pub env: &'a HashMap<String, String>,
 }
 
+/// Paths already warned about as not-a-worktree, so a plain directory a
+/// user parked under `.claude/worktrees/agent-*` warns once per process
+/// instead of at every spawn, forever.
+fn not_a_worktree_already_warned(path: &Path) -> bool {
+    static WARNED: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    let warned = WARNED.get_or_init(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+    let mut warned = warned.lock();
+    !warned.insert(path.to_path_buf())
+}
+
+/// Log the outcome of one agent-worktree reap. `worktree` carries the
+/// path so every outcome is attributable. Kept trees are info, not
+/// warn: uncommitted edits are the CLI's deliberate hand-back. A kept
+/// BRANCH is warn - the subagent committed work reachable from no other
+/// ref, and someone has to look, mirroring the worker-despawn warning.
+fn log_agent_worktree_reap(
+    worktree: &crate::env::worktree::AgentWorktree,
+    outcome: crate::env::worktree::AgentWorktreeReap,
+) {
+    use crate::env::worktree::{AgentWorktreeReap, BranchReapOutcome};
+    match outcome {
+        AgentWorktreeReap::Reaped { branch: BranchReapOutcome::Kept { count, tip } } => {
+            let plural = if count == 1 { "" } else { "s" };
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                path = %worktree.path.display(),
+                branch = %worktree.branch,
+                "branch '{}' kept: {count} commit{plural} reachable from no other ref (tip {tip}); \
+                 inspect with 'git log -{count} {tip}', then 'git branch -D {}' once it has landed",
+                worktree.branch,
+                worktree.branch,
+            );
+        }
+        AgentWorktreeReap::Reaped { branch: BranchReapOutcome::KeptOnError { reason } } => {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                path = %worktree.path.display(),
+                branch = %worktree.branch,
+                reason = %reason,
+                "branch kept: could not verify it holds no unique commits; \
+                 check 'git log' on it and delete it by hand",
+            );
+        }
+        AgentWorktreeReap::Reaped { branch: BranchReapOutcome::DeleteFailed { reason } } => {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                path = %worktree.path.display(),
+                branch = %worktree.branch,
+                reason = %reason,
+                "branch holds no unique commits, but the delete failed; \
+                 retry with 'git branch -D'",
+            );
+        }
+        AgentWorktreeReap::Reaped { branch } => tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
+            branch = ?branch,
+            "agent worktree reaped",
+        ),
+        AgentWorktreeReap::KeptDirty { reason } => tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
+            branch = %worktree.branch,
+            reason = %reason,
+            "agent worktree kept: the subagent left uncommitted changes",
+        ),
+        AgentWorktreeReap::KeptUniqueCommit { tip } => tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
+            tip = %tip,
+            "agent worktree kept: detached HEAD holds commits reachable from no other \
+             ref (tip {tip}). Inspect with 'git -C <path> log {tip}', commit or branch \
+             that work, then remove the tree by hand",
+        ),
+        AgentWorktreeReap::Absent => tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
+            "agent worktree already gone",
+        ),
+        AgentWorktreeReap::NotAWorktree => {
+            if !not_a_worktree_already_warned(&worktree.path) {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    path = %worktree.path.display(),
+                    "git does not vouch for this path being a worktree; left in place",
+                );
+            }
+        }
+        AgentWorktreeReap::RemoveFailed { reason } => tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
+            reason = %reason,
+            "agent worktree reap failed",
+        ),
+    }
+}
+
+/// The hook closure's decision for one PostToolUse event. Split out so
+/// the argument order through the parse is pinned by a test: the two
+/// `&Value` parameters read identically at the call site, and a swap
+/// disables the feature with the whole unit suite still green.
+fn agent_worktree_from_post_tool_use(
+    input: &PostToolUseInput,
+) -> Option<crate::env::worktree::AgentWorktree> {
+    crate::env::worktree::completed_agent_worktree(
+        &input.tool_name,
+        &input.tool_input,
+        &input.tool_response,
+    )
+}
+
+/// How untouched a managed agent worktree must be before the spawn-time
+/// sweep will list it. Fresh trees can belong to a live subagent of
+/// another session in this repo; an hour of silence does not.
+const AGENT_WORKTREE_SWEEP_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Reap this repo's leftover agent worktrees in the background: a
+/// one-shot reap failure or a missed completion event otherwise leaks
+/// the tree forever. Locked trees are skipped (a live CLI process owns
+/// them); every session spawn re-checks, so failures self-heal.
+fn sweep_agent_worktrees(cwd: &str) {
+    if cwd.is_empty() {
+        return;
+    }
+    let repo_root = std::path::PathBuf::from(cwd);
+    tokio::spawn(async move {
+        match tokio::task::spawn_blocking(move || {
+            let Ok(worktrees) =
+                crate::env::worktree::stale_agent_worktrees(&repo_root, AGENT_WORKTREE_SWEEP_AGE)
+            else {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    repo = %repo_root.display(),
+                    "agent worktree sweep could not read the managed worktrees dir",
+                );
+                return;
+            };
+            for worktree in worktrees {
+                // Re-read the lock per tree, immediately before removal:
+                // the listing is a snapshot, and a lock taken since (a
+                // just-spawned agent of another session) must stop this
+                // reap.
+                if crate::env::worktree::agent_worktree_lock_is_live(&repo_root, &worktree.path) {
+                    tracing::debug!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        path = %worktree.path.display(),
+                        "agent worktree locked by a live process; sweep skipped it",
+                    );
+                    continue;
+                }
+                let outcome = crate::env::worktree::reap_agent_worktree(&worktree);
+                log_agent_worktree_reap(&worktree, outcome);
+            }
+        })
+        .await
+        {
+            Ok(()) => {}
+            Err(join_err) => tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                error = %join_err,
+                "agent worktree sweep spawn_blocking task panicked",
+            ),
+        }
+    });
+}
+
 fn build_options_with_callback(
     cwd: &str,
     resume: Option<&str>,
@@ -916,6 +1084,66 @@ fn build_options_with_callback(
                 });
                 HookDecision::passthrough()
             }
+        })
+        .post_tool_use("*", |input: PostToolUseInput, _ctx: HookContext| async move {
+            if let Some(agent_worktree) = agent_worktree_from_post_tool_use(&input) {
+                tracing::info!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    session_id = %input.base.session_id,
+                    path = %agent_worktree.path.display(),
+                    branch = %agent_worktree.branch,
+                    "agent worktree reap scheduled: the subagent completed and will not return",
+                );
+                // `git worktree remove` unlinks a whole target/ tree, so
+                // the reap runs off the hook dispatch task; a wrapper
+                // task awaits the blocking handle so a panic surfaces in
+                // the log instead of vanishing with the JoinHandle.
+                tokio::spawn(async move {
+                    match tokio::task::spawn_blocking(move || {
+                        let outcome = crate::env::worktree::reap_agent_worktree(&agent_worktree);
+                        log_agent_worktree_reap(&agent_worktree, outcome);
+                    })
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(join_err) => tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %join_err,
+                            "agent worktree reap spawn_blocking task panicked",
+                        ),
+                    }
+                });
+            } else if crate::env::worktree::is_isolated_agent_call(
+                &input.tool_name,
+                &input.tool_input,
+            ) {
+                // The captured contract has two fieldless-by-design
+                // populations: a completed no-changes call (the CLI
+                // auto-cleaned) and an async launch. A miss on any other
+                // shape is the drift signal, so it alone gets info.
+                let known_fieldless = matches!(
+                    input.tool_response.get("status").and_then(serde_json::Value::as_str),
+                    Some("completed" | "async_launched")
+                );
+                if known_fieldless {
+                    tracing::debug!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        session_id = %input.base.session_id,
+                        tool = %input.tool_name,
+                        "isolation worktree agent finished fieldless (auto-clean or launch)",
+                    );
+                } else {
+                    tracing::info!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        session_id = %input.base.session_id,
+                        tool = %input.tool_name,
+                        status = ?input.tool_response.get("status"),
+                        "isolation worktree agent finished; its response named no managed \
+                         worktree path and its shape matches no captured contract",
+                    );
+                }
+            }
+            HookDecision::passthrough()
         })
         .build();
 
@@ -2080,6 +2308,102 @@ mod tests {
             "bypass launch offers bypass at connect: {:?}",
             state.available_modes,
         );
+    }
+
+    /// Every session registers the PostToolUse observer so a completed
+    /// isolation:"worktree" Agent call can reap its worktree.
+    #[test]
+    fn build_options_registers_the_post_tool_use_reap_observer() {
+        use crate::client::SessionLaunchSettings;
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        let (event_tx, _rx) = mpsc::unbounded_channel();
+        let options = super::build_options_with_callback(
+            "",
+            None,
+            &SessionLaunchSettings::default(),
+            event_tx,
+            fresh_pending(),
+            fresh_pending_questions(),
+            Arc::new(Mutex::new(String::new())),
+            Vec::new(),
+            &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
+        );
+        let desc = format!("{:?}", options.hooks);
+        assert!(
+            desc.contains("post_tool_use_count: 1"),
+            "the reap observer rides the same hooks block as the PreToolUse observer: {desc}"
+        );
+    }
+
+    /// A PostToolUseInput built through serde from the captured wire
+    /// shape, over a real temp-repo worktree, reaps that directory. Pins
+    /// the whole decision path - including the tool_input/tool_response
+    /// argument order, which a swap would silently disable.
+    #[test]
+    fn a_post_tool_use_payload_reaps_the_worktree_it_names() {
+        use forge_primitives::hooks::inputs::PostToolUseInput;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .expect("spawn git");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(dir.path().join("seed.txt"), "seed").expect("write seed");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+        let wt_path = dir.path().join(".claude").join("worktrees").join("agent-abc123");
+        std::fs::create_dir_all(wt_path.parent().expect("parent")).expect("mkdir");
+        run(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "worktree-agent-abc123",
+            wt_path.to_str().expect("utf8 path"),
+        ]);
+
+        let input: PostToolUseInput = serde_json::from_value(json!({
+            "session_id": "4c448f28-7223-43b2-88fd-0b88dba61865",
+            "transcript_path": "/tmp/transcript.jsonl",
+            "cwd": dir.path().join("x").to_str().expect("utf8 cwd"),
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "tool_input": {
+                "description": "capture keep",
+                "prompt": "leave a file",
+                "subagent_type": "general-purpose",
+                "run_in_background": false,
+                "isolation": "worktree",
+            },
+            "tool_response": {
+                "status": "completed",
+                "agentId": "ac437073a41a2149d",
+                "content": [{ "type": "text", "text": "done" }],
+                "totalToolUseCount": 1,
+                "worktreePath": wt_path.to_str().expect("utf8 wt"),
+                "worktreeBranch": "worktree-agent-abc123",
+            },
+            "tool_use_id": "toolu_capture",
+        }))
+        .expect("the captured PostToolUse shape parses");
+
+        let worktree = super::agent_worktree_from_post_tool_use(&input)
+            .expect("an isolated completion names its managed worktree");
+        let outcome = crate::env::worktree::reap_agent_worktree(&worktree);
+        assert!(
+            matches!(outcome, crate::env::worktree::AgentWorktreeReap::Reaped { .. }),
+            "the named clean worktree is reaped, got {outcome:?}"
+        );
+        assert!(!wt_path.exists(), "the directory is actually gone");
     }
 
     #[test]

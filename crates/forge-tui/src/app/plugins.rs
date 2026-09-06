@@ -363,6 +363,33 @@ pub(crate) fn apply_inventory_refresh_failure(app: &mut App, message: String) {
     app.config.last_error = Some(message);
 }
 
+/// A manual refresh, check or inventory event dropped on a cwd
+/// mismatch (the focused session moved mid-run): release the armed
+/// loading flag without writing the other project's outcome into the
+/// focused pane.
+pub(crate) fn settle_dropped_refresh_failure(app: &mut App) {
+    // Only an armed pane settles: a stale terminal on an idle pane
+    // must not wipe a displayed status line or report.
+    if !app.plugins.loading {
+        return;
+    }
+    app.plugins.loading = false;
+    app.config.status_message = None;
+    app.plugins.runtime_reload_after_refresh = false;
+    app.plugins.pending_runtime_reload_success_message = None;
+}
+
+/// Same release for a dropped run finish, plus the pane's unfinished
+/// run copy: no event is left to finish it, and it is what latches
+/// the `u`/`c`/`r` guard.
+pub(crate) fn settle_dropped_manual_run(app: &mut App) {
+    if !app.plugins.loading {
+        return;
+    }
+    settle_dropped_refresh_failure(app);
+    app.plugins.update_run = None;
+}
+
 pub(crate) fn reset_for_session_change(app: &mut App) {
     app.plugins.loading = false;
     app.plugins.last_inventory_refresh_at = None;

@@ -2472,6 +2472,270 @@ mod tests {
         assert!(app.plugins.installed.is_empty());
     }
 
+    fn stale_cwd_check_row() -> crate::app::plugins::PluginUpdateRunRow {
+        crate::app::plugins::PluginUpdateRunRow {
+            plugin_id: "checked-plugin".into(),
+            scope: "user".into(),
+            cwd_raw: String::new(),
+            marketplace: "claude-plugins-official".into(),
+            status: crate::app::plugins::PluginRunRowStatus::UpdateAvailable,
+            installed_version: Some("1.0.0".into()),
+            available_version: Some("2.0.0".into()),
+            detail: None,
+        }
+    }
+
+    /// The focus moved while a manual check ran, so its finished
+    /// event arrives for the old cwd and is dropped. The pane settles
+    /// rather than pinning the loading flag and the u/c/r guard on a
+    /// report that will never land; the stale snapshot still applies
+    /// nothing.
+    #[test]
+    fn stale_manual_run_finish_releases_the_pane_instead_of_wedging_it() {
+        let mut app = make_test_app();
+        app.set_cwd_raw("/current");
+        app.plugins.loading = true;
+        app.config.status_message = Some("Checking for plugin updates...".into());
+        app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
+            trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+            finished: false,
+            rows: Vec::new(),
+        });
+        app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
+            id: "seeded-plugin".into(),
+            version: None,
+            scope: "user".into(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: crate::app::plugins::PluginCapability::Skill,
+        });
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PluginsUpdateRunFinished {
+                cwd_raw: "/old".into(),
+                run: crate::app::plugins::PluginUpdateRun {
+                    trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                    finished: true,
+                    rows: vec![stale_cwd_check_row()],
+                },
+                snapshot: Some(crate::app::plugins::PluginsInventorySnapshot {
+                    installed: Vec::new(),
+                    marketplace: Vec::new(),
+                    marketplaces: Vec::new(),
+                }),
+                claude_path: None,
+            },
+        );
+
+        assert!(!app.plugins.loading, "a dropped finish must not pin the pane");
+        assert!(app.plugins.update_run.is_none(), "the u/c/r guard releases");
+        assert!(app.config.status_message.is_none(), "the stale progress line goes too");
+        assert_eq!(app.plugins.installed.len(), 1, "the other project's snapshot never applies");
+        assert!(app.plugins.update_availability.is_empty(), "the dropped report leaves no markers");
+
+        // The same event for the cwd the pane is on lands unchanged.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PluginsUpdateRunFinished {
+                cwd_raw: "/current".into(),
+                run: crate::app::plugins::PluginUpdateRun {
+                    trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                    finished: true,
+                    rows: vec![stale_cwd_check_row()],
+                },
+                snapshot: Some(crate::app::plugins::PluginsInventorySnapshot {
+                    installed: Vec::new(),
+                    marketplace: Vec::new(),
+                    marketplaces: Vec::new(),
+                }),
+                claude_path: None,
+            },
+        );
+
+        assert!(!app.plugins.loading);
+        assert!(app.plugins.update_run.is_some(), "the report lands");
+        assert!(app.plugins.installed.is_empty(), "the matching snapshot applies");
+        assert_eq!(app.plugins.update_availability.len(), 1, "check markers land");
+    }
+
+    /// The failed-check route of the same wedge: the pane releases
+    /// the flag quietly, without writing the other project's error
+    /// into the focused one. A report displayed before the failure
+    /// predates the drop and survives.
+    #[test]
+    fn stale_manual_check_failure_releases_the_pane_without_an_error() {
+        let mut app = make_test_app();
+        app.set_cwd_raw("/current");
+        app.plugins.loading = true;
+        app.config.status_message = Some("Checking for plugin updates...".into());
+        app.plugins.runtime_reload_after_refresh = true;
+        app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
+            trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: vec![crate::app::plugins::PluginUpdateRunRow {
+                status: crate::app::plugins::PluginRunRowStatus::AlreadyCurrent,
+                ..stale_cwd_check_row()
+            }],
+        });
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PluginsInventoryRefreshFailed {
+                cwd_raw: "/old".into(),
+                message: "refresh blew up".into(),
+                trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+            },
+        );
+
+        assert!(!app.plugins.loading);
+        assert!(app.config.status_message.is_none());
+        assert!(
+            !app.plugins.runtime_reload_after_refresh,
+            "the dropped failure retires the reload intent like the matched path"
+        );
+        assert!(app.plugins.pending_runtime_reload_success_message.is_none());
+        assert!(
+            app.config.last_error.is_none(),
+            "the other project's error stays out of the footer"
+        );
+        assert!(app.plugins.update_run.is_some(), "the displayed report predates the drop");
+    }
+
+    /// The third terminal arm, the `r` refresh success: armed by the
+    /// same loading flag, so a dropped snapshot wedges the pane the
+    /// same way. It releases the flag and applies nothing from the
+    /// other project.
+    #[test]
+    fn stale_manual_refresh_success_releases_the_pane_instead_of_wedging_it() {
+        let mut app = make_test_app();
+        app.set_cwd_raw("/current");
+        app.plugins.loading = true;
+        app.config.status_message = Some("Refreshing plugin inventory...".into());
+        app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
+            id: "seeded-plugin".into(),
+            version: None,
+            scope: "user".into(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: crate::app::plugins::PluginCapability::Skill,
+        });
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PluginsInventoryUpdated {
+                cwd_raw: "/old".into(),
+                snapshot: crate::app::plugins::PluginsInventorySnapshot {
+                    installed: Vec::new(),
+                    marketplace: Vec::new(),
+                    marketplaces: Vec::new(),
+                },
+                claude_path: std::path::PathBuf::from("claude"),
+            },
+        );
+
+        assert!(!app.plugins.loading, "a dropped refresh must not pin the pane");
+        assert!(app.config.status_message.is_none(), "the stale progress line goes too");
+        assert_eq!(app.plugins.installed.len(), 1, "the other project's snapshot never applies");
+        assert!(app.plugins.claude_path.is_none(), "the dropped claude path never lands");
+        assert!(app.plugins.last_inventory_refresh_at.is_none(), "the drop is not a refresh");
+    }
+
+    /// Progress does not settle: a run whose progress event dropped
+    /// is genuinely still in flight, and its Finished owns the
+    /// release. Settling here "for symmetry" would free the u/c/r
+    /// guard while the plan still executes.
+    #[test]
+    fn stale_run_progress_leaves_the_in_flight_run_armed() {
+        let mut app = make_test_app();
+        app.set_cwd_raw("/current");
+        app.plugins.loading = true;
+        app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
+            trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+            finished: false,
+            rows: vec![stale_cwd_check_row()],
+        });
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PluginsUpdateRunProgress {
+                cwd_raw: "/old".into(),
+                run: crate::app::plugins::PluginUpdateRun {
+                    trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                    finished: false,
+                    rows: vec![stale_cwd_check_row()],
+                },
+            },
+        );
+
+        assert!(
+            app.plugins.loading,
+            "progress does not settle; the run's Finished owns the release"
+        );
+        assert!(
+            app.plugins.update_run.is_some(),
+            "progress does not settle; the run's Finished owns the release"
+        );
+    }
+
+    /// Only an armed pane settles: a stale terminal arriving while
+    /// nothing is in flight must not wipe a displayed report or
+    /// status line.
+    #[test]
+    fn a_stale_terminal_on_an_idle_pane_changes_nothing() {
+        let mut app = make_test_app();
+        app.set_cwd_raw("/current");
+        app.config.status_message = Some("Update check: 1 updated, 0 failed, 0 current".into());
+        app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
+            trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: vec![stale_cwd_check_row()],
+        });
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PluginsUpdateRunFinished {
+                cwd_raw: "/old".into(),
+                run: crate::app::plugins::PluginUpdateRun {
+                    trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                    finished: true,
+                    rows: vec![stale_cwd_check_row()],
+                },
+                snapshot: None,
+                claude_path: None,
+            },
+        );
+
+        assert!(!app.plugins.loading);
+        assert_eq!(
+            app.config.status_message.as_deref(),
+            Some("Update check: 1 updated, 0 failed, 0 current"),
+            "an idle pane keeps its status line"
+        );
+        assert!(app.plugins.update_run.is_some(), "an idle pane keeps its report");
+
+        // The failure settle carries its own gate, so the same holds
+        // for the refresh/check arms.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PluginsInventoryRefreshFailed {
+                cwd_raw: "/old".into(),
+                message: "refresh blew up".into(),
+                trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+            },
+        );
+
+        assert_eq!(
+            app.config.status_message.as_deref(),
+            Some("Update check: 1 updated, 0 failed, 0 current"),
+            "an idle pane keeps its status line"
+        );
+    }
+
     #[test]
     fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
         let mut app = make_test_app();

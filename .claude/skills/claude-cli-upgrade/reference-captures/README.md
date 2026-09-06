@@ -1,8 +1,8 @@
 # Reference captures - wire shapes for new CLI 2.1.156 tools
 
-This directory holds raw `stream-json` captures from `claude --print` probes that nudged the model to invoke each new tool family. Use these when designing forge UI surfaces (Inspector pane rendering, chat suppression rules, glyph mapping, special-case routing) so the implementation works against real wire data rather than guesses.
+This directory holds raw captures from `claude --print` probes. The stream-json captures (the tool-family table below) were nudged so the model invoked each new tool family; use them when designing forge UI surfaces (Inspector pane rendering, chat suppression rules, glyph mapping, special-case routing) so the implementation works against real wire data rather than guesses. Hook-envelope captures record the PostToolUse hook input for one tool instead, for parser-facing shapes.
 
-Captured against `claude` CLI **2.1.156** on **2026-05-29**. If a newer CLI ships a different tool surface, regenerate via the `claude-cli-upgrade` skill's Phase 4.
+The stream-json captures were taken against `claude` CLI **2.1.156** on **2026-05-29**. If a newer CLI ships a different tool surface, regenerate via the `claude-cli-upgrade` skill's Phase 4.
 
 These are redacted, not raw. A capture from `claude --print` carries whatever the capture machine's own hooks printed and whatever skills and slash commands it had installed, so `session_redact` replaces the hook bodies and the command / skill inventory wholesale. Regenerating means re-running a fresh capture through `sdk_reredact_capture` before committing; `sdk_capture_hygiene` fails the build otherwise.
 
@@ -48,6 +48,7 @@ with open(sys.argv[1]) as f:
 | `lsp.jsonl` | LSP | LSP tool invocation against a Rust file in the working dir |
 | `remote_trigger.jsonl` | RemoteTrigger | RemoteTrigger call with a plausible target. Model called ToolSearch first then RemoteTrigger once |
 | `push_notification.jsonl` | PushNotification | PushNotification with title + body. Model called ToolSearch first then PushNotification once |
+| `agent_worktree_posttooluse.jsonl` | PostToolUse hook (Agent tool) | Hook-envelope capture, CLI 2.1.220, not stream-json: one line per PostToolUse input for an isolation:"worktree" Agent call. Keep case carries flat top-level `worktreePath`/`worktreeBranch`; async launch (`async_launched`) names no worktree. Envelope fields marked `<...-not-held>` were not captured verbatim |
 
 ### Intentionally skipped
 

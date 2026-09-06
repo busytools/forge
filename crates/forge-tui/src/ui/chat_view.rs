@@ -54,9 +54,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     app.rendered_projects_pane_body_area = Rect::default();
     app.rendered_inspector_body_area = Rect::default();
 
-    // One build per frame, shared by the chat spinner and the Inspector
-    // section. Gated because `subagents_view` indexes the whole session
-    // before it discovers there is nothing live to show.
+    // One build per frame for the Inspector section. Gated because
+    // `subagents_view` indexes the whole session before it discovers
+    // there is nothing live to show.
     let subagents = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::subagents_view"));
         if app.has_active_subagent_root() { app.subagents_view() } else { Vec::new() }
@@ -70,7 +70,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if !projects_overlay && !inspector_overlay {
         let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));
-        chat::render(frame, areas.body, app, &subagents);
+        chat::render(frame, areas.body, app);
     }
 
     if projects_overlay {
