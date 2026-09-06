@@ -1244,7 +1244,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
             adopted_session_id = %session_id,
         );
         app.set_session_id(Some(crate::agent::model::SessionId::new(session_id.to_owned())));
-    } else if !active_session_id_str.is_empty() && active_session_id_str != session_id
+    } else if (!active_session_id_str.is_empty() && active_session_id_str != session_id)
         || frame_bucket.as_ref().is_some_and(|key| app.active_session_key.as_ref() != Some(key))
     {
         // SDK message for a non-active session. The handlers in
