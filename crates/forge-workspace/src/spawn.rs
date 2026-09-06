@@ -2071,9 +2071,18 @@ provider = "anthropic"
 
     /// Stub whose `forge.toml` carries the given `[workers]
     /// max_concurrent`, loaded through the real config path because the
-    /// full spawn below reads `config.projects`.
-    fn stub_with_worker_limit(limit: usize) -> (Arc<Workspace>, tempfile::TempDir) {
+    /// full spawn below reads `config.projects`. Projects point at
+    /// throwaway dirs: a real repo path would make `is_git` true and
+    /// hang `--worktree <label>` spawns off the actual checkout.
+    fn stub_with_worker_limit(
+        limit: usize,
+    ) -> (Arc<Workspace>, (tempfile::TempDir, tempfile::TempDir)) {
         let dir = tempdir().expect("config tempdir");
+        let projects_dir = tempdir().expect("projects tempdir");
+        let forge_path = projects_dir.path().join("forge").display().to_string();
+        let notes_path = projects_dir.path().join("notes").display().to_string();
+        fs::create_dir_all(&forge_path).expect("create forge project dir");
+        fs::create_dir_all(&notes_path).expect("create notes project dir");
         fs::write(
             forge_toml_path(dir.path()),
             format!(
@@ -2084,11 +2093,11 @@ accounts = ["Stargate"]
 
 [[orgs.projects]]
 name = "forge"
-path = "~/Projects/forge"
+path = "{forge_path}"
 
 [[orgs.projects]]
 name = "notes"
-path = "~/Projects/notes"
+path = "{notes_path}"
 
 [[accounts]]
 display_name = "Stargate"
@@ -2103,7 +2112,7 @@ max_concurrent = {limit}
         .expect("write forge.toml");
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace new"));
-        (workspace, dir)
+        (workspace, (dir, projects_dir))
     }
 
     fn seeded_project(workspace: &Arc<Workspace>) -> ProjectKey {
@@ -2291,8 +2300,9 @@ max_concurrent = {limit}
             .filter(|w| !matches!(w.status, forge_primitives::WorkerLiveness::Failed))
             .count();
         assert!(live <= 1, "no overshoot past the cap; got {live} live workers");
-        // Release the winner so its dispatcher never gets far enough to
-        // exec a claude subprocess this test would leave behind.
+        // Release closes each winner's Command channel, so the
+        // SessionTask's disconnect() reaps the client; kill_on_drop is
+        // the backstop.
         for session in winner_sessions {
             workspace.release_session(&session);
         }
@@ -2331,6 +2341,9 @@ max_concurrent = {limit}
             3,
             "the exempt spawn creates its worker"
         );
+        if let Ok(reply) = reply {
+            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+        }
     }
 
     /// #976: a despawn frees its slot; the next lead-driven spawn
@@ -2380,6 +2393,9 @@ max_concurrent = {limit}
         );
         let reply = rx.await.expect("reply");
         assert!(reply.is_ok(), "the freed slot lets the next spawn through: {:?}", reply.err());
+        if let Ok(reply) = reply {
+            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+        }
     }
 
     /// A `Failed` worker holds no cap slot, matching the label-dedup
