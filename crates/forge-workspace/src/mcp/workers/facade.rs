@@ -1449,4 +1449,14 @@ mod worktree_creation_failed_tests {
             "wrapped generic failure must stay DispatchFailed; got {err:?}",
         );
     }
+
+    #[test]
+    fn the_cap_refusal_stays_a_dispatch_failure() {
+        let message = crate::spawn::worker_limit_reached_message(2, 2);
+        assert_eq!(
+            classify_worker_spawn_failure(&message, true),
+            WorkerSpawnError::DispatchFailed { message },
+            "the cap refusal rides the DispatchFailed pass-through; its wording must never gain a worktree substring",
+        );
+    }
 }

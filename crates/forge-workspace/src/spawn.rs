@@ -926,6 +926,14 @@ fn synth_worker_key(project_key: &ProjectKey, label: &str, is_resume: bool) -> S
     ))
 }
 
+/// The caller-facing refusal for an at-cap worker spawn. One source so
+/// the classifier pin in the facade tests tracks the real text.
+pub(crate) fn worker_limit_reached_message(live: usize, cap: usize) -> String {
+    format!(
+        "worker limit reached: {live} workers are already live and the concurrent worker cap is {cap} (forge.toml [workers] max_concurrent); despawn one first, or raise/remove [workers] max_concurrent in forge.toml"
+    )
+}
+
 /// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
 /// in `live_workers[project_key]`, dispatch a fresh-session spawn
 /// via `SessionTarget::FreshInProject` with the charter threaded
@@ -1044,9 +1052,7 @@ pub(crate) fn handle_spawn_worker(
                     cap,
                     "spawn_worker: refused, at the concurrent worker cap",
                 );
-                let _ = return_to.send(Err(format!(
-                    "worker limit reached: {live} workers are already live and the concurrent worker cap is {cap} (forge.toml [workers] max_concurrent); despawn one first, or raise/remove [workers] max_concurrent in forge.toml"
-                )));
+                let _ = return_to.send(Err(worker_limit_reached_message(live, cap)));
             }
         }
         return;
