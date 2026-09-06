@@ -4364,15 +4364,9 @@ impl Workspace {
             return Err(LiveWorkerRefusal::LabelLive(existing.session_key.clone()));
         }
         if let Some(cap) = cap {
-            // Failed entries hold no slot, matching `live_worker_with_label`.
             let live: usize = workers
                 .values()
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .filter(|w| !matches!(w.status, forge_primitives::WorkerLiveness::Failed))
-                        .count()
-                })
+                .map(|entries| entries.iter().filter(|w| w.is_live()).count())
                 .sum();
             if live >= cap {
                 return Err(LiveWorkerRefusal::AtCap { live, cap });

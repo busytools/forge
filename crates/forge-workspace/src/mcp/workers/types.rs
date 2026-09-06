@@ -79,6 +79,13 @@ pub struct WorkerEntry {
 }
 
 impl WorkerEntry {
+    /// Live in the label-gate and cap-count sense: not `Failed`. Both
+    /// rules must agree on this, or a respawnable label still eats a
+    /// cap slot.
+    pub(crate) fn is_live(&self) -> bool {
+        !matches!(self.status, WorkerLiveness::Failed)
+    }
+
     /// Project the workspace-internal entry to the wire shape.
     /// `session_id` is the worker's claude-issued session UUID (=
     /// `session_key.as_str().to_owned()` once Connected).
@@ -114,7 +121,7 @@ pub(crate) fn live_worker_with_label<'a>(
     entries: &'a [WorkerEntry],
     label: &str,
 ) -> Option<&'a WorkerEntry> {
-    entries.iter().find(|w| w.label == label && !matches!(w.status, WorkerLiveness::Failed))
+    entries.iter().find(|w| w.label == label && w.is_live())
 }
 
 #[cfg(test)]

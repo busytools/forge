@@ -2294,11 +2294,7 @@ max_concurrent = {limit}
         }
         assert!(winners >= 1, "the first arrival always gets the free slot");
         let project = seeded_project(&workspace);
-        let live = workspace
-            .list_live_workers(&project)
-            .iter()
-            .filter(|w| !matches!(w.status, forge_primitives::WorkerLiveness::Failed))
-            .count();
+        let live = workspace.list_live_workers(&project).iter().filter(|w| w.is_live()).count();
         assert!(live <= 1, "no overshoot past the cap; got {live} live workers");
         // Release closes each winner's Command channel, so the
         // SessionTask's disconnect() reaps the client; kill_on_drop is
