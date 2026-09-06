@@ -2330,6 +2330,37 @@ max_concurrent = {limit}
         assert!(reply.is_ok(), "the freed slot lets the next spawn through: {:?}", reply.err());
     }
 
+    /// A `Failed` worker holds no cap slot, matching the label-dedup
+    /// which already treats `Failed` as not-live. One connection
+    /// failure must not wedge every later spawn until a manual despawn.
+    #[tokio::test]
+    async fn a_failed_worker_does_not_consume_a_cap_slot() {
+        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let project = seeded_project(&workspace);
+        let mut failed = fake_worker_entry("dead", "dead-1");
+        failed.status = forge_primitives::WorkerLiveness::Failed;
+        workspace.insert_live_worker(&project, failed);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project,
+            "fresh",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("reply");
+        assert!(reply.is_ok(), "the Failed worker must not consume the slot: {:?}", reply.err());
+        if let Ok(reply) = reply {
+            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+        }
+    }
+
     /// `handle_close_worker` removes the worker entry, releases the
     /// session, and emits `WorkerStatusChanged { Removed }`. The
     /// label-targeting picks the latest-spawned duplicate.
