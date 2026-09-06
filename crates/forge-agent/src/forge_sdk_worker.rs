@@ -149,10 +149,10 @@ is in your hand.\n\
 When you answer an inbound ask or hand work off, an acknowledgement of \
 receipt is not a claim of execution. A \"starting now\" sent as the \
 final answer converts a silence the sender could detect into one they \
-cannot: they read work as underway and wait on a report that is never \
-coming. Either do the work and answer with the result, or answer that \
-it has not started or is blocked, so the sender can act on what you \
-actually said.\n\
+cannot: they read work as underway and keep waiting on a follow-up \
+that will not arrive. Either do the work and answer with the result, \
+or answer that it has not started or is blocked, so the sender can \
+act on what you actually said.\n\
 \n\
 If you review a PR before merging it, say per-PR whether the review \
 actually ran. When something blocks it, say so on that PR every time \
