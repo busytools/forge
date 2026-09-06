@@ -4308,6 +4308,92 @@ mod error_message_tests {
 }
 
 #[cfg(test)]
+mod turn_end_context_usage_tests {
+    //! Turn end is the only context-usage poll trigger a submit
+    //! produces - the Result frame on the success path, the error
+    //! handler otherwise. The CLI answers `get_context_usage` inside
+    //! its single stdin pump, so the request must not sit in the
+    //! pipe while the finalizing turn's hooks need the pump. One
+    //! exception: a queued submit reopened at turn end can start its
+    //! own turn while that poll is still in flight. The success-path
+    //! refresh still feeds the footer bar below
+    //! CONTEXT_USAGE_TOKEN_GATE; at or above it the poll is
+    //! gate-skipped by design.
+    use super::handle_sdk_message;
+    use crate::app::App;
+    use forge_primitives::Message;
+
+    fn result_message(session_id: &str) -> Message {
+        Message::Result {
+            subtype: "success".to_owned(),
+            session_id: session_id.to_owned(),
+            is_error: false,
+            num_turns: 1,
+            duration_ms: 0,
+            duration_api_ms: 0,
+            stop_reason: Some("end_turn".to_owned()),
+            total_cost_usd: None,
+            usage: None,
+            result: None,
+            structured_output: None,
+            model_usage: None,
+            permission_denials: None,
+            errors: None,
+            uuid: None,
+            terminal_reason: None,
+        }
+    }
+
+    fn app_with_connection()
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
+        let mut app = App::test_default();
+        let rx = app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        (app, rx)
+    }
+
+    #[test]
+    fn result_refreshes_context_usage_exactly_once() {
+        let (mut app, mut rx) = app_with_connection();
+
+        handle_sdk_message(&mut app, result_message("session-1"));
+
+        let envelope = rx.try_recv().expect("turn end should poll context usage");
+        assert!(
+            matches!(
+                envelope,
+                forge_primitives::AgentCommand::GetContextUsage { ref session_id }
+                    if session_id == "session-1"
+            ),
+            "expected GetContextUsage, got {envelope:?}",
+        );
+        assert!(rx.try_recv().is_err(), "turn end must not send a second get_context_usage");
+    }
+
+    /// The turn-end send must take the gated auto path, not the
+    /// forced one: above `CONTEXT_USAGE_TOKEN_GATE` the poll skips
+    /// itself, which is the large-transcript population the pump
+    /// wedge is about. A swap to the forced refresh would silently
+    /// reintroduce it.
+    #[test]
+    fn result_above_the_token_gate_sends_no_poll() {
+        let (mut app, mut rx) = app_with_connection();
+        {
+            let usage = app.session_usage_mut();
+            usage.context_usage_percent = Some(60);
+            usage.context_max_tokens = Some(1_000_000);
+        }
+
+        handle_sdk_message(&mut app, result_message("session-1"));
+
+        assert!(
+            rx.try_recv().is_err(),
+            "above the token gate the turn-end poll must be gate-skipped"
+        );
+    }
+}
+
+#[cfg(test)]
 mod finalize_open_tool_calls_tests {
     //! The turn-end sweep force-completes lingering tool calls, EXCEPT
     //! persistent monitors and backgrounded tasks the CLI still lists as
