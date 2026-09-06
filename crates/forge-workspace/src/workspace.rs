@@ -375,6 +375,7 @@ pub(crate) struct PooledAgent {
 /// Why `insert_live_worker_if_label_absent` refused an insert. Decided
 /// under the same lock acquisition as the insert, so the refusal and
 /// the pool state can never disagree.
+#[derive(Debug)]
 pub enum LiveWorkerRefusal {
     /// A live (non-`Failed`) worker already holds the label.
     LabelLive(SessionKey),

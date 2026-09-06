@@ -2192,13 +2192,57 @@ max_concurrent = {limit}
         );
     }
 
-    /// Parallel spawns cannot overshoot the cap: eight concurrent
-    /// lead-driven spawns at cap 1 land exactly one worker, and every
-    /// loser is told the cap is why. Pins the cap check + insert being
-    /// one critical section - dispatched spawns run inline on their
-    /// caller's task, so nothing serializes them but this.
+    /// The atomicity pin, at the layer it lives: concurrent
+    /// `insert_live_worker_if_label_absent` calls at cap 1 admit
+    /// exactly one and refuse the rest, whatever order the lock grants.
+    /// Direct inserts, so no spawn machinery can retire an entry
+    /// mid-race. A barrier releases all callers at once; the count only
+    /// stays at 1 if the cap check and the push share the lock.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_spawns_at_the_cap_land_exactly_one_worker() {
+    async fn concurrent_cap_gate_admits_exactly_one() {
+        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let project = seeded_project(&workspace);
+        let barrier = Arc::new(tokio::sync::Barrier::new(32));
+
+        let mut handles = Vec::new();
+        for n in 0..32 {
+            let workspace = Arc::clone(&workspace);
+            let project = project.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let entry = fake_worker_entry(&format!("w{n}"), &format!("w{n}-session"));
+                workspace.insert_live_worker_if_label_absent(&project, entry, Some(1))
+            }));
+        }
+
+        let mut admitted = 0;
+        let mut refused = 0;
+        for handle in handles {
+            match handle.await.expect("insert task joins") {
+                Ok(()) => admitted += 1,
+                Err(LiveWorkerRefusal::AtCap { live, cap }) => {
+                    refused += 1;
+                    assert_eq!((live, cap), (1, 1), "the refusal names the count and the cap");
+                }
+                Err(other) => panic!("no label collisions at distinct labels: {other:?}"),
+            }
+        }
+        assert_eq!(admitted, 1, "exactly one insert wins the cap");
+        assert_eq!(refused, 31, "every other insert is refused by the cap");
+        assert_eq!(workspace.list_live_workers(&project).len(), 1);
+    }
+
+    /// The same gate through the full handler: eight concurrent
+    /// lead-driven spawns at cap 1, and the live (non-`Failed`) count
+    /// never exceeds 1.
+    ///
+    /// Deliberately NOT "exactly one Ok": a winner whose subprocess
+    /// dies asynchronously is transitioned to `Failed` by the
+    /// spawn-failure handler, which frees its slot for a queued spawn -
+    /// the count invariant survives, the reply count does not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_spawns_keep_the_live_count_under_the_cap() {
         let (workspace, _config_dir) = stub_with_worker_limit(1);
 
         let mut handles = Vec::new();
@@ -2224,7 +2268,6 @@ max_concurrent = {limit}
         }
 
         let mut winners = 0;
-        let mut cap_refusals = 0;
         let mut winner_sessions = Vec::new();
         for handle in handles {
             match handle.await.expect("spawn task joins") {
@@ -2235,16 +2278,19 @@ max_concurrent = {limit}
                 Err(message) => {
                     assert!(
                         message.contains("worker limit reached"),
-                        "a loser names the cap: {message}"
+                        "the only refusal is the cap, never a collision or other error: {message}"
                     );
-                    cap_refusals += 1;
                 }
             }
         }
-        assert_eq!(winners, 1, "exactly one spawn wins the cap slot");
-        assert_eq!(cap_refusals, 7, "every other spawn is refused by the cap");
+        assert!(winners >= 1, "the first arrival always gets the free slot");
         let project = seeded_project(&workspace);
-        assert_eq!(workspace.list_live_workers(&project).len(), 1, "no overshoot past the cap");
+        let live = workspace
+            .list_live_workers(&project)
+            .iter()
+            .filter(|w| !matches!(w.status, forge_primitives::WorkerLiveness::Failed))
+            .count();
+        assert!(live <= 1, "no overshoot past the cap; got {live} live workers");
         // Release the winner so its dispatcher never gets far enough to
         // exec a claude subprocess this test would leave behind.
         for session in winner_sessions {
