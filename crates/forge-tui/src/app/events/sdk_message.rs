@@ -4369,6 +4369,28 @@ mod turn_end_context_usage_tests {
         );
         assert!(rx.try_recv().is_err(), "turn end must not send a second get_context_usage");
     }
+
+    /// The turn-end send must take the gated auto path, not the
+    /// forced one: above `CONTEXT_USAGE_TOKEN_GATE` the poll skips
+    /// itself, which is the large-transcript population the pump
+    /// wedge is about. A swap to the forced refresh would silently
+    /// reintroduce it.
+    #[test]
+    fn result_above_the_token_gate_sends_no_poll() {
+        let (mut app, mut rx) = app_with_connection();
+        {
+            let usage = app.session_usage_mut();
+            usage.context_usage_percent = Some(60);
+            usage.context_max_tokens = Some(1_000_000);
+        }
+
+        handle_sdk_message(&mut app, result_message("session-1"));
+
+        assert!(
+            rx.try_recv().is_err(),
+            "above the token gate the turn-end poll must be gate-skipped"
+        );
+    }
 }
 
 #[cfg(test)]
