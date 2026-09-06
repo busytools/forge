@@ -3126,6 +3126,7 @@ impl Workspace {
                     resume_existing,
                     kick,
                     interactive,
+                    from_boot_respawn,
                     return_to,
                 } => {
                     let span = tracing::info_span!(
@@ -3145,6 +3146,7 @@ impl Workspace {
                         resume_existing,
                         kick,
                         interactive,
+                        from_boot_respawn,
                         return_to,
                     );
                 }
@@ -3356,6 +3358,7 @@ impl Workspace {
                 resume_existing,
                 kick,
                 interactive: worker.interactive,
+                from_boot_respawn: true,
                 return_to: tx,
             };
             if let Err(err) = self.dispatch(cmd) {
@@ -3632,6 +3635,12 @@ impl Workspace {
         project_key: &ProjectKey,
     ) -> Vec<crate::mcp::workers::types::WorkerEntry> {
         self.live_workers.lock().get(project_key).cloned().unwrap_or_default()
+    }
+
+    /// Live dynamic workers across every project - the count the
+    /// `[workers] max_concurrent` cap is measured against.
+    pub(crate) fn total_live_worker_count(&self) -> usize {
+        self.live_workers.lock().values().map(Vec::len).sum()
     }
 
     /// Every live worker's liveness, keyed by project.

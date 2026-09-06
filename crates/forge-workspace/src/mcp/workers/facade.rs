@@ -485,6 +485,7 @@ impl WorkerFacade for ProdWorkerFacade {
             resume_existing: None,
             kick,
             interactive,
+            from_boot_respawn: false,
             return_to: tx,
         };
         if let Err(err) = ws.dispatch(cmd) {

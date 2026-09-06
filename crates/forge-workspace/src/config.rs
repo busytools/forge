@@ -58,6 +58,10 @@ struct ForgeToml {
     /// Absent section → all defaults, which leaves auto-update off.
     #[serde(default)]
     plugins: PluginSettings,
+    /// Optional `[workers]` section - the dynamic-worker concurrency
+    /// cap. Absent section → all defaults.
+    #[serde(default)]
+    workers: WorkerSettings,
     /// Optional top-level `[env]` table - the BASE every session
     /// starts from, overridden per key by `[accounts.env]` and then by
     /// `[projects.<name>.env]`. Merged into `LoadedAccount.env` at
@@ -173,6 +177,32 @@ pub struct PluginSettings {
     pub auto_update: bool,
 }
 
+/// Cap on concurrently live dynamic workers when `[workers]
+/// max_concurrent` is absent.
+const DEFAULT_MAX_CONCURRENT_WORKERS: usize = 2;
+
+fn default_max_concurrent_workers() -> usize {
+    DEFAULT_MAX_CONCURRENT_WORKERS
+}
+
+/// The `[workers]` section. Unknown fields are rejected so a mistyped
+/// key cannot silently leave the concurrency cap at its default.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerSettings {
+    /// Cap on dynamic workers live at once, across every project. A
+    /// spawn over the cap errors instead of queuing; a boot-time
+    /// respawn of persisted workers is exempt. Default 2.
+    #[serde(default = "default_max_concurrent_workers")]
+    pub max_concurrent: usize,
+}
+
+impl Default for WorkerSettings {
+    fn default() -> Self {
+        Self { max_concurrent: DEFAULT_MAX_CONCURRENT_WORKERS }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
@@ -195,6 +225,9 @@ pub(crate) struct LoadedConfig {
     /// `[plugins]` section knobs. Absent section means auto-update is
     /// off.
     pub plugins: PluginSettings,
+    /// `[workers]` section knobs. Absent section means the worker cap
+    /// sits at its default.
+    pub workers: WorkerSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -272,6 +305,7 @@ impl LoadedConfig {
             dictate: crate::dictate::DictateSettings::default(),
             gotify: None,
             plugins: PluginSettings::default(),
+            workers: WorkerSettings::default(),
         }
     }
 }
@@ -515,6 +549,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         dictate: parsed.dictate,
         gotify: parsed.gotify,
         plugins: parsed.plugins,
+        workers: parsed.workers,
     })
 }
 
@@ -1564,6 +1599,38 @@ provider = "anthropic"
         );
         let error = load_from_dir(dir.path()).expect_err("unknown key must fail loudly");
         assert!(error.to_string().contains("trust_markets"), "names the key: {error}");
+    }
+
+    #[test]
+    fn the_workers_section_reaches_the_loaded_config() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &format!("{}\n[workers]\nmax_concurrent = 3\n", minimal_config()));
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.workers.max_concurrent, 3);
+    }
+
+    #[test]
+    fn absent_workers_section_caps_at_the_default() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.workers.max_concurrent, 2);
+    }
+
+    #[test]
+    fn a_workers_section_without_the_key_caps_at_the_default() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &format!("{}\n[workers]\n", minimal_config()));
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.workers.max_concurrent, 2);
+    }
+
+    #[test]
+    fn an_unknown_workers_key_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &format!("{}\n[workers]\nmax_workers = 3\n", minimal_config()));
+        let error = load_from_dir(dir.path()).expect_err("unknown key must fail loudly");
+        assert!(error.to_string().contains("max_workers"), "names the key: {error}");
     }
 
     #[test]

@@ -315,6 +315,12 @@ pub enum Command {
         /// tool. Read from the persisted row on a re-spawn, so it
         /// survives a forge restart.
         interactive: bool,
+        /// True only for boot/reconnect re-spawns of persisted
+        /// workers, which bypass the `[workers] max_concurrent` cap:
+        /// they restore state the user already had, and their reply is
+        /// dropped, so a refusal there would strand rows with no
+        /// caller to hear it.
+        from_boot_respawn: bool,
         return_to: oneshot::Sender<Result<WorkerSpawnReply, String>>,
     },
     /// Close (terminate agent + remove from `live_workers`) the
