@@ -1427,6 +1427,10 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Running;
         assert!(!super::build_base_spinner(&app).live_turn_running, "no turn opened yet, no clock");
+        assert!(
+            super::build_base_spinner(&app).show_thinking,
+            "status Running alone keeps the mid-turn spinner on body-bearing messages"
+        );
         app.start_live_turn(std::time::Instant::now());
         assert!(
             super::build_base_spinner(&app).live_turn_running,
