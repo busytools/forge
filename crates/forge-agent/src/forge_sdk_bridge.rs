@@ -715,6 +715,7 @@ impl ForgeSdkBridge {
                 Err(_) => {
                     tracing::warn!(
                         target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        session_id = %session_id,
                         "context usage probe timed out; skipping this poll",
                     );
                     return Ok(());
