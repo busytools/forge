@@ -4309,13 +4309,14 @@ mod error_message_tests {
 
 #[cfg(test)]
 mod turn_end_context_usage_tests {
-    //! The Result frame is the only context-usage poll trigger a
-    //! submit produces: the CLI answers `get_context_usage` inside
+    //! Turn end is the only context-usage poll trigger a submit
+    //! produces - the Result frame on the success path, the error
+    //! handler otherwise. The CLI answers `get_context_usage` inside
     //! its single stdin pump, so the request must not sit in the
     //! pipe while the finalizing turn's hooks need the pump. One
     //! exception: a queued submit reopened at turn end can start its
-    //! own turn while that poll is still in flight. The turn-end
-    //! refresh on the success path still feeds the footer bar below
+    //! own turn while that poll is still in flight. The success-path
+    //! refresh still feeds the footer bar below
     //! CONTEXT_USAGE_TOKEN_GATE; at or above it the poll is
     //! gate-skipped by design.
     use super::handle_sdk_message;
