@@ -152,7 +152,7 @@ CLAUDE_CODE_AUTO_COMPACT_WINDOW = "950000"
 
 ## `[projects.<name>]`
 
-Per-project environment, keyed by a project's `name`. Unlike the
+Per-project settings, keyed by a project's `name`. Unlike the
 top-level tables, this one rejects unknown fields, so a mistyped inner
 table fails the load loudly instead of quietly applying nothing.
 
@@ -160,6 +160,7 @@ table fails the load loudly instead of quietly applying nothing.
 |---|---|---|---|
 | `env` | table | `{}` | Written as `[projects.<name>.env]`. |
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
+| `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. |
 
 A `[projects.<name>]` block naming a project that no
 `[[orgs.projects]]` declares fails the load, and the error lists the
@@ -310,24 +311,12 @@ Like `[dictate]`, an unrecognised key here fails the load rather than
 being ignored. Keys an older forge read here (`trusted_marketplaces`,
 `pins`) are rejected the same way: remove them.
 
-## `[workers]`
-
-Optional. Absent means the dynamic-worker concurrency cap sits at its
-default.
-
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `max_concurrent` | integer | `2` | Cap on dynamic workers live at once, across every project. A spawn over the cap errors instead of queuing; despawning a worker frees its slot for the next spawn. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. |
-
-Like `[plugins]`, an unrecognised key here fails the load rather than
-being ignored.
-
 ## Unknown keys
 
 The top-level document does not reject unknown tables, so a section
 forge no longer reads is ignored rather than failing the load. The
 places that do reject unknown fields are `[[accounts]]`,
-`[projects.<name>.env]`, `[dictate]`, `[plugins]` and `[workers]`.
+`[projects.<name>]`, `[dictate]` and `[plugins]`.
 
 ## A complete example
 
@@ -380,8 +369,9 @@ experimental = true
   ANTHROPIC_BASE_URL = "http://localhost:18765"
   ANTHROPIC_AUTH_TOKEN = "unused"
 
-# Per-project env, keyed by the project's `name`.
+# Per-project settings, keyed by the project's `name`.
 [projects.service]
+max_workers = 4
 env_file = "~/.config/service/secrets.env"
 
   [projects.service.env]
@@ -402,9 +392,6 @@ client_token = "CxxxxxxxxxxxxxxxA"
 
 [plugins]
 auto_update = true
-
-[workers]
-max_concurrent = 3
 ```
 
 ## What forge does at startup

@@ -379,8 +379,8 @@ pub(crate) struct PooledAgent {
 pub enum LiveWorkerRefusal {
     /// A live (non-`Failed`) worker already holds the label.
     LabelLive(SessionKey),
-    /// The `[workers] max_concurrent` cap is reached: `live` workers
-    /// are up against a cap of `cap`.
+    /// The project's worker cap is reached: `live` workers are up
+    /// against a cap of `cap`.
     AtCap { live: usize, cap: usize },
 }
 
@@ -4340,17 +4340,17 @@ impl Workspace {
 
     /// Insert `entry` only if no live (non-`Failed`) worker already holds
     /// its label in `project_key`, and - when `cap` is `Some` - only if
-    /// the live worker count is under it. Holds `live_workers.lock()`
-    /// across the label-check, the cap-check AND the push, so two
-    /// genuinely-concurrent SpawnWorker dispatches (a reconnect re-spawn
-    /// racing a manual `workers__spawn`, say) can't both pass a
-    /// check-then-insert window and fork two subprocesses onto one
-    /// worktree or overshoot the cap. The label check precedes the cap
-    /// check, so a duplicate-label spawn at the cap reports the
+    /// that project's live worker count is under it. Holds
+    /// `live_workers.lock()` across the label-check, the cap-check AND
+    /// the push, so two genuinely-concurrent SpawnWorker dispatches (a
+    /// reconnect re-spawn racing a manual `workers__spawn`, say) can't
+    /// both pass a check-then-insert window and fork two subprocesses
+    /// onto one worktree or overshoot the cap. The label check precedes
+    /// the cap check, so a duplicate-label spawn at the cap reports the
     /// collision. `cap: None` is the boot re-spawn exemption. Returns
     /// `Ok(())` on insert. This is the sole enforcement point for the
-    /// at-most-one-live-worker-per-label invariant and the
-    /// `[workers] max_concurrent` cap.
+    /// at-most-one-live-worker-per-label invariant and the per-project
+    /// worker cap.
     pub fn insert_live_worker_if_label_absent(
         &self,
         project_key: &ProjectKey,
@@ -4364,10 +4364,9 @@ impl Workspace {
             return Err(LiveWorkerRefusal::LabelLive(existing.session_key.clone()));
         }
         if let Some(cap) = cap {
-            let live: usize = workers
-                .values()
-                .map(|entries| entries.iter().filter(|w| w.is_live()).count())
-                .sum();
+            let live = workers
+                .get(project_key)
+                .map_or(0, |entries| entries.iter().filter(|w| w.is_live()).count());
             if live >= cap {
                 return Err(LiveWorkerRefusal::AtCap { live, cap });
             }
@@ -5881,6 +5880,7 @@ impl Workspace {
             accounts: vec!["acct-a".to_owned()],
             auto_start: false,
             env: std::collections::HashMap::new(),
+            max_workers: None,
         });
     }
 
