@@ -8,31 +8,26 @@
 //! quoting shape, so re-introducing the pattern fails CI here instead
 //! of writing to a live profile.
 
-use std::path::{Path, PathBuf};
-
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(err) => panic!("walking the workspace crates/ tree: {err}"),
-    };
-    for entry in entries {
-        let Ok(entry) = entry else { panic!("unreadable entry under {}", dir.display()) };
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
+use std::path::PathBuf;
 
 #[test]
 fn no_fixture_config_dir_resolves_into_the_home_directory() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let crates_dir = manifest_dir.parent().expect("crates/ sits beside the manifest").to_owned();
+    let crates_dir = manifest_dir.parent().expect("crates/ sits beside the manifest");
 
     let mut files = Vec::new();
-    collect_rs_files(&crates_dir, &mut files);
+    let mut stack = vec![crates_dir];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).expect("walking the workspace crates/ tree");
+        for entry in entries {
+            let path = entry.expect("readable dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
     assert!(
         files.len() > 100,
         "walked an implausibly small tree ({} files); the walk is broken",
