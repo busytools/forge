@@ -431,9 +431,11 @@ pub fn completed_agent_worktree(
     Some(AgentWorktree { path, repo_root, branch })
 }
 
-/// First string value under `key` in a pre-order walk, depth-capped.
-/// String content is never searched, so a result text quoting
-/// `worktreePath:` cannot aim the reap.
+/// First string value under `key` in a pre-order walk. The walk is
+/// depth-capped at 6: the captured shape is flat and top-level, so a
+/// deeper field is treated as absent (surfaced by the caller's
+/// parse-miss log, never guessed at). String content is never searched,
+/// so a result text quoting `worktreePath:` cannot aim the reap.
 fn find_string_field(value: &serde_json::Value, key: &str, depth: u8) -> Option<String> {
     if depth > 6 {
         return None;
@@ -1363,8 +1365,9 @@ mod tests {
         }
     }
 
-    /// The reap counts on the parser's layout guard for its repo root, so
-    /// the response walk must find the field wherever the CLI nests it.
+    /// The reap counts on the parser's layout guard for its repo root,
+    /// so the response walk must find the field at a shallow nesting
+    /// (depth cap 6); a deeper shape degrades to the parse-miss log.
     #[test]
     fn completed_agent_worktree_walks_nested_response_objects() {
         let response = serde_json::json!({
