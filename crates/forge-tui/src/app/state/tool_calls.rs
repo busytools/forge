@@ -724,7 +724,6 @@ mod tests {
                     frame,
                     ratatui::layout::Rect::new(0, 0, width, height),
                     app,
-                    &[],
                 );
             })
             .expect("draw");
