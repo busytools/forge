@@ -52,7 +52,7 @@ impl Recording {
     /// Channels are averaged rather than one being chosen: discarding a
     /// capsule silently halves the signal on hardware where the speaker
     /// sits nearer one of them.
-    fn push(&self, block: &[f32], channels: usize, limit: usize) {
+    pub(crate) fn push(&self, block: &[f32], channels: usize, limit: usize) {
         debug_assert!(
             channels > 0 && block.len().is_multiple_of(channels),
             "interleaved audio must divide evenly into frames"
@@ -121,6 +121,33 @@ impl Recording {
 
     pub(crate) fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the recording has been asked to stop. Test seam: the
+    /// feeding microphone in `test_support` polls it between chunks.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub(crate) fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    /// Samples currently held. The append-only buffer keeps written
+    /// ranges stable, so a segmenter can cut by offset while the
+    /// callback keeps appending past them.
+    pub(crate) fn sample_len(&self) -> usize {
+        self.samples.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+    }
+
+    /// Copy `[from..to)` out without draining. The recording keeps the
+    /// whole take so finish can hand diagnostics the full capture, and
+    /// so an offset that raced a stop is a short copy, not a panic.
+    /// The lock is held for the memcpy only - long enough to be felt in
+    /// a callback budget if it happened every block, which it does not:
+    /// this runs once per window boundary, every 30 to 60 seconds.
+    pub(crate) fn copy_region(&self, from: usize, to: usize) -> Vec<f32> {
+        let samples = self.samples.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let to = to.min(samples.len());
+        let from = from.min(to);
+        samples[from..to].to_vec()
     }
 
     pub(crate) fn take(&self) -> Vec<f32> {
@@ -219,8 +246,13 @@ const CAP_CEILING: usize = SAMPLE_RATE as usize * 3600;
 /// The body a capture thread runs: open the input, record into `shared`
 /// until stopped or capped, answer `ready` either way. The engine holds
 /// one, so a test can stand in a recorder that never touches hardware.
-pub(crate) type Recorder =
-    fn(&Arc<Recording>, Duration, Option<&str>, &std::sync::mpsc::Sender<Result<(), Error>>);
+/// A boxed closure rather than a fn pointer so a stand-in can carry the
+/// samples it feeds.
+pub(crate) type Recorder = Arc<
+    dyn Fn(&Arc<Recording>, Duration, Option<&str>, &std::sync::mpsc::Sender<Result<(), Error>>)
+        + Send
+        + Sync,
+>;
 
 /// Open the default input and record until asked to stop or until
 /// `max_capture` elapses.

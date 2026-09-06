@@ -226,10 +226,11 @@ pub(crate) struct DictateIndicator {
     /// resolver for a smaller number belongs to an older take of the
     /// same key and resets nothing.
     pub(crate) generation: u64,
-    /// Which window of a multi-window take is decoding, as (window,
-    /// total). `None` while recording and for single-window takes,
-    /// which render as they always have.
-    pub(crate) progress: Option<(usize, usize)>,
+    /// How many of the take's segments have settled, as
+    /// `(done, total)`. `total` is `None` while the recording is still
+    /// open and the final count after the stop; `None` overall while
+    /// nothing has settled yet.
+    pub(crate) progress: Option<(usize, Option<usize>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,14 +271,12 @@ impl DictateIndicator {
         self.phase = DictatePhase::Transcribing;
     }
 
-    /// A window of a multi-window take started decoding. A step from a
-    /// smaller total belongs to an older take and must not shrink the
-    /// counter; only a matching generation passes the caller's guard,
-    /// so this simply records what arrived.
-    pub(crate) fn set_progress(&mut self, window: usize, total: usize) {
-        if total > 1 {
-            self.progress = Some((window, total));
-        }
+    /// A segment of the take settled. Steps arrive while the recording
+    /// is still open with no total, and again after the stop with the
+    /// final count; only a matching generation passes the caller's
+    /// guard, so this simply records what arrived.
+    pub(crate) fn set_progress(&mut self, done: usize, total: Option<usize>) {
+        self.progress = Some((done, total));
     }
 
     /// The mm:ss figure the status row shows: live while recording,
@@ -585,10 +584,13 @@ fn status_row(
     let dot_glyph = if recording { "\u{25cf}" } else { "\u{25cc}" };
     let dot_base = if recording { ORANGE } else { BLUE };
     let timer_text = format_clock(indicator.take_elapsed());
-    let label = match (recording, indicator.progress) {
+    let label = match (recording, indicator.progress.as_ref()) {
+        (true, Some((done, _))) if *done > 0 => format!("listening \u{b7} {done} ready "),
         (true, _) => "listening ".to_owned(),
-        (false, Some((window, total))) => format!("transcribing {window}/{total} "),
-        (false, None) => "transcribing ".to_owned(),
+        (false, Some((done, Some(total)))) if *total > 1 => {
+            format!("transcribing {done}/{total} ")
+        }
+        (false, _) => "transcribing ".to_owned(),
     };
     let esc = "esc cancel";
     // The dB figure the caret spot used to carry: its text is the 5 Hz
@@ -991,17 +993,16 @@ mod tests {
         assert_eq!(indicator.take_elapsed(), frozen, "transcription holds the take length still");
     }
 
-    /// The window counter follows the take: the engine sends steps in
-    /// decode order, and the row shows the one that arrived last.
+    /// The segment counter follows the take: the engine sends steps as
+    /// segments settle, and the row shows the one that arrived last.
     #[test]
     fn the_window_counter_advances_with_the_take() {
         let mut indicator = DictateIndicator::recording(-50.0, 1);
-        indicator.begin_transcribing();
-        indicator.set_progress(1, 6);
-        indicator.set_progress(2, 6);
-        assert_eq!(indicator.progress, Some((2, 6)), "the counter shows the newest step");
-        indicator.set_progress(3, 6);
-        assert_eq!(indicator.progress, Some((3, 6)), "k advances to N with no resets");
+        indicator.set_progress(1, None);
+        indicator.set_progress(2, None);
+        assert_eq!(indicator.progress, Some((2, None)), "the counter shows the newest step");
+        indicator.set_progress(3, Some(6));
+        assert_eq!(indicator.progress, Some((3, Some(6))), "the total lands at the stop");
     }
 
     /// A progress step for a generation that is not this take's belongs
@@ -1016,7 +1017,12 @@ mod tests {
         );
         apply_session_update(
             &mut app,
-            SessionUpdate::DictateProgress { key: key.clone(), generation: 2, window: 2, total: 6 },
+            SessionUpdate::DictateProgress {
+                key: key.clone(),
+                generation: 2,
+                done: 2,
+                total: Some(6),
+            },
         );
         let progress = {
             let bucket = app.session_mut(&key).expect("bucket");
@@ -1028,13 +1034,18 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            SessionUpdate::DictateProgress { key: key.clone(), generation: 1, window: 2, total: 6 },
+            SessionUpdate::DictateProgress {
+                key: key.clone(),
+                generation: 1,
+                done: 2,
+                total: Some(6),
+            },
         );
         let progress = {
             let bucket = app.session_mut(&key).expect("bucket");
             bucket.dictate.as_ref().expect("take").progress
         };
-        assert_eq!(progress, Some((2, 6)), "the matching generation lands");
+        assert_eq!(progress, Some((2, Some(6))), "the matching generation lands");
     }
 
     #[test]

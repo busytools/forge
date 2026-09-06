@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, Once, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -50,13 +50,16 @@ pub struct Stages {
     pub audio: Duration,
 }
 
-/// Which window of a take is decoding, for a host that shows
-/// transcription progress over a multi-window take. `window` counts
-/// from 1; a single-window take reports once, at 1 of 1.
+/// How far a take's transcription has got, for a host that shows
+/// progress while the recording runs. `done` counts the segments that
+/// have settled, in order; `total` is `None` until finish has
+/// submitted the tail, because a live recording does not know how many
+/// segments it will produce. A single-segment take reports twice at
+/// stop, at 0 of 1 and 1 of 1, and no host has to special-case it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowProgress {
-    pub window: usize,
-    pub total: usize,
+    pub done: usize,
+    pub total: Option<usize>,
 }
 
 /// Clean text, plus what it was before normalization.
@@ -163,6 +166,12 @@ fn audio_duration(samples: usize) -> Duration {
     Duration::from_micros((samples as u64).saturating_mul(1_000_000) / u64::from(SAMPLE_RATE))
 }
 
+/// Loudest sample in `pcm`, in dBFS.
+fn peak_dbfs(pcm: &[f32]) -> f32 {
+    let peak = pcm.iter().fold(0.0f32, |worst, s| worst.max(s.abs()));
+    if peak <= 0.0 { f32::NEG_INFINITY } else { 20.0 * peak.log10() }
+}
+
 /// Long takes are transcribed in windows rather than as one pass: the
 /// recognition runtime decodes a whole buffer against one encoder
 /// output, and past about two minutes the decoder derails into
@@ -190,15 +199,32 @@ const ENERGY_FRAME: usize = SAMPLE_RATE as usize / 50;
 fn window_bounds(pcm: &[f32]) -> Vec<(usize, usize)> {
     let mut bounds = Vec::new();
     let mut start = 0;
-    while pcm.len() - start > WINDOW_TARGET {
-        let lo = start + WINDOW_MIN;
-        let hi = start + WINDOW_TARGET;
-        let cut = lo + quietest_frame(&pcm[lo..hi]);
+    while let Some(cut) = next_cut(pcm, start) {
         bounds.push((start, cut));
         start = cut;
     }
     bounds.push((start, pcm.len()));
     bounds
+}
+
+/// Where the next window past `start` ends, once more than
+/// [`WINDOW_TARGET`] has accrued past it: the quietest [`ENERGY_FRAME`]
+/// block between [`WINDOW_MIN`] and [`WINDOW_TARGET`] past `start`.
+/// `None` while the region is still short.
+///
+/// This one function is the whole windowing rule, and both callers
+/// share it: whole-buffer windowing loops it over the finished take,
+/// and the live segmenter calls it as the recording grows. The cut at
+/// `start` depends only on samples up to `start + WINDOW_TARGET`, so
+/// deciding it as soon as they exist lands exactly where deciding it
+/// after the take would.
+fn next_cut(pcm: &[f32], start: usize) -> Option<usize> {
+    if pcm.len() - start <= WINDOW_TARGET {
+        return None;
+    }
+    let lo = start + WINDOW_MIN;
+    let hi = start + WINDOW_TARGET;
+    Some(lo + quietest_frame(&pcm[lo..hi]))
 }
 
 /// Sample offset of the quietest [`ENERGY_FRAME`] block by summed
@@ -263,9 +289,17 @@ struct Job {
     resample: Duration,
     audio: Duration,
     truncated: bool,
-    options: NormalizeOptions,
+    /// `Some` on a job that rewrites its own text: the direct path,
+    /// and the pipelined finalize. Pipelined segment jobs carry `None`
+    /// so their raw text joins later under one normalize pass.
+    normalize: Option<NormalizeOptions>,
+    /// Set on a pipelined finalize job: rewrite this joined text
+    /// instead of recognizing `pcm`, which is empty.
+    prejoined: Option<String>,
+    /// `false` on pipelined jobs: one take writes ONE diagnostics
+    /// record, from its segmenter at finish, not one per segment.
+    diagnose: bool,
     cancel: CancelToken,
-    progress: Option<Sender<WindowProgress>>,
     reply: Sender<Result<Outcome, Error>>,
     queued_at: Instant,
 }
@@ -313,6 +347,10 @@ pub struct Engine {
     recorder: crate::capture::Recorder,
     normalize_options: NormalizeOptions,
     silence_floor: f32,
+    /// Where take diagnostics land, if the caller pointed them
+    /// anywhere. Held here because the worker consumes the config, and
+    /// the per-take segmenter writes the record at finish.
+    diagnostics_dir: Option<PathBuf>,
     /// Set before teardown. The worker checks it between jobs, so a
     /// backlog is DISCARDED rather than drained: shutdown should not wait
     /// out work whose callers are going away with it.
@@ -364,7 +402,7 @@ impl Engine {
     /// cannot be loaded surfaces from the first [`Ticket::recv`] rather
     /// than here, because that is where it is first used.
     pub fn new(cfg: Config) -> Result<Arc<Engine>, Error> {
-        Self::with_recorder(cfg, crate::capture::record)
+        Self::with_recorder(cfg, Arc::new(crate::capture::record))
     }
 
     /// Build the engine recording through `recorder` instead of
@@ -380,6 +418,7 @@ impl Engine {
         let device = cfg.device.clone();
         let normalize_options = cfg.normalize_options;
         let silence_floor = cfg.silence_floor;
+        let diagnostics_dir = cfg.diagnostics_dir.clone();
         let stopping = Arc::new(AtomicBool::new(false));
         let in_flight: Arc<Mutex<Option<CancelToken>>> = Arc::new(Mutex::new(None));
         let readiness = Arc::new(Readiness::default());
@@ -401,6 +440,7 @@ impl Engine {
             recorder,
             normalize_options,
             silence_floor,
+            diagnostics_dir,
             stopping,
             in_flight,
             jobs: Some(jobs),
@@ -506,13 +546,19 @@ impl Engine {
         *lock = Some(holder.into());
         drop(lock);
 
+        // Resolved before the microphone claim: a take whose queue is
+        // already gone (the engine is dropping) must refuse without
+        // taking the holder slot it could not release.
+        let jobs =
+            self.jobs.as_ref().ok_or(Busy { holder: "the engine is stopping".to_owned() })?.clone();
+
         let recording =
             Arc::new(crate::capture::Recording::new(crate::capture::sample_cap(self.max_capture)));
         let (ready, started) = channel();
         let max_capture = self.max_capture;
         let shared = Arc::clone(&recording);
         let wanted = device.map(str::to_owned);
-        let record_fn = self.recorder;
+        let record_fn = Arc::clone(&self.recorder);
         let recorder = std::thread::Builder::new()
             .name("forge-dictate-mic".into())
             .spawn(move || record_fn(&shared, max_capture, wanted.as_deref(), &ready))
@@ -530,6 +576,43 @@ impl Engine {
             Err(_) => Some(Error::Capture { message: "the recorder thread did not start".into() }),
         };
 
+        // The take's segmenter: cuts windows off the recording as it
+        // grows and queues them while the microphone keeps running.
+        // Carried on `failed_to_open` like the recorder above - a take
+        // whose segmenter did not start can never resolve, so the
+        // capture is refused, not degraded.
+        let (finish_tx, finish_rx) = channel::<FinishTake>();
+        let (answer_tx, answer_rx) = channel();
+        let (progress_tx, progress_rx) = channel();
+        let cancel = CancelToken::new();
+        let take = TakeShared { cancel: cancel.clone(), answer: answer_tx, progress: progress_tx };
+        let segmenter = std::thread::Builder::new()
+            .name("forge-dictate-take".into())
+            .spawn({
+                let state = TakeSegmenter {
+                    recording: Arc::clone(&recording),
+                    jobs,
+                    silence_floor: self.silence_floor,
+                    diagnostics_dir: self.diagnostics_dir.clone(),
+                    take,
+                    last_cut: 0,
+                    cuts: Vec::new(),
+                    parts: Vec::new(),
+                    pending: Vec::new(),
+                    settled: 0,
+                    first_queued_at: None,
+                    first_settled_at: None,
+                    failed: None,
+                };
+                move || state.run(&finish_rx)
+            })
+            .ok();
+        let failed_to_open = failed_to_open.or({
+            segmenter
+                .is_none()
+                .then(|| Error::Capture { message: "the take segmenter did not start".into() })
+        });
+
         Ok(Capture {
             holder: Arc::clone(&self.holder),
             engine: Arc::clone(self),
@@ -537,6 +620,11 @@ impl Engine {
             recorder,
             max_capture,
             failed_to_open,
+            segmenter,
+            finish_tx: Some(finish_tx),
+            answer_rx: Some(answer_rx),
+            progress_rx: Some(progress_rx),
+            cancel,
         })
     }
 
@@ -550,17 +638,16 @@ impl Engine {
     ) -> Result<Ticket, Error> {
         let queued_at = Instant::now();
         let (reply, answer) = channel();
-        let (progress_tx, progress_rx) = channel();
         let cancel = CancelToken::new();
 
         // Silence is a property of the samples, so it is decided here
         // rather than on the worker: a quiet capture needs no weights,
         // should not load any, and should not queue behind a backlog.
-        let peak = Self::peak_dbfs(&pcm);
+        let peak = peak_dbfs(&pcm);
         let audio = audio_duration(pcm.len());
         if peak < self.silence_floor {
             let _ = reply.send(Ok(Outcome::NoAudio { peak, audio }));
-            return Ok(Ticket { answer, cancel, progress: None });
+            return Ok(Ticket { answer, cancel, segmenter: None });
         }
 
         self.jobs
@@ -571,20 +658,15 @@ impl Engine {
                 resample,
                 audio,
                 truncated,
-                options,
+                normalize: Some(options),
+                prejoined: None,
+                diagnose: true,
                 cancel: cancel.clone(),
-                progress: Some(progress_tx),
                 reply,
                 queued_at,
             })
             .map_err(|_| Error::EngineStopped)?;
-        Ok(Ticket { answer, cancel, progress: Some(progress_rx) })
-    }
-
-    /// Loudest sample in `pcm`, in dBFS.
-    fn peak_dbfs(pcm: &[f32]) -> f32 {
-        let peak = pcm.iter().fold(0.0f32, |worst, s| worst.max(s.abs()));
-        if peak <= 0.0 { f32::NEG_INFINITY } else { 20.0 * peak.log10() }
+        Ok(Ticket { answer, cancel, segmenter: None })
     }
 }
 
@@ -594,6 +676,34 @@ impl Engine {
 pub struct Busy {
     /// Label the current holder passed to [`Engine::try_capture`].
     pub holder: String,
+}
+
+/// The polling view of a live capture: the level read and the cap
+/// flag, over a shared handle to the recording. `Sync` and `Send`, so
+/// an async host can hold it across await points.
+pub struct CaptureMeter {
+    recording: Arc<crate::capture::Recording>,
+}
+
+impl CaptureMeter {
+    /// Loudest input since the last read, in dBFS. Take-and-reset, as
+    /// [`Capture::level`] - the handle shares the recording's
+    /// accumulator, so exactly one poller should read it.
+    pub fn level(&self) -> f32 {
+        self.recording.peak_dbfs()
+    }
+
+    /// Whether the capture reached [`Config::max_capture`] and stopped
+    /// itself.
+    pub fn was_truncated(&self) -> bool {
+        self.recording.was_truncated()
+    }
+}
+
+impl std::fmt::Debug for CaptureMeter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaptureMeter").finish_non_exhaustive()
+    }
 }
 
 /// Records from the microphone, and holds the crate's claim on it until
@@ -622,6 +732,23 @@ pub struct Capture {
     /// [`Outcome::NoAudio`] would hide a denied permission behind a
     /// message about silence.
     failed_to_open: Option<Error>,
+    /// The take's segmenter. Taken by `finish`, which hands it to the
+    /// ticket; joined by `Drop` on the abandon path.
+    segmenter: Option<std::thread::JoinHandle<()>>,
+    /// Dropping it aborts the segmenter: the take is over and its
+    /// queued work should not run on.
+    finish_tx: Option<Sender<FinishTake>>,
+    /// The take's aggregate answer, once every segment and the tail
+    /// have run and the join has been normalized. Taken by `finish`.
+    answer_rx: Option<Receiver<Result<Outcome, Error>>>,
+    /// Per-segment progress while the recording is still open. Taken
+    /// by the host at recording start; the stream outlives the handoff
+    /// to the ticket because the segmenter owns its sender throughout.
+    progress_rx: Option<Receiver<WindowProgress>>,
+    /// This take's cancel token, shared by every job the segmenter
+    /// queues. The ticket carries a clone, so abandoning the take
+    /// after finish aborts its outstanding work.
+    cancel: CancelToken,
 }
 
 impl Capture {
@@ -638,6 +765,23 @@ impl Capture {
         self.recording.peak_dbfs()
     }
 
+    /// The shareable polling view of this capture: level and cap
+    /// truncation, the two reads a recording loop wants. `Capture`
+    /// itself is `Send` but not `Sync` - it holds channel receivers -
+    /// so a host that polls a live capture from an async task borrows
+    /// this handle across awaits instead of the capture.
+    pub fn meter(&self) -> CaptureMeter {
+        CaptureMeter { recording: Arc::clone(&self.recording) }
+    }
+
+    /// Take this take's progress stream, if it has not been taken.
+    /// Steps arrive as segments settle while the recording is still
+    /// open, and again once finish has submitted the tail and the
+    /// total is known.
+    pub fn take_progress(&mut self) -> Option<Receiver<WindowProgress>> {
+        self.progress_rx.take()
+    }
+
     /// Stop recording and queue what was captured. Releases the
     /// microphone before the transcription starts, so the next caller
     /// does not wait for inference.
@@ -648,16 +792,35 @@ impl Capture {
 
     /// Stop recording and queue what was captured, overriding the
     /// configured normalizer options for this recording only.
+    ///
+    /// With a take already pipelining, this submits the tail and hands
+    /// back a ticket over the AGGREGATE: the segmenter waits for every
+    /// segment already queued, joins the raw texts, and normalizes the
+    /// join once on the worker. The returned ticket resolves when the
+    /// whole transcript does.
     pub fn finish_with(mut self, options: NormalizeOptions) -> Result<Ticket, Error> {
         if let Some(error) = self.failed_to_open.take() {
             return Err(error);
         }
-        let pcm = self.stop_recording();
+        self.stop_recording();
         let truncated = self.recording.was_truncated();
         if truncated {
             tracing::warn!(cap = ?self.max_capture, "capture reached its cap and stopped itself");
         }
-        self.engine.submit(pcm, Duration::ZERO, truncated, options)
+        let segmenter = self.segmenter.take();
+        match (self.finish_tx.take(), self.answer_rx.take(), segmenter) {
+            (Some(finish_tx), Some(answer_rx), Some(segmenter)) => {
+                finish_tx
+                    .send(FinishTake { options, truncated })
+                    .map_err(|_| Error::EngineStopped)?;
+                Ok(Ticket {
+                    answer: answer_rx,
+                    cancel: self.cancel.clone(),
+                    segmenter: Some(segmenter),
+                })
+            }
+            _ => Err(Error::EngineStopped),
+        }
     }
 
     /// Stop recording and throw the audio away.
@@ -681,13 +844,14 @@ impl Capture {
     }
 
     /// Stop the recorder and join it, so the device is released before
-    /// this returns rather than at some later point.
-    fn stop_recording(&mut self) -> Vec<f32> {
+    /// this returns rather than at some later point. The captured
+    /// samples stay where they are: the segmenter holds the recording
+    /// and reads the tail out of it at finish.
+    fn stop_recording(&mut self) {
         self.recording.stop();
         if let Some(recorder) = self.recorder.take() {
             let _ = recorder.join();
         }
-        self.recording.take()
     }
 }
 
@@ -700,20 +864,30 @@ impl std::fmt::Debug for Capture {
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        // Device first, then the lock: releasing the label while the
-        // stream is still open would let the next caller open a second
-        // one against the same input.
-        let _ = self.stop_recording();
+        // Device first, then the segmenter: the closed finish channel
+        // is the abandon signal, and the join makes sure no take
+        // thread outlives the value that owns its result.
+        self.stop_recording();
+        self.finish_tx.take();
+        if let Some(segmenter) = self.segmenter.take() {
+            let _ = segmenter.join();
+        }
         let mut lock = self.holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *lock = None;
     }
 }
 
-/// A transcription in flight.
+/// A transcription in flight. On the pipelined capture path this is
+/// the take's AGGREGATE: it resolves once every segment and the tail
+/// have run and the join has been normalized once.
 pub struct Ticket {
     answer: Receiver<Result<Outcome, Error>>,
     cancel: CancelToken,
-    progress: Option<Receiver<WindowProgress>>,
+    /// The take's segmenter, on the capture path. Joined so no take
+    /// thread outlives the value that owns its result; it holds no
+    /// native state, so the join is tidiness and not the teardown
+    /// guarantee - that is the worker join in `Engine::drop`.
+    segmenter: Option<std::thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for Ticket {
@@ -730,8 +904,12 @@ impl Ticket {
     /// BLOCKING, and deliberately without an async twin: an async host
     /// wraps this in its own `spawn_blocking`, where the reverse would
     /// put a runtime in every consumer to serve one.
-    pub fn recv(self) -> Result<Outcome, Error> {
-        self.answer.recv().map_err(|_| Error::EngineStopped)?
+    pub fn recv(mut self) -> Result<Outcome, Error> {
+        let answer = self.answer.recv().map_err(|_| Error::EngineStopped)?;
+        if let Some(segmenter) = self.segmenter.take() {
+            let _ = segmenter.join();
+        }
+        answer
     }
 
     /// A clone of this ticket's cancel token. Cancelling it aborts THIS
@@ -742,19 +920,14 @@ impl Ticket {
     pub fn cancel_token(&self) -> CancelToken {
         self.cancel.clone()
     }
-
-    /// Takes this ticket's per-window progress stream, if it has not
-    /// been taken. Steps arrive before each window decodes; the stream
-    /// closes when the job ends. A host that never takes it costs the
-    /// worker a failed send per window and nothing more.
-    pub fn take_progress(&mut self) -> Option<Receiver<WindowProgress>> {
-        self.progress.take()
-    }
 }
 
 impl Drop for Ticket {
     fn drop(&mut self) {
         self.cancel.cancel();
+        if let Some(segmenter) = self.segmenter.take() {
+            let _ = segmenter.join();
+        }
     }
 }
 
@@ -898,57 +1071,62 @@ fn worker(
         // and for early takes the tail of the model load. The felt lag
         // `processing_ms` never sees.
         let start_lag_ms = u64::try_from(job.queued_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let windows = window_bounds(&job.pcm);
-        let total = windows.len();
         let window_ms =
             |samples: usize| u64::try_from(audio_duration(samples).as_millis()).unwrap_or(u64::MAX);
-        for (k, &(start, end)) in windows.iter().enumerate() {
-            if let Some(progress) = job.progress.as_ref() {
-                let _ = progress.send(WindowProgress { window: k + 1, total });
-            }
-            match session.run(&job.pcm[start..end], &options) {
-                Ok(out) => {
-                    stages.mel = stages.mel.saturating_add(Duration::from_secs_f64(
-                        f64::from(out.timings.mel_ms) / 1000.0,
-                    ));
-                    stages.encode = stages.encode.saturating_add(Duration::from_secs_f64(
-                        f64::from(out.timings.encode_ms) / 1000.0,
-                    ));
-                    stages.decode = stages.decode.saturating_add(Duration::from_secs_f64(
-                        f64::from(out.timings.decode_ms) / 1000.0,
-                    ));
-                    window_records.push(diagnostics::WindowRecord {
-                        start_ms: window_ms(start),
-                        end_ms: window_ms(end),
-                        raw: out.text.clone(),
-                    });
-                    asr_parts.push(out.text);
-                }
-                // Discriminated on the ERROR VARIANT rather than on
-                // `was_aborted`/`was_truncated`. Those report "the most
-                // recent run", and `run` has early returns that never reach
-                // native at all - an interior NUL in the language string, an
-                // oversized buffer, a busy session - on which the flags still
-                // hold the PREVIOUS job's value. Per-error state cannot go
-                // stale.
-                Err(transcribe_cpp::Error::Aborted { .. }) => {
-                    failure = Some(Error::Cancelled);
-                    break;
-                }
-                Err(transcribe_cpp::Error::OutputTruncated { partial: Some(partial), .. }) => {
-                    window_records.push(diagnostics::WindowRecord {
-                        start_ms: window_ms(start),
-                        end_ms: window_ms(end),
-                        raw: partial.text.clone(),
-                    });
-                    asr_parts.push(partial.text);
-                    truncated = true;
-                }
-                Err(source) => {
-                    let message = source.to_string();
-                    failure = Some(Error::Recognition { message: message.clone() });
-                    recognition_error = Some((k, message));
-                    break;
+        // A pipelined finalize job carries text, not audio: it exists
+        // so the join is normalized on the worker, where the normalizer
+        // lives. Everything else recognizes its windows.
+        if let Some(raw) = job.prejoined {
+            asr_parts.push(raw);
+        } else {
+            let windows = window_bounds(&job.pcm);
+            for (k, &(start, end)) in windows.iter().enumerate() {
+                match session.run(&job.pcm[start..end], &options) {
+                    Ok(out) => {
+                        stages.mel = stages.mel.saturating_add(Duration::from_secs_f64(
+                            f64::from(out.timings.mel_ms) / 1000.0,
+                        ));
+                        stages.encode = stages.encode.saturating_add(Duration::from_secs_f64(
+                            f64::from(out.timings.encode_ms) / 1000.0,
+                        ));
+                        stages.decode = stages.decode.saturating_add(Duration::from_secs_f64(
+                            f64::from(out.timings.decode_ms) / 1000.0,
+                        ));
+                        window_records.push(diagnostics::WindowRecord {
+                            start_ms: window_ms(start),
+                            end_ms: window_ms(end),
+                            raw: out.text.clone(),
+                        });
+                        asr_parts.push(out.text);
+                    }
+                    // Discriminated on the ERROR VARIANT rather than on
+                    // `was_aborted`/`was_truncated`. Those report "the most
+                    // recent run", and `run` has early returns that never reach
+                    // native at all - an interior NUL in the language string, an
+                    // oversized buffer, a busy session - on which the flags still
+                    // hold the PREVIOUS job's value. Per-error state cannot go
+                    // stale.
+                    Err(transcribe_cpp::Error::Aborted { .. }) => {
+                        failure = Some(Error::Cancelled);
+                        break;
+                    }
+                    Err(transcribe_cpp::Error::OutputTruncated {
+                        partial: Some(partial), ..
+                    }) => {
+                        window_records.push(diagnostics::WindowRecord {
+                            start_ms: window_ms(start),
+                            end_ms: window_ms(end),
+                            raw: partial.text.clone(),
+                        });
+                        asr_parts.push(partial.text);
+                        truncated = true;
+                    }
+                    Err(source) => {
+                        let message = source.to_string();
+                        failure = Some(Error::Recognition { message: message.clone() });
+                        recognition_error = Some((k, message));
+                        break;
+                    }
                 }
             }
         }
@@ -958,11 +1136,14 @@ fn worker(
         let answer = if let Some(error) = failure {
             Err(error)
         } else {
-            let (asr, text) = finalize_transcript(&asr_parts, |raw| {
+            let (asr, text) = finalize_transcript(&asr_parts, |raw| match &job.normalize {
                 // A normalizer that fails mid-session must not cost the
                 // speaker their words: fall back to the recognised text
-                // and say so, where a load failure above is fatal.
-                normalize_text(normalizer.as_ref(), raw, job.options, &mut stages)
+                // and say so, where a load failure above is fatal. A
+                // raw-only pipelined job skips the rewrite; its text
+                // joins the take's later, under one normalize pass.
+                Some(options) => normalize_text(normalizer.as_ref(), raw, *options, &mut stages),
+                None => raw.to_owned(),
             });
             // Consumed here rather than where `stages` is built: an
             // error or a cancel discards the stages, and taking the
@@ -980,8 +1161,11 @@ fn worker(
         // quitting fast beats blocking shutdown on a capture-sized
         // write, and that is a stated trade, not a side effect. A
         // queued take starts after the write, which is the one cost a
-        // 30-minute capture's wav ever asks anyone to pay.
+        // 30-minute capture's wav ever asks anyone to pay. Pipelined
+        // jobs never write at all - the take writes ONE record, from
+        // its segmenter at finish.
         if let (Some(dir), Some((outcome, text))) = (&cfg.diagnostics_dir, diag)
+            && job.diagnose
             && !stopping.load(Ordering::Relaxed)
         {
             let record = diagnostics::TakeRecord {
@@ -998,6 +1182,419 @@ fn worker(
             };
             diagnostics::capture_take(dir, diagnostics::take_stamp(), &record);
         }
+    }
+}
+
+/// How often the segmenter looks for the next window boundary. The cut
+/// needs no samples past `WINDOW_TARGET` after the previous cut, so
+/// this cadence bounds how long a segment can run past its ideal cut.
+const SEGMENT_POLL: Duration = Duration::from_millis(250);
+
+/// What the host hands a pipelined take at finish: the normalizer
+/// options for the one join pass, and whether the recording stopped
+/// itself at the cap.
+#[derive(Clone, Copy)]
+struct FinishTake {
+    options: NormalizeOptions,
+    truncated: bool,
+}
+
+/// The channels a take's segmenter shares with its capture and ticket.
+struct TakeShared {
+    /// Cancels every job the segmenter queued, when the take is over.
+    cancel: CancelToken,
+    /// The take's aggregate answer.
+    answer: Sender<Result<Outcome, Error>>,
+    /// Per-segment progress.
+    progress: Sender<WindowProgress>,
+}
+
+/// One settled piece of a pipelined take, in submission order.
+#[derive(Debug)]
+enum Part {
+    /// Recognition output for the join, with the stages it cost. The
+    /// text is raw: normalization happens once, over the join.
+    Transcript {
+        raw: String,
+        stages: Stages,
+        truncated: bool,
+    },
+    /// Below the silence floor; contributes its span and peak only.
+    NoAudio {
+        peak: f32,
+        audio: Duration,
+    },
+    Failed(Error),
+}
+
+/// What a take's settled parts come to, before normalization.
+#[derive(Debug)]
+enum Aggregate {
+    /// Raw texts to join and normalize once.
+    Join {
+        raws: Vec<String>,
+    },
+    NoAudio {
+        peak: f32,
+        audio: Duration,
+    },
+    Failed(Error),
+}
+
+/// Sum of the parts' recognition work, for the take's own stages and
+/// the diagnostics record.
+fn fold_stages(parts: &[Part]) -> (Stages, Duration, bool) {
+    let mut stages = Stages::default();
+    let mut audio = Duration::ZERO;
+    let mut truncated = false;
+    for part in parts {
+        let Part::Transcript { stages: s, truncated: t, .. } = part else { continue };
+        stages.mel += s.mel;
+        stages.encode += s.encode;
+        stages.decode += s.decode;
+        stages.model_load += s.model_load;
+        stages.resample += s.resample;
+        if s.normalize.is_some() {
+            stages.normalize = s.normalize;
+        }
+        truncated |= *t;
+        audio += s.audio;
+    }
+    (stages, audio, truncated)
+}
+
+/// Fold a take's parts in submission order. The first failure wins, as
+/// the whole-take job's first window error did; any recognized part
+/// sends the take down the join path, and only a take with nothing
+/// above the floor anywhere reads as silence.
+fn aggregate_parts(parts: Vec<Part>) -> Aggregate {
+    if let Some(index) = parts.iter().position(|part| matches!(part, Part::Failed(_))) {
+        let mut parts = parts;
+        return match parts.swap_remove(index) {
+            Part::Failed(error) => Aggregate::Failed(error),
+            // The position above named a failed part, so this arm is
+            // unreachable; a stopped engine is the honest stand-in.
+            _ => Aggregate::Failed(Error::EngineStopped),
+        };
+    }
+    if !parts.iter().any(|part| matches!(part, Part::Transcript { .. })) {
+        let peak = parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::NoAudio { peak, .. } => Some(*peak),
+                _ => None,
+            })
+            .fold(f32::NEG_INFINITY, f32::max);
+        let audio = parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::NoAudio { audio, .. } => Some(*audio),
+                _ => None,
+            })
+            .sum();
+        return Aggregate::NoAudio { peak, audio };
+    }
+    let raws = parts
+        .into_iter()
+        .filter_map(|part| match part {
+            Part::Transcript { raw, .. } => Some(raw),
+            _ => None,
+        })
+        .collect();
+    Aggregate::Join { raws }
+}
+
+/// One capture's segmenter: cuts windows off the growing recording as
+/// they pass the reliability ceiling and queues each for recognition
+/// while the microphone keeps running; at finish it submits the tail,
+/// waits out every segment, and normalizes the join exactly once, on
+/// the worker where the normalizer lives. No partial text is ever
+/// produced - the only thing that leaves this thread before the answer
+/// is the progress count.
+struct TakeSegmenter {
+    recording: Arc<crate::capture::Recording>,
+    jobs: Sender<Job>,
+    silence_floor: f32,
+    diagnostics_dir: Option<PathBuf>,
+    take: TakeShared,
+    /// First sample not yet handed to a segment.
+    last_cut: usize,
+    /// Segment spans in submission order, for the diagnostics record.
+    cuts: Vec<(usize, usize)>,
+    /// Settled pieces, in submission order. Aligned with `cuts`: every
+    /// cut contributes exactly one part, even a silence-gated one.
+    parts: Vec<Part>,
+    /// Answers still awaited, in submission order. The worker is
+    /// serial, so they complete in this order too.
+    pending: Vec<Receiver<Result<Outcome, Error>>>,
+    /// How many parts have settled. The progress stream's `done`.
+    settled: usize,
+    /// When the take's first job was queued, and when its first part
+    /// settled: the diagnostics `start_lag_ms` spans the two.
+    first_queued_at: Option<Instant>,
+    first_settled_at: Option<Instant>,
+    /// The first recognition failure and the segment it hit, for the
+    /// diagnostics record. The take answers with the same error.
+    failed: Option<(usize, String)>,
+}
+
+impl TakeSegmenter {
+    fn run(mut self, finish: &Receiver<FinishTake>) {
+        loop {
+            match finish.recv_timeout(SEGMENT_POLL) {
+                Ok(finish) => {
+                    self.finish(finish);
+                    return;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    // Abandoned without finishing: the take is over,
+                    // and its queued work should not run on.
+                    self.take.cancel.cancel();
+                    return;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    self.poll_cut();
+                    self.collect_ready();
+                }
+            }
+        }
+    }
+
+    /// Cut the next window if enough audio has accrued past the last
+    /// one. The decision runs the same function whole-buffer windowing
+    /// does, over a copy of the uncut region, so a live cut lands
+    /// exactly where the finished take's would.
+    fn poll_cut(&mut self) {
+        let len = self.recording.sample_len();
+        if len <= self.last_cut {
+            return;
+        }
+        let region = self.recording.copy_region(self.last_cut, len);
+        let Some(relative) = next_cut(&region, 0) else { return };
+        self.last_cut += relative;
+        // `region[..relative]` is exactly the segment; the copy in front
+        // of it doubles as the quietest-frame search space.
+        let segment = region[..relative].to_vec();
+        self.submit_region(segment);
+    }
+
+    /// Silence-gate a region and queue it, recording whichever part it
+    /// became. `cuts` and `parts` advance together, so the diagnostics
+    /// record can name every segment's span and raw text.
+    fn submit_region(&mut self, pcm: Vec<f32>) {
+        let start = self.cuts.last().map_or(0, |&(_, end)| end);
+        let end = start + pcm.len();
+        self.cuts.push((start, end));
+        let peak = peak_dbfs(&pcm);
+        let audio = audio_duration(pcm.len());
+        if peak < self.silence_floor {
+            self.parts.push(Part::NoAudio { peak, audio });
+            self.stamp_settled();
+            let _ = self.take.progress.send(WindowProgress { done: self.settled, total: None });
+            return;
+        }
+        let queued_at = Instant::now();
+        if self.first_queued_at.is_none() {
+            self.first_queued_at = Some(queued_at);
+        }
+        let (reply, answer) = channel();
+        let sent = self.jobs.send(Job {
+            pcm,
+            resample: Duration::ZERO,
+            audio,
+            truncated: false,
+            normalize: None,
+            prejoined: None,
+            diagnose: false,
+            cancel: self.take.cancel.clone(),
+            reply,
+            queued_at,
+        });
+        if sent.is_ok() {
+            self.pending.push(answer);
+        } else {
+            // The engine is going away; the take fails with it.
+            self.parts.push(Part::Failed(Error::EngineStopped));
+            self.stamp_settled();
+        }
+    }
+
+    /// Take every answer already waiting, in submission order.
+    fn collect_ready(&mut self) {
+        while !self.pending.is_empty() {
+            let answer = match self.pending[0].try_recv() {
+                Ok(answer) => answer,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                // The worker died without replying; the take fails
+                // with it rather than waiting forever.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(Error::EngineStopped),
+            };
+            self.pending.remove(0);
+            self.record(answer);
+            let _ = self.take.progress.send(WindowProgress { done: self.settled, total: None });
+        }
+    }
+
+    /// Wait out every answer still owed, in submission order. Only
+    /// finish calls this, and the worker answers every job it takes,
+    /// so this terminates.
+    fn drain_pending(&mut self) {
+        while !self.pending.is_empty() {
+            let answer = self.pending[0].recv().unwrap_or(Err(Error::EngineStopped));
+            self.pending.remove(0);
+            self.record(answer);
+        }
+    }
+
+    fn record(&mut self, answer: Result<Outcome, Error>) {
+        let part = match answer {
+            Ok(Outcome::Transcript(t)) => {
+                Part::Transcript { raw: t.asr, stages: t.stages, truncated: t.truncated }
+            }
+            Ok(Outcome::NoAudio { peak, audio }) => Part::NoAudio { peak, audio },
+            Err(error) => {
+                if self.failed.is_none() {
+                    let index = self.parts.len();
+                    self.failed = Some((index, error.to_string()));
+                }
+                Part::Failed(error)
+            }
+        };
+        self.parts.push(part);
+        self.stamp_settled();
+    }
+
+    fn stamp_settled(&mut self) {
+        self.settled += 1;
+        if self.first_settled_at.is_none() {
+            self.first_settled_at = Some(Instant::now());
+        }
+    }
+
+    /// Complete the take: wait out the remaining segments, submit the
+    /// tail, and normalize the join once. The answer lands on the
+    /// take's channel as its last act; the only earlier output is the
+    /// progress tally gaining its total.
+    fn finish(mut self, finish: FinishTake) {
+        let started = Instant::now();
+        self.drain_pending();
+        // The tail: whatever grew past the last cut. The recording
+        // stopped before the finish message was sent, so the span is
+        // stable.
+        let len = self.recording.sample_len();
+        if len > self.last_cut {
+            let pcm = self.recording.copy_region(self.last_cut, len);
+            self.submit_region(pcm);
+        }
+        let total = self.cuts.len();
+        let _ = self.take.progress.send(WindowProgress { done: self.settled, total: Some(total) });
+        // The tail's raw text feeds the join, so it settles before the
+        // normalize pass queues.
+        self.drain_pending();
+        // The raw text per segment, aligned with `self.cuts`; silence
+        // and failure contribute nothing to the join.
+        let raws: Vec<String> = self
+            .parts
+            .iter()
+            .map(|part| match part {
+                Part::Transcript { raw, .. } => raw.clone(),
+                Part::NoAudio { .. } | Part::Failed(_) => String::new(),
+            })
+            .collect();
+        let (folded_stages, audio, folded_truncated) = fold_stages(&self.parts);
+        let answer = match aggregate_parts(std::mem::take(&mut self.parts)) {
+            Aggregate::Failed(error) => Err(error),
+            Aggregate::NoAudio { peak, audio } => Ok(Outcome::NoAudio { peak, audio }),
+            Aggregate::Join { raws: join_raws, .. } => {
+                let joined = join_window_texts(&join_raws);
+                match self.normalize_join(&joined, finish.options) {
+                    Ok(Outcome::Transcript(mut transcript)) => {
+                        // The take's stages: every segment's recognition
+                        // work plus the finalize's normalize pass, over
+                        // the span the take actually covers.
+                        let normalize = transcript.stages.normalize;
+                        transcript.stages = folded_stages.clone();
+                        transcript.stages.normalize = normalize;
+                        transcript.stages.audio = audio;
+                        transcript.truncated |= folded_truncated | finish.truncated;
+                        Ok(Outcome::Transcript(transcript))
+                    }
+                    Ok(other) => Ok(other),
+                    Err(error) => Err(error),
+                }
+            }
+        };
+        let diag = diagnostic_outcome(&answer);
+        let diag_stages = match &answer {
+            Ok(Outcome::Transcript(transcript)) => transcript.stages.clone(),
+            _ => folded_stages,
+        };
+        // Teardown reports itself as a stopped engine, and skips its
+        // write for the same trade the worker makes: quitting fast
+        // beats blocking shutdown on a capture-sized write.
+        let teardown = matches!(&answer, Err(Error::EngineStopped));
+        let _ = self.take.answer.send(answer);
+        let _ = self.take.progress.send(WindowProgress { done: total, total: Some(total) });
+        if let (Some(dir), Some((outcome, text))) = (&self.diagnostics_dir, diag)
+            && !teardown
+        {
+            let ms_of = |samples: usize| {
+                u64::try_from(audio_duration(samples).as_millis()).unwrap_or(u64::MAX)
+            };
+            let windows: Vec<diagnostics::WindowRecord> = self
+                .cuts
+                .iter()
+                .zip(raws.iter())
+                .map(|((start, end), raw)| diagnostics::WindowRecord {
+                    start_ms: ms_of(*start),
+                    end_ms: ms_of(*end),
+                    raw: raw.clone(),
+                })
+                .collect();
+            let audio = self.recording.take();
+            let start_lag_ms = match (self.first_queued_at, self.first_settled_at) {
+                (Some(queued), Some(settled)) => {
+                    u64::try_from(settled.saturating_duration_since(queued).as_millis())
+                        .unwrap_or(u64::MAX)
+                }
+                _ => 0,
+            };
+            let record = diagnostics::TakeRecord {
+                audio: &audio,
+                windows: &windows,
+                joined: &join_window_texts(&raws),
+                text: &text,
+                stages: &diag_stages,
+                start_lag_ms,
+                processing_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                truncated: folded_truncated || finish.truncated,
+                outcome,
+                recognition_error: self.failed,
+            };
+            diagnostics::capture_take(dir, diagnostics::take_stamp(), &record);
+        }
+    }
+
+    /// Queue the join for normalization on the worker and wait it out.
+    /// No silence gate: the job carries text, not audio, and the gate
+    /// reads samples.
+    fn normalize_join(&self, joined: &str, options: NormalizeOptions) -> Result<Outcome, Error> {
+        let (reply, answer) = channel();
+        self.jobs
+            .send(Job {
+                pcm: Vec::new(),
+                resample: Duration::ZERO,
+                audio: Duration::ZERO,
+                truncated: false,
+                normalize: Some(options),
+                prejoined: Some(joined.to_owned()),
+                diagnose: false,
+                cancel: self.take.cancel.clone(),
+                reply,
+                queued_at: Instant::now(),
+            })
+            .map_err(|_| Error::EngineStopped)?;
+        answer.recv().map_err(|_| Error::EngineStopped)?
     }
 }
 
@@ -1090,7 +1687,8 @@ mod tests_engine {
         if let Some(device) = device {
             builder = builder.device(device);
         }
-        Engine::with_recorder(builder.build(), device_echoing_recorder).expect("engine must start")
+        Engine::with_recorder(builder.build(), Arc::new(device_echoing_recorder))
+            .expect("engine must start")
     }
 
     /// `try_capture` records from the configured device;
@@ -1317,6 +1915,172 @@ mod tests_engine {
             "a -12 dBFS signal must fall below a -3 dBFS floor, so the config is what decides"
         );
     }
+
+    #[test]
+    fn the_take_aggregate_joins_raw_texts_in_submission_order() {
+        let parts = vec![
+            Part::Transcript { raw: "first".into(), stages: Stages::default(), truncated: false },
+            Part::NoAudio { peak: -40.0, audio: Duration::from_millis(500) },
+            Part::Transcript { raw: "second".into(), stages: Stages::default(), truncated: true },
+        ];
+        match aggregate_parts(parts) {
+            Aggregate::Join { raws } => {
+                assert_eq!(
+                    raws,
+                    ["first", "second"],
+                    "silence contributes nothing to the join; order is the take's order"
+                );
+                assert_eq!(
+                    join_window_texts(&raws),
+                    "first second",
+                    "the join, not the pieces, is what the normalizer sees"
+                );
+            }
+            other => panic!("a take with recognized parts must join, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_take_with_nothing_above_the_floor_reads_as_silence_over_the_whole_span() {
+        let parts = vec![
+            Part::NoAudio { peak: -40.0, audio: Duration::from_millis(500) },
+            Part::NoAudio { peak: -30.0, audio: Duration::from_millis(1500) },
+        ];
+        match aggregate_parts(parts) {
+            Aggregate::NoAudio { peak, audio } => {
+                // Exact, not approximated: the aggregate copies the
+                // input peak, it computes nothing.
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(peak, -30.0, "the take's peak is the loudest segment's");
+                }
+                assert_eq!(audio, Duration::from_millis(2000), "the span is the whole take");
+            }
+            other => panic!("a take with no recognized part must read as silence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_first_recognition_failure_is_the_take_answer() {
+        let parts = vec![
+            Part::Transcript { raw: "early".into(), stages: Stages::default(), truncated: false },
+            Part::Failed(Error::Recognition { message: "one".into() }),
+            Part::Failed(Error::Recognition { message: "two".into() }),
+        ];
+        match aggregate_parts(parts) {
+            Aggregate::Failed(Error::Recognition { message }) => assert_eq!(
+                message, "one",
+                "the first failure in submission order wins, as the first window error did"
+            ),
+            other => panic!("a failed part must fail the take, got {other:?}"),
+        }
+    }
+
+    /// The pipelined queue, weightless: the feeding microphone crosses
+    /// the window ceiling, the segmenter cuts and queues while the
+    /// capture is still open, and the take answers through the
+    /// pipeline (here with the load failure a weightless engine gives
+    /// every job).
+    #[test]
+    fn a_segment_settles_while_the_recording_is_still_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let engine = crate::test_support::engine_with_feeding_microphone(
+            cfg,
+            Arc::new(loud(70)),
+            Duration::from_millis(1),
+        )
+        .expect("engine must start");
+        let mut capture = engine.try_capture("pipeline").expect("an idle microphone must be held");
+        let mut progress = capture.take_progress().expect("the capture carries a progress stream");
+        let seen = wait_for_a_settled_segment(&mut progress);
+        assert!(
+            seen.iter().all(|step| step.total.is_none()),
+            "a live recording cannot know its total, got {seen:?}"
+        );
+        let ticket = capture.finish().expect("the take must finish");
+        assert!(
+            matches!(ticket.recv(), Err(Error::ModelLoad { .. })),
+            "the segment job reached the worker, so its failure is the take's answer"
+        );
+    }
+
+    #[test]
+    fn a_take_without_cuts_still_resolves_through_the_pipeline() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let engine = crate::test_support::engine_with_feeding_microphone(
+            cfg,
+            Arc::new(loud(5)),
+            Duration::from_millis(1),
+        )
+        .expect("engine must start");
+        let capture = engine.try_capture("pipeline").expect("an idle microphone must be held");
+        std::thread::sleep(Duration::from_millis(100));
+        let ticket = capture.finish().expect("the take must finish");
+        assert!(matches!(ticket.recv(), Err(Error::ModelLoad { .. })));
+    }
+
+    #[test]
+    fn abandoning_a_take_mid_recording_does_not_hang_or_wedge_the_microphone() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let engine = crate::test_support::engine_with_feeding_microphone(
+            cfg,
+            Arc::new(loud(70)),
+            Duration::from_millis(1),
+        )
+        .expect("engine must start");
+        let mut capture = engine.try_capture("pipeline").expect("an idle microphone must be held");
+        let mut progress = capture.take_progress().expect("the capture carries a progress stream");
+        wait_for_a_settled_segment(&mut progress);
+        drop(capture);
+        engine.try_capture("second").expect("the abandon must release the microphone");
+    }
+
+    #[test]
+    fn dropping_the_ticket_mid_pipeline_cancels_without_hanging() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let engine = crate::test_support::engine_with_feeding_microphone(
+            cfg,
+            Arc::new(loud(70)),
+            Duration::from_millis(1),
+        )
+        .expect("engine must start");
+        let mut capture = engine.try_capture("pipeline").expect("an idle microphone must be held");
+        let mut progress = capture.take_progress().expect("the capture carries a progress stream");
+        wait_for_a_settled_segment(&mut progress);
+        let ticket = capture.finish().expect("the take must finish");
+        drop(ticket);
+        engine.try_capture("second").expect("the cancelled take must release the microphone");
+    }
+
+    /// Poll a capture's progress stream until one segment has settled,
+    /// while the recording is still open.
+    fn wait_for_a_settled_segment(progress: &mut Receiver<WindowProgress>) -> Vec<WindowProgress> {
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            while let Ok(step) = progress.try_recv() {
+                seen.push(step);
+            }
+            if seen.iter().any(|step| step.done >= 1) {
+                return seen;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no segment settled while the recording was open: {seen:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Well above any sane silence floor, so fed audio becomes jobs
+    /// rather than silence-gated skips.
+    fn loud(seconds_long: usize) -> Vec<f32> {
+        vec![0.5; seconds_long * SAMPLE_RATE as usize]
+    }
 }
 
 #[cfg(test)]
@@ -1460,6 +2224,41 @@ mod tests_windowing {
     fn with_silence(mut pcm: Vec<f32>, from: usize, to: usize) -> Vec<f32> {
         pcm[from..to].fill(0.0);
         pcm
+    }
+
+    /// The live cut rule and whole-buffer windowing are one function,
+    /// [`next_cut`]; this pins the consequence, that deciding each cut
+    /// as the buffer grows lands exactly where deciding after the take
+    /// would. Deterministic dips - one quiet frame per second - so the
+    /// cut is the latest quiet frame the search window sees.
+    #[test]
+    fn live_cuts_and_whole_buffer_cuts_are_the_same_function() {
+        let mut pcm = Vec::new();
+        for _ in 0..360 {
+            pcm.extend(std::iter::repeat_n(0.4, ENERGY_FRAME * 49));
+            pcm.extend(std::iter::repeat_n(0.0, ENERGY_FRAME));
+        }
+        let offline = window_bounds(&pcm);
+        assert!(
+            offline.len() > 2,
+            "a six-minute take must span several windows, got {}",
+            offline.len()
+        );
+
+        let mut live: Vec<(usize, usize)> = Vec::new();
+        let mut last_cut = 0;
+        for end in (0..=pcm.len()).step_by(SAMPLE_RATE as usize) {
+            while let Some(cut) = next_cut(&pcm[..end], last_cut) {
+                live.push((last_cut, cut));
+                last_cut = cut;
+            }
+        }
+        // The tail is the finish-time submission.
+        live.push((last_cut, pcm.len()));
+        assert_eq!(
+            live, offline,
+            "deciding cuts as the buffer grows must land exactly where whole-buffer windowing does"
+        );
     }
 }
 

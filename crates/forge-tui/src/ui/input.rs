@@ -764,8 +764,8 @@ mod tests {
                 SessionUpdate::DictateProgress {
                     key: key.clone(),
                     generation: 1,
-                    window: 2,
-                    total: 6,
+                    done: 2,
+                    total: Some(6),
                 },
             );
 
@@ -791,8 +791,8 @@ mod tests {
                 SessionUpdate::DictateProgress {
                     key: key.clone(),
                     generation: 1,
-                    window: 1,
-                    total: 1,
+                    done: 1,
+                    total: Some(1),
                 },
             );
 
@@ -800,6 +800,41 @@ mod tests {
             assert!(
                 rows[1].contains("transcribing") && !rows[1].contains("1/1"),
                 "a single-window take must render as it always has, got: {}",
+                rows[1]
+            );
+        }
+
+        #[test]
+        fn a_recording_take_counts_settled_segments_on_the_row() {
+            let mut app = App::test_default();
+            let key = active_key(&app);
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            );
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -6.0 },
+            );
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateProgress {
+                    key: key.clone(),
+                    generation: 1,
+                    done: 2,
+                    total: None,
+                },
+            );
+
+            let rows = render_input(&mut app, 80, 5);
+            assert!(
+                rows[1].contains("listening") && rows[1].contains("2 ready"),
+                "segments settling during recording count on the live row, got: {}",
+                rows[1]
+            );
+            assert!(
+                rows[1].contains("\u{25cf}"),
+                "the row is still the live recording row, got: {}",
                 rows[1]
             );
         }

@@ -1081,16 +1081,18 @@ pub enum SessionUpdate {
     DictateTranscribing {
         key: SessionKey,
     },
-    /// A take from `key` is decoding window `window` of `total`, so a
-    /// long take can show progress. Emitted per window, single-window
-    /// takes included; a composer renders only what it wants to.
-    /// `generation` is the take's own, as handed out by
-    /// [`SessionUpdate::DictateStarted`].
+    /// A take from `key` has settled `done` segments of its
+    /// transcription. `total` is `None` while the recording is still
+    /// open, because a live take cannot know how many segments it will
+    /// produce, and the final count once the take was stopped and its
+    /// tail submitted. Single-segment takes report at stop only; a
+    /// composer renders only what it wants to. `generation` is the
+    /// take's own, as handed out by [`SessionUpdate::DictateStarted`].
     DictateProgress {
         key: SessionKey,
         generation: u64,
-        window: usize,
-        total: usize,
+        done: usize,
+        total: Option<usize>,
     },
     /// A take from `key` is done: insert, notice or reset per
     /// [`DictateOutcome`]. `generation` is the take's own, as handed
@@ -1361,11 +1363,11 @@ impl std::fmt::Debug for SessionUpdate {
             Self::DictateTranscribing { key } => {
                 f.debug_struct("DictateTranscribing").field("key", key).finish()
             }
-            Self::DictateProgress { key, generation, window, total } => f
+            Self::DictateProgress { key, generation, done, total } => f
                 .debug_struct("DictateProgress")
                 .field("key", key)
                 .field("generation", generation)
-                .field("window", window)
+                .field("done", done)
                 .field("total", total)
                 .finish(),
             Self::DictateEnded { key, outcome, .. } => f
