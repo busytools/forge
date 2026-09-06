@@ -1230,6 +1230,19 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
     if active_session_id_str.is_empty() && !session_id.is_empty() && frame_bucket.is_none() {
         // The active bucket exists but has no id yet - adopt the
         // canonical id so subsequent dispatch resolves correctly.
+        // Adoption trusts the workspace's prompt buffering: a foreign
+        // session is never streamed frames until its own Connected
+        // renames its bucket in, so a bucketless frame id is this
+        // session's own pre-init identity. A just-closed session's
+        // in-flight frame breaks that trust and resurrects a ghost
+        // bucket here - this log is the tripwire.
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "sdk_frame_id_adopted",
+            outcome = "success",
+            focused_key = %app.active_session_key.as_ref().map_or("<none>", |k| k.as_str()),
+            adopted_session_id = %session_id,
+        );
         app.set_session_id(Some(crate::agent::model::SessionId::new(session_id.to_owned())));
     } else if !active_session_id_str.is_empty() && active_session_id_str != session_id
         || frame_bucket.as_ref().is_some_and(|key| app.active_session_key.as_ref() != Some(key))
@@ -1251,6 +1264,19 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
         // buffer still only shows what was on screen at switch-out.
         let session_key =
             frame_bucket.unwrap_or_else(|| SessionKey::from_session_id(session_id.to_owned()));
+        // An id-less focused bucket routing a bucketed frame is the
+        // adoption gate's complement - stub/sentinel windows only, so
+        // rare enough to log. The regular per-frame background route
+        // stays silent.
+        if active_session_id_str.is_empty() {
+            tracing::info!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "sdk_frame_routed_to_own_bucket",
+                outcome = "success",
+                focused_key = %app.active_session_key.as_ref().map_or("<none>", |k| k.as_str()),
+                frame_session_id = %session_id,
+            );
+        }
         if app.session_mut(&session_key).is_none() {
             // #126 rekey path: the wire `session_id` doesn't match a
             // known bucket. This is the symptom of an empty-session_id
