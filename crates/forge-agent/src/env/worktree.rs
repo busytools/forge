@@ -607,9 +607,9 @@ pub fn stale_agent_worktrees(
     Ok(stale)
 }
 
-/// Whether the sweep may treat a lock as blocking: a parsable pid whose
-/// process is alive blocks, everything else (no pid, unreadable) does
-/// not - the fail-closed direction for a lock we did not write.
+/// Whether a lock blocks the sweep: a parsable pid whose process is
+/// alive blocks, and so does one we cannot judge (no pid, or liveness
+/// unanswerable); only a provably dead pid releases the tree.
 fn lock_pid_is_live(pid: Option<u32>) -> bool {
     match pid {
         Some(pid) => process_is_live(pid),
