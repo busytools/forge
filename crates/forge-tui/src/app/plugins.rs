@@ -382,6 +382,11 @@ pub(crate) fn apply_inventory_refresh_failure(app: &mut App, message: String) {
 /// loading flag without writing the other project's outcome into the
 /// focused pane.
 pub(crate) fn settle_dropped_refresh_failure(app: &mut App) {
+    // Only an armed pane settles: a stale terminal on an idle pane
+    // must not wipe a displayed status line or report.
+    if !app.plugins.loading {
+        return;
+    }
     app.plugins.loading = false;
     app.plugins.status_message = None;
     app.plugins.runtime_reload_after_refresh = false;
@@ -392,6 +397,9 @@ pub(crate) fn settle_dropped_refresh_failure(app: &mut App) {
 /// run copy: no event is left to finish it, and it is what latches
 /// the `u`/`c`/`r` guard.
 pub(crate) fn settle_dropped_manual_run(app: &mut App) {
+    if !app.plugins.loading {
+        return;
+    }
     settle_dropped_refresh_failure(app);
     app.plugins.update_run = None;
 }

@@ -2680,6 +2680,60 @@ mod tests {
         );
     }
 
+    /// Only an armed pane settles: a stale terminal arriving while
+    /// nothing is in flight must not wipe a displayed report or
+    /// status line.
+    #[test]
+    fn a_stale_terminal_on_an_idle_pane_changes_nothing() {
+        let mut app = make_test_app();
+        app.set_cwd_raw("/current");
+        app.plugins.status_message = Some("Update check: 1 updated, 0 failed, 0 current".into());
+        app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
+            trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: vec![stale_cwd_check_row()],
+        });
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PluginsUpdateRunFinished {
+                cwd_raw: "/old".into(),
+                run: crate::app::plugins::PluginUpdateRun {
+                    trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                    finished: true,
+                    rows: vec![stale_cwd_check_row()],
+                },
+                snapshot: None,
+                claude_path: None,
+            },
+        );
+
+        assert!(!app.plugins.loading);
+        assert_eq!(
+            app.plugins.status_message.as_deref(),
+            Some("Update check: 1 updated, 0 failed, 0 current"),
+            "an idle pane keeps its status line"
+        );
+        assert!(app.plugins.update_run.is_some(), "an idle pane keeps its report");
+
+        // The failure settle carries its own gate, so the same holds
+        // for the refresh/check arms.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PluginsInventoryRefreshFailed {
+                cwd_raw: "/old".into(),
+                message: "refresh blew up".into(),
+                trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+            },
+        );
+
+        assert_eq!(
+            app.plugins.status_message.as_deref(),
+            Some("Update check: 1 updated, 0 failed, 0 current"),
+            "an idle pane keeps its status line"
+        );
+    }
+
     #[test]
     fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
         let mut app = make_test_app();
