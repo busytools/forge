@@ -355,6 +355,7 @@ fn git_error(out: &std::process::Output) -> String {
 /// A completed `isolation: "worktree"` subagent's managed worktree, as
 /// the Agent tool reports it on completion. Produced only by
 /// [`completed_agent_worktree`], which vouches for every field.
+#[derive(Debug)]
 pub struct AgentWorktree {
     /// The worktree directory, `<repo>/.claude/worktrees/agent-<hex>`.
     pub path: std::path::PathBuf,
@@ -487,9 +488,8 @@ fn detached_unique_tip(repo_root: &Path, path: &Path) -> Option<String> {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(_) => return Some(tip),
+    let Ok(mut child) = cmd.spawn() else {
+        return Some(tip);
     };
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
@@ -521,29 +521,103 @@ fn survivor_tips(repo_root: &Path, worktree_path: &Path) -> Option<Vec<String>> 
     let listing = git_in_repo(repo_root, &["worktree", "list", "--porcelain"])?;
     let here = std::fs::canonicalize(worktree_path).ok();
     let mut current: Option<(String, Option<String>)> = None;
+    let flush = |current: &mut Option<(String, Option<String>)>, tips: &mut Vec<String>| {
+        if let Some((path, Some(sha))) = current.take() {
+            let same = std::fs::canonicalize(std::path::Path::new(&path))
+                .ok()
+                .zip(here.clone())
+                .is_some_and(|(a, b)| a == b)
+                || path == worktree_path.to_string_lossy();
+            if !same {
+                tips.push(sha);
+            }
+        }
+    };
     for line in listing.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
+            flush(&mut current, &mut tips);
             current = Some((path.to_owned(), None));
         } else if let Some(sha) = line.strip_prefix("HEAD ") {
             if let Some((_, head)) = current.as_mut() {
                 *head = Some(sha.to_owned());
             }
         } else if line.is_empty() {
-            if let Some((path, head)) = current.take() {
-                if let Some(sha) = head {
-                    let same = std::fs::canonicalize(std::path::Path::new(&path))
-                        .ok()
-                        .zip(here.clone())
-                        .is_some_and(|(a, b)| a == b)
-                        || path == worktree_path.to_string_lossy();
-                    if !same {
-                        tips.push(sha);
-                    }
-                }
-            }
+            flush(&mut current, &mut tips);
         }
     }
+    flush(&mut current, &mut tips);
     Some(tips)
+}
+
+/// Managed agent worktrees under `<repo>/.claude/worktrees/` untouched
+/// for at least `age`, for the reconciliation sweep that runs at every
+/// session spawn: it reaps what a one-shot failure or a missed
+/// completion event left behind. Locked trees are never listed - a lock
+/// means a live CLI process owns the tree, and the reap's removal
+/// unlocks first. Feed the result to [`reap_agent_worktree`].
+pub fn stale_agent_worktrees(repo_root: &Path, age: std::time::Duration) -> Vec<AgentWorktree> {
+    let worktrees_dir = repo_root.join(".claude").join("worktrees");
+    let Ok(entries) = std::fs::read_dir(&worktrees_dir) else {
+        return Vec::new();
+    };
+    let locked = locked_worktree_paths(repo_root);
+    let mut stale = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("agent-") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        let untouched = meta.modified().ok().and_then(|m| m.elapsed().ok());
+        if untouched.is_none_or(|tree_age| tree_age < age) {
+            continue;
+        }
+        let path = entry.path();
+        let real = std::fs::canonicalize(&path);
+        if real.is_ok_and(|real| locked.contains(&real)) || locked.contains(&path) {
+            continue;
+        }
+        stale.push(AgentWorktree {
+            path,
+            repo_root: repo_root.to_path_buf(),
+            branch: format!("worktree-{name}"),
+        });
+    }
+    stale
+}
+
+/// Paths of this repo's worktrees git reports as locked, canonicalized.
+fn locked_worktree_paths(repo_root: &Path) -> Vec<std::path::PathBuf> {
+    let Some(listing) = git_in_repo(repo_root, &["worktree", "list", "--porcelain"]) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    let mut current: Option<String> = None;
+    let mut is_locked = false;
+    let flush = |current: &mut Option<String>, is_locked: bool, paths: &mut Vec<_>| {
+        if let (Some(path), true) = (current.take(), is_locked)
+            && let Ok(real) = std::fs::canonicalize(std::path::Path::new(&path))
+        {
+            paths.push(real);
+        }
+    };
+    for line in listing.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            flush(&mut current, is_locked, &mut paths);
+            current = Some(path.to_owned());
+            is_locked = false;
+        } else if line.starts_with("locked") {
+            is_locked = true;
+        } else if line.is_empty() {
+            flush(&mut current, is_locked, &mut paths);
+        }
+    }
+    flush(&mut current, is_locked, &mut paths);
+    paths
 }
 
 /// Remove a completed subagent's managed worktree, then reap the
@@ -1196,7 +1270,7 @@ mod tests {
             "agentType": "general-purpose",
             "content": [{ "type": "text", "text": "done" }],
             "resolvedModel": "glm-5.3-flash",
-            "totalDurationMs": 111649,
+            "totalDurationMs": 111_649,
             "totalTokens": 35201,
             "totalToolUseCount": 8,
             "usage": {
@@ -1557,5 +1631,52 @@ mod tests {
             matches!(reap_agent_worktree(&agent_wt), AgentWorktreeReap::NotAWorktree),
             "a directory git does not vouch for is never removed",
         );
+    }
+
+    #[test]
+    fn stale_agent_worktrees_lists_a_tree_once_its_age_elapses() {
+        let (dir, wt, branch) = init_repo_with_agent_worktree("abc123");
+
+        let listed = stale_agent_worktrees(dir.path(), std::time::Duration::ZERO);
+        assert_eq!(listed.len(), 1, "a fresh tree is stale at age zero: {listed:?}");
+        assert_eq!(listed[0].path, wt);
+        assert_eq!(listed[0].branch, branch);
+        assert_eq!(listed[0].repo_root, dir.path());
+
+        assert!(
+            stale_agent_worktrees(dir.path(), std::time::Duration::from_secs(3600)).is_empty(),
+            "a tree younger than the age is not listed"
+        );
+    }
+
+    /// A lock means a live CLI process owns the tree; the sweep must not
+    /// list it, because the reap's removal unlocks first.
+    #[test]
+    fn stale_agent_worktrees_never_lists_a_locked_tree() {
+        let (dir, wt, _branch) = init_repo_with_agent_worktree("abc123");
+        run_git(dir.path(), &["worktree", "lock", wt.to_str().expect("utf8 path")]);
+
+        assert!(
+            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).is_empty(),
+            "a locked tree stays out of the sweep"
+        );
+    }
+
+    #[test]
+    fn stale_agent_worktrees_ignores_non_agent_names_and_plain_files() {
+        let (dir, _wt, _branch) = init_repo_with_agent_worktree("abc123");
+        add_worker_worktree(dir.path(), "worker-z");
+        let scratch = dir.path().join(".claude").join("worktrees").join("agent-plain-file");
+        fs::write(&scratch, "a file, not a tree").expect("write scratch");
+
+        let listed = stale_agent_worktrees(dir.path(), std::time::Duration::ZERO);
+        assert_eq!(listed.len(), 1, "only the agent-prefixed dir is listed: {listed:?}");
+        assert!(listed[0].path.ends_with("agent-abc123"), "{:?}", listed[0].path);
+    }
+
+    #[test]
+    fn stale_agent_worktrees_is_empty_outside_a_repo() {
+        let dir = tempdir().expect("tempdir");
+        assert!(stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).is_empty());
     }
 }

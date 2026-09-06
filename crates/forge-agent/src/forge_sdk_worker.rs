@@ -239,6 +239,7 @@ pub(crate) async fn spawn_session(
         &AccountBinding { config_dir: &config_dir, env: &account_env },
     );
     let (client, events) = Client::spawn(options).await?;
+    sweep_agent_worktrees(cwd);
     // For resume sessions the CLI flag carried the real session id -
     // prefer that over `Client::session_id()`, which is empty until
     // `system/init` lands on the wire (per `Client::spawn` docs, after
@@ -974,6 +975,41 @@ fn agent_worktree_from_post_tool_use(
         &input.tool_input,
         &input.tool_response,
     )
+}
+
+/// How untouched a managed agent worktree must be before the spawn-time
+/// sweep will list it. Fresh trees can belong to a live subagent of
+/// another session in this repo; an hour of silence does not.
+const AGENT_WORKTREE_SWEEP_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Reap this repo's leftover agent worktrees in the background: a
+/// one-shot reap failure or a missed completion event otherwise leaks
+/// the tree forever. Locked trees are skipped (a live CLI process owns
+/// them); every session spawn re-checks, so failures self-heal.
+fn sweep_agent_worktrees(cwd: &str) {
+    if cwd.is_empty() {
+        return;
+    }
+    let repo_root = std::path::PathBuf::from(cwd);
+    tokio::spawn(async move {
+        match tokio::task::spawn_blocking(move || {
+            for worktree in
+                crate::env::worktree::stale_agent_worktrees(&repo_root, AGENT_WORKTREE_SWEEP_AGE)
+            {
+                let outcome = crate::env::worktree::reap_agent_worktree(&worktree);
+                log_agent_worktree_reap(&worktree, outcome);
+            }
+        })
+        .await
+        {
+            Ok(()) => {}
+            Err(join_err) => tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                error = %join_err,
+                "agent worktree sweep spawn_blocking task panicked",
+            ),
+        }
+    });
 }
 
 fn build_options_with_callback(
