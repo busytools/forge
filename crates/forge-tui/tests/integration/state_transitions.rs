@@ -452,6 +452,11 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
         Some("real-session-abc"),
         "App should have adopted the wire session id",
     );
+    assert_eq!(
+        active_session_key(&app).as_str(),
+        "real-session-abc",
+        "adoption carries focus to the adopted session's bucket, not just the id",
+    );
     let assistant = app
         .messages()
         .iter()

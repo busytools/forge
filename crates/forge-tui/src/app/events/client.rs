@@ -1220,11 +1220,33 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
     // races during session swap.
     let active_session_id_string = app.session_id().map(|s| s.to_string());
     let active_session_id_str = active_session_id_string.as_deref().unwrap_or("");
-    if active_session_id_str.is_empty() && !session_id.is_empty() {
+    // A frame whose session already owns a bucket must never adopt
+    // onto the focused bucket: an id-less active bucket (spawn stub,
+    // boot sentinel) otherwise inherits the background session's id
+    // and `set_session_id` drags focus there.
+    let frame_bucket = (!session_id.is_empty())
+        .then(|| SessionKey::from_session_id(session_id.to_owned()))
+        .filter(|key| app.sessions.contains_key(key));
+    if active_session_id_str.is_empty() && !session_id.is_empty() && frame_bucket.is_none() {
         // The active bucket exists but has no id yet - adopt the
         // canonical id so subsequent dispatch resolves correctly.
+        // Adoption trusts the workspace's prompt buffering: a foreign
+        // session is never streamed frames until its own Connected
+        // renames its bucket in, so a bucketless frame id is this
+        // session's own pre-init identity. A just-closed session's
+        // in-flight frame breaks that trust and resurrects a ghost
+        // bucket here - this log is the tripwire.
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "sdk_frame_id_adopted",
+            outcome = "success",
+            focused_key = %app.active_session_key.as_ref().map_or("<none>", |k| k.as_str()),
+            adopted_session_id = %session_id,
+        );
         app.set_session_id(Some(crate::agent::model::SessionId::new(session_id.to_owned())));
-    } else if !active_session_id_str.is_empty() && active_session_id_str != session_id {
+    } else if (!active_session_id_str.is_empty() && active_session_id_str != session_id)
+        || frame_bucket.as_ref().is_some_and(|key| app.active_session_key.as_ref() != Some(key))
+    {
         // SDK message for a non-active session. The handlers in
         // `super::sdk_message::handle_sdk_message` reach for the
         // active bucket via the App-level accessors (chat buffer,
@@ -1240,7 +1262,21 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
         // payloads in the bucket - the user switches back to a
         // bucket whose pane glyph says Attention but whose chat
         // buffer still only shows what was on screen at switch-out.
-        let session_key = SessionKey::from_session_id(session_id.to_owned());
+        let session_key =
+            frame_bucket.unwrap_or_else(|| SessionKey::from_session_id(session_id.to_owned()));
+        // An id-less focused bucket routing a bucketed frame is the
+        // adoption gate's complement - stub/sentinel windows only, so
+        // rare enough to log. The regular per-frame background route
+        // stays silent.
+        if active_session_id_str.is_empty() {
+            tracing::info!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "sdk_frame_routed_to_own_bucket",
+                outcome = "success",
+                focused_key = %app.active_session_key.as_ref().map_or("<none>", |k| k.as_str()),
+                frame_session_id = %session_id,
+            );
+        }
         if app.session_mut(&session_key).is_none() {
             // #126 rekey path: the wire `session_id` doesn't match a
             // known bucket. This is the symptom of an empty-session_id
@@ -1573,6 +1609,14 @@ pub(super) fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey,
         );
     }
     if app.active_session_key.as_ref() == Some(from) {
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "active_session_switched",
+            outcome = "success",
+            reason = "key_renamed",
+            from = %from.as_str(),
+            to = %to.as_str(),
+        );
         app.active_session_key = Some(to);
         app.refresh_status_from_active_lifecycle();
     }
@@ -3773,6 +3817,203 @@ mod tests {
         assert!(
             app.sessions.get(&key_b).and_then(|s| s.review_replies_waiting.clone()).is_none(),
             "a zero count clears the parked signal",
+        );
+    }
+}
+
+/// The spawn-stub focus seam. An id-less focused bucket - a
+/// `__spawn_<name>__` stub or the boot `__conn_pending__` sentinel -
+/// must not inherit a background session's identity, or
+/// `set_session_id` drags focus there and the spawn's own
+/// KeyRenamed + Connected find the stub unfocused. Enforced for
+/// frames whose session already owns a bucket; a frame whose session
+/// owns none (fresh spawn before its first real-id frame, a
+/// just-closed session's in-flight tail) still adopts - logged as
+/// `sdk_frame_id_adopted`, not mechanism-gated.
+#[cfg(test)]
+mod focus_seam_tests {
+    use super::*;
+    use crate::app::MessageBlock;
+    use crate::app::session::UiSession;
+
+    fn user_frame(session_id: &str) -> forge_primitives::Message {
+        forge_primitives::Message::User {
+            message: forge_primitives::UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![forge_primitives::ContentBlock::Text {
+                    text: "background turn".to_owned(),
+                }],
+            },
+            session_id: session_id.to_owned(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    fn assistant_frame(session_id: &str) -> forge_primitives::Message {
+        forge_primitives::Message::Assistant {
+            message: forge_primitives::AssistantEnvelope {
+                id: "msg_1".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-opus-5".to_owned(),
+                content: vec![forge_primitives::ContentBlock::Text {
+                    text: "background answer".to_owned(),
+                }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: session_id.to_owned(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    /// A live worker bucket plus the user sitting on a cold project's
+    /// spawn stub.
+    fn app_with_worker_and_focused_stub() -> (App, SessionKey, SessionKey) {
+        let mut app = App::test_default();
+        let worker = SessionKey::from_session_id("worker-uuid");
+        let mut worker_bucket = UiSession::new(worker.clone());
+        worker_bucket.session_id = Some(forge_primitives::SessionId::new("worker-uuid"));
+        app.sessions.insert(worker.clone(), worker_bucket);
+        let stub = SessionKey::from_session_id("__spawn_busymail__");
+        app.sessions.insert(stub.clone(), UiSession::new(stub.clone()));
+        app.active_session_key = Some(stub.clone());
+        (app, stub, worker)
+    }
+
+    /// A frame from a bucketed background session must route to its
+    /// own bucket without touching the stub - adopting its session id
+    /// onto the id-less stub dragged focus to the worker and the user
+    /// landed there when the spawn connected.
+    #[test]
+    fn foreign_frame_spares_the_idless_spawn_stub() {
+        let (mut app, stub, worker) = app_with_worker_and_focused_stub();
+
+        apply_session_update_chat_appended(&mut app, "worker-uuid", user_frame("worker-uuid"));
+        apply_session_update_chat_appended(&mut app, "worker-uuid", assistant_frame("worker-uuid"));
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&stub),
+            "a frame from a bucketed session must not drag focus off the stub",
+        );
+        assert!(
+            app.sessions.get(&stub).and_then(|b| b.session_id.clone()).is_none(),
+            "the background session's id must not be stamped onto the stub",
+        );
+        // The frame's content must land in its own bucket's chat, not
+        // in the focused stub's.
+        let worker_bucket = app.sessions.get(&worker).expect("worker bucket");
+        assert!(
+            worker_bucket.messages.iter().any(|m| m.blocks.iter().any(|b| matches!(
+                b, MessageBlock::Text(t) if t.text.contains("background answer")
+            ))),
+            "the background frame renders into its own session's chat",
+        );
+        assert!(
+            !app.sessions.get(&stub).expect("stub bucket").messages.iter().any(|m| m
+                .blocks
+                .iter()
+                .any(
+                    |b| matches!(b, MessageBlock::Text(t) if t.text.contains("background answer"))
+                )),
+            "the background frame must not render into the focused stub's chat",
+        );
+    }
+
+    /// End to end: with the frame gated, the stub keeps focus through
+    /// KeyRenamed and Connected takes the active path, so the click
+    /// lands on the connecting session without a re-click.
+    #[test]
+    fn click_spawn_keeps_focus_through_rename_and_connect() {
+        let (mut app, stub, _worker) = app_with_worker_and_focused_stub();
+        let real = SessionKey::from_session_id("real-uuid");
+        *app.resuming_session_id_mut() = Some("resume-1".to_owned());
+
+        apply_session_update_chat_appended(&mut app, "worker-uuid", user_frame("worker-uuid"));
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::KeyRenamed { from: stub, to: real.clone() },
+        );
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Connected {
+                key: real.clone(),
+                session_id: forge_primitives::SessionId::new("real-uuid"),
+                cwd: "/Users/vedhavyas/Projects/busymail".to_owned(),
+                current_model: forge_primitives::CurrentModel::new("claude-opus-5", "opus", "Opus"),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 0,
+            },
+        );
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&real),
+            "focus lands on the connecting session",
+        );
+        assert_eq!(
+            app.resuming_session_id(),
+            None,
+            "Connected took the active path: the user is watching this session",
+        );
+    }
+
+    /// A launchpad boot leaves `__conn_pending__` focused while
+    /// every auto_start session connects in the background. None of
+    /// them may take the tab - not at the stub, not at connect, and
+    /// not via a stray frame adopting onto the id-less sentinel.
+    #[test]
+    fn background_boot_connects_never_take_focus() {
+        let mut app = App::test_default();
+        let conn_pending = SessionKey::from_session_id(crate::app::App::PRE_CONNECT_KEY);
+        let stub = SessionKey::from_session_id("__spawn_forge__");
+        let real = SessionKey::from_session_id("bg-uuid");
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Spawning {
+                key: stub.clone(),
+                project_name: "forge".to_owned(),
+                cwd: "/Users/vedhavyas/Projects/forge".to_owned(),
+                display_name: "forge".to_owned(),
+            },
+        );
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&conn_pending),
+            "a background wake's stub registers without taking focus",
+        );
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::KeyRenamed { from: stub, to: real.clone() },
+        );
+        apply_session_update_chat_appended(&mut app, "bg-uuid", user_frame("bg-uuid"));
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Connected {
+                key: real.clone(),
+                session_id: forge_primitives::SessionId::new("bg-uuid"),
+                cwd: "/Users/vedhavyas/Projects/forge".to_owned(),
+                current_model: forge_primitives::CurrentModel::new("claude-opus-5", "opus", "Opus"),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 0,
+            },
+        );
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&conn_pending),
+            "a background wake's connect must never move focus",
         );
     }
 }
