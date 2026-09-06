@@ -667,7 +667,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#
     }
@@ -686,7 +686,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "~/.claude-codex"
+config_dir = "/tmp/forge-test/claude-codex"
 provider = "codex"
 [accounts.env]
 ANTHROPIC_BASE_URL = "http://localhost:18765"
@@ -717,7 +717,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-no-provider"
+config_dir = "/tmp/forge-test/claude-no-provider"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("absent provider must not load");
@@ -746,7 +746,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "~/.claude-codex-no-base"
+config_dir = "/tmp/forge-test/claude-codex-no-base"
 provider = "codex"
 "#,
         );
@@ -777,7 +777,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Router"
-config_dir = "~/.claude-router-bare-host"
+config_dir = "/tmp/forge-test/claude-router-bare-host"
 provider = "openrouter"
 [accounts.env]
 ANTHROPIC_BASE_URL = "https://openrouter.ai"
@@ -809,7 +809,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Router"
-config_dir = "~/.claude-router-ok"
+config_dir = "/tmp/forge-test/claude-router-ok"
 provider = "openrouter"
 [accounts.env]
 ANTHROPIC_BASE_URL = "https://openrouter.ai/api/"
@@ -832,7 +832,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-unknown-key"
+config_dir = "/tmp/forge-test/claude-unknown-key"
 provider = "anthropic"
 providers = "anthropic"
 "#,
@@ -862,7 +862,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "~/.claude-codex-blank-base"
+config_dir = "/tmp/forge-test/claude-codex-blank-base"
 provider = "codex"
 [accounts.env]
 ANTHROPIC_BASE_URL = "   "
@@ -897,7 +897,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Openrouter"
-config_dir = "~/.claude-openrouter"
+config_dir = "/tmp/forge-test/claude-openrouter"
 provider = "openrouter"
 permission_mode = "bypassPermissions"
 [accounts.env]
@@ -938,7 +938,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Openrouter"
-config_dir = "~/.claude-openrouter-bad"
+config_dir = "/tmp/forge-test/claude-openrouter-bad"
 provider = "openrouter"
 permission_mode = "yolo"
 [accounts.env]
@@ -972,7 +972,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-mistyped-mode"
+config_dir = "/tmp/forge-test/claude-mistyped-mode"
 provider = "anthropic"
 permissionmode = "bypassPermissions"
 "#,
@@ -1017,7 +1017,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#,
         );
@@ -1046,13 +1046,13 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "~/.claude-codex"
+config_dir = "/tmp/forge-test/claude-codex"
 provider = "anthropic"
 [accounts.env]
 CLAUDE_CODE_AUTO_COMPACT_WINDOW = "372000"
 [[accounts]]
 display_name = "Gateway"
-config_dir = "~/.claude"
+config_dir = "/tmp/forge-test/claude"
 provider = "anthropic"
 "#,
         );
@@ -1086,7 +1086,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 [accounts.env]
 CLAUDE_CODE_OAUTH_TOKEN = "  sk-ant-oat01-stargate  "
@@ -1130,7 +1130,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "~/.claude-codex"
+config_dir = "/tmp/forge-test/claude-codex"
 provider = "codex"
 [accounts.env]
 ANTHROPIC_BASE_URL = "http://localhost:18765"
@@ -1164,7 +1164,7 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Codex"
-config_dir = "~/.claude-codex"
+config_dir = "/tmp/forge-test/claude-codex"
 provider = "anthropic"
 [accounts.env]
 ALL_THREE = "account"
@@ -1219,7 +1219,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 
 [projects.forge]
@@ -1283,7 +1283,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 
 [projects.forge]
@@ -1320,7 +1320,7 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 
 [projects.forge.env]
@@ -1374,7 +1374,7 @@ name = "theta"
 path = "~/Projects/theta"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 
 [projects.gamma.env]
@@ -1443,7 +1443,7 @@ path = "~/Projects/airmail"
 
 [[accounts]]
 display_name = "Codex"
-config_dir = "~/.claude-codex"
+config_dir = "/tmp/forge-test/claude-codex"
 provider = "codex"
 [accounts.env]
 ANTHROPIC_BASE_URL = "http://localhost:18765"
@@ -1487,12 +1487,12 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "~/.claude-codex"
+config_dir = "/tmp/forge-test/claude-codex"
 provider = "anthropic"
 experimental = true
 [[accounts]]
 display_name = "Gateway"
-config_dir = "~/.claude"
+config_dir = "/tmp/forge-test/claude"
 provider = "anthropic"
 "#,
         );
@@ -1682,7 +1682,7 @@ provider = "anthropic"
             r#"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#,
         );
@@ -1702,7 +1702,7 @@ accounts = ["Stargate"]
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#,
         );
@@ -1726,7 +1726,7 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#,
         );
@@ -1750,7 +1750,7 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#,
         );
@@ -1784,7 +1784,7 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Codex"
-config_dir = "~/.claude-codex"
+config_dir = "/tmp/forge-test/claude-codex"
 provider = "anthropic"
 experimental = true
 "#,
@@ -1812,13 +1812,13 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Codex"
-config_dir = "~/.claude-codex"
+config_dir = "/tmp/forge-test/claude-codex"
 provider = "anthropic"
 experimental = true
 
 [[accounts]]
 display_name = "Gateway"
-config_dir = "~/.claude"
+config_dir = "/tmp/forge-test/claude"
 provider = "anthropic"
 "#,
         );
@@ -1851,7 +1851,7 @@ path = "~/Projects/aware"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#,
         );
@@ -1881,7 +1881,7 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#,
         );
@@ -1911,7 +1911,7 @@ name = "middle"
 path = "~/Projects/middle"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#,
         );
@@ -1937,7 +1937,7 @@ name = "alpha"
 path = "~/Projects/alpha"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#,
         );
@@ -1967,7 +1967,7 @@ path = "~/Projects/gamma"
 auto_start = true
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#,
         );
@@ -2009,11 +2009,11 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-other"
+config_dir = "/tmp/forge-test/claude-other"
 provider = "anthropic"
 "#,
         );
