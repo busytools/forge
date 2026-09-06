@@ -539,18 +539,18 @@ impl Engine {
         holder: impl Into<String>,
         device: Option<&str>,
     ) -> Result<Capture, Busy> {
+        // Resolved before the microphone claim: a take whose queue is
+        // already gone (the engine is dropping) must refuse without
+        // taking the holder slot it could not release.
+        let jobs =
+            self.jobs.as_ref().ok_or(Busy { holder: "the engine is stopping".to_owned() })?.clone();
+
         let mut lock = self.holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(held) = lock.as_deref() {
             return Err(Busy { holder: held.to_owned() });
         }
         *lock = Some(holder.into());
         drop(lock);
-
-        // Resolved before the microphone claim: a take whose queue is
-        // already gone (the engine is dropping) must refuse without
-        // taking the holder slot it could not release.
-        let jobs =
-            self.jobs.as_ref().ok_or(Busy { holder: "the engine is stopping".to_owned() })?.clone();
 
         let recording =
             Arc::new(crate::capture::Recording::new(crate::capture::sample_cap(self.max_capture)));
@@ -1360,13 +1360,16 @@ impl TakeSegmenter {
         }
     }
 
-    /// Cut the next window if enough audio has accrued past the last
-    /// one. The decision runs the same function whole-buffer windowing
-    /// does, over a copy of the uncut region, so a live cut lands
-    /// exactly where the finished take's would.
+    /// Cut the next window once enough audio has accrued past the last
+    /// one - the only poll that copies, since a boundary arrives every
+    /// 30 to 60 seconds against a 250 ms poll, and the early return is
+    /// exactly `next_cut`'s own short-circuit. The decision runs the
+    /// same function whole-buffer windowing does, over a copy of the
+    /// uncut region, so a live cut lands exactly where the finished
+    /// take's would.
     fn poll_cut(&mut self) {
         let len = self.recording.sample_len();
-        if len <= self.last_cut {
+        if len.saturating_sub(self.last_cut) <= WINDOW_TARGET {
             return;
         }
         let region = self.recording.copy_region(self.last_cut, len);
