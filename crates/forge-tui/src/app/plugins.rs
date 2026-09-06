@@ -76,8 +76,6 @@ pub struct PluginsState {
     pub marketplace: Vec<MarketplaceEntry>,
     pub marketplaces: Vec<MarketplaceSourceEntry>,
     pub loading: bool,
-    pub status_message: Option<String>,
-    pub last_error: Option<String>,
     pub last_inventory_refresh_at: Option<Instant>,
     pub claude_path: Option<PathBuf>,
     pub runtime_reload_after_refresh: bool,
@@ -110,11 +108,6 @@ impl PluginsState {
             PluginsViewTab::Plugins => self.plugins_selected_index = index,
             PluginsViewTab::Marketplace => self.marketplace_selected_index = index,
         }
-    }
-
-    pub fn clear_feedback(&mut self) {
-        self.status_message = None;
-        self.last_error = None;
     }
 
     pub fn search_query_for(&self, tab: PluginsViewTab) -> String {
@@ -162,7 +155,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         && app.plugins.update_run.as_ref().is_some_and(|run| run.finished)
     {
         app.plugins.update_run = None;
-        app.plugins.status_message = None;
         app.needs_redraw = true;
         return true;
     }
@@ -298,8 +290,8 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
         return;
     }
     app.plugins.loading = true;
-    app.plugins.clear_feedback();
-    app.plugins.status_message = Some("Refreshing plugin inventory...".to_owned());
+    app.config.last_error = None;
+    app.config.status_message = Some("Refreshing plugin inventory...".to_owned());
     app.needs_redraw = true;
     let event_tx = app.update_tx.clone();
     let cwd_context = app.cwd_raw();
@@ -343,7 +335,6 @@ pub(crate) fn apply_inventory_refresh_success(
     app.plugins.marketplace = snapshot.marketplace;
     app.plugins.marketplaces = snapshot.marketplaces;
     app.plugins.loading = false;
-    app.plugins.last_error = None;
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(claude_path);
     refresh_update_records(app);
@@ -353,7 +344,6 @@ pub(crate) fn apply_inventory_refresh_success(
     if should_reload_runtime {
         start_runtime_reload(app, "Plugin inventory refreshed".to_owned());
     } else {
-        app.plugins.status_message = Some("Plugin inventory refreshed".to_owned());
         app.config.last_error = None;
         app.config.status_message = Some("Plugin inventory refreshed".to_owned());
     }
@@ -363,24 +353,18 @@ pub(crate) fn apply_inventory_refresh_failure(app: &mut App, message: String) {
     app.plugins.loading = false;
     app.plugins.runtime_reload_after_refresh = false;
     app.plugins.pending_runtime_reload_success_message = None;
-    app.plugins.status_message = None;
     // A check that could not refresh leaves no half-seen report behind.
     if let Some(run) = app.plugins.update_run.as_ref()
         && run.rows.iter().all(|row| row.status == PluginRunRowStatus::Queued)
     {
         app.plugins.update_run = None;
     }
-    app.plugins.last_error = Some(message.clone());
-    // The pane's footer renders the config feedback pair, so the
-    // failure mirrors there like every sibling failure handler.
     app.config.status_message = None;
     app.config.last_error = Some(message);
 }
 
 pub(crate) fn reset_for_session_change(app: &mut App) {
     app.plugins.loading = false;
-    app.plugins.status_message = None;
-    app.plugins.last_error = None;
     app.plugins.last_inventory_refresh_at = None;
     app.plugins.installed.clear();
     app.plugins.marketplace.clear();
@@ -946,7 +930,6 @@ pub(crate) fn apply_cli_action_success(app: &mut App, result: PluginsCliActionSu
     app.plugins.installed = result.snapshot.installed;
     app.plugins.marketplace = result.snapshot.marketplace;
     app.plugins.marketplaces = result.snapshot.marketplaces;
-    app.plugins.last_error = None;
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(result.claude_path);
     refresh_update_records(app);
@@ -965,9 +948,7 @@ pub(crate) fn apply_cli_action_failure(app: &mut App, message: String) {
 
 pub(crate) fn apply_runtime_reload_success(app: &mut App) {
     app.plugins.loading = false;
-    app.plugins.last_error = None;
     if let Some(message) = app.plugins.pending_runtime_reload_success_message.take() {
-        app.plugins.status_message = Some(message.clone());
         app.config.last_error = None;
         app.config.status_message = Some(message);
     }
@@ -975,8 +956,6 @@ pub(crate) fn apply_runtime_reload_success(app: &mut App) {
 
 pub(crate) fn apply_runtime_reload_failure(app: &mut App, message: &str) {
     app.plugins.loading = false;
-    app.plugins.status_message = None;
-    app.plugins.last_error = Some(message.to_owned());
     app.plugins.pending_runtime_reload_success_message = None;
     app.config.status_message = None;
     app.config.last_error = Some(format!("Failed to reload session plugins: {message}"));
@@ -984,8 +963,6 @@ pub(crate) fn apply_runtime_reload_failure(app: &mut App, message: &str) {
 
 fn start_runtime_reload(app: &mut App, success_message: String) {
     app.plugins.loading = true;
-    app.plugins.status_message = Some("Reloading session plugins...".to_owned());
-    app.plugins.last_error = None;
     app.plugins.pending_runtime_reload_success_message = Some(success_message);
     app.config.last_error = None;
     app.config.status_message = Some("Reloading session plugins...".to_owned());
@@ -1108,18 +1085,16 @@ pub(crate) fn start_update_run(app: &mut App, trigger: PluginUpdateTrigger) {
     }
     let rows = build_update_rows(app, trigger);
     if rows.is_empty() {
-        let message = "No installed plugins are eligible for update".to_owned();
-        app.plugins.status_message = Some(message.clone());
         app.config.last_error = None;
-        app.config.status_message = Some(message);
+        app.config.status_message = Some("No installed plugins are eligible for update".to_owned());
         return;
     }
     let runnable = rows.iter().filter(|row| row.status == PluginRunRowStatus::Queued).count();
     let run = PluginUpdateRun { trigger, finished: false, rows };
     app.plugins.update_run = Some(run.clone());
     app.plugins.loading = true;
-    app.plugins.status_message = Some(format!("Updating {runnable} plugin(s)..."));
-    app.plugins.last_error = None;
+    app.config.last_error = None;
+    app.config.status_message = Some(format!("Updating {runnable} plugin(s)..."));
     app.needs_redraw = true;
     let plan = UpdateRunPlan {
         cwd_context: app.cwd_raw(),
@@ -1148,8 +1123,8 @@ pub(crate) fn start_check_run(app: &mut App) {
         return;
     }
     app.plugins.loading = true;
-    app.plugins.status_message = Some("Checking for plugin updates...".to_owned());
-    app.plugins.last_error = None;
+    app.config.last_error = None;
+    app.config.status_message = Some("Checking for plugin updates...".to_owned());
     app.needs_redraw = true;
     let update_tx = app.update_tx.clone();
     let cwd_context = app.cwd_raw();
@@ -1479,12 +1454,16 @@ pub(crate) fn start_rollback(app: &mut App, plugin_id: String, scope: String) {
         .find(|record| record.plugin_id == plugin_id && record.scope == scope)
         .cloned()
     else {
-        app.plugins.last_error = Some("No recorded previous version for this plugin".to_owned());
+        // The pane's footer renders the config feedback pair.
+        let message = "No recorded previous version for this plugin";
+        app.config.status_message = None;
+        app.config.last_error = Some(message.to_owned());
         return;
     };
     if record.marketplace_ref_before.is_none() {
-        app.plugins.last_error =
-            Some("No pre-update marketplace ref was captured; rollback is unavailable".to_owned());
+        let message = "No pre-update marketplace ref was captured; rollback is unavailable";
+        app.config.status_message = None;
+        app.config.last_error = Some(message.to_owned());
         return;
     }
     let install_location = app
@@ -1494,8 +1473,9 @@ pub(crate) fn start_rollback(app: &mut App, plugin_id: String, scope: String) {
         .find(|marketplace| marketplace.name == record.marketplace)
         .and_then(|marketplace| marketplace.install_location.clone());
     let Some(install_location) = install_location else {
-        app.plugins.last_error =
-            Some("Rollback needs a git-backed marketplace clone; none found".to_owned());
+        let message = "Rollback needs a git-backed marketplace clone; none found";
+        app.config.status_message = None;
+        app.config.last_error = Some(message.to_owned());
         return;
     };
     if tokio::runtime::Handle::try_current().is_err() {
@@ -1508,8 +1488,8 @@ pub(crate) fn start_rollback(app: &mut App, plugin_id: String, scope: String) {
     let to_version = record.from_version.clone().unwrap_or_else(|| "previous version".to_owned());
     app.config.overlay = None;
     app.plugins.loading = true;
-    app.plugins.status_message = Some(format!("Rolling back {label} to {to_version}..."));
-    app.plugins.last_error = None;
+    app.config.last_error = None;
+    app.config.status_message = Some(format!("Rolling back {label} to {to_version}..."));
     app.needs_redraw = true;
     let update_tx = app.update_tx.clone();
     let cwd_context = app.cwd_raw();
@@ -1708,10 +1688,9 @@ pub(crate) fn apply_update_run_finished(
         PluginUpdateTrigger::Manual => Some(format!("Update run finished: {}", run.summary())),
     };
     // Arms that skip the runtime reload sync the footer pair
-    // themselves, so a mirrored failure does not outlive a successful
+    // themselves, so a recorded failure does not outlive a successful
     // run.
     if let Some(message) = summary {
-        app.plugins.status_message = Some(message.clone());
         app.config.last_error = None;
         app.config.status_message = Some(message);
     }
@@ -1764,10 +1743,8 @@ pub(crate) fn apply_rollback_failure(
         clamp_selection(app);
     }
     app.plugins.loading = false;
-    app.plugins.status_message = None;
     app.config.status_message = None;
     let failure = format!("Rollback of {} failed: {message}", display_label(plugin_id));
-    app.plugins.last_error = Some(failure.clone());
     app.config.last_error = Some(failure);
     app.needs_redraw = true;
 }
@@ -3082,13 +3059,12 @@ mod tests {
                 .is_some_and(|message| message.starts_with("Update check: ")),
             "a nothing-found run reports as a check"
         );
-        assert!(app.config.last_error.is_none(), "the mirrored error clears");
+        assert!(app.config.last_error.is_none(), "the recorded error clears");
         assert!(app.plugins.update_availability.is_empty(), "nothing found: no markers");
     }
 
-    /// The plugins failure handlers mirror into the config feedback
-    /// pair, which is what the pane's footer renders;
-    /// plugins.last_error has no reader.
+    /// The plugins failure handlers write the config feedback pair,
+    /// which is what the pane's footer renders.
     #[test]
     fn plugin_failures_surface_on_the_footer_pair() {
         let mut app = App::test_default();
@@ -3105,6 +3081,150 @@ mod tests {
             Some("Rollback of P From Market failed: boom")
         );
         assert!(app.config.status_message.is_none(), "the stale status clears");
+    }
+
+    /// A rollback guard refusal leaves the overlay open, so its
+    /// message has to reach the footer pair or nothing shows it.
+    #[test]
+    fn rollback_guard_refusals_surface_on_the_footer_pair() {
+        let mut app = App::test_default();
+
+        start_rollback(&mut app, "pensive@claude-night-market".to_owned(), "user".to_owned());
+        assert_eq!(
+            app.config.last_error.as_deref(),
+            Some("No recorded previous version for this plugin")
+        );
+
+        app.config.last_error = None;
+        app.plugins.update_records = vec![PluginUpdateRecord {
+            plugin_id: "pensive@claude-night-market".to_owned(),
+            marketplace: "claude-night-market".to_owned(),
+            scope: "user".to_owned(),
+            cwd_raw: String::new(),
+            from_version: Some("1.7.1".to_owned()),
+            to_version: Some("1.7.2".to_owned()),
+            marketplace_ref_before: None,
+            updated_at: "2026-09-04T06:00:00Z".to_owned(),
+            trigger: PluginUpdateTrigger::Manual,
+        }];
+        start_rollback(&mut app, "pensive@claude-night-market".to_owned(), "user".to_owned());
+        assert_eq!(
+            app.config.last_error.as_deref(),
+            Some("No pre-update marketplace ref was captured; rollback is unavailable")
+        );
+
+        app.plugins.update_records[0].marketplace_ref_before = Some("abc123".to_owned());
+        start_rollback(&mut app, "pensive@claude-night-market".to_owned(), "user".to_owned());
+        assert_eq!(
+            app.config.last_error.as_deref(),
+            Some("Rollback needs a git-backed marketplace clone; none found")
+        );
+    }
+
+    /// The `u` start message reaches the footer pair and clears a
+    /// stale error with it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_update_start_message_surfaces_on_the_footer_pair() {
+        let mut app = App::test_default();
+        seeded_installed(&mut app);
+        app.plugins.active_tab = PluginsViewTab::Installed;
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                app.config.last_error = Some("stale".to_owned());
+                handle_key(&mut app, KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+                assert_eq!(
+                    app.config.status_message.as_deref(),
+                    Some("Updating 3 plugin(s)..."),
+                    "the start message reaches the footer pair: {:?}",
+                    app.config.status_message
+                );
+                assert!(app.config.last_error.is_none(), "the stale error clears");
+            })
+            .await;
+    }
+
+    /// The `c` start message reaches the footer pair.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_check_start_message_surfaces_on_the_footer_pair() {
+        let mut app = App::test_default();
+        seeded_installed(&mut app);
+        app.plugins.active_tab = PluginsViewTab::Installed;
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+                assert_eq!(
+                    app.config.status_message.as_deref(),
+                    Some("Checking for plugin updates..."),
+                    "the start message reaches the footer pair: {:?}",
+                    app.config.status_message
+                );
+            })
+            .await;
+    }
+
+    /// The `r` start message reaches the footer pair.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_refresh_start_message_surfaces_on_the_footer_pair() {
+        let mut app = App::test_default();
+        app.plugins.active_tab = PluginsViewTab::Installed;
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+                assert_eq!(
+                    app.config.status_message.as_deref(),
+                    Some("Refreshing plugin inventory..."),
+                    "the start message reaches the footer pair: {:?}",
+                    app.config.status_message
+                );
+            })
+            .await;
+    }
+
+    /// The rollback start message reaches the footer pair and clears
+    /// a stale error with it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_rollback_start_message_surfaces_on_the_footer_pair() {
+        let mut app = App::test_default();
+        app.plugins.update_records = vec![PluginUpdateRecord {
+            plugin_id: "pensive@claude-night-market".to_owned(),
+            marketplace: "claude-night-market".to_owned(),
+            scope: "user".to_owned(),
+            cwd_raw: String::new(),
+            from_version: Some("1.7.1".to_owned()),
+            to_version: Some("1.7.2".to_owned()),
+            marketplace_ref_before: Some("abc123".to_owned()),
+            updated_at: "2026-09-04T06:00:00Z".to_owned(),
+            trigger: PluginUpdateTrigger::Manual,
+        }];
+        app.plugins.marketplaces = vec![MarketplaceSourceEntry {
+            name: "claude-night-market".to_owned(),
+            source: None,
+            repo: None,
+            install_location: Some("/tmp/claude-night-market".to_owned()),
+        }];
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                app.config.last_error = Some("stale".to_owned());
+                start_rollback(
+                    &mut app,
+                    "pensive@claude-night-market".to_owned(),
+                    "user".to_owned(),
+                );
+                assert!(
+                    app.config
+                        .status_message
+                        .as_deref()
+                        .is_some_and(|message| { message.starts_with("Rolling back ") }),
+                    "the start message reaches the footer pair: {:?}",
+                    app.config.status_message
+                );
+                assert!(app.config.last_error.is_none(), "the stale error clears");
+            })
+            .await;
     }
 
     /// After an update run the markers describe the run's post-run
@@ -3346,9 +3466,9 @@ mod tests {
         );
         assert!(app.plugins.update_records.is_empty());
         // The Auto arm skips the runtime reload, so it syncs the
-        // footer pair itself: the mirrored error clears and the
+        // footer pair itself: the recorded error clears and the
         // summary lands on the status line.
-        assert!(app.config.last_error.is_none(), "a finished boot run clears a mirrored error");
+        assert!(app.config.last_error.is_none(), "a finished boot run clears a recorded error");
         assert_eq!(
             app.config.status_message.as_deref(),
             Some("Plugin auto-update finished: 1 updated, 0 failed, 0 current")
@@ -3401,7 +3521,7 @@ mod tests {
     }
 
     /// A `u` with nothing installed refuses the run and syncs the
-    /// footer pair itself: a mirrored failure must not outlive the
+    /// footer pair itself: a recorded failure must not outlive the
     /// no-op.
     #[tokio::test]
     async fn an_empty_u_reports_nothing_eligible_and_syncs_the_footer() {
@@ -3412,7 +3532,7 @@ mod tests {
         start_update_run(&mut app, PluginUpdateTrigger::Manual);
 
         assert!(app.plugins.update_run.is_none(), "no run is seeded");
-        assert!(app.config.last_error.is_none(), "the mirrored error clears");
+        assert!(app.config.last_error.is_none(), "the recorded error clears");
         assert_eq!(
             app.config.status_message.as_deref(),
             Some("No installed plugins are eligible for update")
@@ -4055,12 +4175,12 @@ mod tests {
         assert!(!app.plugins.loading, "the seeded run does not pin the pane");
         assert!(app.plugins.update_run.is_none(), "the empty seeded run is cleared");
         assert!(
-            app.plugins
+            app.config
                 .last_error
                 .as_deref()
                 .is_some_and(|error| error.contains("claude CLI not found")),
             "the failure is visible in the pane: {:?}",
-            app.plugins.last_error
+            app.config.last_error
         );
         assert!(
             calls.lock().expect("call log").is_empty(),
