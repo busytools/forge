@@ -24,6 +24,7 @@ use crate::protocol::{
     Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
 };
 use crate::target::ProjectKey;
+use crate::workspace::LiveWorkerRefusal;
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
@@ -965,28 +966,6 @@ pub(crate) fn handle_spawn_worker(
     };
     let is_git = forge_agent::env::worktree::is_git_repo(&view.path);
 
-    // `[workers] max_concurrent` cap. Boot re-spawns are exempt: they
-    // restore persisted workers the user already had, and their spawn
-    // reply is dropped, so a refusal here could never reach a caller.
-    let max_workers = workspace.config.workers.max_concurrent;
-    if !from_boot_respawn {
-        let live = workspace.total_live_worker_count();
-        if live >= max_workers {
-            tracing::info!(
-                target: "forge_workspace::spawn",
-                project = %project_key.as_str(),
-                label = %label,
-                live,
-                max_workers,
-                "spawn_worker: refused, at the concurrent worker cap",
-            );
-            let _ = return_to.send(Err(format!(
-                "worker limit reached: {live} workers are already live and the concurrent worker cap is {max_workers} (forge.toml [workers] max_concurrent); despawn one first"
-            )));
-            return;
-        }
-    }
-
     // Synthesize a pool key for the not-yet-spawned worker. The
     // SessionTask rekeys this onto the real claude-issued UUID on
     // first Connected; migrate_session_task also rewrites the
@@ -1031,24 +1010,45 @@ pub(crate) fn handle_spawn_worker(
         diagnostic: None,
         kick,
     };
-    // At-most-one-live-worker-per-label, enforced atomically at this
-    // shared core so neither dispatch source - the boot re-spawn or an
-    // MCP `workers__spawn` - can double-insert and fork two subprocesses
-    // onto one worktree, even on two genuinely-concurrent dispatches for
-    // the same label.
-    if let Err(existing) = workspace.insert_live_worker_if_label_absent(&project_key, entry.clone())
+    // Label uniqueness AND the `[workers] max_concurrent` cap, enforced
+    // atomically at this shared core so neither dispatch source - the
+    // boot re-spawn or an MCP `workers__spawn` - can double-insert and
+    // fork two subprocesses onto one worktree, or overshoot the cap on
+    // genuinely-concurrent dispatches. Boot re-spawns pass no cap: they
+    // restore persisted workers the user already had, and their spawn
+    // reply is dropped, so a refusal there could never reach a caller.
+    let cap = (!from_boot_respawn).then(|| workspace.config.workers.max_concurrent);
+    if let Err(refusal) =
+        workspace.insert_live_worker_if_label_absent(&project_key, entry.clone(), cap)
     {
-        let existing_session = existing.as_str().to_owned();
-        tracing::debug!(
-            target: "forge_workspace::spawn",
-            project = %project_key.as_str(),
-            label = %label,
-            %existing_session,
-            "spawn_worker: label already live; skipping duplicate spawn",
-        );
-        let _ = return_to.send(Err(format!(
-            "a worker labeled '{label}' is already live (session {existing_session}); message it with workers__tell / workers__ask or close it first (one live worker per label)"
-        )));
+        match refusal {
+            LiveWorkerRefusal::LabelLive(existing) => {
+                let existing_session = existing.as_str().to_owned();
+                tracing::debug!(
+                    target: "forge_workspace::spawn",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    %existing_session,
+                    "spawn_worker: label already live; skipping duplicate spawn",
+                );
+                let _ = return_to.send(Err(format!(
+                    "a worker labeled '{label}' is already live (session {existing_session}); message it with workers__tell / workers__ask or close it first (one live worker per label)"
+                )));
+            }
+            LiveWorkerRefusal::AtCap { live, cap } => {
+                tracing::info!(
+                    target: "forge_workspace::spawn",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    live,
+                    cap,
+                    "spawn_worker: refused, at the concurrent worker cap",
+                );
+                let _ = return_to.send(Err(format!(
+                    "worker limit reached: {live} workers are already live and the concurrent worker cap is {cap} (forge.toml [workers] max_concurrent); despawn one first"
+                )));
+            }
+        }
         return;
     }
     // Extend the assignment plan so this worker's account comes from the
@@ -2184,6 +2184,66 @@ max_concurrent = {limit}
             0,
             "the refused spawn creates no worker in the target project"
         );
+    }
+
+    /// Parallel spawns cannot overshoot the cap: eight concurrent
+    /// lead-driven spawns at cap 1 land exactly one worker, and every
+    /// loser is told the cap is why. Pins the cap check + insert being
+    /// one critical section - dispatched spawns run inline on their
+    /// caller's task, so nothing serializes them but this.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_spawns_at_the_cap_land_exactly_one_worker() {
+        let (workspace, _config_dir) = stub_with_worker_limit(1);
+
+        let mut handles = Vec::new();
+        for n in 0..8 {
+            let workspace = Arc::clone(&workspace);
+            handles.push(tokio::spawn(async move {
+                let project = seeded_project(&workspace);
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                handle_spawn_worker(
+                    &workspace,
+                    project,
+                    &format!("w{n}"),
+                    "charter".to_owned(),
+                    "lead".to_owned(),
+                    None,
+                    None,
+                    false,
+                    false,
+                    tx,
+                );
+                rx.await.expect("reply")
+            }));
+        }
+
+        let mut winners = 0;
+        let mut cap_refusals = 0;
+        let mut winner_sessions = Vec::new();
+        for handle in handles {
+            match handle.await.expect("spawn task joins") {
+                Ok(reply) => {
+                    winners += 1;
+                    winner_sessions.push(SessionKey::from_session_id(reply.session_id));
+                }
+                Err(message) => {
+                    assert!(
+                        message.contains("worker limit reached"),
+                        "a loser names the cap: {message}"
+                    );
+                    cap_refusals += 1;
+                }
+            }
+        }
+        assert_eq!(winners, 1, "exactly one spawn wins the cap slot");
+        assert_eq!(cap_refusals, 7, "every other spawn is refused by the cap");
+        let project = seeded_project(&workspace);
+        assert_eq!(workspace.list_live_workers(&project).len(), 1, "no overshoot past the cap");
+        // Release the winner so its dispatcher never gets far enough to
+        // exec a claude subprocess this test would leave behind.
+        for session in winner_sessions {
+            workspace.release_session(&session);
+        }
     }
 
     /// #976's open question, decided: the boot-time respawn scan is
