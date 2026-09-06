@@ -2261,7 +2261,11 @@ max_concurrent = {limit}
         }
         assert_eq!(admitted, 1, "exactly one insert wins the cap");
         assert_eq!(refused, 31, "every other insert is refused by the cap");
-        assert_eq!(workspace.list_live_workers(&project).len(), 1);
+        assert_eq!(
+            workspace.list_live_workers(&project).len(),
+            1,
+            "the pool holds exactly the one admitted entry"
+        );
     }
 
     /// The same gate through the full handler: eight concurrent
