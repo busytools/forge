@@ -3144,7 +3144,8 @@ mod tests {
             .await;
     }
 
-    /// The `c` start message reaches the footer pair.
+    /// The `c` start message reaches the footer pair and clears a
+    /// stale error with it.
     #[tokio::test(flavor = "current_thread")]
     async fn the_check_start_message_surfaces_on_the_footer_pair() {
         let mut app = App::test_default();
@@ -3153,6 +3154,7 @@ mod tests {
 
         tokio::task::LocalSet::new()
             .run_until(async {
+                app.config.last_error = Some("stale".to_owned());
                 handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
                 assert_eq!(
                     app.config.status_message.as_deref(),
@@ -3160,11 +3162,13 @@ mod tests {
                     "the start message reaches the footer pair: {:?}",
                     app.config.status_message
                 );
+                assert!(app.config.last_error.is_none(), "the stale error clears");
             })
             .await;
     }
 
-    /// The `r` start message reaches the footer pair.
+    /// The `r` start message reaches the footer pair and clears a
+    /// stale error with it.
     #[tokio::test(flavor = "current_thread")]
     async fn the_refresh_start_message_surfaces_on_the_footer_pair() {
         let mut app = App::test_default();
@@ -3172,6 +3176,7 @@ mod tests {
 
         tokio::task::LocalSet::new()
             .run_until(async {
+                app.config.last_error = Some("stale".to_owned());
                 handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
                 assert_eq!(
                     app.config.status_message.as_deref(),
@@ -3179,6 +3184,7 @@ mod tests {
                     "the start message reaches the footer pair: {:?}",
                     app.config.status_message
                 );
+                assert!(app.config.last_error.is_none(), "the stale error clears");
             })
             .await;
     }
@@ -3813,18 +3819,26 @@ mod tests {
     }
 
     /// Boot auto-update updates every installed plugin from its own
-    /// entry cwd. The run is seeded synchronously so a manual `u`
-    /// cannot race it.
+    /// entry cwd; a marketplace-less id skips without a CLI call and
+    /// the footer summary stays honest. The run is seeded
+    /// synchronously so a manual `u` cannot race it.
     #[tokio::test(flavor = "current_thread")]
     async fn boot_auto_update_runs_every_installed_plugin() {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace");
         let calls = call_log();
-        let cli = fake_cli(
-            "supabase is already at the latest version (1.0.0).",
-            &two_plugin_snapshot(),
-            &calls,
-        );
+        let mut snapshot = two_plugin_snapshot();
+        snapshot.installed.push(InstalledPluginEntry {
+            id: "bare-skill".to_owned(),
+            version: Some("0.1.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        });
+        let cli = fake_cli("supabase is already at the latest version (1.0.0).", &snapshot, &calls);
         let settings = forge_workspace::PluginSettings { auto_update: true };
 
         tokio::task::LocalSet::new()
@@ -3855,7 +3869,11 @@ mod tests {
         let log = calls.lock().expect("call log").clone();
         let update_calls: Vec<&String> =
             log.iter().filter(|call| !call.starts_with("refresh")).collect();
-        assert_eq!(update_calls.len(), 3, "every installed plugin updates: {log:?}");
+        assert_eq!(
+            update_calls.len(),
+            3,
+            "every marketplace-backed plugin updates, the bare id never calls: {log:?}"
+        );
         assert!(
             log.iter().any(|call| call.starts_with("/test:")),
             "user-scoped plugins update from the boot cwd: {log:?}"
@@ -3864,9 +3882,17 @@ mod tests {
         let run = app.plugins.update_run.as_ref().expect("the report stands");
         assert!(run.finished);
         assert!(
-            run.rows.iter().all(|row| row.status == PluginRunRowStatus::AlreadyCurrent),
-            "the fake CLI reports every plugin current: {:?}",
             run.rows
+                .iter()
+                .any(|row| row.plugin_id == "bare-skill"
+                    && row.status == PluginRunRowStatus::Skipped),
+            "the marketplace-less entry skips on the auto arm: {:?}",
+            run.rows
+        );
+        assert_eq!(
+            app.config.status_message.as_deref(),
+            Some("Plugin auto-update finished: all current"),
+            "the footer summary counts the three current plugins, not the skipped one"
         );
     }
 
