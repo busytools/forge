@@ -381,6 +381,14 @@ pub enum AgentWorktreeReap {
     RemoveFailed { reason: String },
 }
 
+/// Whether this hook payload names an isolation:"worktree" Agent call -
+/// the population whose completion either names a managed worktree or
+/// proves the CLI's tool-response contract drifted.
+pub fn is_isolated_agent_call(tool_name: &str, tool_input: &serde_json::Value) -> bool {
+    (tool_name == "Agent" || tool_name == "Task")
+        && tool_input.get("isolation").and_then(serde_json::Value::as_str) == Some("worktree")
+}
+
 /// The agent worktree a completed Agent-tool call left behind, from the
 /// PostToolUse hook payload.
 ///
@@ -394,10 +402,7 @@ pub fn completed_agent_worktree(
     tool_input: &serde_json::Value,
     tool_response: &serde_json::Value,
 ) -> Option<AgentWorktree> {
-    if tool_name != "Agent" && tool_name != "Task" {
-        return None;
-    }
-    if tool_input.get("isolation").and_then(serde_json::Value::as_str) != Some("worktree") {
+    if !is_isolated_agent_call(tool_name, tool_input) {
         return None;
     }
     let path: std::path::PathBuf = find_string_field(tool_response, "worktreePath", 0)?.into();
@@ -1081,13 +1086,50 @@ mod tests {
         );
     }
 
-    /// The PostToolUse payload of a real isolation:"worktree" Agent call
-    /// (CLI 2.1.220): the response names the managed worktree path and
-    /// branch.
-    fn isolated_agent_response(path: &str, branch: &str) -> serde_json::Value {
+    /// The PostToolUse tool_response of a real isolation:"worktree" Agent
+    /// call that left an uncommitted file, captured on CLI 2.1.220
+    /// (absolute path redacted). The worktree fields are flat and
+    /// top-level; a completed call that changed nothing carries none of
+    /// them, and an async launch carries none either.
+    fn kept_worktree_response(path: &str, branch: &str) -> serde_json::Value {
         serde_json::json!({
+            "status": "completed",
+            "prompt": "Create a file named kept.txt in the repo root containing the word hello. Do not commit it. When finished, reply with just the word done.",
+            "agentId": "ac437073a41a2149d",
+            "agentType": "general-purpose",
+            "content": [{ "type": "text", "text": "done" }],
+            "resolvedModel": "glm-5.3-flash",
+            "totalDurationMs": 111649,
+            "totalTokens": 35201,
+            "totalToolUseCount": 8,
+            "usage": {
+                "input_tokens": 190,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 35008,
+                "output_tokens": 3,
+                "server_tool_use": { "web_search_requests": 0, "web_fetch_requests": 0 },
+                "service_tier": "standard",
+            },
+            "toolStats": { "editFileCount": 1, "linesAdded": 2, "linesRemoved": 0 },
             "worktreePath": path,
             "worktreeBranch": branch,
+        })
+    }
+
+    /// The tool_response of a real async isolation:"worktree" launch,
+    /// captured on CLI 2.1.220. It names no worktree: the subagent is
+    /// about to run in it, so a parse that found a path here would reap a
+    /// live agent's tree.
+    fn async_launch_response() -> serde_json::Value {
+        serde_json::json!({
+            "isAsync": true,
+            "status": "async_launched",
+            "agentId": "a01ffe965157f5add",
+            "description": "capture async",
+            "resolvedModel": "glm-5.3-flash",
+            "prompt": "sleep then done",
+            "outputFile": "/private/tmp/claude-501/repo/65d36dcd/tasks/a01ffe965157f5add.output",
+            "canReadOutputFile": true,
         })
     }
 
@@ -1095,12 +1137,40 @@ mod tests {
         serde_json::json!({ "isolation": "worktree", "prompt": "review it" })
     }
 
+    /// The CLI auto-cleans a no-changes worktree and names no path in the
+    /// response; that population must parse as None, never as a miss that
+    /// guesses.
+    #[test]
+    fn completed_agent_worktree_ignores_a_completed_response_without_a_worktree() {
+        let mut response = kept_worktree_response("/repo/.claude/worktrees/agent-abc123", "w");
+        response.as_object_mut().expect("object").remove("worktreePath");
+        response.as_object_mut().expect("object").remove("worktreeBranch");
+        assert!(completed_agent_worktree("Agent", &agent_input(), &response).is_none());
+    }
+
+    /// An async launch's worktree is about to be a live agent's cwd; the
+    /// response naming no path is what keeps the reap off it.
+    #[test]
+    fn completed_agent_worktree_never_reaps_an_async_launch() {
+        assert!(
+            completed_agent_worktree("Agent", &agent_input(), &async_launch_response()).is_none()
+        );
+    }
+
+    #[test]
+    fn is_isolated_agent_call_tracks_the_gate_population() {
+        assert!(is_isolated_agent_call("Agent", &agent_input()));
+        assert!(is_isolated_agent_call("Task", &agent_input()));
+        assert!(!is_isolated_agent_call("EnterWorktree", &agent_input()));
+        assert!(!is_isolated_agent_call("Agent", &serde_json::json!({ "prompt": "plain" })));
+    }
+
     #[test]
     fn completed_agent_worktree_parses_the_managed_path_and_branch() {
         let wt = completed_agent_worktree(
             "Agent",
             &agent_input(),
-            &isolated_agent_response(
+            &kept_worktree_response(
                 "/repo/.claude/worktrees/agent-a83052083ca02b1ce",
                 "worktree-agent-a83052083ca02b1ce",
             ),
@@ -1127,7 +1197,7 @@ mod tests {
         let wt = completed_agent_worktree(
             "Task",
             &agent_input(),
-            &isolated_agent_response(
+            &kept_worktree_response(
                 "/repo/.claude/worktrees/agent-abc123",
                 "worktree-agent-abc123",
             ),
@@ -1152,7 +1222,7 @@ mod tests {
             completed_agent_worktree(
                 "Agent",
                 &plain,
-                &isolated_agent_response(
+                &kept_worktree_response(
                     "/repo/.claude/worktrees/agent-abc123",
                     "worktree-agent-abc123"
                 ),
@@ -1170,7 +1240,7 @@ mod tests {
             completed_agent_worktree(
                 "EnterWorktree",
                 &agent_input(),
-                &isolated_agent_response(
+                &kept_worktree_response(
                     "/repo/.claude/worktrees/agent-abc123",
                     "worktree-agent-abc123"
                 ),
@@ -1190,7 +1260,7 @@ mod tests {
                 completed_agent_worktree(
                     "Agent",
                     &agent_input(),
-                    &isolated_agent_response(path, "worktree-agent-abc123"),
+                    &kept_worktree_response(path, "worktree-agent-abc123"),
                 )
                 .is_none(),
                 "{path} is not a managed agent worktree",

@@ -961,6 +961,17 @@ fn build_options_with_callback(
                         &agent_worktree,
                     ));
                 });
+            } else if crate::env::worktree::is_isolated_agent_call(
+                &input.tool_name,
+                &input.tool_input,
+            ) {
+                tracing::info!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    session_id = %input.base.session_id,
+                    tool = %input.tool_name,
+                    "isolation worktree agent completed; its response named no managed \
+                     worktree path (auto-cleaned, or the CLI's tool-response contract changed)",
+                );
             }
             HookDecision::passthrough()
         })
