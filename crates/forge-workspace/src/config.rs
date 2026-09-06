@@ -491,7 +491,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         }
     }
 
-    // A `[projects.<name>.env]` table repeats a project name by hand,
+    // A `[projects.<name>]` table repeats a project name by hand,
     // so a typo lands nowhere. Same treatment as an org naming an
     // undeclared account: refuse to boot and list the valid names.
     let mut unknown_env_projects: Vec<&str> =
