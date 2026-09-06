@@ -556,13 +556,23 @@ fn survivor_tips(repo_root: &Path, worktree_path: &Path) -> Option<Vec<String>> 
 /// (the CLI stamps one on a live isolation agent's tree) keeps the tree
 /// out; a dead pid - a crashed CLI's leftover, which git never prunes on
 /// its own - is reapable. Locks without a parsable pid are not ours to
-/// judge and skip. Feed the result to [`reap_agent_worktree`].
-pub fn stale_agent_worktrees(repo_root: &Path, age: std::time::Duration) -> Vec<AgentWorktree> {
+/// judge and skip. `Ok(vec![])` when the worktrees dir is absent; other
+/// read errors propagate, and a repo git cannot answer about sweeps as
+/// empty - the fail-closed direction for a deleter. Feed the result to
+/// [`reap_agent_worktree`].
+pub fn stale_agent_worktrees(
+    repo_root: &Path,
+    age: std::time::Duration,
+) -> std::io::Result<Vec<AgentWorktree>> {
     let worktrees_dir = repo_root.join(".claude").join("worktrees");
-    let Ok(entries) = std::fs::read_dir(&worktrees_dir) else {
-        return Vec::new();
+    let entries = match std::fs::read_dir(&worktrees_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
     };
-    let locks = locked_worktrees(repo_root);
+    let Some(locks) = locked_worktrees(repo_root) else {
+        return Ok(Vec::new());
+    };
     let mut stale = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -594,7 +604,7 @@ pub fn stale_agent_worktrees(repo_root: &Path, age: std::time::Duration) -> Vec<
             branch: format!("worktree-{name}"),
         });
     }
-    stale
+    Ok(stale)
 }
 
 /// Whether the sweep may treat a lock as blocking: a parsable pid whose
@@ -624,7 +634,10 @@ pub fn agent_worktree_lock_is_live(repo_root: &Path, path: &Path) -> bool {
     let Ok(real) = std::fs::canonicalize(path) else {
         return true;
     };
-    match locked_worktrees(repo_root).into_iter().find(|lock| lock.path == real) {
+    let Some(locks) = locked_worktrees(repo_root) else {
+        return true;
+    };
+    match locks.into_iter().find(|lock| lock.path == real) {
         Some(lock) => lock_pid_is_live(lock.pid),
         None => false,
     }
@@ -638,11 +651,11 @@ struct WorktreeLock {
 }
 
 /// This repo's worktrees git reports as locked, canonicalized, with the
-/// pid parsed from the reason when there is one.
-fn locked_worktrees(repo_root: &Path) -> Vec<WorktreeLock> {
-    let Some(listing) = git_in_repo(repo_root, &["worktree", "list", "--porcelain"]) else {
-        return Vec::new();
-    };
+/// pid parsed from the reason when there is one. `None` when git cannot
+/// be asked - the caller sweeps as empty rather than judge without the
+/// lock facts.
+fn locked_worktrees(repo_root: &Path) -> Option<Vec<WorktreeLock>> {
+    let listing = git_in_repo(repo_root, &["worktree", "list", "--porcelain"])?;
     let mut locks = Vec::new();
     let mut current: Option<String> = None;
     let mut reason: Option<String> = None;
@@ -668,7 +681,7 @@ fn locked_worktrees(repo_root: &Path) -> Vec<WorktreeLock> {
         }
     }
     flush(&mut current, &mut reason, &mut locks);
-    locks
+    Some(locks)
 }
 
 /// The pid in a CLI lock reason, `claude agent agent-<hex> (pid 33497
@@ -1696,14 +1709,17 @@ mod tests {
     fn stale_agent_worktrees_lists_a_tree_once_its_age_elapses() {
         let (dir, wt, branch) = init_repo_with_agent_worktree("abc123");
 
-        let listed = stale_agent_worktrees(dir.path(), std::time::Duration::ZERO);
+        let listed =
+            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).expect("listing works");
         assert_eq!(listed.len(), 1, "a fresh tree is stale at age zero: {listed:?}");
         assert_eq!(listed[0].path, wt);
         assert_eq!(listed[0].branch, branch);
         assert_eq!(listed[0].repo_root, dir.path());
 
         assert!(
-            stale_agent_worktrees(dir.path(), std::time::Duration::from_secs(3600)).is_empty(),
+            stale_agent_worktrees(dir.path(), std::time::Duration::from_secs(3600))
+                .expect("listing works")
+                .is_empty(),
             "a tree younger than the age is not listed"
         );
     }
@@ -1724,7 +1740,9 @@ mod tests {
         run_git(dir.path(), &["worktree", "lock", wt.to_str().expect("utf8 path")]);
 
         assert!(
-            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).is_empty(),
+            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO)
+                .expect("listing works")
+                .is_empty(),
             "a locked tree stays out of the sweep"
         );
     }
@@ -1741,7 +1759,9 @@ mod tests {
         );
 
         assert!(
-            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).is_empty(),
+            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO)
+                .expect("listing works")
+                .is_empty(),
             "a live owner keeps its tree out of the sweep"
         );
     }
@@ -1765,7 +1785,8 @@ mod tests {
             &["worktree", "lock", "--reason", &reason, wt.to_str().expect("utf8 path")],
         );
 
-        let listed = stale_agent_worktrees(dir.path(), std::time::Duration::ZERO);
+        let listed =
+            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).expect("listing works");
         assert_eq!(listed.len(), 1, "a dead owner's leftover is reapable: {listed:?}");
     }
 
@@ -1779,7 +1800,11 @@ mod tests {
             &["worktree", "lock", "--reason", "held by hand", wt.to_str().expect("utf8 path")],
         );
 
-        assert!(stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).is_empty());
+        assert!(
+            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO)
+                .expect("listing works")
+                .is_empty()
+        );
     }
 
     /// The gate the sweep re-runs immediately before each removal, so a
@@ -1819,14 +1844,42 @@ mod tests {
         let scratch = dir.path().join(".claude").join("worktrees").join("agent-plain-file");
         fs::write(&scratch, "a file, not a tree").expect("write scratch");
 
-        let listed = stale_agent_worktrees(dir.path(), std::time::Duration::ZERO);
+        let listed =
+            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).expect("listing works");
         assert_eq!(listed.len(), 1, "only the agent-prefixed dir is listed: {listed:?}");
         assert!(listed[0].path.ends_with("agent-abc123"), "{:?}", listed[0].path);
     }
 
     #[test]
+    /// A worktrees dir that cannot be read propagates the error - the
+    /// sweep must not read an unreadable listing as an empty one.
+    #[cfg(unix)]
+    #[test]
+    fn stale_agent_worktrees_propagates_an_unreadable_worktrees_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = init_repo_with_commit();
+        let worktrees = dir.path().join(".claude").join("worktrees");
+        std::fs::create_dir_all(&worktrees).expect("mkdir");
+        std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod");
+
+        let outcome = stale_agent_worktrees(dir.path(), std::time::Duration::ZERO);
+        std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o755))
+            .expect("restore chmod");
+        assert!(
+            outcome.is_err(),
+            "an unreadable dir is an error, never an empty sweep: {outcome:?}"
+        );
+    }
+
+    #[test]
     fn stale_agent_worktrees_is_empty_outside_a_repo() {
         let dir = tempdir().expect("tempdir");
-        assert!(stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).is_empty());
+        assert!(
+            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO)
+                .expect("listing works")
+                .is_empty()
+        );
     }
 }
