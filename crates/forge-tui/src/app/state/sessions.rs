@@ -301,6 +301,15 @@ impl super::App {
                         .or_insert_with(|| crate::app::session::UiSession::new(key.clone()));
                     bucket.session_id = Some(primitive_id.clone());
                 }
+                if self.active_session_key.as_ref() != Some(&key) {
+                    tracing::info!(
+                        target: crate::logging::targets::APP_SESSION,
+                        event_name = "active_session_switched",
+                        outcome = "success",
+                        from = %self.active_session_key.as_ref().map_or("<none>", |k| k.as_str()),
+                        to = %key.as_str(),
+                    );
+                }
                 self.active_session_key = Some(key.clone());
                 self.refresh_status_from_active_lifecycle();
                 // Mirror `session_id` onto the workspace's
@@ -1239,5 +1248,54 @@ mod tests {
         app.clear_session_runtime_identity();
 
         assert!(app.observed_assistant_model().is_none());
+    }
+
+    /// Every focus move owes an `active_session_switched` log line -
+    /// including `set_session_id`'s carry of the focused bucket onto
+    /// its real key, which used to strand focus on an unrelated
+    /// session with nothing in forge.log to say so.
+    #[test]
+    fn set_session_id_logs_the_focus_move_it_makes() {
+        let mut app = App::test_default();
+        let pending = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+        assert_eq!(app.active_session_key.as_ref(), Some(&pending));
+
+        let log = capture_logs(|| {
+            app.set_session_id(Some(crate::agent::model::SessionId::new("real-uuid")));
+        });
+
+        assert!(
+            log.contains("active_session_switched"),
+            "the pointer move must log like every other focus move; got: {log}"
+        );
+        assert!(
+            log.contains("to=real-uuid") && log.contains("from=__conn_pending__"),
+            "the log names both ends of the move; got: {log}"
+        );
+    }
+
+    /// Log capture mirroring the pattern in `events/session.rs` - the
+    /// tracing line is the artifact under test.
+    fn capture_logs(f: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Writer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("capture lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let capture: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let writer = Writer(Arc::clone(&capture));
+        let subscriber =
+            tracing_subscriber::fmt().with_ansi(false).with_writer(move || writer.clone()).finish();
+        tracing::subscriber::with_default(subscriber, f);
+        String::from_utf8_lossy(&capture.lock().expect("capture lock")).into_owned()
     }
 }
