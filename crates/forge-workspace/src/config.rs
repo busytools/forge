@@ -58,6 +58,11 @@ struct ForgeToml {
     /// Absent section → all defaults, which leaves auto-update off.
     #[serde(default)]
     plugins: PluginSettings,
+    /// Ghost of the deleted `[workers]` section: read only so a stale
+    /// synced forge.toml still carrying it warns at load instead of
+    /// sitting there silently ignored.
+    #[serde(default)]
+    workers: Option<toml::Value>,
     /// Optional top-level `[env]` table - the BASE every session
     /// starts from, overridden per key by `[accounts.env]` and then by
     /// `[projects.<name>.env]`. Merged into `LoadedAccount.env` at
@@ -323,6 +328,14 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
 
     let parsed: ForgeToml = toml::from_str(&raw)
         .map_err(|source| WorkspaceError::ConfigParse { path: path.clone(), source })?;
+
+    if parsed.workers.is_some() {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "workers_section_ignored",
+            "[workers] is no longer read; use [projects.<name>] max_workers per project",
+        );
+    }
 
     if parsed.orgs.is_empty() {
         return Err(WorkspaceError::NoOrgsConfigured { path });
@@ -1599,6 +1612,17 @@ provider = "anthropic"
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("happy path");
         assert_eq!(config.default_project().max_workers, None);
+    }
+
+    #[test]
+    fn a_negative_max_workers_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[projects.forge]\nmax_workers = -1\n", minimal_config()),
+        );
+        let error = load_from_dir(dir.path()).expect_err("a bad value must fail loudly");
+        assert!(error.to_string().contains("max_workers"), "names the key: {error}");
     }
 
     #[test]
