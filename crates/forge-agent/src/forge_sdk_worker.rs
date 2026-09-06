@@ -962,6 +962,20 @@ fn log_agent_worktree_reap(
     }
 }
 
+/// The hook closure's decision for one PostToolUse event. Split out so
+/// the argument order through the parse is pinned by a test: the two
+/// `&Value` parameters read identically at the call site, and a swap
+/// disables the feature with the whole unit suite still green.
+fn agent_worktree_from_post_tool_use(
+    input: &PostToolUseInput,
+) -> Option<crate::env::worktree::AgentWorktree> {
+    crate::env::worktree::completed_agent_worktree(
+        &input.tool_name,
+        &input.tool_input,
+        &input.tool_response,
+    )
+}
+
 fn build_options_with_callback(
     cwd: &str,
     resume: Option<&str>,
@@ -1000,11 +1014,7 @@ fn build_options_with_callback(
             }
         })
         .post_tool_use("*", |input: PostToolUseInput, _ctx: HookContext| async move {
-            if let Some(agent_worktree) = crate::env::worktree::completed_agent_worktree(
-                &input.tool_name,
-                &input.tool_input,
-                &input.tool_response,
-            ) {
+            if let Some(agent_worktree) = agent_worktree_from_post_tool_use(&input) {
                 tracing::info!(
                     target: crate::logging::targets::BRIDGE_LIFECYCLE,
                     session_id = %input.base.session_id,
@@ -2235,6 +2245,75 @@ mod tests {
             desc.contains("post_tool_use_count: 1"),
             "the reap observer rides the same hooks block as the PreToolUse observer: {desc}"
         );
+    }
+
+    /// A PostToolUseInput built through serde from the captured wire
+    /// shape, over a real temp-repo worktree, reaps that directory. Pins
+    /// the whole decision path - including the tool_input/tool_response
+    /// argument order, which a swap would silently disable.
+    #[test]
+    fn a_post_tool_use_payload_reaps_the_worktree_it_names() {
+        use forge_primitives::hooks::inputs::PostToolUseInput;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .expect("spawn git");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(dir.path().join("seed.txt"), "seed").expect("write seed");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+        let wt_path = dir.path().join(".claude").join("worktrees").join("agent-abc123");
+        std::fs::create_dir_all(wt_path.parent().expect("parent")).expect("mkdir");
+        run(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "worktree-agent-abc123",
+            wt_path.to_str().expect("utf8 path"),
+        ]);
+
+        let input: PostToolUseInput = serde_json::from_value(json!({
+            "session_id": "4c448f28-7223-43b2-88fd-0b88dba61865",
+            "transcript_path": "/tmp/transcript.jsonl",
+            "cwd": dir.path().join("x").to_str().expect("utf8 cwd"),
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "tool_input": {
+                "description": "capture keep",
+                "prompt": "leave a file",
+                "subagent_type": "general-purpose",
+                "run_in_background": false,
+                "isolation": "worktree",
+            },
+            "tool_response": {
+                "status": "completed",
+                "agentId": "ac437073a41a2149d",
+                "content": [{ "type": "text", "text": "done" }],
+                "totalToolUseCount": 1,
+                "worktreePath": wt_path.to_str().expect("utf8 wt"),
+                "worktreeBranch": "worktree-agent-abc123",
+            },
+            "tool_use_id": "toolu_capture",
+        }))
+        .expect("the captured PostToolUse shape parses");
+
+        let worktree = super::agent_worktree_from_post_tool_use(&input)
+            .expect("an isolated completion names its managed worktree");
+        let outcome = crate::env::worktree::reap_agent_worktree(&worktree);
+        assert!(
+            matches!(outcome, crate::env::worktree::AgentWorktreeReap::Reaped { .. }),
+            "the named clean worktree is reaped, got {outcome:?}"
+        );
+        assert!(!wt_path.exists(), "the directory is actually gone");
     }
 
     #[test]
