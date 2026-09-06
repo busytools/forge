@@ -317,7 +317,7 @@ default.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `max_concurrent` | integer | `2` | Cap on dynamic workers live at once, across every project. A spawn over the cap errors instead of queuing; despawning a worker frees its slot for the next spawn. Workers restored by the boot-time respawn of persisted rows are exempt, but still count toward the cap once live. |
+| `max_concurrent` | integer | `2` | Cap on dynamic workers live at once, across every project. A spawn over the cap errors instead of queuing; despawning a worker frees its slot for the next spawn. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. |
 
 Like `[plugins]`, an unrecognised key here fails the load rather than
 being ignored.
