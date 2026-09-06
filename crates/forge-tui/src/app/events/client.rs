@@ -1609,6 +1609,14 @@ pub(super) fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey,
         );
     }
     if app.active_session_key.as_ref() == Some(from) {
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "active_session_switched",
+            outcome = "success",
+            reason = "key_renamed",
+            from = %from.as_str(),
+            to = %to.as_str(),
+        );
         app.active_session_key = Some(to);
         app.refresh_status_from_active_lifecycle();
     }
@@ -3815,9 +3823,13 @@ mod tests {
 
 /// The spawn-stub focus seam. An id-less focused bucket - a
 /// `__spawn_<name>__` stub or the boot `__conn_pending__` sentinel -
-/// must never inherit a background session's identity, or
+/// must not inherit a background session's identity, or
 /// `set_session_id` drags focus there and the spawn's own
-/// KeyRenamed + Connected find the stub unfocused.
+/// KeyRenamed + Connected find the stub unfocused. Enforced for
+/// frames whose session already owns a bucket; a frame whose session
+/// owns none (fresh spawn before its first real-id frame, a
+/// just-closed session's in-flight tail) still adopts - logged as
+/// `sdk_frame_id_adopted`, not mechanism-gated.
 #[cfg(test)]
 mod focus_seam_tests {
     use super::*;

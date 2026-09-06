@@ -306,6 +306,7 @@ impl super::App {
                         target: crate::logging::targets::APP_SESSION,
                         event_name = "active_session_switched",
                         outcome = "success",
+                        reason = "session_id_adoption",
                         from = %self.active_session_key.as_ref().map_or("<none>", |k| k.as_str()),
                         to = %key.as_str(),
                     );
@@ -1250,10 +1251,13 @@ mod tests {
         assert!(app.observed_assistant_model().is_none());
     }
 
-    /// Every focus move owes an `active_session_switched` log line -
-    /// including `set_session_id`'s carry of the focused bucket onto
-    /// its real key, which used to strand focus on an unrelated
-    /// session with nothing in forge.log to say so.
+    /// `set_session_id`'s carry of the focused bucket onto its real
+    /// key logs `active_session_switched` - it used to strand focus on
+    /// an unrelated session with nothing in forge.log to say so. The
+    /// covered moves are switch_active_session, this carry, and
+    /// KeyRenamed's rename carry; `apply_connected_presentation`'s
+    /// active-path write stays unlogged (was_active already true, the
+    /// pointer does not change).
     #[test]
     fn set_session_id_logs_the_focus_move_it_makes() {
         let mut app = App::test_default();
