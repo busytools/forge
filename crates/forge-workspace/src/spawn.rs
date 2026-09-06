@@ -2155,6 +2155,28 @@ max_concurrent = {limit}
             2,
             "the refused spawn creates no worker"
         );
+
+        // Label precedence: at the cap, a DUPLICATE label reports the
+        // collision, not the cap - the lead is pointed at the remedy
+        // that matches the actual problem.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w1",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let err = rx.await.expect("reply").expect_err("a live label must refuse");
+        assert!(
+            err.contains("already live") && !err.contains("worker limit reached"),
+            "the collision wins over the cap: {err}"
+        );
     }
 
     /// The cap is GLOBAL: a worker live in any project consumes the
