@@ -191,8 +191,8 @@ fn default_max_concurrent_workers() -> usize {
 #[serde(deny_unknown_fields)]
 pub struct WorkerSettings {
     /// Cap on dynamic workers live at once, across every project. A
-    /// spawn over the cap errors instead of queuing; a boot-time
-    /// respawn of persisted workers is exempt. Default 2.
+    /// spawn over the cap errors instead of queuing; a boot or
+    /// lead-reconnect respawn of persisted workers is exempt. Default 2.
     #[serde(default = "default_max_concurrent_workers")]
     pub max_concurrent: usize,
 }
