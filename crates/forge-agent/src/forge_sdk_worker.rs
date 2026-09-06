@@ -883,13 +883,47 @@ pub(crate) struct AccountBinding<'a> {
 /// Log the outcome of one agent-worktree reap. Kept trees are info, not
 /// Log the outcome of one agent-worktree reap. `worktree` carries the
 /// path so every outcome is attributable. Kept trees are info, not
-/// warn: uncommitted edits are the CLI's deliberate hand-back.
+/// warn: uncommitted edits are the CLI's deliberate hand-back. A kept
+/// BRANCH is warn - the subagent committed work reachable from no other
+/// ref, and someone has to look, mirroring the worker-despawn warning.
 fn log_agent_worktree_reap(
     worktree: &crate::env::worktree::AgentWorktree,
     outcome: crate::env::worktree::AgentWorktreeReap,
 ) {
-    use crate::env::worktree::AgentWorktreeReap;
+    use crate::env::worktree::{AgentWorktreeReap, BranchReapOutcome};
     match outcome {
+        AgentWorktreeReap::Reaped { branch: BranchReapOutcome::Kept { count, tip } } => {
+            let plural = if count == 1 { "" } else { "s" };
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                path = %worktree.path.display(),
+                branch = %worktree.branch,
+                "branch '{}' kept: {count} commit{plural} reachable from no other ref (tip {tip}); \
+                 inspect with 'git log -{count} {tip}', then 'git branch -D {}' once it has landed",
+                worktree.branch,
+                worktree.branch,
+            );
+        }
+        AgentWorktreeReap::Reaped { branch: BranchReapOutcome::KeptOnError { reason } } => {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                path = %worktree.path.display(),
+                branch = %worktree.branch,
+                reason = %reason,
+                "branch kept: could not verify it holds no unique commits; \
+                 check 'git log' on it and delete it by hand",
+            );
+        }
+        AgentWorktreeReap::Reaped { branch: BranchReapOutcome::DeleteFailed { reason } } => {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                path = %worktree.path.display(),
+                branch = %worktree.branch,
+                reason = %reason,
+                "branch holds no unique commits, but the delete failed; \
+                 retry with 'git branch -D'",
+            );
+        }
         AgentWorktreeReap::Reaped { branch } => tracing::info!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             path = %worktree.path.display(),
