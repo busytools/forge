@@ -2150,9 +2150,9 @@ max_concurrent = {limit}
 
     /// The cap is GLOBAL: a worker live in any project consumes the
     /// budget, so a spawn into a different project is refused too.
-    /// Pins `total_live_worker_count` against the per-project count,
-    /// which would compile and read like its neighbours while quietly
-    /// re-scoping the cap per project.
+    /// Pins the global count inside `insert_live_worker_if_label_absent`
+    /// against a per-project count, which would compile and read like
+    /// its neighbours while quietly re-scoping the cap per project.
     #[tokio::test]
     async fn the_cap_counts_workers_across_projects() {
         let (workspace, _config_dir) = stub_with_worker_limit(1);
