@@ -377,9 +377,10 @@ pub(crate) fn apply_inventory_refresh_failure(app: &mut App, message: String) {
     app.config.last_error = Some(message);
 }
 
-/// A manual refresh or check failure dropped on a cwd mismatch (the
-/// focused session moved mid-run): release the armed loading flag
-/// without writing the other project's error into the focused pane.
+/// A manual refresh, check or inventory event dropped on a cwd
+/// mismatch (the focused session moved mid-run): release the armed
+/// loading flag without writing the other project's outcome into the
+/// focused pane.
 pub(crate) fn settle_dropped_refresh_failure(app: &mut App) {
     app.plugins.loading = false;
     app.plugins.status_message = None;

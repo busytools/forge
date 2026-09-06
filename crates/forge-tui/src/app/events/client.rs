@@ -280,9 +280,17 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             super::queued_turn::note_queued_dispatch(app, &key);
         }
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
-            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_dropped", |app| {
-                crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);
-            });
+            let applied =
+                dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_dropped", |app| {
+                    crate::app::plugins::apply_inventory_refresh_success(
+                        app,
+                        snapshot,
+                        claude_path,
+                    );
+                });
+            if !applied {
+                crate::app::plugins::settle_dropped_refresh_failure(app);
+            }
         }
         SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message, trigger } => {
             // A boot auto-update run is app-scoped (see the run arms
