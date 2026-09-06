@@ -1439,8 +1439,9 @@ mod tests {
     /// Post-turn traffic (monitor/notification text re-binding the
     /// spinner anchor) leaves the session status busy with a non-terminal
     /// subagent on the roster while the turn's clock is settled. The
-    /// assembled spinner must carry the subagent entry WITHOUT a live
-    /// turn, so the paint gate keeps the line and the bar out of chat.
+    /// busy-looking status must not paint turn indicators: no live
+    /// clock, no bar (#854 removed the subagent line; the subagent
+    /// fixture just supplies the realistic busy-looking status).
     #[test]
     fn base_spinner_keeps_the_subagent_entry_without_a_live_turn_after_the_result() {
         let mut app = App::test_default();

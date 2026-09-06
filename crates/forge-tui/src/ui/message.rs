@@ -1776,10 +1776,6 @@ fn build_message_render_signature(
     spinner.show_empty_thinking.hash(&mut hasher);
     spinner.show_thinking.hash(&mut hasher);
     spinner.show_compacting.hash(&mut hasher);
-    // Item 3's idle suppression and the running-subagents line both key off
-    // these; fold them (line content included) so a flip invalidates the
-    // cached layout.
-    spinner.is_active_turn_assistant.hash(&mut hasher);
     let assistant_frame = if message_has_frame_dependent_assistant_lines(msg, spinner) {
         Some(spinner.glyph)
     } else {
