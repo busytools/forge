@@ -23,17 +23,18 @@ fn post_connect_refreshes(app: &mut App, key: &SessionKey) {
 }
 
 /// Apply `f` only when `cwd_raw` matches the app's current cwd; log
-/// and drop the event otherwise. Plugin lifecycle events are
-/// cwd-scoped and stale ones from a previous project must not affect
-/// the active project's inventory.
+/// and drop the event otherwise, reporting the drop. Plugin
+/// lifecycle events are cwd-scoped and stale ones from a previous
+/// project must not affect the active project's inventory.
 fn dispatch_if_cwd_matches(
     app: &mut App,
     cwd_raw: &str,
     event_name: &str,
     f: impl FnOnce(&mut App),
-) {
+) -> bool {
     if app.cwd_raw() == cwd_raw {
         f(app);
+        true
     } else {
         tracing::debug!(
             target: crate::logging::targets::APP_CONFIG,
@@ -42,6 +43,7 @@ fn dispatch_if_cwd_matches(
             received_cwd = %cwd_raw,
             "stale-cwd plugin event dropped"
         );
+        false
     }
 }
 
@@ -278,9 +280,17 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             super::queued_turn::note_queued_dispatch(app, &key);
         }
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
-            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_dropped", |app| {
-                crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);
-            });
+            let applied =
+                dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_dropped", |app| {
+                    crate::app::plugins::apply_inventory_refresh_success(
+                        app,
+                        snapshot,
+                        claude_path,
+                    );
+                });
+            if !applied {
+                crate::app::plugins::settle_dropped_refresh_failure(app);
+            }
         }
         SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message, trigger } => {
             // A boot auto-update run is app-scoped (see the run arms
@@ -289,7 +299,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             if trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
                 crate::app::plugins::apply_inventory_refresh_failure(app, message);
             } else {
-                dispatch_if_cwd_matches(
+                let applied = dispatch_if_cwd_matches(
                     app,
                     &cwd_raw,
                     "plugins_inventory_failure_dropped",
@@ -297,6 +307,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                         crate::app::plugins::apply_inventory_refresh_failure(app, message);
                     },
                 );
+                if !applied {
+                    crate::app::plugins::settle_dropped_refresh_failure(app);
+                }
             }
         }
         SessionUpdate::PluginsCliActionSucceeded { cwd_raw, result } => {
@@ -330,7 +343,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             if run.trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
                 crate::app::plugins::apply_update_run_finished(app, &run, snapshot, claude_path);
             } else {
-                dispatch_if_cwd_matches(
+                let applied = dispatch_if_cwd_matches(
                     app,
                     &cwd_raw,
                     "plugins_update_run_finished_dropped",
@@ -343,6 +356,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                         );
                     },
                 );
+                if !applied {
+                    crate::app::plugins::settle_dropped_manual_run(app);
+                }
             }
         }
         SessionUpdate::PluginsRollbackSucceeded {
