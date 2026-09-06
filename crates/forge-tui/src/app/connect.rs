@@ -513,7 +513,7 @@ mod tests {
         std::fs::write(
             forge_dir(dir).join("forge.toml"),
             format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\nprovider = \"anthropic\"\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-connect-stargate\"\nprovider = \"anthropic\"\n"
             ),
         )
         .expect("write forge.toml");
@@ -788,7 +788,7 @@ mod tests {
         std::fs::write(
             forge_dir(config_dir.path()).join("forge.toml"),
             format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\nprovider = \"anthropic\"\n\n[ui]\nspinner = \"ember\"\nfps = 60\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-connect-stargate\"\nprovider = \"anthropic\"\n\n[ui]\nspinner = \"ember\"\nfps = 60\n"
             ),
         )
         .expect("write forge.toml");

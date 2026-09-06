@@ -55,7 +55,7 @@ fn app_with_dictate(snapshot: DictateSnapshot) -> App {
         forge.join("forge.toml"),
         "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
          [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
-         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"/tmp/forge-test/claude-subspace\"\nprovider = \"anthropic\"\n",
     )
     .expect("write forge.toml");
     let workspace =
@@ -287,7 +287,7 @@ async fn preflight_hands_over_when_an_account_settles_bailed() {
         forge.join("forge.toml"),
         "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
          [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
-         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"/tmp/forge-test/claude-subspace\"\nprovider = \"anthropic\"\n",
     )
     .expect("write forge.toml");
     let workspace =
@@ -357,7 +357,7 @@ async fn the_recorded_failure_rides_the_snapshot_to_the_row() {
         forge.join("forge.toml"),
         "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
          [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
-         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"/tmp/forge-test/claude-subspace\"\nprovider = \"anthropic\"\n",
     )
     .expect("write forge.toml");
     let workspace =
@@ -690,7 +690,7 @@ async fn preflight_renders_on_both_routes_and_hands_over_to_each() {
             forge.join("forge.toml"),
             "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
              [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
-             [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+             [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"/tmp/forge-test/claude-subspace\"\nprovider = \"anthropic\"\n",
         )
         .expect("write forge.toml");
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
@@ -760,7 +760,7 @@ async fn forge_does_not_quit_on_cancel_until_the_copy_is_on_screen() {
         forge.join("forge.toml"),
         "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
          [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
-         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n",
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"/tmp/forge-test/claude-subspace\"\nprovider = \"anthropic\"\n",
     )
     .expect("write forge.toml");
     let workspace =
@@ -1107,11 +1107,11 @@ async fn a_short_terminal_drops_the_wordmark_rather_than_the_exits() {
         "[[orgs]]\nname = \"Personal\"\n\
          accounts = [\"Subspace\", \"Granite\", \"Granite1\", \"Personal\", \"Codex\"]\n\n\
          [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
-         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\nprovider = \"anthropic\"\n\
-         [[accounts]]\ndisplay_name = \"Granite\"\nconfig_dir = \"~/.claude-granite\"\nprovider = \"anthropic\"\n\
-         [[accounts]]\ndisplay_name = \"Granite1\"\nconfig_dir = \"~/.claude-granite1\"\nprovider = \"anthropic\"\n\
-         [[accounts]]\ndisplay_name = \"Personal\"\nconfig_dir = \"~/.claude-personal\"\nprovider = \"anthropic\"\n\
-         [[accounts]]\ndisplay_name = \"Codex\"\nconfig_dir = \"~/.claude-codex\"\nprovider = \"anthropic\"\n",
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"/tmp/forge-test/claude-subspace\"\nprovider = \"anthropic\"\n\
+         [[accounts]]\ndisplay_name = \"Granite\"\nconfig_dir = \"/tmp/forge-test/claude-granite\"\nprovider = \"anthropic\"\n\
+         [[accounts]]\ndisplay_name = \"Granite1\"\nconfig_dir = \"/tmp/forge-test/claude-granite1\"\nprovider = \"anthropic\"\n\
+         [[accounts]]\ndisplay_name = \"Personal\"\nconfig_dir = \"/tmp/forge-test/claude-personal\"\nprovider = \"anthropic\"\n\
+         [[accounts]]\ndisplay_name = \"Codex\"\nconfig_dir = \"/tmp/forge-test/claude-codex\"\nprovider = \"anthropic\"\n",
     )
     .expect("write forge.toml");
 

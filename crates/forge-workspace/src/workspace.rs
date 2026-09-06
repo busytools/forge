@@ -8026,7 +8026,7 @@ provider = "anthropic"
 
 [[accounts]]
 display_name = "Gateway"
-config_dir = "~/.claude-gateway"
+config_dir = "/tmp/forge-test/claude-gateway"
 provider = "anthropic"
 "#,
         )
@@ -8107,12 +8107,12 @@ provider = "anthropic"
 
 [[accounts]]
 display_name = "Gateway"
-config_dir = "~/.claude-gateway"
+config_dir = "/tmp/forge-test/claude-gateway"
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Personal"
-config_dir = "~/.claude-second"
+config_dir = "/tmp/forge-test/claude-second"
 provider = "anthropic"
 "#,
         )
@@ -8862,7 +8862,7 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "TokenAcct"
-config_dir = "~/.claude"
+config_dir = "/tmp/forge-test/claude"
 provider = "anthropic"
 
   [accounts.env]
@@ -12302,12 +12302,12 @@ auto_start = true
 
 [[accounts]]
 display_name = "Alpha"
-config_dir = "~/.claude-alpha"
+config_dir = "/tmp/forge-test/claude-alpha"
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Beta"
-config_dir = "~/.claude-beta"
+config_dir = "/tmp/forge-test/claude-beta"
 provider = "anthropic"
 "#,
         )
@@ -12335,12 +12335,12 @@ auto_start = true
 
 [[accounts]]
 display_name = "Alpha"
-config_dir = "~/.claude-alpha"
+config_dir = "/tmp/forge-test/claude-alpha"
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Beta"
-config_dir = "~/.claude-beta"
+config_dir = "/tmp/forge-test/claude-beta"
 provider = "anthropic"
 "#,
         )
@@ -12433,13 +12433,13 @@ auto_start = true
 
 [[accounts]]
 display_name = "Exp"
-config_dir = "~/.claude-exp"
+config_dir = "/tmp/forge-test/claude-exp"
 provider = "anthropic"
 experimental = true
 
 [[accounts]]
 display_name = "Alpha"
-config_dir = "~/.claude-alpha"
+config_dir = "/tmp/forge-test/claude-alpha"
 provider = "anthropic"
 "#,
         )

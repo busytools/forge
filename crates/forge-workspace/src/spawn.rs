@@ -2116,7 +2116,7 @@ path = "{notes_path}"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-spawn-stargate"
 provider = "anthropic"
 
 [projects.forge]
@@ -2722,7 +2722,7 @@ max_workers = {limit}
         std::fs::write(
             forge_toml_path(config.path()),
             format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge\"\npath = \"{repo_path_str}\"\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\nprovider = \"anthropic\"\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge\"\npath = \"{repo_path_str}\"\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-spawn-conn-stargate\"\nprovider = \"anthropic\"\n"
             ),
         )
         .expect("write forge.toml");
