@@ -16,7 +16,7 @@ fn no_fixture_config_dir_resolves_into_the_home_directory() {
     let crates_dir = manifest_dir.parent().expect("crates/ sits beside the manifest");
 
     let mut files = Vec::new();
-    let mut stack = vec![crates_dir];
+    let mut stack = vec![crates_dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let entries = std::fs::read_dir(&dir).expect("walking the workspace crates/ tree");
         for entry in entries {
