@@ -1045,7 +1045,7 @@ pub(crate) fn handle_spawn_worker(
                     "spawn_worker: refused, at the concurrent worker cap",
                 );
                 let _ = return_to.send(Err(format!(
-                    "worker limit reached: {live} workers are already live and the concurrent worker cap is {cap} (forge.toml [workers] max_concurrent); despawn one first"
+                    "worker limit reached: {live} workers are already live and the concurrent worker cap is {cap} (forge.toml [workers] max_concurrent); despawn one first, or raise/remove [workers] max_concurrent in forge.toml"
                 )));
             }
         }
