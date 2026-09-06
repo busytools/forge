@@ -931,7 +931,8 @@ fn synth_worker_key(project_key: &ProjectKey, label: &str, is_resume: bool) -> S
 pub(crate) fn worker_limit_reached_message(project: &str, live: usize, cap: usize) -> String {
     let workers = if live == 1 { "worker" } else { "workers" };
     format!(
-        "worker limit reached: project '{project}' has {live} {workers} live and its cap is {cap} (forge.toml [projects.<name>] max_workers, default 2); despawn one first, or raise/remove max_workers"
+        "worker limit reached: project '{project}' has {live} {workers} live and its cap is {cap} (forge.toml [projects.<name>] max_workers, default {}); despawn one first, or raise/remove max_workers",
+        crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT
     )
 }
 
