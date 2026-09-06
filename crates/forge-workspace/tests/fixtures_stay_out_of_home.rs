@@ -4,9 +4,11 @@
 //! against a real profile directory - writing `.claude.json` and
 //! friends into `$HOME`, where it surfaces as a security-watchdog hit
 //! rather than a test failure (#988 fixed the plain literals and the
-//! escaped-string variants still recursed). This guard rejects every
-//! quoting shape, so re-introducing the pattern fails CI here instead
-//! of writing to a live profile.
+//! escaped-string variants still recursed).
+//!
+//! Coverage: any .rs line containing both `config_dir` and `~` fails,
+//! at any backslash-quoting depth. Phrase doc examples without
+//! putting those two on one line.
 
 use std::path::PathBuf;
 
@@ -34,19 +36,24 @@ fn no_fixture_config_dir_resolves_into_the_home_directory() {
         files.len()
     );
 
-    let quote = '"';
-    let needle = format!("config_dir = {quote}~");
     let mut offenders = Vec::new();
     for file in &files {
+        // The guard must name the pattern to search for it; it is the
+        // one file exempt from its own scan.
+        if file.file_name() == Some(std::ffi::OsStr::new("fixtures_stay_out_of_home.rs")) {
+            continue;
+        }
         let Ok(source) = std::fs::read_to_string(file) else {
             continue;
         };
         for (index, line) in source.lines().enumerate() {
             // Stripping backslashes collapses every quoting depth (plain
             // TOML strings, escaped format! strings, nested doc text)
-            // into the same shape, so one check covers all of them.
+            // into the same shape. Matching on the pair of substrings
+            // rather than a full assignment form also catches
+            // single-quoted TOML literals and no-whitespace `="~"`.
             let unescaped = line.replace('\\', "");
-            if unescaped.contains(&needle) {
+            if unescaped.contains("config_dir") && unescaped.contains('~') {
                 offenders.push(format!("{}:{}: {}", file.display(), index + 1, line.trim()));
             }
         }
