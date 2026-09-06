@@ -24,6 +24,7 @@ use crate::protocol::{
     Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
 };
 use crate::target::ProjectKey;
+use crate::workspace::LiveWorkerRefusal;
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
@@ -925,6 +926,14 @@ fn synth_worker_key(project_key: &ProjectKey, label: &str, is_resume: bool) -> S
     ))
 }
 
+/// The caller-facing refusal for an at-cap worker spawn. One source so
+/// the classifier pin in the facade tests tracks the real text.
+pub(crate) fn worker_limit_reached_message(live: usize, cap: usize) -> String {
+    format!(
+        "worker limit reached: {live} workers are already live and the concurrent worker cap is {cap} (forge.toml [workers] max_concurrent); despawn one first, or raise/remove [workers] max_concurrent in forge.toml"
+    )
+}
+
 /// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
 /// in `live_workers[project_key]`, dispatch a fresh-session spawn
 /// via `SessionTarget::FreshInProject` with the charter threaded
@@ -950,6 +959,7 @@ pub(crate) fn handle_spawn_worker(
     resume_existing: Option<String>,
     kick: Option<String>,
     interactive: bool,
+    from_boot_respawn: bool,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
     // Verify the project exists before claiming a synth key. Probe its
@@ -1008,24 +1018,43 @@ pub(crate) fn handle_spawn_worker(
         diagnostic: None,
         kick,
     };
-    // At-most-one-live-worker-per-label, enforced atomically at this
-    // shared core so neither dispatch source - the boot re-spawn or an
-    // MCP `workers__spawn` - can double-insert and fork two subprocesses
-    // onto one worktree, even on two genuinely-concurrent dispatches for
-    // the same label.
-    if let Err(existing) = workspace.insert_live_worker_if_label_absent(&project_key, entry.clone())
+    // Label uniqueness AND the `[workers] max_concurrent` cap, enforced
+    // atomically at this shared core so neither dispatch source - the
+    // boot re-spawn or an MCP `workers__spawn` - can double-insert and
+    // fork two subprocesses onto one worktree, or overshoot the cap on
+    // genuinely-concurrent dispatches. Boot re-spawns pass no cap: they
+    // restore persisted workers the user already had, and their spawn
+    // reply is dropped, so a refusal there could never reach a caller.
+    let cap = (!from_boot_respawn).then(|| workspace.config.workers.max_concurrent);
+    if let Err(refusal) =
+        workspace.insert_live_worker_if_label_absent(&project_key, entry.clone(), cap)
     {
-        let existing_session = existing.as_str().to_owned();
-        tracing::debug!(
-            target: "forge_workspace::spawn",
-            project = %project_key.as_str(),
-            label = %label,
-            %existing_session,
-            "spawn_worker: label already live; skipping duplicate spawn",
-        );
-        let _ = return_to.send(Err(format!(
-            "a worker labeled '{label}' is already live (session {existing_session}); message it with workers__tell / workers__ask or close it first (one live worker per label)"
-        )));
+        match refusal {
+            LiveWorkerRefusal::LabelLive(existing) => {
+                let existing_session = existing.as_str().to_owned();
+                tracing::debug!(
+                    target: "forge_workspace::spawn",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    %existing_session,
+                    "spawn_worker: label already live; skipping duplicate spawn",
+                );
+                let _ = return_to.send(Err(format!(
+                    "a worker labeled '{label}' is already live (session {existing_session}); message it with workers__tell / workers__ask or close it first (one live worker per label)"
+                )));
+            }
+            LiveWorkerRefusal::AtCap { live, cap } => {
+                tracing::info!(
+                    target: "forge_workspace::spawn",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    live,
+                    cap,
+                    "spawn_worker: refused, at the concurrent worker cap",
+                );
+                let _ = return_to.send(Err(worker_limit_reached_message(live, cap)));
+            }
+        }
         return;
     }
     // Extend the assignment plan so this worker's account comes from the
@@ -2026,6 +2055,7 @@ provider = "anthropic"
             None,
             None,
             false,
+            false,
             tx,
         );
 
@@ -2037,6 +2067,388 @@ provider = "anthropic"
         let reply = rx.await.expect("reply channel");
         let err = reply.expect_err("a duplicate spawn replies an error");
         assert!(err.contains("already live"), "error names the collision: {err}");
+    }
+
+    /// Stub whose `forge.toml` carries the given `[workers]
+    /// max_concurrent`, loaded through the real config path because the
+    /// full spawn below reads `config.projects`. Projects point at
+    /// throwaway dirs: a real repo path would make `is_git` true and
+    /// hang `--worktree <label>` spawns off the actual checkout.
+    fn stub_with_worker_limit(
+        limit: usize,
+    ) -> (Arc<Workspace>, (tempfile::TempDir, tempfile::TempDir)) {
+        let dir = tempdir().expect("config tempdir");
+        let projects_dir = tempdir().expect("projects tempdir");
+        let forge_path = projects_dir.path().join("forge").display().to_string();
+        let notes_path = projects_dir.path().join("notes").display().to_string();
+        fs::create_dir_all(&forge_path).expect("create forge project dir");
+        fs::create_dir_all(&notes_path).expect("create notes project dir");
+        fs::write(
+            forge_toml_path(dir.path()),
+            format!(
+                r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "{forge_path}"
+
+[[orgs.projects]]
+name = "notes"
+path = "{notes_path}"
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+provider = "anthropic"
+
+[workers]
+max_concurrent = {limit}
+"#
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace new"));
+        (workspace, (dir, projects_dir))
+    }
+
+    fn seeded_project(workspace: &Arc<Workspace>) -> ProjectKey {
+        workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project present")
+            .key
+    }
+
+    /// #976: a lead-driven spawn at the `[workers] max_concurrent` cap
+    /// replies a clean error naming the limit and inserts no entry.
+    #[tokio::test]
+    async fn spawn_worker_over_limit_refuses_and_creates_nothing() {
+        let (workspace, _config_dir) = stub_with_worker_limit(2);
+        let project = seeded_project(&workspace);
+        workspace.insert_live_worker(&project, fake_worker_entry("w1", "w1"));
+        workspace.insert_live_worker(&project, fake_worker_entry("w2", "w2"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w3",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+
+        let err = rx.await.expect("reply").expect_err("at-limit spawn must refuse");
+        assert!(err.contains("worker limit reached"), "names the refusal: {err}");
+        assert!(err.contains("cap is 2"), "names the cap: {err}");
+        assert_eq!(
+            workspace.list_live_workers(&project).len(),
+            2,
+            "the refused spawn creates no worker"
+        );
+
+        // Label precedence: at the cap, a DUPLICATE label reports the
+        // collision, not the cap - the lead is pointed at the remedy
+        // that matches the actual problem.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w1",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let err = rx.await.expect("reply").expect_err("a live label must refuse");
+        assert!(
+            err.contains("already live") && !err.contains("worker limit reached"),
+            "the collision wins over the cap: {err}"
+        );
+    }
+
+    /// The cap is GLOBAL: a worker live in any project consumes the
+    /// budget, so a spawn into a different project is refused too.
+    /// Pins the global count inside `insert_live_worker_if_label_absent`
+    /// against a per-project count, which would compile and read like
+    /// its neighbours while quietly re-scoping the cap per project.
+    #[tokio::test]
+    async fn the_cap_counts_workers_across_projects() {
+        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let forge_project = seeded_project(&workspace);
+        let notes_project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "notes")
+            .expect("seeded notes project present")
+            .key;
+        workspace.insert_live_worker(&forge_project, fake_worker_entry("w1", "w1"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            notes_project.clone(),
+            "w2",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+
+        let err = rx
+            .await
+            .expect("reply")
+            .expect_err("a worker in another project must consume the budget");
+        assert!(err.contains("worker limit reached"), "names the refusal: {err}");
+        assert!(err.contains("cap is 1"), "names the cap: {err}");
+        assert_eq!(
+            workspace.list_live_workers(&notes_project).len(),
+            0,
+            "the refused spawn creates no worker in the target project"
+        );
+    }
+
+    /// The atomicity pin, at the layer it lives: concurrent
+    /// `insert_live_worker_if_label_absent` calls at cap 1 admit
+    /// exactly one and refuse the rest, whatever order the lock grants.
+    /// Direct inserts, so no spawn machinery can retire an entry
+    /// mid-race. A barrier releases all callers at once; the count only
+    /// stays at 1 if the cap check and the push share the lock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_cap_gate_admits_exactly_one() {
+        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let project = seeded_project(&workspace);
+        let barrier = Arc::new(tokio::sync::Barrier::new(32));
+
+        let mut handles = Vec::new();
+        for n in 0..32 {
+            let workspace = Arc::clone(&workspace);
+            let project = project.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let entry = fake_worker_entry(&format!("w{n}"), &format!("w{n}-session"));
+                workspace.insert_live_worker_if_label_absent(&project, entry, Some(1))
+            }));
+        }
+
+        let mut admitted = 0;
+        let mut refused = 0;
+        for handle in handles {
+            match handle.await.expect("insert task joins") {
+                Ok(()) => admitted += 1,
+                Err(LiveWorkerRefusal::AtCap { live, cap }) => {
+                    refused += 1;
+                    assert_eq!((live, cap), (1, 1), "the refusal names the count and the cap");
+                }
+                Err(other) => panic!("no label collisions at distinct labels: {other:?}"),
+            }
+        }
+        assert_eq!(admitted, 1, "exactly one insert wins the cap");
+        assert_eq!(refused, 31, "every other insert is refused by the cap");
+        assert_eq!(
+            workspace.list_live_workers(&project).len(),
+            1,
+            "the pool holds exactly the one admitted entry"
+        );
+    }
+
+    /// The same gate through the full handler: eight concurrent
+    /// lead-driven spawns at cap 1, and the live (non-`Failed`) count
+    /// never exceeds 1.
+    ///
+    /// Deliberately NOT "exactly one Ok": a winner whose subprocess
+    /// dies asynchronously is transitioned to `Failed` by the
+    /// spawn-failure handler, which frees its slot for a queued spawn -
+    /// the count invariant survives, the reply count does not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_spawns_keep_the_live_count_under_the_cap() {
+        let (workspace, _config_dir) = stub_with_worker_limit(1);
+
+        let mut handles = Vec::new();
+        for n in 0..8 {
+            let workspace = Arc::clone(&workspace);
+            handles.push(tokio::spawn(async move {
+                let project = seeded_project(&workspace);
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                handle_spawn_worker(
+                    &workspace,
+                    project,
+                    &format!("w{n}"),
+                    "charter".to_owned(),
+                    "lead".to_owned(),
+                    None,
+                    None,
+                    false,
+                    false,
+                    tx,
+                );
+                rx.await.expect("reply")
+            }));
+        }
+
+        let mut winners = 0;
+        let mut winner_sessions = Vec::new();
+        for handle in handles {
+            match handle.await.expect("spawn task joins") {
+                Ok(reply) => {
+                    winners += 1;
+                    winner_sessions.push(SessionKey::from_session_id(reply.session_id));
+                }
+                Err(message) => {
+                    assert!(
+                        message.contains("worker limit reached"),
+                        "the only refusal is the cap, never a collision or other error: {message}"
+                    );
+                }
+            }
+        }
+        assert!(winners >= 1, "the first arrival always gets the free slot");
+        let project = seeded_project(&workspace);
+        let live = workspace.list_live_workers(&project).iter().filter(|w| w.is_live()).count();
+        assert!(live <= 1, "no overshoot past the cap; got {live} live workers");
+        // Release closes each winner's Command channel, so the
+        // SessionTask's disconnect() reaps the client; kill_on_drop is
+        // the backstop.
+        for session in winner_sessions {
+            workspace.release_session(&session);
+        }
+    }
+
+    /// #976's open question, decided: the boot-time respawn scan is
+    /// EXEMPT from the cap. Persisted workers are state the user
+    /// already had, and the boot path drops the spawn reply, so an
+    /// over-limit refusal there would strand rows silently with no
+    /// retry. The exempt spawn proceeds past the cap.
+    #[tokio::test]
+    async fn boot_respawn_spawn_is_exempt_from_the_limit() {
+        let (workspace, _config_dir) = stub_with_worker_limit(2);
+        let project = seeded_project(&workspace);
+        workspace.insert_live_worker(&project, fake_worker_entry("w1", "w1"));
+        workspace.insert_live_worker(&project, fake_worker_entry("w2", "w2"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w3",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            true,
+            tx,
+        );
+
+        let reply = rx.await.expect("reply");
+        assert!(reply.is_ok(), "boot respawn must not be refused by the cap: {:?}", reply.err());
+        assert_eq!(
+            workspace.list_live_workers(&project).len(),
+            3,
+            "the exempt spawn creates its worker"
+        );
+        if let Ok(reply) = reply {
+            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+        }
+    }
+
+    /// #976: a despawn frees its slot; the next lead-driven spawn
+    /// succeeds.
+    #[tokio::test]
+    async fn despawn_frees_a_spawn_slot() {
+        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let project = seeded_project(&workspace);
+        workspace.insert_live_worker(&project, fake_worker_entry("w1", "w1"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w2",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let err = rx.await.expect("reply").expect_err("at-limit spawn must refuse");
+        assert!(err.contains("worker limit reached"), "names the refusal: {err}");
+
+        let (despawn_tx, despawn_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "w1", false, despawn_tx);
+        let outcome = despawn_rx.await.expect("despawn reply");
+        assert!(
+            matches!(outcome, crate::protocol::DespawnResult::Despawned { .. }),
+            "the worker despawns: {outcome:?}"
+        );
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w2",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("reply");
+        assert!(reply.is_ok(), "the freed slot lets the next spawn through: {:?}", reply.err());
+        if let Ok(reply) = reply {
+            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+        }
+    }
+
+    /// A `Failed` worker holds no cap slot, matching the label-dedup
+    /// which already treats `Failed` as not-live. One connection
+    /// failure must not wedge every later spawn until a manual despawn.
+    #[tokio::test]
+    async fn a_failed_worker_does_not_consume_a_cap_slot() {
+        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let project = seeded_project(&workspace);
+        let mut failed = fake_worker_entry("dead", "dead-1");
+        failed.status = forge_primitives::WorkerLiveness::Failed;
+        workspace.insert_live_worker(&project, failed);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project,
+            "fresh",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("reply");
+        assert!(reply.is_ok(), "the Failed worker must not consume the slot: {:?}", reply.err());
+        if let Ok(reply) = reply {
+            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+        }
     }
 
     /// `handle_close_worker` removes the worker entry, releases the
@@ -2397,6 +2809,7 @@ provider = "anthropic"
             "lead-uuid".to_owned(),
             None,
             None,
+            false,
             false,
             tx,
         );

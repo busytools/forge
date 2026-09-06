@@ -310,12 +310,24 @@ Like `[dictate]`, an unrecognised key here fails the load rather than
 being ignored. Keys an older forge read here (`trusted_marketplaces`,
 `pins`) are rejected the same way: remove them.
 
+## `[workers]`
+
+Optional. Absent means the dynamic-worker concurrency cap sits at its
+default.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `max_concurrent` | integer | `2` | Cap on dynamic workers live at once, across every project. A spawn over the cap errors instead of queuing; despawning a worker frees its slot for the next spawn. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. |
+
+Like `[plugins]`, an unrecognised key here fails the load rather than
+being ignored.
+
 ## Unknown keys
 
 The top-level document does not reject unknown tables, so a section
 forge no longer reads is ignored rather than failing the load. The
 places that do reject unknown fields are `[[accounts]]`,
-`[projects.<name>.env]`, `[dictate]` and `[plugins]`.
+`[projects.<name>.env]`, `[dictate]`, `[plugins]` and `[workers]`.
 
 ## A complete example
 
@@ -390,6 +402,9 @@ client_token = "CxxxxxxxxxxxxxxxA"
 
 [plugins]
 auto_update = true
+
+[workers]
+max_concurrent = 3
 ```
 
 ## What forge does at startup

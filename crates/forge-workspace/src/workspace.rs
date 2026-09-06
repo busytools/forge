@@ -372,6 +372,18 @@ pub(crate) struct PooledAgent {
     pub account: AccountKey,
 }
 
+/// Why `insert_live_worker_if_label_absent` refused an insert. Decided
+/// under the same lock acquisition as the insert, so the refusal and
+/// the pool state can never disagree.
+#[derive(Debug)]
+pub enum LiveWorkerRefusal {
+    /// A live (non-`Failed`) worker already holds the label.
+    LabelLive(SessionKey),
+    /// The `[workers] max_concurrent` cap is reached: `live` workers
+    /// are up against a cap of `cap`.
+    AtCap { live: usize, cap: usize },
+}
+
 /// Pick the lead session for a project from a list of candidates.
 ///
 /// Order of preference:
@@ -3126,6 +3138,7 @@ impl Workspace {
                     resume_existing,
                     kick,
                     interactive,
+                    from_boot_respawn,
                     return_to,
                 } => {
                     let span = tracing::info_span!(
@@ -3145,6 +3158,7 @@ impl Workspace {
                         resume_existing,
                         kick,
                         interactive,
+                        from_boot_respawn,
                         return_to,
                     );
                 }
@@ -3356,6 +3370,7 @@ impl Workspace {
                 resume_existing,
                 kick,
                 interactive: worker.interactive,
+                from_boot_respawn: true,
                 return_to: tx,
             };
             if let Err(err) = self.dispatch(cmd) {
@@ -4324,27 +4339,40 @@ impl Workspace {
     }
 
     /// Insert `entry` only if no live (non-`Failed`) worker already holds
-    /// its label in `project_key`. Holds `live_workers.lock()` across the
-    /// label-check AND the push, so two genuinely-concurrent SpawnWorker
-    /// dispatches for the same label (a reconnect re-spawn racing a manual
-    /// `workers__spawn`, say) can't both pass a check-then-insert window
-    /// and fork two subprocesses onto one worktree. Returns `Ok(())` on
-    /// insert, or `Err(session_key)` naming the live worker that already
-    /// holds the label. This is the sole enforcement point for the
-    /// at-most-one-live-worker-per-label invariant.
+    /// its label in `project_key`, and - when `cap` is `Some` - only if
+    /// the live worker count is under it. Holds `live_workers.lock()`
+    /// across the label-check, the cap-check AND the push, so two
+    /// genuinely-concurrent SpawnWorker dispatches (a reconnect re-spawn
+    /// racing a manual `workers__spawn`, say) can't both pass a
+    /// check-then-insert window and fork two subprocesses onto one
+    /// worktree or overshoot the cap. The label check precedes the cap
+    /// check, so a duplicate-label spawn at the cap reports the
+    /// collision. `cap: None` is the boot re-spawn exemption. Returns
+    /// `Ok(())` on insert. This is the sole enforcement point for the
+    /// at-most-one-live-worker-per-label invariant and the
+    /// `[workers] max_concurrent` cap.
     pub fn insert_live_worker_if_label_absent(
         &self,
         project_key: &ProjectKey,
         entry: crate::mcp::workers::types::WorkerEntry,
-    ) -> Result<(), SessionKey> {
+        cap: Option<usize>,
+    ) -> Result<(), LiveWorkerRefusal> {
         let mut workers = self.live_workers.lock();
-        let entries = workers.entry(project_key.clone()).or_default();
-        if let Some(existing) =
+        if let Some(existing) = workers.get(project_key).and_then(|entries| {
             crate::mcp::workers::types::live_worker_with_label(entries, &entry.label)
-        {
-            return Err(existing.session_key.clone());
+        }) {
+            return Err(LiveWorkerRefusal::LabelLive(existing.session_key.clone()));
         }
-        entries.push(entry);
+        if let Some(cap) = cap {
+            let live: usize = workers
+                .values()
+                .map(|entries| entries.iter().filter(|w| w.is_live()).count())
+                .sum();
+            if live >= cap {
+                return Err(LiveWorkerRefusal::AtCap { live, cap });
+            }
+        }
+        workers.entry(project_key.clone()).or_default().push(entry);
         Ok(())
     }
 
@@ -9447,13 +9475,17 @@ mod workers_state_tests {
         let (ws, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
         assert!(
-            ws.insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "first"))
+            ws.insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "first"), None)
                 .is_ok(),
             "the first insert for a label wins",
         );
         let existing = ws
-            .insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "second"))
+            .insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "second"), None)
             .expect_err("a second live worker for the same label is rejected");
+        let existing = match existing {
+            LiveWorkerRefusal::LabelLive(session_key) => session_key,
+            LiveWorkerRefusal::AtCap { .. } => panic!("no cap was supplied"),
+        };
         assert_eq!(existing.as_str(), "first", "the live holder is returned");
         assert_eq!(ws.list_live_workers(&project).len(), 1, "no duplicate is inserted");
     }
@@ -9468,7 +9500,7 @@ mod workers_state_tests {
         failed.status = WorkerLiveness::Failed;
         ws.insert_live_worker(&project, failed);
         assert!(
-            ws.insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "fresh"))
+            ws.insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "fresh"), None)
                 .is_ok(),
             "a Failed entry does not block a re-spawn of its label",
         );
@@ -10625,9 +10657,14 @@ mod worker_respawn_tests {
         );
 
         for cmd in workspace.drain_test_dispatch_buffer() {
-            let Command::SpawnWorker { label, interactive, .. } = cmd else {
+            let Command::SpawnWorker { label, interactive, from_boot_respawn, .. } = cmd else {
                 panic!("expected SpawnWorker");
             };
+            assert!(
+                from_boot_respawn,
+                "a boot re-spawn must stay exempt from the worker cap; flipping this \
+                 strands persisted rows on restart with the refusal dropped unheard"
+            );
             match label.as_str() {
                 "talkative" => {
                     assert!(interactive, "an interactive row re-spawns interactive");
@@ -10929,6 +10966,70 @@ provider = "anthropic"
             Some(session_id.as_str()),
             "the scan resumes the worker onto its tagged session",
         );
+    }
+
+    /// The MCP path is the only one leads spawn through; its
+    /// `from_boot_respawn` must stay false or the cap silently stops
+    /// governing exactly the spawns the cap exists for.
+    #[tokio::test]
+    async fn mcp_spawn_carries_from_boot_respawn_false() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, _path, session_id) = resumable_worker_fixture(&project, &cfg);
+        // The caller resolves as the project lead through the catalog;
+        // the boot scan does not run under new_for_test, so seed the
+        // session row the resolution looks for.
+        ws.catalog.lock().insert(
+            key,
+            vec![forge_primitives::SDKSessionInfo {
+                session_id: session_id.clone(),
+                summary: "lead".to_owned(),
+                last_modified: 0,
+                file_size: None,
+                custom_title: None,
+                first_prompt: None,
+                git_branch: None,
+                cwd: None,
+                storage_key: String::new(),
+                tag: None,
+                created_at: None,
+            }],
+        );
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        // The intercept swallows the command and holds its reply sender,
+        // so the facade's await only resolves once the buffer is
+        // drained below - which is also where the assertion target
+        // comes from.
+        let spawner = tokio::spawn(async move {
+            let _ = facade
+                .spawn_worker(
+                    &SessionKey::from_session_id(session_id),
+                    "reviewer".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                )
+                .await;
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let from_boot_respawn = loop {
+            let drained = ws.drain_test_dispatch_buffer();
+            if let Some(from_boot_respawn) = drained.iter().find_map(|cmd| match cmd {
+                Command::SpawnWorker { from_boot_respawn, .. } => Some(*from_boot_respawn),
+                _ => None,
+            }) {
+                break from_boot_respawn;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the MCP spawn never dispatched a SpawnWorker"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        spawner.await.expect("facade task joins");
+        assert!(!from_boot_respawn, "the MCP path is cap-governed, never boot-exempt");
     }
 
     /// The respawn scan writes its tag rows back to redb, so the next
