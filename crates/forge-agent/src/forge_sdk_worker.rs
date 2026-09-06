@@ -881,28 +881,47 @@ pub(crate) struct AccountBinding<'a> {
 }
 
 /// Log the outcome of one agent-worktree reap. Kept trees are info, not
+/// Log the outcome of one agent-worktree reap. `worktree` carries the
+/// path so every outcome is attributable. Kept trees are info, not
 /// warn: uncommitted edits are the CLI's deliberate hand-back.
-fn log_agent_worktree_reap(outcome: crate::env::worktree::AgentWorktreeReap) {
+fn log_agent_worktree_reap(
+    worktree: &crate::env::worktree::AgentWorktree,
+    outcome: crate::env::worktree::AgentWorktreeReap,
+) {
     use crate::env::worktree::AgentWorktreeReap;
     match outcome {
         AgentWorktreeReap::Reaped { branch } => tracing::info!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
             branch = ?branch,
             "agent worktree reaped",
         ),
         AgentWorktreeReap::KeptDirty { reason } => tracing::info!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
+            branch = %worktree.branch,
             reason = %reason,
             "agent worktree kept: the subagent left uncommitted changes",
         ),
         AgentWorktreeReap::KeptUniqueCommit { tip } => tracing::info!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
             tip = %tip,
             "agent worktree kept: detached HEAD holds commits reachable from no ref",
         ),
-        AgentWorktreeReap::Absent | AgentWorktreeReap::NotAWorktree => {}
+        AgentWorktreeReap::Absent => tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
+            "agent worktree already gone",
+        ),
+        AgentWorktreeReap::NotAWorktree => tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
+            "git does not vouch for this path being a worktree; left in place",
+        ),
         AgentWorktreeReap::RemoveFailed { reason } => tracing::warn!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            path = %worktree.path.display(),
             reason = %reason,
             "agent worktree reap failed",
         ),
@@ -962,9 +981,8 @@ fn build_options_with_callback(
                 // `git worktree remove` unlinks a whole target/ tree, so
                 // the reap runs off the hook dispatch task.
                 tokio::task::spawn_blocking(move || {
-                    log_agent_worktree_reap(crate::env::worktree::reap_agent_worktree(
-                        &agent_worktree,
-                    ));
+                    let outcome = crate::env::worktree::reap_agent_worktree(&agent_worktree);
+                    log_agent_worktree_reap(&agent_worktree, outcome);
                 });
             } else if crate::env::worktree::is_isolated_agent_call(
                 &input.tool_name,
