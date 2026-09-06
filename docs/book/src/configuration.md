@@ -160,7 +160,7 @@ table fails the load loudly instead of quietly applying nothing.
 |---|---|---|---|
 | `env` | table | `{}` | Written as `[projects.<name>.env]`. |
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
-| `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. |
+| `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
 
 A `[projects.<name>]` block naming a project that no
 `[[orgs.projects]]` declares fails the load, and the error lists the

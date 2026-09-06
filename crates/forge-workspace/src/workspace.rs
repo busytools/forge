@@ -4559,9 +4559,9 @@ impl Workspace {
                 target: "forge_workspace::workspace",
                 event_name = "project_key_ambiguous",
                 project_key = target.as_str(),
-                "two projects resolve to this session-storage key, so no [projects.<name>.env] \
-                 is applied - give them distinct paths, or merge the entries if they are the \
-                 same directory declared twice",
+                "two projects resolve to this session-storage key, so no [projects.<name>] \
+                 settings are applied - give them distinct paths, or merge the entries if they \
+                 are the same directory declared twice",
             );
             return None;
         }
