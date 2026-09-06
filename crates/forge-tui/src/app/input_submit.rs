@@ -222,11 +222,6 @@ fn dispatch_prompt(app: &mut App, text: String) {
         attachments: images,
     }) {
         Ok(()) => {
-            if !busy {
-                // Mid-turn submits ride the in-flight turn's context
-                // updates - only refresh on the idle → new-turn path.
-                crate::app::session_runtime::request_context_usage_refresh(app);
-            }
             tracing::info!(
                 target: crate::logging::targets::APP_INPUT,
                 event_name = "prompt_dispatched",
@@ -280,6 +275,30 @@ mod tests {
             prompt,
             forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
+    }
+
+    /// The idle submit must not queue a `get_context_usage` behind
+    /// the prompt: the CLI answers that control request inside its
+    /// single stdin pump, so a request sitting in the pipe at turn
+    /// start wedges hook responses past their timeout. The poll
+    /// fires at the Result frame instead.
+    #[test]
+    fn idle_submit_sends_no_context_usage_poll() {
+        let (mut app, mut rx) = app_with_connection();
+        app.status = AppStatus::Ready;
+        app.input_mut().set_text("hello");
+
+        submit_input(&mut app);
+
+        let prompt = rx.try_recv().expect("prompt command should be sent");
+        assert!(matches!(
+            prompt,
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "submit must not queue a get_context_usage behind the prompt"
+        );
     }
 
     /// A message sent while the turn is still running must not start a

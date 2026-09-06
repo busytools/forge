@@ -4308,6 +4308,65 @@ mod error_message_tests {
 }
 
 #[cfg(test)]
+mod turn_end_context_usage_tests {
+    //! The Result frame is the only context-usage poll trigger a
+    //! submit produces: the CLI answers `get_context_usage` inside
+    //! its single stdin pump, so the request must never be queued
+    //! while a turn's hooks need the pump. The turn-end refresh on
+    //! the success path is what still feeds the footer bar.
+    use super::handle_sdk_message;
+    use crate::app::App;
+    use forge_primitives::Message;
+
+    fn result_message(session_id: &str) -> Message {
+        Message::Result {
+            subtype: "success".to_owned(),
+            session_id: session_id.to_owned(),
+            is_error: false,
+            num_turns: 1,
+            duration_ms: 0,
+            duration_api_ms: 0,
+            stop_reason: Some("end_turn".to_owned()),
+            total_cost_usd: None,
+            usage: None,
+            result: None,
+            structured_output: None,
+            model_usage: None,
+            permission_denials: None,
+            errors: None,
+            uuid: None,
+            terminal_reason: None,
+        }
+    }
+
+    fn app_with_connection()
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
+        let mut app = App::test_default();
+        let rx = app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        (app, rx)
+    }
+
+    #[test]
+    fn result_refreshes_context_usage_exactly_once() {
+        let (mut app, mut rx) = app_with_connection();
+
+        handle_sdk_message(&mut app, result_message("session-1"));
+
+        let envelope = rx.try_recv().expect("turn end should poll context usage");
+        assert!(
+            matches!(
+                envelope,
+                forge_primitives::AgentCommand::GetContextUsage { ref session_id }
+                    if session_id == "session-1"
+            ),
+            "expected GetContextUsage, got {envelope:?}",
+        );
+        assert!(rx.try_recv().is_err(), "turn end must not send a second get_context_usage");
+    }
+}
+
+#[cfg(test)]
 mod finalize_open_tool_calls_tests {
     //! The turn-end sweep force-completes lingering tool calls, EXCEPT
     //! persistent monitors and backgrounded tasks the CLI still lists as
