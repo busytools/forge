@@ -30,7 +30,7 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "~/.claude-stargate"
+config_dir = "/tmp/forge-test-smoke-stargate"
 provider = "anthropic"
 "#,
     )
