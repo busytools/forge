@@ -662,12 +662,10 @@ fn locked_worktrees(repo_root: &Path) -> Option<Vec<WorktreeLock>> {
     let flush = |current: &mut Option<String>,
                  reason: &mut Option<String>,
                  locks: &mut Vec<WorktreeLock>| {
-        if let Some(path) = current.take() {
-            if let Some(reason) = reason.take()
-                && let Ok(real) = std::fs::canonicalize(std::path::Path::new(&path))
-            {
-                locks.push(WorktreeLock { path: real, pid: parse_lock_pid(&reason) });
-            }
+        if let (Some(path), Some(reason)) = (current.take(), reason.take())
+            && let Ok(real) = std::fs::canonicalize(std::path::Path::new(&path))
+        {
+            locks.push(WorktreeLock { path: real, pid: parse_lock_pid(&reason) });
         }
     };
     for line in listing.lines() {
@@ -688,7 +686,7 @@ fn locked_worktrees(repo_root: &Path) -> Option<Vec<WorktreeLock>> {
 /// start ...)`. `None` for a bare `locked` line or any foreign reason.
 fn parse_lock_pid(reason: &str) -> Option<u32> {
     let digits = reason.split("pid ").nth(1)?;
-    let digits: String = digits.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = digits.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
 }
 
@@ -1363,7 +1361,7 @@ mod tests {
     /// captured on CLI 2.1.220. It names no worktree: the subagent is
     /// about to run in it, so a parse that found a path here would reap a
     /// live agent's tree.
-    fn async_launch_response() -> serde_json::Value {
+    fn async_launch_response(output_file: &str) -> serde_json::Value {
         serde_json::json!({
             "isAsync": true,
             "status": "async_launched",
@@ -1371,7 +1369,7 @@ mod tests {
             "description": "capture async",
             "resolvedModel": "glm-5.3-flash",
             "prompt": "sleep then done",
-            "outputFile": "/private/tmp/claude-501/repo/65d36dcd/tasks/a01ffe965157f5add.output",
+            "outputFile": output_file,
             "canReadOutputFile": true,
         })
     }
@@ -1396,7 +1394,12 @@ mod tests {
     #[test]
     fn completed_agent_worktree_never_reaps_an_async_launch() {
         assert!(
-            completed_agent_worktree("Agent", &agent_input(), &async_launch_response()).is_none()
+            completed_agent_worktree(
+                "Agent",
+                &agent_input(),
+                &async_launch_response("/tmp/tasks/a01ffe965157f5add.output")
+            )
+            .is_none()
         );
     }
 
@@ -1850,7 +1853,6 @@ mod tests {
         assert!(listed[0].path.ends_with("agent-abc123"), "{:?}", listed[0].path);
     }
 
-    #[test]
     /// A worktrees dir that cannot be read propagates the error - the
     /// sweep must not read an unreadable listing as an empty one.
     #[cfg(unix)]

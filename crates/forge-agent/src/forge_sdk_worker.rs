@@ -881,6 +881,17 @@ pub(crate) struct AccountBinding<'a> {
     pub env: &'a HashMap<String, String>,
 }
 
+/// Paths already warned about as not-a-worktree, so a plain directory a
+/// user parked under `.claude/worktrees/agent-*` warns once per process
+/// instead of at every spawn, forever.
+fn not_a_worktree_already_warned(path: &Path) -> bool {
+    static WARNED: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    let warned = WARNED.get_or_init(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+    let mut warned = warned.lock();
+    !warned.insert(path.to_path_buf())
+}
+
 /// Log the outcome of one agent-worktree reap. `worktree` carries the
 /// path so every outcome is attributable. Kept trees are info, not
 /// warn: uncommitted edits are the CLI's deliberate hand-back. A kept
@@ -937,22 +948,28 @@ fn log_agent_worktree_reap(
             reason = %reason,
             "agent worktree kept: the subagent left uncommitted changes",
         ),
-        AgentWorktreeReap::KeptUniqueCommit { tip } => tracing::info!(
+        AgentWorktreeReap::KeptUniqueCommit { tip } => tracing::warn!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             path = %worktree.path.display(),
             tip = %tip,
-            "agent worktree kept: detached HEAD holds commits reachable from no ref",
+            "agent worktree kept: detached HEAD holds commits reachable from no other \
+             ref (tip {tip}). Inspect with 'git -C <path> log {tip}', commit or branch \
+             that work, then remove the tree by hand",
         ),
         AgentWorktreeReap::Absent => tracing::debug!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             path = %worktree.path.display(),
             "agent worktree already gone",
         ),
-        AgentWorktreeReap::NotAWorktree => tracing::warn!(
-            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-            path = %worktree.path.display(),
-            "git does not vouch for this path being a worktree; left in place",
-        ),
+        AgentWorktreeReap::NotAWorktree => {
+            if !not_a_worktree_already_warned(&worktree.path) {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    path = %worktree.path.display(),
+                    "git does not vouch for this path being a worktree; left in place",
+                );
+            }
+        }
         AgentWorktreeReap::RemoveFailed { reason } => tracing::warn!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             path = %worktree.path.display(),
@@ -1106,7 +1123,7 @@ fn build_options_with_callback(
                 // shape is the drift signal, so it alone gets info.
                 let known_fieldless = matches!(
                     input.tool_response.get("status").and_then(serde_json::Value::as_str),
-                    Some("completed") | Some("async_launched")
+                    Some("completed" | "async_launched")
                 );
                 if known_fieldless {
                     tracing::debug!(
