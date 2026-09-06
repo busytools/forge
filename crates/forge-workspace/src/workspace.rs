@@ -10657,9 +10657,14 @@ mod worker_respawn_tests {
         );
 
         for cmd in workspace.drain_test_dispatch_buffer() {
-            let Command::SpawnWorker { label, interactive, .. } = cmd else {
+            let Command::SpawnWorker { label, interactive, from_boot_respawn, .. } = cmd else {
                 panic!("expected SpawnWorker");
             };
+            assert!(
+                from_boot_respawn,
+                "a boot re-spawn must stay exempt from the worker cap; flipping this \
+                 strands persisted rows on restart with the refusal dropped unheard"
+            );
             match label.as_str() {
                 "talkative" => {
                     assert!(interactive, "an interactive row re-spawns interactive");
@@ -10961,6 +10966,70 @@ provider = "anthropic"
             Some(session_id.as_str()),
             "the scan resumes the worker onto its tagged session",
         );
+    }
+
+    /// The MCP path is the only one leads spawn through; its
+    /// `from_boot_respawn` must stay false or the cap silently stops
+    /// governing exactly the spawns the cap exists for.
+    #[tokio::test]
+    async fn mcp_spawn_carries_from_boot_respawn_false() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, _path, session_id) = resumable_worker_fixture(&project, &cfg);
+        // The caller resolves as the project lead through the catalog;
+        // the boot scan does not run under new_for_test, so seed the
+        // session row the resolution looks for.
+        ws.catalog.lock().insert(
+            key,
+            vec![forge_primitives::SDKSessionInfo {
+                session_id: session_id.clone(),
+                summary: "lead".to_owned(),
+                last_modified: 0,
+                file_size: None,
+                custom_title: None,
+                first_prompt: None,
+                git_branch: None,
+                cwd: None,
+                storage_key: String::new(),
+                tag: None,
+                created_at: None,
+            }],
+        );
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        // The intercept swallows the command and holds its reply sender,
+        // so the facade's await only resolves once the buffer is
+        // drained below - which is also where the assertion target
+        // comes from.
+        let spawner = tokio::spawn(async move {
+            let _ = facade
+                .spawn_worker(
+                    &SessionKey::from_session_id(session_id),
+                    "reviewer".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                )
+                .await;
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let from_boot_respawn = loop {
+            let drained = ws.drain_test_dispatch_buffer();
+            if let Some(from_boot_respawn) = drained.iter().find_map(|cmd| match cmd {
+                Command::SpawnWorker { from_boot_respawn, .. } => Some(*from_boot_respawn),
+                _ => None,
+            }) {
+                break from_boot_respawn;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the MCP spawn never dispatched a SpawnWorker"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        spawner.await.expect("facade task joins");
+        assert!(!from_boot_respawn, "the MCP path is cap-governed, never boot-exempt");
     }
 
     /// The respawn scan writes its tag rows back to redb, so the next
