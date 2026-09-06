@@ -2571,6 +2571,7 @@ mod tests {
         app.set_cwd_raw("/current");
         app.plugins.loading = true;
         app.plugins.status_message = Some("Checking for plugin updates...".into());
+        app.plugins.runtime_reload_after_refresh = true;
         app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
             trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
             finished: true,
@@ -2591,6 +2592,11 @@ mod tests {
 
         assert!(!app.plugins.loading);
         assert!(app.plugins.status_message.is_none());
+        assert!(
+            !app.plugins.runtime_reload_after_refresh,
+            "the dropped failure retires the reload intent like the matched path"
+        );
+        assert!(app.plugins.pending_runtime_reload_success_message.is_none());
         assert!(app.plugins.last_error.is_none(), "the other project's error stays out");
         assert!(app.config.last_error.is_none(), "the footer pair stays clean too");
         assert!(app.plugins.update_run.is_some(), "the displayed report predates the drop");

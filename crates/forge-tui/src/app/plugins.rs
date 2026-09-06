@@ -384,6 +384,8 @@ pub(crate) fn apply_inventory_refresh_failure(app: &mut App, message: String) {
 pub(crate) fn settle_dropped_refresh_failure(app: &mut App) {
     app.plugins.loading = false;
     app.plugins.status_message = None;
+    app.plugins.runtime_reload_after_refresh = false;
+    app.plugins.pending_runtime_reload_success_message = None;
 }
 
 /// Same release for a dropped run finish, plus the pane's unfinished
