@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::{Config, ConfigBuilder, Engine, Outcome, Samples};
+use crate::{Config, ConfigBuilder, Engine, Error, Outcome, Samples};
 use sha2::{Digest, Sha256};
 
 /// Dictation-style speech: ten distinct paragraphs, eight seconds of
@@ -324,10 +324,16 @@ fn a_pipelined_take_gate_transcribes_while_recording() {
     assert_eq!(text, one_pass, "the landed text must be exactly one normalizer pass over the join");
 }
 
-/// Cancelling a pipelined take mid-flight must end it: no hang in the
-/// drop, the microphone and engine both still usable afterwards.
+/// Cancelling a pipelined take mid-flight must END it: the abandoned
+/// take's own answer is what discriminates. With working cancellation
+/// every outstanding job aborts and the take answers `Cancelled`; with
+/// broken cancellation the backlog decodes fully and the take answers
+/// `Ok` - so the answer's shape is the assertion, not the clock. The
+/// deadline only bounds a hang: the models run ~80x realtime, so a
+/// fully decoded backlog and an aborted one are both far inside it.
+/// The microphone and engine must still work afterwards.
 #[test]
-#[ignore = "needs the ASR weights; generates a ~90 s `say` clip on first run"]
+#[ignore = "needs the ASR weights; generates a ~110 s `say` clip on first run"]
 fn a_pipelined_cancel_gate_ends_cleanly() {
     shipped_weights_on_disk();
     let pcm = read_clip("cancel", PIPELINE_SCRIPT);
@@ -357,10 +363,21 @@ fn a_pipelined_cancel_gate_ends_cleanly() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // Abandon after the stop, while the tail is still owed: the cancel
-    // must reach the outstanding jobs and the drop must join.
+    // Stop while segments are still owed, then cancel and DEMAND the
+    // take's answer instead of dropping it unread.
     let ticket = capture.finish().expect("the take must finish");
-    drop(ticket);
+    ticket.cancel_token().cancel();
+    let (answered, waiting) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = answered.send(ticket.recv());
+    });
+    let answer = waiting
+        .recv_timeout(Duration::from_secs(120))
+        .expect("a cancelled take must still resolve, not hang");
+    assert!(
+        matches!(&answer, Err(Error::Cancelled)),
+        "a cancelled pipelined take must answer Cancelled, not decode its backlog: {answer:?}"
+    );
 
     // The engine takes another take and answers it - a real one, so
     // the cancellation demonstrably left working weights behind.
