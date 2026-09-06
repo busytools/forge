@@ -928,9 +928,10 @@ fn synth_worker_key(project_key: &ProjectKey, label: &str, is_resume: bool) -> S
 
 /// The caller-facing refusal for an at-cap worker spawn. One source so
 /// the classifier pin in the facade tests tracks the real text.
-pub(crate) fn worker_limit_reached_message(live: usize, cap: usize) -> String {
+pub(crate) fn worker_limit_reached_message(project: &str, live: usize, cap: usize) -> String {
+    let workers = if live == 1 { "worker" } else { "workers" };
     format!(
-        "worker limit reached: {live} workers are already live in this project and the concurrent worker cap is {cap} (forge.toml [projects.<name>] max_workers, default 2); despawn one first, or raise/remove max_workers"
+        "worker limit reached: project '{project}' has {live} {workers} live and its cap is {cap} (forge.toml [projects.<name>] max_workers, default 2); despawn one first, or raise/remove max_workers"
     )
 }
 
@@ -1059,7 +1060,11 @@ pub(crate) fn handle_spawn_worker(
                     cap,
                     "spawn_worker: refused, at the concurrent worker cap",
                 );
-                let _ = return_to.send(Err(worker_limit_reached_message(live, cap)));
+                let _ = return_to.send(Err(worker_limit_reached_message(
+                    project_key.as_str(),
+                    live,
+                    cap,
+                )));
             }
         }
         return;
@@ -2249,7 +2254,7 @@ max_workers = {limit}
         assert!(err.contains("worker limit reached"), "names the refusal: {err}");
         assert!(err.contains("cap is 2"), "names notes' own cap: {err}");
         assert!(
-            err.contains("2 workers are already live in this project"),
+            err.contains(&format!("project '{}' has 2 workers live", notes_project.as_str())),
             "notes' refusal counts only notes' workers: {err}"
         );
 
@@ -2257,7 +2262,7 @@ max_workers = {limit}
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_spawn_worker(
             &workspace,
-            forge_project,
+            forge_project.clone(),
             "w5",
             "charter".to_owned(),
             "lead".to_owned(),
@@ -2270,8 +2275,8 @@ max_workers = {limit}
         let err = rx.await.expect("reply").expect_err("forge at its cap must refuse");
         assert!(err.contains("cap is 1"), "names forge's override: {err}");
         assert!(
-            err.contains("1 workers are already live in this project"),
-            "forge's refusal counts only forge's workers: {err}"
+            err.contains(&format!("project '{}' has 1 worker live", forge_project.as_str())),
+            "forge's refusal counts only forge's workers, singular: {err}"
         );
     }
 

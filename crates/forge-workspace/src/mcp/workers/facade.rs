@@ -1452,7 +1452,7 @@ mod worktree_creation_failed_tests {
 
     #[test]
     fn the_cap_refusal_stays_a_dispatch_failure() {
-        let message = crate::spawn::worker_limit_reached_message(2, 2);
+        let message = crate::spawn::worker_limit_reached_message("forge", 2, 2);
         assert_eq!(
             classify_worker_spawn_failure(&message, true),
             WorkerSpawnError::DispatchFailed { message },

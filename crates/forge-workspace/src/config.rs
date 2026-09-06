@@ -500,7 +500,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     if !unknown_env_projects.is_empty() {
         let mut valid: Vec<&str> = seen_project_names.iter().map(String::as_str).collect();
         valid.sort_unstable();
-        return Err(WorkspaceError::UnknownProjectEnv {
+        return Err(WorkspaceError::UnknownProjectSettings {
             projects: unknown_env_projects.join(", "),
             valid: valid.join(", "),
             path,

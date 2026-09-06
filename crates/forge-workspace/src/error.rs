@@ -103,7 +103,7 @@ pub enum WorkspaceError {
         "forge.toml at {} has [projects.<name>] for undeclared projects: {projects}; valid projects: {valid}",
         path.display()
     )]
-    UnknownProjectEnv { path: PathBuf, projects: String, valid: String },
+    UnknownProjectSettings { path: PathBuf, projects: String, valid: String },
 
     #[error("no project named '{name}' in forge.toml at {}", path.display())]
     ProjectNotFound { name: String, path: PathBuf },
