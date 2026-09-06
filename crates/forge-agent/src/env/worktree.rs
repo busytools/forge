@@ -373,6 +373,10 @@ pub enum AgentWorktreeReap {
     /// Uncommitted or untracked changes: the CLI hands a changed tree
     /// back to the caller deliberately, so the reap refuses too.
     KeptDirty { reason: String },
+    /// Detached HEAD holding commits reachable from no ref: removal
+    /// would strand them, because the post-removal branch reap sees refs
+    /// only and never a linked worktree's HEAD. `tip` is the full sha.
+    KeptUniqueCommit { tip: String },
     /// Already gone - the CLI's own auto-clean, or an earlier reap.
     Absent,
     /// Git does not vouch for the path being a worktree.
@@ -452,6 +456,94 @@ fn find_string_field(value: &serde_json::Value, key: &str, depth: u8) -> Option<
     }
 }
 
+/// The full sha of a detached worktree HEAD holding commits that only
+/// the worktree itself reaches, or `None` when removal cannot strand
+/// anything. An attached branch is judged after removal by
+/// [`reap_worktree_branch`]; a detached HEAD must be judged before.
+///
+/// The survivors are refs plus every OTHER worktree's HEAD. `--all`
+/// cannot serve here: it includes this worktree's own HEAD, against
+/// which nothing ever reads unique, so the guard would never fire. Any
+/// failure to verify returns a tip, keeping the tree.
+fn detached_unique_tip(repo_root: &Path, path: &Path) -> Option<String> {
+    if worktree_branch(path).is_some() {
+        return None;
+    }
+    let tip = match git_in_repo(path, &["rev-parse", "HEAD"]) {
+        Some(sha) => sha.trim().to_owned(),
+        None => return Some(String::from("(unreadable HEAD)")),
+    };
+    if tip.is_empty() {
+        return Some(String::from("(unreadable HEAD)"));
+    }
+    let survivors = survivor_tips(repo_root, path)?;
+    let exclusions: Vec<String> = survivors.iter().map(|sha| format!("^{sha}")).collect();
+    let mut cmd = git_command::command("git");
+    cmd.arg("-C")
+        .arg(repo_root)
+        .args(["rev-list", "--count", &tip, "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(_) => return Some(tip),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(exclusions.join("\n").as_bytes());
+        let _ = stdin.write_all(b"\n");
+    }
+    let unique = match child.wait_with_output() {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok()
+        }
+        _ => None,
+    };
+    match unique {
+        Some(0) => None,
+        _ => Some(tip),
+    }
+}
+
+/// Every tip that would survive `worktree_path`'s removal: all refs plus
+/// the HEAD of each other worktree. `None` when git cannot be asked,
+/// which the caller treats as keep.
+fn survivor_tips(repo_root: &Path, worktree_path: &Path) -> Option<Vec<String>> {
+    let mut tips: Vec<String> =
+        git_in_repo(repo_root, &["for-each-ref", "--format=%(objectname)"])?
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_owned())
+            .collect();
+    let listing = git_in_repo(repo_root, &["worktree", "list", "--porcelain"])?;
+    let here = std::fs::canonicalize(worktree_path).ok();
+    let mut current: Option<(String, Option<String>)> = None;
+    for line in listing.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            current = Some((path.to_owned(), None));
+        } else if let Some(sha) = line.strip_prefix("HEAD ") {
+            if let Some((_, head)) = current.as_mut() {
+                *head = Some(sha.to_owned());
+            }
+        } else if line.is_empty() {
+            if let Some((path, head)) = current.take() {
+                if let Some(sha) = head {
+                    let same = std::fs::canonicalize(std::path::Path::new(&path))
+                        .ok()
+                        .zip(here.clone())
+                        .is_some_and(|(a, b)| a == b)
+                        || path == worktree_path.to_string_lossy();
+                    if !same {
+                        tips.push(sha);
+                    }
+                }
+            }
+        }
+    }
+    Some(tips)
+}
+
 /// Remove a completed subagent's managed worktree, then reap the
 /// conventional branch behind it. Refuses anything but a porcelain-clean
 /// tree: the measured leak is clean trees whose gitignored target/ the
@@ -469,6 +561,9 @@ pub fn reap_agent_worktree(agent_worktree: &AgentWorktree) -> AgentWorktreeReap 
     }
     if let Some(reason) = worktree_dirty_reason(path) {
         return AgentWorktreeReap::KeptDirty { reason };
+    }
+    if let Some(tip) = detached_unique_tip(&agent_worktree.repo_root, path) {
+        return AgentWorktreeReap::KeptUniqueCommit { tip };
     }
     match remove_worktree(path, false) {
         Ok(()) => AgentWorktreeReap::Reaped {
@@ -1372,6 +1467,38 @@ mod tests {
             branch_exists(dir.path(), "review-971"),
             "the subagent's own branch is not the reap's target",
         );
+    }
+
+    /// A detached worktree HEAD is invisible to the post-removal branch
+    /// reap (`--all` reads refs, not linked worktree HEADs), so commits
+    /// there would strand on removal. No upstream exists to trip the
+    /// unpushed check, and the tree reads porcelain-clean - exactly the
+    /// shape the reap otherwise removes.
+    #[test]
+    fn keeps_a_detached_agent_worktree_whose_commits_no_ref_reaches() {
+        let dir = init_repo_with_commit();
+        let wt = dir.path().join(".claude").join("worktrees").join("agent-abc123");
+        std::fs::create_dir_all(wt.parent().expect("parent")).expect("mkdir");
+        run_git(
+            dir.path(),
+            &["worktree", "add", "-q", "--detach", wt.to_str().expect("utf8 path")],
+        );
+        fs::write(wt.join("work.txt"), "committed while detached").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "detached work"]);
+        let agent_wt = agent_worktree_for(dir.path(), "abc123", "worktree-agent-abc123");
+
+        let outcome = reap_agent_worktree(&agent_wt);
+
+        let AgentWorktreeReap::KeptUniqueCommit { tip } = outcome else {
+            panic!("a detached HEAD holding unique commits keeps the tree, got {outcome:?}");
+        };
+        assert_eq!(
+            tip,
+            git_stdout(&wt, &["rev-parse", "HEAD"]),
+            "the warning names the full tip, so the commit stays findable"
+        );
+        assert!(wt.exists(), "the tree survives, and the commit with it");
     }
 
     /// The second leaked worktree sat on a detached HEAD: no branch to

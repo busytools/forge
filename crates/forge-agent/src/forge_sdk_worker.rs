@@ -895,6 +895,11 @@ fn log_agent_worktree_reap(outcome: crate::env::worktree::AgentWorktreeReap) {
             reason = %reason,
             "agent worktree kept: the subagent left uncommitted changes",
         ),
+        AgentWorktreeReap::KeptUniqueCommit { tip } => tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            tip = %tip,
+            "agent worktree kept: detached HEAD holds commits reachable from no ref",
+        ),
         AgentWorktreeReap::Absent | AgentWorktreeReap::NotAWorktree => {}
         AgentWorktreeReap::RemoveFailed { reason } => tracing::warn!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
