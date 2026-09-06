@@ -4313,7 +4313,9 @@ mod turn_end_context_usage_tests {
     //! submit produces: the CLI answers `get_context_usage` inside
     //! its single stdin pump, so the request must never be queued
     //! while a turn's hooks need the pump. The turn-end refresh on
-    //! the success path is what still feeds the footer bar.
+    //! the success path is what still feeds the footer bar below
+    //! CONTEXT_USAGE_TOKEN_GATE; at or above it the poll is
+    //! gate-skipped by design.
     use super::handle_sdk_message;
     use crate::app::App;
     use forge_primitives::Message;
