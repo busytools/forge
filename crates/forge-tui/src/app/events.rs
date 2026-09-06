@@ -2495,7 +2495,7 @@ mod tests {
         let mut app = make_test_app();
         app.set_cwd_raw("/current");
         app.plugins.loading = true;
-        app.plugins.status_message = Some("Checking for plugin updates...".into());
+        app.config.status_message = Some("Checking for plugin updates...".into());
         app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
             trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
             finished: false,
@@ -2532,7 +2532,7 @@ mod tests {
 
         assert!(!app.plugins.loading, "a dropped finish must not pin the pane");
         assert!(app.plugins.update_run.is_none(), "the u/c/r guard releases");
-        assert!(app.plugins.status_message.is_none(), "the stale progress line goes too");
+        assert!(app.config.status_message.is_none(), "the stale progress line goes too");
         assert_eq!(app.plugins.installed.len(), 1, "the other project's snapshot never applies");
         assert!(app.plugins.update_availability.is_empty(), "the dropped report leaves no markers");
 
@@ -2570,7 +2570,7 @@ mod tests {
         let mut app = make_test_app();
         app.set_cwd_raw("/current");
         app.plugins.loading = true;
-        app.plugins.status_message = Some("Checking for plugin updates...".into());
+        app.config.status_message = Some("Checking for plugin updates...".into());
         app.plugins.runtime_reload_after_refresh = true;
         app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
             trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
@@ -2591,14 +2591,16 @@ mod tests {
         );
 
         assert!(!app.plugins.loading);
-        assert!(app.plugins.status_message.is_none());
+        assert!(app.config.status_message.is_none());
         assert!(
             !app.plugins.runtime_reload_after_refresh,
             "the dropped failure retires the reload intent like the matched path"
         );
         assert!(app.plugins.pending_runtime_reload_success_message.is_none());
-        assert!(app.plugins.last_error.is_none(), "the other project's error stays out");
-        assert!(app.config.last_error.is_none(), "the footer pair stays clean too");
+        assert!(
+            app.config.last_error.is_none(),
+            "the other project's error stays out of the footer"
+        );
         assert!(app.plugins.update_run.is_some(), "the displayed report predates the drop");
     }
 
@@ -2611,7 +2613,7 @@ mod tests {
         let mut app = make_test_app();
         app.set_cwd_raw("/current");
         app.plugins.loading = true;
-        app.plugins.status_message = Some("Refreshing plugin inventory...".into());
+        app.config.status_message = Some("Refreshing plugin inventory...".into());
         app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
             id: "seeded-plugin".into(),
             version: None,
@@ -2637,7 +2639,7 @@ mod tests {
         );
 
         assert!(!app.plugins.loading, "a dropped refresh must not pin the pane");
-        assert!(app.plugins.status_message.is_none(), "the stale progress line goes too");
+        assert!(app.config.status_message.is_none(), "the stale progress line goes too");
         assert_eq!(app.plugins.installed.len(), 1, "the other project's snapshot never applies");
         assert!(app.plugins.claude_path.is_none(), "the dropped claude path never lands");
         assert!(app.plugins.last_inventory_refresh_at.is_none(), "the drop is not a refresh");
@@ -2687,7 +2689,7 @@ mod tests {
     fn a_stale_terminal_on_an_idle_pane_changes_nothing() {
         let mut app = make_test_app();
         app.set_cwd_raw("/current");
-        app.plugins.status_message = Some("Update check: 1 updated, 0 failed, 0 current".into());
+        app.config.status_message = Some("Update check: 1 updated, 0 failed, 0 current".into());
         app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
             trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
             finished: true,
@@ -2710,7 +2712,7 @@ mod tests {
 
         assert!(!app.plugins.loading);
         assert_eq!(
-            app.plugins.status_message.as_deref(),
+            app.config.status_message.as_deref(),
             Some("Update check: 1 updated, 0 failed, 0 current"),
             "an idle pane keeps its status line"
         );
@@ -2728,7 +2730,7 @@ mod tests {
         );
 
         assert_eq!(
-            app.plugins.status_message.as_deref(),
+            app.config.status_message.as_deref(),
             Some("Update check: 1 updated, 0 failed, 0 current"),
             "an idle pane keeps its status line"
         );
