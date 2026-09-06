@@ -70,12 +70,6 @@ pub struct SpinnerState {
     pub show_thinking: bool,
     /// True when this message should show the compaction indicator.
     pub show_compacting: bool,
-    /// One-line chat indicator for the session waiting on >=1
-    /// non-terminal `SubagentRoot`. `Some` whenever
-    /// `App::subagents_view` is non-empty for the active session;
-    /// `None` when no subagent is active. ADDITIVE to the turn info
-    /// row, which renders beneath it while the turn runs.
-    pub running_subagents: Option<RunningSubagentsLine>,
     /// True while the session's live-turn clock is running - a Result
     /// settles it. Status alone reads busy for post-turn traffic
     /// (monitor/notification text re-binds the spinner anchor), which
@@ -90,16 +84,6 @@ impl SpinnerState {
     fn owns_running_turn(&self) -> bool {
         self.show_empty_thinking || self.show_thinking
     }
-}
-
-/// Snapshot of the active-subagent set surfaced by the chat
-/// running-subagents indicator. Carries the total count + the
-/// primary entry's label so [`subagent_running_line`] can format the
-/// single / multi-subagent shape without re-reading session state.
-#[derive(Clone)]
-pub struct RunningSubagentsLine {
-    pub count: usize,
-    pub primary_label: Option<String>,
 }
 
 struct MessageLayout {
@@ -315,9 +299,6 @@ fn renders_bare_role_label_only(
     if (spinner.show_empty_thinking && spinner.live_turn_running)
         || spinner.show_compacting
         || (spinner.show_thinking && spinner.live_turn_running)
-        || (spinner.running_subagents.is_some()
-            && spinner.is_active_turn_assistant
-            && spinner.live_turn_running)
     {
         return false;
     }
@@ -944,21 +925,6 @@ fn append_assistant_blocks(
             layout.push_blank();
         }
         layout.push_wrapped_line(compacting_line(spinner.glyph), render_context.width);
-    }
-    // Additive to the turn info row, which renders beneath this line
-    // and carries the main agent's own progress.
-    if let Some(running) = spinner.running_subagents.as_ref()
-        && !show_compacting
-        && spinner.is_active_turn_assistant
-        && spinner.live_turn_running
-    {
-        if state.has_body_content {
-            layout.push_blank();
-        }
-        layout.push_wrapped_line(
-            subagent_running_line(spinner.glyph, running.count, running.primary_label.as_deref()),
-            render_context.width,
-        );
     }
 }
 
@@ -1814,11 +1780,6 @@ fn build_message_render_signature(
     // these; fold them (line content included) so a flip invalidates the
     // cached layout.
     spinner.is_active_turn_assistant.hash(&mut hasher);
-    spinner
-        .running_subagents
-        .as_ref()
-        .map(|running| (running.count, running.primary_label.as_deref()))
-        .hash(&mut hasher);
     let assistant_frame = if message_has_frame_dependent_assistant_lines(msg, spinner) {
         Some(spinner.glyph)
     } else {
@@ -2260,29 +2221,6 @@ pub fn format_token_count_short(n: u64) -> String {
         return format!("{whole}.{tenths}M");
     }
     format!("{}M", n / M)
-}
-
-/// One-line chat indicator for a session waiting on >=1 non-terminal
-/// `SubagentRoot`, rendered only on the in-flight turn's assistant
-/// message. Subagents are Inspector-only, so without this line the chat
-/// says nothing about what a subagent is doing mid-turn; once the turn
-/// ends the Inspector is the only surface, which is deliberate. Sibling
-/// of [`compacting_line`]; additive to the turn info row, which renders
-/// beneath it and carries the main agent's own progress. Single shape:
-/// `⠋ ◇ running subagent: <label>… (see Inspector)`; multi:
-/// `⠋ ◇ running N subagents… (see Inspector)`. The label arg falls
-/// back to the count form when absent.
-fn subagent_running_line(spinner: char, count: usize, label: Option<&str>) -> Line<'static> {
-    let body = match (count, label) {
-        (n, _) if n > 1 => {
-            format!("{spinner} \u{25c7} running {n} subagents\u{2026} (see Inspector)")
-        }
-        (_, Some(label)) if !label.is_empty() => {
-            format!("{spinner} \u{25c7} running subagent: {label}\u{2026} (see Inspector)")
-        }
-        _ => format!("{spinner} \u{25c7} running subagent\u{2026} (see Inspector)"),
-    };
-    Line::from(Span::styled(body, Style::default().fg(theme::DIM)))
 }
 
 fn compacting_line(ch: char) -> Line<'static> {
@@ -3492,7 +3430,6 @@ mod tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
-            running_subagents: None,
             live_turn_running: false,
         }
     }
@@ -4519,58 +4456,15 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
-    // subagent_running_line: the chat-side "running subagent..." line
-    // that surfaces while `App::subagents_view` is non-empty. Additive
-    // to the turn info row, which renders beneath it.
+    // #854: the running-subagents line never renders in chat - the
+    // Inspector is the subagent surface. The turn info row stays.
     // ----------------------------------------------------------------
 
     #[test]
-    fn subagent_running_line_single_uses_label_and_inspector_pointer() {
-        let line =
-            subagent_running_line('\u{280B}', 1, Some("Explore \u{b7} map hidden tool calls"));
-        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            rendered.contains("\u{25c7}"),
-            "expected the \u{25c7} subagent glyph; got {rendered:?}",
-        );
-        assert!(
-            rendered.contains("running subagent: Explore \u{b7} map hidden tool calls"),
-            "expected single-subagent label form; got {rendered:?}",
-        );
-        assert!(rendered.contains("see Inspector"), "expected Inspector pointer; got {rendered:?}");
-    }
-
-    #[test]
-    fn subagent_running_line_multi_uses_count() {
-        let line = subagent_running_line('\u{280B}', 3, Some("Explore"));
-        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            rendered.contains("running 3 subagents"),
-            "expected count form for >1 subagent; got {rendered:?}",
-        );
-        assert!(
-            !rendered.contains("subagent:"),
-            "expected the single-form `subagent:` label to be absent; got {rendered:?}",
-        );
-    }
-
-    #[test]
-    fn subagent_running_line_falls_back_when_label_is_unavailable() {
-        let line = subagent_running_line('\u{280B}', 1, None);
-        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            rendered.contains("running subagent"),
-            "expected fallback to the count form when label missing; got {rendered:?}",
-        );
-        assert!(rendered.contains("see Inspector"));
-    }
-
-    #[test]
-    fn assistant_render_stacks_the_subagent_line_above_the_turn_row() {
+    fn assistant_render_omits_the_subagent_line_but_keeps_the_turn_row() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
-            running_subagents: Some(RunningSubagentsLine { count: 2, primary_label: None }),
             live_turn_running: true,
             ..idle_spinner()
         };
@@ -4586,31 +4480,20 @@ mod tests {
         );
 
         let rendered = render_lines_to_strings(&lines);
-        let subagent_idx = rendered.iter().position(|line| line.contains("running 2 subagents"));
-        let row_idx = rendered.iter().position(|line| is_turn_info_row(line));
         assert!(
-            subagent_idx.is_some(),
-            "expected the running-subagents line alongside the turn row; got {rendered:?}",
+            !rendered.iter().any(|line| line.contains("see Inspector")),
+            "the subagent line is removed from chat unconditionally (#854); got {rendered:?}",
         );
         assert!(
-            row_idx.is_some(),
-            "expected the turn info row alongside the subagent line; got {rendered:?}",
-        );
-        assert!(
-            subagent_idx < row_idx,
-            "the subagent line sits in the body's status slot and the row is the message's \
-             footer, so the row is last; got {rendered:?}",
+            rendered.iter().any(|line| is_turn_info_row(line)),
+            "the turn info row still carries the live turn; got {rendered:?}",
         );
     }
 
     #[test]
     fn assistant_render_keeps_the_turn_row_when_no_subagent_active() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            show_thinking: true,
-            running_subagents: None,
-            ..idle_spinner()
-        };
+        let spinner =
+            SpinnerState { is_active_turn_assistant: true, show_thinking: true, ..idle_spinner() };
         let mut msg = make_text_message(MessageRole::Assistant, "streaming");
         msg.turn_info = running_turn_info();
         let mut lines = Vec::new();
@@ -4630,20 +4513,13 @@ mod tests {
         );
         assert!(
             !rendered.iter().any(|line| line.contains("running subagent")),
-            "no running-subagent line when running_subagents is None; got {rendered:?}",
+            "no running-subagent line in the baseline render; got {rendered:?}",
         );
     }
 
     #[test]
     fn assistant_render_skips_subagent_line_for_non_active_assistant() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: false,
-            running_subagents: Some(RunningSubagentsLine {
-                count: 1,
-                primary_label: Some("Explore".to_owned()),
-            }),
-            ..idle_spinner()
-        };
+        let spinner = SpinnerState { is_active_turn_assistant: false, ..idle_spinner() };
         let mut msg = make_text_message(MessageRole::Assistant, "older reply");
         let mut lines = Vec::new();
 
@@ -4664,17 +4540,13 @@ mod tests {
     /// Post-turn traffic (monitor/notification text re-binding the
     /// spinner anchor) leaves a body-bearing message at
     /// `active_turn_assistant` while no turn is in flight. The live
-    /// clock is settled, so the running-subagents line may not render -
-    /// the Inspector is the only subagent surface once the turn ends.
+    /// clock is settled, so no turn indicator may render - the
+    /// Inspector is the only subagent surface once the turn ends.
     #[test]
     fn turn_indicators_need_a_live_turn_even_on_the_active_assistant() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
-            running_subagents: Some(RunningSubagentsLine {
-                count: 1,
-                primary_label: Some("Explore".to_owned()),
-            }),
             live_turn_running: false,
             ..idle_spinner()
         };
@@ -4729,16 +4601,13 @@ mod tests {
 
     /// The designed live-turn shape the gate above must not eat: with
     /// the clock running, the anchored mid-stream message carries its
-    /// body, the running-subagents line and the turn info row.
+    /// body and the turn info row - and, since #854, never the
+    /// running-subagents line.
     #[test]
     fn turn_indicators_render_while_a_live_turn_runs() {
         let spinner = SpinnerState {
             is_active_turn_assistant: true,
             show_thinking: true,
-            running_subagents: Some(RunningSubagentsLine {
-                count: 1,
-                primary_label: Some("Explore".to_owned()),
-            }),
             live_turn_running: true,
             ..idle_spinner()
         };
@@ -4756,8 +4625,8 @@ mod tests {
 
         let rendered = render_lines_to_strings(&lines);
         assert!(
-            rendered.iter().any(|line| line.contains("running subagent")),
-            "a live turn plus a running subagent renders the line; got {rendered:?}",
+            !rendered.iter().any(|line| line.contains("see Inspector")),
+            "a live turn never renders the subagent line in chat (#854); got {rendered:?}",
         );
         assert!(
             rendered.iter().any(|line| line.contains("[▶ expand]")),
@@ -5242,89 +5111,6 @@ mod tests {
         assert!(
             !lines.is_empty(),
             "an actively-thinking empty placeholder still shows the spinner"
-        );
-    }
-
-    /// The render-cache signature must fold running_subagents +
-    /// is_active_turn_assistant: an empty assistant suppressed while idle
-    /// must rebuild (not return the stale empty layout) when it flips into
-    /// an active turn with a running subagent.
-    #[test]
-    fn subagent_flip_invalidates_empty_assistant_render_cache() {
-        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![]);
-
-        let mut lines_a = Vec::new();
-        render_message(
-            &mut msg,
-            &idle_spinner(),
-            MessageRenderContext::new(None, 120, 0, default_options()),
-            &mut lines_a,
-        );
-        assert!(lines_a.is_empty(), "idle empty placeholder is suppressed");
-
-        let active_with_subagent = SpinnerState {
-            is_active_turn_assistant: true,
-            running_subagents: Some(RunningSubagentsLine {
-                count: 1,
-                primary_label: Some("Explore".to_owned()),
-            }),
-            live_turn_running: true,
-            ..idle_spinner()
-        };
-        let mut lines_b = Vec::new();
-        render_message(
-            &mut msg,
-            &active_with_subagent,
-            MessageRenderContext::new(None, 120, 0, default_options()),
-            &mut lines_b,
-        );
-        let rendered = render_lines_to_strings(&lines_b);
-        assert!(
-            rendered.iter().any(|l| l.contains("subagent")),
-            "cache rebuilds on the subagent flip instead of the stale empty render; got {rendered:?}",
-        );
-    }
-
-    /// The signature folds the subagent line CONTENT: a count/label change
-    /// on an empty active assistant must rebuild, not serve the stale line.
-    #[test]
-    fn subagent_count_change_invalidates_empty_assistant_render_cache() {
-        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![]);
-
-        let one = SpinnerState {
-            is_active_turn_assistant: true,
-            running_subagents: Some(RunningSubagentsLine {
-                count: 1,
-                primary_label: Some("Explore".to_owned()),
-            }),
-            live_turn_running: true,
-            ..idle_spinner()
-        };
-        let mut lines_a = Vec::new();
-        render_message(
-            &mut msg,
-            &one,
-            MessageRenderContext::new(None, 120, 0, default_options()),
-            &mut lines_a,
-        );
-
-        let many = SpinnerState {
-            is_active_turn_assistant: true,
-            running_subagents: Some(RunningSubagentsLine { count: 3, primary_label: None }),
-            live_turn_running: true,
-            ..idle_spinner()
-        };
-        let mut lines_b = Vec::new();
-        render_message(
-            &mut msg,
-            &many,
-            MessageRenderContext::new(None, 120, 0, default_options()),
-            &mut lines_b,
-        );
-        let rendered = render_lines_to_strings(&lines_b);
-        assert!(
-            rendered.iter().any(|l| l.contains("3 subagents")),
-            "cache rebuilds on the count change instead of serving the stale line; got {rendered:?}",
         );
     }
 

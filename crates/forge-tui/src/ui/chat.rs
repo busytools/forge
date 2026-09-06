@@ -7,7 +7,7 @@ use crate::app::cache_metrics;
 use crate::app::{
     App, AppStatus, MessageBlock, MessageRole, ScrollbarGeometry, SelectionKind, SelectionState,
 };
-use crate::ui::message::{self, RunningSubagentsLine, SpinnerState};
+use crate::ui::message::{self, SpinnerState};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -449,7 +449,7 @@ fn stop_hook_summary_for(app: &App, idx: usize) -> StopHookSnapshot {
     }
 }
 
-fn build_base_spinner(app: &App, subagents: &[crate::app::SubagentEntry]) -> SpinnerState {
+fn build_base_spinner(app: &App) -> SpinnerState {
     // `show_thinking` fires on both `Thinking` (no body streamed yet)
     // and `Running` (mid-stream / tool execution) so the spinner keeps
     // ticking visibly across the whole turn - not just the pre-body
@@ -464,31 +464,8 @@ fn build_base_spinner(app: &App, subagents: &[crate::app::SubagentEntry]) -> Spi
         show_empty_thinking: turn_in_flight,
         show_thinking: turn_in_flight,
         show_compacting: app.is_compacting(),
-        running_subagents: derive_running_subagents(subagents),
         live_turn_running: app.active_session().is_some_and(|s| s.live_turn.started_at.is_some()),
     }
-}
-
-fn derive_running_subagents(
-    subagents: &[crate::app::SubagentEntry],
-) -> Option<RunningSubagentsLine> {
-    let running: Vec<&crate::app::SubagentEntry> = subagents
-        .iter()
-        .filter(|entry| {
-            !matches!(
-                entry.status,
-                crate::agent::model::ToolCallStatus::Completed
-                    | crate::agent::model::ToolCallStatus::Failed
-                    | crate::agent::model::ToolCallStatus::Killed
-            )
-        })
-        .collect();
-    if running.is_empty() {
-        return None;
-    }
-    let count = running.len();
-    let primary_label = (count == 1).then(|| running[0].label.clone());
-    Some(RunningSubagentsLine { count, primary_label })
 }
 
 fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &SpinnerState) -> usize {
@@ -644,8 +621,7 @@ pub(super) fn refresh_selection_snapshot(app: &mut App) {
         return;
     }
 
-    let subagents = if app.has_active_subagent_root() { app.subagents_view() } else { Vec::new() };
-    let base_spinner = build_base_spinner(app, &subagents);
+    let base_spinner = build_base_spinner(app);
     let content_height = sync_chat_layout(app, area, &base_spinner);
     let _t = app.perf.as_ref().map(|p| p.start("chat::selection_capture"));
     let render_data = build_scrolled_render_data(
@@ -990,18 +966,13 @@ fn render_message_range(
     }
 }
 
-pub fn render(
-    frame: &mut Frame,
-    area: Rect,
-    app: &mut App,
-    subagents: &[crate::app::SubagentEntry],
-) {
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let _t = app.perf.as_ref().map(|p| p.start("chat::render"));
     crate::perf::mark_with("chat::message_count", "msgs", app.messages().len());
     let content_area = chat_content_area(area);
     let width = content_area.width;
     let viewport_height = content_area.height as usize;
-    let base_spinner = build_base_spinner(app, subagents);
+    let base_spinner = build_base_spinner(app);
     let content_height = sync_chat_layout(app, content_area, &base_spinner);
 
     if content_height <= viewport_height {
@@ -1295,7 +1266,6 @@ mod tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
-            running_subagents: None,
             live_turn_running: false,
         }
     }
@@ -1453,38 +1423,17 @@ mod tests {
     }
 
     #[test]
-    fn derive_running_subagents_returns_none_without_dispatch() {
-        let app = App::test_default();
-        assert!(super::derive_running_subagents(&app.subagents_view()).is_none());
-    }
-
-    #[test]
-    fn build_base_spinner_carries_no_running_subagents_by_default() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Running;
-        let spinner = super::build_base_spinner(&app, &app.subagents_view());
-        assert!(spinner.running_subagents.is_none());
-        assert!(spinner.show_thinking, "thinking remains independent of the subagent surface");
-    }
-
-    #[test]
     fn base_spinner_live_turn_running_follows_the_clock() {
         let mut app = App::test_default();
         app.status = AppStatus::Running;
-        assert!(
-            !super::build_base_spinner(&app, &[]).live_turn_running,
-            "no turn opened yet, no clock"
-        );
+        assert!(!super::build_base_spinner(&app).live_turn_running, "no turn opened yet, no clock");
         app.start_live_turn(std::time::Instant::now());
         assert!(
-            super::build_base_spinner(&app, &[]).live_turn_running,
+            super::build_base_spinner(&app).live_turn_running,
             "the opened turn runs the clock"
         );
         app.settle_live_turn(1_000);
-        assert!(
-            !super::build_base_spinner(&app, &[]).live_turn_running,
-            "the Result settles the clock"
-        );
+        assert!(!super::build_base_spinner(&app).live_turn_running, "the Result settles the clock");
     }
 
     /// Post-turn traffic (monitor/notification text re-binding the
@@ -1543,11 +1492,7 @@ mod tests {
         app.bind_active_turn_assistant_to_tail();
         app.status = AppStatus::Running;
 
-        let base = super::build_base_spinner(&app, &app.subagents_view());
-        assert!(
-            base.running_subagents.is_some(),
-            "fixture guard: the backgrounded subagent is still on the roster"
-        );
+        let base = super::build_base_spinner(&app);
         assert!(
             !base.live_turn_running,
             "no Result is owed for post-turn text, so no turn is in flight"
@@ -1580,7 +1525,7 @@ mod tests {
             "reproduces the desync: running turn with no bound assistant",
         );
 
-        let base = super::build_base_spinner(&app, &app.subagents_view());
+        let base = super::build_base_spinner(&app);
         let _ = app.active_viewport_mut().on_frame(80, 24);
         update_visual_heights(&mut app, &base, 80, 24);
 
@@ -1608,7 +1553,7 @@ mod tests {
         app.status = AppStatus::Running;
         let completed = app.messages().len() - 1;
 
-        let base = super::build_base_spinner(&app, &app.subagents_view());
+        let base = super::build_base_spinner(&app);
         let _ = app.active_viewport_mut().on_frame(80, 24);
         update_visual_heights(&mut app, &base, 80, 24);
 
@@ -1631,7 +1576,7 @@ mod tests {
         app.clear_active_turn_assistant();
         app.status = AppStatus::Thinking;
 
-        let base = super::build_base_spinner(&app, &app.subagents_view());
+        let base = super::build_base_spinner(&app);
         let _ = app.active_viewport_mut().on_frame(80, 24);
         update_visual_heights(&mut app, &base, 80, 24);
 

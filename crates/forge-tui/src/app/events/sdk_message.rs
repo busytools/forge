@@ -4631,7 +4631,6 @@ mod monitor_chat_block_tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
-            running_subagents: None,
             live_turn_running: false,
         };
         let mut out = String::new();
