@@ -883,16 +883,30 @@ fn begin_capture(
 
 /// Own one take from first sample to delivered transcript: stream
 /// level events while recording, then submit and wait, honouring the
-/// stop channel at every phase.
+/// stop channel at every phase. Segments of a long take transcribe
+/// while the recording is still running; the transcript lands once the
+/// take's join has been normalized.
 async fn run_recording(
     ws: Arc<crate::Workspace>,
     key: SessionKey,
-    capture: forge_dictate::Capture,
+    mut capture: forge_dictate::Capture,
     generation: u64,
     mut stop: tokio::sync::mpsc::Receiver<bool>,
     updates: tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
 ) {
-    let submit = record_until_stopped(&key, &capture, &mut stop, &updates).await;
+    // Take progress spans the whole take: segments settle while the
+    // recording is still open, and the tally gains its total after the
+    // stop. The stream closes when the take's segmenter exits.
+    tokio::spawn(forward_take_progress(
+        updates.clone(),
+        key.clone(),
+        generation,
+        capture.take_progress(),
+    ));
+    // The meter handle, not the capture, crosses the await points: the
+    // capture holds channel receivers and is not Sync.
+    let meter = capture.meter();
+    let submit = record_until_stopped(&key, &meter, &mut stop, &updates).await;
     if !submit {
         drop(capture);
         clear_recording_if_ours(&ws, &key);
@@ -912,7 +926,7 @@ async fn run_recording(
         .domain_session_for(&key)
         .map(|domain| domain.lock().dictate_overrides.normalize_options())
         .unwrap_or_default();
-    let Ok(mut ticket) = capture.finish_with(options) else {
+    let Ok(ticket) = capture.finish_with(options) else {
         tracing::warn!("dictation could not submit its take");
         clear_recording_if_ours(&ws, &key);
         let _ = updates.send(SessionUpdate::DictateEnded {
@@ -927,43 +941,11 @@ async fn run_recording(
     move_to_finishing(&ws, &key);
 
     // The token is cloned out before the ticket moves into the blocking
-    // read, so abandoning this take touches only its own job - a queued
-    // take behind it keeps its own token and aborts on its own turn.
+    // read, so abandoning this take touches only its own jobs - a
+    // queued take behind it keeps its own token and aborts on its own
+    // turn.
     let cancel = ticket.cancel_token();
-    // The per-window progress stream drains off the ticket before the
-    // move; a single-window take emits one step, which the composer
-    // renders as it always has.
-    let mut progress = ticket.take_progress();
     let mut answer = tokio::task::spawn_blocking(move || ticket.recv());
-    // Forward window steps as updates while the take decodes. The task
-    // ends when the engine closes the stream at job end.
-    let forward = updates.clone();
-    let forward_key = key.clone();
-    tokio::spawn(async move {
-        let Some(progress) = progress.as_mut() else { return };
-        let mut tick = tokio::time::interval(PROGRESS_POLL);
-        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        loop {
-            tick.tick().await;
-            match progress.try_recv() {
-                Ok(window_step) => {
-                    if forward
-                        .send(SessionUpdate::DictateProgress {
-                            key: forward_key.clone(),
-                            generation,
-                            window: window_step.window,
-                            total: window_step.total,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-            }
-        }
-    });
     let outcome = match wait_for_take(&mut answer, &mut stop, &cancel).await {
         TakeResolution::Abandoned => DictateOutcome::Cancelled,
         TakeResolution::Answered(resolved) => match resolved {
@@ -980,6 +962,41 @@ async fn run_recording(
     };
     remove_finishing(&ws, &key);
     let _ = updates.send(SessionUpdate::DictateEnded { key, outcome, generation });
+}
+
+/// Forward a take's progress steps as updates while it runs. Steps
+/// arrive while the recording is still open (segments settling, no
+/// total) and again after the stop (total known); the task ends when
+/// the take's segmenter closes the stream.
+async fn forward_take_progress(
+    updates: tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
+    key: SessionKey,
+    generation: u64,
+    mut progress: Option<std::sync::mpsc::Receiver<forge_dictate::WindowProgress>>,
+) {
+    let Some(progress) = progress.as_mut() else { return };
+    let mut tick = tokio::time::interval(PROGRESS_POLL);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        match progress.try_recv() {
+            Ok(step) => {
+                if updates
+                    .send(SessionUpdate::DictateProgress {
+                        key: key.clone(),
+                        generation,
+                        done: step.done,
+                        total: step.total,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+        }
+    }
 }
 
 /// How waiting on a submitted take ended.
@@ -1024,7 +1041,7 @@ async fn wait_for_take<T>(
 /// itself. Returns whether the take should be submitted.
 async fn record_until_stopped(
     key: &SessionKey,
-    capture: &forge_dictate::Capture,
+    capture: &forge_dictate::CaptureMeter,
     stop: &mut tokio::sync::mpsc::Receiver<bool>,
     updates: &tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
 ) -> bool {

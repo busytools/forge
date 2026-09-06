@@ -552,12 +552,12 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 indicator.begin_transcribing();
             }
         }
-        SessionUpdate::DictateProgress { key, generation, window, total } => {
+        SessionUpdate::DictateProgress { key, generation, done, total } => {
             if let Some(bucket) = app.session_mut(&key)
                 && let Some(indicator) = bucket.dictate.as_mut()
                 && indicator.generation == generation
             {
-                indicator.set_progress(window, total);
+                indicator.set_progress(done, total);
             }
         }
         SessionUpdate::DictateEnded { key, outcome, generation } => {
