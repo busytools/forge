@@ -881,7 +881,6 @@ pub(crate) struct AccountBinding<'a> {
     pub env: &'a HashMap<String, String>,
 }
 
-/// Log the outcome of one agent-worktree reap. Kept trees are info, not
 /// Log the outcome of one agent-worktree reap. `worktree` carries the
 /// path so every outcome is attributable. Kept trees are info, not
 /// warn: uncommitted edits are the CLI's deliberate hand-back. A kept
@@ -993,9 +992,17 @@ fn sweep_agent_worktrees(cwd: &str) {
     let repo_root = std::path::PathBuf::from(cwd);
     tokio::spawn(async move {
         match tokio::task::spawn_blocking(move || {
-            for worktree in
+            let Ok(worktrees) =
                 crate::env::worktree::stale_agent_worktrees(&repo_root, AGENT_WORKTREE_SWEEP_AGE)
-            {
+            else {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    repo = %repo_root.display(),
+                    "agent worktree sweep could not read the managed worktrees dir",
+                );
+                return;
+            };
+            for worktree in worktrees {
                 // Re-read the lock per tree, immediately before removal:
                 // the listing is a snapshot, and a lock taken since (a
                 // just-spawned agent of another session) must stop this
@@ -1093,13 +1100,31 @@ fn build_options_with_callback(
                 &input.tool_name,
                 &input.tool_input,
             ) {
-                tracing::info!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    session_id = %input.base.session_id,
-                    tool = %input.tool_name,
-                    "isolation worktree agent completed; its response named no managed \
-                     worktree path (auto-cleaned, or the CLI's tool-response contract changed)",
+                // The captured contract has two fieldless-by-design
+                // populations: a completed no-changes call (the CLI
+                // auto-cleaned) and an async launch. A miss on any other
+                // shape is the drift signal, so it alone gets info.
+                let known_fieldless = matches!(
+                    input.tool_response.get("status").and_then(serde_json::Value::as_str),
+                    Some("completed") | Some("async_launched")
                 );
+                if known_fieldless {
+                    tracing::debug!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        session_id = %input.base.session_id,
+                        tool = %input.tool_name,
+                        "isolation worktree agent finished fieldless (auto-clean or launch)",
+                    );
+                } else {
+                    tracing::info!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        session_id = %input.base.session_id,
+                        tool = %input.tool_name,
+                        status = ?input.tool_response.get("status"),
+                        "isolation worktree agent finished; its response named no managed \
+                         worktree path and its shape matches no captured contract",
+                    );
+                }
             }
             HookDecision::passthrough()
         })
