@@ -552,15 +552,17 @@ fn survivor_tips(repo_root: &Path, worktree_path: &Path) -> Option<Vec<String>> 
 /// Managed agent worktrees under `<repo>/.claude/worktrees/` untouched
 /// for at least `age`, for the reconciliation sweep that runs at every
 /// session spawn: it reaps what a one-shot failure or a missed
-/// completion event left behind. Locked trees are never listed - a lock
-/// means a live CLI process owns the tree, and the reap's removal
-/// unlocks first. Feed the result to [`reap_agent_worktree`].
+/// completion event left behind. A lock whose reason carries a live pid
+/// (the CLI stamps one on a live isolation agent's tree) keeps the tree
+/// out; a dead pid - a crashed CLI's leftover, which git never prunes on
+/// its own - is reapable. Locks without a parsable pid are not ours to
+/// judge and skip. Feed the result to [`reap_agent_worktree`].
 pub fn stale_agent_worktrees(repo_root: &Path, age: std::time::Duration) -> Vec<AgentWorktree> {
     let worktrees_dir = repo_root.join(".claude").join("worktrees");
     let Ok(entries) = std::fs::read_dir(&worktrees_dir) else {
         return Vec::new();
     };
-    let locked = locked_worktree_paths(repo_root);
+    let locks = locked_worktrees(repo_root);
     let mut stale = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -578,8 +580,13 @@ pub fn stale_agent_worktrees(repo_root: &Path, age: std::time::Duration) -> Vec<
         }
         let path = entry.path();
         let real = std::fs::canonicalize(&path);
-        if real.is_ok_and(|real| locked.contains(&real)) || locked.contains(&path) {
-            continue;
+        let lock = locks
+            .iter()
+            .find(|lock| lock.path == path || real.as_ref().is_ok_and(|real| lock.path == *real));
+        match lock {
+            // Live owner, or a lock we cannot judge: keep the tree.
+            Some(lock) if lock_pid_is_live(lock.pid) => continue,
+            _ => {}
         }
         stale.push(AgentWorktree {
             path,
@@ -590,34 +597,86 @@ pub fn stale_agent_worktrees(repo_root: &Path, age: std::time::Duration) -> Vec<
     stale
 }
 
-/// Paths of this repo's worktrees git reports as locked, canonicalized.
-fn locked_worktree_paths(repo_root: &Path) -> Vec<std::path::PathBuf> {
+/// Whether the sweep may treat a lock as blocking: a parsable pid whose
+/// process is alive blocks, everything else (no pid, unreadable) does
+/// not - the fail-closed direction for a lock we did not write.
+fn lock_pid_is_live(pid: Option<u32>) -> bool {
+    match pid {
+        Some(pid) => process_is_live(pid),
+        None => true,
+    }
+}
+
+/// Whether `pid` names a live process. Unanswerable counts as live: a
+/// liveness question we cannot ask never deletes a tree.
+fn process_is_live(pid: u32) -> bool {
+    let Ok(out) = Command::new("ps").args(["-p", &pid.to_string(), "-o", "pid="]).output() else {
+        return true;
+    };
+    out.status.success() && !out.stdout.is_empty()
+}
+
+/// Whether `path`'s lock, re-read now, belongs to a live process. The
+/// sweep re-runs this immediately before each removal so a lock taken
+/// after the listing still stops that reap. Unlocked or dead-owner
+/// trees answer false; unreadable answers true.
+pub fn agent_worktree_lock_is_live(repo_root: &Path, path: &Path) -> bool {
+    let Ok(real) = std::fs::canonicalize(path) else {
+        return true;
+    };
+    match locked_worktrees(repo_root).into_iter().find(|lock| lock.path == real) {
+        Some(lock) => lock_pid_is_live(lock.pid),
+        None => false,
+    }
+}
+
+/// A worktree lock: the canonicalized path plus the pid the CLI stamps
+/// into its reason, when it carries one.
+struct WorktreeLock {
+    path: std::path::PathBuf,
+    pid: Option<u32>,
+}
+
+/// This repo's worktrees git reports as locked, canonicalized, with the
+/// pid parsed from the reason when there is one.
+fn locked_worktrees(repo_root: &Path) -> Vec<WorktreeLock> {
     let Some(listing) = git_in_repo(repo_root, &["worktree", "list", "--porcelain"]) else {
         return Vec::new();
     };
-    let mut paths = Vec::new();
+    let mut locks = Vec::new();
     let mut current: Option<String> = None;
-    let mut is_locked = false;
-    let flush = |current: &mut Option<String>, is_locked: bool, paths: &mut Vec<_>| {
-        if let (Some(path), true) = (current.take(), is_locked)
-            && let Ok(real) = std::fs::canonicalize(std::path::Path::new(&path))
-        {
-            paths.push(real);
+    let mut reason: Option<String> = None;
+    let flush = |current: &mut Option<String>,
+                 reason: &mut Option<String>,
+                 locks: &mut Vec<WorktreeLock>| {
+        if let Some(path) = current.take() {
+            if let Some(reason) = reason.take()
+                && let Ok(real) = std::fs::canonicalize(std::path::Path::new(&path))
+            {
+                locks.push(WorktreeLock { path: real, pid: parse_lock_pid(&reason) });
+            }
         }
     };
     for line in listing.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
-            flush(&mut current, is_locked, &mut paths);
+            flush(&mut current, &mut reason, &mut locks);
             current = Some(path.to_owned());
-            is_locked = false;
-        } else if line.starts_with("locked") {
-            is_locked = true;
+        } else if let Some(reason_text) = line.strip_prefix("locked") {
+            reason = Some(reason_text.trim().to_owned());
         } else if line.is_empty() {
-            flush(&mut current, is_locked, &mut paths);
+            flush(&mut current, &mut reason, &mut locks);
         }
     }
-    flush(&mut current, is_locked, &mut paths);
-    paths
+    flush(&mut current, &mut reason, &mut locks);
+    locks
+}
+
+/// The pid in a CLI lock reason, `claude agent agent-<hex> (pid 33497
+/// start ...)`. `None` for a bare `locked` line or any foreign reason.
+fn parse_lock_pid(reason: &str) -> Option<u32> {
+    let digits = reason.split("pid ").nth(1)?;
+    let digits: String = digits.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
 }
 
 /// Remove a completed subagent's managed worktree, then reap the
@@ -1649,6 +1708,14 @@ mod tests {
         );
     }
 
+    /// A pid whose process has already exited, for dead-owner fixtures.
+    fn dead_child_pid() -> u32 {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+        let pid = child.id();
+        child.wait().expect("wait true");
+        pid
+    }
+
     /// A lock means a live CLI process owns the tree; the sweep must not
     /// list it, because the reap's removal unlocks first.
     #[test]
@@ -1659,6 +1726,89 @@ mod tests {
         assert!(
             stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).is_empty(),
             "a locked tree stays out of the sweep"
+        );
+    }
+
+    /// The lock the CLI stamps on a live isolation agent's tree: a pid
+    /// this process can prove alive. Measured live on CLI 2.1.220.
+    #[test]
+    fn stale_agent_worktrees_skips_a_live_pid_lock() {
+        let (dir, wt, _branch) = init_repo_with_agent_worktree("abc123");
+        let reason = format!("claude agent agent-abc123 (pid {} start now)", std::process::id());
+        run_git(
+            dir.path(),
+            &["worktree", "lock", "--reason", &reason, wt.to_str().expect("utf8 path")],
+        );
+
+        assert!(
+            stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).is_empty(),
+            "a live owner keeps its tree out of the sweep"
+        );
+    }
+
+    /// A crashed CLI leaves its pid behind; a dead pid makes the tree
+    /// reapable again instead of leaking forever (git never prunes
+    /// locked worktrees on its own).
+    #[test]
+    fn stale_agent_worktrees_lists_a_dead_pid_lock() {
+        let (dir, wt, _branch) = init_repo_with_agent_worktree("abc123");
+        let exited = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true")
+            .wait()
+            .expect("wait true");
+        assert!(exited.success());
+        let dead = dead_child_pid();
+        let reason = format!("claude agent agent-abc123 (pid {dead} start now)");
+        run_git(
+            dir.path(),
+            &["worktree", "lock", "--reason", &reason, wt.to_str().expect("utf8 path")],
+        );
+
+        let listed = stale_agent_worktrees(dir.path(), std::time::Duration::ZERO);
+        assert_eq!(listed.len(), 1, "a dead owner's leftover is reapable: {listed:?}");
+    }
+
+    /// A lock reason without a pid is one we did not write; its
+    /// lifecycle is not ours to judge, so it skips.
+    #[test]
+    fn stale_agent_worktrees_skips_a_lock_without_a_parsable_pid() {
+        let (dir, wt, _branch) = init_repo_with_agent_worktree("abc123");
+        run_git(
+            dir.path(),
+            &["worktree", "lock", "--reason", "held by hand", wt.to_str().expect("utf8 path")],
+        );
+
+        assert!(stale_agent_worktrees(dir.path(), std::time::Duration::ZERO).is_empty());
+    }
+
+    /// The gate the sweep re-runs immediately before each removal, so a
+    /// lock taken after the listing still stops that reap.
+    #[test]
+    fn agent_worktree_lock_is_live_distinguishes_the_three_states() {
+        let (dir, wt_locked, _b) = init_repo_with_agent_worktree("locked1");
+        let reason = format!("claude agent agent-locked1 (pid {} start now)", std::process::id());
+        run_git(
+            dir.path(),
+            &["worktree", "lock", "--reason", &reason, wt_locked.to_str().expect("utf8 path")],
+        );
+        let (_d2, wt_dead, _b2) = {
+            let (dir2, wt2, b2) = init_repo_with_agent_worktree("dead1");
+            let dead = dead_child_pid();
+            let reason = format!("claude agent agent-dead1 (pid {dead} start now)");
+            run_git(
+                dir2.path(),
+                &["worktree", "lock", "--reason", &reason, wt2.to_str().expect("utf8 path")],
+            );
+            (dir2, wt2, b2)
+        };
+        let (_d3, wt_unlocked, _b3) = init_repo_with_agent_worktree("free1");
+
+        assert!(agent_worktree_lock_is_live(dir.path(), &wt_locked), "a live owner's lock is live");
+        assert!(!agent_worktree_lock_is_live(dir.path(), &wt_dead), "a dead owner's lock is not");
+        assert!(
+            !agent_worktree_lock_is_live(dir.path(), &wt_unlocked),
+            "an unlocked tree has nothing live",
         );
     }
 

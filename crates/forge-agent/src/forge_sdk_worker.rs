@@ -996,6 +996,18 @@ fn sweep_agent_worktrees(cwd: &str) {
             for worktree in
                 crate::env::worktree::stale_agent_worktrees(&repo_root, AGENT_WORKTREE_SWEEP_AGE)
             {
+                // Re-read the lock per tree, immediately before removal:
+                // the listing is a snapshot, and a lock taken since (a
+                // just-spawned agent of another session) must stop this
+                // reap.
+                if crate::env::worktree::agent_worktree_lock_is_live(&repo_root, &worktree.path) {
+                    tracing::debug!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        path = %worktree.path.display(),
+                        "agent worktree locked by a live process; sweep skipped it",
+                    );
+                    continue;
+                }
                 let outcome = crate::env::worktree::reap_agent_worktree(&worktree);
                 log_agent_worktree_reap(&worktree, outcome);
             }
