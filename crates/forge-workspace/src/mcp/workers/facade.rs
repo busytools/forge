@@ -185,6 +185,12 @@ pub fn classify_worker_spawn_failure(
     message: &str,
     is_git_repo_at_spawn: bool,
 ) -> WorkerSpawnError {
+    // The cap refusal embeds the project key, which derives from a
+    // directory path, so it can carry "worktree" without being a
+    // worktree failure.
+    if message.contains("worker limit reached") {
+        return WorkerSpawnError::DispatchFailed { message: message.to_owned() };
+    }
     let lower = message.to_lowercase();
     let mentions_worktree = lower.contains("worktree");
     let resembles_branch_resolve = lower.contains("failed to resolve base branch");
@@ -1452,11 +1458,11 @@ mod worktree_creation_failed_tests {
 
     #[test]
     fn the_cap_refusal_stays_a_dispatch_failure() {
-        let message = crate::spawn::worker_limit_reached_message("forge", 2, 2);
+        let message = crate::spawn::worker_limit_reached_message("my-worktree-proj", 2, 2);
         assert_eq!(
             classify_worker_spawn_failure(&message, true),
             WorkerSpawnError::DispatchFailed { message },
-            "the cap refusal rides the DispatchFailed pass-through; its wording must never gain a worktree substring",
+            "the cap refusal stays DispatchFailed even when the project key carries 'worktree'",
         );
     }
 }
