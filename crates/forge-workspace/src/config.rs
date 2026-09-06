@@ -58,29 +58,30 @@ struct ForgeToml {
     /// Absent section → all defaults, which leaves auto-update off.
     #[serde(default)]
     plugins: PluginSettings,
-    /// Optional `[workers]` section - the dynamic-worker concurrency
-    /// cap. Absent section → all defaults.
+    /// Ghost of the deleted `[workers]` section: read only so a stale
+    /// synced forge.toml still carrying it warns at load instead of
+    /// sitting there silently ignored.
     #[serde(default)]
-    workers: WorkerSettings,
+    workers: Option<toml::Value>,
     /// Optional top-level `[env]` table - the BASE every session
     /// starts from, overridden per key by `[accounts.env]` and then by
     /// `[projects.<name>.env]`. Merged into `LoadedAccount.env` at
     /// load; the project layer is applied at spawn. Absent -> empty.
     #[serde(default)]
     env: HashMap<String, String>,
-    /// `[projects.<name>.env]` tables keyed by project name, drained
-    /// into `LoadedProject.env` at load. A name no `[[orgs.projects]]`
+    /// `[projects.<name>]` tables keyed by project name, drained
+    /// into `LoadedProject` at load. A name no `[[orgs.projects]]`
     /// declares is a load error, not a silent no-op.
     #[serde(default)]
-    projects: HashMap<String, ProjectEnvEntry>,
+    projects: HashMap<String, ProjectSettings>,
 }
 
-/// One `[projects.<name>.env]` table. Unknown fields are rejected so a
-/// mistyped inner table (`envs`) or keys written without the `.env`
-/// nesting fail loudly instead of loading as an empty env.
+/// One `[projects.<name>]` table. Unknown fields are rejected so a
+/// mistyped inner table (`envs`) fails loudly instead of loading as
+/// an empty env.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProjectEnvEntry {
+struct ProjectSettings {
     #[serde(default)]
     env: HashMap<String, String>,
     /// Path to a `KEY=value` file whose entries join this project's env,
@@ -88,6 +89,11 @@ struct ProjectEnvEntry {
     /// every other value here, so rotating it needs a forge restart.
     #[serde(default)]
     env_file: Option<String>,
+    /// Cap on this project's concurrently live dynamic workers. The
+    /// count is per project: the gate counts only this project's live
+    /// workers. Absent keeps the default.
+    #[serde(default)]
+    max_workers: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,31 +183,9 @@ pub struct PluginSettings {
     pub auto_update: bool,
 }
 
-/// Cap on concurrently live dynamic workers when `[workers]
-/// max_concurrent` is absent.
-const DEFAULT_MAX_CONCURRENT_WORKERS: usize = 2;
-
-fn default_max_concurrent_workers() -> usize {
-    DEFAULT_MAX_CONCURRENT_WORKERS
-}
-
-/// The `[workers]` section. Unknown fields are rejected so a mistyped
-/// key cannot silently leave the concurrency cap at its default.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkerSettings {
-    /// Cap on dynamic workers live at once, across every project. A
-    /// spawn over the cap errors instead of queuing; a boot or
-    /// lead-reconnect respawn of persisted workers is exempt. Default 2.
-    #[serde(default = "default_max_concurrent_workers")]
-    pub max_concurrent: usize,
-}
-
-impl Default for WorkerSettings {
-    fn default() -> Self {
-        Self { max_concurrent: DEFAULT_MAX_CONCURRENT_WORKERS }
-    }
-}
+/// Cap on a project's concurrently live dynamic workers when its
+/// `[projects.<name>] max_workers` override is absent.
+pub(crate) const DEFAULT_MAX_WORKERS_PER_PROJECT: usize = 2;
 
 #[derive(Debug)]
 pub(crate) struct LoadedConfig {
@@ -225,9 +209,6 @@ pub(crate) struct LoadedConfig {
     /// `[plugins]` section knobs. Absent section means auto-update is
     /// off.
     pub plugins: PluginSettings,
-    /// `[workers]` section knobs. Absent section means the worker cap
-    /// sits at its default.
-    pub workers: WorkerSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +236,9 @@ pub(crate) struct LoadedProject {
     /// usage probe, plan detection and the picker all read the ACCOUNT
     /// map, so they measure a different endpoint.
     pub env: HashMap<String, String>,
+    /// Cap on this project's live dynamic workers; `None` keeps the
+    /// default. See `ProjectSettings::max_workers`.
+    pub max_workers: Option<usize>,
 }
 
 /// Complete `[env]` < `[accounts.env]` < `[projects.<name>.env]`,
@@ -305,7 +289,6 @@ impl LoadedConfig {
             dictate: crate::dictate::DictateSettings::default(),
             gotify: None,
             plugins: PluginSettings::default(),
-            workers: WorkerSettings::default(),
         }
     }
 }
@@ -345,6 +328,14 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
 
     let parsed: ForgeToml = toml::from_str(&raw)
         .map_err(|source| WorkspaceError::ConfigParse { path: path.clone(), source })?;
+
+    if parsed.workers.is_some() {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "workers_section_ignored",
+            "[workers] is no longer read; use [projects.<name>] max_workers per project",
+        );
+    }
 
     if parsed.orgs.is_empty() {
         return Err(WorkspaceError::NoOrgsConfigured { path });
@@ -493,9 +484,12 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
-            let project_env = project_env_tables
+            let (env, max_workers) = project_env_tables
                 .remove(&project_entry.name)
-                .map(|table| resolve_project_env(&project_entry.name, table))
+                .map(|table| {
+                    let max_workers = table.max_workers;
+                    (resolve_project_env(&project_entry.name, table), max_workers)
+                })
                 .unwrap_or_default();
             projects.push(LoadedProject {
                 name: project_entry.name,
@@ -504,12 +498,13 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
                 auto_start: project_entry.auto_start,
-                env: project_env,
+                env,
+                max_workers,
             });
         }
     }
 
-    // A `[projects.<name>.env]` table repeats a project name by hand,
+    // A `[projects.<name>]` table repeats a project name by hand,
     // so a typo lands nowhere. Same treatment as an org naming an
     // undeclared account: refuse to boot and list the valid names.
     let mut unknown_env_projects: Vec<&str> =
@@ -518,7 +513,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     if !unknown_env_projects.is_empty() {
         let mut valid: Vec<&str> = seen_project_names.iter().map(String::as_str).collect();
         valid.sort_unstable();
-        return Err(WorkspaceError::UnknownProjectEnv {
+        return Err(WorkspaceError::UnknownProjectSettings {
             projects: unknown_env_projects.join(", "),
             valid: valid.join(", "),
             path,
@@ -549,7 +544,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         dictate: parsed.dictate,
         gotify: parsed.gotify,
         plugins: parsed.plugins,
-        workers: parsed.workers,
     })
 }
 
@@ -565,7 +559,7 @@ fn trim_setup_token<S: std::hash::BuildHasher>(env: &mut HashMap<String, String,
     }
 }
 
-fn resolve_project_env(project: &str, entry: ProjectEnvEntry) -> HashMap<String, String> {
+fn resolve_project_env(project: &str, entry: ProjectSettings) -> HashMap<String, String> {
     let mut env = entry.env_file.map(|path| read_env_file(project, &path)).unwrap_or_default();
     env.extend(entry.env);
     trim_setup_token(&mut env);
@@ -1602,34 +1596,32 @@ provider = "anthropic"
     }
 
     #[test]
-    fn the_workers_section_reaches_the_loaded_config() {
+    fn the_projects_max_workers_key_reaches_the_loaded_project() {
         let dir = tempdir().expect("tempdir");
-        write_config(dir.path(), &format!("{}\n[workers]\nmax_concurrent = 3\n", minimal_config()));
+        write_config(
+            dir.path(),
+            &format!("{}\n[projects.forge]\nmax_workers = 4\n", minimal_config()),
+        );
         let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(config.workers.max_concurrent, 3);
+        assert_eq!(config.default_project().max_workers, Some(4));
     }
 
     #[test]
-    fn absent_workers_section_caps_at_the_default() {
+    fn absent_max_workers_leaves_the_project_at_the_default() {
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(config.workers.max_concurrent, 2);
+        assert_eq!(config.default_project().max_workers, None);
     }
 
     #[test]
-    fn a_workers_section_without_the_key_caps_at_the_default() {
+    fn a_negative_max_workers_fails_the_load() {
         let dir = tempdir().expect("tempdir");
-        write_config(dir.path(), &format!("{}\n[workers]\n", minimal_config()));
-        let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(config.workers.max_concurrent, 2);
-    }
-
-    #[test]
-    fn an_unknown_workers_key_fails_the_load() {
-        let dir = tempdir().expect("tempdir");
-        write_config(dir.path(), &format!("{}\n[workers]\nmax_workers = 3\n", minimal_config()));
-        let error = load_from_dir(dir.path()).expect_err("unknown key must fail loudly");
+        write_config(
+            dir.path(),
+            &format!("{}\n[projects.forge]\nmax_workers = -1\n", minimal_config()),
+        );
+        let error = load_from_dir(dir.path()).expect_err("a bad value must fail loudly");
         assert!(error.to_string().contains("max_workers"), "names the key: {error}");
     }
 

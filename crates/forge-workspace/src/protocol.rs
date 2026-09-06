@@ -316,7 +316,7 @@ pub enum Command {
         /// survives a forge restart.
         interactive: bool,
         /// True only for boot/reconnect re-spawns of persisted
-        /// workers, which bypass the `[workers] max_concurrent` cap:
+        /// workers, which bypass the project's worker cap:
         /// they restore state the user already had, and their reply is
         /// dropped, so a refusal there would strand rows with no
         /// caller to hear it.

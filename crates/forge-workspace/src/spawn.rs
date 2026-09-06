@@ -928,9 +928,11 @@ fn synth_worker_key(project_key: &ProjectKey, label: &str, is_resume: bool) -> S
 
 /// The caller-facing refusal for an at-cap worker spawn. One source so
 /// the classifier pin in the facade tests tracks the real text.
-pub(crate) fn worker_limit_reached_message(live: usize, cap: usize) -> String {
+pub(crate) fn worker_limit_reached_message(project: &str, live: usize, cap: usize) -> String {
+    let workers = if live == 1 { "worker" } else { "workers" };
     format!(
-        "worker limit reached: {live} workers are already live and the concurrent worker cap is {cap} (forge.toml [workers] max_concurrent); despawn one first, or raise/remove [workers] max_concurrent in forge.toml"
+        "worker limit reached: project '{project}' has {live} {workers} live and its cap is {cap} (forge.toml [projects.<name>] max_workers, default {}); despawn one first, or raise/remove max_workers",
+        crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT
     )
 }
 
@@ -1018,14 +1020,21 @@ pub(crate) fn handle_spawn_worker(
         diagnostic: None,
         kick,
     };
-    // Label uniqueness AND the `[workers] max_concurrent` cap, enforced
-    // atomically at this shared core so neither dispatch source - the
-    // boot re-spawn or an MCP `workers__spawn` - can double-insert and
-    // fork two subprocesses onto one worktree, or overshoot the cap on
-    // genuinely-concurrent dispatches. Boot re-spawns pass no cap: they
-    // restore persisted workers the user already had, and their spawn
-    // reply is dropped, so a refusal there could never reach a caller.
-    let cap = (!from_boot_respawn).then(|| workspace.config.workers.max_concurrent);
+    // Label uniqueness AND the project's worker cap, enforced atomically
+    // at this shared core so neither dispatch source - the boot
+    // re-spawn or an MCP `workers__spawn` - can double-insert and fork
+    // two subprocesses onto one worktree, or overshoot the cap on
+    // genuinely-concurrent dispatches. The cap is per project: the
+    // project's `[projects.<name>] max_workers` override, else the
+    // default. Boot re-spawns pass no cap: they restore persisted
+    // workers the user already had, and their spawn reply is dropped,
+    // so a refusal there could never reach a caller.
+    let cap = (!from_boot_respawn).then(|| {
+        workspace
+            .project_for_key(&project_key)
+            .and_then(|project| project.max_workers)
+            .unwrap_or(crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT)
+    });
     if let Err(refusal) =
         workspace.insert_live_worker_if_label_absent(&project_key, entry.clone(), cap)
     {
@@ -1052,7 +1061,11 @@ pub(crate) fn handle_spawn_worker(
                     cap,
                     "spawn_worker: refused, at the concurrent worker cap",
                 );
-                let _ = return_to.send(Err(worker_limit_reached_message(live, cap)));
+                let _ = return_to.send(Err(worker_limit_reached_message(
+                    project_key.as_str(),
+                    live,
+                    cap,
+                )));
             }
         }
         return;
@@ -2069,12 +2082,14 @@ provider = "anthropic"
         assert!(err.contains("already live"), "error names the collision: {err}");
     }
 
-    /// Stub whose `forge.toml` carries the given `[workers]
-    /// max_concurrent`, loaded through the real config path because the
-    /// full spawn below reads `config.projects`. Projects point at
-    /// throwaway dirs: a real repo path would make `is_git` true and
-    /// hang `--worktree <label>` spawns off the actual checkout.
-    fn stub_with_worker_limit(
+    /// Stub whose `forge.toml` caps the `forge` project at the given
+    /// override via `[projects.forge] max_workers`, loaded through the
+    /// real config path because the full spawn below reads
+    /// `config.projects`. The `notes` project stays at the default.
+    /// Projects point at throwaway dirs: a real repo path would make
+    /// `is_git` true and hang `--worktree <label>` spawns off the
+    /// actual checkout.
+    fn stub_with_project_cap(
         limit: usize,
     ) -> (Arc<Workspace>, (tempfile::TempDir, tempfile::TempDir)) {
         let dir = tempdir().expect("config tempdir");
@@ -2104,8 +2119,8 @@ display_name = "Stargate"
 config_dir = "~/.claude-stargate"
 provider = "anthropic"
 
-[workers]
-max_concurrent = {limit}
+[projects.forge]
+max_workers = {limit}
 "#
             ),
         )
@@ -2124,11 +2139,11 @@ max_concurrent = {limit}
             .key
     }
 
-    /// #976: a lead-driven spawn at the `[workers] max_concurrent` cap
+    /// #976: a lead-driven spawn at the project's worker cap
     /// replies a clean error naming the limit and inserts no entry.
     #[tokio::test]
     async fn spawn_worker_over_limit_refuses_and_creates_nothing() {
-        let (workspace, _config_dir) = stub_with_worker_limit(2);
+        let (workspace, _config_dir) = stub_with_project_cap(2);
         let project = seeded_project(&workspace);
         workspace.insert_live_worker(&project, fake_worker_entry("w1", "w1"));
         workspace.insert_live_worker(&project, fake_worker_entry("w2", "w2"));
@@ -2179,14 +2194,14 @@ max_concurrent = {limit}
         );
     }
 
-    /// The cap is GLOBAL: a worker live in any project consumes the
-    /// budget, so a spawn into a different project is refused too.
-    /// Pins the global count inside `insert_live_worker_if_label_absent`
-    /// against a per-project count, which would compile and read like
-    /// its neighbours while quietly re-scoping the cap per project.
+    /// The cap is PER PROJECT: the gate counts only the spawning
+    /// project's live workers, against that project's own
+    /// `[projects.<name>] max_workers` override, else the default of
+    /// 2. Workers live in other projects neither consume the budget
+    /// nor raise it.
     #[tokio::test]
-    async fn the_cap_counts_workers_across_projects() {
-        let (workspace, _config_dir) = stub_with_worker_limit(1);
+    async fn the_cap_is_per_project() {
+        let (workspace, _config_dir) = stub_with_project_cap(1);
         let forge_project = seeded_project(&workspace);
         let notes_project = workspace
             .list_projects()
@@ -2194,6 +2209,8 @@ max_concurrent = {limit}
             .find(|v| v.name == "notes")
             .expect("seeded notes project present")
             .key;
+        // forge sits at its own cap (override 1); notes still has its
+        // full default budget of 2.
         workspace.insert_live_worker(&forge_project, fake_worker_entry("w1", "w1"));
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -2209,18 +2226,99 @@ max_concurrent = {limit}
             false,
             tx,
         );
-
-        let err = rx
-            .await
-            .expect("reply")
-            .expect_err("a worker in another project must consume the budget");
-        assert!(err.contains("worker limit reached"), "names the refusal: {err}");
-        assert!(err.contains("cap is 1"), "names the cap: {err}");
-        assert_eq!(
-            workspace.list_live_workers(&notes_project).len(),
-            0,
-            "the refused spawn creates no worker in the target project"
+        let reply = rx.await.expect("reply");
+        assert!(
+            reply.is_ok(),
+            "a worker in another project must not consume notes' budget: {:?}",
+            reply.err()
         );
+        if let Ok(reply) = reply {
+            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+        }
+
+        // notes fills to its own default cap of 2 and refuses past it.
+        workspace.insert_live_worker(&notes_project, fake_worker_entry("w3", "w3"));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            notes_project.clone(),
+            "w4",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let err = rx.await.expect("reply").expect_err("notes at its cap must refuse");
+        assert!(err.contains("worker limit reached"), "names the refusal: {err}");
+        assert!(err.contains("cap is 2"), "names notes' own cap: {err}");
+        assert!(
+            err.contains(&format!("project '{}' has 2 workers live", notes_project.as_str())),
+            "notes' refusal counts only notes' workers: {err}"
+        );
+
+        // forge's override still governs forge.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            forge_project.clone(),
+            "w5",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let err = rx.await.expect("reply").expect_err("forge at its cap must refuse");
+        assert!(err.contains("cap is 1"), "names forge's override: {err}");
+        assert!(
+            err.contains(&format!("project '{}' has 1 worker live", forge_project.as_str())),
+            "forge's refusal counts only forge's workers, singular: {err}"
+        );
+    }
+
+    /// The override raises as well as lowers: a cap above the default
+    /// admits past 2. Every other cap test also passes if the
+    /// resolution clamps the override to the default, and the raise
+    /// direction is the one the forge project's own config depends on.
+    #[tokio::test]
+    async fn a_cap_above_the_default_admits_past_two() {
+        let (workspace, _config_dir) = stub_with_project_cap(3);
+        let project = seeded_project(&workspace);
+        workspace.insert_live_worker(&project, fake_worker_entry("w1", "w1"));
+        workspace.insert_live_worker(&project, fake_worker_entry("w2", "w2"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w3",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("reply");
+        assert!(
+            reply.is_ok(),
+            "the override must raise the cap past the default: {:?}",
+            reply.err()
+        );
+        assert_eq!(
+            workspace.list_live_workers(&project).len(),
+            3,
+            "the admitted spawn creates its worker"
+        );
+        if let Ok(reply) = reply {
+            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+        }
     }
 
     /// The atomicity pin, at the layer it lives: concurrent
@@ -2231,7 +2329,7 @@ max_concurrent = {limit}
     /// stays at 1 if the cap check and the push share the lock.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_cap_gate_admits_exactly_one() {
-        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let (workspace, _config_dir) = stub_with_project_cap(1);
         let project = seeded_project(&workspace);
         let barrier = Arc::new(tokio::sync::Barrier::new(32));
 
@@ -2278,7 +2376,7 @@ max_concurrent = {limit}
     /// the count invariant survives, the reply count does not.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_spawns_keep_the_live_count_under_the_cap() {
-        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let (workspace, _config_dir) = stub_with_project_cap(1);
 
         let mut handles = Vec::new();
         for n in 0..8 {
@@ -2337,7 +2435,7 @@ max_concurrent = {limit}
     /// retry. The exempt spawn proceeds past the cap.
     #[tokio::test]
     async fn boot_respawn_spawn_is_exempt_from_the_limit() {
-        let (workspace, _config_dir) = stub_with_worker_limit(2);
+        let (workspace, _config_dir) = stub_with_project_cap(2);
         let project = seeded_project(&workspace);
         workspace.insert_live_worker(&project, fake_worker_entry("w1", "w1"));
         workspace.insert_live_worker(&project, fake_worker_entry("w2", "w2"));
@@ -2372,7 +2470,7 @@ max_concurrent = {limit}
     /// succeeds.
     #[tokio::test]
     async fn despawn_frees_a_spawn_slot() {
-        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let (workspace, _config_dir) = stub_with_project_cap(1);
         let project = seeded_project(&workspace);
         workspace.insert_live_worker(&project, fake_worker_entry("w1", "w1"));
 
@@ -2425,7 +2523,7 @@ max_concurrent = {limit}
     /// failure must not wedge every later spawn until a manual despawn.
     #[tokio::test]
     async fn a_failed_worker_does_not_consume_a_cap_slot() {
-        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let (workspace, _config_dir) = stub_with_project_cap(1);
         let project = seeded_project(&workspace);
         let mut failed = fake_worker_entry("dead", "dead-1");
         failed.status = forge_primitives::WorkerLiveness::Failed;
