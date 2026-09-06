@@ -699,9 +699,10 @@ impl ForgeSdkBridge {
             // The footer poll fires this every few seconds; a wedged
             // CLI must cost one skipped poll, not a parked task per
             // poll with the Ctx bar frozen. Accept-and-document: the
-            // expiry stays log-only (no typed event) because the bar
-            // showing a stale percentage is preferable to flashing an
-            // error - the next poll re-fires and recovers on its own.
+            // expiry stays log-only (no typed event), so the TUI's
+            // in-flight flag never clears and later refreshes coalesce
+            // behind the dead probe - the bar wedges rather than
+            // flashing an error.
             let usage = match tokio::time::timeout(
                 Self::CONTROL_RESPONSE_TIMEOUT,
                 client.get_context_usage(),
