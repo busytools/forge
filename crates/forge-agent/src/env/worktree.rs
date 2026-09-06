@@ -352,6 +352,127 @@ fn git_error(out: &std::process::Output) -> String {
     if stderr.is_empty() { out.status.to_string() } else { stderr }
 }
 
+/// A completed `isolation: "worktree"` subagent's managed worktree, as
+/// the Agent tool reports it on completion. Produced only by
+/// [`completed_agent_worktree`], which vouches for every field.
+pub struct AgentWorktree {
+    /// The worktree directory, `<repo>/.claude/worktrees/agent-<hex>`.
+    pub path: std::path::PathBuf,
+    /// The repo the worktree was cut from; where branch reaping runs.
+    pub repo_root: std::path::PathBuf,
+    /// The CLI's conventional branch (`worktree-<slug>`), from the tool
+    /// response or derived from the directory name.
+    pub branch: String,
+}
+
+/// Outcome of [`reap_agent_worktree`].
+#[derive(Debug)]
+pub enum AgentWorktreeReap {
+    /// Removed. Carries the conventional branch's reap outcome.
+    Reaped { branch: BranchReapOutcome },
+    /// Uncommitted or untracked changes: the CLI hands a changed tree
+    /// back to the caller deliberately, so the reap refuses too.
+    KeptDirty { reason: String },
+    /// Already gone - the CLI's own auto-clean, or an earlier reap.
+    Absent,
+    /// Git does not vouch for the path being a worktree.
+    NotAWorktree,
+    /// `git worktree remove` failed; the directory survives.
+    RemoveFailed { reason: String },
+}
+
+/// The agent worktree a completed Agent-tool call left behind, from the
+/// PostToolUse hook payload.
+///
+/// Gated four ways because the answer aims a deletion: only the Agent
+/// tool (either spelling), only calls that ran with
+/// `isolation: "worktree"`, only a structured `worktreePath` field, and
+/// only paths with the CLI's managed layout
+/// `<repo>/.claude/worktrees/agent-<...>`. `None` when any gate fails.
+pub fn completed_agent_worktree(
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    tool_response: &serde_json::Value,
+) -> Option<AgentWorktree> {
+    if tool_name != "Agent" && tool_name != "Task" {
+        return None;
+    }
+    if tool_input.get("isolation").and_then(serde_json::Value::as_str) != Some("worktree") {
+        return None;
+    }
+    let path: std::path::PathBuf = find_string_field(tool_response, "worktreePath", 0)?.into();
+    if !path.is_absolute() {
+        return None;
+    }
+    let name = path.file_name()?.to_str()?;
+    if !name.starts_with("agent-") {
+        return None;
+    }
+    let worktrees = path.parent()?;
+    if worktrees.file_name()? != std::ffi::OsStr::new("worktrees") {
+        return None;
+    }
+    let dot_claude = worktrees.parent()?;
+    if dot_claude.file_name()? != std::ffi::OsStr::new(".claude") {
+        return None;
+    }
+    let branch = find_string_field(tool_response, "worktreeBranch", 0)
+        .unwrap_or_else(|| format!("worktree-{name}"));
+    let repo_root = dot_claude.parent()?.to_path_buf();
+    Some(AgentWorktree { path, repo_root, branch })
+}
+
+/// First string value under `key` in a pre-order walk, depth-capped.
+/// String content is never searched, so a result text quoting
+/// `worktreePath:` cannot aim the reap.
+fn find_string_field(value: &serde_json::Value, key: &str, depth: u8) -> Option<String> {
+    if depth > 6 {
+        return None;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                if k == key
+                    && let Some(s) = v.as_str()
+                {
+                    return Some(s.to_owned());
+                }
+            }
+            map.values().find_map(|v| find_string_field(v, key, depth + 1))
+        }
+        serde_json::Value::Array(items) => {
+            items.iter().find_map(|v| find_string_field(v, key, depth + 1))
+        }
+        _ => None,
+    }
+}
+
+/// Remove a completed subagent's managed worktree, then reap the
+/// conventional branch behind it. Refuses anything but a porcelain-clean
+/// tree: the measured leak is clean trees whose gitignored target/ the
+/// CLI's auto-clean does not count, while uncommitted edits are a tree
+/// the CLI handed back deliberately. Only `branch` is ever aimed at -
+/// a branch the subagent checked out itself is left to git's normal
+/// lifecycle, the same rule the worker despawn applies.
+pub fn reap_agent_worktree(agent_worktree: &AgentWorktree) -> AgentWorktreeReap {
+    let path = &agent_worktree.path;
+    if !path.exists() {
+        return AgentWorktreeReap::Absent;
+    }
+    if !is_git_repo(path) {
+        return AgentWorktreeReap::NotAWorktree;
+    }
+    if let Some(reason) = worktree_dirty_reason(path) {
+        return AgentWorktreeReap::KeptDirty { reason };
+    }
+    match remove_worktree(path, false) {
+        Ok(()) => AgentWorktreeReap::Reaped {
+            branch: reap_worktree_branch(&agent_worktree.repo_root, &agent_worktree.branch),
+        },
+        Err(err) => AgentWorktreeReap::RemoveFailed { reason: err.to_string() },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -957,6 +1078,283 @@ mod tests {
         assert!(
             branch_ref_exists(dir.path(), "worktree-lbl"),
             "a repo we cannot read must not read as a branch that is gone",
+        );
+    }
+
+    /// The PostToolUse payload of a real isolation:"worktree" Agent call
+    /// (CLI 2.1.220): the response names the managed worktree path and
+    /// branch.
+    fn isolated_agent_response(path: &str, branch: &str) -> serde_json::Value {
+        serde_json::json!({
+            "worktreePath": path,
+            "worktreeBranch": branch,
+        })
+    }
+
+    fn agent_input() -> serde_json::Value {
+        serde_json::json!({ "isolation": "worktree", "prompt": "review it" })
+    }
+
+    #[test]
+    fn completed_agent_worktree_parses_the_managed_path_and_branch() {
+        let wt = completed_agent_worktree(
+            "Agent",
+            &agent_input(),
+            &isolated_agent_response(
+                "/repo/.claude/worktrees/agent-a83052083ca02b1ce",
+                "worktree-agent-a83052083ca02b1ce",
+            ),
+        )
+        .expect("an isolated Agent completion yields its worktree");
+        assert_eq!(wt.path, Path::new("/repo/.claude/worktrees/agent-a83052083ca02b1ce"));
+        assert_eq!(wt.repo_root, Path::new("/repo"));
+        assert_eq!(wt.branch, "worktree-agent-a83052083ca02b1ce");
+    }
+
+    #[test]
+    fn completed_agent_worktree_derives_the_branch_when_the_response_omits_it() {
+        let response = serde_json::json!({
+            "worktreePath": "/repo/.claude/worktrees/agent-abc123",
+        });
+        let wt = completed_agent_worktree("Agent", &agent_input(), &response)
+            .expect("a path-only response still yields the worktree");
+        assert_eq!(wt.branch, "worktree-agent-abc123", "the CLI's worktree-<slug> convention");
+    }
+
+    /// Older CLIs name the tool `Task`; both spellings gate the reap.
+    #[test]
+    fn completed_agent_worktree_accepts_the_task_spelling() {
+        let wt = completed_agent_worktree(
+            "Task",
+            &agent_input(),
+            &isolated_agent_response(
+                "/repo/.claude/worktrees/agent-abc123",
+                "worktree-agent-abc123",
+            ),
+        );
+        assert!(wt.is_some(), "Task is the pre-rename Agent tool name");
+    }
+
+    /// A completed Agent tool result text quotes the worktreePath template;
+    /// only a structured field may aim the reap.
+    #[test]
+    fn completed_agent_worktree_ignores_the_path_when_it_only_appears_in_text() {
+        let response = serde_json::json!({
+            "content": [{ "type": "text", "text": "worktreePath: /repo/.claude/worktrees/agent-abc123" }],
+        });
+        assert!(completed_agent_worktree("Agent", &agent_input(), &response).is_none());
+    }
+
+    #[test]
+    fn completed_agent_worktree_requires_the_isolation_input() {
+        let plain = serde_json::json!({ "prompt": "review it" });
+        assert!(
+            completed_agent_worktree(
+                "Agent",
+                &plain,
+                &isolated_agent_response(
+                    "/repo/.claude/worktrees/agent-abc123",
+                    "worktree-agent-abc123"
+                ),
+            )
+            .is_none(),
+            "a non-isolated Agent call never names a managed worktree",
+        );
+    }
+
+    /// EnterWorktree's own response also carries worktree fields; the
+    /// tool-name gate is what keeps it out of the reap.
+    #[test]
+    fn completed_agent_worktree_rejects_other_tool_names() {
+        assert!(
+            completed_agent_worktree(
+                "EnterWorktree",
+                &agent_input(),
+                &isolated_agent_response(
+                    "/repo/.claude/worktrees/agent-abc123",
+                    "worktree-agent-abc123"
+                ),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn completed_agent_worktree_rejects_paths_outside_the_managed_layout() {
+        for path in [
+            "/repo/other/agent-abc123",
+            "/repo/.claude/worktrees/worker-abc123",
+            ".claude/worktrees/agent-abc123",
+        ] {
+            assert!(
+                completed_agent_worktree(
+                    "Agent",
+                    &agent_input(),
+                    &isolated_agent_response(path, "worktree-agent-abc123"),
+                )
+                .is_none(),
+                "{path} is not a managed agent worktree",
+            );
+        }
+    }
+
+    /// The reap counts on the parser's layout guard for its repo root, so
+    /// the response walk must find the field wherever the CLI nests it.
+    #[test]
+    fn completed_agent_worktree_walks_nested_response_objects() {
+        let response = serde_json::json!({
+            "result": { "worktreePath": "/repo/.claude/worktrees/agent-abc123" },
+        });
+        let wt = completed_agent_worktree("Agent", &agent_input(), &response)
+            .expect("a nested worktreePath is still a structured field");
+        assert_eq!(wt.repo_root, Path::new("/repo"));
+    }
+
+    fn init_repo_with_agent_worktree(hex: &str) -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let dir = init_repo_with_commit();
+        let branch = add_worker_worktree(dir.path(), &format!("agent-{hex}"));
+        let wt = dir.path().join(".claude").join("worktrees").join(format!("agent-{hex}"));
+        (dir, wt, branch)
+    }
+
+    fn agent_worktree_for(dir: &Path, hex: &str, branch: &str) -> AgentWorktree {
+        AgentWorktree {
+            path: dir.join(".claude").join("worktrees").join(format!("agent-{hex}")),
+            repo_root: dir.to_path_buf(),
+            branch: branch.to_owned(),
+        }
+    }
+
+    #[test]
+    fn reaps_a_clean_agent_worktree_and_its_conventional_branch() {
+        let (dir, wt, branch) = init_repo_with_agent_worktree("abc123");
+        let agent_wt = agent_worktree_for(dir.path(), "abc123", &branch);
+
+        let outcome = reap_agent_worktree(&agent_wt);
+
+        assert!(
+            matches!(outcome, AgentWorktreeReap::Reaped { .. }),
+            "a clean completed agent worktree is reaped, got {outcome:?}"
+        );
+        assert!(!wt.exists(), "the directory is gone");
+        assert!(!branch_exists(dir.path(), &branch), "the conventional branch is gone");
+    }
+
+    /// target/ and friends are ignored, so the measured leak is
+    /// porcelain-clean; a non-empty porcelain means the subagent left real
+    /// edits and the CLI handed the tree back deliberately.
+    #[test]
+    fn keeps_an_agent_worktree_holding_uncommitted_changes() {
+        let (dir, wt, branch) = init_repo_with_agent_worktree("abc123");
+        fs::write(wt.join("notes.md"), "uncommitted").expect("write scratch");
+        let agent_wt = agent_worktree_for(dir.path(), "abc123", &branch);
+
+        let outcome = reap_agent_worktree(&agent_wt);
+
+        let AgentWorktreeReap::KeptDirty { reason } = outcome else {
+            panic!("a dirty agent worktree is kept, got {outcome:?}");
+        };
+        assert!(!reason.is_empty());
+        assert!(wt.exists(), "the directory survives");
+    }
+
+    /// A subagent that committed its work to the conventional branch leaves
+    /// a clean tree; the reachability check keeps the branch.
+    #[test]
+    fn removes_a_clean_worktree_but_keeps_a_branch_holding_unique_commits() {
+        let (dir, wt, branch) = init_repo_with_agent_worktree("abc123");
+        fs::write(wt.join("work.txt"), "committed by the subagent").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "real work"]);
+        let agent_wt = agent_worktree_for(dir.path(), "abc123", &branch);
+
+        let outcome = reap_agent_worktree(&agent_wt);
+
+        let AgentWorktreeReap::Reaped { branch: branch_outcome } = outcome else {
+            panic!("a clean tree is removed, got {outcome:?}");
+        };
+        assert!(!wt.exists(), "the directory is gone");
+        assert!(
+            matches!(branch_outcome, BranchReapOutcome::Kept { .. }),
+            "the branch holds a unique commit, got {branch_outcome:?}"
+        );
+        assert!(branch_exists(dir.path(), &branch));
+    }
+
+    /// A subagent may check out its own branch inside the worktree (the
+    /// leaked review-971 shape). The reap aims at the conventional branch
+    /// only, never at whatever was checked out.
+    #[test]
+    fn never_aims_at_a_branch_the_subagent_checked_out_itself() {
+        let (dir, wt, branch) = init_repo_with_agent_worktree("abc123");
+        run_git(&wt, &["checkout", "-q", "-b", "review-971"]);
+        let agent_wt = agent_worktree_for(dir.path(), "abc123", &branch);
+
+        let outcome = reap_agent_worktree(&agent_wt);
+
+        assert!(
+            matches!(outcome, AgentWorktreeReap::Reaped { .. }),
+            "the tree is clean, got {outcome:?}"
+        );
+        assert!(!wt.exists());
+        assert!(!branch_exists(dir.path(), &branch), "the conventional branch goes");
+        assert!(
+            branch_exists(dir.path(), "review-971"),
+            "the subagent's own branch is not the reap's target",
+        );
+    }
+
+    /// The second leaked worktree sat on a detached HEAD: no branch to
+    /// reap, removal must still work.
+    #[test]
+    fn removes_a_detached_head_agent_worktree() {
+        let dir = init_repo_with_commit();
+        let wt = dir.path().join(".claude").join("worktrees").join("agent-abc123");
+        std::fs::create_dir_all(wt.parent().expect("parent")).expect("mkdir");
+        run_git(
+            dir.path(),
+            &["worktree", "add", "-q", "--detach", wt.to_str().expect("utf8 path")],
+        );
+        let agent_wt = agent_worktree_for(dir.path(), "abc123", "worktree-agent-abc123");
+
+        let outcome = reap_agent_worktree(&agent_wt);
+
+        assert!(
+            matches!(outcome, AgentWorktreeReap::Reaped { .. }),
+            "a detached clean worktree is reaped, got {outcome:?}"
+        );
+        assert!(!wt.exists());
+        assert!(
+            !branch_exists(dir.path(), "worktree-agent-abc123"),
+            "the conventional branch never existed here"
+        );
+    }
+
+    #[test]
+    fn reports_absent_when_the_worktree_is_already_gone() {
+        let dir = init_repo_with_commit();
+        let agent_wt = agent_worktree_for(dir.path(), "abc123", "worktree-agent-abc123");
+
+        assert!(
+            matches!(reap_agent_worktree(&agent_wt), AgentWorktreeReap::Absent),
+            "the CLI's own auto-clean may have removed it first"
+        );
+    }
+
+    #[test]
+    fn reports_not_a_worktree_for_a_plain_directory() {
+        let dir = tempdir().expect("tempdir");
+        let fake = dir.path().join(".claude").join("worktrees").join("agent-abc123");
+        std::fs::create_dir_all(&fake).expect("mkdir");
+        let agent_wt = AgentWorktree {
+            path: fake,
+            repo_root: dir.path().to_path_buf(),
+            branch: "worktree-agent-abc123".to_owned(),
+        };
+
+        assert!(
+            matches!(reap_agent_worktree(&agent_wt), AgentWorktreeReap::NotAWorktree),
+            "a directory git does not vouch for is never removed",
         );
     }
 }

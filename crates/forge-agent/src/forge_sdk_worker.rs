@@ -14,7 +14,7 @@ use std::sync::Arc;
 use forge_primitives::{PermissionDecision, ToolPermissionContext};
 use forge_sdk::{
     Client, HookContext, HookDecision, HooksBuilder, Options, OptionsBuilder, PermissionMode,
-    PreToolUseInput,
+    PostToolUseInput, PreToolUseInput,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
@@ -880,6 +880,30 @@ pub(crate) struct AccountBinding<'a> {
     pub env: &'a HashMap<String, String>,
 }
 
+/// Log the outcome of one agent-worktree reap. Kept trees are info, not
+/// warn: uncommitted edits are the CLI's deliberate hand-back.
+fn log_agent_worktree_reap(outcome: crate::env::worktree::AgentWorktreeReap) {
+    use crate::env::worktree::AgentWorktreeReap;
+    match outcome {
+        AgentWorktreeReap::Reaped { branch } => tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            branch = ?branch,
+            "agent worktree reaped",
+        ),
+        AgentWorktreeReap::KeptDirty { reason } => tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            reason = %reason,
+            "agent worktree kept: the subagent left uncommitted changes",
+        ),
+        AgentWorktreeReap::Absent | AgentWorktreeReap::NotAWorktree => {}
+        AgentWorktreeReap::RemoveFailed { reason } => tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            reason = %reason,
+            "agent worktree reap failed",
+        ),
+    }
+}
+
 fn build_options_with_callback(
     cwd: &str,
     resume: Option<&str>,
@@ -916,6 +940,29 @@ fn build_options_with_callback(
                 });
                 HookDecision::passthrough()
             }
+        })
+        .post_tool_use("*", |input: PostToolUseInput, _ctx: HookContext| async move {
+            if let Some(agent_worktree) = crate::env::worktree::completed_agent_worktree(
+                &input.tool_name,
+                &input.tool_input,
+                &input.tool_response,
+            ) {
+                tracing::info!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    session_id = %input.base.session_id,
+                    path = %agent_worktree.path.display(),
+                    branch = %agent_worktree.branch,
+                    "agent worktree reap scheduled: the subagent completed and will not return",
+                );
+                // `git worktree remove` unlinks a whole target/ tree, so
+                // the reap runs off the hook dispatch task.
+                tokio::task::spawn_blocking(move || {
+                    log_agent_worktree_reap(crate::env::worktree::reap_agent_worktree(
+                        &agent_worktree,
+                    ));
+                });
+            }
+            HookDecision::passthrough()
         })
         .build();
 
@@ -2079,6 +2126,33 @@ mod tests {
             state.available_modes.iter().any(|m| m.id == "bypassPermissions"),
             "bypass launch offers bypass at connect: {:?}",
             state.available_modes,
+        );
+    }
+
+    /// Every session registers the PostToolUse observer so a completed
+    /// isolation:"worktree" Agent call can reap its worktree.
+    #[test]
+    fn build_options_registers_the_post_tool_use_reap_observer() {
+        use crate::client::SessionLaunchSettings;
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        let (event_tx, _rx) = mpsc::unbounded_channel();
+        let options = super::build_options_with_callback(
+            "",
+            None,
+            &SessionLaunchSettings::default(),
+            event_tx,
+            fresh_pending(),
+            fresh_pending_questions(),
+            Arc::new(Mutex::new(String::new())),
+            Vec::new(),
+            &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
+        );
+        let desc = format!("{:?}", options.hooks);
+        assert!(
+            desc.contains("post_tool_use_count: 1"),
+            "the reap observer rides the same hooks block as the PreToolUse observer: {desc}"
         );
     }
 
