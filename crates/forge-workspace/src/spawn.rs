@@ -2080,6 +2080,10 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 
+[[orgs.projects]]
+name = "notes"
+path = "~/Projects/notes"
+
 [[accounts]]
 display_name = "Stargate"
 config_dir = "~/.claude-stargate"
@@ -2135,6 +2139,50 @@ max_concurrent = {limit}
             workspace.list_live_workers(&project).len(),
             2,
             "the refused spawn creates no worker"
+        );
+    }
+
+    /// The cap is GLOBAL: a worker live in any project consumes the
+    /// budget, so a spawn into a different project is refused too.
+    /// Pins `total_live_worker_count` against the per-project count,
+    /// which would compile and read like its neighbours while quietly
+    /// re-scoping the cap per project.
+    #[tokio::test]
+    async fn the_cap_counts_workers_across_projects() {
+        let (workspace, _config_dir) = stub_with_worker_limit(1);
+        let forge_project = seeded_project(&workspace);
+        let notes_project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "notes")
+            .expect("seeded notes project present")
+            .key;
+        workspace.insert_live_worker(&forge_project, fake_worker_entry("w1", "w1"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            notes_project.clone(),
+            "w2",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+
+        let err = rx
+            .await
+            .expect("reply")
+            .expect_err("a worker in another project must consume the budget");
+        assert!(err.contains("worker limit reached"), "names the refusal: {err}");
+        assert!(err.contains("cap is 1"), "names the cap: {err}");
+        assert_eq!(
+            workspace.list_live_workers(&notes_project).len(),
+            0,
+            "the refused spawn creates no worker in the target project"
         );
     }
 
