@@ -1013,10 +1013,23 @@ fn build_options_with_callback(
                     "agent worktree reap scheduled: the subagent completed and will not return",
                 );
                 // `git worktree remove` unlinks a whole target/ tree, so
-                // the reap runs off the hook dispatch task.
-                tokio::task::spawn_blocking(move || {
-                    let outcome = crate::env::worktree::reap_agent_worktree(&agent_worktree);
-                    log_agent_worktree_reap(&agent_worktree, outcome);
+                // the reap runs off the hook dispatch task; a wrapper
+                // task awaits the blocking handle so a panic surfaces in
+                // the log instead of vanishing with the JoinHandle.
+                tokio::spawn(async move {
+                    match tokio::task::spawn_blocking(move || {
+                        let outcome = crate::env::worktree::reap_agent_worktree(&agent_worktree);
+                        log_agent_worktree_reap(&agent_worktree, outcome);
+                    })
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(join_err) => tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %join_err,
+                            "agent worktree reap spawn_blocking task panicked",
+                        ),
+                    }
                 });
             } else if crate::env::worktree::is_isolated_agent_call(
                 &input.tool_name,
