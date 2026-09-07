@@ -3254,3 +3254,63 @@ mod tests_reader_terminal {
         set_test_sdk_binary(None);
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests_connected_identity {
+    use super::emit_connected;
+    use crate::client::{AgentEvent, SessionLaunchSettings};
+    use forge_sdk::{Client, OptionsBuilder};
+    use std::path::Path;
+
+    /// forge-sdk's fixture variant whose init frame omits
+    /// `apiKeySource`, so `account_info_from_init` answers None.
+    fn no_api_key_mock_binary() -> String {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../forge-sdk/tests/fixtures/mock_claude_no_api_key.sh"
+        )
+        .to_owned()
+    }
+
+    /// The spawn-path half of the identity contract: when the init
+    /// frame carries no account, `emit_connected` sends no
+    /// `StatusSnapshot` at all - the identity is the init frame's, and
+    /// no shell probe keyed on the config dir may appear here to
+    /// describe whichever sibling owns it.
+    #[tokio::test]
+    async fn connected_without_init_account_emits_no_identity_snapshot() {
+        let opts = OptionsBuilder::new().binary(no_api_key_mock_binary()).build();
+        let (client, _client_events) = Client::spawn(opts).await.expect("mock client");
+        let (event_tx, mut observed) = tokio::sync::mpsc::unbounded_channel();
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            emit_connected(
+                &event_tx,
+                &client,
+                "session-1",
+                "/tmp/forge-testing-stub",
+                &SessionLaunchSettings::default(),
+                None,
+                Path::new("/tmp/forge-testing-stub"),
+                None,
+            ),
+        )
+        .await
+        .expect("emit_connected completes promptly");
+
+        let mut connected = 0;
+        while let Ok(event) = observed.try_recv() {
+            match event {
+                AgentEvent::StatusSnapshot { account, forge_account, .. } => panic!(
+                    "a session whose init frame omits the account must not emit an identity \
+                     snapshot (account={account:?}, forge={forge_account:?})",
+                ),
+                AgentEvent::Connected { .. } => connected += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(connected, 1, "Connected itself must still arrive");
+    }
+}
