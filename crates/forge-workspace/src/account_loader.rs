@@ -70,18 +70,17 @@ pub async fn run_account_loading(
     let mut iteration = 0u32;
     // Whether the previous iteration recorded its own failure class.
     // The retry-loop arm does (it is the class the budget was burned
-    // on); the refresh and 200-mapping paths leave any earlier record
-    // stale, so the cap must fall back to the unrecorded default
-    // rather than bail an auth problem wearing a network label.
+    // on); the 200-mapping path leaves any earlier record stale, so
+    // the cap must fall back to the unrecorded default rather than
+    // bail an auth problem wearing a network label.
     let mut last_iteration_recorded = false;
     loop {
         iteration += 1;
         if iteration > MAX_LOADING_ITERATIONS {
             // Spun the full retry budget without reaching a terminal
             // state. Force-bail so the account doesn't keep hammering
-            // refresh + probe forever. Common cause: refresh succeeds
-            // but the rotated token still 401s (server-side scope or
-            // org change forge can't recover from automatically).
+            // the probe forever. Common cause: a server-side scope or
+            // org change forge can't recover from automatically.
             if let Some(workspace) = workspace_weak.upgrade() {
                 tracing::warn!(
                     target: "forge_workspace::account_loader",

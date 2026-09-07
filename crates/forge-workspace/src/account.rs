@@ -52,8 +52,9 @@ pub enum UsageFetchStatus {
     /// against the OAuth `/api/oauth/usage` endpoint (typical when
     /// multiple forge instances poll from the same machine).
     RateLimited,
-    /// OAuth credentials on disk are past their expires_at - needs
-    /// `/login` to refresh.
+    /// The account's credential is dead or absent (expired, or no
+    /// token in env at all). Repair is minting the setup token in
+    /// `[accounts.env]` plus a restart.
     Expired,
     /// API returned 401/403 - token rejected (may be revoked).
     Unauthorized,
@@ -78,8 +79,8 @@ pub enum Unusable {
     /// The last probe failed before it could read usage: throttled,
     /// rejected, or expired credentials.
     ProbeBlocked,
-    /// The boot-time loading task ended in `Bailed` - auth status said
-    /// logged out, or the refresh itself failed terminally.
+    /// The boot-time loading task ended in `Bailed` on an auth
+    /// failure.
     Bailed,
 }
 

@@ -1013,9 +1013,9 @@ fn glyph_for_lifecycle(
         }
         // #143 item 3: AuthRequired needs distinct visual from
         // Sleeping so the user can tell at a glance which sessions
-        // need `claude auth login` vs which are simply idle. ⚠ in
-        // STATUS_WARNING mirrors the 5h/7d ETA column's "⚠ expired
-        // - /login" treatment from #169.
+        // need an auth repair vs which are simply idle. ⚠ in
+        // STATUS_WARNING mirrors the 5h/7d ETA column's "⚠ expired"
+        // treatment from #169.
         SessionLifecycleState::AuthRequired => ("\u{26a0}".to_owned(), theme::STATUS_WARNING),
         SessionLifecycleState::Sleeping
         | SessionLifecycleState::Failed
@@ -1654,8 +1654,8 @@ fn push_usage_window_lines(
     // Color tier: success-path durations stay DIM. Probe-rate-limit
     // / network / fetch-failed labels stay DIM (transient). The two
     // statuses that need the user's attention to recover (Expired,
-    // Unauthorized - the account literally can't serve a request
-    // without /login) bump to STATUS_WARNING so the bottom-panel
+    // Unauthorized - the account literally can't serve a request on
+    // its dead credential) bump to STATUS_WARNING so the bottom-panel
     // bar carries an obvious yellow `⚠` mark instead of blending
     // into the rest of the DIM chrome.
     let (eta_text, eta_style) = window.and_then(format_window_reset_duration_only).map_or_else(
@@ -1813,7 +1813,8 @@ fn spend_secondary(
 }
 
 /// `true` when this status means the account can't serve requests
-/// until the user takes recovery action (re-login). These labels
+/// until the user repairs the credential (an env edit plus a
+/// restart). These labels
 /// render in STATUS_WARNING yellow with a `⚠` prefix so they
 /// visibly stand out from transient probe failures.
 fn needs_user_recovery(status: forge_workspace::UsageFetchStatus) -> bool {
