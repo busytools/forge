@@ -236,11 +236,28 @@ as all defaults.
 |---|---|---|---|
 | `spinner` | string | `braille` | `braille`, `phase_of_moon`, `ember`, `bars_v`, `star`, `sparkle` |
 | `fps` | integer | `120` | 30 to 240 |
+| `notifications_osc9` | string | `auto` | `auto`, `off` |
 
-Both keys are lenient, so a hand-edited typo does not stop forge
-booting. A `spinner` name forge does not recognise resolves to the
-default. An `fps` outside the range is clamped and warned about, and a
-non-integer `fps` resolves to the default.
+`spinner` and `fps` are lenient, so a hand-edited typo does not stop
+forge booting. A `spinner` name forge does not recognise resolves to
+the default. An `fps` outside the range is clamped and warned about,
+and a non-integer `fps` resolves to the default.
+
+`notifications_osc9` is parsed strictly: an unknown value fails the
+load, naming the key and the value.
+
+`notifications_osc9` governs whether forge sends OSC 9
+desktop-notification escapes. Detection reads `TERM_PROGRAM` /
+`ITERM_SESSION_ID`, which describe the terminal at the far end of the
+pipe and say nothing about what forwards to it: a multiplexer between
+forge and that terminal can strip the escape while passing the
+environment through unchanged (shpool drops OSC 9 by design; dtach
+forwards nothing it does not know), so the default notification
+channel ends up silent rather than degraded. `off` makes forge treat
+OSC 9 as unavailable and fall back to the terminal bell and the
+OS-native desktop notification, which do not cross the terminal. The
+key serves any setup where the escape is emitted but stripped, however
+the stripping happens; it is config, not per-multiplexer code.
 
 `launchpad_spinner` is accepted as an alias for `spinner`.
 

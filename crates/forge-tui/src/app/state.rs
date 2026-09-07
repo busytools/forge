@@ -1002,7 +1002,9 @@ impl App {
             rendered_projects_pane_body_area: ratatui::layout::Rect::default(),
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             needs_redraw: true,
-            notifications: super::notify::NotificationManager::new(),
+            notifications: super::notify::NotificationManager::new(
+                forge_workspace::Osc9NotificationMode::default(),
+            ),
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
             fps_ema: None,

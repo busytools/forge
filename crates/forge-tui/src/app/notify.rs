@@ -1,4 +1,5 @@
 use super::config::PreferredNotifChannel;
+use forge_workspace::Osc9NotificationMode;
 use std::borrow::Cow;
 
 /// Events that can trigger a user notification.
@@ -18,21 +19,26 @@ pub enum NotifyEvent {
 /// `FocusGained`/`FocusLost` events backed by DECSET 1004) and dispatches
 /// notifications only when the window is **not** focused.
 ///
-/// Two notification layers fire in parallel:
+/// Three notification layers exist; the channel decides which run:
 /// 1. **Terminal bell** (`BEL \x07`) -- causes a taskbar flash / dock bounce
 ///    on virtually every terminal emulator.
 /// 2. **Desktop notification** via `notify-rust` -- OS-native toast popup
 ///    (Windows Toast, macOS Notification Center, Linux freedesktop D-Bus).
 ///    Spawned on a background thread so it never blocks the TUI event loop.
-///    Silently ignored when the notification backend is unavailable (e.g. SSH).
+/// 3. **OSC 9 escape** -- while the terminal is believed to support it,
+///    channels that can emit it suppress the desktop notification (and the
+///    bell too, except on `iterm2_with_bell`), so a multiplexer that strips
+///    the escape silently leaves nothing. The `[ui] notifications_osc9`
+///    forge.toml key forces that belief off and restores bell + desktop.
 #[derive(Debug)]
 pub struct NotificationManager {
     terminal_focused: bool,
+    osc9_mode: Osc9NotificationMode,
 }
 
 impl Default for NotificationManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(Osc9NotificationMode::default())
     }
 }
 
@@ -49,10 +55,10 @@ struct TerminalCapabilities {
 }
 
 impl NotificationManager {
-    pub const fn new() -> Self {
+    pub const fn new(osc9_mode: Osc9NotificationMode) -> Self {
         // Default to `true` (focused) so that terminals which do not support
         // DECSET 1004 never fire spurious notifications.
-        Self { terminal_focused: true }
+        Self { terminal_focused: true, osc9_mode }
     }
 
     /// Call when the terminal emits a `FocusGained` event.
@@ -70,6 +76,11 @@ impl NotificationManager {
         self.terminal_focused
     }
 
+    #[cfg(test)]
+    pub(crate) const fn osc9_mode(&self) -> Osc9NotificationMode {
+        self.osc9_mode
+    }
+
     /// Send a notification if the terminal is not focused.
     ///
     /// This is the single entry-point that all event handlers should call.
@@ -78,7 +89,8 @@ impl NotificationManager {
         if self.terminal_focused {
             return;
         }
-        let plan = notification_plan(channel, detect_terminal_capabilities(), event);
+        let plan =
+            notification_plan(channel, detect_terminal_capabilities(), self.osc9_mode, event);
         if let Some(text) = plan.osc9_text {
             send_osc9_notification(text);
         }
@@ -166,9 +178,14 @@ fn send_osc9_notification(message: &str) {
 fn notification_plan(
     channel: PreferredNotifChannel,
     capabilities: TerminalCapabilities,
+    osc9_mode: Osc9NotificationMode,
     event: NotifyEvent,
 ) -> NotificationPlan {
-    let osc9_text = capabilities.osc9_notifications.then(|| notification_text(event));
+    let osc9_available = match osc9_mode {
+        Osc9NotificationMode::Auto => capabilities.osc9_notifications,
+        Osc9NotificationMode::Off => false,
+    };
+    let osc9_text = osc9_available.then(|| notification_text(event));
     match channel {
         PreferredNotifChannel::NotificationsDisabled => {
             NotificationPlan { ring_bell: false, send_desktop: false, osc9_text: None }
@@ -260,20 +277,20 @@ mod tests {
 
     #[test]
     fn defaults_to_focused() {
-        let mgr = NotificationManager::new();
+        let mgr = NotificationManager::new(Osc9NotificationMode::default());
         assert!(mgr.is_focused(), "should default to focused to suppress spurious notifications");
     }
 
     #[test]
     fn focus_lost_sets_unfocused() {
-        let mut mgr = NotificationManager::new();
+        let mut mgr = NotificationManager::new(Osc9NotificationMode::default());
         mgr.on_focus_lost();
         assert!(!mgr.is_focused());
     }
 
     #[test]
     fn focus_gained_restores_focused() {
-        let mut mgr = NotificationManager::new();
+        let mut mgr = NotificationManager::new(Osc9NotificationMode::default());
         mgr.on_focus_lost();
         mgr.on_focus_gained();
         assert!(mgr.is_focused());
@@ -285,6 +302,7 @@ mod tests {
             notification_plan(
                 PreferredNotifChannel::NotificationsDisabled,
                 TerminalCapabilities { osc9_notifications: true },
+                Osc9NotificationMode::Auto,
                 NotifyEvent::TurnComplete,
             ),
             NotificationPlan { ring_bell: false, send_desktop: false, osc9_text: None }
@@ -297,6 +315,7 @@ mod tests {
             notification_plan(
                 PreferredNotifChannel::TerminalBell,
                 TerminalCapabilities { osc9_notifications: true },
+                Osc9NotificationMode::Auto,
                 NotifyEvent::TurnComplete,
             ),
             NotificationPlan { ring_bell: true, send_desktop: false, osc9_text: None }
@@ -309,6 +328,7 @@ mod tests {
             notification_plan(
                 PreferredNotifChannel::Iterm2,
                 TerminalCapabilities { osc9_notifications: true },
+                Osc9NotificationMode::Auto,
                 NotifyEvent::TurnComplete,
             ),
             NotificationPlan {
@@ -325,6 +345,7 @@ mod tests {
             notification_plan(
                 PreferredNotifChannel::Iterm2,
                 TerminalCapabilities { osc9_notifications: false },
+                Osc9NotificationMode::Auto,
                 NotifyEvent::TurnComplete,
             ),
             NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
@@ -337,6 +358,7 @@ mod tests {
             notification_plan(
                 PreferredNotifChannel::Iterm2WithBell,
                 TerminalCapabilities { osc9_notifications: true },
+                Osc9NotificationMode::Auto,
                 NotifyEvent::PermissionRequired,
             ),
             NotificationPlan {
@@ -353,6 +375,7 @@ mod tests {
             notification_plan(
                 PreferredNotifChannel::Iterm2WithBell,
                 TerminalCapabilities { osc9_notifications: false },
+                Osc9NotificationMode::Auto,
                 NotifyEvent::PermissionRequired,
             ),
             NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
@@ -365,6 +388,7 @@ mod tests {
             notification_plan(
                 PreferredNotifChannel::Ghostty,
                 TerminalCapabilities { osc9_notifications: true },
+                Osc9NotificationMode::Auto,
                 NotifyEvent::TurnComplete,
             ),
             NotificationPlan {
@@ -405,6 +429,32 @@ mod tests {
             terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "wezterm".to_owned())]);
 
         assert!(!capabilities.osc9_notifications);
+    }
+
+    #[test]
+    fn osc9_override_off_forces_iterm2_to_bell_and_desktop() {
+        assert_eq!(
+            notification_plan(
+                PreferredNotifChannel::Iterm2,
+                TerminalCapabilities { osc9_notifications: true },
+                Osc9NotificationMode::Off,
+                NotifyEvent::TurnComplete,
+            ),
+            NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
+        );
+    }
+
+    #[test]
+    fn osc9_override_off_leaves_ghostty_with_desktop_only() {
+        assert_eq!(
+            notification_plan(
+                PreferredNotifChannel::Ghostty,
+                TerminalCapabilities { osc9_notifications: true },
+                Osc9NotificationMode::Off,
+                NotifyEvent::TurnComplete,
+            ),
+            NotificationPlan { ring_bell: false, send_desktop: true, osc9_text: None }
+        );
     }
 
     #[test]
