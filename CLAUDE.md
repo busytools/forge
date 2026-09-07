@@ -488,19 +488,28 @@ inspected.
     suppresses the `notify-rust` desktop notification, which reaches
     the OS without crossing the terminal at all. That belief comes
     from `terminal_capabilities_from_env` reading `TERM_PROGRAM` and
-    `ITERM_SESSION_ID`. Measured: both reach a pane under zellij
-    0.44.3 and under GNU screen 4.00.03 unchanged, while an OSC 9
-    emitted inside either does not reach the outer pty, with plain
-    text written on both sides of it arriving normally. shpool 0.9.8
-    drops it deliberately; its vendored vterm carries the literals
-    `ignoring OSC 9 (desktop notification)` and `ignoring OSC 777`.
-    So the check answers whether the terminal supports OSC 9 when
-    the question is whether an OSC 9 survives to it. The outcome is
-    silence rather than a degraded notification: `Iterm2` and
-    `Ghostty`, two of the five channels and the default among them,
-    leave `ring_bell` and `send_desktop` both false when OSC 9 is
-    believed available - `Iterm2` keys both on it, `Ghostty`'s bell
-    is off regardless - so an eaten escape leaves nothing at all.
+    `ITERM_SESSION_ID`. Measured 2026-08-29: both reach a pane under
+    zellij 0.44.3 and under GNU screen 4.00.03 unchanged, while an
+    OSC 9 emitted inside either does not reach the outer pty, with
+    plain text written on both sides of it arriving normally.
+
+    Corrected 2026-09-07 by a live three-probe matrix on the user's
+    mac-studio (Ghostty + ws/shpool 0.9.8, one probe at a time, the
+    user as the only observer): shpool 0.9.8 FORWARDS OSC 9 - the
+    vendored-vterm literals were a source reading, not a behaviour;
+    Ghostty renders the escape into a system banner. The earlier
+    shpool-strip claims in this rule were wrong. The real limit is
+    Ghostty's own frontmost suppression: with Ghostty focused,
+    `Ghostty.App.swift`'s `shouldPresentNotification` returns false,
+    so the notification lands silently in Notification Centre and the
+    user sees only a dock bounce; defocused, the banner presents.
+    That suppression is hardcoded in Ghostty 1.3.1 with no config
+    (upstream discussion #10691 proposes options; none shipped). The
+    user-facing "notifications completely gone" report was this
+    suppression plus forge's text carrying no context - not a dead
+    delivery path. The channel seam `notifications_osc9` remains as
+    the user's override, and its "off" arm is still the honest choice
+    for a setup where the escape genuinely does not survive.
 
     What crosses is decided per sequence by the thing in the middle,
     and no one capability answers it for every sequence. tmux
