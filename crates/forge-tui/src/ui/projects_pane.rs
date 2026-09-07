@@ -1013,9 +1013,9 @@ fn glyph_for_lifecycle(
         }
         // #143 item 3: AuthRequired needs distinct visual from
         // Sleeping so the user can tell at a glance which sessions
-        // need `claude auth login` vs which are simply idle. ⚠ in
-        // STATUS_WARNING mirrors the 5h/7d ETA column's "⚠ expired
-        // - /login" treatment from #169.
+        // need an auth repair vs which are simply idle. ⚠ in
+        // STATUS_WARNING mirrors the 5h/7d ETA column's "⚠ expired"
+        // treatment from #169.
         SessionLifecycleState::AuthRequired => ("\u{26a0}".to_owned(), theme::STATUS_WARNING),
         SessionLifecycleState::Sleeping
         | SessionLifecycleState::Failed
@@ -1473,15 +1473,13 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .and_then(|(ws, name)| ws.usage_error_for(&name));
 
     // The account class decides what a failed-probe hint tells the
-    // reader to do: `/login` only repairs the keychain class - for a
-    // token or base-url account it would re-authenticate whichever
-    // sibling owns the shared config dir.
+    // reader to do: which env key the credential lives behind.
     let account_auth = app
         .workspace
         .as_ref()
         .zip(app.active_account_display_name())
         .and_then(|(ws, name)| ws.account_auth_for(&name))
-        .unwrap_or(forge_workspace::AccountAuth::Keychain);
+        .unwrap_or(forge_workspace::AccountAuth::Token);
 
     // 7d cap detection: when the 7d window is at-or-near 100%
     // utilization AND the usage probe hit a 429, the 429 is a
@@ -1656,8 +1654,8 @@ fn push_usage_window_lines(
     // Color tier: success-path durations stay DIM. Probe-rate-limit
     // / network / fetch-failed labels stay DIM (transient). The two
     // statuses that need the user's attention to recover (Expired,
-    // Unauthorized - the account literally can't serve a request
-    // without /login) bump to STATUS_WARNING so the bottom-panel
+    // Unauthorized - the account literally can't serve a request on
+    // its dead credential) bump to STATUS_WARNING so the bottom-panel
     // bar carries an obvious yellow `⚠` mark instead of blending
     // into the rest of the DIM chrome.
     let (eta_text, eta_style) = window.and_then(format_window_reset_duration_only).map_or_else(
@@ -1815,7 +1813,8 @@ fn spend_secondary(
 }
 
 /// `true` when this status means the account can't serve requests
-/// until the user takes recovery action (re-login). These labels
+/// until the user repairs the credential (an env edit plus a
+/// restart). These labels
 /// render in STATUS_WARNING yellow with a `⚠` prefix so they
 /// visibly stand out from transient probe failures.
 fn needs_user_recovery(status: forge_workspace::UsageFetchStatus) -> bool {
@@ -1863,14 +1862,10 @@ fn usage_error_label(
     }
 }
 
-/// Where the repair lives, per account class. A keychain account
-/// re-authenticates with `/login`; a base-url one re-keys its env
-/// token; a token-mode one re-mints its setup token, since `/login`
-/// would only re-authenticate whichever sibling owns the shared
-/// config dir.
+/// Where the repair lives, per account class: the env key the
+/// credential sits behind.
 fn repair_hint(auth: forge_workspace::AccountAuth) -> &'static str {
     match auth {
-        forge_workspace::AccountAuth::Keychain => "/login",
         forge_workspace::AccountAuth::BaseUrl => "[accounts.env]",
         forge_workspace::AccountAuth::Token => "setup token",
     }
@@ -3236,49 +3231,47 @@ mod tests {
     // and surfaces 7d-cap context when applicable.
     // ----------------------------------------------------------------
 
-    fn keychain() -> forge_workspace::AccountAuth {
-        forge_workspace::AccountAuth::Keychain
-    }
-
     #[test]
     fn usage_error_label_rate_limited_says_rate_limited_when_7d_below_cap() {
-        let label =
-            usage_error_label(forge_workspace::UsageFetchStatus::RateLimited, false, keychain());
+        let label = usage_error_label(
+            forge_workspace::UsageFetchStatus::RateLimited,
+            false,
+            forge_workspace::AccountAuth::Token,
+        );
         assert_eq!(label, "rate-limited", "429 + 7d-below-cap → rate-limited");
     }
 
     #[test]
     fn usage_error_label_rate_limited_says_7d_cap_when_7d_at_cap() {
-        let label =
-            usage_error_label(forge_workspace::UsageFetchStatus::RateLimited, true, keychain());
+        let label = usage_error_label(
+            forge_workspace::UsageFetchStatus::RateLimited,
+            true,
+            forge_workspace::AccountAuth::Token,
+        );
         assert_eq!(
             label, "7d cap",
             "429 + 7d-at-cap → 7d cap (budget exhaustion, not transient throttle)",
         );
     }
 
+    /// The 7d-at-cap flag must not bleed into auth errors - an
+    /// exhausted budget is not what a rejected token says.
     #[test]
-    fn usage_error_label_unauthorized_unchanged() {
-        let label =
-            usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, false, keychain());
-        assert_eq!(label, "⚠ unauthorized - /login");
-        // 7d-at-cap flag must NOT affect auth errors - they need /login
-        // regardless of the 7d window state.
-        let with_cap =
-            usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, true, keychain());
-        assert_eq!(with_cap, "⚠ unauthorized - /login");
+    fn usage_error_label_cap_flag_does_not_touch_auth_labels() {
+        let token = forge_workspace::AccountAuth::Token;
+        assert_eq!(
+            usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, true, token),
+            usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, false, token),
+        );
+        assert_eq!(
+            usage_error_label(forge_workspace::UsageFetchStatus::Expired, true, token),
+            usage_error_label(forge_workspace::UsageFetchStatus::Expired, false, token),
+        );
     }
 
-    #[test]
-    fn usage_error_label_expired_unchanged() {
-        let label =
-            usage_error_label(forge_workspace::UsageFetchStatus::Expired, false, keychain());
-        assert_eq!(label, "⚠ expired - /login");
-    }
-
-    /// A token session sharing the config dir would re-authenticate
-    /// whichever sibling owns it, so the hint names the setup token
-    /// instead of `/login`.
+    /// An Anthropic account's credential is its setup token - with or
+    /// without one in env, `/login` would re-authenticate whoever owns
+    /// the shared config dir, so the hint names the token.
     #[test]
     fn usage_error_label_token_account_names_the_setup_token() {
         let token = forge_workspace::AccountAuth::Token;
@@ -3308,11 +3301,19 @@ mod tests {
     #[test]
     fn usage_error_label_network_and_other_collapse_to_em_dash() {
         assert_eq!(
-            usage_error_label(forge_workspace::UsageFetchStatus::NetworkFailed, false, keychain()),
+            usage_error_label(
+                forge_workspace::UsageFetchStatus::NetworkFailed,
+                false,
+                forge_workspace::AccountAuth::Token,
+            ),
             "\u{2014}",
         );
         assert_eq!(
-            usage_error_label(forge_workspace::UsageFetchStatus::Other, false, keychain()),
+            usage_error_label(
+                forge_workspace::UsageFetchStatus::Other,
+                false,
+                forge_workspace::AccountAuth::Token,
+            ),
             "\u{2014}",
         );
     }

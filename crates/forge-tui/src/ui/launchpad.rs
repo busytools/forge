@@ -350,9 +350,9 @@ pub(super) fn wordmark_contains(needle: &str) -> bool {
 /// window, where the rows really are blocked and this is what says why.
 ///
 /// Not a boot-time condition either. A token expiring mid-session takes
-/// an account `Ready -> Bailed` on the usage poll, and the recovery poll
-/// then takes it to `Loading`, so the row reappears whenever that
-/// happens.
+/// an account `Ready -> Bailed` on the usage poll, and a healed
+/// credential takes it back to `Ready`, so the row reappears whenever
+/// that happens.
 pub(super) fn account_row_visible(app: &App) -> bool {
     app.workspace.as_ref().is_some_and(|ws| {
         ws.account_loading_snapshot()
@@ -866,8 +866,8 @@ fn push_error_row(lines: &mut Vec<Line<'static>>, error: &str, area_width: u16) 
 /// Inline hint for a project whose AssignmentPlan pool is empty
 /// (every allowed account ended in `Bailed`). Same indent + style
 /// shape as `push_error_row`; uses DIM rather than STATUS_ERROR
-/// because the condition is recoverable (user needs to `/login` an
-/// account in the allow-list) rather than a hard error.
+/// because the condition is recoverable (repairing one of the
+/// allow-list accounts' credentials) rather than a hard error.
 fn push_no_usable_accounts_row(lines: &mut Vec<Line<'static>>, area_width: u16) {
     let style = Style::default().fg(theme::DIM);
     let pad: usize = 8;

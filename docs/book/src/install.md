@@ -46,20 +46,8 @@ feature.
 ## Development is macOS-first
 
 forge is developed and run on macOS. Other platforms compile, and CI
-builds and tests on Linux, but two things behave differently:
+builds and tests on Linux, but one thing behaves differently:
 
-- **OAuth credentials are read from the macOS Keychain.** The reader is
-  gated behind `#[cfg(target_os = "macos")]`; on every other target it
-  returns nothing, unconditionally. It feeds the boot-time account
-  loader and the usage probe, so on other platforms the surfaces built
-  on those (account usage, plan tier) have no token to authenticate
-  with. An account whose `provider` is `codex`, `openrouter` or `zai`
-  is unaffected, because those paths carry their own bearer token and
-  never consult the keychain. The same is true of an `anthropic`
-  account whose env carries `CLAUDE_CODE_OAUTH_TOKEN` (its
-  `[accounts.env]`, or the global `[env]`): that token is the
-  credential and the keychain is never read. The provider plus that
-  key decide that, not the presence of `ANTHROPIC_BASE_URL`.
 - **App-level chords use Cmd on macOS, Ctrl elsewhere.** The pane
   toggles (`Cmd+Left`/`Cmd+Right` vs `Ctrl+Left`/`Ctrl+Right`) and
   toggle-all-tool-calls (`Cmd+X` vs `Ctrl+X`) swap their modifier.

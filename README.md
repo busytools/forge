@@ -77,10 +77,8 @@ it cannot be established.
 ## Scope
 
 forge was written for one person's use across a few machines.
-Development is macOS-first: OAuth credentials are read from the macOS
-Keychain behind a `cfg` gate, and on other targets that reader returns
-nothing. It is open source because the code may be useful to read or
-build on, not because it has been generalised.
+Development is macOS-first. It is open source because the code may be
+useful to read or build on, not because it has been generalised.
 
 ## Contributing
 

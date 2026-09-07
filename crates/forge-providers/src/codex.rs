@@ -79,7 +79,6 @@ enum Mapper {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::path::Path;
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -125,7 +124,7 @@ mod tests {
     async fn a_host_ua_failure_is_a_ua_probe_error_not_a_network_failure() {
         let backend = Codex;
         let env = env_with_base("http://localhost:18765");
-        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &env };
+        let account = AccountEnv { env: &env };
         let result = backend.probe(&account, &FailingUaHost).await;
         assert!(
             matches!(result, Err(ProbeError::Fetch(OauthUsageError::UaProbe(_)))),
@@ -138,7 +137,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_base_is_unmappable_without_probing() {
         let backend = Codex;
-        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &HashMap::new() };
+        let account = AccountEnv { env: &HashMap::new() };
         let result = backend.probe(&account, &UnreachableHost).await;
         assert!(matches!(result, Err(ProbeError::Unmappable(_))), "got {result:?}");
     }
@@ -147,10 +146,6 @@ mod tests {
 
     #[async_trait]
     impl ProviderHost for FailingUaHost {
-        fn keychain(&self, _config_dir: &Path) -> Option<crate::OauthCredentials> {
-            unreachable!("the codex probe never reads the keychain")
-        }
-
         fn http_client(&self, _timeout: Duration) -> Result<reqwest::Client, String> {
             reqwest::Client::builder().build().map_err(|e| e.to_string())
         }
@@ -164,10 +159,6 @@ mod tests {
 
     #[async_trait]
     impl ProviderHost for UnreachableHost {
-        fn keychain(&self, _config_dir: &Path) -> Option<crate::OauthCredentials> {
-            unreachable!("the codex probe never reads the keychain")
-        }
-
         fn http_client(&self, _timeout: Duration) -> Result<reqwest::Client, String> {
             unreachable!("the probe must not build a client for a missing base url")
         }

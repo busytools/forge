@@ -52,8 +52,9 @@ pub enum UsageFetchStatus {
     /// against the OAuth `/api/oauth/usage` endpoint (typical when
     /// multiple forge instances poll from the same machine).
     RateLimited,
-    /// OAuth credentials on disk are past their expires_at - needs
-    /// `/login` to refresh.
+    /// The account's credential is dead or absent (expired, or no
+    /// token in env at all). Repair is minting the setup token in
+    /// `[accounts.env]` plus a restart.
     Expired,
     /// API returned 401/403 - token rejected (may be revoked).
     Unauthorized,
@@ -78,35 +79,29 @@ pub enum Unusable {
     /// The last probe failed before it could read usage: throttled,
     /// rejected, or expired credentials.
     ProbeBlocked,
-    /// The boot-time loading task ended in `Bailed` - auth status said
-    /// logged out, or the refresh itself failed terminally.
+    /// The boot-time loading task ended in `Bailed` on an auth
+    /// failure.
     Bailed,
 }
 
 /// Boot-time loading state for an account. The launchpad gates click
 /// and spawn until every account in the map has resolved to `Ready`
 /// or `Bailed`; both terminal states feed into the assignment-plan
-/// computation, while `Loading` and `Refreshing` keep the launchpad
-/// dim. A bailed account's `usage` is `None` by construction (the
-/// loader clears it on the transition).
+/// computation, while `Loading` keeps the launchpad dim. A bailed
+/// account's `usage` is `None` by construction (the loader clears it
+/// on the transition).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadingState {
-    /// First-pass keychain fetch + probe in progress. The launchpad
-    /// shows `○` (yellow) for this account.
+    /// First-pass probe in progress. The launchpad shows `○` (yellow)
+    /// for this account.
     Loading,
-    /// A 401 with `loggedIn=true` triggered a `claude -p hi` refresh;
-    /// next iteration will re-probe with the rotated token. Glyph is
-    /// the same yellow `○` as `Loading` (user-visible distinction is
-    /// not necessary; the launchpad gate cares about terminal-vs-not).
-    Refreshing,
     /// Probe returned 200; account is usable and may be assigned to
     /// sessions. Launchpad glyph: `●` (green).
     Ready,
-    /// Either `loggedIn=false` from `claude auth status` or the
-    /// refresh path itself failed terminally. User must `/login`
-    /// interactively; the 30 s recovery poll will retry from
-    /// `Loading` once auth_status flips back. Launchpad glyph: `⚠`
-    /// (red).
+    /// The probe ended in an auth failure the account cannot recover
+    /// from in place. The user fixes the credential and lets the 60 s
+    /// usage poller flip the account back to `Ready`. Launchpad glyph:
+    /// `⚠` (red).
     Bailed,
 }
 
@@ -293,10 +288,11 @@ impl AccountStateMap {
 
     /// [`Self::provider`] for a key that came out of this map, so a miss
     /// means the map changed underneath the caller. Anthropic is the
-    /// safe default - it probes the keychain rather than an endpoint
-    /// derived from an env this account may not have - but it is the
-    /// wrong answer for a base-url account, whose repair copy would then
-    /// tell the user to run `/login`. Warn rather than pick silently.
+    /// safe default - it probes the official API rather than an
+    /// endpoint derived from an env this account may not have - but it
+    /// is the wrong answer for a base-url account, whose repair copy
+    /// would then name the wrong env key. Warn rather than pick
+    /// silently.
     pub fn provider_or_anthropic(&self, key: &AccountKey) -> forge_primitives::account::Provider {
         self.provider(key).unwrap_or_else(|| {
             tracing::warn!(
@@ -310,16 +306,15 @@ impl AccountStateMap {
 
     /// How the account proves who it is, which is the only thing that
     /// changes what an auth-repair hint tells the user to do. Base-url
-    /// wins over the token check: such an account re-keys its env
-    /// token, whatever else the env carries. `None` for unknown keys.
+    /// wins: such an account re-keys its env token, whatever else the
+    /// env carries. Every other account's credential is its setup
+    /// token, so both its token-mode and its token-less shapes repair
+    /// the same way. `None` for unknown keys.
     pub fn auth(&self, key: &AccountKey) -> Option<crate::views::AccountAuth> {
         if self.provider(key)?.uses_base_url() {
             return Some(crate::views::AccountAuth::BaseUrl);
         }
-        if self.env(key).is_some_and(forge_providers::is_token_mode) {
-            return Some(crate::views::AccountAuth::Token);
-        }
-        Some(crate::views::AccountAuth::Keychain)
+        Some(crate::views::AccountAuth::Token)
     }
 
     /// Distinct on-disk config_dirs across every known account. Used by
@@ -367,13 +362,11 @@ impl AccountStateMap {
         }
     }
 
-    /// Drive a `LoadingState` transition for `key`. Used by the
-    /// boot-time loading task to step between `Loading` →
-    /// `Refreshing` → terminal, and by the recovery poll to flip a
-    /// `Bailed` account back to `Loading` once `auth_status` reports
-    /// logged-in. Setting `Bailed` clears the cached `usage` so the
-    /// renderer drops the stale %bar (replaces the PR #238 3-strike
-    /// counter; bailed accounts have no live snapshot by construction).
+    /// Drive a `LoadingState` transition for `key`, used by the
+    /// boot-time loading task. Setting `Bailed` clears the cached
+    /// `usage` so the renderer drops the stale %bar (replaces the PR
+    /// #238 3-strike counter; bailed accounts have no live snapshot by
+    /// construction).
     pub fn set_loading(&mut self, key: &AccountKey, loading: LoadingState) {
         if let Some(state) = self.by_key.get_mut(key) {
             state.loading = loading;
@@ -422,18 +415,14 @@ impl AccountStateMap {
             // probe response means the account's credential is dead.
             // Transition `loading` to `Bailed` and drop the
             // cached `usage` so the renderer surfaces the error label
-            // instead of the stale %bar. Recovery paths differ by
-            // class: the 30 s recovery poll
-            // (account_loader::run_recovery_poll) picks a keychain
-            // account back up once `claude auth status` reports
-            // logged-in, while a base-url or token account recovers
-            // via the 60 s usage poller (after the edited env is
-            // re-read at a restart). Other statuses leave
+            // instead of the stale %bar. The account recovers via the
+            // 60 s usage poller after the edited env is re-read at a
+            // restart. Other statuses leave
             // `loading` alone (a transient `RateLimited` or
             // `NetworkFailed` is not auth-related; the cache stays
             // and the account remains Ready for the assignment plan).
             // Replaces the PR #238 `consecutive_unauthorized` 3-strike
-            // counter - the recovery poll absorbs transient 401s.
+            // counter.
             if matches!(status, UsageFetchStatus::Unauthorized | UsageFetchStatus::Expired) {
                 let prev = state.loading;
                 state.loading = LoadingState::Bailed;
@@ -627,12 +616,9 @@ impl AccountStateMap {
         // Resolve allow-list entries to known keys, preserving
         // allow-list order. Carry usage + last_error + loading so
         // unusable_reason can see the full picture - an account whose
-        // boot-time loading task ended in `Bailed` (auth_status said
-        // logged-out, refresh failed, etc.) must NOT be picked even
-        // if its last_error is None - unusable_reason's existing
-        // inputs wouldn't catch a Bailed-without-recent-error case, which
-        // is the exact shape after the recovery poll transitions
-        // Loading -> Bailed without firing set_last_error.
+        // boot-time loading task ended in `Bailed` must NOT be picked
+        // even if its last_error is None - unusable_reason's existing
+        // inputs wouldn't catch a Bailed-without-recent-error case.
         let candidates: Vec<(
             &AccountKey,
             Option<&UsageSnapshot>,
@@ -916,8 +902,10 @@ mod tests {
     }
 
     /// The repair-route table every auth hint branches on. Base-url
-    /// wins over the token check: an account whose provider owns a
-    /// base url re-keys its env token, whatever else its env carries.
+    /// wins: an account whose provider owns a base url re-keys its env
+    /// token, whatever else its env carries. A token-less Anthropic
+    /// account classifies Token - the repair it needs is the same
+    /// setup-token copy.
     #[test]
     fn auth_classifies_the_repair_route_per_account() {
         let mut token = make_account("Token");
@@ -925,7 +913,7 @@ mod tests {
         let mut base_url = make_account("Base");
         base_url.provider = forge_primitives::account::Provider::Openrouter;
         base_url.env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
-        let map = AccountStateMap::new(&[token, base_url, make_account("Keychain")]);
+        let map = AccountStateMap::new(&[token, base_url, make_account("Tokenless")]);
         assert_eq!(
             map.auth(&AccountKey("Token".to_owned())),
             Some(crate::views::AccountAuth::Token),
@@ -936,8 +924,9 @@ mod tests {
             "a base-url provider classifies BaseUrl even beside a setup token",
         );
         assert_eq!(
-            map.auth(&AccountKey("Keychain".to_owned())),
-            Some(crate::views::AccountAuth::Keychain),
+            map.auth(&AccountKey("Tokenless".to_owned())),
+            Some(crate::views::AccountAuth::Token),
+            "a token-less anthropic account repairs as a token account",
         );
         assert_eq!(map.auth(&AccountKey("Unknown".to_owned())), None, "unknown key -> None");
     }
@@ -951,7 +940,6 @@ mod tests {
             make_account("probe-expired"),
             make_account("probe-unauthorized"),
             make_account("bailed"),
-            make_account("refreshing"),
         ]);
 
         // tier-0 + Ready -> usable.
@@ -978,10 +966,6 @@ mod tests {
         // Bailed with clear usage + no last_error -> unusable purely on
         // the loading axis (set_loading(Bailed) clears usage, so tier is 0).
         map.set_loading(&AccountKey("bailed".to_owned()), LoadingState::Bailed);
-        // Refreshing with clear tier-0 usage -> usable; only Bailed is
-        // excluded on the loading axis, not Refreshing.
-        map.set_usage(&AccountKey("refreshing".to_owned()), snapshot(Some(10.0), Some(20.0)));
-        map.set_loading(&AccountKey("refreshing".to_owned()), LoadingState::Refreshing);
 
         assert!(map.is_account_usable(&AccountKey("ready-low".to_owned())));
         assert!(!map.is_account_usable(&AccountKey("saturated".to_owned())));
@@ -989,7 +973,6 @@ mod tests {
         assert!(!map.is_account_usable(&AccountKey("probe-expired".to_owned())));
         assert!(!map.is_account_usable(&AccountKey("probe-unauthorized".to_owned())));
         assert!(!map.is_account_usable(&AccountKey("bailed".to_owned())));
-        assert!(map.is_account_usable(&AccountKey("refreshing".to_owned())));
     }
 
     #[test]
@@ -1784,12 +1767,10 @@ mod tests {
     //
     // Replaces the PR #238 `consecutive_unauthorized` 3-strike counter:
     // a single 401 now transitions to `LoadingState::Bailed` (clearing
-    // the cached usage), and the 30 s recovery poll
-    // (account_loader::run_recovery_poll) is what absorbs transient
-    // failures by retrying from Loading once auth_status reports
-    // logged-in. The user-visible effect is the same - bailed accounts
-    // surface the `⚠ unauthorized - /login` label instead of a stale
-    // %bar - just the storage shape moved.
+    // the cached usage). The 60 s usage poller absorbs transient
+    // failures by re-probing. The user-visible effect is the same -
+    // bailed accounts surface the auth label instead of a stale %bar -
+    // just the storage shape moved.
     // ---------------------------------------------------------------
 
     fn key(name: &str) -> AccountKey {
@@ -1828,8 +1809,8 @@ mod tests {
         // Subsumes the PR #238 three-strike test. Single Unauthorized
         // (not three) now flips loading to Bailed and clears the
         // cached usage so the renderer drops the stale %bar in favour
-        // of the unauthorized label. The recovery poll re-runs the
-        // loading task once auth_status reports logged-in.
+        // of the unauthorized label. The 60 s usage poller re-probes
+        // the account.
         let mut map = AccountStateMap::new(&[make_account("Personal")]);
         let k = key("Personal");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
@@ -1904,11 +1885,10 @@ mod tests {
 
     #[test]
     fn set_loading_to_loading_does_not_clear_usage() {
-        // Recovery poll transitions Bailed → Loading when auth_status
-        // flips back. The transition itself shouldn't wipe a cache
-        // that might've been re-primed since the bail. (In practice
-        // the cache is already None on a Bailed account, but the
-        // contract should be explicit.)
+        // The transition itself shouldn't wipe a cache that might've
+        // been re-primed since the bail. (In practice the cache is
+        // already None on a Bailed account, but the contract should
+        // be explicit.)
         let mut map = AccountStateMap::new(&[make_account("Gateway")]);
         let k = key("Gateway");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
@@ -1922,7 +1902,7 @@ mod tests {
     #[test]
     fn bailed_account_recovers_to_ready_via_set_usage() {
         // Recovery flow: account got Bailed by a probe failure; the
-        // recovery poll's re-run of loading lands a fresh probe;
+        // 60 s usage poller's re-probe lands a fresh snapshot;
         // set_usage transitions back to Ready, re-priming the cache.
         let mut map = AccountStateMap::new(&[make_account("Personal")]);
         let k = key("Personal");
@@ -1949,27 +1929,18 @@ mod tests {
     }
 
     #[test]
-    fn all_loaded_false_when_any_refreshing() {
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
-        map.set_loading(&key("Gateway"), LoadingState::Refreshing);
-        map.set_usage(&key("Personal"), snapshot(Some(10.0), Some(20.0)));
-        assert!(!map.all_loaded(), "Refreshing is mid-flight, not terminal");
-    }
-
-    #[test]
     fn pick_for_project_skips_bailed_accounts() {
         // Bailed account is in the allow list with no last_error (the
-        // recovery poll explicitly transitioned via set_loading, not
-        // set_last_error). Without the LoadingState filter,
-        // unusable_reason would classify it as usable because both
-        // usage and last_error are None. The picker must NOT return
-        // it; the Ready account must win.
+        // boot loader's retry-cap force-bail transitions via
+        // set_loading, not set_last_error). Without the LoadingState
+        // filter, unusable_reason would classify it as usable because
+        // both usage and last_error are None. The picker must NOT
+        // return it; the Ready account must win.
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         // Gateway: ready
         map.set_usage(&key("Gateway"), snapshot(Some(20.0), Some(20.0)));
-        // Personal: bailed via direct set_loading (mirrors recovery
-        // poll's auth_status=logged_out -> Bailed path, which has
-        // no associated last_error).
+        // Personal: bailed via direct set_loading, no associated
+        // last_error.
         map.set_loading(&key("Personal"), LoadingState::Bailed);
         let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()]);
         assert_eq!(

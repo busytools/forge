@@ -72,8 +72,7 @@ fn choose_mapper(credential: Result<BaseUrlCredential, MissingBase>) -> Mapper {
 #[derive(Debug, PartialEq, Eq)]
 enum Mapper {
     /// The credential bound to the monitor mapper: the arm holding
-    /// this cannot map the windowed `/api/oauth/usage` shape or read
-    /// the keychain.
+    /// this cannot map the windowed `/api/oauth/usage` shape.
     Monitor(BaseUrlCredential),
     MissingBase(MissingBase),
 }
@@ -252,7 +251,6 @@ fn window_from_entry(entry: &QuotaLimitEntry) -> Option<UsageWindow> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::path::Path;
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -316,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_base_is_unmappable_without_probing() {
         let backend = Zai;
-        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &HashMap::new() };
+        let account = AccountEnv { env: &HashMap::new() };
         let result = backend.probe(&account, &UnreachableHost).await;
         assert!(matches!(result, Err(ProbeError::Unmappable(_))), "got {result:?}");
     }
@@ -450,7 +448,7 @@ mod tests {
             let _ = sock.shutdown(std::net::Shutdown::Both);
         });
         let env = env_with_base(&format!("http://{addr}/api/anthropic"));
-        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &env };
+        let account = AccountEnv { env: &env };
         let snapshot = Zai.probe(&account, &LocalHost).await.expect("snapshot");
         assert_eq!(snapshot.source, UsageSourceKind::ZaiMonitor);
         let five = snapshot.five_hour.expect("5h window");
@@ -465,10 +463,6 @@ mod tests {
 
     #[async_trait]
     impl ProviderHost for LocalHost {
-        fn keychain(&self, _config_dir: &Path) -> Option<crate::OauthCredentials> {
-            unreachable!("the zai probe never reads the keychain")
-        }
-
         fn http_client(&self, timeout: Duration) -> Result<reqwest::Client, String> {
             reqwest::Client::builder().timeout(timeout).build().map_err(|e| e.to_string())
         }
@@ -482,10 +476,6 @@ mod tests {
 
     #[async_trait]
     impl ProviderHost for UnreachableHost {
-        fn keychain(&self, _config_dir: &Path) -> Option<crate::OauthCredentials> {
-            unreachable!("the zai probe never reads the keychain")
-        }
-
         fn http_client(&self, _timeout: Duration) -> Result<reqwest::Client, String> {
             unreachable!("the probe must not build a client for a missing base url")
         }

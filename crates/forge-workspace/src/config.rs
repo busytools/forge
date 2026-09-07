@@ -422,14 +422,15 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         }
         // Legal but self-inconsistent: the env is still stamped on the
         // spawned session, so chat goes to the proxy while usage probes
-        // the keychain. Before `provider` existed the combination could
-        // not be expressed, so warn rather than refuse.
+        // the official API with the setup token. Before `provider`
+        // existed the combination could not be expressed, so warn
+        // rather than refuse.
         if provider == Provider::Anthropic && base_url.is_some() {
             tracing::warn!(
                 target: "forge_workspace::config",
                 account = %entry.display_name,
                 "account sets provider = \"anthropic\" beside an ANTHROPIC_BASE_URL; sessions \
-                 will use that endpoint while usage probes the keychain",
+                 will use that endpoint while usage probes the official API",
             );
         }
         accounts.push(LoadedAccount {

@@ -288,7 +288,6 @@ pub(crate) async fn spawn_session(
         resume_id,
         &config_dir,
         display_name.as_deref(),
-        &account_env,
     )
     .await;
 
@@ -351,7 +350,6 @@ async fn emit_connected(
     resume_id: Option<&str>,
     config_dir: &Path,
     display_name: Option<&str>,
-    env: &HashMap<String, String>,
 ) {
     let server_info = client.get_server_info().cloned();
     let init_data = client.initial_session_data().cloned();
@@ -410,31 +408,8 @@ async fn emit_connected(
         );
     }
 
-    // The identity fallback shells out to `claude auth status` (~50ms
-    // blocking per the docstring) - wrap in spawn_blocking so the
-    // async worker doesn't park a tokio worker thread for the
-    // duration. account_info_from_init is in-memory, no I/O.
-    let account = if let Some(account) = client.account_info_from_init() {
-        Some(account)
-    } else {
-        let config_dir_owned = config_dir.to_owned();
-        let env_owned = env.to_owned();
-        match tokio::task::spawn_blocking(move || {
-            crate::cloud::auth_status::shell_identity_fallback(&config_dir_owned, &env_owned)
-        })
-        .await
-        {
-            Ok(opt) => opt,
-            Err(join_err) => {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    error = %join_err,
-                    "account_info_from_shell spawn_blocking task panicked"
-                );
-                None
-            }
-        }
-    };
+    // The identity is the init frame's; there is no shell fallback.
+    let account = client.account_info_from_init();
     if let Some(account) = account {
         let forge_account =
             display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));
@@ -3277,5 +3252,65 @@ mod tests_reader_terminal {
         .expect("drain window completes");
 
         set_test_sdk_binary(None);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests_connected_identity {
+    use super::emit_connected;
+    use crate::client::{AgentEvent, SessionLaunchSettings};
+    use forge_sdk::{Client, OptionsBuilder};
+    use std::path::Path;
+
+    /// forge-sdk's fixture variant whose init frame omits
+    /// `apiKeySource`, so `account_info_from_init` answers None.
+    fn no_api_key_mock_binary() -> String {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../forge-sdk/tests/fixtures/mock_claude_no_api_key.sh"
+        )
+        .to_owned()
+    }
+
+    /// The spawn-path half of the identity contract: when the init
+    /// frame carries no account, `emit_connected` sends no
+    /// `StatusSnapshot` at all - the identity is the init frame's, and
+    /// no shell probe keyed on the config dir may appear here to
+    /// describe whichever sibling owns it.
+    #[tokio::test]
+    async fn connected_without_init_account_emits_no_identity_snapshot() {
+        let opts = OptionsBuilder::new().binary(no_api_key_mock_binary()).build();
+        let (client, _client_events) = Client::spawn(opts).await.expect("mock client");
+        let (event_tx, mut observed) = tokio::sync::mpsc::unbounded_channel();
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            emit_connected(
+                &event_tx,
+                &client,
+                "session-1",
+                "/tmp/forge-testing-stub",
+                &SessionLaunchSettings::default(),
+                None,
+                Path::new("/tmp/forge-testing-stub"),
+                None,
+            ),
+        )
+        .await
+        .expect("emit_connected completes promptly");
+
+        let mut connected = 0;
+        while let Ok(event) = observed.try_recv() {
+            match event {
+                AgentEvent::StatusSnapshot { account, forge_account, .. } => panic!(
+                    "a session whose init frame omits the account must not emit an identity \
+                     snapshot (account={account:?}, forge={forge_account:?})",
+                ),
+                AgentEvent::Connected { .. } => connected += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(connected, 1, "Connected itself must still arrive");
     }
 }

@@ -66,34 +66,26 @@ fn app_with_dictate(snapshot: DictateSnapshot) -> App {
     app
 }
 
-fn account(name: &str, state: LoadingState, dir: &str) -> AccountLoadingRow {
-    account_with(name, state, dir, forge_workspace::AccountAuth::Keychain)
+fn account(name: &str, state: LoadingState) -> AccountLoadingRow {
+    account_with(name, state, forge_workspace::AccountAuth::Token)
 }
 
 fn account_with(
     name: &str,
     state: LoadingState,
-    dir: &str,
     auth: forge_workspace::AccountAuth,
 ) -> AccountLoadingRow {
-    AccountLoadingRow {
-        display_name: name.to_owned(),
-        state,
-        last_error: None,
-        config_dir: std::path::PathBuf::from(dir),
-        auth,
-    }
+    AccountLoadingRow { display_name: name.to_owned(), state, last_error: None, auth }
 }
 
 fn bailed_with_error(
     name: &str,
-    dir: &str,
     auth: forge_workspace::AccountAuth,
     last_error: forge_workspace::UsageFetchStatus,
 ) -> AccountLoadingRow {
     AccountLoadingRow {
         last_error: Some(last_error),
-        ..account_with(name, LoadingState::Bailed, dir, auth)
+        ..account_with(name, LoadingState::Bailed, auth)
     }
 }
 
@@ -106,8 +98,7 @@ fn the_two_sections_share_one_row_geometry() {
     let accounts_heading = flatten(&[heading_row("Accounts", PICKER_WIDTH)]).remove(0);
     let dictation_heading = flatten(&[heading_row("Dictation", PICKER_WIDTH)]).remove(0);
     let row =
-        flatten(&[account_row(&account("Subspace", LoadingState::Ready, "/x"), PICKER_WIDTH)])
-            .remove(0);
+        flatten(&[account_row(&account("Subspace", LoadingState::Ready), PICKER_WIDTH)]).remove(0);
 
     assert_eq!(
         accounts_heading.find("Accounts"),
@@ -169,12 +160,12 @@ fn a_model_reads_by_role_with_its_file_beneath() {
 /// A bailed account stops forge starting, so the screen has to name
 /// BOTH exits: either one alone strands a reader who cannot take that
 /// route. They are not equivalent, and the screen says which is which -
-/// repairing the account is picked up in place, dropping it is not.
+/// repairing the account keeps it configured, dropping it does not.
 #[test]
 fn a_bailed_account_names_both_exits() {
     let text = flatten(&bail_detail(
         &App::test_default(),
-        &account("Granite1", LoadingState::Bailed, "/home/x/.claude-granite1"),
+        &account("Granite1", LoadingState::Bailed),
         PICKER_WIDTH,
     ))
     .join("\n");
@@ -184,28 +175,27 @@ fn a_bailed_account_names_both_exits() {
         "the screen names the account that stopped it; got:\n{text}",
     );
     assert!(
-        text.contains("Fix the auth") && text.contains("/login"),
-        "exit one is fixing the auth, with the command; got:\n{text}",
+        text.contains("Fix the auth") && text.contains("claude setup-token"),
+        "exit one is minting the setup token, with the command; got:\n{text}",
     );
     assert!(
-        text.contains("CLAUDE_CONFIG_DIR=/home/x/.claude-granite1"),
-        "the /login line carries that account's own config dir; got:\n{text}",
+        text.contains("CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]"),
+        "the repair line names the env key the token lives behind; got:\n{text}",
     );
     assert!(
         text.contains("Or drop the account") && text.contains("[[accounts]]"),
         "exit two is removing the account from forge.toml; got:\n{text}",
     );
-    // The two exits are not equivalent and the screen has to say so:
-    // this one lands without a restart, the other does not.
+    // The repair is an env edit, so the screen must say it needs a
+    // restart - a reader who fixes their auth otherwise cannot tell
+    // whether the retrying poller will pick it up on its own.
     assert!(
-        text.contains("forge retries on its own - no restart needed"),
-        "the /login exit says the retry is automatic - a reader who fixes their auth otherwise \
-         cannot tell whether to restart; got:\n{text}",
+        text.contains("editing [accounts.env] needs a restart"),
+        "the repair exit says the edit needs a restart; got:\n{text}",
     );
-    // And it must not name an interval. A keychain account recovers on
-    // the 30 s recovery poll, a base-url account on the 60 s usage poll
-    // which that poll skips - so any single number is false for one
-    // class, and this row cannot tell which it is rendering.
+    // And it must not name an interval. The pollers run under probe
+    // backoff, so any single number would be false, and this row
+    // renders every failure class.
     //
     // Asserted as "this line carries no digit", because enumerating
     // spellings is always one variant short. Scoping to the line is what
@@ -213,21 +203,19 @@ fn a_bailed_account_names_both_exits() {
     // digits, the retry line has no business carrying one.
     let retry_line = text
         .lines()
-        .find(|line| line.contains("forge retries on its own"))
-        .expect("the retry line is asserted present above");
+        .find(|line| line.contains("needs a restart"))
+        .expect("the restart line is asserted present above");
     assert!(
         !retry_line.chars().any(|c| c.is_ascii_digit()),
-        "no interval belongs on the retry line: the two account classes do not share one; \
+        "no interval belongs on the retry line: the pollers' backoff shares none; \
          got {retry_line:?}",
     );
 }
 
-/// The repair instruction AND the retry line differ by account class.
-/// `claude /login` is actively wrong for a base-url account: it has no
-/// keychain entry to write, its credential being the token in its own
-/// `[accounts.env]`. And the no-restart promise is only true for the
-/// keychain arm - an env edit is boot-frozen, so the base-url arm owes
-/// the reader the restart instead.
+/// The repair instruction AND the restart line differ by account
+/// class: the two env credentials live behind different keys, so one
+/// arm's repair instruction shown to both classes sends a reader
+/// hunting for an env key their forge.toml does not have.
 ///
 /// **Asserted as DIFFERENCES, not as independent contents.** Two
 /// `contains` checks would both keep passing if the branches were
@@ -237,39 +225,36 @@ fn the_repair_and_retry_lines_differ_by_account_class() {
     let render = |auth| {
         flatten(&bail_detail(
             &App::test_default(),
-            &account_with("Granite1", LoadingState::Bailed, "/home/x/.claude-granite1", auth),
+            &account_with("Granite1", LoadingState::Bailed, auth),
             PICKER_WIDTH,
         ))
         .join("\n")
     };
-    let keychain = render(forge_workspace::AccountAuth::Keychain);
+    let token = render(forge_workspace::AccountAuth::Token);
     let base_url = render(forge_workspace::AccountAuth::BaseUrl);
 
     assert_ne!(
-        keychain, base_url,
-        "collapsing the classes shows one arm's repair instruction to both; got:\n{keychain}",
+        token, base_url,
+        "collapsing the classes shows one arm's repair instruction to both; got:\n{token}",
     );
     assert!(
-        keychain.contains("/login") && !keychain.contains("ANTHROPIC_AUTH_TOKEN"),
-        "a keychain account is repaired with /login; got:\n{keychain}",
+        token.contains("CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]")
+            && !token.contains("ANTHROPIC_AUTH_TOKEN"),
+        "a token account is repaired through its setup token; got:\n{token}",
     );
     assert!(
-        keychain.contains("forge retries on its own - no restart needed")
-            && !keychain.contains("needs a restart"),
-        "a keychain repair is picked up in place; got:\n{keychain}",
+        token.contains("editing [accounts.env] needs a restart")
+            && !token.contains("no restart needed"),
+        "an env edit is boot-frozen and must not promise an in-place retry; got:\n{token}",
     );
     assert!(
-        base_url.contains("ANTHROPIC_AUTH_TOKEN in [accounts.env]") && !base_url.contains("/login"),
-        "a base-url account has no keychain entry for /login to write; got:\n{base_url}",
+        base_url.contains("ANTHROPIC_AUTH_TOKEN in [accounts.env]")
+            && !base_url.contains("CLAUDE_CODE_OAUTH_TOKEN"),
+        "a base-url account's credential is the ANTHROPIC_AUTH_TOKEN; got:\n{base_url}",
     );
     assert!(
-        base_url.contains("editing [accounts.env] needs a restart")
-            && !base_url.contains("no restart needed"),
-        "an env edit is boot-frozen and must not promise an in-place retry; got:\n{base_url}",
-    );
-    assert!(
-        keychain.contains("Or drop the account") && base_url.contains("Or drop the account"),
-        "the second exit is class-agnostic; got:\n{keychain}",
+        token.contains("Or drop the account") && base_url.contains("Or drop the account"),
+        "the second exit is class-agnostic; got:\n{token}",
     );
 }
 
@@ -323,7 +308,7 @@ async fn preflight_hands_over_when_an_account_settles_bailed() {
 fn the_state_column_names_the_failure_class() {
     let row_text = |last_error: Option<forge_workspace::UsageFetchStatus>| {
         account_row(
-            &AccountLoadingRow { last_error, ..account("Subspace", LoadingState::Bailed, "/x") },
+            &AccountLoadingRow { last_error, ..account("Subspace", LoadingState::Bailed) },
             PICKER_WIDTH,
         )
         .spans
@@ -389,7 +374,6 @@ fn an_unreachable_bail_names_the_endpoint_not_the_auth() {
         &App::test_default(),
         &bailed_with_error(
             "Subspace",
-            "/home/x/.claude-subspace",
             forge_workspace::AccountAuth::BaseUrl,
             forge_workspace::UsageFetchStatus::NetworkFailed,
         ),
@@ -429,7 +413,6 @@ fn a_bailed_base_url_account_promises_a_restart_not_in_place_recovery() {
         &App::test_default(),
         &bailed_with_error(
             "Subspace",
-            "/home/x/.claude-subspace",
             forge_workspace::AccountAuth::BaseUrl,
             forge_workspace::UsageFetchStatus::Unauthorized,
         ),
@@ -461,7 +444,6 @@ fn an_erroring_endpoint_is_not_an_auth_failure_either() {
         &App::test_default(),
         &bailed_with_error(
             "Subspace",
-            "/home/x/.claude-subspace",
             forge_workspace::AccountAuth::BaseUrl,
             forge_workspace::UsageFetchStatus::Other,
         ),
@@ -483,16 +465,14 @@ fn an_erroring_endpoint_is_not_an_auth_failure_either() {
 }
 
 /// A bailed token account's credential is the setup token in its
-/// `[accounts.env]`, not a keychain entry: `/login` would authenticate
-/// whichever account owns the shared config dir, not this one. The
-/// repair is a re-mint, and it is an env edit, so it needs a restart.
+/// `[accounts.env]`. The repair is a mint or re-mint, and it is an env
+/// edit, so it needs a restart.
 #[test]
 fn a_bailed_token_account_names_the_re_mint_not_login() {
     let text = flatten(&bail_detail(
         &App::test_default(),
         &bailed_with_error(
             "TokenAcct",
-            "/home/x/.claude",
             forge_workspace::AccountAuth::Token,
             forge_workspace::UsageFetchStatus::Unauthorized,
         ),
@@ -510,7 +490,7 @@ fn a_bailed_token_account_names_the_re_mint_not_login() {
     );
     assert!(
         !text.contains("/login"),
-        "`/login` repairs the shared dir's keychain account, never this one; got:\n{text}",
+        "re-authenticating the shared config dir is never the repair; got:\n{text}",
     );
     assert!(
         text.contains("CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]"),
@@ -531,7 +511,6 @@ fn a_rate_limited_bail_tells_the_reader_to_wait() {
         &App::test_default(),
         &bailed_with_error(
             "Subspace",
-            "/home/x/.claude-subspace",
             forge_workspace::AccountAuth::BaseUrl,
             forge_workspace::UsageFetchStatus::RateLimited,
         ),
@@ -550,7 +529,7 @@ fn a_rate_limited_bail_tells_the_reader_to_wait() {
 }
 
 /// The unreachable repair line is class-shaped like the auth one: a
-/// keychain account has no base url to check, so naming
+/// token account has no base url to check, so naming
 /// `ANTHROPIC_BASE_URL` at it would send a reader hunting for a key
 /// their forge.toml does not have.
 ///
@@ -563,26 +542,21 @@ fn the_unreachable_repair_differs_by_account_class() {
     let render = |auth| {
         flatten(&bail_detail(
             &App::test_default(),
-            &bailed_with_error(
-                "Subspace",
-                "/home/x/.claude-subspace",
-                auth,
-                forge_workspace::UsageFetchStatus::NetworkFailed,
-            ),
+            &bailed_with_error("Subspace", auth, forge_workspace::UsageFetchStatus::NetworkFailed),
             PICKER_WIDTH,
         ))
         .join("\n")
     };
-    let keychain = render(forge_workspace::AccountAuth::Keychain);
+    let token = render(forge_workspace::AccountAuth::Token);
     let base_url = render(forge_workspace::AccountAuth::BaseUrl);
 
     assert_ne!(
-        keychain, base_url,
-        "collapsing the classes shows one arm's repair line to both; got:\n{keychain}",
+        token, base_url,
+        "collapsing the classes shows one arm's repair line to both; got:\n{token}",
     );
     assert!(
-        keychain.contains("Anthropic API") && !keychain.contains("ANTHROPIC_BASE_URL"),
-        "a keychain account has no base url to check; got:\n{keychain}",
+        token.contains("Anthropic API") && !token.contains("ANTHROPIC_BASE_URL"),
+        "a token account has no base url to check; got:\n{token}",
     );
     assert!(
         base_url.contains("ANTHROPIC_BASE_URL") && !base_url.contains("Anthropic API"),
@@ -1078,8 +1052,7 @@ fn only_a_fresh_fetch_carries_the_first_run_note() {
 /// either panel alone puts a visible jump in the middle of boot.
 #[test]
 fn the_handover_is_a_content_swap_not_a_resize() {
-    let flat =
-        flatten(&[account_row(&account("Subspace", LoadingState::Ready, "/x"), PICKER_WIDTH)]);
+    let flat = flatten(&[account_row(&account("Subspace", LoadingState::Ready), PICKER_WIDTH)]);
     assert_eq!(
         NAME_WIDTH + 2 + 1 + 1 + STATE_WIDTH + 2,
         usize::from(PICKER_WIDTH),
