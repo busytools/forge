@@ -97,11 +97,10 @@ pub enum LoadingState {
     /// Probe returned 200; account is usable and may be assigned to
     /// sessions. Launchpad glyph: `●` (green).
     Ready,
-    /// Either `loggedIn=false` from `claude auth status` or the
-    /// refresh path itself failed terminally. User must `/login`
-    /// interactively; the 30 s recovery poll will retry from
-    /// `Loading` once auth_status flips back. Launchpad glyph: `⚠`
-    /// (red).
+    /// The probe ended in an auth failure the account cannot recover
+    /// from in place. The user fixes the credential and lets the 60 s
+    /// usage poller flip the account back to `Ready`. Launchpad glyph:
+    /// `⚠` (red).
     Bailed,
 }
 
@@ -620,12 +619,9 @@ impl AccountStateMap {
         // Resolve allow-list entries to known keys, preserving
         // allow-list order. Carry usage + last_error + loading so
         // unusable_reason can see the full picture - an account whose
-        // boot-time loading task ended in `Bailed` (auth_status said
-        // logged-out, refresh failed, etc.) must NOT be picked even
-        // if its last_error is None - unusable_reason's existing
-        // inputs wouldn't catch a Bailed-without-recent-error case, which
-        // is the exact shape after the recovery poll transitions
-        // Loading -> Bailed without firing set_last_error.
+        // boot-time loading task ended in `Bailed` must NOT be picked
+        // even if its last_error is None - unusable_reason's existing
+        // inputs wouldn't catch a Bailed-without-recent-error case.
         let candidates: Vec<(
             &AccountKey,
             Option<&UsageSnapshot>,
@@ -1772,12 +1768,10 @@ mod tests {
     //
     // Replaces the PR #238 `consecutive_unauthorized` 3-strike counter:
     // a single 401 now transitions to `LoadingState::Bailed` (clearing
-    // the cached usage), and the 30 s recovery poll
-    // (account_loader::run_recovery_poll) is what absorbs transient
-    // failures by retrying from Loading once auth_status reports
-    // logged-in. The user-visible effect is the same - bailed accounts
-    // surface the `⚠ unauthorized - /login` label instead of a stale
-    // %bar - just the storage shape moved.
+    // the cached usage). The 60 s usage poller absorbs transient
+    // failures by re-probing. The user-visible effect is the same -
+    // bailed accounts surface the auth label instead of a stale %bar -
+    // just the storage shape moved.
     // ---------------------------------------------------------------
 
     fn key(name: &str) -> AccountKey {
@@ -1816,8 +1810,8 @@ mod tests {
         // Subsumes the PR #238 three-strike test. Single Unauthorized
         // (not three) now flips loading to Bailed and clears the
         // cached usage so the renderer drops the stale %bar in favour
-        // of the unauthorized label. The recovery poll re-runs the
-        // loading task once auth_status reports logged-in.
+        // of the unauthorized label. The 60 s usage poller re-probes
+        // the account.
         let mut map = AccountStateMap::new(&[make_account("Personal")]);
         let k = key("Personal");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
@@ -1892,11 +1886,10 @@ mod tests {
 
     #[test]
     fn set_loading_to_loading_does_not_clear_usage() {
-        // Recovery poll transitions Bailed → Loading when auth_status
-        // flips back. The transition itself shouldn't wipe a cache
-        // that might've been re-primed since the bail. (In practice
-        // the cache is already None on a Bailed account, but the
-        // contract should be explicit.)
+        // The transition itself shouldn't wipe a cache that might've
+        // been re-primed since the bail. (In practice the cache is
+        // already None on a Bailed account, but the contract should
+        // be explicit.)
         let mut map = AccountStateMap::new(&[make_account("Gateway")]);
         let k = key("Gateway");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
@@ -1947,9 +1940,8 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         // Gateway: ready
         map.set_usage(&key("Gateway"), snapshot(Some(20.0), Some(20.0)));
-        // Personal: bailed via direct set_loading (mirrors recovery
-        // poll's auth_status=logged_out -> Bailed path, which has
-        // no associated last_error).
+        // Personal: bailed via direct set_loading, no associated
+        // last_error.
         map.set_loading(&key("Personal"), LoadingState::Bailed);
         let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()]);
         assert_eq!(

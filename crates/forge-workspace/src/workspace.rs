@@ -142,7 +142,7 @@ pub enum SessionChipState {
     AtCap,
     /// Account flipped to Bailed. Red foreground + `⚠ ` prefix.
     /// The session's spawn would fall through to round-robin until
-    /// the recovery poll flips the account back to Ready.
+    /// the 60 s usage poller flips the account back to Ready.
     Bailed,
 }
 
@@ -2111,20 +2111,6 @@ impl Workspace {
                 .instrument(span),
             );
         }
-
-        // Background recovery poll: watches Bailed accounts and
-        // re-runs the loading flow when `claude auth status` flips
-        // back to logged-in. One task per Workspace lifetime. Holds
-        // Weak so the task auto-exits on workspace shutdown rather
-        // than keeping the Arc alive past drop.
-        let weak = Arc::downgrade(self);
-        let span = tracing::info_span!("account_recovery_poll");
-        tokio::spawn(
-            async move {
-                crate::account_loader::run_recovery_poll(weak).await;
-            }
-            .instrument(span),
-        );
     }
 
     /// Spawn the 60 s background account-usage poller. Fetches

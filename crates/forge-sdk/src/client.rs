@@ -467,13 +467,6 @@ impl Client {
     /// email/org/subscription). Returns `None` when the payload is
     /// absent (init not yet arrived), the field is missing, or the
     /// value is empty / `"none"`.
-    ///
-    /// Callers that need the full profile (email, organization,
-    /// subscription tier) shell out to `claude auth status`
-    /// separately - that path is agent-side
-    /// (`forge_agent::cloud::auth_status`), not SDK-side, because it
-    /// spawns a fresh subprocess outside the long-lived stream-json
-    /// session.
     pub fn account_info_from_init(&self) -> Option<forge_primitives::AccountInfo> {
         let data = self.inner.cached_init_data.as_ref()?;
         let api_key_source = data

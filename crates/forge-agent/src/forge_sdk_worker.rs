@@ -288,7 +288,6 @@ pub(crate) async fn spawn_session(
         resume_id,
         &config_dir,
         display_name.as_deref(),
-        &account_env,
     )
     .await;
 
@@ -351,7 +350,6 @@ async fn emit_connected(
     resume_id: Option<&str>,
     config_dir: &Path,
     display_name: Option<&str>,
-    env: &HashMap<String, String>,
 ) {
     let server_info = client.get_server_info().cloned();
     let init_data = client.initial_session_data().cloned();
@@ -410,31 +408,8 @@ async fn emit_connected(
         );
     }
 
-    // The identity fallback shells out to `claude auth status` (~50ms
-    // blocking per the docstring) - wrap in spawn_blocking so the
-    // async worker doesn't park a tokio worker thread for the
-    // duration. account_info_from_init is in-memory, no I/O.
-    let account = if let Some(account) = client.account_info_from_init() {
-        Some(account)
-    } else {
-        let config_dir_owned = config_dir.to_owned();
-        let env_owned = env.to_owned();
-        match tokio::task::spawn_blocking(move || {
-            crate::cloud::auth_status::shell_identity_fallback(&config_dir_owned, &env_owned)
-        })
-        .await
-        {
-            Ok(opt) => opt,
-            Err(join_err) => {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    error = %join_err,
-                    "account_info_from_shell spawn_blocking task panicked"
-                );
-                None
-            }
-        }
-    };
+    // The identity is the init frame's; there is no shell fallback.
+    let account = client.account_info_from_init();
     if let Some(account) = account {
         let forge_account =
             display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));

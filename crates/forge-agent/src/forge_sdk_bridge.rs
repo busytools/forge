@@ -615,33 +615,11 @@ impl ForgeSdkBridge {
 
     pub(crate) fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
-        let config_dir = self.inner.config_dir.clone();
         let display_name = self.inner.display_name.clone();
-        let env = self.inner.env.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
-            // The shell fallback shells out to `claude auth status`;
-            // wrap in spawn_blocking so this dispatched task doesn't
-            // park its tokio worker for the ~50ms probe.
-            let account = if let Some(account) = client.account_info_from_init() {
-                account
-            } else {
-                let cd = config_dir.clone();
-                match tokio::task::spawn_blocking(move || {
-                    crate::cloud::auth_status::shell_identity_fallback(&cd, &env)
-                })
-                .await
-                {
-                    Ok(opt) => opt.unwrap_or_default(),
-                    Err(join_err) => {
-                        tracing::warn!(
-                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                            error = %join_err,
-                            "get_status_snapshot account probe spawn_blocking task panicked"
-                        );
-                        forge_primitives::AccountInfo::default()
-                    }
-                }
-            };
+            // The identity is the init frame's; there is no shell
+            // fallback to consult.
+            let account = client.account_info_from_init().unwrap_or_default();
             let forge_account = display_name.map(forge_primitives::ForgeAccountIdentity::new);
             if event_tx
                 .send(AgentEvent::StatusSnapshot { session_id, account, forge_account })
@@ -1314,8 +1292,8 @@ mod tests {
     }
 
     /// Fixture variant whose init frame omits `apiKeySource`, so
-    /// `account_info_from_init` answers None and the status
-    /// snapshot's fallback arm answers.
+    /// `account_info_from_init` answers None and the snapshot lands
+    /// the default identity.
     fn no_api_key_mock_binary() -> String {
         concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1339,11 +1317,11 @@ mod tests {
         (bridge, events)
     }
 
-    /// The token-mode contract at the surface the user sees: a token
-    /// session whose init frame carries no account snapshots the
-    /// default identity, never a `claude auth status` read - that
-    /// probe keys on the shared config dir and would describe
-    /// whichever sibling last logged in interactively.
+    /// The identity contract at the surface the user sees: a session
+    /// whose init frame carries no account snapshots the default
+    /// identity. There is no shell probe to fall back to - a probe
+    /// keyed on the config dir would describe whichever sibling last
+    /// logged in interactively.
     #[tokio::test]
     async fn token_session_snapshots_the_default_identity() {
         let mut env = HashMap::new();
