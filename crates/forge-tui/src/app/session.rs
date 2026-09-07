@@ -45,13 +45,9 @@ pub struct UiSession {
     /// This session's `/dictate` normalizer-axis overrides, mirrored
     /// from the workspace's `DomainSession` via
     /// `SessionUpdate::DictateOverrides` echoes. The `/dictate`
-    /// dialog's markers and reset row read from here.
+    /// dialog's markers and reset row read from here. The input-device
+    /// pick is NOT here - it is app state shared by every session.
     pub dictate_overrides: forge_workspace::DictateOverrides,
-    /// This session's `/dictate` input-device pick, mirrored from the
-    /// workspace via `SessionUpdate::DictateDevicePin` echoes. The
-    /// dialog's Device row reads from here; `None` means the
-    /// configured pin stands.
-    pub dictate_device_pin: Option<forge_workspace::DictateDeviceChoice>,
     /// TUI-side mirror of the workspace's authoritative `session_id`.
     /// Workspace stamps the real id onto `DomainSession.session_id`
     /// (for `AgentHandle` dispatch); TUI mirrors it here for render
@@ -830,7 +826,6 @@ impl UiSession {
         // The workspace no longer holds these for the identity being
         // torn down; mirrors must not either.
         self.dictate_overrides = forge_workspace::DictateOverrides::default();
-        self.dictate_device_pin = None;
         self.mcp = McpState::default();
     }
 }
@@ -843,7 +838,6 @@ impl Default for UiSession {
         Self {
             key: Option::default(),
             dictate_overrides: forge_workspace::DictateOverrides::default(),
-            dictate_device_pin: None,
             backgrounded_roots: HashSet::new(),
             session_id: Option::default(),
             lifecycle_state: SessionLifecycleState::default(),
@@ -982,8 +976,8 @@ mod tests {
         assert!(session.observed_assistant_model.is_none());
     }
 
-    /// The dictate mirrors ride the same teardown: a hard clear must
-    /// not leave a pin the workspace no longer holds.
+    /// The dictate override mirror rides the same teardown: a hard
+    /// clear must not leave axes the workspace no longer holds.
     #[test]
     fn clear_runtime_identity_clears_the_dictate_mirrors() {
         let mut session = UiSession {
@@ -991,14 +985,12 @@ mod tests {
                 styling: Some(forge_workspace::Styling::Formal),
                 ..Default::default()
             },
-            dictate_device_pin: Some(forge_workspace::DictateDeviceChoice::System),
             ..UiSession::default()
         };
 
         session.clear_runtime_identity();
 
         assert_eq!(session.dictate_overrides, forge_workspace::DictateOverrides::default());
-        assert_eq!(session.dictate_device_pin, None);
     }
 
     /// Pre-Connect bucket state (cwd, files_accessed, …) accumulated

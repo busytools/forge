@@ -213,9 +213,9 @@ pub enum Command {
     ResetDictateOverrides {
         key: SessionKey,
     },
-    /// Set this session's `/dictate` input-device pick, or clear it
-    /// back to the configured pin. Workspace state on the
-    /// `DomainSession`, never routed to the agent; the echo lands as
+    /// Set the `/dictate` input-device pick, or clear it back to the
+    /// configured pin. Workspace state shared by every session, never
+    /// routed to the agent; the echo lands as
     /// `SessionUpdate::DictateDevicePin`.
     SetDictateDevice {
         key: SessionKey,
@@ -894,9 +894,10 @@ pub enum SessionUpdate {
         key: SessionKey,
         overrides: crate::dictate::DictateOverrides,
     },
-    /// The input-device pick a session holds after a `/dictate`
-    /// device edit landed. Sent after every `SetDictateDevice`, and
-    /// alongside the overrides echo by a Reset.
+    /// The input-device pick in force after a `/dictate` device edit
+    /// landed - workspace state shared by every session. Sent after
+    /// every `SetDictateDevice`, and alongside the overrides echo by
+    /// a Reset.
     DictateDevicePin {
         key: SessionKey,
         pick: Option<crate::dictate::DictateDeviceChoice>,

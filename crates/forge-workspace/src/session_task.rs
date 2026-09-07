@@ -320,14 +320,15 @@ impl SessionTask {
                     self.drain_review_activity_for(&caller);
                     // Session-scoped `/dictate` state dies with the
                     // identity too: the TUI mints a blank bucket for
-                    // the replaced session, so a pick (or an override)
-                    // left here would record on a session that no
-                    // longer exists while the readout claims the
-                    // configured default.
+                    // the replaced session, so an override left here
+                    // would style a session that no longer exists
+                    // while the readout claims the crate defaults.
+                    // The device pick is NOT here - it is workspace
+                    // state shared by every session and outlives the
+                    // replacement.
                     {
                         let mut domain = self.domain.lock();
                         domain.dictate_overrides = crate::dictate::DictateOverrides::default();
-                        domain.dictate_device = None;
                     }
                     let previous_key = self.key.clone();
                     self.rekey_to(&real_key);
@@ -342,16 +343,12 @@ impl SessionTask {
                         history,
                         compaction_count,
                     });
-                    // After SessionReplaced so the echoes land on the
+                    // After SessionReplaced so the echo lands on the
                     // fresh bucket the TUI minted for it: the cleared
                     // values re-affirm the blank state.
                     self.emit(SessionUpdate::DictateOverrides {
                         key: real_key.clone(),
                         overrides: crate::dictate::DictateOverrides::default(),
-                    });
-                    self.emit(SessionUpdate::DictateDevicePin {
-                        key: real_key.clone(),
-                        pick: None,
                     });
                 } else {
                     self.rekey_to(&real_key);
@@ -2744,18 +2741,19 @@ mod tests {
         assert!(!saw_plain_connected, "an account switch must not emit a fresh Connected");
     }
 
-    /// The replaced identity's `/dictate` state must die with it: the
-    /// TUI mints a blank bucket for the new session, so a pick left on
-    /// the domain would record on the previous session's device while
-    /// the fresh readout claims the configured default.
+    /// The replaced identity's `/dictate` override axes die with it:
+    /// the TUI mints a blank bucket for the new session, so an axis
+    /// left on the domain would style a session that no longer exists.
+    /// The device pick is workspace state shared by every session, so
+    /// the replacement must leave it - and echo nothing.
     #[tokio::test]
-    async fn a_replaced_identity_drops_its_dictate_state_and_echoes_the_clear() {
+    async fn a_replaced_identity_drops_its_overrides_but_not_the_device_pick() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         let session_key = SessionKey::from_session_id("dictate-rekey-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         domain.lock().dictate_overrides.styling = Some(forge_dictate::normalize::Styling::Formal);
-        domain.lock().dictate_device =
+        *workspace.dictate_device_pick.lock() =
             Some(crate::dictate::DictateDeviceChoice::Device("shure-id".into()));
 
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
@@ -2794,26 +2792,24 @@ mod tests {
             compaction_count: 0,
         });
 
-        assert_eq!(
-            domain.lock().dictate_device,
-            None,
-            "the replaced identity must not carry its pick onto the new session"
-        );
         assert_eq!(domain.lock().dictate_overrides, crate::dictate::DictateOverrides::default());
+        assert_eq!(
+            *workspace.dictate_device_pick.lock(),
+            Some(crate::dictate::DictateDeviceChoice::Device("shure-id".into())),
+            "the pick is workspace state: a session replacement must not clear it"
+        );
 
         let mut replaced_seen = false;
-        let mut pin_echoes = vec![];
         while let Ok(u) = update_rx.try_recv() {
-            match u {
-                SessionUpdate::SessionReplaced { .. } => replaced_seen = true,
-                SessionUpdate::DictateDevicePin { pick, .. } => {
-                    assert!(replaced_seen, "the echo must land after the fresh bucket is minted");
-                    pin_echoes.push(pick);
-                }
-                _ => {}
+            if let SessionUpdate::DictateDevicePin { .. } = u {
+                panic!("a replacement must not echo a device-pin clear: {u:?}");
             }
+            replaced_seen |= matches!(u, SessionUpdate::SessionReplaced { .. });
         }
-        assert_eq!(pin_echoes, vec![None], "the clear echoes with the pick gone");
+        assert!(
+            replaced_seen,
+            "the scenario must still be a replacement, or the test proves nothing"
+        );
     }
 
     /// A forced-account switch tears the live session down BEFORE

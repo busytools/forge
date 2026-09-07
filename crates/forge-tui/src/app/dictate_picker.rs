@@ -5,7 +5,7 @@
 //! enter sets the highlighted row, esc closes. Enter never closes -
 //! the dialog is a set of choices made in one visit, and reset
 //! deliberately stays open so fine-tuning can continue. The rows are
-//! derived from the session's live state on every read, so the markers
+//! derived from live state on every read, so the markers
 //! and the reset row's dimness can never drift from what the workspace
 //! echoed.
 //!
@@ -13,8 +13,8 @@
 //! block's readout row; enter there opens `Devices`, the enumerated
 //! input list, where esc steps back instead of closing. The device
 //! pick is the `/spinner` shape: the `forge.toml` `[dictate] device`
-//! pin is the default, a pick overrides it until the session ends, and
-//! a restart reverts to the pin.
+//! pin is the default, a pick overrides it for every session, and a
+//! restart reverts to the pin.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use forge_workspace::{
@@ -50,7 +50,7 @@ pub(crate) enum RowAction {
 }
 
 /// How a state tag renders: the source of a value. Dim for defaults,
-/// the accent colour for a session pick, the error colour for a pin
+/// the accent colour for a picker pick, the error colour for a pin
 /// whose device is gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TagTone {
@@ -156,11 +156,11 @@ fn live_overrides(app: &App) -> DictateOverrides {
 }
 
 fn live_device_pin(app: &App) -> Option<DictateDeviceChoice> {
-    app.active_session().and_then(|s| s.dictate_device_pin.clone())
+    app.dictate_device_pin.clone()
 }
 
 /// The INPUT DEVICE readout row: what a take records from, and where
-/// that value came from. Resolved from the session pick over the
+/// that value came from. Resolved from the pick over the
 /// configured pin; names come from the last catalog. A machine with
 /// no inputs says so rather than naming a default that is not there.
 fn device_readout(app: &App) -> (String, Option<(String, TagTone)>) {
@@ -184,8 +184,8 @@ fn device_readout(app: &App) -> (String, Option<(String, TagTone)>) {
     let default_name = || catalog.devices.iter().find(|d| d.is_default).map(|d| d.name.clone());
     let in_force =
         forge_workspace::resolve_capture_device(pin.as_ref(), catalog.configured.as_deref());
-    // Where the value came from: a session pick until the session
-    // ends, else the pin, else the system default.
+    // Where the value came from: a pick until forge restarts, else
+    // the pin, else the system default.
     let source: (&str, TagTone) = match pin {
         Some(_) => ("active until restart", TagTone::Accent),
         None if catalog.configured.is_some() => ("configured default (forge.toml)", TagTone::Dim),
@@ -277,7 +277,7 @@ pub(crate) fn device_list(app: &App) -> DeviceList {
         in_force.as_deref().filter(|id| !catalog.devices.iter().any(|d| d.id == *id))
     {
         // Either source can go absent between walks: a configured
-        // pin, or a session pick whose device was unplugged since the
+        // pin, or a pick whose device was unplugged since the
         // last enumeration. The tag names forge.toml only when the
         // pin field is the one that is stale.
         let tag =
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_pick_moves_the_marker_and_names_its_source() {
+    fn a_pick_moves_the_marker_and_names_its_source() {
         let rows = axis_rows(overridden());
         let marked: Vec<&str> =
             rows.iter().filter(|r| r.marker).map(|r| r.label.as_str()).collect();
@@ -593,9 +593,7 @@ mod tests {
     fn a_device_only_pick_keeps_the_reset_row_reachable() {
         let mut app = App::test_default();
         app.dictate_devices = Some(Ok(catalog()));
-        let key = app.active_session_key.clone().expect("active session");
-        app.sessions.get_mut(&key).expect("bucket").dictate_device_pin =
-            Some(DictateDeviceChoice::Device("shure-id".into()));
+        app.dictate_device_pin = Some(DictateDeviceChoice::Device("shure-id".into()));
 
         let reset = rows(&app).last().expect("reset row").clone();
         assert!(reset.selectable, "a pick the reset must clear exists, whatever the axes say");
@@ -630,9 +628,7 @@ mod tests {
         );
 
         let mut app = catalog_app(Some("shure-id".into()));
-        let key = app.active_session_key.clone().expect("active session");
-        app.sessions.get_mut(&key).expect("bucket").dictate_device_pin =
-            Some(DictateDeviceChoice::Device("mbp-mic".into()));
+        app.dictate_device_pin = Some(DictateDeviceChoice::Device("mbp-mic".into()));
         let row = rows(&app).into_iter().find(|r| r.group == "INPUT DEVICE").expect("device row");
         assert_eq!(row.label, "Device: MacBook Pro Microphone");
         assert_eq!(row.tag, Some(("active until restart".into(), TagTone::Accent)));
@@ -668,9 +664,7 @@ mod tests {
     #[test]
     fn a_pin_whose_device_is_absent_reads_the_raw_id() {
         let mut app = catalog_app(Some("shure-id".into()));
-        let key = app.active_session_key.clone().expect("active session");
-        app.sessions.get_mut(&key).expect("bucket").dictate_device_pin =
-            Some(DictateDeviceChoice::Device("unplugged-id".into()));
+        app.dictate_device_pin = Some(DictateDeviceChoice::Device("unplugged-id".into()));
         let row = rows(&app).into_iter().find(|r| r.group == "INPUT DEVICE").expect("device row");
         assert_eq!(row.label, "Device: unplugged-id");
         assert_eq!(row.tag, Some(("not present".into(), TagTone::Error)));
@@ -693,11 +687,9 @@ mod tests {
     }
 
     #[test]
-    fn a_session_pick_moves_the_in_force_marker_off_the_pin() {
+    fn a_pick_moves_the_in_force_marker_off_the_pin() {
         let mut app = catalog_app(Some("shure-id".into()));
-        let key = app.active_session_key.clone().expect("active session");
-        app.sessions.get_mut(&key).expect("bucket").dictate_device_pin =
-            Some(DictateDeviceChoice::System);
+        app.dictate_device_pin = Some(DictateDeviceChoice::System);
         let DeviceList::Rows(rows) = device_list(&app) else {
             panic!("a loaded catalog yields rows");
         };

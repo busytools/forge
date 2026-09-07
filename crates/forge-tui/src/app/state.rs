@@ -426,6 +426,11 @@ pub struct App {
     /// could not. `None` until the first `/dictate` open asks for one;
     /// a fresh open re-enumerates and replaces it on arrival.
     pub dictate_devices: Option<Result<forge_workspace::DictateDeviceCatalog, String>>,
+    /// The `/dictate` input-device pick, mirrored from the workspace
+    /// via `SessionUpdate::DictateDevicePin` echoes. Shared by every
+    /// session and cleared only when forge restarts; `None` means the
+    /// configured pin stands.
+    pub dictate_device_pin: Option<forge_workspace::DictateDeviceChoice>,
     /// A catalog request is in flight; the tick guards on it so rapid
     /// opens do not stack walks.
     pub dictate_devices_in_flight: bool,
@@ -947,6 +952,7 @@ impl App {
             dictate_devices_tx,
             dictate_devices_rx,
             dictate_devices: None,
+            dictate_device_pin: None,
             dictate_devices_in_flight: false,
             dictate_devices_dirty: false,
             review_waiting_event_tx: review_waiting_tx,

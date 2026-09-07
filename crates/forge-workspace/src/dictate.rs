@@ -122,15 +122,13 @@ pub enum DictateOverrideUpdate {
     Reset,
 }
 
-/// A session's pick in the `/dictate` overlay's device list. The
-/// `forge.toml` `[dictate] device` pin is the default state, so it
-/// needs no variant: the field is `None` until a pick lands. A pick
-/// overrides the pin until the session ends - a restart reverts to the
-/// pin.
+/// A pick in the `/dictate` overlay's device list. The `forge.toml`
+/// `[dictate] device` pin is the default state, so it needs no
+/// variant: the field is `None` until a pick lands. A pick overrides
+/// the pin for every session until forge restarts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictateDeviceChoice {
-    /// Record from the system default input for the rest of the
-    /// session, whatever the pin names.
+    /// Record from the system default input, whatever the pin names.
     System,
     /// Record from this device id.
     Device(String),
@@ -846,10 +844,11 @@ fn begin_capture(
         .lock()
         .clone()
         .ok_or("dictation is not ready · enable [dictate] in forge.toml and restart")?;
-    // The session pick wins over the configured pin; with neither, the
-    // system default records. Resolved before the open so a pin naming
-    // a gone device errors here rather than falling back.
-    let pick = ws.domain_session_for(key).and_then(|domain| domain.lock().dictate_device.clone());
+    // The picker's pick - shared by every session - wins over the
+    // configured pin; with neither, the system default records.
+    // Resolved before the open so a pin naming a gone device errors
+    // here rather than falling back.
+    let pick = ws.dictate_device_pick.lock().clone();
     let wanted = crate::dictate::resolve_capture_device(pick.as_ref(), engine.device());
     let capture = engine
         .try_capture_with(key.as_str(), wanted.as_deref())
@@ -1381,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn a_device_pick_lands_on_the_session_and_echoes() {
+    fn a_device_pick_lands_on_the_workspace_and_echoes() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
         let key = crate::SessionKey::from_session_id("dictate-device");
         workspace.register_domain_session(key.clone(), None);
@@ -1393,9 +1392,8 @@ mod tests {
             })
             .expect("dispatch");
 
-        let binding = workspace.domain_session_for(&key).expect("session");
         assert_eq!(
-            binding.lock().dictate_device,
+            *workspace.dictate_device_pick.lock(),
             Some(DictateDeviceChoice::Device("shure-id".into())),
         );
         let echo = updates.try_recv().expect("a pin echo for the pick");
@@ -1406,6 +1404,31 @@ mod tests {
             }
             other => panic!("unexpected update: {other:?}"),
         }
+    }
+
+    /// The pick is shared by every session: a dispatch from one key is
+    /// visible in the workspace state the next capture resolves from,
+    /// whichever session it runs under.
+    #[test]
+    fn a_device_pick_is_shared_by_every_session() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        let first = crate::SessionKey::from_session_id("dictate-first");
+        let second = crate::SessionKey::from_session_id("dictate-second");
+        workspace.register_domain_session(first.clone(), None);
+        workspace.register_domain_session(second.clone(), None);
+
+        workspace
+            .dispatch(Command::SetDictateDevice {
+                key: first,
+                pick: Some(DictateDeviceChoice::System),
+            })
+            .expect("dispatch");
+
+        assert_eq!(
+            *workspace.dictate_device_pick.lock(),
+            Some(DictateDeviceChoice::System),
+            "the pick must be workspace state, not the dispatching session's"
+        );
     }
 
     #[test]
@@ -1422,9 +1445,8 @@ mod tests {
             .expect("dispatch");
         workspace.dispatch(Command::ResetDictateOverrides { key: key.clone() }).expect("dispatch");
 
-        let binding = workspace.domain_session_for(&key).expect("session");
         assert_eq!(
-            binding.lock().dictate_device,
+            *workspace.dictate_device_pick.lock(),
             None,
             "back to defaults means back to the configured pin, so the pick must go"
         );
