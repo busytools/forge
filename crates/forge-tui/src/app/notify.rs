@@ -148,14 +148,16 @@ impl NotificationManager {
             notification_text(event, context.project.as_deref(), context.worker_label.as_deref());
         let plan =
             notification_plan(channel, detect_terminal_capabilities(), self.osc9_mode, &text);
+        // Built once: the record cannot diverge from the send.
+        let desktop = plan.send_desktop.then(|| (text.title.clone(), text.detail.clone()));
         if let Some(line) = &plan.osc9_text {
             send_osc9_notification(line);
         }
         if plan.ring_bell {
             ring_bell();
         }
-        if plan.send_desktop {
-            send_desktop_notification(text.title.clone(), text.detail.clone());
+        if let Some((title, body)) = &desktop {
+            send_desktop_notification(title.clone(), body.clone());
         }
         // The `testing` feature records what was delivered so tests
         // can assert it; the sends above still run.
@@ -163,7 +165,7 @@ impl NotificationManager {
         self.delivered.borrow_mut().push(DeliveredNotification {
             osc9_line: plan.osc9_text.clone(),
             bell: plan.ring_bell,
-            desktop: plan.send_desktop.then(|| (text.title.clone(), text.detail.clone())),
+            desktop,
         });
     }
 
