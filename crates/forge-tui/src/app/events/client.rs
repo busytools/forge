@@ -3273,10 +3273,12 @@ mod tests {
     }
 
     /// The notification text resolves from the EVENT's session, not the
-    /// active tab: a background worker's question names the worker's
-    /// project and label while the user reads another session.
+    /// active tab: a background worker's prompts name the worker's
+    /// project and label while the user reads another session. Both
+    /// prompt kinds, since seed_two_sessions stamps no projects (the
+    /// active key would pass both otherwise).
     #[test]
-    fn question_for_a_background_session_names_that_session() {
+    fn prompts_for_a_background_session_name_that_session() {
         let mut app = App::test_default();
         let (key_a, key_b) = seed_two_sessions(&mut app);
         if let Some(bucket) = app.sessions.get_mut(&key_a) {
@@ -3303,24 +3305,33 @@ mod tests {
                 },
             );
         }
+        let context = crate::app::notify::NotifyContext {
+            project: Some("beta".to_owned()),
+            worker_label: Some("egen-lead".to_owned()),
+        };
         apply_session_update(
             &mut app,
             SessionUpdate::QuestionRequest {
-                key: key_b,
+                key: key_b.clone(),
                 tool_id: "tc-q-bg".into(),
                 request: crate::app::prompt::tests::make_question_request(false),
             },
         );
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PermissionRequest {
+                key: key_b,
+                tool_id: "tc-p-bg".into(),
+                request: crate::app::prompt::tests::make_permission_request(),
+            },
+        );
         assert_eq!(
             crate::app::notify::test_capture::take_notifications(&app),
-            vec![(
-                crate::app::notify::NotifyEvent::QuestionRequired,
-                crate::app::notify::NotifyContext {
-                    project: Some("beta".to_owned()),
-                    worker_label: Some("egen-lead".to_owned()),
-                },
-            )],
-            "the question names the background session's project + worker",
+            vec![
+                (crate::app::notify::NotifyEvent::QuestionRequired, context.clone()),
+                (crate::app::notify::NotifyEvent::PermissionRequired, context),
+            ],
+            "both prompt kinds name the background session's project + worker",
         );
     }
 
