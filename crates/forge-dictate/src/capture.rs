@@ -618,6 +618,23 @@ mod tests_input_config {
         }
     }
 
+    #[test]
+    fn an_f32_offer_wins_even_when_a_non_f32_range_serves_16k() {
+        // Only the F32 stream can be opened, so a native 16 kHz I16
+        // range must not beat an F32 range that needs conversion.
+        let plan = input_plan([
+            range(1, 16_000, 16_000, SampleFormat::I16),
+            range(2, 48_000, 48_000, SampleFormat::F32),
+        ])
+        .expect("an F32 offer exists");
+        assert_eq!(
+            plan.resample_from,
+            Some(48_000),
+            "the F32 offer is the only one this crate can open"
+        );
+        assert_eq!((plan.config.channels, plan.config.sample_rate), (2, 48_000));
+    }
+
     /// Feed a stereo take through the converter in CoreAudio-sized
     /// blocks, interleaved the way the F32 callback delivers.
     fn feed_stereo(
@@ -721,7 +738,7 @@ mod tests_input_config {
         assert_eq!(
             recording.take(),
             vec![0.5, 0.0],
-            "a device that already speaks the model rate must flow through today's exact downmix"
+            "a stereo block on the native path must flow through today's exact downmix"
         );
     }
 
