@@ -251,10 +251,12 @@ desktop-notification escapes. Detection reads `TERM_PROGRAM` /
 `ITERM_SESSION_ID`, which describe the terminal at the far end of the
 pipe and say nothing about what forwards to it: a multiplexer between
 forge and that terminal can strip the escape while passing the
-environment through unchanged (shpool drops OSC 9 by design; tmux
-drops the notification form; dtach forwards nothing it does not
-know), so the default notification
-channel ends up silent rather than degraded. `off` makes forge treat
+environment through unchanged (shpool forwards OSC 9 through
+unchanged; tmux drops the notification form; dtach forwards nothing
+it does not know), so the default notification channel ends up silent
+rather than degraded there. When the escape does arrive, its banner
+shows while Ghostty is not the frontmost app and is downgraded to a
+dock bounce when it is. `off` makes forge treat
 OSC 9 as unavailable and fall back to what does not cross the
 terminal: the Iterm2 channel gains the bell plus the OS-native
 desktop notification, Ghostty keeps the desktop notification only.

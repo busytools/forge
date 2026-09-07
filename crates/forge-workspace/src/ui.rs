@@ -39,12 +39,14 @@ pub struct UiSettings {
     /// describe the terminal at the far end of the pipe and say
     /// nothing about what forwards to it: a multiplexer can strip the
     /// escape while passing the environment through unchanged (shpool
-    /// by design; tmux for the notification form; dtach for anything
-    /// it does not know), leaving the
-    /// default notification channel silent rather than degraded. This
-    /// key serves any setup where the escape is emitted but stripped,
-    /// however the stripping happens, and is the seam: serving
-    /// another silent path is config here, not code.
+    /// forwards OSC 9 through unchanged; tmux drops the notification
+    /// form; dtach for anything it does not know), leaving the
+    /// default notification channel silent rather than degraded
+    /// there. A banner that does arrive shows while Ghostty is not
+    /// the frontmost app and is downgraded to a dock bounce when it
+    /// is. This key serves any setup where the escape is emitted but
+    /// stripped, however the stripping happens, and is the seam:
+    /// serving another silent path is config here, not code.
     #[serde(default)]
     pub notifications_osc9: Osc9NotificationMode,
 }
