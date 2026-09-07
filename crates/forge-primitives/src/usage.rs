@@ -49,9 +49,9 @@ impl UsageSourceKind {
 /// straight off the wire, and an uncapped key has no denominator to be
 /// a percentage of.
 ///
-/// Every figure is scoped to one key. Account-wide balance comes from a
-/// different endpoint with a different scope and is deliberately absent
-/// so a row cannot imply both are per-key.
+/// Every figure is scoped to one key. The account-wide balance comes
+/// from a different endpoint with a different scope and lives on
+/// [`UsageSnapshot::balance`], not here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiSpend {
     pub daily: f64,

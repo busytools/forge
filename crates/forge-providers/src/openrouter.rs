@@ -701,7 +701,7 @@ mod tests {
         let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &env };
         let snapshot = Openrouter.probe(&account, &LocalHost).await.expect("snapshot");
 
-        assert!(snapshot.spend.is_some(), "the key data stands when the credits fetch fails",);
+        assert!(snapshot.spend.is_some(), "the key data stands when the credits fetch fails");
         assert_eq!(snapshot.balance, None, "a failed credits fetch is an absent balance");
         assert_eq!(seen.lock().expect("request log").len(), 2);
     }

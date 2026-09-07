@@ -1130,11 +1130,12 @@ fn peer_badge_spans(
 /// Constant by design - values flip but shape stays put (see the
 /// "account chrome, not status row" intent in the design brief).
 ///
-/// 19 rows: rule + 6 identity (Profile/Org/Session/Mode/Model/Effort) +
+/// 20 rows: rule + 6 identity (Profile/Org/Session/Mode/Model/Effort) +
 /// 1 blank + 2 (Ctx bar + size row) + 1 blank + 2 (5h bar + ETA row) +
-/// 1 blank + 2 (7d bar + ETA row) + 1 blank + 2 (forge + claude version
+/// 1 blank + 2 (7d bar + ETA row) + 1 blank + 1 (spend balance row or
+/// a second separator blank) + 1 blank + 2 (forge + claude version
 /// rows).
-const ACCOUNT_PANEL_HEIGHT: u16 = 19;
+const ACCOUNT_PANEL_HEIGHT: u16 = 20;
 
 /// Width (columns) the rule and content extend up to from the
 /// pane's right edge. Matches the project-row right gutter so the
@@ -1160,9 +1161,9 @@ const ACCOUNT_PANEL_MIN_PANE_HEIGHT: u16 = 24;
 /// aligns regardless of label length.
 const ACCOUNT_PANEL_ID_LABEL_WIDTH: usize = 7;
 
-/// Label column for the spend period rows. Five holds `month`, which
-/// is the widest of `day` / `week` / `month`.
-const SPEND_LABEL_WIDTH: usize = 5;
+/// Label column for the spend money rows. Seven holds `balance`, the
+/// widest of `day` / `week` / `month` / `balance`.
+const SPEND_LABEL_WIDTH: usize = 7;
 
 /// Bar cell count derived from the pane width so the row stretches
 /// to fill the available content area (pane width minus the 2-col
@@ -1499,19 +1500,20 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 && w.resets_at.is_some_and(|when| when > std::time::SystemTime::now())
         });
 
-    // Rows 9..=13: what this account bills in. A window-billed
-    // account gets the 5h and 7d bars; a spend-billed one gets its
-    // periods and cap in the same five rows, because
-    // `ACCOUNT_PANEL_HEIGHT` is fixed and a differing row count would
-    // move the project list above.
-    let spend = app
+    // Rows 9..=14: what this account bills in. A window-billed
+    // account gets the 5h and 7d bars plus a separator; a spend-billed
+    // one gets its periods, balance and cap in the same six rows,
+    // because `ACCOUNT_PANEL_HEIGHT` is fixed and a differing row
+    // count would move the project list above.
+    let openrouter_snapshot = app
         .usage()
         .snapshot
         .as_ref()
-        .filter(|s| s.source == crate::app::UsageSourceKind::OpenRouterKey)
-        .map(|s| s.spend.as_ref());
+        .filter(|s| s.source == crate::app::UsageSourceKind::OpenRouterKey);
+    let balance = openrouter_snapshot.and_then(|s| s.balance);
+    let spend = openrouter_snapshot.map(|s| s.spend.as_ref());
     if let Some(spend) = spend {
-        push_spend_lines(&mut lines, spend, width, usage_error, account_auth);
+        push_spend_lines(&mut lines, spend, balance, width, usage_error, account_auth);
     } else {
         // Rows 9..=10: 5h bar + ETA row.
         push_usage_window_lines(
@@ -1542,6 +1544,11 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             false,
             account_auth,
         );
+
+        // Row 14: the balance row's slot on a spend-billed account.
+        // Windows have no balance to show, so the row stays empty
+        // rather than shifting everything below it.
+        lines.push(Line::default());
     }
 
     // Row 14: blank between usage and version rows.
@@ -1677,9 +1684,9 @@ fn push_usage_window_lines(
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(eta_text, eta_style)]));
 }
 
-/// The five rows a spend-billed account gets where a window-billed one
-/// gets its 5h and 7d bars: `day` / `week` / `month`, then the key's
-/// cap, then a secondary line.
+/// The six rows a spend-billed account gets where a window-billed one
+/// gets its 5h and 7d bars: `day` / `week` / `month` / `balance`, then
+/// the key's cap, then a secondary line.
 ///
 /// `spend` is `None` when no probe has landed. Every figure then reads
 /// `$-` rather than `$0.00`, because a zero is a reading and forge has
@@ -1690,13 +1697,16 @@ fn push_usage_window_lines(
 /// than a shorter one with a ragged edge. That is deliberate: do not
 /// "fix" it by spelling the label out.
 ///
-/// Excluded on purpose and re-litigated more than once: `byok_usage_*`
-/// is inference billed to a different payer's account, so adding it to
+/// `balance` is deliberately account-wide - the remaining credit pool
+/// every key on the account draws on, from `/v1/credits` - while the
+/// figures around it are per-key. `byok_usage_*` stays excluded: it is
+/// inference billed to a different payer's account, so adding it to
 /// these figures would produce a total reconcilable against neither
-/// bill. `/v1/credits` is account-wide rather than per-key.
+/// bill.
 fn push_spend_lines(
     lines: &mut Vec<Line<'static>>,
     spend: Option<&forge_primitives::usage::ApiSpend>,
+    balance: Option<f64>,
     width: u16,
     usage_error: Option<forge_workspace::UsageFetchStatus>,
     auth: forge_workspace::AccountAuth,
@@ -1710,6 +1720,7 @@ fn push_spend_lines(
         ("day", spend.map(|s| s.daily)),
         ("week", spend.map(|s| s.weekly)),
         ("month", spend.map(|s| s.monthly)),
+        ("balance", balance),
     ] {
         let value = money(amount);
         let left = 1 + SPEND_LABEL_WIDTH + 2;
@@ -2420,6 +2431,7 @@ mod tests {
 
     fn spend_snapshot(
         spend: Option<forge_primitives::usage::ApiSpend>,
+        balance: Option<f64>,
     ) -> crate::app::UsageSnapshot {
         crate::app::UsageSnapshot {
             source: crate::app::UsageSourceKind::OpenRouterKey,
@@ -2429,7 +2441,7 @@ mod tests {
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
-            balance: None,
+            balance,
             spend,
         }
     }
@@ -2480,7 +2492,7 @@ mod tests {
             ("unprobed", None),
         ] {
             let mut app = App::test_default();
-            app.usage_mut().snapshot = Some(spend_snapshot(spend));
+            app.usage_mut().snapshot = Some(spend_snapshot(spend, None));
             assert_eq!(
                 build_account_panel_lines(&app, 32).len(),
                 expected,
@@ -2506,7 +2518,7 @@ mod tests {
     #[test]
     fn the_cap_row_draws_a_bar_only_when_a_cap_exists() {
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(Some(capped(12.40, 20.0, 7.60))));
+        app.usage_mut().snapshot = Some(spend_snapshot(Some(capped(12.40, 20.0, 7.60)), None));
         let row = cap_row(&app);
         assert!(row.contains('\u{2593}'), "a cap gives the bar something to fill: {row}");
         assert!(row.contains("62%"), "the bar reports usage against the cap: {row}");
@@ -2519,7 +2531,7 @@ mod tests {
         assert!(panel.contains("$7.60 left"), "what is left is the useful number: {panel}");
 
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(Some(uncapped())));
+        app.usage_mut().snapshot = Some(spend_snapshot(Some(uncapped()), None));
         let row = cap_row(&app);
         assert!(row.contains("not set"), "an uncapped key says so: {row}");
         assert!(!row.contains('\u{2593}'), "no cap means no bar to fill: {row}");
@@ -2531,7 +2543,7 @@ mod tests {
     #[test]
     fn an_unprobed_spend_account_shows_dashes_not_zeroes() {
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(None));
+        app.usage_mut().snapshot = Some(spend_snapshot(None, None));
         let rendered = build_account_panel_lines(&app, 32)
             .iter()
             .map(line_text)
@@ -2549,6 +2561,47 @@ mod tests {
         );
     }
 
+    /// The account's remaining OpenRouter credit pool, right-aligned in
+    /// the money column exactly like the period rows above it, and
+    /// sitting above the cap row - the approved order. The value's
+    /// right edge is the panel's content edge (width minus the right
+    /// gutter), which is what makes the row read as one column with
+    /// the periods.
+    #[test]
+    fn the_balance_row_renders_the_remaining_pool() {
+        let mut app = App::test_default();
+        app.usage_mut().snapshot = Some(spend_snapshot(Some(uncapped()), Some(64.40)));
+        let rows: Vec<String> = build_account_panel_lines(&app, 32).iter().map(line_text).collect();
+        let balance_idx =
+            rows.iter().position(|l| l.starts_with(" balance")).expect("the balance row renders");
+        let row = &rows[balance_idx];
+        assert!(row.starts_with(" balance  "), "the label fills the spend label column: {row}");
+        assert!(row.trim_end().ends_with("$64.40"), "the pool left is the value: {row}");
+        assert_eq!(
+            row.chars().count(),
+            32 - PANEL_RIGHT_GUTTER,
+            "the value lands on the panel's right edge like the periods: {row}",
+        );
+        let cap_idx = rows.iter().position(|l| l.starts_with(" cap")).expect("the cap row renders");
+        assert!(balance_idx < cap_idx, "the balance sits above the cap: {rows:?}");
+    }
+
+    /// A balance forge has no reading for renders the no-data
+    /// convention, never a zero: `$0.00` would claim the account has
+    /// nothing left to spend, which at zero stops inference.
+    #[test]
+    fn an_absent_balance_renders_a_dash_not_a_zero() {
+        let mut app = App::test_default();
+        app.usage_mut().snapshot = Some(spend_snapshot(Some(uncapped()), None));
+        let row = build_account_panel_lines(&app, 32)
+            .iter()
+            .map(line_text)
+            .find(|l| l.starts_with(" balance"))
+            .expect("the balance row renders even without a reading");
+        assert!(row.trim_end().ends_with("$-"), "got {row}");
+        assert!(!row.contains("$0.00"), "a zero would be a reading forge does not have");
+    }
+
     /// Full words, because these are calendar periods rather than the
     /// rolling windows `5h` / `7d` name. Anchored to the label column:
     /// the secondary row carries the reset cadence, so a bare substring
@@ -2557,7 +2610,7 @@ mod tests {
     #[test]
     fn the_spend_periods_are_spelled_out() {
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(Some(capped(0.04, 20.0, 19.96))));
+        app.usage_mut().snapshot = Some(spend_snapshot(Some(capped(0.04, 20.0, 19.96)), None));
         let rendered =
             build_account_panel_lines(&app, 32).iter().map(line_text).collect::<Vec<_>>();
 
@@ -2576,7 +2629,7 @@ mod tests {
         // co-anchor the layout. This test pins the constant explicitly
         // so a change to row count surfaces here too, not only at
         // runtime.
-        assert_eq!(ACCOUNT_PANEL_HEIGHT, 19);
+        assert_eq!(ACCOUNT_PANEL_HEIGHT, 20);
     }
 
     /// A project with no live workers must produce zero tree-child
