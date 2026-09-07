@@ -30,7 +30,6 @@
 //!      Loading state stays in `Loading`; the account remains
 //!      dimmed on the launchpad until something resolves.
 
-use std::path::PathBuf;
 use std::sync::Weak;
 use std::time::Duration;
 
@@ -62,11 +61,7 @@ const MAX_LOADING_ITERATIONS: u32 = 12;
 /// the workspace is gone and the task returns. The lock is only
 /// acquired for single mutator calls, never across an await, so
 /// other workspace operations aren't blocked.
-pub async fn run_account_loading(
-    config_dir: PathBuf,
-    account_key: AccountKey,
-    workspace_weak: Weak<Workspace>,
-) {
+pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<Workspace>) {
     let mut iteration = 0u32;
     // Whether the previous iteration recorded its own failure class.
     // The retry-loop arm does (it is the class the budget was burned
@@ -111,8 +106,7 @@ pub async fn run_account_loading(
         };
         // The backend owns the probe and the repair verdict; the
         // loader only executes the verdict against its state machine.
-        let probe_result =
-            crate::provider_probe::probe_via_backend(provider, &config_dir, &account_env).await;
+        let probe_result = crate::provider_probe::probe_via_backend(provider, &account_env).await;
 
         match probe_result {
             Ok(snapshot) => {
@@ -146,13 +140,7 @@ pub async fn run_account_loading(
                 let action = crate::provider_probe::backend_for(provider).map_or(
                     RepairAction::Retry { retry_after: None },
                     |backend| {
-                        backend.repair(
-                            &forge_providers::AccountEnv {
-                                config_dir: &config_dir,
-                                env: &account_env,
-                            },
-                            &err,
-                        )
+                        backend.repair(&forge_providers::AccountEnv { env: &account_env }, &err)
                     },
                 );
                 match action {

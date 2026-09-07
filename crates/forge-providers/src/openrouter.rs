@@ -311,7 +311,6 @@ fn snapshot_from_openrouter_key(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::path::Path;
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -375,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_base_is_unmappable_without_probing() {
         let backend = Openrouter;
-        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &HashMap::new() };
+        let account = AccountEnv { env: &HashMap::new() };
         let result = backend.probe(&account, &UnreachableHost).await;
         assert!(matches!(result, Err(ProbeError::Unmappable(_))), "got {result:?}");
     }
@@ -423,7 +422,7 @@ mod tests {
             let _ = sock.shutdown(std::net::Shutdown::Both);
         });
         let env = env_with_base(&format!("http://{addr}"));
-        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &env };
+        let account = AccountEnv { env: &env };
         let snapshot = Openrouter.probe(&account, &LocalHost).await.expect("snapshot");
         let spend = snapshot.spend.expect("spend");
         assert!((spend.daily - 0.25).abs() < f64::EPSILON, "got {spend:?}");
@@ -671,7 +670,7 @@ mod tests {
             (200, r#"{"data":{"total_credits":435.0,"total_usage":370.60}}"#.to_owned()),
         ]);
         let env = env_with_base(&format!("http://{addr}"));
-        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &env };
+        let account = AccountEnv { env: &env };
         let snapshot = Openrouter.probe(&account, &LocalHost).await.expect("snapshot");
 
         let spend = snapshot.spend.expect("spend");
@@ -706,7 +705,7 @@ mod tests {
             (401, r#"{"error":{"message":"No auth credentials","code":401}}"#.to_owned()),
         ]);
         let env = env_with_base(&format!("http://{addr}"));
-        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &env };
+        let account = AccountEnv { env: &env };
         let snapshot = Openrouter.probe(&account, &LocalHost).await.expect("snapshot");
 
         assert!(snapshot.spend.is_some(), "the key data stands when the credits fetch fails");

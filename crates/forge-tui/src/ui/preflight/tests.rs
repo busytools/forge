@@ -66,34 +66,26 @@ fn app_with_dictate(snapshot: DictateSnapshot) -> App {
     app
 }
 
-fn account(name: &str, state: LoadingState, dir: &str) -> AccountLoadingRow {
-    account_with(name, state, dir, forge_workspace::AccountAuth::Token)
+fn account(name: &str, state: LoadingState) -> AccountLoadingRow {
+    account_with(name, state, forge_workspace::AccountAuth::Token)
 }
 
 fn account_with(
     name: &str,
     state: LoadingState,
-    dir: &str,
     auth: forge_workspace::AccountAuth,
 ) -> AccountLoadingRow {
-    AccountLoadingRow {
-        display_name: name.to_owned(),
-        state,
-        last_error: None,
-        config_dir: std::path::PathBuf::from(dir),
-        auth,
-    }
+    AccountLoadingRow { display_name: name.to_owned(), state, last_error: None, auth }
 }
 
 fn bailed_with_error(
     name: &str,
-    dir: &str,
     auth: forge_workspace::AccountAuth,
     last_error: forge_workspace::UsageFetchStatus,
 ) -> AccountLoadingRow {
     AccountLoadingRow {
         last_error: Some(last_error),
-        ..account_with(name, LoadingState::Bailed, dir, auth)
+        ..account_with(name, LoadingState::Bailed, auth)
     }
 }
 
@@ -106,8 +98,7 @@ fn the_two_sections_share_one_row_geometry() {
     let accounts_heading = flatten(&[heading_row("Accounts", PICKER_WIDTH)]).remove(0);
     let dictation_heading = flatten(&[heading_row("Dictation", PICKER_WIDTH)]).remove(0);
     let row =
-        flatten(&[account_row(&account("Subspace", LoadingState::Ready, "/x"), PICKER_WIDTH)])
-            .remove(0);
+        flatten(&[account_row(&account("Subspace", LoadingState::Ready), PICKER_WIDTH)]).remove(0);
 
     assert_eq!(
         accounts_heading.find("Accounts"),
@@ -174,7 +165,7 @@ fn a_model_reads_by_role_with_its_file_beneath() {
 fn a_bailed_account_names_both_exits() {
     let text = flatten(&bail_detail(
         &App::test_default(),
-        &account("Granite1", LoadingState::Bailed, "/home/x/.claude-granite1"),
+        &account("Granite1", LoadingState::Bailed),
         PICKER_WIDTH,
     ))
     .join("\n");
@@ -234,7 +225,7 @@ fn the_repair_and_retry_lines_differ_by_account_class() {
     let render = |auth| {
         flatten(&bail_detail(
             &App::test_default(),
-            &account_with("Granite1", LoadingState::Bailed, "/home/x/.claude-granite1", auth),
+            &account_with("Granite1", LoadingState::Bailed, auth),
             PICKER_WIDTH,
         ))
         .join("\n")
@@ -317,7 +308,7 @@ async fn preflight_hands_over_when_an_account_settles_bailed() {
 fn the_state_column_names_the_failure_class() {
     let row_text = |last_error: Option<forge_workspace::UsageFetchStatus>| {
         account_row(
-            &AccountLoadingRow { last_error, ..account("Subspace", LoadingState::Bailed, "/x") },
+            &AccountLoadingRow { last_error, ..account("Subspace", LoadingState::Bailed) },
             PICKER_WIDTH,
         )
         .spans
@@ -383,7 +374,6 @@ fn an_unreachable_bail_names_the_endpoint_not_the_auth() {
         &App::test_default(),
         &bailed_with_error(
             "Subspace",
-            "/home/x/.claude-subspace",
             forge_workspace::AccountAuth::BaseUrl,
             forge_workspace::UsageFetchStatus::NetworkFailed,
         ),
@@ -423,7 +413,6 @@ fn a_bailed_base_url_account_promises_a_restart_not_in_place_recovery() {
         &App::test_default(),
         &bailed_with_error(
             "Subspace",
-            "/home/x/.claude-subspace",
             forge_workspace::AccountAuth::BaseUrl,
             forge_workspace::UsageFetchStatus::Unauthorized,
         ),
@@ -455,7 +444,6 @@ fn an_erroring_endpoint_is_not_an_auth_failure_either() {
         &App::test_default(),
         &bailed_with_error(
             "Subspace",
-            "/home/x/.claude-subspace",
             forge_workspace::AccountAuth::BaseUrl,
             forge_workspace::UsageFetchStatus::Other,
         ),
@@ -485,7 +473,6 @@ fn a_bailed_token_account_names_the_re_mint_not_login() {
         &App::test_default(),
         &bailed_with_error(
             "TokenAcct",
-            "/home/x/.claude",
             forge_workspace::AccountAuth::Token,
             forge_workspace::UsageFetchStatus::Unauthorized,
         ),
@@ -524,7 +511,6 @@ fn a_rate_limited_bail_tells_the_reader_to_wait() {
         &App::test_default(),
         &bailed_with_error(
             "Subspace",
-            "/home/x/.claude-subspace",
             forge_workspace::AccountAuth::BaseUrl,
             forge_workspace::UsageFetchStatus::RateLimited,
         ),
@@ -556,12 +542,7 @@ fn the_unreachable_repair_differs_by_account_class() {
     let render = |auth| {
         flatten(&bail_detail(
             &App::test_default(),
-            &bailed_with_error(
-                "Subspace",
-                "/home/x/.claude-subspace",
-                auth,
-                forge_workspace::UsageFetchStatus::NetworkFailed,
-            ),
+            &bailed_with_error("Subspace", auth, forge_workspace::UsageFetchStatus::NetworkFailed),
             PICKER_WIDTH,
         ))
         .join("\n")
@@ -1071,8 +1052,7 @@ fn only_a_fresh_fetch_carries_the_first_run_note() {
 /// either panel alone puts a visible jump in the middle of boot.
 #[test]
 fn the_handover_is_a_content_swap_not_a_resize() {
-    let flat =
-        flatten(&[account_row(&account("Subspace", LoadingState::Ready, "/x"), PICKER_WIDTH)]);
+    let flat = flatten(&[account_row(&account("Subspace", LoadingState::Ready), PICKER_WIDTH)]);
     assert_eq!(
         NAME_WIDTH + 2 + 1 + 1 + STATE_WIDTH + 2,
         usize::from(PICKER_WIDTH),

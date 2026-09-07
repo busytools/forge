@@ -32,13 +32,6 @@ pub fn token_bearer<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>)
     env.get(CLAUDE_CODE_OAUTH_TOKEN_ENV).map(String::as_str).filter(|token| !token.is_empty())
 }
 
-/// True when `env` carries a non-empty setup token. Spawn-path stamping
-/// and the repair copy branch on this rather than on the provider
-/// alone.
-pub fn is_token_mode<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> bool {
-    token_bearer(env).is_some()
-}
-
 /// The Anthropic `[[accounts]] provider` token.
 pub struct Anthropic;
 
@@ -228,7 +221,6 @@ fn snapshot_from_unified_headers(headers: &HeaderMap) -> UsageSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::time::{Duration, SystemTime};
 
     use async_trait::async_trait;
@@ -504,7 +496,7 @@ mod tests {
         let backend = Anthropic;
         let mut env = HashMap::new();
         env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
-        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &env };
+        let account = AccountEnv { env: &env };
         let result = backend.probe(&account, &FailingUaHost).await;
         assert!(
             matches!(result, Err(ProbeError::Fetch(OauthUsageError::UaProbe(_)))),
@@ -517,7 +509,7 @@ mod tests {
     #[tokio::test]
     async fn a_tokenless_account_is_no_credentials_without_probing() {
         let backend = Anthropic;
-        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &HashMap::new() };
+        let account = AccountEnv { env: &HashMap::new() };
         let result = backend.probe(&account, &EmptyHost).await;
         assert!(matches!(result, Err(ProbeError::NoCredentials)), "got {result:?}");
     }

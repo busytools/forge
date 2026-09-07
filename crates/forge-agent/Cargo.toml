@@ -31,12 +31,10 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-hex = { workspace = true }
 ignore = { workspace = true }
 notify = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true }
-sha2 = { workspace = true }
 time = { workspace = true }
 time-tz = { workspace = true }
 iana-time-zone = { workspace = true }

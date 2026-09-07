@@ -3,7 +3,6 @@
 //! usage poller.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use forge_agent::cloud::AgentHost;
 use forge_primitives::account::Provider;
@@ -24,11 +23,10 @@ pub(crate) fn backend_for(provider: Provider) -> Result<&'static dyn ProviderBac
 /// host.
 pub(crate) async fn probe_via_backend(
     provider: Provider,
-    config_dir: &Path,
     env: &HashMap<String, String>,
 ) -> Result<UsageSnapshot, ProbeError> {
     let backend = backend_for(provider)?;
-    let account_env = AccountEnv { config_dir, env };
+    let account_env = AccountEnv { env };
     backend.probe(&account_env, &AgentHost).await
 }
 

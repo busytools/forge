@@ -16,7 +16,6 @@ mod openrouter;
 mod zai;
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -28,7 +27,7 @@ pub use forge_primitives::usage::oauth::OauthUsageError;
 
 pub use crate::model_catalog::ModelCatalog;
 
-pub use crate::anthropic::{Anthropic, CLAUDE_CODE_OAUTH_TOKEN_ENV, is_token_mode, token_bearer};
+pub use crate::anthropic::{Anthropic, CLAUDE_CODE_OAUTH_TOKEN_ENV, token_bearer};
 pub use crate::codex::Codex;
 pub use crate::openrouter::Openrouter;
 pub use crate::zai::Zai;
@@ -37,7 +36,6 @@ pub use crate::zai::Zai;
 /// merged global `[env]` + `[accounts.env]` block; the merge happens
 /// in forge-workspace config load and stays there.
 pub struct AccountEnv<'a> {
-    pub config_dir: &'a Path,
     pub env: &'a HashMap<String, String>,
 }
 
@@ -292,7 +290,7 @@ mod tests {
     }
 
     fn repair_account(env: &HashMap<String, String>) -> AccountEnv<'_> {
-        AccountEnv { config_dir: Path::new("/tmp/unused"), env }
+        AccountEnv { env }
     }
 
     /// The repair pin: every auth failure is terminal. forge has no

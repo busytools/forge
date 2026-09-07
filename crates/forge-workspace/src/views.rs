@@ -137,8 +137,7 @@ pub enum AccountAuth {
 }
 
 /// One account's place in preflight: what it is called, how far it
-/// has got, the config dir a failed one has to be fixed in, and how it
-/// authenticates.
+/// has got, and how it authenticates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountLoadingRow {
     /// forge.toml `[[accounts]]` display name.
@@ -148,9 +147,6 @@ pub struct AccountLoadingRow {
     /// lets a bailed row say `unreachable` when the endpoint is simply
     /// down rather than `auth failed`.
     pub last_error: Option<crate::account::UsageFetchStatus>,
-    /// `CLAUDE_CONFIG_DIR` for this account, which is what preflight
-    /// puts in the `/login` line when it will not authenticate.
-    pub config_dir: std::path::PathBuf,
     /// Which repair instruction a bailed row earns.
     pub auth: AccountAuth,
 }

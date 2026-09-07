@@ -1703,7 +1703,6 @@ impl Workspace {
                 display_name: k.0.clone(),
                 state: accounts.loading_state(k),
                 last_error: accounts.usage_error(k),
-                config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
                 auth: accounts.auth(k).unwrap_or(crate::views::AccountAuth::Token),
             })
             .collect()
@@ -2093,20 +2092,16 @@ impl Workspace {
     /// gate that the launchpad now consults via
     /// `AccountStateMap::all_loaded()`.
     pub fn start_account_loading_tasks(self: &Arc<Self>) {
-        let entries: Vec<(AccountKey, std::path::PathBuf)> = {
+        let entries: Vec<AccountKey> = {
             let accounts = self.accounts.lock();
-            accounts
-                .ordered_keys
-                .iter()
-                .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
-                .collect()
+            accounts.ordered_keys.clone()
         };
-        for (key, dir) in entries {
+        for key in entries {
             let span = tracing::info_span!("account_loading", account = %key.0);
             let weak = Arc::downgrade(self);
             tokio::spawn(
                 async move {
-                    crate::account_loader::run_account_loading(dir, key, weak).await;
+                    crate::account_loader::run_account_loading(key, weak).await;
                 }
                 .instrument(span),
             );
@@ -2245,7 +2240,6 @@ impl Workspace {
     pub async fn refresh_account_usage_once(self: &Arc<Self>) {
         let entries: Vec<(
             AccountKey,
-            std::path::PathBuf,
             forge_primitives::account::Provider,
             std::collections::HashMap<String, String>,
         )> = {
@@ -2263,15 +2257,12 @@ impl Workspace {
                 // moment has passed gets a fresh probe via the
                 // override even if the backoff timer is still active.
                 .filter(|key| accounts.scheduler_should_probe(key))
-                .filter_map(|key| {
-                    accounts.config_dir(key).map(|dir| {
-                        (
-                            key.clone(),
-                            dir.clone(),
-                            accounts.provider_or_anthropic(key),
-                            accounts.env(key).cloned().unwrap_or_default(),
-                        )
-                    })
+                .map(|key| {
+                    (
+                        key.clone(),
+                        accounts.provider_or_anthropic(key),
+                        accounts.env(key).cloned().unwrap_or_default(),
+                    )
                 })
                 .collect()
         };
@@ -2288,7 +2279,7 @@ impl Workspace {
         // per-iteration set_usage / set_last_error locks below.
         {
             let mut accounts = self.accounts.lock();
-            for (key, _, _, _) in &entries {
+            for (key, _, _) in &entries {
                 if !accounts.should_probe_now(key) {
                     accounts.disarm_override(key);
                 }
@@ -2300,10 +2291,10 @@ impl Workspace {
         // Serial execution staggers requests by per-probe latency
         // (~hundreds of ms), within the 60 s poll interval.
         let mut any_success = false;
-        for (key, dir, provider, env) in entries {
+        for (key, provider, env) in entries {
             // The backend owns the probe; an auth failure surfaces and
             // the account stays bailed until the credential heals.
-            let fetch_result = crate::provider_probe::probe_via_backend(provider, &dir, &env).await;
+            let fetch_result = crate::provider_probe::probe_via_backend(provider, &env).await;
             match fetch_result {
                 Ok(snapshot) => {
                     self.accounts.lock().set_usage(&key, snapshot);
@@ -2361,7 +2352,6 @@ impl Workspace {
                     tracing::warn!(
                         target: "forge_workspace::account",
                         account = %key.0,
-                        config_dir = %dir.display(),
                         error = %err,
                         retry_after_secs = ?retry_after.map(|d| d.as_secs()),
                         status = ?status,
