@@ -28,6 +28,50 @@ pub struct UiSettings {
     /// default rather than failing the load (see `deserialize_fps`).
     #[serde(default, deserialize_with = "deserialize_fps")]
     pub fps: RepaintCadence,
+    /// Whether forge may send OSC 9 desktop-notification escapes:
+    /// `auto` (default) trusts the detected capability, `off` treats
+    /// OSC 9 as unavailable and falls back to what does not cross the
+    /// terminal: the Iterm2 channel gains the bell plus the OS-native
+    /// desktop notification, Ghostty keeps the desktop notification
+    /// only.
+    ///
+    /// Detection reads `TERM_PROGRAM` / `ITERM_SESSION_ID`, which
+    /// describe the terminal at the far end of the pipe and say
+    /// nothing about what forwards to it: a multiplexer can strip the
+    /// escape while passing the environment through unchanged (shpool
+    /// by design; tmux for the notification form; dtach for anything
+    /// it does not know), leaving the
+    /// default notification channel silent rather than degraded. This
+    /// key serves any setup where the escape is emitted but stripped,
+    /// however the stripping happens, and is the seam: serving
+    /// another silent path is config here, not code.
+    #[serde(default)]
+    pub notifications_osc9: Osc9NotificationMode,
+}
+
+/// What the `[ui] notifications_osc9` key accepts. Strictly parsed:
+/// an unknown value fails the config load.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Osc9NotificationMode {
+    /// Trust the detected terminal capability.
+    #[default]
+    Auto,
+    /// Never send OSC 9; the plan falls back to bell and desktop.
+    Off,
+}
+
+impl<'de> Deserialize<'de> for Osc9NotificationMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "auto" => Ok(Self::Auto),
+            "off" => Ok(Self::Off),
+            other => Err(serde::de::Error::unknown_variant(other, &["auto", "off"])),
+        }
+    }
 }
 
 /// Repaint rate when `[ui] fps` is absent.
@@ -467,6 +511,39 @@ mod tests {
             floor.effective_cadence_ms(32),
             32,
             "a 32ms step outruns the floor and keeps its own intent",
+        );
+    }
+
+    #[test]
+    fn notifications_osc9_defaults_to_auto() {
+        let parsed: UiSettings = toml::from_str("").expect("empty parses");
+        assert_eq!(parsed.notifications_osc9, Osc9NotificationMode::Auto);
+    }
+
+    #[test]
+    fn notifications_osc9_parses_off() {
+        let parsed: UiSettings = toml::from_str("notifications_osc9 = \"off\"\n").expect("parse");
+        assert_eq!(parsed.notifications_osc9, Osc9NotificationMode::Off);
+    }
+
+    #[test]
+    fn notifications_osc9_parses_explicit_auto() {
+        let parsed: UiSettings = toml::from_str("notifications_osc9 = \"auto\"\n").expect("parse");
+        assert_eq!(parsed.notifications_osc9, Osc9NotificationMode::Auto);
+    }
+
+    #[test]
+    fn unknown_notifications_osc9_value_fails_the_load() {
+        let err = toml::from_str::<UiSettings>("notifications_osc9 = \"never\"\n")
+            .expect_err("an unknown value must be refused");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("never"),
+            "the error must name the value that was not understood, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("notifications_osc9"),
+            "the error must name the key, got: {rendered}"
         );
     }
 

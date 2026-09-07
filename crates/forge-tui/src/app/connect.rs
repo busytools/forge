@@ -300,7 +300,7 @@ fn create_app_impl(
         rendered_projects_pane_body_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         paste_burst: super::paste_burst::PasteBurstDetector::new(),
         needs_redraw: true,
-        notifications: super::notify::NotificationManager::new(),
+        notifications: super::notify::NotificationManager::new(ui_settings.notifications_osc9),
         perf,
         render_cache_budget: RenderCacheBudget::default(),
         fps_ema: None,
@@ -788,7 +788,7 @@ mod tests {
         std::fs::write(
             forge_dir(config_dir.path()).join("forge.toml"),
             format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-connect-stargate\"\nprovider = \"anthropic\"\n\n[ui]\nspinner = \"ember\"\nfps = 60\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-connect-stargate\"\nprovider = \"anthropic\"\n\n[ui]\nspinner = \"ember\"\nfps = 60\nnotifications_osc9 = \"off\"\n"
             ),
         )
         .expect("write forge.toml");
@@ -804,6 +804,11 @@ mod tests {
         // config value that never reached the App.
         assert_eq!(app.repaint_cadence, forge_workspace::RepaintCadence::from_fps(60));
         assert_ne!(app.repaint_cadence, forge_workspace::RepaintCadence::default());
+        assert_eq!(
+            app.notifications.osc9_mode(),
+            forge_workspace::Osc9NotificationMode::Off,
+            "the forge.toml override must reach the notification manager, not the default",
+        );
     }
 
     #[cfg(feature = "perf")]
