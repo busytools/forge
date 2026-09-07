@@ -743,6 +743,20 @@ mod tests_input_config {
     }
 
     #[test]
+    fn one_callback_larger_than_a_resampler_chunk_is_consumed_in_full() {
+        let recording = Recording::new(SAMPLE_RATE as usize);
+        let mut converter = InputConverter::new(2, Some(48_000)).expect("the resampler must build");
+        // 960 frames is exactly two chunks: the one push must run the
+        // resampler for both, not stop after the first.
+        converter.push(&vec![0.0; 2 * 480 * 2], &recording, SAMPLE_RATE as usize);
+        let produced = recording.sample_len();
+        assert!(
+            (200..=320).contains(&produced),
+            "both chunks of a 960-frame callback must be resampled (116 then 160 frames), got {produced}"
+        );
+    }
+
+    #[test]
     fn the_level_meter_reads_the_raw_channels_on_the_resampled_path() {
         let recording = Recording::new(SAMPLE_RATE as usize);
         let mut converter = InputConverter::new(2, Some(48_000)).expect("the resampler must build");
