@@ -1,16 +1,14 @@
 //! forge-agent's implementation of the
-//! [`forge_providers::ProviderHost`] port. The keychain read, the
-//! extra-roots HTTP client and the `claude --version` UA cache stay on
-//! this side of the port so forge-providers carries no process or
-//! keychain plumbing of its own.
+//! [`forge_providers::ProviderHost`] port. The extra-roots HTTP client
+//! and the `claude --version` UA cache stay on this side of the port
+//! so forge-providers carries no process plumbing of its own.
 
-use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
-use forge_providers::{OauthCredentials, ProviderHost};
+use forge_providers::ProviderHost;
 
 /// The host every workspace-side backend probe runs against.
 pub struct AgentHost;
@@ -26,10 +24,6 @@ static UA: OnceLock<String> = OnceLock::new();
 
 #[async_trait]
 impl ProviderHost for AgentHost {
-    fn keychain(&self, config_dir: &Path) -> Option<OauthCredentials> {
-        crate::cloud::oauth_credentials::load_oauth_credentials(config_dir)
-    }
-
     fn http_client(&self, timeout: Duration) -> Result<reqwest::Client, String> {
         crate::http_trust::with_extra_roots(reqwest::Client::builder().timeout(timeout))
             .build()

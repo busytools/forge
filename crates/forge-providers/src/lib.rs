@@ -21,7 +21,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 pub use forge_primitives::account::Provider;
-pub use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 pub use forge_primitives::usage::AccountBudget;
 pub use forge_primitives::usage::UsageSnapshot;
 pub use forge_primitives::usage::UsageSourceKind;
@@ -55,7 +54,7 @@ pub enum BillingModel {
 /// nothing.
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
-    #[error("no credentials for the keychain plan")]
+    #[error("no CLAUDE_CODE_OAUTH_TOKEN in the account env")]
     NoCredentials,
     #[error(transparent)]
     Fetch(#[from] OauthUsageError),
@@ -76,13 +75,11 @@ pub enum RepairAction {
     Retry { retry_after: Option<Duration> },
 }
 
-/// The host port, implemented by forge-agent. The only filesystem,
-/// keychain or process plumbing a backend may reach, so the crate
-/// stays HTTP + mapping and is testable offline.
+/// The host port, implemented by forge-agent. The only process
+/// plumbing a backend may reach, so the crate stays HTTP + mapping and
+/// is testable offline.
 #[async_trait]
 pub trait ProviderHost: Send + Sync {
-    /// The macOS keychain entry for `config_dir`, or None.
-    fn keychain(&self, config_dir: &Path) -> Option<OauthCredentials>;
     /// A reqwest client with the NODE_EXTRA_CA_CERTS roots applied
     /// and the caller's timeout baked in.
     fn http_client(&self, timeout: Duration) -> Result<reqwest::Client, String>;
@@ -347,10 +344,8 @@ mod tests {
         let anthropic = backend(Provider::Anthropic).expect("registered");
         let retry_after = Some(Duration::from_secs(60));
         assert_eq!(
-            anthropic.repair(
-                &account,
-                &ProbeError::Fetch(OauthUsageError::RateLimited { retry_after })
-            ),
+            anthropic
+                .repair(&account, &ProbeError::Fetch(OauthUsageError::RateLimited { retry_after })),
             RepairAction::Retry { retry_after },
         );
         assert_eq!(

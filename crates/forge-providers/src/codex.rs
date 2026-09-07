@@ -147,10 +147,6 @@ mod tests {
 
     #[async_trait]
     impl ProviderHost for FailingUaHost {
-        fn keychain(&self, _config_dir: &Path) -> Option<crate::OauthCredentials> {
-            unreachable!("the codex probe never reads the keychain")
-        }
-
         fn http_client(&self, _timeout: Duration) -> Result<reqwest::Client, String> {
             reqwest::Client::builder().build().map_err(|e| e.to_string())
         }
@@ -164,10 +160,6 @@ mod tests {
 
     #[async_trait]
     impl ProviderHost for UnreachableHost {
-        fn keychain(&self, _config_dir: &Path) -> Option<crate::OauthCredentials> {
-            unreachable!("the codex probe never reads the keychain")
-        }
-
         fn http_client(&self, _timeout: Duration) -> Result<reqwest::Client, String> {
             unreachable!("the probe must not build a client for a missing base url")
         }

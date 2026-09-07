@@ -2317,8 +2317,7 @@ impl Workspace {
         for (key, dir, provider, env) in entries {
             // The backend owns the probe; an auth failure surfaces and
             // the account stays bailed until the credential heals.
-            let fetch_result =
-                crate::provider_probe::probe_via_backend(provider, &dir, &env).await;
+            let fetch_result = crate::provider_probe::probe_via_backend(provider, &dir, &env).await;
             match fetch_result {
                 Ok(snapshot) => {
                     self.accounts.lock().set_usage(&key, snapshot);

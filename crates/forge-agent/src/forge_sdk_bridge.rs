@@ -658,28 +658,11 @@ impl ForgeSdkBridge {
 
     pub(crate) fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
-        let config_dir = self.inner.config_dir.clone();
         let env = self.inner.env.clone();
         self.dispatch("get_oauth_credentials_snapshot", move |_client| async move {
-            // load_oauth_credentials shells out to macOS `security
-            // find-generic-password`; wrap in spawn_blocking so the
-            // 30s usage-poller doesn't park N tokio workers per
-            // account during keychain access.
-            let credentials = match tokio::task::spawn_blocking(move || {
-                crate::cloud::oauth_credentials::session_oauth_credentials(&config_dir, &env)
-            })
-            .await
-            {
-                Ok(opt) => opt,
-                Err(join_err) => {
-                    tracing::warn!(
-                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                        error = %join_err,
-                        "load_oauth_credentials spawn_blocking task panicked"
-                    );
-                    None
-                }
-            };
+            // The snapshot is the account's env token - an in-memory
+            // map read, no I/O.
+            let credentials = crate::cloud::oauth_credentials::session_oauth_credentials(&env);
             if event_tx
                 .send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials })
                 .is_err()
