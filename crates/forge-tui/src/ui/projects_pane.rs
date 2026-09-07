@@ -2602,6 +2602,23 @@ mod tests {
         assert!(!row.contains("$0.00"), "a zero would be a reading forge does not have");
     }
 
+    /// An overdrawn account (usage past credits) renders the negative
+    /// it reports. Clamping it to zero would turn an overdrawn pool
+    /// into a confident `$0.00`, exactly the reading forge does not
+    /// have.
+    #[test]
+    fn an_overdrawn_balance_renders_the_negative() {
+        let mut app = App::test_default();
+        app.usage_mut().snapshot = Some(spend_snapshot(Some(uncapped()), Some(-12.34)));
+        let row = build_account_panel_lines(&app, 32)
+            .iter()
+            .map(line_text)
+            .find(|l| l.starts_with(" balance"))
+            .expect("the balance row renders for a negative too");
+        assert!(row.trim_end().ends_with("$-12.34"), "got {row}");
+        assert!(!row.contains("$0.00"), "a clamp would invent a reading: {row}");
+    }
+
     /// Full words, because these are calendar periods rather than the
     /// rolling windows `5h` / `7d` name. Anchored to the label column:
     /// the secondary row carries the reset cadence, so a bare substring
