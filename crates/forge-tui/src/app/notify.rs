@@ -150,9 +150,17 @@ impl crate::app::App {
     /// terminal-focus check decides that. The notification text comes
     /// from the event session's project + worker label.
     pub(crate) fn notify(&self, event: NotifyEvent, session_key: &SessionKey) {
-        let context = self.notification_context(session_key);
+        // The test capture drains regardless of focus (tests run
+        // focused); production skips the lookup entirely while focused.
         #[cfg(feature = "testing")]
-        self.test_notifications.borrow_mut().push((event, context.clone()));
+        {
+            let context = self.notification_context(session_key);
+            self.test_notifications.borrow_mut().push((event, context));
+        }
+        if self.notifications.is_focused() {
+            return;
+        }
+        let context = self.notification_context(session_key);
         self.notifications.notify(
             self.config.preferred_notification_channel_effective(),
             event,
