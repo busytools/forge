@@ -96,7 +96,7 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 /// surface" - the cache-invalidation pathway from #237-A picks up
 /// after 3 consecutive strikes and the bottom panel flips to the
 /// "`⚠ unauthorized - /login`" label.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum RefreshError {
     /// `claude auth status` reports `loggedIn=false` (or fails to
     /// run / parse). The account has no live refresh token; user
@@ -116,6 +116,12 @@ pub enum RefreshError {
     /// status code when one is available.
     #[error("`claude -p hi` exited with status {0:?}")]
     ExitNonZero(Option<i32>),
+    /// The target config dir has no `.claude.json` - the claude CLI
+    /// has never booted against it. Every spawn materializes the dir
+    /// on first boot, and external setup tooling can then treat the
+    /// profile as initialized; the refresh is skipped instead.
+    #[error("config dir has no .claude.json; profile was never initialized")]
+    ProfileUninitialized,
     /// The refresh ran successfully but the re-read keychain still
     /// reports an expired (or absent) token. Suggests the CLI's
     /// own refresh path is broken; falls through to the upstream
@@ -190,6 +196,18 @@ fn sweep_stale_jsonls(dir: &Path) {
     }
 }
 
+/// Entry gate for the refresh spawn: a profile the claude CLI has
+/// never booted (no `.claude.json`) is refused, because the spawn's
+/// first boot would materialize the dir - factored out so the
+/// decision is testable without reaching the billed spawn.
+fn ensure_profile_initialized(config_dir: &Path) -> Result<(), RefreshError> {
+    if auth_status::profile_is_initialized(config_dir) {
+        Ok(())
+    } else {
+        Err(RefreshError::ProfileUninitialized)
+    }
+}
+
 /// Spawn a brief `claude -p "hi"` invocation against `config_dir` to
 /// nudge the claude CLI into refreshing its OAuth token. Returns the
 /// re-read [`OauthCredentials`] on success, or a [`RefreshError`]
@@ -202,6 +220,8 @@ fn sweep_stale_jsonls(dir: &Path) {
 /// is dead. Other 401 causes (revoked token, scope mismatch, network
 /// proxy interception) fall through to the existing Unauthorized
 /// surface; #237-A's cache-invalidation handles the renderer side.
+/// A profile the CLI has never booted is refused without spawning
+/// ([`RefreshError::ProfileUninitialized`]).
 ///
 /// Concurrency: per-account `tokio::sync::Mutex` serialises refresh
 /// attempts; concurrent callers for the same account wait on the
@@ -217,6 +237,7 @@ fn sweep_stale_jsonls(dir: &Path) {
 /// - Spawns one `claude -p "hi"` per refresh attempt. This is a real
 ///   billed API call (one short turn). Lead has accepted the cost.
 pub async fn refresh_via_cli_spawn(config_dir: &Path) -> Result<OauthCredentials, RefreshError> {
+    ensure_profile_initialized(config_dir)?;
     // Pre-gate. `account_info_from_shell` returns None when
     // loggedIn=false, the binary is missing, or the JSON fails to
     // parse. Any of those means we can't refresh - short-circuit
@@ -546,6 +567,42 @@ mod tests {
                 "keychain service name must end with account_id_for_tmp output (dir={dir} id={id})",
             );
         }
+    }
+
+    /// The refresh spawn's CLI boot materializes an uninitialized
+    /// config dir (`.claude.json`, `backups/`, project history), which
+    /// external setup tooling then treats as an initialized profile.
+    /// The refusal must fire before any spawn.
+    #[tokio::test]
+    async fn refresh_refuses_to_boot_an_uninitialized_profile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_path_buf();
+        drop(dir);
+
+        let result = refresh_via_cli_spawn(&path).await;
+
+        assert!(
+            matches!(result, Err(RefreshError::ProfileUninitialized)),
+            "uninitialized profile must be refused before any spawn; got {result:?}"
+        );
+        assert!(!path.exists(), "the refusal must not materialize the profile dir");
+    }
+
+    /// The gate's decision is the marker file alone: present -> the
+    /// refresh flow may proceed, absent -> refused, even when the dir
+    /// itself exists. Pinned as a unit so the full spawn flow (a real
+    /// billed `claude -p hi` when the machine is logged in) is never
+    /// exercised from a test.
+    #[test]
+    fn the_profile_gate_decides_on_the_first_boot_marker_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            ensure_profile_initialized(dir.path()),
+            Err(RefreshError::ProfileUninitialized),
+            "dir exists but no first-boot marker: refused",
+        );
+        std::fs::write(dir.path().join(".claude.json"), b"{}").expect("write first-boot marker");
+        assert_eq!(ensure_profile_initialized(dir.path()), Ok(()), "marker present: allowed");
     }
 
     #[test]

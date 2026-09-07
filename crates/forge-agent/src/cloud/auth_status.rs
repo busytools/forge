@@ -58,6 +58,16 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
     }
 }
 
+/// Whether the claude CLI has ever booted against `config_dir`: its
+/// first boot writes `.claude.json`. Every claude spawn materializes
+/// an uninitialized dir (`.claude.json`, `backups/`, project state),
+/// and external setup tooling can then treat the profile as
+/// initialized, so probe paths that spawn claude against a
+/// possibly-uninitialized profile gate on this first.
+pub(crate) fn profile_is_initialized(config_dir: &Path) -> bool {
+    config_dir.join(".claude.json").exists()
+}
+
 /// Shell out to `claude auth status` and parse its JSON output into
 /// [`AccountInfo`]. The `config_dir` is exported to the subprocess as
 /// `CLAUDE_CONFIG_DIR` so the spawned `claude` reads the bound
@@ -66,6 +76,8 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 ///
 /// Returns `None` when:
 ///
+/// - the profile has never been initialized (no `.claude.json`; the
+///   spawn would materialize the dir),
 /// - the `claude` binary is not on `$PATH`,
 /// - the subprocess exits non-zero,
 /// - the JSON is malformed,
@@ -82,6 +94,14 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 /// Synchronous; runs the subprocess inline. ~50ms first call, faster
 /// thereafter (claude warms up its keychain reads in-process).
 pub fn account_info_from_shell(config_dir: &Path) -> Option<AccountInfo> {
+    if !profile_is_initialized(config_dir) {
+        tracing::debug!(
+            target: "forge_agent::cloud::auth_status",
+            config_dir = %config_dir.display(),
+            "claude auth status skipped: profile has no .claude.json; spawning would materialize it",
+        );
+        return None;
+    }
     let mut cmd = std::process::Command::new("claude");
     cmd.args(["auth", "status"]);
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
@@ -197,6 +217,20 @@ fn parse_auth_status(stdout: &[u8]) -> Option<AccountInfo> {
 mod tests {
 
     use super::*;
+
+    /// The shell-out's CLI boot materializes an uninitialized config
+    /// dir; the probe must refuse before spawning.
+    #[test]
+    fn auth_status_refuses_to_boot_an_uninitialized_profile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_path_buf();
+        drop(dir);
+
+        let info = account_info_from_shell(&path);
+
+        assert!(info.is_none(), "an uninitialized profile has no account info");
+        assert!(!path.exists(), "the probe must not materialize the profile dir");
+    }
 
     #[test]
     fn parses_full_oauth_status() {
