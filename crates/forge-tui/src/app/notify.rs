@@ -581,6 +581,10 @@ mod tests {
         assert_eq!(text.title, "companies");
         assert_eq!(text.detail, "turn complete");
         assert_eq!(text.osc9_line(), "companies - turn complete");
+
+        let worker_turn =
+            notification_text(NotifyEvent::TurnComplete, Some("companies"), Some("egen-lead"));
+        assert_eq!(worker_turn.detail, "turn complete", "the detail discards the worker label");
     }
 
     #[test]
