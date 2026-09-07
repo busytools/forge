@@ -250,7 +250,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // bucket was dropped, and pointing the user at it would send
             // them looking for something that is not there.
             if queued {
-                app.notify(crate::app::notify::NotifyEvent::PermissionRequired);
+                app.notify(crate::app::notify::NotifyEvent::PermissionRequired, &key);
             }
         }
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
@@ -262,7 +262,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             }
             crate::app::prompt::snapshot_draft_if_needed(app, &key);
             if queued {
-                app.notify(crate::app::notify::NotifyEvent::QuestionRequired);
+                app.notify(crate::app::notify::NotifyEvent::QuestionRequired, &key);
             }
         }
         SessionUpdate::McpOperationError { key, error } => {
@@ -3266,7 +3266,10 @@ mod tests {
         );
         assert_eq!(
             crate::app::notify::test_capture::take_notifications(&app),
-            vec![crate::app::notify::NotifyEvent::QuestionRequired],
+            vec![(
+                crate::app::notify::NotifyEvent::QuestionRequired,
+                crate::app::notify::NotifyContext::default(),
+            )],
             "an enqueued question raises QuestionRequired",
         );
     }
@@ -3287,8 +3290,74 @@ mod tests {
         );
         assert_eq!(
             crate::app::notify::test_capture::take_notifications(&app),
-            vec![crate::app::notify::NotifyEvent::PermissionRequired],
+            vec![(
+                crate::app::notify::NotifyEvent::PermissionRequired,
+                crate::app::notify::NotifyContext::default(),
+            )],
             "an enqueued permission request raises PermissionRequired",
+        );
+    }
+
+    /// The notification text resolves from the EVENT's session, not the
+    /// active tab: a background worker's prompts name the worker's
+    /// project and label while the user reads another session. Both
+    /// prompt kinds, since seed_two_sessions stamps no projects (the
+    /// active key would pass both otherwise).
+    #[test]
+    fn prompts_for_a_background_session_name_that_session() {
+        let mut app = App::test_default();
+        let (key_a, key_b) = seed_two_sessions(&mut app);
+        if let Some(bucket) = app.sessions.get_mut(&key_a) {
+            bucket.project = Some("alpha".to_owned());
+        }
+        if let Some(bucket) = app.sessions.get_mut(&key_b) {
+            bucket.project = Some("beta".to_owned());
+        }
+        app.active_session_key = Some(key_a.clone());
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.insert_live_worker(
+                &forge_workspace::ProjectKey::new_for_test("p-beta"),
+                forge_workspace::WorkerEntry {
+                    label: "egen-lead".to_owned(),
+                    charter: String::new(),
+                    session_key: key_b.clone(),
+                    status: forge_primitives::WorkerLiveness::Running,
+                    spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                    spawned_by_session_id: String::new(),
+                    needs_tag: false,
+                    is_git_repo_at_spawn: false,
+                    diagnostic: None,
+                    kick: None,
+                },
+            );
+        }
+        let context = crate::app::notify::NotifyContext {
+            project: Some("beta".to_owned()),
+            worker_label: Some("egen-lead".to_owned()),
+        };
+        apply_session_update(
+            &mut app,
+            SessionUpdate::QuestionRequest {
+                key: key_b.clone(),
+                tool_id: "tc-q-bg".into(),
+                request: crate::app::prompt::tests::make_question_request(false),
+            },
+        );
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PermissionRequest {
+                key: key_b,
+                tool_id: "tc-p-bg".into(),
+                request: crate::app::prompt::tests::make_permission_request(),
+            },
+        );
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![
+                (crate::app::notify::NotifyEvent::QuestionRequired, context.clone()),
+                (crate::app::notify::NotifyEvent::PermissionRequired, context),
+            ],
+            "both prompt kinds name the background session's project + worker",
         );
     }
 
