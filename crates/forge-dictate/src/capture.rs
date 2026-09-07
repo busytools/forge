@@ -59,27 +59,7 @@ impl Recording {
             "interleaved audio must divide evenly into frames"
         );
 
-        // Peak over the RAW block, not the averages: a meter should show
-        // a channel clipping even when the mean of the channels does not.
-        let mut loudest = 0.0f32;
-        for sample in block {
-            loudest = loudest.max(sample.abs());
-        }
-        let mut current = self.peak_bits.load(Ordering::Relaxed);
-        loop {
-            if f32::from_bits(current) >= loudest {
-                break;
-            }
-            match self.peak_bits.compare_exchange_weak(
-                current,
-                loudest.to_bits(),
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(seen) => current = seen,
-            }
-        }
+        self.observe_peak(block);
 
         let mut samples = self.samples.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if samples.len() >= limit {
@@ -106,6 +86,32 @@ impl Recording {
             samples.extend_from_slice(&block[..block.len().min(room)]);
         } else {
             samples.extend(block.chunks_exact(channels).take(room).map(channel_mean));
+        }
+    }
+
+    /// Fold the loudest absolute sample of `block` into the meter's
+    /// accumulator. Peak over the RAW block, not any downmix: a meter
+    /// should show a channel clipping even when the mean of the
+    /// channels does not.
+    fn observe_peak(&self, block: &[f32]) {
+        let mut loudest = 0.0f32;
+        for sample in block {
+            loudest = loudest.max(sample.abs());
+        }
+        let mut current = self.peak_bits.load(Ordering::Relaxed);
+        loop {
+            if f32::from_bits(current) >= loudest {
+                break;
+            }
+            match self.peak_bits.compare_exchange_weak(
+                current,
+                loudest.to_bits(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(seen) => current = seen,
+            }
         }
     }
 
@@ -320,6 +326,7 @@ impl Resampling {
     }
 
     fn push(&mut self, block: &[f32], channels: usize, sink: &Recording, limit: usize) {
+        sink.observe_peak(block);
         if channels <= 1 {
             self.staging.extend_from_slice(block);
         } else {
@@ -715,6 +722,21 @@ mod tests_input_config {
             recording.take(),
             vec![0.5, 0.0],
             "a device that already speaks the model rate must flow through today's exact downmix"
+        );
+    }
+
+    #[test]
+    fn the_level_meter_reads_the_raw_channels_on_the_resampled_path() {
+        let recording = Recording::new(SAMPLE_RATE as usize);
+        let mut converter = InputConverter::new(2, Some(48_000)).expect("the resampler must build");
+        // One channel at full scale, the other silent: the filtered mean
+        // is -6 dBFS but the meter must report the channel that is
+        // actually clipping.
+        converter.push(&[1.0, 0.0], &recording, SAMPLE_RATE as usize);
+        let peak = recording.peak_dbfs();
+        assert!(
+            peak.abs() < 0.01,
+            "the meter must read the raw channel peak (0 dBFS) through the resampler, got {peak}"
         );
     }
 }
