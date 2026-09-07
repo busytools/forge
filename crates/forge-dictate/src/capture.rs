@@ -334,6 +334,9 @@ impl Resampling {
                 match self.resampler.process_into_buffer(&self.input, &mut self.output, None) {
                     Ok(used) => used,
                     Err(error) => {
+                        // Defensive: a persistent rejection must not
+                        // grow staging without bound.
+                        self.staging.clear();
                         tracing::warn!(%error, "resampler rejected a block; dropping it");
                         return;
                     }
