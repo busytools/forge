@@ -1488,7 +1488,7 @@ mod tests {
         assert_eq!(
             pick(Some(DictateDeviceChoice::Device("pin-id".into()))).as_deref(),
             Some("pin-id"),
-            "a session pick must beat the configured pin"
+            "a picker pick must beat the configured pin"
         );
         assert_eq!(
             pick(Some(DictateDeviceChoice::System)),
@@ -1734,6 +1734,38 @@ mod dictate_lifecycle_tests {
                 "whatever refused the start, no microphone claim may survive it"
             ),
         }
+    }
+
+    /// The picker's pick is what a start records from: a pick naming a
+    /// device nothing enumerates must fail the open naming it, rather
+    /// than falling back to the configured pin or the system default.
+    #[tokio::test]
+    async fn a_start_records_from_the_workspace_pick() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        // The real recorder: a stand-in that always opens would make the
+        // pick unreachable. No hardware is needed - a device id nothing
+        // enumerates fails the lookup on any machine.
+        let dir = tempfile::tempdir().unwrap();
+        let engine = forge_dictate::Engine::new(
+            forge_dictate::ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build(),
+        )
+        .expect("an engine starts without its weights");
+        *ws.dictate.engine.lock() = Some(engine);
+
+        let session = key("picker-pick");
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        ws.command_senders.lock().insert(session.clone(), cmd_tx);
+        *ws.dictate_device_pick.lock() = Some(crate::dictate::DictateDeviceChoice::Device(
+            "forge-dictate-no-such-device".into(),
+        ));
+
+        let Err(error) = begin_capture(&ws, &session) else {
+            panic!("a pick naming an absent device must refuse the start");
+        };
+        assert!(
+            error.contains("forge-dictate-no-such-device"),
+            "the refusal must name the picked device, got: {error}"
+        );
     }
 
     /// Stop routing reaches the recording that owns the key, and an
