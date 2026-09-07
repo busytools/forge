@@ -921,6 +921,75 @@ mod tests {
     use super::*;
     use crate::app::App;
 
+    fn seed_bucket(app: &mut App, id: &str, project: &str) -> SessionKey {
+        let key = SessionKey::from_str_for_test(id);
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.project = Some(project.to_owned());
+        app.sessions.insert(key.clone(), bucket);
+        key
+    }
+
+    /// A worker tab's own turn completion names its project + worker
+    /// label: the notify site passes the event session's key and the
+    /// context resolves from it.
+    #[test]
+    fn turn_complete_notification_context_names_the_event_session() {
+        let mut app = App::test_default();
+        seed_bucket(&mut app, "session-other", "alpha");
+        let worker_key = seed_bucket(&mut app, "session-worker", "beta");
+        app.active_session_key = Some(worker_key.clone());
+        if let Some(ws) = app.workspace.as_ref() {
+            ws.insert_live_worker(
+                &forge_workspace::ProjectKey::new_for_test("p-beta"),
+                forge_workspace::WorkerEntry {
+                    label: "egen-lead".to_owned(),
+                    charter: String::new(),
+                    session_key: worker_key.clone(),
+                    status: forge_primitives::WorkerLiveness::Running,
+                    spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                    spawned_by_session_id: String::new(),
+                    needs_tag: false,
+                    is_git_repo_at_spawn: false,
+                    diagnostic: None,
+                    kick: None,
+                },
+            );
+        }
+        app.status = AppStatus::Thinking;
+        app.active_messages_mut().push(user_message("hello"));
+        app.active_messages_mut().push(empty_assistant_message());
+
+        apply_session_update_turn_complete(&mut app, &worker_key, None);
+
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![(
+                crate::app::notify::NotifyEvent::TurnComplete,
+                crate::app::notify::NotifyContext {
+                    project: Some("beta".to_owned()),
+                    worker_label: Some("egen-lead".to_owned()),
+                },
+            )],
+            "the turn-complete toast names the event session's project + worker",
+        );
+    }
+
+    /// The notify call lives only on the active-session path - the
+    /// background branch returns before it. Pinned so a refactor that
+    /// moves the notify across the branch is a decision, not drift.
+    #[test]
+    fn background_turn_complete_notifies_nothing() {
+        let mut app = App::test_default();
+        let background = seed_bucket(&mut app, "session-bg", "beta");
+
+        apply_session_update_turn_complete(&mut app, &background, None);
+
+        assert!(
+            crate::app::notify::test_capture::take_notifications(&app).is_empty(),
+            "a background turn completion is silent",
+        );
+    }
+
     fn empty_assistant_message() -> ChatMessage {
         ChatMessage::new(MessageRole::Assistant, Vec::new())
     }
