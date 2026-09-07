@@ -30,9 +30,10 @@ pub struct UiSettings {
     pub fps: RepaintCadence,
     /// Whether forge may send OSC 9 desktop-notification escapes:
     /// `auto` (default) trusts the detected capability, `off` treats
-    /// OSC 9 as unavailable and falls back to the terminal bell and
-    /// the OS-native desktop notification, which do not cross the
-    /// terminal.
+    /// OSC 9 as unavailable and falls back to what does not cross the
+    /// terminal: the Iterm2 channel gains the bell plus the OS-native
+    /// desktop notification, Ghostty keeps the desktop notification
+    /// only.
     ///
     /// Detection reads `TERM_PROGRAM` / `ITERM_SESSION_ID`, which
     /// describe the terminal at the far end of the pipe and say

@@ -29,7 +29,8 @@ pub enum NotifyEvent {
 ///    channels that can emit it suppress the desktop notification (and the
 ///    bell too, except on `iterm2_with_bell`), so a multiplexer that strips
 ///    the escape silently leaves nothing. The `[ui] notifications_osc9`
-///    forge.toml key forces that belief off and restores bell + desktop.
+///    forge.toml key forces that belief off: the Iterm2 channel regains
+///    bell + desktop, Ghostty keeps desktop only.
 #[derive(Debug)]
 pub struct NotificationManager {
     terminal_focused: bool,

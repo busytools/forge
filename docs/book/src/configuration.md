@@ -255,9 +255,10 @@ environment through unchanged (shpool drops OSC 9 by design; tmux
 drops the notification form; dtach forwards nothing it does not
 know), so the default notification
 channel ends up silent rather than degraded. `off` makes forge treat
-OSC 9 as unavailable and fall back to the terminal bell and the
-OS-native desktop notification, which do not cross the terminal. The
-key serves any setup where the escape is emitted but stripped, however
+OSC 9 as unavailable and fall back to what does not cross the
+terminal: the Iterm2 channel gains the bell plus the OS-native
+desktop notification, Ghostty keeps the desktop notification only.
+The key serves any setup where the escape is emitted but stripped, however
 the stripping happens; it is config, not per-multiplexer code.
 
 `launchpad_spinner` is accepted as an alias for `spinner`.
