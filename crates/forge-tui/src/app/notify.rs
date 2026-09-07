@@ -44,6 +44,17 @@ impl NotificationText {
     }
 }
 
+/// What one unfocused notify() delivered, recorded instead of sent
+/// when the `testing` feature is on: the OSC 9 line, the bell, and
+/// the desktop (title, body) in delivery order.
+#[cfg(feature = "testing")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveredNotification {
+    pub osc9_line: Option<String>,
+    pub bell: bool,
+    pub desktop: Option<(String, String)>,
+}
+
 /// Central notification manager.
 ///
 /// Tracks whether the terminal window is focused (via crossterm
@@ -66,6 +77,8 @@ impl NotificationText {
 pub struct NotificationManager {
     terminal_focused: bool,
     osc9_mode: Osc9NotificationMode,
+    #[cfg(feature = "testing")]
+    delivered: std::cell::RefCell<Vec<DeliveredNotification>>,
 }
 
 impl Default for NotificationManager {
@@ -90,7 +103,12 @@ impl NotificationManager {
     pub const fn new(osc9_mode: Osc9NotificationMode) -> Self {
         // Default to `true` (focused) so that terminals which do not support
         // DECSET 1004 never fire spurious notifications.
-        Self { terminal_focused: true, osc9_mode }
+        Self {
+            terminal_focused: true,
+            osc9_mode,
+            #[cfg(feature = "testing")]
+            delivered: std::cell::RefCell::new(Vec::new()),
+        }
     }
 
     /// Call when the terminal emits a `FocusGained` event.
@@ -130,15 +148,30 @@ impl NotificationManager {
             notification_text(event, context.project.as_deref(), context.worker_label.as_deref());
         let plan =
             notification_plan(channel, detect_terminal_capabilities(), self.osc9_mode, &text);
-        if let Some(line) = plan.osc9_text {
-            send_osc9_notification(&line);
+        if let Some(line) = &plan.osc9_text {
+            send_osc9_notification(line);
         }
         if plan.ring_bell {
             ring_bell();
         }
         if plan.send_desktop {
-            send_desktop_notification(text.title, text.detail);
+            send_desktop_notification(text.title.clone(), text.detail.clone());
         }
+        // The `testing` feature records what was delivered so tests
+        // can assert it; the sends above still run.
+        #[cfg(feature = "testing")]
+        self.delivered.borrow_mut().push(DeliveredNotification {
+            osc9_line: plan.osc9_text.clone(),
+            bell: plan.ring_bell,
+            desktop: plan.send_desktop.then(|| (text.title.clone(), text.detail.clone())),
+        });
+    }
+
+    /// Test-only: drain what the unfocused notify()s delivered, in
+    /// order. Populated only with the `testing` feature on.
+    #[cfg(feature = "testing")]
+    pub fn take_delivered(&self) -> Vec<DeliveredNotification> {
+        self.delivered.borrow_mut().drain(..).collect()
     }
 }
 
@@ -644,6 +677,42 @@ mod tests {
         let app = App::test_default();
         let unknown = forge_workspace::SessionKey::from_session_id("no-such-session");
         assert_eq!(app.notification_context(&unknown), NotifyContext::default());
+    }
+
+    /// A focused terminal (the manager's default) delivers nothing.
+    #[test]
+    fn focused_terminal_delivers_nothing() {
+        let mut app = App::test_default();
+        let key = seed_bucket(&mut app, "session-a", "companies");
+
+        app.notify(NotifyEvent::TurnComplete, &key);
+
+        assert!(
+            app.notifications.take_delivered().is_empty(),
+            "a focused terminal delivers nothing",
+        );
+    }
+
+    /// The desktop toast receives (title, body) = (project, event
+    /// detail) in that order; OSC 9 mode Off pins the plan to bell +
+    /// desktop regardless of the test process's environment.
+    #[test]
+    fn unfocused_terminal_delivers_desktop_title_and_body_in_order() {
+        let mut app = App::test_default();
+        let key = seed_bucket(&mut app, "session-a", "companies");
+        app.notifications = NotificationManager::new(Osc9NotificationMode::Off);
+        app.notifications.on_focus_lost();
+
+        app.notify(NotifyEvent::TurnComplete, &key);
+
+        assert_eq!(
+            app.notifications.take_delivered(),
+            vec![DeliveredNotification {
+                osc9_line: None,
+                bell: true,
+                desktop: Some(("companies".to_owned(), "turn complete".to_owned())),
+            }],
+        );
     }
 
     #[test]
