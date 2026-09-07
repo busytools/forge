@@ -525,6 +525,12 @@ mod tests {
     }
 
     #[test]
+    fn notifications_osc9_parses_explicit_auto() {
+        let parsed: UiSettings = toml::from_str("notifications_osc9 = \"auto\"\n").expect("parse");
+        assert_eq!(parsed.notifications_osc9, Osc9NotificationMode::Auto);
+    }
+
+    #[test]
     fn unknown_notifications_osc9_value_fails_the_load() {
         let err = toml::from_str::<UiSettings>("notifications_osc9 = \"never\"\n")
             .expect_err("an unknown value must be refused");
