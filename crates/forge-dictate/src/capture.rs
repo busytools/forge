@@ -697,7 +697,7 @@ mod tests_input_config {
         let pcm = interior_second(recording.take());
         let aliased = magnitude_at(&pcm, 4_000.0);
         assert!(
-            aliased < 0.02,
+            aliased < 0.005,
             "a 12 kHz tone must be filtered away, not aliased into the speech band at 4 kHz, got {aliased}"
         );
     }
