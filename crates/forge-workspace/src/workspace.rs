@@ -2315,11 +2315,10 @@ impl Workspace {
         // (~hundreds of ms), within the 60 s poll interval.
         let mut any_success = false;
         for (key, dir, provider, env) in entries {
-            // The backend owns the probe; the keychain recovery wrapper
-            // keeps its 401 refresh gate, and an env-bearer provider's
-            // 401 never fires one.
+            // The backend owns the probe; an auth failure surfaces and
+            // the account stays bailed until the credential heals.
             let fetch_result =
-                crate::provider_probe::probe_with_keychain_recovery(provider, &dir, &env).await;
+                crate::provider_probe::probe_via_backend(provider, &dir, &env).await;
             match fetch_result {
                 Ok(snapshot) => {
                     self.accounts.lock().set_usage(&key, snapshot);

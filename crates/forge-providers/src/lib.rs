@@ -65,15 +65,11 @@ pub enum ProbeError {
 
 /// What a backend allows after one of its probes failed, decided by
 /// [`ProviderBackend::repair`]. The boot loader executes the verdict
-/// against its state machine and the poller's keychain-refresh gate
-/// consults it.
+/// against its state machine.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RepairAction {
-    /// Rotate the keychain credential (the CLI-spawn refresh), then
-    /// re-probe.
-    Refresh,
-    /// Auth failure a keychain rotation cannot repair: the account
-    /// bails and the poller re-probes it later.
+    /// Auth failure forge cannot repair: the account bails and the
+    /// poller re-probes it later.
     Terminal,
     /// Transient failure: record it, back off, and retry. Carries the
     /// server `Retry-After` for a 429.
@@ -118,26 +114,18 @@ pub trait ProviderBackend: Send + Sync {
     fn billing(&self) -> BillingModel;
 
     /// What this backend allows after a failed probe. The shared
-    /// default is the boot loader's table: the auth classes refresh on
-    /// a keychain route and are terminal on an env-bearer one, where a
-    /// refresh would burn billed `claude -p hi` spawns against a
-    /// credential the probe never read; everything else retries.
-    /// Backends whose provider repairs differently override this.
-    fn repair(&self, account: &AccountEnv<'_>, err: &ProbeError) -> RepairAction {
-        let env_bearer = self.token().uses_base_url() || is_token_mode(account.env);
+    /// default: the auth classes are terminal (an env credential is
+    /// boot-frozen and there is no local credential repair to fire) and
+    /// everything else retries. Backends whose provider repairs
+    /// differently override this.
+    fn repair(&self, _account: &AccountEnv<'_>, err: &ProbeError) -> RepairAction {
         match err {
             ProbeError::NoCredentials
             | ProbeError::Fetch(
                 OauthUsageError::NoCredentials
                 | OauthUsageError::Expired
                 | OauthUsageError::Unauthorized(_),
-            ) => {
-                if env_bearer {
-                    RepairAction::Terminal
-                } else {
-                    RepairAction::Refresh
-                }
-            }
+            ) => RepairAction::Terminal,
             ProbeError::Fetch(OauthUsageError::RateLimited { retry_after }) => {
                 RepairAction::Retry { retry_after: *retry_after }
             }
@@ -310,78 +298,45 @@ mod tests {
         AccountEnv { config_dir: Path::new("/tmp/unused"), env }
     }
 
-    /// The repair pin: the three auth classes refresh on a keychain
-    /// route and are terminal on every env-bearer one. Inverting this
-    /// fires billed `claude -p hi` spawns against a credential the
-    /// probe never read.
+    /// The repair pin: every auth failure is terminal. forge has no
+    /// credential repair of its own to fire - an account whose token is
+    /// dead bails and waits for the pollers, and nothing spawns a
+    /// `claude` subprocess to rotate anything.
     #[test]
-    fn repair_refreshes_keychain_auth_failures_and_terminals_env_bearer_ones() {
+    fn repair_terminals_every_auth_failure() {
         let empty = HashMap::new();
-        let keychain = repair_account(&empty);
+        let account = repair_account(&empty);
         let auth_classes = [
             ProbeError::NoCredentials,
             ProbeError::Fetch(OauthUsageError::Expired),
             ProbeError::Fetch(OauthUsageError::Unauthorized(401)),
         ];
-        for err in &auth_classes {
-            let anthropic = backend(Provider::Anthropic).expect("registered");
-            assert_eq!(
-                anthropic.repair(&keychain, err),
-                RepairAction::Refresh,
-                "{err:?} on a keychain route is refresh-eligible",
-            );
-            for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
-                let resolved = backend(provider).expect("registered");
+        for provider in [Provider::Anthropic, Provider::Codex, Provider::Openrouter, Provider::Zai]
+        {
+            let resolved = backend(provider).expect("registered");
+            for err in &auth_classes {
                 assert_eq!(
-                    resolved.repair(&keychain, err),
+                    resolved.repair(&account, err),
                     RepairAction::Terminal,
-                    "{provider:?} is env-bearer; {err:?} must not fire a refresh",
+                    "{provider:?}; {err:?} must not fire a credential repair",
                 );
             }
         }
-
-        let mut token = HashMap::new();
-        token.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
-        let token_mode = repair_account(&token);
-        for err in &auth_classes {
-            let anthropic = backend(Provider::Anthropic).expect("registered");
-            assert_eq!(
-                anthropic.repair(&token_mode, err),
-                RepairAction::Terminal,
-                "token-mode anthropic cannot be repaired by rotating the keychain; {err:?}",
-            );
-        }
     }
 
-    /// A base url in env cannot flip an Anthropic account onto the
-    /// env-bearer route: it answers where the credential lives, and
-    /// Anthropic's credential is still the keychain.
-    #[test]
-    fn repair_keeps_anthropic_on_the_keychain_route_despite_a_base_url() {
-        let mut base = HashMap::new();
-        base.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
-        base.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-codex".to_owned());
-        let account = repair_account(&base);
-        let anthropic = backend(Provider::Anthropic).expect("registered");
-        assert_eq!(
-            anthropic.repair(&account, &ProbeError::Fetch(OauthUsageError::Unauthorized(401))),
-            RepairAction::Refresh,
-        );
-    }
-
-    /// Every non-auth class retries: the network class on either route,
+    /// Every non-auth class retries: the network class,
     /// a 429 carrying the server Retry-After, the scope refusal (the
     /// token arms convert it before classification) and a 200 that
     /// maps to nothing - mapping drift is not an auth failure.
     #[test]
     fn repair_retries_every_transient_class() {
         let empty = HashMap::new();
-        let keychain = repair_account(&empty);
+        let account = repair_account(&empty);
         for provider in [Provider::Anthropic, Provider::Codex] {
             let resolved = backend(provider).expect("registered");
             assert_eq!(
                 resolved.repair(
-                    &keychain,
+                    &account,
                     &ProbeError::Fetch(OauthUsageError::Network("dns".to_owned()))
                 ),
                 RepairAction::Retry { retry_after: None },
@@ -393,17 +348,17 @@ mod tests {
         let retry_after = Some(Duration::from_secs(60));
         assert_eq!(
             anthropic.repair(
-                &keychain,
+                &account,
                 &ProbeError::Fetch(OauthUsageError::RateLimited { retry_after })
             ),
             RepairAction::Retry { retry_after },
         );
         assert_eq!(
-            anthropic.repair(&keychain, &ProbeError::Fetch(OauthUsageError::ScopeInsufficient)),
+            anthropic.repair(&account, &ProbeError::Fetch(OauthUsageError::ScopeInsufficient)),
             RepairAction::Retry { retry_after: None },
         );
         assert_eq!(
-            anthropic.repair(&keychain, &ProbeError::Unmappable("no window".to_owned())),
+            anthropic.repair(&account, &ProbeError::Unmappable("no window".to_owned())),
             RepairAction::Retry { retry_after: None },
         );
     }

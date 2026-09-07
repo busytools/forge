@@ -10,24 +10,20 @@
 //!
 //! Outline of one iteration:
 //! 1. The account's provider backend resolves the credential: the
-//!    macOS keychain, or the account's `CLAUDE_CODE_OAUTH_TOKEN` when
-//!    it is token-mode (a valid token is probed via a minimal billed
-//!    messages call whose headers carry the usage windows).
+//!    account's `CLAUDE_CODE_OAUTH_TOKEN` when it is token-mode (a
+//!    valid token is probed via a minimal billed messages call whose
+//!    headers carry the usage windows), or nothing at all.
 //! 2. Probe through the backend.
 //! 3. Branch on the probe result:
 //!    - 200 -> snapshot stored via `set_usage`, transitions to
 //!      `Ready`, task exits.
 //!    - a 200 whose body maps to nothing -> response-shape drift;
 //!      back off and retry.
-//!    - `NoCredentials` / `Expired` / `Unauthorized` -> auth-recovery
-//!      path. Transition to `Refreshing`, fire
-//!      `refresh_via_cli_spawn`. On success, transition back to
-//!      `Loading` and loop. On failure (NotLoggedIn or any other
-//!      `RefreshError`), transition to `Bailed`, task exits. On an
-//!      env-bearer route (token-mode or base-url) an auth failure
-//!      skips the refresh (rotating the keychain cannot repair a
-//!      credential the probe never read) and terminals straight to
-//!      `Bailed`.
+//!    - `NoCredentials` / `Expired` / `Unauthorized` -> auth failure.
+//!      forge has no local credential repair to fire (the env is
+//!      boot-frozen), so the account transitions to `Bailed`, task
+//!      exits. The 60 s usage poller re-probes the account and flips
+//!      it `Ready` once the credential heals.
 //!    - `RateLimited` / `HttpStatus` / `Network` / `Decode` ->
 //!      transient probe failure. Sleep `PROBE_RETRY_INTERVAL`
 //!      (or the server-provided `retry_after`, when present), loop.
@@ -40,7 +36,7 @@ use std::time::Duration;
 
 use tracing::Instrument;
 
-use forge_agent::cloud::{auth_status, oauth_credentials};
+use forge_agent::cloud::auth_status;
 use forge_providers::{ProbeError, RepairAction};
 
 use crate::account::{AccountKey, LoadingState};
@@ -53,14 +49,11 @@ use crate::workspace::Workspace;
 const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Hard cap on loading-loop iterations before the task gives up and
-/// bails the account. Without the cap, a refresh that succeeds but
-/// yields a token that still 401s on probe would spin the loop
-/// forever, burning quota on every cycle. 12 iterations at the
+/// bails the account. Without the cap, a probe that keeps failing
+/// transiently would spin the loop forever. 12 iterations at the
 /// 2 s default sleep is ~24 s upper bound, which is generous for
 /// recovery from transient errors but bounded against infinite
-/// thrash. Each retry budget also counts against the spawn cost
-/// of `refresh_via_cli_spawn` (a billed API call), so the cap is
-/// also a runaway-cost guard.
+/// thrash.
 const MAX_LOADING_ITERATIONS: u32 = 12;
 
 /// 30 s polling interval for the recovery loop.
@@ -178,55 +171,11 @@ pub async fn run_account_loading(
                     },
                 );
                 match action {
-                    RepairAction::Refresh => {
-                        // Keychain auth-recovery (never base-url). Transition to
-                        // Refreshing so the launchpad shows in-flight; fire the
-                        // CLI-spawn refresh (pre-gated via auth_status). On
-                        // success loop + re-probe; any failure Bails and the
-                        // 30 s recovery poll retries once auth_status flips back.
-                        workspace
-                            .account_states()
-                            .lock()
-                            .set_loading(&account_key, LoadingState::Refreshing);
-                        match oauth_credentials::refresh_via_cli_spawn(&config_dir).await {
-                            Ok(_new_creds) => {
-                                workspace
-                                    .account_states()
-                                    .lock()
-                                    .set_loading(&account_key, LoadingState::Loading);
-                                last_iteration_recorded = false;
-                            }
-                            Err(refresh_err) => {
-                                tracing::warn!(
-                                    target: "forge_workspace::account_loader",
-                                    account = %account_key.0,
-                                    error = %refresh_err,
-                                    "refresh_via_cli_spawn failed during boot loading; account Bailed",
-                                );
-                                // Record the probe error that triggered the
-                                // refresh, not just the bail: a boot where the
-                                // network flapped and then the token 401'd must
-                                // render as the auth problem it ended on.
-                                let mut states = workspace.account_states().lock();
-                                states.set_last_error(
-                                    &account_key,
-                                    crate::workspace::classify_oauth_usage_error(&err),
-                                    None,
-                                );
-                                drop(states);
-                                workspace
-                                    .account_states()
-                                    .lock()
-                                    .set_loading(&account_key, LoadingState::Bailed);
-                                workspace.recompute_plan_if_ready();
-                                return;
-                            }
-                        }
-                    }
                     RepairAction::Terminal => {
-                        // An auth failure the keychain refresh can't
-                        // help. Record it (Unauthorized/Expired bail + stay
-                        // visible), recompute the plan, and RETURN so the task
+                        // An auth failure forge cannot repair (the env
+                        // credential is boot-frozen). Record it
+                        // (Unauthorized/Expired bail + stay visible),
+                        // recompute the plan, and RETURN so the task
                         // doesn't spin the iteration cap or hold lead assignment
                         // stale. The 60 s usage poller re-probes the account and
                         // flips it Ready once the endpoint heals.

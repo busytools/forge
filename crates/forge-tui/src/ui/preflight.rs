@@ -65,7 +65,7 @@ const PANEL_BOTTOM_MARGIN: u16 = 1;
 /// uses the same red for the same state.
 pub(super) fn account_glyph(state: LoadingState) -> (&'static str, Color) {
     match state {
-        LoadingState::Loading | LoadingState::Refreshing => ("\u{25cb}", Color::Yellow),
+        LoadingState::Loading => ("\u{25cb}", Color::Yellow),
         LoadingState::Ready => ("\u{25cf}", Color::Green),
         LoadingState::Bailed => ("\u{26a0}", theme::STATUS_ERROR),
     }
@@ -256,7 +256,7 @@ fn account_row(row: &AccountLoadingRow, width: u16) -> Line<'static> {
     let (glyph, color) = account_glyph(row.state);
     let (state, state_style, name_style) = match row.state {
         LoadingState::Ready => ("ready", dim(), Style::default()),
-        LoadingState::Loading | LoadingState::Refreshing => ("resolving", dim(), Style::default()),
+        LoadingState::Loading => ("resolving", dim(), Style::default()),
         LoadingState::Bailed => {
             // The state column carries the classified failure: an auth
             // problem, a rate limit, and an endpoint that is down or

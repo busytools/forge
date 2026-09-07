@@ -86,19 +86,14 @@ pub enum Unusable {
 /// Boot-time loading state for an account. The launchpad gates click
 /// and spawn until every account in the map has resolved to `Ready`
 /// or `Bailed`; both terminal states feed into the assignment-plan
-/// computation, while `Loading` and `Refreshing` keep the launchpad
-/// dim. A bailed account's `usage` is `None` by construction (the
-/// loader clears it on the transition).
+/// computation, while `Loading` keeps the launchpad dim. A bailed
+/// account's `usage` is `None` by construction (the loader clears it
+/// on the transition).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadingState {
-    /// First-pass keychain fetch + probe in progress. The launchpad
-    /// shows `○` (yellow) for this account.
+    /// First-pass probe in progress. The launchpad shows `○` (yellow)
+    /// for this account.
     Loading,
-    /// A 401 with `loggedIn=true` triggered a `claude -p hi` refresh;
-    /// next iteration will re-probe with the rotated token. Glyph is
-    /// the same yellow `○` as `Loading` (user-visible distinction is
-    /// not necessary; the launchpad gate cares about terminal-vs-not).
-    Refreshing,
     /// Probe returned 200; account is usable and may be assigned to
     /// sessions. Launchpad glyph: `●` (green).
     Ready,
@@ -367,13 +362,11 @@ impl AccountStateMap {
         }
     }
 
-    /// Drive a `LoadingState` transition for `key`. Used by the
-    /// boot-time loading task to step between `Loading` →
-    /// `Refreshing` → terminal, and by the recovery poll to flip a
-    /// `Bailed` account back to `Loading` once `auth_status` reports
-    /// logged-in. Setting `Bailed` clears the cached `usage` so the
-    /// renderer drops the stale %bar (replaces the PR #238 3-strike
-    /// counter; bailed accounts have no live snapshot by construction).
+    /// Drive a `LoadingState` transition for `key`, used by the
+    /// boot-time loading task. Setting `Bailed` clears the cached
+    /// `usage` so the renderer drops the stale %bar (replaces the PR
+    /// #238 3-strike counter; bailed accounts have no live snapshot by
+    /// construction).
     pub fn set_loading(&mut self, key: &AccountKey, loading: LoadingState) {
         if let Some(state) = self.by_key.get_mut(key) {
             state.loading = loading;
@@ -978,10 +971,6 @@ mod tests {
         // Bailed with clear usage + no last_error -> unusable purely on
         // the loading axis (set_loading(Bailed) clears usage, so tier is 0).
         map.set_loading(&AccountKey("bailed".to_owned()), LoadingState::Bailed);
-        // Refreshing with clear tier-0 usage -> usable; only Bailed is
-        // excluded on the loading axis, not Refreshing.
-        map.set_usage(&AccountKey("refreshing".to_owned()), snapshot(Some(10.0), Some(20.0)));
-        map.set_loading(&AccountKey("refreshing".to_owned()), LoadingState::Refreshing);
 
         assert!(map.is_account_usable(&AccountKey("ready-low".to_owned())));
         assert!(!map.is_account_usable(&AccountKey("saturated".to_owned())));
@@ -989,7 +978,6 @@ mod tests {
         assert!(!map.is_account_usable(&AccountKey("probe-expired".to_owned())));
         assert!(!map.is_account_usable(&AccountKey("probe-unauthorized".to_owned())));
         assert!(!map.is_account_usable(&AccountKey("bailed".to_owned())));
-        assert!(map.is_account_usable(&AccountKey("refreshing".to_owned())));
     }
 
     #[test]
@@ -1946,14 +1934,6 @@ mod tests {
     fn all_loaded_false_when_any_loading() {
         let map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         assert!(!map.all_loaded(), "fresh accounts start in Loading; gate must stay closed");
-    }
-
-    #[test]
-    fn all_loaded_false_when_any_refreshing() {
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
-        map.set_loading(&key("Gateway"), LoadingState::Refreshing);
-        map.set_usage(&key("Personal"), snapshot(Some(10.0), Some(20.0)));
-        assert!(!map.all_loaded(), "Refreshing is mid-flight, not terminal");
     }
 
     #[test]
