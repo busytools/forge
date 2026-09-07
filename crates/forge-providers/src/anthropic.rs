@@ -259,6 +259,7 @@ fn snapshot_from_unified_headers(headers: &HeaderMap) -> UsageSnapshot {
         seven_day_sonnet: None,
         extra_usage: None,
         spend: None,
+        balance: None,
     }
 }
 
@@ -281,6 +282,7 @@ fn snapshot_from_payload(payload: OauthUsage) -> Result<UsageSnapshot, ProbeErro
         seven_day_sonnet: map_window(payload.seven_day_sonnet),
         extra_usage: map_extra_usage(payload.extra_usage),
         spend: None,
+        balance: None,
     })
 }
 

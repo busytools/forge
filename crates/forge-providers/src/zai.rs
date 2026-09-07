@@ -230,6 +230,7 @@ fn snapshot_from_zai_quota(payload: QuotaLimitData) -> Result<UsageSnapshot, Pro
         seven_day_sonnet: None,
         extra_usage: None,
         spend: None,
+        balance: None,
     })
 }
 

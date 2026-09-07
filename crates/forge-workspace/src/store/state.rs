@@ -140,6 +140,7 @@ mod tests {
                 seven_day_sonnet: None,
                 extra_usage: None,
                 spend: None,
+                balance: None,
             },
         }
     }
@@ -293,6 +294,40 @@ mod tests {
                 expires_at: None,
             },
             "the figures it carried survive and an absent cap stays absent rather than becoming zero",
+        );
+    }
+
+    /// The sibling case for `balance`: a row written before the
+    /// snapshot grew the account credit pool must still decode, because
+    /// redb has no migration step and the cache is read straight back
+    /// at boot.
+    #[test]
+    fn an_account_usage_row_written_before_balance_still_decodes() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let old_row = br#"{"snapshot":{
+            "source":"OpenRouterKey",
+            "fetched_at":{"secs_since_epoch":1735128000,"nanos_since_epoch":0},
+            "five_hour":null,"seven_day":null,
+            "seven_day_opus":null,"seven_day_sonnet":null,
+            "extra_usage":null,
+            "spend":{"daily":0.5,"weekly":1.25,"monthly":20.3}
+        }}"#;
+
+        let txn = db.database().begin_write().expect("begin");
+        {
+            let mut table = txn.open_table(ACCOUNT_USAGE).expect("open table");
+            table.insert("Api", old_row.as_slice()).expect("insert pre-balance row");
+        }
+        txn.commit().expect("commit");
+
+        let loaded = account_usage(&db).expect("read");
+        let snapshot = &loaded.get("Api").expect("the pre-balance row survives").snapshot;
+        assert!(snapshot.spend.is_some(), "the spend block it carried is preserved");
+        assert_eq!(
+            snapshot.balance, None,
+            "the absent balance decodes to None rather than failing the row",
         );
     }
 

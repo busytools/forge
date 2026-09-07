@@ -879,6 +879,7 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
             spend: None,
+            balance: None,
         }
     }
 
@@ -1458,6 +1459,7 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
             spend: None,
+            balance: None,
         }
     }
 
@@ -1509,6 +1511,7 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
             spend: None,
+            balance: None,
         }
     }
 
@@ -1537,6 +1540,7 @@ mod tests {
             }),
             extra_usage: None,
             spend: None,
+            balance: None,
         }
     }
 

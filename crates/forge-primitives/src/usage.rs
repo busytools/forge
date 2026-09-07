@@ -49,9 +49,9 @@ impl UsageSourceKind {
 /// straight off the wire, and an uncapped key has no denominator to be
 /// a percentage of.
 ///
-/// Every figure is scoped to one key. Account-wide balance comes from a
-/// different endpoint with a different scope and is deliberately absent
-/// so a row cannot imply both are per-key.
+/// Every figure is scoped to one key. The account-wide balance comes
+/// from a different endpoint with a different scope and lives on
+/// [`UsageSnapshot::balance`], not here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiSpend {
     pub daily: f64,
@@ -127,6 +127,14 @@ pub struct UsageSnapshot {
     /// field existed - serde decodes a missing key on an `Option` to
     /// `None`, which is what keeps the cached rows readable.
     pub spend: Option<ApiSpend>,
+    /// The OpenRouter account's remaining credit pool, in USD:
+    /// `total_credits - total_usage` from `/v1/credits`. Account-wide -
+    /// every key on the account draws on the same pool - unlike the
+    /// per-key figures in [`ApiSpend`]. `None` when the credits fetch
+    /// failed, when the 200 carried no `data` envelope, and for every
+    /// cached row written before this field existed, decoded as absent
+    /// like `spend` above.
+    pub balance: Option<f64>,
 }
 
 impl UsageSnapshot {
