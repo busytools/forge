@@ -130,18 +130,30 @@ async fn key_probe(
     base_url: &str,
     bearer: &str,
 ) -> Result<(KeyResponse, Option<f64>), OauthUsageError> {
-    let key: KeyResponse = fetch_json(client, &key_url(base_url), bearer).await?;
+    let (key, _) = fetch_json(client, &key_url(base_url), bearer).await?;
     let balance = credits_balance(client, base_url, bearer).await;
     Ok((key, balance))
 }
 
 /// The account's remaining credit pool, or `None` when the fetch or
-/// decode fails for any reason: the balance is auxiliary, and the
+/// decode fails for any reason, or the 200 carries no `data` envelope -
+/// each logged with its own cause. The balance is auxiliary, and the
 /// `/v1/key` data the panel also renders must stand even when this
 /// endpoint is unavailable.
 async fn credits_balance(client: &reqwest::Client, base_url: &str, bearer: &str) -> Option<f64> {
     match fetch_json::<CreditsResponse>(client, &credits_url(base_url), bearer).await {
-        Ok(payload) => balance_from_credits(payload),
+        Ok((payload, body)) => {
+            let balance = balance_from_credits(payload);
+            if balance.is_none() {
+                tracing::warn!(
+                    target: "forge_providers::openrouter",
+                    event_name = "openrouter_credits_no_envelope",
+                    body_suffix = %truncated_body_suffix(&body),
+                    "200 from the credits endpoint carried no data envelope; balance stays absent",
+                );
+            }
+            balance
+        }
         Err(error) => {
             tracing::warn!(
                 target: "forge_providers::openrouter",
@@ -160,12 +172,14 @@ fn balance_from_credits(payload: CreditsResponse) -> Option<f64> {
 
 /// One authenticated GET, classified like the window probes:
 /// 401 / 403 unauthorized, 429 rate-limited (honouring Retry-After),
-/// any other status carrying a truncated body suffix.
+/// any other status carrying a truncated body suffix. Returns the
+/// decoded body alongside the raw bytes so a caller can name an
+/// unexpected 200 shape in its own log.
 async fn fetch_json<T: DeserializeOwned>(
     client: &reqwest::Client,
     url: &str,
     bearer: &str,
-) -> Result<T, OauthUsageError> {
+) -> Result<(T, Vec<u8>), OauthUsageError> {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     let auth = HeaderValue::from_str(&format!("Bearer {bearer}"))
@@ -219,21 +233,23 @@ async fn fetch_json<T: DeserializeOwned>(
     }
 
     match status {
-        200 => serde_json::from_slice(&body).map_err(|error| {
-            // A 200 that will not parse is the shape a wrong base url
-            // takes: the bare host answers 200 with an HTML page. Name
-            // the URL and show the body, or the only evidence is a byte
-            // count on a trace line nobody has enabled.
-            tracing::warn!(
-                target: "forge_providers::openrouter",
-                event_name = "openrouter_get_decode_failed",
-                url,
-                error = %error,
-                body_suffix = %truncated_body_suffix(&body),
-                "200 did not decode; check the base url is the API root",
-            );
-            OauthUsageError::Decode(error.to_string())
-        }),
+        200 => {
+            serde_json::from_slice(&body).map(|decoded| (decoded, body.to_vec())).map_err(|error| {
+                // A 200 that will not parse is the shape a wrong base url
+                // takes: the bare host answers 200 with an HTML page. Name
+                // the URL and show the body, or the only evidence is a byte
+                // count on a trace line nobody has enabled.
+                tracing::warn!(
+                    target: "forge_providers::openrouter",
+                    event_name = "openrouter_get_decode_failed",
+                    url,
+                    error = %error,
+                    body_suffix = %truncated_body_suffix(&body),
+                    "200 did not decode; check the base url is the API root",
+                );
+                OauthUsageError::Decode(error.to_string())
+            })
+        }
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
         429 => Err(OauthUsageError::RateLimited { retry_after }),
         _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
