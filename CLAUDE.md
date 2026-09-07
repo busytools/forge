@@ -25,10 +25,10 @@ forge-test-harness ─→ primitives + sdk + workspace
 - **`forge-providers`** - one backend per `forge.toml` provider token:
   credential resolution, the usage probe's HTTP + payload mapping,
   billing shape, the OpenRouter model catalog. Depends on
-  forge-primitives only; the keychain, the `claude --version` user
-  agent and the TLS-trust client arrive through the `ProviderHost`
-  port forge-agent implements, so the crate stays HTTP + mapping and
-  never spawns the CLI.
+  forge-primitives only; the `claude --version` user agent and the
+  TLS-trust client arrive through the `ProviderHost` port forge-agent
+  implements, so the crate stays HTTP + mapping and never spawns the
+  CLI.
 - **`forge-connectors`** - one module per inbound connector: the
   stream client, REST lookups, subscription matching and subsystem
   pump for one external integration (Gotify today). Depends on
@@ -177,8 +177,9 @@ are, and should not quietly widen them:
 - **State is unencrypted and machine-local.** The redb DB and the
   captured session JSONL hold conversation content in the clear, at
   filesystem permissions.
-- **Credentials come from the user's own `~/.claude*` dirs** and the
-  system keychain. forge reads them; it does not manage or isolate them.
+- **Credentials come from the user's own `~/.claude*` dirs** (env
+  tokens in `forge.toml`). forge reads them; it does not manage or
+  isolate them.
 - **Sessions are not sandboxed from each other.** One config dir, one
   process, many sessions, shared state store.
 

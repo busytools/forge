@@ -96,11 +96,11 @@ scopes every key after a table header into that table, so a `provider`
 written below one is read as an environment variable and the account
 still counts as missing it.
 
-`"anthropic"` reads credentials from the macOS keychain and probes the
-default host - unless its env carries `CLAUDE_CODE_OAUTH_TOKEN` (from
-`[accounts.env]` or the global `[env]`), in which case that token is
-the credential and the keychain is not read (see [Environment
-layering](#environment-layering)). `"codex"`, `"openrouter"` and
+`"anthropic"` authenticates with `CLAUDE_CODE_OAUTH_TOKEN` from its
+env (see [Environment layering](#environment-layering)) and probes the
+default host; an account declaring it without that token has no
+credential at all and bails its preflight with an auth failure.
+`"codex"`, `"openrouter"` and
 `"zai"` authenticate with the `ANTHROPIC_AUTH_TOKEN` beside their
 `ANTHROPIC_BASE_URL`, and an account declaring any of them without
 that base url fails the load naming the account and the missing key.
@@ -214,12 +214,12 @@ account picker all read the account map.
 A `CLAUDE_CODE_OAUTH_TOKEN` in an `"anthropic"` account's env - its
 own `[accounts.env]`, or the global `[env]` every account extends -
 makes the account token-mode: the token, minted by
-`claude setup-token`, is the credential, the keychain is never read,
-and several accounts can share one config dir. The usage endpoint
+`claude setup-token`, is the credential, and several accounts can
+share one config dir. The usage endpoint
 refuses setup tokens (they lack the `user:profile` scope), so a valid
 token is probed with a minimal billed messages call instead - its
-response headers carry the same 5-hour and 7-day usage windows
-keychain accounts render, at roughly nine tokens per account per
+response headers carry the 5-hour and 7-day usage windows
+at roughly nine tokens per account per
 usage poll; a rejected token renders as an auth failure whose repair
 is a re-mint. Like every env key, it is read once at boot, so
 replacing the token needs a restart.
