@@ -38,7 +38,8 @@ pub struct UiSettings {
     /// describe the terminal at the far end of the pipe and say
     /// nothing about what forwards to it: a multiplexer can strip the
     /// escape while passing the environment through unchanged (shpool
-    /// by design; dtach for anything it does not know), leaving the
+    /// by design; tmux for the notification form; dtach for anything
+    /// it does not know), leaving the
     /// default notification channel silent rather than degraded. This
     /// key serves any setup where the escape is emitted but stripped,
     /// however the stripping happens, and is the seam: serving
