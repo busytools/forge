@@ -373,7 +373,6 @@ impl super::App {
         *self.session_usage_mut() = SessionUsageState::default();
         let bucket = self.active_bucket_mut();
         bucket.dictate_overrides = forge_workspace::DictateOverrides::default();
-        bucket.dictate_device_pin = None;
     }
 
     /// The active tab's forge.toml project name, backing the Inspector
@@ -1219,9 +1218,8 @@ mod tests {
         {
             let bucket = app.active_bucket_mut();
             bucket.dictate_overrides.styling = Some(forge_workspace::Styling::Formal);
-            bucket.dictate_device_pin =
-                Some(forge_workspace::DictateDeviceChoice::Device("shure-id".into()));
         }
+        app.dictate_device_pin = Some(forge_workspace::DictateDeviceChoice::System);
 
         app.clear_session_runtime_identity();
 
@@ -1236,8 +1234,9 @@ mod tests {
             "a torn-down identity keeps no override mirrors"
         );
         assert_eq!(
-            bucket.dictate_device_pin, None,
-            "a torn-down identity keeps no device pin: the workspace holds none"
+            app.dictate_device_pin,
+            Some(forge_workspace::DictateDeviceChoice::System),
+            "the pick is workspace state: a session teardown must not clear it"
         );
     }
 

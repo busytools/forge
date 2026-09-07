@@ -32,11 +32,11 @@ const NOTE: [&str; 3] = [
 
 /// The pick-mode note: the pin follows the id, so an unplugged device
 /// fails the take rather than quietly moving it, and a pick is a
-/// session state, not a config edit.
+/// runtime choice, not a config edit.
 const DEVICE_NOTE: [&str; 3] = [
     "A pin follows the device id: unplugging it fails the take",
     "instead of quietly recording on another input.",
-    "A pick lasts this session; forge.toml keeps the default.",
+    "A pick lasts until restart; forge.toml keeps the default.",
 ];
 
 /// The note that replaces it while the pin names a device the list
@@ -76,7 +76,10 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
 fn options_lines(app: &App, highlight: usize) -> Vec<Line<'static>> {
     let rows = dictate_picker::rows(app);
     let highlight = highlight.min(rows.len().saturating_sub(1));
-    let mut lines = vec![header_line("Dictate", "this session only"), Line::default()];
+    let mut lines = vec![
+        header_line("Dictate", "axes this session \u{b7} device until restart"),
+        Line::default(),
+    ];
 
     let mut group_drawn = "";
     for (idx, row) in rows.iter().enumerate() {
@@ -348,7 +351,7 @@ mod tests {
         let joined: String = lines.join("\n");
         for fragment in [
             "Dictate",
-            "this session only",
+            "axes this session \u{b7} device until restart",
             "VOICE",
             "STRUCTURE",
             "DESTINATION",
@@ -510,11 +513,9 @@ mod tests {
     }
 
     #[test]
-    fn the_pin_session_state_renders_until_restart() {
+    fn the_pick_renders_until_restart() {
         let mut app = catalog_app(Some("shure-id"));
-        let key = app.active_session_key.clone().expect("active session");
-        app.sessions.get_mut(&key).expect("bucket").dictate_device_pin =
-            Some(DictateDeviceChoice::System);
+        app.dictate_device_pin = Some(DictateDeviceChoice::System);
         crate::app::dictate_picker::open(&mut app);
 
         let lines = render_overlay(&app, 80, 30);

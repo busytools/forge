@@ -197,6 +197,12 @@ pub struct Workspace {
     /// submitted takes still awaiting a transcript. Driven by
     /// `Command::DictateStart` / `Command::DictateStop`.
     pub(crate) dictate_runtime: Mutex<crate::dictate::DictateRuntime>,
+    /// The `/dictate` overlay's input-device pick, shared by every
+    /// session: `None` until one lands, then it overrides the
+    /// `forge.toml` `[dictate] device` pin for every capture until the
+    /// process ends. Set by `Command::SetDictateDevice`; a Reset
+    /// clears it. Volatile, never persisted.
+    pub(crate) dictate_device_pick: Mutex<Option<crate::dictate::DictateDeviceChoice>>,
     /// Fan-in [`SessionUpdate`] sender. Cloned and handed to TUI-side
     /// modules (slash executors, plugin install, service-status check)
     /// via [`Self::update_sender`] so they can emit presentation
@@ -970,6 +976,7 @@ impl Workspace {
             assignment_plan: Mutex::new(None),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
+            dictate_device_pick: Mutex::new(None),
             update_tx,
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
@@ -2836,13 +2843,12 @@ impl Workspace {
                 domain.lock().dictate_overrides.context = Some(v);
             }
             crate::dictate::DictateOverrideUpdate::Reset => {
-                let mut domain = domain.lock();
-                domain.dictate_overrides = crate::dictate::DictateOverrides::default();
-                domain.dictate_device = None;
+                domain.lock().dictate_overrides = crate::dictate::DictateOverrides::default();
+                *self.dictate_device_pick.lock() = None;
             }
         }
         let overrides = domain.lock().dictate_overrides;
-        let pick = domain.lock().dictate_device.clone();
+        let pick = self.dictate_device_pick.lock().clone();
         let _ = self
             .update_sender()
             .send(SessionUpdate::DictateOverrides { key: key.clone(), overrides });
@@ -2851,19 +2857,18 @@ impl Workspace {
         Ok(())
     }
 
-    /// Apply a `/dictate` device pick (or its clear) and echo the pin.
-    /// The pick is workspace state on the `DomainSession`, like the
-    /// override axes; a capture start resolves it over the configured
-    /// pin.
+    /// Apply a `/dictate` device pick (or its clear) and echo it. The
+    /// pick is workspace state shared by every session - it overrides
+    /// the configured pin for every capture until the process ends.
     fn apply_dictate_device(
         self: &Arc<Self>,
         key: &SessionKey,
         pick: Option<crate::dictate::DictateDeviceChoice>,
     ) -> Result<(), DispatchError> {
-        let Some(domain) = self.domain_session_for(key) else {
+        if self.domain_session_for(key).is_none() {
             return Err(DispatchError::UnknownSession(key.clone()));
-        };
-        domain.lock().dictate_device.clone_from(&pick);
+        }
+        (*self.dictate_device_pick.lock()).clone_from(&pick);
         let _ =
             self.update_sender().send(SessionUpdate::DictateDevicePin { key: key.clone(), pick });
         Ok(())
@@ -5768,6 +5773,7 @@ impl Workspace {
             assignment_plan: Mutex::new(None),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
+            dictate_device_pick: Mutex::new(None),
             update_tx,
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),

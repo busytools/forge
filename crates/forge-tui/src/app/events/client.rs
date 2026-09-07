@@ -192,11 +192,12 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 app.needs_redraw = true;
             }
         }
-        SessionUpdate::DictateDevicePin { key, pick } => {
-            if let Some(bucket) = app.sessions.get_mut(&key) {
-                bucket.dictate_device_pin = pick;
-                app.needs_redraw = true;
-            }
+        SessionUpdate::DictateDevicePin { pick, .. } => {
+            // The pick is workspace state shared by every session; the
+            // key in the echo is the dispatching session and nothing
+            // more.
+            app.dictate_device_pin = pick;
+            app.needs_redraw = true;
         }
         SessionUpdate::StatusSnapshot { session_id, account, forge_account } => {
             apply_session_update_status_snapshot(app, &session_id, account, forge_account);
@@ -1788,6 +1789,31 @@ mod tests {
             "an echo for one session must not touch another"
         );
         assert!(app.needs_redraw);
+    }
+
+    /// The device-pick echo carries the dispatching session's key, but
+    /// the pick is APP state: one echo lands no matter which session it
+    /// names, and every session's readout reads the same field.
+    #[test]
+    fn the_device_pick_echo_lands_on_the_shared_state() {
+        let mut app = App::test_default();
+        app.needs_redraw = false;
+        let (key_a, _key_b) = seed_two_sessions(&mut app);
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::DictateDevicePin {
+                key: key_a,
+                pick: Some(forge_workspace::DictateDeviceChoice::System),
+            },
+        );
+
+        assert_eq!(
+            app.dictate_device_pin,
+            Some(forge_workspace::DictateDeviceChoice::System),
+            "the pick is shared by every session, so the echo must land on App state"
+        );
+        assert!(app.needs_redraw, "every session's readout renders from this field");
     }
 
     fn seed_two_sessions(app: &mut App) -> (SessionKey, SessionKey) {

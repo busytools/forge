@@ -40,6 +40,7 @@ serde_json = { workspace = true }
 # Microphone capture. The stream is !Send, which is why it lives on a
 # thread of its own rather than inside `Capture`.
 cpal = { workspace = true }
+rubato = "0.16"
 
 # Metal is the only backend worth naming: elsewhere ggml selects one
 # itself and falls back to CPU.

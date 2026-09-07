@@ -246,6 +246,7 @@ fn create_app_impl(
         dictate_devices_tx,
         dictate_devices_rx,
         dictate_devices: None,
+        dictate_device_pin: None,
         dictate_devices_in_flight: false,
         dictate_devices_dirty: false,
         review_waiting_event_tx,
