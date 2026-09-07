@@ -2581,6 +2581,9 @@ mod tests {
             32 - PANEL_RIGHT_GUTTER,
             "the value lands on the panel's right edge like the periods: {row}",
         );
+        let month_idx =
+            rows.iter().position(|l| l.starts_with(" month")).expect("the month row renders");
+        assert!(month_idx < balance_idx, "the balance sits below the periods: {rows:?}");
         let cap_idx = rows.iter().position(|l| l.starts_with(" cap")).expect("the cap row renders");
         assert!(balance_idx < cap_idx, "the balance sits above the cap: {rows:?}");
     }
