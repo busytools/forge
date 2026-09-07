@@ -1,5 +1,6 @@
 use super::config::PreferredNotifChannel;
 use forge_workspace::Osc9NotificationMode;
+use forge_workspace::SessionKey;
 use std::borrow::Cow;
 
 /// Events that can trigger a user notification.
@@ -11,6 +12,36 @@ pub enum NotifyEvent {
     QuestionRequired,
     /// The agent finished its turn.
     TurnComplete,
+}
+
+/// What the notification text is built from, resolved from the
+/// event's own session at notify time - never the active tab's, so a
+/// worker's question names the worker while the user reads another
+/// session.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotifyContext {
+    /// The session's forge.toml project name (`UiSession.project`).
+    /// `None` before Connect.
+    pub project: Option<String>,
+    /// The session's live-worker label. `None` for a lead session.
+    /// Resolved from the live-worker registry, never the sessions
+    /// catalog - workers are deliberately absent from it.
+    pub worker_label: Option<String>,
+}
+
+/// The strings one notification delivers: a short title (the project)
+/// and the detail line (event phrase + worker label).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NotificationText {
+    pub title: String,
+    pub detail: String,
+}
+
+impl NotificationText {
+    /// The single-line form the OSC 9 escape carries.
+    fn osc9_line(&self) -> String {
+        format!("{} - {}", self.title, self.detail)
+    }
 }
 
 /// Central notification manager.
@@ -43,11 +74,11 @@ impl Default for NotificationManager {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NotificationPlan {
     ring_bell: bool,
     send_desktop: bool,
-    osc9_text: Option<&'static str>,
+    osc9_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,33 +117,61 @@ impl NotificationManager {
     ///
     /// This is the single entry-point that all event handlers should call.
     /// It is intentionally cheap when focused (just a bool check).
-    pub fn notify(&self, channel: PreferredNotifChannel, event: NotifyEvent) {
+    pub fn notify(
+        &self,
+        channel: PreferredNotifChannel,
+        event: NotifyEvent,
+        context: &NotifyContext,
+    ) {
         if self.terminal_focused {
             return;
         }
+        let text =
+            notification_text(event, context.project.as_deref(), context.worker_label.as_deref());
         let plan =
-            notification_plan(channel, detect_terminal_capabilities(), self.osc9_mode, event);
-        if let Some(text) = plan.osc9_text {
-            send_osc9_notification(text);
+            notification_plan(channel, detect_terminal_capabilities(), self.osc9_mode, &text);
+        if let Some(line) = plan.osc9_text {
+            send_osc9_notification(&line);
         }
         if plan.ring_bell {
             ring_bell();
         }
         if plan.send_desktop {
-            send_desktop_notification(event);
+            send_desktop_notification(text.title, text.detail);
         }
     }
 }
 
 impl crate::app::App {
-    /// Raise `event` through this app's notification manager, using the
-    /// app's configured channel. The single call site for every
-    /// notification, so nothing grows a second policy about when to
-    /// notify: the manager's own terminal-focus check decides that.
-    pub(crate) fn notify(&self, event: NotifyEvent) {
+    /// Raise `event` for `session_key`'s session through this app's
+    /// notification manager, using the app's configured channel. The
+    /// single call site for every notification, so nothing grows a
+    /// second policy about when to notify: the manager's own
+    /// terminal-focus check decides that. The notification text comes
+    /// from the event session's project + worker label.
+    pub(crate) fn notify(&self, event: NotifyEvent, session_key: &SessionKey) {
+        let context = self.notification_context(session_key);
         #[cfg(feature = "testing")]
-        self.test_notifications.borrow_mut().push(event);
-        self.notifications.notify(self.config.preferred_notification_channel_effective(), event);
+        self.test_notifications.borrow_mut().push((event, context.clone()));
+        self.notifications.notify(
+            self.config.preferred_notification_channel_effective(),
+            event,
+            &context,
+        );
+    }
+
+    /// The event session's project name + worker label, read at notify
+    /// time. Falls back to defaults when the bucket is gone or the
+    /// session is not a live worker.
+    fn notification_context(&self, session_key: &SessionKey) -> NotifyContext {
+        NotifyContext {
+            project: self.sessions.get(session_key).and_then(|bucket| bucket.project.clone()),
+            worker_label: self
+                .workspace
+                .as_ref()
+                .and_then(|ws| ws.worker_lookup_for_session(session_key))
+                .map(|(_, label, _)| label),
+        }
     }
 }
 
@@ -120,10 +179,11 @@ impl crate::app::App {
 /// capture, mirroring `events::turn::test_capture`.
 #[cfg(test)]
 pub(crate) mod test_capture {
+    use super::NotifyContext;
     use super::NotifyEvent;
 
     /// Test-only: drain every notification raised so far, in order.
-    pub fn take_notifications(app: &crate::app::App) -> Vec<NotifyEvent> {
+    pub fn take_notifications(app: &crate::app::App) -> Vec<(NotifyEvent, NotifyContext)> {
         #[rustfmt::skip] #[cfg(feature = "testing")] let drained = app.test_notifications.borrow_mut().drain(..).collect();
         drained
     }
@@ -146,23 +206,14 @@ fn ring_bell() {
 /// Runs on `std::thread::spawn` rather than tokio because `notify-rust`'s
 /// `show()` may block on a D-Bus round-trip (Linux) or COM call (Windows).
 /// Failures are logged at debug; the terminal bell is the reliable fallback.
-fn send_desktop_notification(event: NotifyEvent) {
-    let (summary, body) = match event {
-        NotifyEvent::PermissionRequired => {
-            ("Claude Code", "Permission required -- waiting for your approval")
-        }
-        NotifyEvent::QuestionRequired => {
-            ("Claude Code", "Question required -- waiting for your input")
-        }
-        NotifyEvent::TurnComplete => ("Claude Code", "Turn complete"),
-    };
+fn send_desktop_notification(title: String, body: String) {
     std::thread::spawn(move || {
-        if let Err(e) = notify_rust::Notification::new().summary(summary).body(body).show() {
+        if let Err(error) = notify_rust::Notification::new().summary(&title).body(&body).show() {
             tracing::debug!(
                 target: crate::logging::targets::APP_LIFECYCLE,
-                error = %e,
-                summary,
-                "desktop notification failed (D-Bus / Notification Center / config?)",
+                error = %error,
+                title,
+                "desktop notification failed",
             );
         }
     });
@@ -180,13 +231,13 @@ fn notification_plan(
     channel: PreferredNotifChannel,
     capabilities: TerminalCapabilities,
     osc9_mode: Osc9NotificationMode,
-    event: NotifyEvent,
+    text: &NotificationText,
 ) -> NotificationPlan {
     let osc9_available = match osc9_mode {
         Osc9NotificationMode::Auto => capabilities.osc9_notifications,
         Osc9NotificationMode::Off => false,
     };
-    let osc9_text = osc9_available.then(|| notification_text(event));
+    let osc9_text = osc9_available.then(|| text.osc9_line());
     match channel {
         PreferredNotifChannel::NotificationsDisabled => {
             NotificationPlan { ring_bell: false, send_desktop: false, osc9_text: None }
@@ -237,12 +288,28 @@ where
     TerminalCapabilities { osc9_notifications }
 }
 
-const fn notification_text(event: NotifyEvent) -> &'static str {
-    match event {
-        NotifyEvent::PermissionRequired => "Claude Code: Permission required",
-        NotifyEvent::QuestionRequired => "Claude Code: Question required",
-        NotifyEvent::TurnComplete => "Claude Code: Turn complete",
-    }
+/// The title the toast carries when the session has no project yet.
+const APP_NAME: &str = "forge";
+
+/// Build the delivered strings for one event from the session's
+/// project + worker label. The title stays short (the project); the
+/// detail names the event, and the worker when the session is one.
+fn notification_text(
+    event: NotifyEvent,
+    project: Option<&str>,
+    worker_label: Option<&str>,
+) -> NotificationText {
+    let title = project.unwrap_or(APP_NAME).to_owned();
+    let detail = match (event, worker_label) {
+        (NotifyEvent::TurnComplete, _) => "turn complete".to_owned(),
+        (NotifyEvent::PermissionRequired, Some(label)) => format!("worker {label} needs input"),
+        (NotifyEvent::PermissionRequired, None) => "permission needs your approval".to_owned(),
+        (NotifyEvent::QuestionRequired, Some(label)) => {
+            format!("worker {label} needs your answer")
+        }
+        (NotifyEvent::QuestionRequired, None) => "question needs your answer".to_owned(),
+    };
+    NotificationText { title, detail }
 }
 
 fn osc9_escape_sequence(message: &str) -> Cow<'_, str> {
@@ -275,6 +342,8 @@ fn sanitize_osc9_message(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
+    use crate::app::session::UiSession;
 
     #[test]
     fn defaults_to_focused() {
@@ -297,6 +366,12 @@ mod tests {
         assert!(mgr.is_focused());
     }
 
+    // Fixed text for the plan tests: channel gating is what they pin,
+    // not wording.
+    fn fixture_text() -> NotificationText {
+        NotificationText { title: "companies".to_owned(), detail: "turn complete".to_owned() }
+    }
+
     #[test]
     fn disabled_notifications_plan_is_silent() {
         assert_eq!(
@@ -304,7 +379,7 @@ mod tests {
                 PreferredNotifChannel::NotificationsDisabled,
                 TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Auto,
-                NotifyEvent::TurnComplete,
+                &fixture_text(),
             ),
             NotificationPlan { ring_bell: false, send_desktop: false, osc9_text: None }
         );
@@ -317,7 +392,7 @@ mod tests {
                 PreferredNotifChannel::TerminalBell,
                 TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Auto,
-                NotifyEvent::TurnComplete,
+                &fixture_text(),
             ),
             NotificationPlan { ring_bell: true, send_desktop: false, osc9_text: None }
         );
@@ -330,12 +405,12 @@ mod tests {
                 PreferredNotifChannel::Iterm2,
                 TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Auto,
-                NotifyEvent::TurnComplete,
+                &fixture_text(),
             ),
             NotificationPlan {
                 ring_bell: false,
                 send_desktop: false,
-                osc9_text: Some("Claude Code: Turn complete"),
+                osc9_text: Some("companies - turn complete".to_owned()),
             }
         );
     }
@@ -347,7 +422,7 @@ mod tests {
                 PreferredNotifChannel::Iterm2,
                 TerminalCapabilities { osc9_notifications: false },
                 Osc9NotificationMode::Auto,
-                NotifyEvent::TurnComplete,
+                &fixture_text(),
             ),
             NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
         );
@@ -360,12 +435,12 @@ mod tests {
                 PreferredNotifChannel::Iterm2WithBell,
                 TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Auto,
-                NotifyEvent::PermissionRequired,
+                &fixture_text(),
             ),
             NotificationPlan {
                 ring_bell: true,
                 send_desktop: false,
-                osc9_text: Some("Claude Code: Permission required"),
+                osc9_text: Some("companies - turn complete".to_owned()),
             }
         );
     }
@@ -377,7 +452,7 @@ mod tests {
                 PreferredNotifChannel::Iterm2WithBell,
                 TerminalCapabilities { osc9_notifications: false },
                 Osc9NotificationMode::Auto,
-                NotifyEvent::PermissionRequired,
+                &fixture_text(),
             ),
             NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
         );
@@ -390,12 +465,12 @@ mod tests {
                 PreferredNotifChannel::Ghostty,
                 TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Auto,
-                NotifyEvent::TurnComplete,
+                &fixture_text(),
             ),
             NotificationPlan {
                 ring_bell: false,
                 send_desktop: false,
-                osc9_text: Some("Claude Code: Turn complete"),
+                osc9_text: Some("companies - turn complete".to_owned()),
             }
         );
     }
@@ -439,7 +514,7 @@ mod tests {
                 PreferredNotifChannel::Iterm2,
                 TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Off,
-                NotifyEvent::TurnComplete,
+                &fixture_text(),
             ),
             NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
         );
@@ -452,10 +527,114 @@ mod tests {
                 PreferredNotifChannel::Ghostty,
                 TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Off,
-                NotifyEvent::TurnComplete,
+                &fixture_text(),
             ),
             NotificationPlan { ring_bell: false, send_desktop: true, osc9_text: None }
         );
+    }
+
+    #[test]
+    fn turn_complete_text_carries_the_project() {
+        let text = notification_text(NotifyEvent::TurnComplete, Some("companies"), None);
+        assert_eq!(text.title, "companies");
+        assert_eq!(text.detail, "turn complete");
+        assert_eq!(text.osc9_line(), "companies - turn complete");
+    }
+
+    #[test]
+    fn permission_text_varies_by_worker_label() {
+        let worker =
+            notification_text(NotifyEvent::PermissionRequired, Some("forge"), Some("egen-lead"));
+        assert_eq!(worker.title, "forge");
+        assert_eq!(worker.detail, "worker egen-lead needs input");
+
+        let lead = notification_text(NotifyEvent::PermissionRequired, Some("forge"), None);
+        assert_eq!(lead.detail, "permission needs your approval");
+    }
+
+    #[test]
+    fn question_text_varies_by_worker_label() {
+        let worker =
+            notification_text(NotifyEvent::QuestionRequired, Some("forge"), Some("egen-lead"));
+        assert_eq!(worker.detail, "worker egen-lead needs your answer");
+
+        let lead = notification_text(NotifyEvent::QuestionRequired, Some("forge"), None);
+        assert_eq!(lead.detail, "question needs your answer");
+    }
+
+    #[test]
+    fn text_falls_back_to_the_app_name_without_a_project() {
+        let text = notification_text(NotifyEvent::TurnComplete, None, None);
+        assert_eq!(text.title, "forge");
+        assert_eq!(text.detail, "turn complete");
+        assert_eq!(text.osc9_line(), "forge - turn complete");
+    }
+
+    fn seed_bucket(app: &mut App, id: &str, project: &str) -> forge_workspace::SessionKey {
+        let key = forge_workspace::SessionKey::from_str_for_test(id);
+        let mut bucket = UiSession::new(key.clone());
+        bucket.project = Some(project.to_owned());
+        app.sessions.insert(key.clone(), bucket);
+        key
+    }
+
+    fn seed_worker(
+        app: &App,
+        project_key: &forge_workspace::ProjectKey,
+        key: &forge_workspace::SessionKey,
+        label: &str,
+    ) {
+        let ws = app.workspace.as_ref().expect("test workspace");
+        ws.insert_live_worker(
+            project_key,
+            forge_workspace::WorkerEntry {
+                label: label.to_owned(),
+                charter: String::new(),
+                session_key: key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: String::new(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+    }
+
+    #[test]
+    fn notification_context_reads_the_event_session_not_the_active_one() {
+        let mut app = App::test_default();
+        let active = seed_bucket(&mut app, "session-a", "alpha");
+        let worker = seed_bucket(&mut app, "session-b", "beta");
+        app.active_session_key = Some(active.clone());
+        seed_worker(
+            &app,
+            &forge_workspace::ProjectKey::new_for_test("p-beta"),
+            &worker,
+            "egen-lead",
+        );
+
+        assert_eq!(
+            app.notification_context(&worker),
+            NotifyContext {
+                project: Some("beta".to_owned()),
+                worker_label: Some("egen-lead".to_owned()),
+            },
+            "the event session's project + worker label, never the active tab's",
+        );
+        assert_eq!(
+            app.notification_context(&active),
+            NotifyContext { project: Some("alpha".to_owned()), worker_label: None },
+            "a lead session resolves no worker label",
+        );
+    }
+
+    #[test]
+    fn notification_context_falls_back_without_bucket_or_worker() {
+        let app = App::test_default();
+        let unknown = forge_workspace::SessionKey::from_session_id("no-such-session");
+        assert_eq!(app.notification_context(&unknown), NotifyContext::default());
     }
 
     #[test]

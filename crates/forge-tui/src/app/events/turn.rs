@@ -475,7 +475,7 @@ fn apply_turn_complete_presentation(
         return;
     }
     if turn_was_active {
-        app.notify(super::super::notify::NotifyEvent::TurnComplete);
+        app.notify(super::super::notify::NotifyEvent::TurnComplete, session_key);
     }
     // Mid-turn submits leave user bubbles after the active assistant.
     // When this turn wraps, claude immediately starts another turn to
