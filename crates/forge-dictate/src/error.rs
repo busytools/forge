@@ -66,9 +66,9 @@ pub enum Error {
     #[error("no input device is available")]
     NoInputDevice,
 
-    /// The input device could not deliver the one format the models
-    /// read. Reported rather than resampled, for the same reason a
-    /// mismatched [`Error::SampleRate`] is.
+    /// The input device offers nothing this crate can open: no F32
+    /// config at all. F32 offers at other rates are converted instead,
+    /// so what remains here is the case the offered list names.
     #[error("no input offers mono {wanted} Hz f32; the device offers {offered}")]
     UnsupportedInput { wanted: u32, offered: String },
 

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rubato::Resampler as _;
 
 use crate::Error;
 use crate::audio::SAMPLE_RATE;
@@ -104,11 +105,7 @@ impl Recording {
         if channels <= 1 {
             samples.extend_from_slice(&block[..block.len().min(room)]);
         } else {
-            // Channel counts are single digits; the cast cannot lose anything.
-            let scale = f32::from(u16::try_from(channels).unwrap_or(u16::MAX));
-            samples.extend(
-                block.chunks_exact(channels).take(room).map(|f| f.iter().sum::<f32>() / scale),
-            );
+            samples.extend(block.chunks_exact(channels).take(room).map(channel_mean));
         }
     }
 
@@ -239,6 +236,114 @@ pub(crate) fn sample_cap(max_capture: Duration) -> usize {
     wanted.min(CAP_CEILING)
 }
 
+/// Mean of one interleaved frame, so every channel contributes. Both
+/// downmix sites share this one formula: discarding a capsule silently
+/// halves the signal on hardware where the speaker sits nearer one of
+/// them.
+fn channel_mean(frame: &[f32]) -> f32 {
+    // Channel counts are single digits; the cast cannot lose anything.
+    let scale = f32::from(u16::try_from(frame.len()).unwrap_or(u16::MAX));
+    frame.iter().sum::<f32>() / scale
+}
+
+/// Resampler input per call, in device frames. 10 ms at 48 kHz; any
+/// block size the device delivers is staged up to it.
+const RESAMPLE_CHUNK: usize = 480;
+
+/// Turns what the device delivers into the mono [`SAMPLE_RATE`] signal
+/// everything downstream reads. Pass-through when the device natively
+/// offers the model rate; otherwise downmix to mono, then resample
+/// with a windowed-sinc filter. Decimating without the filter would
+/// fold everything above the new Nyquist into the speech band as
+/// confident wrong words.
+///
+/// Built on the recorder thread and moved into the stream callback,
+/// which is `FnMut`, so `push` is the whole realtime path: it extends
+/// preallocated buffers and never allocates.
+pub(crate) struct InputConverter {
+    channels: usize,
+    resampling: Option<Resampling>,
+}
+
+impl InputConverter {
+    /// `channels` is what the stream will deliver, `device_rate` the
+    /// rate it will deliver at; a `None` rate is the pass-through.
+    pub(crate) fn new(channels: usize, device_rate: Option<u32>) -> Result<Self, Error> {
+        let resampling = device_rate.map(Resampling::new).transpose()?;
+        Ok(Self { channels, resampling })
+    }
+
+    /// Fold one callback's worth of device audio in.
+    pub(crate) fn push(&mut self, block: &[f32], sink: &Recording, limit: usize) {
+        match &mut self.resampling {
+            None => sink.push(block, self.channels, limit),
+            Some(resampling) => resampling.push(block, self.channels, sink, limit),
+        }
+    }
+}
+
+struct Resampling {
+    resampler: rubato::SincFixedIn<f32>,
+    staging: Vec<f32>,
+    input: Vec<Vec<f32>>,
+    output: Vec<Vec<f32>>,
+}
+
+impl Resampling {
+    fn new(device_rate: u32) -> Result<Self, Error> {
+        // The documented starting point; `f_cutoff` is relative to the
+        // lower of the two Nyquists, so speech below it passes and
+        // everything that would alias is in the stopband.
+        let parameters = rubato::SincInterpolationParameters {
+            sinc_len: 256,
+            f_cutoff: 0.95,
+            oversampling_factor: 256,
+            interpolation: rubato::SincInterpolationType::Cubic,
+            window: rubato::WindowFunction::BlackmanHarris2,
+        };
+        let resampler = rubato::SincFixedIn::<f32>::new(
+            f64::from(SAMPLE_RATE) / f64::from(device_rate),
+            1.0,
+            parameters,
+            RESAMPLE_CHUNK,
+            1,
+        )
+        .map_err(|error| Error::Capture { message: error.to_string() })?;
+        let output = resampler.output_buffer_allocate(true);
+        // Sized for the largest block a callback could bring, so the
+        // extends below stay inside the allocation. Overflow past it
+        // would grow once and then hold - the same first-malloc
+        // trade `Recording::new` makes.
+        let staging = Vec::with_capacity(RESAMPLE_CHUNK * 4);
+        let input = vec![vec![0.0; RESAMPLE_CHUNK]];
+        Ok(Self { resampler, staging, input, output })
+    }
+
+    fn push(&mut self, block: &[f32], channels: usize, sink: &Recording, limit: usize) {
+        if channels <= 1 {
+            self.staging.extend_from_slice(block);
+        } else {
+            self.staging.extend(block.chunks_exact(channels).map(channel_mean));
+        }
+        while self.staging.len() >= RESAMPLE_CHUNK {
+            self.input[0].copy_from_slice(&self.staging[..RESAMPLE_CHUNK]);
+            // The only failure is a buffer-size mismatch, and both
+            // buffers are sized to the resampler at construction; a
+            // warn beats panicking the audio thread.
+            let (_, produced) =
+                match self.resampler.process_into_buffer(&self.input, &mut self.output, None) {
+                    Ok(used) => used,
+                    Err(error) => {
+                        tracing::warn!(%error, "resampler rejected a block; dropping it");
+                        return;
+                    }
+                };
+            self.staging.drain(..RESAMPLE_CHUNK);
+            sink.push(&self.output[0][..produced], 1, limit);
+        }
+    }
+}
+
 /// One hour of audio, the point past which reserving the cap costs more
 /// than any dictation could use.
 const CAP_CEILING: usize = SAMPLE_RATE as usize * 3600;
@@ -274,8 +379,8 @@ pub(crate) fn record(
         }
     };
 
-    let config = match input_config(&device) {
-        Ok(config) => config,
+    let plan = match input_config(&device) {
+        Ok(plan) => plan,
         Err(e) => {
             let _ = ready.send(Err(e));
             return;
@@ -283,12 +388,19 @@ pub(crate) fn record(
     };
 
     let limit = sample_cap(max_capture);
-    let channels = config.channels as usize;
-    tracing::debug!(channels, rate = SAMPLE_RATE, "input open");
+    let channels = plan.config.channels as usize;
+    let mut converter = match InputConverter::new(channels, plan.resample_from) {
+        Ok(converter) => converter,
+        Err(e) => {
+            let _ = ready.send(Err(e));
+            return;
+        }
+    };
+    tracing::debug!(channels, rate = SAMPLE_RATE, resample_from = ?plan.resample_from, "input open");
     let sink = Arc::clone(shared);
     let stream = device.build_input_stream(
-        config,
-        move |block: &[f32], _: &cpal::InputCallbackInfo| sink.push(block, channels, limit),
+        plan.config,
+        move |block: &[f32], _: &cpal::InputCallbackInfo| converter.push(block, &sink, limit),
         |error| tracing::warn!(%error, "input stream error"),
         None,
     );
@@ -312,27 +424,48 @@ pub(crate) fn record(
     drop(stream);
 }
 
+/// How a capture opens: the stream config the device will run at, and
+/// the rate its samples arrive at when that is not already
+/// [`SAMPLE_RATE`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct InputPlan {
+    pub(crate) config: cpal::StreamConfig,
+    /// `Some` when the device cannot offer [`SAMPLE_RATE`] itself and
+    /// its audio needs converting; `None` when the samples flow
+    /// through untouched.
+    pub(crate) resample_from: Option<u32>,
+}
+
 /// Pick an input the models can read.
 ///
-/// The rate must be exactly [`SAMPLE_RATE`], because changing it means
-/// filtering and a naive decimation would alias speech down into the
-/// band the model listens to. Channel count is different: averaging
-/// channels at one rate is exact, so a stereo device is accepted and
-/// downmixed. Measured on the target hardware, which offers 16, 24 and
-/// 32 kHz and never fewer than two channels - so requiring mono here
-/// would have meant no microphone at all.
+/// A device offering [`SAMPLE_RATE`] in F32 opens natively, fewest
+/// channels winning: less to average, less to go wrong. One that does
+/// not still opens its best F32 config - fewest channels, then the
+/// rate nearest the model rate - and its audio is downmixed and
+/// resampled with a real filter downstream. Measured on the target
+/// hardware, which offers 16, 24 and 32 kHz and never fewer than two
+/// channels - so requiring mono here would have meant no microphone at
+/// all - and on USB microphones that offer only 48 kHz.
 ///
-/// A device offering no 16 kHz config at all is reported rather than
-/// resampled; that is the case that needs a real filter, and no device
-/// we have has needed it.
-fn input_config(device: &cpal::Device) -> Result<cpal::StreamConfig, Error> {
-    let wanted: cpal::SampleRate = SAMPLE_RATE;
+/// What is still refused is a device with no F32 config at all: the
+/// error names everything it offered, so the mismatch is legible.
+fn input_config(device: &cpal::Device) -> Result<InputPlan, Error> {
     let supported = device
         .supported_input_configs()
         .map_err(|error| Error::Capture { message: error.to_string() })?;
+    input_plan(supported)
+}
 
+/// The negotiation over synthetic ranges, so a device is not needed to
+/// test it.
+fn input_plan(
+    supported: impl IntoIterator<Item = cpal::SupportedStreamConfigRange>,
+) -> Result<InputPlan, Error> {
+    let wanted: cpal::SampleRate = SAMPLE_RATE;
     let mut offered = Vec::new();
-    let mut best: Option<cpal::StreamConfig> = None;
+    let mut native: Option<cpal::StreamConfig> = None;
+    // (channels, distance from the model rate, rate, config)
+    let mut fallback: Option<(u16, u32, cpal::SampleRate, cpal::StreamConfig)> = None;
     for range in supported {
         offered.push(format!(
             "{}ch {}-{}Hz {:?}",
@@ -346,13 +479,241 @@ fn input_config(device: &cpal::Device) -> Result<cpal::StreamConfig, Error> {
         }
         if let Some(config) = range.try_with_sample_rate(wanted) {
             let config: cpal::StreamConfig = config.into();
-            // Fewest channels wins: less to average, less to go wrong.
-            if best.as_ref().is_none_or(|b| config.channels < b.channels) {
-                best = Some(config);
+            if native.as_ref().is_none_or(|b| config.channels < b.channels) {
+                native = Some(config);
             }
+            continue;
+        }
+        // The range cannot serve the model rate itself, so its nearest
+        // end is the resample candidate.
+        let rate = SAMPLE_RATE.clamp(range.min_sample_rate(), range.max_sample_rate());
+        let candidate = (
+            range.channels(),
+            rate.abs_diff(SAMPLE_RATE),
+            rate,
+            cpal::StreamConfig {
+                channels: range.channels(),
+                sample_rate: rate,
+                buffer_size: cpal::BufferSize::Default,
+            },
+        );
+        let better = match fallback {
+            None => true,
+            Some((channels, distance, _, _)) => {
+                candidate.0 < channels || (candidate.0 == channels && candidate.1 < distance)
+            }
+        };
+        if better {
+            fallback = Some(candidate);
         }
     }
-    best.ok_or(Error::UnsupportedInput { wanted: SAMPLE_RATE, offered: offered.join(", ") })
+    if let Some(config) = native {
+        return Ok(InputPlan { config, resample_from: None });
+    }
+    fallback
+        .map(|(_, _, rate, config)| InputPlan { config, resample_from: Some(rate) })
+        .ok_or(Error::UnsupportedInput { wanted: SAMPLE_RATE, offered: offered.join(", ") })
+}
+
+#[cfg(test)]
+mod tests_input_config {
+    use super::*;
+    use cpal::{SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+
+    /// A cpal range with no device behind it. The negotiation reads
+    /// only these fields, so this is a complete synthetic device.
+    fn range(
+        channels: u16,
+        min: u32,
+        max: u32,
+        format: SampleFormat,
+    ) -> SupportedStreamConfigRange {
+        SupportedStreamConfigRange::new(channels, min, max, SupportedBufferSize::Unknown, format)
+    }
+
+    #[test]
+    fn a_device_offering_16k_takes_the_native_path() {
+        // The Mac's built-in input measured inventory: 16 kHz exists,
+        // but only in stereo beside 24 and 32.
+        let plan = input_plan([
+            range(2, 16_000, 16_000, SampleFormat::F32),
+            range(2, 24_000, 24_000, SampleFormat::F32),
+            range(2, 32_000, 32_000, SampleFormat::F32),
+        ])
+        .expect("a 16 kHz config is on offer");
+        assert_eq!(
+            plan.config.sample_rate, SAMPLE_RATE,
+            "the native path must open at the model rate"
+        );
+        assert_eq!(
+            plan.resample_from, None,
+            "a native 16 kHz config must not engage the resampler"
+        );
+    }
+
+    #[test]
+    fn a_device_without_16k_falls_back_to_its_best_f32_offer() {
+        // The AirHug 28's whole inventory, the device this case exists for.
+        let plan = input_plan([range(2, 48_000, 48_000, SampleFormat::F32)])
+            .expect("an F32 offer must be usable, not refused");
+        assert_eq!(
+            (plan.config.channels, plan.config.sample_rate),
+            (2, 48_000),
+            "the fallback opens the device's own best F32 config"
+        );
+        assert_eq!(
+            plan.resample_from,
+            Some(48_000),
+            "the samples arrive at 48 kHz and must be converted to the model rate"
+        );
+    }
+
+    #[test]
+    fn the_fallback_prefers_fewer_channels_then_the_rate_nearest_16k() {
+        let plan = input_plan([
+            range(2, 24_000, 24_000, SampleFormat::F32),
+            range(1, 44_100, 44_100, SampleFormat::F32),
+        ])
+        .expect("offers exist");
+        assert_eq!(
+            (plan.config.channels, plan.config.sample_rate),
+            (1, 44_100),
+            "fewest channels wins even when its rate is the farther one"
+        );
+
+        let plan = input_plan([
+            range(2, 48_000, 48_000, SampleFormat::F32),
+            range(2, 44_100, 44_100, SampleFormat::F32),
+        ])
+        .expect("offers exist");
+        assert_eq!(
+            plan.config.sample_rate, 44_100,
+            "equal channels: the rate nearest the model rate wins"
+        );
+    }
+
+    #[test]
+    fn a_device_with_no_f32_offer_at_all_is_still_refused_with_what_it_offers() {
+        let err =
+            input_plan([range(2, 44_100, 44_100, SampleFormat::I16)]).expect_err("no F32, no open");
+        match err {
+            Error::UnsupportedInput { wanted, offered } => {
+                assert_eq!(wanted, SAMPLE_RATE);
+                assert!(
+                    offered.contains("2ch 44100-44100Hz"),
+                    "the refusal must keep naming what the device offered, got: {offered}"
+                );
+            }
+            other => panic!("the no-F32 refusal must stay UnsupportedInput, got: {other:?}"),
+        }
+    }
+
+    /// Feed a stereo take through the converter in CoreAudio-sized
+    /// blocks, interleaved the way the F32 callback delivers.
+    fn feed_stereo(
+        converter: &mut InputConverter,
+        recording: &Recording,
+        left: &[f32],
+        right: &[f32],
+    ) {
+        for (l, r) in left.chunks(512).zip(right.chunks(512)) {
+            let block: Vec<f32> = l.iter().zip(r.iter()).flat_map(|(l, r)| [*l, *r]).collect();
+            converter.push(&block, recording, usize::MAX);
+        }
+    }
+
+    /// Magnitude of `freq` over `pcm`, taken as 16 kHz samples. Over a
+    /// whole second (16_000 of them) the hertz bins land exactly on the
+    /// DFT grid, so a tone's level reads without windowing leakage.
+    #[allow(clippy::cast_precision_loss)]
+    fn magnitude_at(pcm: &[f32], freq: f32) -> f32 {
+        let n = pcm.len();
+        let omega = 2.0 * std::f32::consts::PI * freq / SAMPLE_RATE as f32;
+        let coeff = 2.0 * omega.cos();
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for &sample in pcm {
+            let s = sample + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s;
+        }
+        (s1 * s1 + s2 * s2 - coeff * s1 * s2).sqrt() / (n as f32 / 2.0)
+    }
+
+    /// The converted take, windowed to its last whole second: whole so
+    /// the hertz bins land exactly, past the head so the filter's
+    /// warmup is not in the window.
+    fn interior_second(mut pcm: Vec<f32>) -> Vec<f32> {
+        let second = SAMPLE_RATE as usize;
+        pcm.split_off(pcm.len() - second)
+    }
+
+    /// `gain * sin(freq)` over two seconds at `rate`.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn sine(freq: f32, gain: f32, rate: f32) -> Vec<f32> {
+        (0..2 * rate as usize)
+            .map(|i| gain * (2.0 * std::f32::consts::PI * freq * i as f32 / rate).sin())
+            .collect()
+    }
+
+    #[test]
+    fn a_48k_stereo_take_converts_to_mono_16k_keeping_its_tone_and_dropping_what_would_alias() {
+        let rate = 48_000.0;
+
+        // In band, at different levels per channel: only the average
+        // (0.2) survives the downmix, so its level pins that the
+        // channels were averaged rather than one carried through.
+        let recording = Recording::new(8 * SAMPLE_RATE as usize);
+        let mut converter = InputConverter::new(2, Some(48_000)).expect("the resampler must build");
+        feed_stereo(&mut converter, &recording, &sine(440.0, 0.3, rate), &sine(440.0, 0.1, rate));
+        let pcm = recording.take();
+        assert!(
+            (31_600..=32_400).contains(&pcm.len()),
+            "two seconds at 48 kHz must land as two seconds at 16 kHz, got {} samples",
+            pcm.len()
+        );
+        let pcm = interior_second(pcm);
+        let kept = magnitude_at(&pcm, 440.0);
+        assert!(
+            (kept - 0.2).abs() < 0.02,
+            "the tone must come through at the downmixed level 0.2, got {kept}"
+        );
+        assert!(
+            magnitude_at(&pcm, 540.0) < 0.02,
+            "the energy must stay at the tone's own frequency: a wrong rate would move it"
+        );
+
+        // Above the new Nyquist. Naive every-third-sample decimation
+        // delivers a 12 kHz tone as a full-size 4 kHz tone - speech-band
+        // content that was never spoken - which is the failure a real
+        // filter exists to prevent.
+        let recording = Recording::new(8 * SAMPLE_RATE as usize);
+        let mut converter = InputConverter::new(2, Some(48_000)).expect("the resampler must build");
+        feed_stereo(
+            &mut converter,
+            &recording,
+            &sine(12_000.0, 0.25, rate),
+            &sine(12_000.0, 0.25, rate),
+        );
+        let pcm = interior_second(recording.take());
+        let aliased = magnitude_at(&pcm, 4_000.0);
+        assert!(
+            aliased < 0.02,
+            "a 12 kHz tone must be filtered away, not aliased into the speech band at 4 kHz, got {aliased}"
+        );
+    }
+
+    #[test]
+    fn a_native_16k_path_forwards_its_samples_through_todays_downmix() {
+        let recording = Recording::new(SAMPLE_RATE as usize);
+        let mut converter =
+            InputConverter::new(2, None).expect("pass-through has nothing to build");
+        converter.push(&[1.0, 0.0, 0.5, -0.5], &recording, SAMPLE_RATE as usize);
+        assert_eq!(
+            recording.take(),
+            vec![0.5, 0.0],
+            "a device that already speaks the model rate must flow through today's exact downmix"
+        );
+    }
 }
 
 #[cfg(test)]
