@@ -1219,6 +1219,7 @@ mod tests {
             let bucket = app.active_bucket_mut();
             bucket.dictate_overrides.styling = Some(forge_workspace::Styling::Formal);
         }
+        app.dictate_device_pin = Some(forge_workspace::DictateDeviceChoice::System);
 
         app.clear_session_runtime_identity();
 
@@ -1231,6 +1232,11 @@ mod tests {
             bucket.dictate_overrides,
             forge_workspace::DictateOverrides::default(),
             "a torn-down identity keeps no override mirrors"
+        );
+        assert_eq!(
+            app.dictate_device_pin,
+            Some(forge_workspace::DictateDeviceChoice::System),
+            "the pick is workspace state: a session teardown must not clear it"
         );
     }
 
