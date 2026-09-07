@@ -940,7 +940,6 @@ mod tests {
             make_account("probe-expired"),
             make_account("probe-unauthorized"),
             make_account("bailed"),
-            make_account("refreshing"),
         ]);
 
         // tier-0 + Ready -> usable.
@@ -1903,7 +1902,7 @@ mod tests {
     #[test]
     fn bailed_account_recovers_to_ready_via_set_usage() {
         // Recovery flow: account got Bailed by a probe failure; the
-        // recovery poll's re-run of loading lands a fresh probe;
+        // 60 s usage poller's re-probe lands a fresh snapshot;
         // set_usage transitions back to Ready, re-priming the cache.
         let mut map = AccountStateMap::new(&[make_account("Personal")]);
         let k = key("Personal");
@@ -1932,11 +1931,11 @@ mod tests {
     #[test]
     fn pick_for_project_skips_bailed_accounts() {
         // Bailed account is in the allow list with no last_error (the
-        // recovery poll explicitly transitioned via set_loading, not
-        // set_last_error). Without the LoadingState filter,
-        // unusable_reason would classify it as usable because both
-        // usage and last_error are None. The picker must NOT return
-        // it; the Ready account must win.
+        // boot loader's retry-cap force-bail transitions via
+        // set_loading, not set_last_error). Without the LoadingState
+        // filter, unusable_reason would classify it as usable because
+        // both usage and last_error are None. The picker must NOT
+        // return it; the Ready account must win.
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         // Gateway: ready
         map.set_usage(&key("Gateway"), snapshot(Some(20.0), Some(20.0)));
