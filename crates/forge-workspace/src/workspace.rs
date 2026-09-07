@@ -5219,7 +5219,7 @@ fn auth_repair_hint(provider: forge_primitives::account::Provider) -> &'static s
     if provider.uses_base_url() {
         "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
     } else {
-        "usage_poll fetch failed with auth error; mint the setup token in [accounts.env] (claude setup-token)"
+        "usage_poll fetch failed with auth error; mint the setup token in [accounts.env] (claude setup-token) and restart forge"
     }
 }
 
@@ -6301,7 +6301,7 @@ mod tests {
         assert_eq!(
             auth_repair_hint(Provider::Anthropic),
             "usage_poll fetch failed with auth error; mint the setup token in [accounts.env] \
-             (claude setup-token)",
+             (claude setup-token) and restart forge",
             "an anthropic account repairs through its setup token, token or not",
         );
     }
