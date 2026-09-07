@@ -69,7 +69,9 @@ pub enum Error {
     /// The input device offers nothing this crate can open: no F32
     /// config at all. F32 offers at other rates are converted instead,
     /// so what remains here is the case the offered list names.
-    #[error("no input offers mono {wanted} Hz f32; the device offers {offered}")]
+    #[error(
+        "the models read {wanted} Hz f32 but the device offers no f32 input; it offers {offered}"
+    )]
     UnsupportedInput { wanted: u32, offered: String },
 
     /// A device was named and is not there. Never falls back to the
