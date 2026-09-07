@@ -1132,9 +1132,8 @@ fn peer_badge_spans(
 ///
 /// 20 rows: rule + 6 identity (Profile/Org/Session/Mode/Model/Effort) +
 /// 1 blank + 2 (Ctx bar + size row) + 1 blank + 2 (5h bar + ETA row) +
-/// 1 blank + 2 (7d bar + ETA row) + 1 blank + 1 (spend balance row or
-/// a second separator blank) + 1 blank + 2 (forge + claude version
-/// rows).
+/// 1 blank + 2 (7d bar + ETA row) + 1 (spend balance row or a second
+/// separator blank) + 1 blank + 2 (forge + claude version rows).
 const ACCOUNT_PANEL_HEIGHT: u16 = 20;
 
 /// Width (columns) the rule and content extend up to from the
@@ -1545,9 +1544,9 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             account_auth,
         );
 
-        // Row 14: the balance row's slot on a spend-billed account.
-        // Windows have no balance to show, so the row stays empty
-        // rather than shifting everything below it.
+        // The balance row's slot on a spend-billed account. Windows
+        // have no balance to show, so the row stays empty rather than
+        // shifting everything below it.
         lines.push(Line::default());
     }
 
@@ -1791,11 +1790,11 @@ fn spend_secondary(
         return (text, style);
     };
     if let Some(remaining) = spend.limit_remaining {
-        // An expiry displaces the reset cadence rather than claiming a
-        // sixth row: a key about to stop working outranks how often its
-        // cap rolls over. The `capped` fallback is defensive - a cap
-        // with no cadence is a shape the endpoint has not been observed
-        // to return.
+        // An expiry displaces the reset cadence rather than claiming
+        // another row: a key about to stop working outranks how often
+        // its cap rolls over. The `capped` fallback is defensive - a
+        // cap with no cadence is a shape the endpoint has not been
+        // observed to return.
         let tail = spend.expires_at.as_deref().map_or_else(
             || spend.limit_reset.clone().unwrap_or_else(|| "capped".to_owned()),
             |when| format!("expires {when}"),
