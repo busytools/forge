@@ -426,6 +426,7 @@ mod tests {
             seven_day_opus: None,
             seven_day_sonnet: None,
             extra_usage: None,
+            balance: None,
             spend,
         }
     }

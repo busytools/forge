@@ -334,6 +334,7 @@ pub fn snapshot_from_payload_lenient(payload: OauthUsage) -> UsageSnapshot {
         seven_day_sonnet: map_window(payload.seven_day_sonnet),
         extra_usage: map_extra_usage(payload.extra_usage),
         spend: None,
+        balance: None,
     }
 }
 

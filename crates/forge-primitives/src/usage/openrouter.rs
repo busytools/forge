@@ -1,4 +1,4 @@
-//! OpenRouter `/api/v1/key` response shapes.
+//! OpenRouter `/api/v1/key` and `/api/v1/credits` response shapes.
 //!
 //! Type-only - the HTTP fetcher lives in the forge-providers
 //! OpenRouter backend. These are the JSON wire shapes; the fetcher
@@ -41,4 +41,23 @@ pub struct KeyData {
     pub limit_reset: Option<String>,
     /// When the key stops working. `None` on a key with no expiry.
     pub expires_at: Option<String>,
+}
+
+/// Envelope for the account credit endpoint. `/v1/credits` is
+/// account-wide - the figures cover every key on the account - unlike
+/// [`KeyData`]'s per-key spend.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CreditsResponse {
+    pub data: Option<CreditsData>,
+}
+
+/// The account's credit pool, in USD. Both figures are required: a
+/// payload missing either is a shape forge cannot compute a balance
+/// from, and half a balance is worse than none.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CreditsData {
+    /// Credits on the account, in USD.
+    pub total_credits: f64,
+    /// All-time usage across every key, in USD.
+    pub total_usage: f64,
 }

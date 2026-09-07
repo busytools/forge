@@ -1,5 +1,6 @@
 //! The OpenRouter backend: the per-key spend probe against
-//! `{base}/v1/key`, plus the public `/v1/models` catalog behind the
+//! `{base}/v1/key` with the account credit pool from `{base}/v1/credits`
+//! alongside it, plus the public `/v1/models` catalog behind the
 //! [`ModelCatalog`] half. The configured base url already ends in
 //! `/api` (that is what the chat API wants), so only the `/v1/...`
 //! tails are appended; appending the documented site-relative paths
@@ -9,9 +10,10 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
+use serde::de::DeserializeOwned;
 
 use forge_primitives::usage::oauth::OauthUsageError;
-use forge_primitives::usage::openrouter::KeyResponse;
+use forge_primitives::usage::openrouter::{CreditsResponse, KeyResponse};
 use forge_primitives::usage::{ApiSpend, UsageSnapshot, UsageSourceKind};
 
 use crate::helpers::{
@@ -53,10 +55,11 @@ impl ProviderBackend for Openrouter {
         match choose_mapper(base_url_credential(account.env)) {
             Mapper::Spend(credential) => {
                 let client = host.http_client(OAUTH_TIMEOUT).map_err(OauthUsageError::Network)?;
-                let payload = key_probe(&client, &credential.base_url, &credential.bearer)
-                    .await
-                    .map_err(ProbeError::Fetch)?;
-                snapshot_from_openrouter_key(payload)
+                let (payload, balance) =
+                    key_probe(&client, &credential.base_url, &credential.bearer)
+                        .await
+                        .map_err(ProbeError::Fetch)?;
+                snapshot_from_openrouter_key(payload, balance)
             }
             Mapper::MissingBase(missing) => Err(ProbeError::Unmappable(missing.to_string())),
         }
@@ -89,6 +92,12 @@ fn key_url(base_url: &str) -> String {
     format!("{}/v1/key", base_url.trim_end_matches('/'))
 }
 
+/// OpenRouter's account-wide credit endpoint, joined by the same rule
+/// as [`key_url`].
+fn credits_url(base_url: &str) -> String {
+    format!("{}/v1/credits", base_url.trim_end_matches('/'))
+}
+
 #[async_trait]
 impl ModelCatalog for Openrouter {
     async fn fetch(
@@ -109,15 +118,54 @@ impl ModelCatalog for Openrouter {
     }
 }
 
-/// One round-trip against `{base_url}/v1/key` for a pay-per-token
-/// account. Shares [`OauthUsageError`] with the window probes so the
-/// loader and poller classify a 401 / 429 / network failure the same
-/// way regardless of billing kind.
+/// One probe for a pay-per-token account: the per-key spend from
+/// `{base}/v1/key`, plus the account's credit pool from
+/// `{base}/v1/credits`. Shares [`OauthUsageError`] with the window
+/// probes so the loader and poller classify a 401 / 429 / network
+/// failure the same way regardless of billing kind. The key fetch is
+/// load-bearing and its error propagates; the credits fetch is
+/// auxiliary and its failure only makes the balance absent.
 async fn key_probe(
     client: &reqwest::Client,
     base_url: &str,
     bearer: &str,
-) -> Result<KeyResponse, OauthUsageError> {
+) -> Result<(KeyResponse, Option<f64>), OauthUsageError> {
+    let key: KeyResponse = fetch_json(client, &key_url(base_url), bearer).await?;
+    let balance = credits_balance(client, base_url, bearer).await;
+    Ok((key, balance))
+}
+
+/// The account's remaining credit pool, or `None` when the fetch or
+/// decode fails for any reason: the balance is auxiliary, and the
+/// `/v1/key` data the panel also renders must stand even when this
+/// endpoint is unavailable.
+async fn credits_balance(client: &reqwest::Client, base_url: &str, bearer: &str) -> Option<f64> {
+    match fetch_json::<CreditsResponse>(client, &credits_url(base_url), bearer).await {
+        Ok(payload) => balance_from_credits(payload),
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_providers::openrouter",
+                event_name = "openrouter_credits_skipped",
+                error = %error,
+                "balance stays absent; the credits fetch failed but the key data stands",
+            );
+            None
+        }
+    }
+}
+
+fn balance_from_credits(payload: CreditsResponse) -> Option<f64> {
+    payload.data.map(|data| data.total_credits - data.total_usage)
+}
+
+/// One authenticated GET, classified like the window probes:
+/// 401 / 403 unauthorized, 429 rate-limited (honouring Retry-After),
+/// any other status carrying a truncated body suffix.
+async fn fetch_json<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: &str,
+) -> Result<T, OauthUsageError> {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     let auth = HeaderValue::from_str(&format!("Bearer {bearer}"))
@@ -125,7 +173,7 @@ async fn key_probe(
     headers.insert(AUTHORIZATION, auth);
 
     let response = client
-        .get(key_url(base_url))
+        .get(url)
         .headers(headers)
         .send()
         .await
@@ -147,11 +195,13 @@ async fn key_probe(
         .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
 
     // Body is logged only on a non-200, and only as a truncated
-    // suffix. A 200 here carries a truncated copy of the key itself.
+    // suffix. A 200 from the key endpoint carries a truncated copy of
+    // the key itself.
     if status == 200 {
         tracing::trace!(
             target: "forge_providers::openrouter",
-            event_name = "openrouter_key_response",
+            event_name = "openrouter_get_response",
+            url,
             status,
             outcome = "ok",
             body_bytes = body.len(),
@@ -159,7 +209,8 @@ async fn key_probe(
     } else {
         tracing::warn!(
             target: "forge_providers::openrouter",
-            event_name = "openrouter_key_response",
+            event_name = "openrouter_get_response",
+            url,
             status,
             outcome = "non_ok",
             retry_after_secs = ?retry_after.map(|d| d.as_secs()),
@@ -175,11 +226,11 @@ async fn key_probe(
             // count on a trace line nobody has enabled.
             tracing::warn!(
                 target: "forge_providers::openrouter",
-                event_name = "openrouter_key_decode_failed",
-                url = %key_url(base_url),
+                event_name = "openrouter_get_decode_failed",
+                url,
                 error = %error,
                 body_suffix = %truncated_body_suffix(&body),
-                "200 from the key endpoint did not decode; check the base url is the API root",
+                "200 did not decode; check the base url is the API root",
             );
             OauthUsageError::Decode(error.to_string())
         }),
@@ -193,6 +244,9 @@ async fn key_probe(
 /// pay-per-token key has no plan window and, when uncapped, no
 /// denominator, so nothing here synthesises a utilization.
 ///
+/// `balance` is the account-wide figure from the credits fetch, or
+/// `None` when that fetch failed - it never fails the snapshot.
+///
 /// Fallible on purpose. A 200 whose body carries no `data` envelope, or
 /// an envelope with none of the three usage figures, is a response
 /// forge cannot read rather than a bill of zero - and since `set_usage`
@@ -200,7 +254,10 @@ async fn key_probe(
 /// to zeroes would report a confident number nothing prompts anyone to
 /// doubt. An absent figure alongside a present sibling is a real zero
 /// and maps as one.
-fn snapshot_from_openrouter_key(payload: KeyResponse) -> Result<UsageSnapshot, ProbeError> {
+fn snapshot_from_openrouter_key(
+    payload: KeyResponse,
+    balance: Option<f64>,
+) -> Result<UsageSnapshot, ProbeError> {
     let Some(data) = payload.data else {
         return Err(ProbeError::Unmappable(
             "OpenRouter key response carried no data envelope.".to_owned(),
@@ -219,6 +276,7 @@ fn snapshot_from_openrouter_key(payload: KeyResponse) -> Result<UsageSnapshot, P
         seven_day_opus: None,
         seven_day_sonnet: None,
         extra_usage: None,
+        balance,
         spend: Some(ApiSpend {
             daily: data.usage_daily.unwrap_or(0.0),
             weekly: data.usage_weekly.unwrap_or(0.0),
@@ -408,7 +466,7 @@ mod tests {
             }}"#,
         )
         .expect("decode");
-        let snapshot = snapshot_from_openrouter_key(payload).expect("a real payload maps");
+        let snapshot = snapshot_from_openrouter_key(payload, None).expect("a real payload maps");
 
         assert_eq!(snapshot.source, UsageSourceKind::OpenRouterKey);
         let spend = snapshot.spend.expect("spend is populated");
@@ -440,7 +498,7 @@ mod tests {
             serde_json::from_str(r#"{"error":{"message":"User not found.","code":401}}"#)
                 .expect("decodes structurally");
         assert!(
-            snapshot_from_openrouter_key(no_envelope).is_err(),
+            snapshot_from_openrouter_key(no_envelope, None).is_err(),
             "a body with no data envelope carries no spend and must not read as zero",
         );
 
@@ -448,7 +506,7 @@ mod tests {
             serde_json::from_str(r#"{"data":{"label":"sk-or-v1-TEST","is_free_tier":false}}"#)
                 .expect("decodes structurally");
         assert!(
-            snapshot_from_openrouter_key(no_figures).is_err(),
+            snapshot_from_openrouter_key(no_figures, None).is_err(),
             "an envelope with none of the three usage figures must not read as zero",
         );
     }
@@ -467,7 +525,7 @@ mod tests {
                         "expires_at":null}}"#,
         )
         .expect("decode");
-        let spend = snapshot_from_openrouter_key(capped).expect("maps").spend.expect("spend");
+        let spend = snapshot_from_openrouter_key(capped, None).expect("maps").spend.expect("spend");
         assert_eq!(spend.limit, Some(20.0), "the cap is the denominator a bar needs");
         assert_eq!(spend.limit_remaining, Some(19.961_130_437), "what is left to spend");
         assert_eq!(spend.limit_reset.as_deref(), Some("monthly"), "the window the cap resets on");
@@ -478,7 +536,8 @@ mod tests {
                         "limit":null,"limit_remaining":null,"limit_reset":null}}"#,
         )
         .expect("decode");
-        let spend = snapshot_from_openrouter_key(uncapped).expect("maps").spend.expect("spend");
+        let spend =
+            snapshot_from_openrouter_key(uncapped, None).expect("maps").spend.expect("spend");
         assert_eq!(spend.limit, None, "an uncapped key has no denominator to invent");
         assert_eq!(spend.limit_remaining, None);
         assert_eq!(spend.limit_reset, None);
@@ -492,7 +551,7 @@ mod tests {
     fn a_partial_openrouter_body_maps_its_present_figure() {
         let partial: KeyResponse =
             serde_json::from_str(r#"{"data":{"usage_daily":0.25}}"#).expect("decode");
-        let spend = snapshot_from_openrouter_key(partial)
+        let spend = snapshot_from_openrouter_key(partial, None)
             .expect("one present figure is a readable report")
             .spend
             .expect("spend");
@@ -501,5 +560,149 @@ mod tests {
             spend.weekly.abs() < f64::EPSILON && spend.monthly.abs() < f64::EPSILON,
             "absent siblings of a present figure are zero",
         );
+    }
+
+    #[test]
+    fn credits_url_joins_one_v1_segment_onto_the_configured_base() {
+        assert_eq!(
+            credits_url("https://openrouter.ai/api"),
+            "https://openrouter.ai/api/v1/credits",
+        );
+        assert_eq!(
+            credits_url("https://openrouter.ai/api/"),
+            "https://openrouter.ai/api/v1/credits",
+            "trailing slash trimmed so base and base/ behave identically",
+        );
+    }
+
+    /// The live `/v1/credits` shape: the balance is the account's
+    /// remaining pool, credits held minus all usage across every key.
+    #[test]
+    fn the_credits_payload_maps_to_the_remaining_pool() {
+        let payload: CreditsResponse =
+            serde_json::from_str(r#"{"data":{"total_credits":435.0,"total_usage":370.60}}"#)
+                .expect("decode");
+        let balance = balance_from_credits(payload).expect("balance");
+        assert!(
+            (balance - 64.40).abs() < 0.001,
+            "435.0 - 370.60 is the pool left to spend, got {balance}",
+        );
+    }
+
+    /// A `data` envelope missing either figure must not decode to a
+    /// balance computed from half the inputs; a null envelope has no
+    /// balance to compute at all. Both leave the row absent.
+    #[test]
+    fn an_incomplete_credits_payload_yields_no_balance() {
+        let missing_usage: Result<CreditsResponse, _> =
+            serde_json::from_str(r#"{"data":{"total_credits":435.0}}"#);
+        assert!(
+            missing_usage.is_err(),
+            "a balance needs both figures; half of one is not a reading",
+        );
+
+        let null_envelope: CreditsResponse =
+            serde_json::from_str(r#"{"data":null}"#).expect("decodes structurally");
+        assert_eq!(
+            balance_from_credits(null_envelope),
+            None,
+            "no data envelope means no balance, not a zero pool",
+        );
+    }
+
+    /// Serve sequential responses from `script`, one per connection,
+    /// recording each request's first line so assertions inspect what
+    /// was actually asked for rather than gating the answer on it.
+    fn spawn_scripted_server(
+        script: Vec<(u16, String)>,
+    ) -> (std::net::SocketAddr, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write as _};
+        use std::sync::{Arc, Mutex};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_clone = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for (status, body) in script {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                // Drain the request before answering: closing with unread
+                // request bytes pending sends an RST that can destroy the
+                // response already in flight.
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    match sock.read(&mut byte) {
+                        Ok(1) => request.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                seen_clone
+                    .lock()
+                    .expect("request log")
+                    .push(String::from_utf8_lossy(&request).into_owned());
+                let header = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(header.as_bytes());
+                let _ = sock.write_all(body.as_bytes());
+                let _ = sock.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        (addr, seen)
+    }
+
+    /// The probe fetches the credit pool alongside the key spend: two
+    /// GETs out of one probe, both Bearer-prefixed on the env token,
+    /// and the balance lands on the snapshot with the spend.
+    #[tokio::test]
+    async fn the_probe_fetches_the_credit_pool_alongside_the_key_spend() {
+        let (addr, seen) = spawn_scripted_server(vec![
+            (200, r#"{"data":{"usage_daily":0.25}}"#.to_owned()),
+            (200, r#"{"data":{"total_credits":435.0,"total_usage":370.60}}"#.to_owned()),
+        ]);
+        let env = env_with_base(&format!("http://{addr}"));
+        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &env };
+        let snapshot = Openrouter.probe(&account, &LocalHost).await.expect("snapshot");
+
+        let spend = snapshot.spend.expect("spend");
+        assert!((spend.daily - 0.25).abs() < f64::EPSILON, "got {spend:?}");
+        let balance = snapshot.balance.expect("the credits fetch lands a balance");
+        assert!((balance - 64.40).abs() < 0.001, "got {balance}");
+
+        let requests = seen.lock().expect("request log");
+        assert_eq!(requests.len(), 2, "one probe, two GETs: {requests:?}");
+        assert!(
+            requests[0].contains("GET /v1/key HTTP/1.1"),
+            "the key fetch is unchanged: {requests:?}",
+        );
+        assert!(
+            requests[1].contains("GET /v1/credits HTTP/1.1"),
+            "the credits fetch hits /v1/credits: {requests:?}",
+        );
+        assert!(
+            requests.iter().all(|r| r.contains("authorization: Bearer sk-or-test")),
+            "both GETs ride the same Bearer token: {requests:?}",
+        );
+    }
+
+    /// The balance is auxiliary: a credits fetch that fails for any
+    /// reason must not fail the probe, because the `/v1/key` data the
+    /// panel also renders still stands and balance only ever renders
+    /// as absent.
+    #[tokio::test]
+    async fn a_credits_failure_leaves_the_key_snapshot_standing() {
+        let (addr, seen) = spawn_scripted_server(vec![
+            (200, r#"{"data":{"usage_daily":0.25}}"#.to_owned()),
+            (401, r#"{"error":{"message":"No auth credentials","code":401}}"#.to_owned()),
+        ]);
+        let env = env_with_base(&format!("http://{addr}"));
+        let account = AccountEnv { config_dir: Path::new("/tmp/unused"), env: &env };
+        let snapshot = Openrouter.probe(&account, &LocalHost).await.expect("snapshot");
+
+        assert!(snapshot.spend.is_some(), "the key data stands when the credits fetch fails",);
+        assert_eq!(snapshot.balance, None, "a failed credits fetch is an absent balance");
+        assert_eq!(seen.lock().expect("request log").len(), 2);
     }
 }

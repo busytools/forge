@@ -6301,6 +6301,7 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
             spend: None,
+            balance: None,
         }
     }
 
@@ -12468,6 +12469,7 @@ provider = "anthropic"
                     seven_day_sonnet: None,
                     extra_usage: None,
                     spend: None,
+                    balance: None,
                 };
                 accounts.set_usage(&AccountKey(name.to_owned()), snapshot);
             }
@@ -12507,6 +12509,7 @@ provider = "anthropic"
                     seven_day_sonnet: None,
                     extra_usage: None,
                     spend: None,
+                    balance: None,
                 };
                 accounts.set_usage(&AccountKey(name.to_owned()), snapshot);
             }
@@ -12569,6 +12572,7 @@ provider = "anthropic"
                 seven_day_sonnet: None,
                 extra_usage: None,
                 spend: None,
+                balance: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -12601,6 +12605,7 @@ provider = "anthropic"
                 seven_day_sonnet: None,
                 extra_usage: None,
                 spend: None,
+                balance: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -12663,6 +12668,7 @@ provider = "anthropic"
                 seven_day_sonnet: None,
                 extra_usage: None,
                 spend: None,
+                balance: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -12700,6 +12706,7 @@ provider = "anthropic"
             seven_day_sonnet: None,
             extra_usage: None,
             spend: None,
+            balance: None,
         }
     }
 
@@ -12889,6 +12896,7 @@ provider = "anthropic"
                 seven_day_sonnet: None,
                 extra_usage: None,
                 spend: None,
+                balance: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -12922,6 +12930,7 @@ provider = "anthropic"
                 seven_day_sonnet: None,
                 extra_usage: None,
                 spend: None,
+                balance: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -12965,6 +12974,7 @@ provider = "anthropic"
                 seven_day_sonnet: None,
                 extra_usage: None,
                 spend: None,
+                balance: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -13000,6 +13010,7 @@ provider = "anthropic"
                 seven_day_sonnet: None,
                 extra_usage: None,
                 spend: None,
+                balance: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
@@ -13030,6 +13041,7 @@ provider = "anthropic"
                 seven_day_sonnet: None,
                 extra_usage: None,
                 spend: None,
+                balance: None,
             };
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }

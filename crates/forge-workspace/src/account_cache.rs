@@ -121,6 +121,7 @@ mod tests {
                 seven_day_sonnet: None,
                 extra_usage: None,
                 spend: None,
+                balance: None,
             },
         }
     }
