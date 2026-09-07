@@ -287,10 +287,11 @@ impl AccountStateMap {
 
     /// [`Self::provider`] for a key that came out of this map, so a miss
     /// means the map changed underneath the caller. Anthropic is the
-    /// safe default - it probes the keychain rather than an endpoint
-    /// derived from an env this account may not have - but it is the
-    /// wrong answer for a base-url account, whose repair copy would then
-    /// tell the user to run `/login`. Warn rather than pick silently.
+    /// safe default - it probes the official API rather than an
+    /// endpoint derived from an env this account may not have - but it
+    /// is the wrong answer for a base-url account, whose repair copy
+    /// would then name the wrong env key. Warn rather than pick
+    /// silently.
     pub fn provider_or_anthropic(&self, key: &AccountKey) -> forge_primitives::account::Provider {
         self.provider(key).unwrap_or_else(|| {
             tracing::warn!(
@@ -304,16 +305,15 @@ impl AccountStateMap {
 
     /// How the account proves who it is, which is the only thing that
     /// changes what an auth-repair hint tells the user to do. Base-url
-    /// wins over the token check: such an account re-keys its env
-    /// token, whatever else the env carries. `None` for unknown keys.
+    /// wins: such an account re-keys its env token, whatever else the
+    /// env carries. Every other account's credential is its setup
+    /// token, so both its token-mode and its token-less shapes repair
+    /// the same way. `None` for unknown keys.
     pub fn auth(&self, key: &AccountKey) -> Option<crate::views::AccountAuth> {
         if self.provider(key)?.uses_base_url() {
             return Some(crate::views::AccountAuth::BaseUrl);
         }
-        if self.env(key).is_some_and(forge_providers::is_token_mode) {
-            return Some(crate::views::AccountAuth::Token);
-        }
-        Some(crate::views::AccountAuth::Keychain)
+        Some(crate::views::AccountAuth::Token)
     }
 
     /// Distinct on-disk config_dirs across every known account. Used by
@@ -414,18 +414,14 @@ impl AccountStateMap {
             // probe response means the account's credential is dead.
             // Transition `loading` to `Bailed` and drop the
             // cached `usage` so the renderer surfaces the error label
-            // instead of the stale %bar. Recovery paths differ by
-            // class: the 30 s recovery poll
-            // (account_loader::run_recovery_poll) picks a keychain
-            // account back up once `claude auth status` reports
-            // logged-in, while a base-url or token account recovers
-            // via the 60 s usage poller (after the edited env is
-            // re-read at a restart). Other statuses leave
+            // instead of the stale %bar. The account recovers via the
+            // 60 s usage poller after the edited env is re-read at a
+            // restart. Other statuses leave
             // `loading` alone (a transient `RateLimited` or
             // `NetworkFailed` is not auth-related; the cache stays
             // and the account remains Ready for the assignment plan).
             // Replaces the PR #238 `consecutive_unauthorized` 3-strike
-            // counter - the recovery poll absorbs transient 401s.
+            // counter.
             if matches!(status, UsageFetchStatus::Unauthorized | UsageFetchStatus::Expired) {
                 let prev = state.loading;
                 state.loading = LoadingState::Bailed;
@@ -905,8 +901,10 @@ mod tests {
     }
 
     /// The repair-route table every auth hint branches on. Base-url
-    /// wins over the token check: an account whose provider owns a
-    /// base url re-keys its env token, whatever else its env carries.
+    /// wins: an account whose provider owns a base url re-keys its env
+    /// token, whatever else its env carries. A token-less Anthropic
+    /// account classifies Token - the repair it needs is the same
+    /// setup-token copy.
     #[test]
     fn auth_classifies_the_repair_route_per_account() {
         let mut token = make_account("Token");
@@ -914,7 +912,7 @@ mod tests {
         let mut base_url = make_account("Base");
         base_url.provider = forge_primitives::account::Provider::Openrouter;
         base_url.env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
-        let map = AccountStateMap::new(&[token, base_url, make_account("Keychain")]);
+        let map = AccountStateMap::new(&[token, base_url, make_account("Tokenless")]);
         assert_eq!(
             map.auth(&AccountKey("Token".to_owned())),
             Some(crate::views::AccountAuth::Token),
@@ -925,8 +923,9 @@ mod tests {
             "a base-url provider classifies BaseUrl even beside a setup token",
         );
         assert_eq!(
-            map.auth(&AccountKey("Keychain".to_owned())),
-            Some(crate::views::AccountAuth::Keychain),
+            map.auth(&AccountKey("Tokenless".to_owned())),
+            Some(crate::views::AccountAuth::Token),
+            "a token-less anthropic account repairs as a token account",
         );
         assert_eq!(map.auth(&AccountKey("Unknown".to_owned())), None, "unknown key -> None");
     }

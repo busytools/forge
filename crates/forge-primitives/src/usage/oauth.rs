@@ -56,18 +56,15 @@ pub struct OauthExtraUsage {
     pub currency: Option<String>,
 }
 
-/// Failure modes for the OAuth usage fetcher. Variants split
-/// fallback-eligible states (`NoCredentials`, `Expired`,
-/// `Unauthorized`) from terminal ones so callers can decide whether
-/// to retry against a different auth source.
+/// Failure modes for the OAuth usage fetcher.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum OauthUsageError {
-    /// No OAuth credentials were resolved from file or keychain.
-    /// Caller should advise `/login`.
+    /// No OAuth credentials were resolved. Caller should advise the
+    /// account's own repair path.
     #[error("No Claude OAuth credentials found")]
     NoCredentials,
-    /// Credentials present but expired locally; caller should advise
-    /// `/login` to refresh.
+    /// Credentials present but expired locally; caller should surface
+    /// the account's own repair path.
     #[error("Claude OAuth credentials expired")]
     Expired,
     /// API returned 401/403. Token may be stale or revoked.

@@ -20,24 +20,20 @@ use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, Pro
 
 /// `[accounts.env]` key carrying a per-account setup token (minted by
 /// `claude setup-token`). Its presence makes an Anthropic account
-/// token-mode: the probe authenticates with the token, never with the
-/// keychain entry for the account's config dir. The value is trimmed
-/// once where it enters forge's config, so every reader sees the same
-/// credential.
+/// token-mode: the token is the account's only credential. The value
+/// is trimmed once where it enters forge's config, so every reader
+/// sees the same credential.
 pub const CLAUDE_CODE_OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
 /// The setup token `env` carries, when non-empty. An empty value stays
-/// None so a real keychain account with a stale empty var in its env
-/// block keeps its probe. Whitespace is the config loader's to strip
-/// (once, at load); this reads the credential as the child gets it.
+/// None: whitespace is the config loader's to strip (once, at load),
+/// and this reads the credential as the child gets it.
 pub fn token_bearer<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> Option<&str> {
     env.get(CLAUDE_CODE_OAUTH_TOKEN_ENV).map(String::as_str).filter(|token| !token.is_empty())
 }
 
-/// True when `env` carries a non-empty setup token, making an
-/// Anthropic account token-mode. A token-mode account has no keychain
-/// entry of its own - the config dir is shared - so the mapper choice
-/// and the repair policy branch on this rather than on the provider
+/// True when `env` carries a non-empty setup token. Spawn-path stamping
+/// and the repair copy branch on this rather than on the provider
 /// alone.
 pub fn is_token_mode<S: std::hash::BuildHasher>(env: &HashMap<String, String, S>) -> bool {
     token_bearer(env).is_some()

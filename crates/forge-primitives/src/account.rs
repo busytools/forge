@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
-    /// Anthropic proper: keychain credentials, `/api/oauth/usage` on the
-    /// default host, plan windows.
+    /// Anthropic proper: a setup-token credential, plan windows on the
+    /// default host.
     Anthropic,
     /// A `claude-code-proxy` endpoint. Base-url like OpenRouter, but its
     /// proxy serves the same windowed `/api/oauth/usage` body Anthropic
@@ -34,11 +34,10 @@ impl Provider {
     pub const ACCEPTED: &'static str = "\"anthropic\", \"codex\", \"openrouter\", \"zai\"";
 
     /// `true` when the account's credential is an `ANTHROPIC_AUTH_TOKEN`
-    /// beside an `ANTHROPIC_BASE_URL` in `[accounts.env]` rather than a
-    /// keychain entry. Both the probe and preflight's repair copy branch
-    /// on this rather than on the provider itself, because every
-    /// non-Anthropic provider repairs the same way. The billing model
-    /// lives on the provider's forge-providers backend instead.
+    /// beside an `ANTHROPIC_BASE_URL` in `[accounts.env]`. Both the probe
+    /// and preflight's repair copy branch on this rather than on the
+    /// provider itself. The billing model lives on the provider's
+    /// forge-providers backend instead.
     pub const fn uses_base_url(self) -> bool {
         matches!(self, Self::Codex | Self::Openrouter | Self::Zai)
     }

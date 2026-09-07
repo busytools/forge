@@ -1,6 +1,6 @@
 //! Composable pieces the backends build probes and snapshots from:
 //! the windowed `/api/oauth/usage` round-trip, the payload-to-window
-//! mappers, and the timestamp parsing the keychain reader shares.
+//! mappers, and the timestamp parsing the snapshot mappers share.
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};

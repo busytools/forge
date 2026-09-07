@@ -1704,7 +1704,7 @@ impl Workspace {
                 state: accounts.loading_state(k),
                 last_error: accounts.usage_error(k),
                 config_dir: accounts.config_dir(k).cloned().unwrap_or_default(),
-                auth: accounts.auth(k).unwrap_or(crate::views::AccountAuth::Keychain),
+                auth: accounts.auth(k).unwrap_or(crate::views::AccountAuth::Token),
             })
             .collect()
     }
@@ -2350,9 +2350,7 @@ impl Workspace {
                             "usage_poll fetch rate-limited by Anthropic; sub-second Retry-After is treated as 'no hint' and we back off exponentially"
                         }
                         account::UsageFetchStatus::Expired
-                        | account::UsageFetchStatus::Unauthorized => {
-                            auth_repair_hint(provider, &env)
-                        }
+                        | account::UsageFetchStatus::Unauthorized => auth_repair_hint(provider),
                         account::UsageFetchStatus::NetworkFailed => {
                             "usage_poll fetch failed with network error; will retry on next tick"
                         }
@@ -5211,23 +5209,17 @@ impl Workspace {
 
 /// The repair line the 60 s poller logs under an auth-classified
 /// failure, keyed on how the account authenticates. Env credentials
-/// are boot-frozen and, on a shared dir, `/login` repairs whichever
-/// sibling last logged in - so both env classes get their own repair,
-/// never `/login`.
+/// are boot-frozen, so both classes point at the env edit, never a
+/// re-authentication of the shared config dir.
 ///
 /// The base-url test must stay first: a global `[env]` setup token
 /// reaches base-url accounts too, and the re-mint advice is for a
 /// credential that account never reads.
-fn auth_repair_hint(
-    provider: forge_primitives::account::Provider,
-    env: &HashMap<String, String>,
-) -> &'static str {
+fn auth_repair_hint(provider: forge_primitives::account::Provider) -> &'static str {
     if provider.uses_base_url() {
         "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
-    } else if forge_providers::is_token_mode(env) {
-        "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] (claude setup-token)"
     } else {
-        "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
+        "usage_poll fetch failed with auth error; mint the setup token in [accounts.env] (claude setup-token)"
     }
 }
 
@@ -5271,10 +5263,9 @@ pub(crate) fn classify_oauth_usage_error(
             OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
             OauthUsageError::UaProbe(_)
             | OauthUsageError::HttpStatus(_, _)
-            // No probe converts a scope refusal any more - the token
-            // arm calls /v1/messages, which has no scope refusal - so
-            // this arrives from the keychain or base-url path, which
-            // is not an auth failure either.
+            // No probe converts a scope refusal - the token arm calls
+            // /v1/messages, which has no scope refusal - and a 403
+            // there is not an auth failure either.
             | OauthUsageError::ScopeInsufficient
             | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
         },
@@ -6289,50 +6280,29 @@ mod tests {
         }
     }
 
-    /// Every credential shape logs the repair line that can actually
-    /// repair it. The base-url arm is load-bearing: a global `[env]`
-    /// setup token reaches base-url accounts too, and a token-first
-    /// order would send their 401 to the re-mint advice against a
-    /// credential those providers never read.
+    /// Every provider logs the repair line that can actually repair
+    /// it. The base-url arm is load-bearing: a global `[env]` setup
+    /// token reaches base-url accounts too, and a token-first order
+    /// would send their 401 to the re-mint advice against a credential
+    /// those providers never read.
     #[test]
     fn auth_repair_hint_keys_on_the_credential_shape() {
         use forge_primitives::account::Provider;
 
-        let mut base_env = std::collections::HashMap::new();
-        base_env.insert("ANTHROPIC_BASE_URL".to_owned(), "http://localhost:18765".to_owned());
-        base_env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-key".to_owned());
-
         for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
             assert_eq!(
-                auth_repair_hint(provider, &base_env),
+                auth_repair_hint(provider),
                 "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in \
                  [accounts.env] and restart forge",
-                "{provider:?} is repaired by an env token edit, never /login",
+                "{provider:?} is repaired by an env token edit",
             );
         }
 
         assert_eq!(
-            auth_repair_hint(Provider::Anthropic, &std::collections::HashMap::new()),
-            "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via \
-             /login",
-        );
-
-        let mut token = std::collections::HashMap::new();
-        token.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
-        assert_eq!(
-            auth_repair_hint(Provider::Anthropic, &token),
-            "usage_poll fetch failed with auth error; re-mint the setup token in [accounts.env] \
+            auth_repair_hint(Provider::Anthropic),
+            "usage_poll fetch failed with auth error; mint the setup token in [accounts.env] \
              (claude setup-token)",
-        );
-
-        let mut codex_with_global_token = base_env.clone();
-        codex_with_global_token
-            .insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
-        assert_eq!(
-            auth_repair_hint(Provider::Codex, &codex_with_global_token),
-            "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in \
-             [accounts.env] and restart forge",
-            "the base-url arm must precede the token check",
+            "an anthropic account repairs through its setup token, token or not",
         );
     }
 
@@ -8806,9 +8776,8 @@ provider = "anthropic"
             classify_oauth_usage_error(&fetch(OauthUsageError::UaProbe("no binary".to_owned()))),
             UsageFetchStatus::Other,
         );
-        // A scope refusal on the keychain path is anomalous (keychain
-        // tokens carry user:profile) and must not render as an auth
-        // failure; the token-mode paths convert it before classification.
+        // A scope refusal is anomalous (OAuth tokens carry user:profile)
+        // and must not render as an auth failure.
         assert_eq!(
             classify_oauth_usage_error(&fetch(OauthUsageError::ScopeInsufficient)),
             UsageFetchStatus::Other,
@@ -8826,11 +8795,9 @@ provider = "anthropic"
         );
     }
 
-    /// A token-mode Anthropic account (setup token in `[accounts.env]`,
-    /// shared config dir) is neither a keychain repair nor a base-url
-    /// env edit, so preflight's bailed-row copy would send the reader
-    /// to `/login` in a dir that does not hold this account's
-    /// credential. The row has to carry the third class.
+    /// An Anthropic account (setup token in `[accounts.env]`) derives
+    /// the token auth class, whose bailed-row repair copy names the
+    /// token and never a re-authentication of the shared config dir.
     #[tokio::test]
     async fn a_token_mode_account_derives_the_token_auth_class() {
         let dir = tempdir().expect("tempdir");

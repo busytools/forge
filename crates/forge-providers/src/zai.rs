@@ -72,8 +72,7 @@ fn choose_mapper(credential: Result<BaseUrlCredential, MissingBase>) -> Mapper {
 #[derive(Debug, PartialEq, Eq)]
 enum Mapper {
     /// The credential bound to the monitor mapper: the arm holding
-    /// this cannot map the windowed `/api/oauth/usage` shape or read
-    /// the keychain.
+    /// this cannot map the windowed `/api/oauth/usage` shape.
     Monitor(BaseUrlCredential),
     MissingBase(MissingBase),
 }

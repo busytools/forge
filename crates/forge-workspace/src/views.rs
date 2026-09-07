@@ -121,20 +121,18 @@ pub struct AccountRow {
 /// distinction and none of the secret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountAuth {
-    /// Credentials in the macOS keychain. Repaired with `claude /login`,
-    /// and picked up by the 30 s recovery poll.
-    Keychain,
     /// `ANTHROPIC_BASE_URL` in the account's `[accounts.env]`, so its
-    /// credential is the `ANTHROPIC_AUTH_TOKEN` beside it and there is
-    /// no keychain entry for `/login` to write. The recovery poll skips
-    /// these; the 60 s usage poll recovers them.
+    /// credential is the `ANTHROPIC_AUTH_TOKEN` beside it. Repaired by
+    /// editing the env, which needs a restart; the 60 s usage poll
+    /// recovers a transient bail.
     BaseUrl,
     /// `CLAUDE_CODE_OAUTH_TOKEN` in the account's env (a setup token,
-    /// merged from global `[env]` and `[accounts.env]`): the keychain
-    /// is never read, so neither `/login` nor a base-url token edit
-    /// repairs it. Repaired by re-minting the token, which is an env
-    /// edit and needs a restart; the 60 s usage poll recovers a
-    /// transient bail.
+    /// merged from global `[env]` and `[accounts.env]`) - the only
+    /// credential an Anthropic account has. Repaired by minting or
+    /// re-minting the token, which is an env edit and needs a restart;
+    /// the 60 s usage poll recovers a transient bail. An Anthropic
+    /// account whose env carries no token classifies here too: the
+    /// repair it needs is the same.
     Token,
 }
 

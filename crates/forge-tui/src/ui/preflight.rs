@@ -12,14 +12,11 @@
 //! it, and the pollers keep re-probing it, so holding the screen waits
 //! on nothing that could change it.
 //!
-//! Repairing the auth on a keychain account needs no restart; anything
-//! that edits forge.toml - the account's env, or dropping the account -
-//! does, because config is read once at boot and the pollers keep
-//! probing what they loaded. What needs no restart is picked up in
-//! place - on the 30 s recovery poll for a keychain account, on the
-//! 60 s usage poll for a base-url or token-mode one, which the
-//! recovery poll skips because it gates on `claude auth status`. The
-//! screen offers the repairs in that order for that reason.
+//! Repairing an account's auth means editing forge.toml - the env
+//! token or dropping the account - and that needs a restart, because
+//! config is read once at boot. What needs no restart is nothing: the
+//! pollers keep probing what they loaded. The screen offers the
+//! repairs in that order.
 //!
 //! Geometry matches [`super::launchpad`]: same wordmark, same
 //! `PICKER_WIDTH` panel, so handing over to the project picker is a
@@ -380,10 +377,9 @@ fn failure_label(failure: &DictateFailure) -> &'static str {
 /// The head and the repair line key on the failure class: an auth
 /// problem, a rate limit, and an endpoint that is down or answering
 /// badly are three different repairs. The auth branch's retry line
-/// states no interval on purpose, and keys on the account class: a
-/// keychain repair is picked up in place by the recovery poll, while
-/// a base-url or token repair is an env edit, and no single interval
-/// is true of the polls that watch the classes.
+/// states no interval on purpose: both repairs are env edits picked
+/// up by the pollers, and no single interval is true of all the
+/// backoff they run under.
 fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'static>> {
     let error = Style::default().fg(theme::STATUS_ERROR);
     let head = Style::default().add_modifier(Modifier::BOLD);
@@ -418,10 +414,9 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
             width,
         )
     } else {
-        // Both env-credential repairs are boot-frozen, so only a
-        // keychain repair recovers in place.
+        // Both repairs are boot-frozen env edits, so both need a
+        // restart to land.
         let tail = match row.auth {
-            AccountAuth::Keychain => "fix the auth and it recovers in place",
             AccountAuth::BaseUrl => "fix the auth and restart forge to pick the new token up",
             AccountAuth::Token => "fix the auth and restart forge to pick the re-mint up",
         };
@@ -439,7 +434,7 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
     if endpoint_failing {
         lines.push(text_row(2, "Check the endpoint", head, width));
         match row.auth {
-            AccountAuth::Keychain | AccountAuth::Token => {
+            AccountAuth::Token => {
                 let line = if row.last_error == Some(UsageFetchStatus::NetworkFailed) {
                     "the probe could not run or reach the Anthropic API"
                 } else {
@@ -469,18 +464,9 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
         lines.push(text_row(4, "Waiting clears it - the pollers keep retrying", dim(), width));
     } else {
         lines.push(text_row(2, "Fix the auth", head, width));
-        // The only thing that differs by account class. A base-url account
-        // has no keychain entry for `/login` to write - its credential is
-        // the token beside it in `[accounts.env]`.
+        // The only thing that differs by account class: which env key
+        // the credential lives behind.
         match row.auth {
-            AccountAuth::Keychain => {
-                lines.extend(command_rows(
-                    4,
-                    &format!("CLAUDE_CONFIG_DIR={} claude", home_relative(&row.config_dir)),
-                    width,
-                ));
-                lines.push(text_row(4, "/login", Style::default(), width));
-            }
             AccountAuth::BaseUrl => {
                 lines.push(text_row(
                     4,
@@ -500,23 +486,10 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
             }
         }
         // Without this a reader who fixes their auth has no way of
-        // knowing whether to restart. Keychain: the recovery poll picks
-        // the repair up in place. Base-url: the repaired token lives in
+        // knowing whether to restart: the repaired token lives in
         // [accounts.env], which is read once at boot, so the retry
         // cannot see it until forge restarts.
-        match row.auth {
-            AccountAuth::Keychain => {
-                lines.push(text_row(
-                    4,
-                    "forge retries on its own - no restart needed",
-                    dim(),
-                    width,
-                ));
-            }
-            AccountAuth::BaseUrl | AccountAuth::Token => {
-                lines.push(text_row(4, "editing [accounts.env] needs a restart", dim(), width));
-            }
-        }
+        lines.push(text_row(4, "editing [accounts.env] needs a restart", dim(), width));
     }
     lines.push(Line::default());
     lines.push(text_row(2, "Or drop the account", head, width));

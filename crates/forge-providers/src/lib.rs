@@ -4,9 +4,9 @@
 //! Each [`ProviderBackend`] owns credential resolution, the probe
 //! request and its payload mapping, the billing shape, and what repair
 //! a failed probe allows for one provider. The [`ProviderHost`] port,
-//! implemented by forge-agent, is the only filesystem, keychain or
-//! process plumbing a backend may reach, so this crate stays HTTP +
-//! mapping and is testable offline.
+//! implemented by forge-agent, is the only process plumbing a backend
+//! may reach, so this crate stays HTTP + mapping and is testable
+//! offline.
 
 mod anthropic;
 mod codex;

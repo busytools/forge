@@ -81,7 +81,7 @@ fn choose_mapper(credential: Result<BaseUrlCredential, MissingBase>) -> Mapper {
 #[derive(Debug, PartialEq, Eq)]
 enum Mapper {
     /// The credential bound to the spend mapper: the arm holding this
-    /// cannot map windows or read the keychain.
+    /// cannot map windows.
     Spend(BaseUrlCredential),
     MissingBase(MissingBase),
 }
