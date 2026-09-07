@@ -205,11 +205,12 @@ fn ring_bell() {
 ///
 /// Runs on `std::thread::spawn` rather than tokio because `notify-rust`'s
 /// `show()` may block on a D-Bus round-trip (Linux) or COM call (Windows).
-/// Failures are logged at debug; the terminal bell is the reliable fallback.
+/// Failures log at warn with the reason - the old debug-level log is how
+/// a failing poster stayed invisible while the bell kept firing.
 fn send_desktop_notification(title: String, body: String) {
     std::thread::spawn(move || {
         if let Err(error) = notify_rust::Notification::new().summary(&title).body(&body).show() {
-            tracing::debug!(
+            tracing::warn!(
                 target: crate::logging::targets::APP_LIFECYCLE,
                 error = %error,
                 title,
