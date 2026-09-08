@@ -631,10 +631,16 @@ fn append_stop_hook_summary(
     let chip_height = layout.height.saturating_sub(chip_y);
     if expanded {
         for hook in hooks {
-            let body = Line::from(Span::styled(
-                format!("    {} · {}", hook.command, format_turn_duration(hook.duration_ms)),
-                Style::default().fg(theme::DIM),
-            ));
+            let body = match hook.duration_ms {
+                Some(duration) => Line::from(Span::styled(
+                    format!("    {} · {}", hook.command, format_turn_duration(duration)),
+                    Style::default().fg(theme::DIM),
+                )),
+                None => Line::from(Span::styled(
+                    format!("    {}", hook.command),
+                    Style::default().fg(theme::DIM),
+                )),
+            };
             layout.push_wrapped_line(body, width);
         }
     }
@@ -5175,9 +5181,12 @@ mod tests {
         let hooks = vec![
             StopHookEntry {
                 command: "bash ~/.claude/hooks/notify.sh".to_owned(),
-                duration_ms: 980,
+                duration_ms: Some(980),
             },
-            StopHookEntry { command: "bash ~/.claude/hooks/log.sh".to_owned(), duration_ms: 1_500 },
+            StopHookEntry {
+                command: "bash ~/.claude/hooks/log.sh".to_owned(),
+                duration_ms: Some(1_500),
+            },
         ];
         let rendered = render_assistant_with_stop_hook(2, true, &hooks);
         assert!(
@@ -5195,6 +5204,25 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("bash ~/.claude/hooks/log.sh") && line.contains("1.5s")),
             "expected second hook row; got {rendered:?}",
+        );
+    }
+
+    /// 2.1.263 plugin-injected hooks carry no `durationMs`; their rows
+    /// render as the bare command with no dangling separator.
+    #[test]
+    fn stop_hook_summary_row_without_duration_renders_bare_command() {
+        let hooks = vec![StopHookEntry {
+            command: "plugin hooks/reminder.sh".to_owned(),
+            duration_ms: None,
+        }];
+        let rendered = render_assistant_with_stop_hook(1, true, &hooks);
+        let row = rendered
+            .iter()
+            .find(|line| line.contains("plugin hooks/reminder.sh"))
+            .expect("hook row rendered");
+        assert!(
+            !row.contains("·"),
+            "a duration-less hook row must not carry a separator tail; got {row:?}",
         );
     }
 
@@ -5244,7 +5272,8 @@ mod tests {
         // because the hook rows lift below the chip.
         let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "done");
-        let hooks = vec![StopHookEntry { command: "bash hook.sh".to_owned(), duration_ms: 500 }];
+        let hooks =
+            vec![StopHookEntry { command: "bash hook.sh".to_owned(), duration_ms: Some(500) }];
 
         let collapsed_ctx = MessageRenderContext::new(None, 80, 0, stop_hook_options(1, false))
             .with_stop_hook_hooks(hooks.as_slice());

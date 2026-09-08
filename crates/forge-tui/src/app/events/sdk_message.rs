@@ -70,11 +70,17 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         // - 2.1.204 `hook_started` / `hook_response`: typed for
         //   wire-conformance; no UI surface yet (hook-activity is a
         //   separate feature).
+        // - 2.1.263 `hook_progress`: interim hook output, same stance.
+        // - 2.1.263 `notification`: CLI host notification (e.g.
+        //   stop-hook error); forge surfaces the underlying condition
+        //   itself, so the frame is a no-op.
         Message::StreamEvent { .. }
         | Message::Unknown { .. }
         | Message::TurnDuration { .. }
         | Message::HookStarted { .. }
-        | Message::HookResponse { .. } => {}
+        | Message::HookProgress { .. }
+        | Message::HookResponse { .. }
+        | Message::Notification { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
         Message::ThinkingTokens { estimated_tokens_delta, .. } => {
             handle_thinking_tokens(app, estimated_tokens_delta);
@@ -97,10 +103,10 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
 /// end, which is why the row keeps its own copy.
 fn handle_thinking_tokens(app: &mut App, estimated_tokens_delta: i64) {
     let delta = u64::try_from(estimated_tokens_delta).unwrap_or_else(|_| {
-        // Every delta across the 2.1.220 baselines is non-negative, and
-        // a block boundary restarts at the new block's first increment
-        // rather than stepping back. A negative one means the field
-        // changed meaning, so count nothing rather than guess.
+        // Every delta the baselines have ever carried is non-negative,
+        // and a block boundary restarts at the new block's first
+        // increment rather than stepping back. A negative one means the
+        // field changed meaning, so count nothing rather than guess.
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "thinking_tokens_negative_delta",
@@ -2189,7 +2195,7 @@ mod stamp_turn_info_tests {
     //! pinned in `replay.rs`.
     use super::stamp_turn_info_on_latest_assistant;
     use super::stamp_turn_info_on_latest_assistant as stamp;
-    use super::{handle_thinking_tokens, handle_user, record_live_turn_usage};
+    use super::{handle_sdk_message, handle_thinking_tokens, handle_user, record_live_turn_usage};
     use crate::app::{App, ChatMessage, MessageRole, TurnInfo};
 
     fn usage(input: u64, output: u64, read: u64, written: u64) -> forge_primitives::Usage {
@@ -2323,6 +2329,90 @@ mod stamp_turn_info_tests {
             latest_turn_info(&app).thinking_tokens,
             Some(50),
             "turn two has thought 50, so that is what it reports - not 133",
+        );
+    }
+
+    /// The dispatcher arm for `Message::ThinkingTokens` was the last
+    /// wire-driven path into the accumulator; the 2.1.263 baselines
+    /// carry no such frames, so this pins the routing itself: a frame
+    /// through `handle_sdk_message` advances the live row's estimate.
+    #[test]
+    fn a_thinking_tokens_frame_through_the_dispatcher_advances_the_estimate() {
+        let mut app = app_with_assistant();
+        handle_sdk_message(
+            &mut app,
+            forge_primitives::Message::ThinkingTokens {
+                estimated_tokens: 164,
+                estimated_tokens_delta: 50,
+                uuid: "uuid_t".to_owned(),
+                session_id: String::new(),
+            },
+        );
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(50),
+            "the dispatcher must feed the DELTA field into the accumulator, not the \
+             block-restarting counter - 164 there would read as this turn's whole thinking",
+        );
+    }
+
+    /// Two thinking blocks in one turn: the wire's cumulative counter
+    /// restarts with the second block, but the delta stream stays
+    /// additive, so the turn reports both blocks' totals (164 + 270),
+    /// not the last block's 270. Driven synthetically: the 2.1.263
+    /// baselines contain no `thinking_tokens` frames at all, so the
+    /// former baseline-driven version had no fixture.
+    #[test]
+    fn a_turn_with_two_thinking_blocks_sums_every_block() {
+        let mut app = app_with_assistant();
+        // Block one's counter runs 50, 164; block two restarts at 50
+        // and runs 150, 250, 270.
+        for delta in [50, 114, 50, 100, 100, 20] {
+            handle_thinking_tokens(&mut app, delta);
+        }
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(434),
+            "both thinking blocks count toward the turn - reading the raw counter instead \
+             of the delta stream would report only the last block's 270",
+        );
+    }
+
+    /// A settled turn keeps its own estimate: later turns' thinking
+    /// must not overwrite a row the Result already settled (the mirror
+    /// skips settled rows), and each later turn carries only its own
+    /// count.
+    #[test]
+    fn a_later_turns_thinking_does_not_overwrite_a_settled_row() {
+        let mut app = app_with_assistant();
+        handle_thinking_tokens(&mut app, 50);
+        handle_thinking_tokens(&mut app, 33);
+        stamp(&mut app, 9_717, Some(9_668), Some(usage(4, 186, 167_802, 825)), None);
+        let settled = latest_turn_info(&app);
+        assert_eq!(
+            settled.thinking_tokens,
+            Some(83),
+            "fixture guard: the first turn settled carrying its own estimate",
+        );
+
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        app.start_live_turn(std::time::Instant::now());
+        handle_thinking_tokens(&mut app, 70);
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(70),
+            "turn two reports only its own count - the submit path reset the accumulator, \
+             so this is 70 and not turn one's 83 plus 70",
+        );
+        let first = app
+            .messages()
+            .iter()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("turn one's row");
+        assert_eq!(
+            first.turn_info.thinking_tokens,
+            Some(83),
+            "turn two's thinking must not overwrite the row the Result already settled",
         );
     }
 

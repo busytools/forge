@@ -42,7 +42,9 @@ pub struct StopHookSummaryState {
 #[derive(Debug, Clone)]
 pub struct StopHookEntry {
     pub command: String,
-    pub duration_ms: u64,
+    /// Milliseconds the hook took; `None` on 2.1.263's plugin-injected
+    /// entries, which carry no `durationMs`.
+    pub duration_ms: Option<u64>,
 }
 
 /// Lifecycle status of a Monitor (`Monitor` tool_use).
@@ -474,6 +476,21 @@ impl WorkflowEntry {
             else {
                 continue;
             };
+            if state == "done"
+                && let Some(preview) = result_preview.as_deref().filter(|s| !s.is_empty())
+            {
+                // Last writer wins. Snapshots are cumulative, so the
+                // walk ends on the terminating agent - which is the
+                // one this field is documented to carry.
+                self.final_result_summary = Some(preview.to_owned());
+            }
+            // Agent entries may arrive without phase tagging (observed
+            // outside the pinned corpus); such an event has no phase
+            // to attach to.
+            let Some((phase_index, phase_title)) = phase_index.as_ref().zip(phase_title.as_ref())
+            else {
+                continue;
+            };
             // Ensure phase exists (wire sometimes emits an agent
             // before a workflow_phase marker - defensive create).
             if !self.phases.iter().any(|p| p.index == *phase_index) {
@@ -497,14 +514,6 @@ impl WorkflowEntry {
                 phase.push_log(format!("{tool}: {summary}"));
             } else if let Some(tool) = last_tool_name.as_deref().filter(|s| !s.is_empty()) {
                 phase.push_log(format!("running {tool}"));
-            }
-            if state == "done"
-                && let Some(preview) = result_preview.as_deref().filter(|s| !s.is_empty())
-            {
-                // Last writer wins. Snapshots are cumulative, so the
-                // walk ends on the terminating agent - which is the
-                // one this field is documented to carry.
-                self.final_result_summary = Some(preview.to_owned());
             }
         }
 
@@ -730,8 +739,8 @@ mod tests {
         forge_primitives::WorkflowProgressEvent::WorkflowAgent {
             index: phase_index,
             label: format!("agent-{phase_index}"),
-            phase_index,
-            phase_title: format!("phase {phase_index}"),
+            phase_index: Some(phase_index),
+            phase_title: Some(format!("phase {phase_index}")),
             state: state.to_owned(),
             last_tool_name: None,
             last_tool_summary: None,
@@ -905,8 +914,8 @@ mod tests {
             forge_primitives::WorkflowProgressEvent::WorkflowAgent {
                 index: 1,
                 label: "ping".to_owned(),
-                phase_index: 1,
-                phase_title: "Ping".to_owned(),
+                phase_index: Some(1),
+                phase_title: Some("Ping".to_owned()),
                 state: "start".to_owned(),
                 last_tool_name: None,
                 last_tool_summary: None,
@@ -940,8 +949,8 @@ mod tests {
         let events = vec![forge_primitives::WorkflowProgressEvent::WorkflowAgent {
             index: 1,
             label: "ping".to_owned(),
-            phase_index: 1,
-            phase_title: "Ping".to_owned(),
+            phase_index: Some(1),
+            phase_title: Some("Ping".to_owned()),
             state: "done".to_owned(),
             last_tool_name: Some("StructuredOutput".to_owned()),
             last_tool_summary: Some("pong".to_owned()),
@@ -951,6 +960,41 @@ mod tests {
         assert_eq!(entry.phases[0].status, PhaseStatus::Completed);
         assert_eq!(entry.status, WorkflowStatus::Completed);
         assert_eq!(entry.final_result_summary.as_deref(), Some("{\"answer\":\"pong\"}"));
+    }
+
+    /// A phase-less agent entry carries no phase to attach logs to, but
+    /// its `done` result must still populate `final_result_summary` -
+    /// the result walk is phase-free. Drop that and a phase-less
+    /// workflow renders as completed with an empty result line.
+    #[test]
+    fn a_phase_less_done_agent_still_populates_the_result_summary() {
+        let mut entry = WorkflowEntry {
+            tool_use_id: "tu".to_owned(),
+            task_id: None,
+            meta_name: "w".to_owned(),
+            meta_description: None,
+            phases: Vec::new(),
+            status: WorkflowStatus::InProgress,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        };
+        let events = vec![forge_primitives::WorkflowProgressEvent::WorkflowAgent {
+            index: 1,
+            label: "solo".to_owned(),
+            phase_index: None,
+            phase_title: None,
+            state: "done".to_owned(),
+            last_tool_name: Some("StructuredOutput".to_owned()),
+            last_tool_summary: Some("pong".to_owned()),
+            result_preview: Some("{\"answer\":\"pong\"}".to_owned()),
+        }];
+        entry.apply_workflow_progress(&events);
+        assert_eq!(entry.final_result_summary.as_deref(), Some("{\"answer\":\"pong\"}"));
+        assert!(
+            entry.phases.is_empty(),
+            "a phase-less entry creates no phase rows - the defensive create must not fire \
+             on a None phase",
+        );
     }
 
     #[test]

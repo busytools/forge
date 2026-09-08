@@ -304,6 +304,42 @@ pub enum Message {
         session_id: String,
     },
 
+    /// A long-running hook emitted interim output. Subtype
+    /// `"hook_progress"` (2.1.263).
+    HookProgress {
+        /// Stable id for this hook run, paired with [`Self::HookResponse`].
+        hook_id: String,
+        /// Hook matcher name (e.g. `"SessionStart:startup"`).
+        hook_name: String,
+        /// Hook event that fired it (e.g. `"SessionStart"`).
+        hook_event: String,
+        /// Raw stdout of the hook command so far.
+        stdout: String,
+        /// Raw stderr of the hook command so far.
+        stderr: String,
+        /// Combined output surfaced to the session so far.
+        output: String,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
+    /// The CLI surfaced a notification to the SDK host. Subtype
+    /// `"notification"` (2.1.263).
+    Notification {
+        /// Notification kind (e.g. `"stop-hook-error"`).
+        key: Option<String>,
+        /// Human-readable notification body.
+        text: String,
+        /// Delivery priority tag (e.g. `"immediate"`).
+        priority: Option<String>,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
     /// A compaction finished and the transcript was replaced. Subtype
     /// `"compact_boundary"`.
     ///
@@ -469,7 +505,9 @@ impl Message {
             | Message::BackgroundTasksChanged { session_id, .. }
             | Message::CommandsChanged { session_id, .. }
             | Message::HookStarted { session_id, .. }
+            | Message::HookProgress { session_id, .. }
             | Message::HookResponse { session_id, .. }
+            | Message::Notification { session_id, .. }
             | Message::CompactBoundary { session_id, .. }
             | Message::Result { session_id, .. }
             | Message::StreamEvent { session_id, .. } => Some(session_id.as_str()),
@@ -680,9 +718,9 @@ pub struct StopHookInfo {
     /// Command line that fired.
     pub command: String,
     /// How long the hook took, in milliseconds. Wire field is
-    /// `durationMs`.
-    #[serde(rename = "durationMs")]
-    pub duration_ms: u64,
+    /// `durationMs`; absent on 2.1.263's plugin-injected entries.
+    #[serde(rename = "durationMs", default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 /// Usage counters reported inside task-progress and task-notification frames.
@@ -770,10 +808,15 @@ pub enum WorkflowProgressEvent {
     WorkflowAgent {
         index: u32,
         label: String,
-        #[serde(rename = "phaseIndex")]
-        phase_index: u32,
-        #[serde(rename = "phaseTitle")]
-        phase_title: String,
+        /// Phase the agent belongs to. The fields became optional:
+        /// phase-less agent entries were observed outside the pinned
+        /// corpus (proxy-routed capture), while the committed corpus
+        /// still tags every entry. Phase grouping then relies on
+        /// `workflow_phase` markers alone.
+        #[serde(rename = "phaseIndex", default, skip_serializing_if = "Option::is_none")]
+        phase_index: Option<u32>,
+        #[serde(rename = "phaseTitle", default, skip_serializing_if = "Option::is_none")]
+        phase_title: Option<String>,
         /// Current agent state on the wire: `start`, `progress`,
         /// `done`. Free-form string so future states decode
         /// without a primitives bump.
@@ -1027,6 +1070,23 @@ enum TypedSystemRepr {
         uuid: String,
         session_id: String,
     },
+    HookProgress {
+        hook_id: String,
+        hook_name: String,
+        hook_event: String,
+        stdout: String,
+        stderr: String,
+        output: String,
+        uuid: String,
+        session_id: String,
+    },
+    Notification {
+        key: Option<String>,
+        text: String,
+        priority: Option<String>,
+        uuid: String,
+        session_id: String,
+    },
     CompactBoundary {
         compact_metadata: CompactMetadataRepr,
         uuid: String,
@@ -1208,6 +1268,32 @@ impl From<MessageRepr> for Message {
                 uuid,
                 session_id,
             },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookProgress {
+                hook_id,
+                hook_name,
+                hook_event,
+                stdout,
+                stderr,
+                output,
+                uuid,
+                session_id,
+            })) => Message::HookProgress {
+                hook_id,
+                hook_name,
+                hook_event,
+                stdout,
+                stderr,
+                output,
+                uuid,
+                session_id,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::Notification {
+                key,
+                text,
+                priority,
+                uuid,
+                session_id,
+            })) => Message::Notification { key, text, priority, uuid, session_id },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CompactBoundary {
                 compact_metadata: CompactMetadataRepr { trigger, pre_tokens },
                 uuid,
@@ -1459,6 +1545,34 @@ impl From<Message> for MessageRepr {
                 uuid,
                 session_id,
             })),
+            Message::HookProgress {
+                hook_id,
+                hook_name,
+                hook_event,
+                stdout,
+                stderr,
+                output,
+                uuid,
+                session_id,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookProgress {
+                hook_id,
+                hook_name,
+                hook_event,
+                stdout,
+                stderr,
+                output,
+                uuid,
+                session_id,
+            })),
+            Message::Notification { key, text, priority, uuid, session_id } => {
+                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::Notification {
+                    key,
+                    text,
+                    priority,
+                    uuid,
+                    session_id,
+                }))
+            }
             Message::CompactBoundary { trigger, pre_tokens, uuid, session_id } => {
                 MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CompactBoundary {
                     compact_metadata: CompactMetadataRepr { trigger, pre_tokens },
@@ -2096,9 +2210,43 @@ mod tests_message_extras {
         assert_eq!(actions, 2, "hookCount -> actions");
         assert_eq!(hook_infos.len(), 2);
         assert_eq!(hook_infos[0].command, "bash ~/.claude/hooks/cmux-notify.sh");
-        assert_eq!(hook_infos[0].duration_ms, 980);
+        assert_eq!(hook_infos[0].duration_ms, Some(980));
         assert_eq!(parent_tool_use_id.as_deref(), Some("uuid_2"));
         assert_eq!(session_id, "session_0");
+    }
+
+    #[test]
+    fn stop_hook_summary_entry_without_duration_decodes_typed() {
+        // 2.1.263 emits hookInfos entries without `durationMs` (observed
+        // for plugin-injected hooks), and prompt-driven hooks add
+        // `promptText`. The entry must still decode as the typed
+        // variant, not fall to the generic system bucket.
+        let raw = json!({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "hasOutput": true,
+            "hookCount": 2,
+            "hookErrors": [],
+            "hookInfos": [
+                {"command": "bash ~/.claude/hooks/cmux-notify.sh", "durationMs": 980},
+                {"command": "${CLAUDE_PLUGIN_ROOT}/hooks/reminder.sh",
+                 "promptText": "Check verification completeness"},
+            ],
+            "level": "suggestion",
+            "preventedContinuation": false,
+            "session_id": "session_0",
+            "stopReason": "",
+            "toolUseID": "5e586a7f",
+            "uuid": "uuid_3",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::StopHookSummary { actions, hook_infos, .. } = msg else {
+            panic!("expected StopHookSummary, got {msg:?}");
+        };
+        assert_eq!(actions, 2);
+        assert_eq!(hook_infos[0].duration_ms, Some(980));
+        assert_eq!(hook_infos[1].duration_ms, None, "durationMs may be absent");
+        assert_eq!(hook_infos[1].command, "${CLAUDE_PLUGIN_ROOT}/hooks/reminder.sh");
     }
 
     #[test]
@@ -2167,8 +2315,8 @@ mod tests_message_extras {
         else {
             panic!("second event must be WorkflowAgent, got {:?}", workflow_progress[1]);
         };
-        assert_eq!(*phase_index, 1);
-        assert_eq!(phase_title, "Ping");
+        assert_eq!(*phase_index, Some(1));
+        assert_eq!(phase_title, &Some("Ping".to_string()));
         assert_eq!(state, "done");
         assert_eq!(last_tool_name.as_deref(), Some("StructuredOutput"));
         assert_eq!(last_tool_summary.as_deref(), Some("pong"));
@@ -2315,6 +2463,97 @@ mod tests_message_extras {
         assert_eq!(outcome, "success");
         assert_eq!(exit_code, 0);
         assert_eq!(stdout, "index body");
+    }
+
+    #[test]
+    fn hook_progress_decodes_as_typed_variant() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "hook_progress",
+            "hook_id": "012697b9-e191-42e6-9385-cee11f7a17d3",
+            "hook_name": "SessionStart:startup",
+            "hook_event": "SessionStart",
+            "stdout": "{\"async\": true}",
+            "stderr": "",
+            "output": "{\"async\": true}",
+            "uuid": "28d6a071-ae36-4cb8-bbdb-86686acea753",
+            "session_id": "e30daa8a-1702-4afd-8379-cab1d235935e",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::HookProgress { hook_id, hook_name, hook_event, stdout, .. } = msg else {
+            panic!("expected HookProgress, got {msg:?}");
+        };
+        assert_eq!(hook_id, "012697b9-e191-42e6-9385-cee11f7a17d3");
+        assert_eq!(hook_name, "SessionStart:startup");
+        assert_eq!(hook_event, "SessionStart");
+        assert_eq!(stdout, "{\"async\": true}");
+    }
+
+    #[test]
+    fn workflow_task_progress_agent_without_phase_decodes_typed() {
+        // Agent entries can arrive without `phaseIndex`/`phaseTitle`
+        // (observed outside the pinned corpus). The entry must still
+        // decode as a typed WorkflowAgent, not fall to the generic
+        // system bucket.
+        let raw = json!({
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "wq8nlqkoi",
+            "tool_use_id": "call_17ac8f53355f48eba45c1a39",
+            "description": "ping",
+            "usage": {"total_tokens": 0, "tool_uses": 0, "duration_ms": 27},
+            "last_tool_name": "ping",
+            "summary": "Two trivial agents in parallel",
+            "workflow_progress": [
+                {
+                    "type": "workflow_agent",
+                    "index": 1,
+                    "label": "ping",
+                    "agentId": "a05487a5d7a14d1db",
+                    "model": "claude-opus-4-8",
+                    "state": "start",
+                    "startedAt": 1_788_848_411_456_u64,
+                    "queuedAt": 1_788_848_411_455_u64,
+                    "attempt": 1,
+                    "promptPreview": "Reply with the single word ping.",
+                    "lastProgressAt": 1_788_848_411_456_u64,
+                },
+            ],
+            "uuid": "uuid_a",
+            "session_id": "session_a",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::TaskProgress { workflow_progress, .. } = msg else {
+            panic!("expected TaskProgress, got {msg:?}");
+        };
+        let WorkflowProgressEvent::WorkflowAgent { phase_index, phase_title, state, .. } =
+            &workflow_progress[0]
+        else {
+            panic!("expected WorkflowAgent, got {:?}", workflow_progress[0]);
+        };
+        assert_eq!(*phase_index, None);
+        assert_eq!(phase_title, &None);
+        assert_eq!(state, "start");
+    }
+
+    #[test]
+    fn notification_decodes_as_typed_variant() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "notification",
+            "key": "stop-hook-error",
+            "text": "Stop hook error occurred \u{b7} ctrl+o to see",
+            "priority": "immediate",
+            "session_id": "e0aed9bb-b0de-43d5-8ded-4c5c1778f0fd",
+            "uuid": "9d893480-969b-4f02-9ce6-666f87184fa0",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::Notification { key, text, priority, .. } = msg else {
+            panic!("expected Notification, got {msg:?}");
+        };
+        assert_eq!(key.as_deref(), Some("stop-hook-error"));
+        assert_eq!(text, "Stop hook error occurred \u{b7} ctrl+o to see");
+        assert_eq!(priority.as_deref(), Some("immediate"));
     }
 
     #[test]

@@ -164,7 +164,7 @@ pub fn attach_recording(builder: OptionsBuilder) -> (OptionsBuilder, Arc<Mutex<T
 /// them. The `real_session_*` baselines have no capture recipe at all -
 /// they come from the `sdk_redact_session` example. The full ritual is
 /// in `.claude/skills/claude-cli-upgrade/`.
-pub const PINNED_CLI_VERSION: &str = "2.1.220";
+pub const PINNED_CLI_VERSION: &str = "2.1.263";
 
 /// Directory holding the committed trace baselines for the pinned CLI
 /// version. Resolves to
@@ -174,6 +174,18 @@ pub fn baseline_dir() -> std::path::PathBuf {
         .join("baselines")
         .join("sdk")
         .join(PINNED_CLI_VERSION)
+}
+
+/// Directory holding the legacy-surface corpus for the pinned CLI
+/// version: the same scenarios captured with the CLI's ambient routing
+/// on a model id it does not recognize. The CLI tailors its tool
+/// surface by model recognition (recognized Anthropic models get a
+/// pruned built-in set; unrecognized ids keep the legacy full surface,
+/// e.g. the Task* family), so both surfaces are committed and replayed.
+/// Resolves to `baseline_dir()`'s `legacy-surface/` subdirectory, which
+/// keeps the two corpora out of each other's diffs.
+pub fn legacy_baseline_dir() -> std::path::PathBuf {
+    baseline_dir().join("legacy-surface")
 }
 
 /// Load a trace fixture by scenario name.
@@ -186,7 +198,18 @@ pub fn baseline_dir() -> std::path::PathBuf {
 ///
 /// If the fixture file is missing, unreadable, or malformed.
 pub fn load_baseline(scenario: &str) -> TraceLog {
-    let path = baseline_dir().join(format!("{scenario}.jsonl"));
+    load_baseline_from(&baseline_dir(), scenario)
+}
+
+/// [`load_baseline`] against an explicit baseline directory - the
+/// legacy-surface corpus lives in a sibling directory of the pinned
+/// one and is loaded the same way.
+///
+/// # Panics
+///
+/// If the fixture file is missing, unreadable, or malformed.
+pub fn load_baseline_from(dir: &std::path::Path, scenario: &str) -> TraceLog {
+    let path = dir.join(format!("{scenario}.jsonl"));
     let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "missing baseline for scenario '{scenario}' at {}: {e}. \

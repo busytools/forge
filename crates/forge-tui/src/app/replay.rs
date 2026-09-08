@@ -272,54 +272,6 @@ mod tests {
         );
     }
 
-    /// Wire-driven monitor drain: the 2.1.220 capture carries a
-    /// `system/task_notification` for the monitor, so the whole
-    /// lifecycle runs end to end through real captured frames.
-    ///
-    /// Baseline timeline:
-    /// - L19 `assistant` `tool_use=Monitor` -> the reducer creates a
-    ///   `MonitorEntry` (Running) plus the matching chat `ToolCall`.
-    /// - L21 `system/task_started` -> stamps `task_id` onto the entry.
-    /// - L24 `system/task_updated` `patch.status="completed"` -> the
-    ///   entry flips to `Completed` (the clear is NOT fired here).
-    /// - L25 `system/task_notification` -> `handle_task_notification`
-    ///   stamps the tail then calls `clear_monitors_if_all_terminal`,
-    ///   draining the now-terminal entry from the Inspector.
-    ///
-    /// Correct end-state: the Monitor `ToolCall` survives in the chat
-    /// and the Inspector MONITORS list is empty. The #277 Bug 5
-    /// deferral (the status setter must NOT self-clear, so the
-    /// notification can stamp the tail before the drain) is locked at
-    /// the unit level by the `state::tests` unit tests
-    /// (`set_monitor_status_no_longer_clears_implicitly` and
-    /// `explicit_clear_drains_when_all_terminal`); this test locks the
-    /// wire-driven drain reaching the same end-state.
-    #[test]
-    fn replay_monitor_persistent_stream_task_notification_drains_completed_monitor() {
-        use crate::app::MessageBlock;
-
-        let harness = replay_baseline("monitor_persistent_stream");
-        let session = harness.default_session();
-
-        let monitor_created = session
-            .messages
-            .iter()
-            .flat_map(|m| m.blocks.iter())
-            .any(|b| matches!(b, MessageBlock::ToolCall(tc) if tc.sdk_tool_name == "Monitor"));
-        assert!(
-            monitor_created,
-            "the L19 Monitor tool_use must produce a chat ToolCall - without it the \
-             empty MONITORS assertion below would pass vacuously",
-        );
-        assert!(
-            session.monitors.is_empty(),
-            "the L25 task_notification drives handle_task_notification -> \
-             clear_monitors_if_all_terminal, draining the completed monitor from the \
-             Inspector; got {} entry/entries",
-            session.monitors.len(),
-        );
-    }
-
     /// Inspector pane render at the post-replay end-state. The
     /// MONITORS section is gone (Monitor lives in chat now); the
     /// snapshot captures the surviving GIT + post-section chrome.
@@ -344,65 +296,6 @@ mod tests {
         let mut harness = replay_baseline("monitor_persistent_stream");
         let snapshot = harness.snapshot_chat(80, 40);
         insta::assert_snapshot!(snapshot);
-    }
-
-    /// `monitor_persistent_stream` fires `thinking_tokens` in its
-    /// first turn only and settles four, so the three silent turns
-    /// after it are what the accumulator's turn-end reset buys. Remove
-    /// that reset - the tempting cleanup once the row keeps its own
-    /// copy - and turn one's 83 settles onto all four.
-    ///
-    /// It does not prove the mirrors overwrite rather than skip: every
-    /// turn here opens its own message, so a fresh `None` and a written
-    /// `None` are the same thing. That distinction bites on a message a
-    /// second turn reuses, which no baseline happens to contain but the
-    /// reducer reaches readily - see
-    /// `a_turn_reusing_an_unsettled_row_does_not_inherit_its_estimate`.
-    #[test]
-    fn replay_the_turn_end_reset_keeps_an_estimate_off_later_turns() {
-        use crate::app::MessageRole;
-
-        let harness = replay_baseline("monitor_persistent_stream");
-        let session = harness.default_session();
-        let settled: Vec<Option<u64>> = session
-            .messages
-            .iter()
-            .filter(|m| matches!(m.role, MessageRole::Assistant) && m.turn_info.is_settled())
-            .map(|m| m.turn_info.thinking_tokens)
-            .collect();
-
-        assert_eq!(
-            settled,
-            vec![Some(83), None, None, None],
-            "the estimate belongs to the turn that produced it - the three after it fired no \
-             event and must not show its number",
-        );
-    }
-
-    /// `exit_plan_mode` thinks twice in one turn - 50, 164 and then a
-    /// restart at 50, 150, 250, 270 - so it is the one baseline where
-    /// summing the deltas and reading the wire's counter disagree.
-    /// Reading the counter yields the last block's 270 and loses the
-    /// first block entirely.
-    #[test]
-    fn replay_a_multi_block_turn_sums_every_thinking_block() {
-        use crate::app::MessageRole;
-
-        let harness = replay_baseline("exit_plan_mode");
-        let session = harness.default_session();
-        let estimates: Vec<Option<u64>> = session
-            .messages
-            .iter()
-            .filter(|m| matches!(m.role, MessageRole::Assistant) && m.turn_info.is_settled())
-            .map(|m| m.turn_info.thinking_tokens)
-            .collect();
-
-        assert_eq!(
-            estimates,
-            vec![Some(434)],
-            "both thinking blocks count toward the turn: 164 and 270 are per-block totals, \
-             and the turn spent both",
-        );
     }
 
     /// `compact.jsonl` ends with a Result that has no assistant

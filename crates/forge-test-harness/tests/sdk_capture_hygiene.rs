@@ -16,15 +16,19 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use forge_test_harness::sdk_wire::baseline_dir;
 use forge_test_harness::sdk_wire::session_redact::WireRedactor;
+use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir};
 
 /// Every directory of committed captures. The reference captures are a
 /// raw `claude --print` shell redirect that no code path redacts, so they
 /// need this guard more than the baselines do.
 fn capture_dirs() -> Vec<std::path::PathBuf> {
     let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    vec![baseline_dir(), repo_root.join(".claude/skills/claude-cli-upgrade/reference-captures")]
+    vec![
+        baseline_dir(),
+        legacy_baseline_dir(),
+        repo_root.join(".claude/skills/claude-cli-upgrade/reference-captures"),
+    ]
 }
 
 fn jsonl_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
