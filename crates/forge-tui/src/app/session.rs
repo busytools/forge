@@ -122,8 +122,7 @@ pub struct UiSession {
     pub pending_cancel: bool,
     /// A turn completed while this session was not the active tab;
     /// renders the Projects-pane completion glyph until the user
-    /// opens the session. Set by the background branch of
-    /// turn-complete, cleared by switch_active_session.
+    /// opens the session.
     pub(crate) unseen_turn_completion: bool,
     /// Latest prompt suggestion from the SDK, shown in the input
     /// hint band.
