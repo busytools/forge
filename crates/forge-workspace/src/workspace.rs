@@ -11046,6 +11046,17 @@ provider = "anthropic"
             Some(session_id.as_str()),
             "the facade resumes the label's tagged session"
         );
+        // The resolve persists its tag rows, so the next boot's scan
+        // starts warm instead of re-reading the transcript end to end.
+        let cached = {
+            let db = ws.db.lock();
+            crate::store::session_tags::load_all(db.as_ref().expect("test db present"))
+                .expect("load persisted cache")
+        };
+        assert!(
+            cached.keys().any(|key| key.contains(&session_id)),
+            "the resume resolution warmed the tag cache for the next boot"
+        );
     }
 
     /// A `resume_session` spawn for a label with no prior tagged session
@@ -11286,6 +11297,52 @@ provider = "anthropic"
             !forge_agent::env::worktree::branch_ref_exists(project.path(), "worktree-steward"),
             "the minted branch is reaped"
         );
+    }
+
+    /// When the recreation itself cannot happen (the label's branch is
+    /// checked out in a second worktree, so `git worktree add` refuses),
+    /// the lead gets WorktreeCreationFailed and nothing dispatches - a
+    /// log-and-continue mutation here would fall through to a scan the
+    /// missing worktree makes misleading.
+    #[tokio::test]
+    async fn mcp_resume_spawn_surfaces_a_failed_worktree_recreation() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, worktree) = git_worker_fixture(&project, &cfg, "steward");
+        run_git_in(
+            project.path(),
+            &["worktree", "add", "-q", "-b", "worktree-steward", "elsewhere"],
+        );
+        seed_catalog_session(&ws, &key, "lead-uuid");
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let err = facade
+            .spawn_worker(
+                &SessionKey::from_session_id("lead-uuid"),
+                "steward".to_owned(),
+                "charter".to_owned(),
+                None,
+                None,
+                false,
+                true,
+            )
+            .await
+            .expect_err("git cannot check the branch out in a second worktree");
+        assert!(
+            matches!(
+                err,
+                crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { .. }
+            ),
+            "the recreation failure surfaces typed, got {err:?}"
+        );
+        assert!(
+            ws.drain_test_dispatch_buffer()
+                .iter()
+                .all(|c| !matches!(c, Command::SpawnWorker { .. })),
+            "the failed recreation stops the spawn before dispatch"
+        );
+        assert!(!worktree.exists(), "the refused add left no worktree behind");
     }
 
     /// The motivating shape: a git worker despawned (worktree removed),

@@ -1317,6 +1317,18 @@ mod tests {
         assert_eq!(worktree_branch(&wt).as_deref(), Some(branch.as_str()));
     }
 
+    /// A dirty existing worktree is still a no-op: the uncommitted file
+    /// and the branch must survive ensure, so a force-recreate mutation
+    /// that wipes the checkout cannot pass.
+    #[test]
+    fn ensure_worker_worktree_never_touches_a_dirty_existing_worktree() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        fs::write(wt.join("uncommitted.txt"), "in flight").expect("write uncommitted");
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("no-op");
+        assert_eq!(outcome, WorktreeEnsure::AlreadyPresent);
+        assert!(wt.join("uncommitted.txt").exists(), "the uncommitted work survives ensure");
+    }
+
     /// The despawn-kept-branch shape: the worktree was removed but the
     /// branch survives (it held unreachable commits). Reattaching it must
     /// bring the branch's content back with it, or the resumed worker
@@ -1361,6 +1373,32 @@ mod tests {
         assert_eq!(outcome, WorktreeEnsure::CreatedWithNewBranch);
         assert!(wt.exists());
         assert_eq!(worktree_branch(&wt).as_deref(), Some("worktree-lbl"));
+        assert_eq!(
+            git_stdout(dir.path(), &["rev-parse", "worktree-lbl"]),
+            git_stdout(dir.path(), &["rev-parse", "HEAD"]),
+            "the recreated branch starts at the repo's current HEAD"
+        );
+    }
+
+    /// The branch is checked out in a second worktree, so `git worktree
+    /// add` at the label path cannot attach it. ensure reports the
+    /// failure with git's stderr instead of pretending to succeed.
+    #[test]
+    fn ensure_worker_worktree_fails_when_the_branch_is_checked_out_elsewhere() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        drop_worktree(dir.path(), &wt);
+        let second = dir.path().join("elsewhere");
+        run_git(
+            dir.path(),
+            &["worktree", "add", "-q", second.to_str().expect("utf8"), "worktree-lbl"],
+        );
+
+        let err = ensure_worker_worktree(dir.path(), "lbl", &wt).expect_err("attach is refused");
+        assert!(
+            matches!(err, WorktreeError::CreateFailed(ref reason) if reason.contains("worktree-lbl")),
+            "the error carries git's stderr naming the branch: {err:?}"
+        );
+        assert!(!wt.exists(), "the failed add leaves no worktree behind");
     }
 
     #[test]
