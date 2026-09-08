@@ -3503,6 +3503,55 @@ mod tests {
         );
     }
 
+    /// The attention family outranks the unseen-completion diamond on
+    /// the row itself: a pending prompt shows yellow △ and a dead turn
+    /// shows red ✕, with the flag armed underneath both.
+    #[test]
+    fn attention_and_failed_turn_outrank_unseen_completion_on_the_row() {
+        use crate::app::session::SessionLifecycleState;
+        use std::time::SystemTime;
+
+        let project_path = "/tmp/bg-activity-project";
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+
+        // Pending prompt + armed flag: yellow △ wins.
+        let (mut app, project, lead_key) =
+            app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
+        app.active_session_key = None;
+        {
+            let lead = app.sessions.get_mut(&lead_key).expect("lead bucket");
+            lead.unseen_turn_completion = true;
+            lead.prompt_queue.push_back(crate::app::prompt::PromptState::from_permission(
+                "tc-bg".to_owned(),
+                crate::app::prompt::tests::make_permission_request(),
+            ));
+        }
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+        let row = rendered_row(&lines, "bg-activity-project");
+        assert!(row.contains('\u{25b3}'), "pending prompt shows the yellow △; got: {row}");
+        assert!(!row.contains('\u{25c6}'), "the diamond never masks △; got: {row}");
+
+        // Dead turn + armed flag: red ✕ wins.
+        let (mut app, project, lead_key) =
+            app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
+        app.active_session_key = None;
+        {
+            let lead = app.sessions.get_mut(&lead_key).expect("lead bucket");
+            lead.unseen_turn_completion = true;
+            lead.failed_turn = Some(crate::app::FailedTurn {
+                error: forge_primitives::ApiRetryError::ServerError,
+                status: Some(529),
+                failed_at: SystemTime::UNIX_EPOCH,
+            });
+        }
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+        let row = rendered_row(&lines, "bg-activity-project");
+        assert!(row.contains('\u{2715}'), "a dead turn shows the red ✕; got: {row}");
+        assert!(!row.contains('\u{25c6}'), "the diamond never masks ✕; got: {row}");
+    }
+
     /// Background work promotes ONLY an Idle session to the spinner.
     /// Attention / AuthRequired must keep their own glyph so a live task
     /// never masks a session that needs the user (pending prompt / login).
