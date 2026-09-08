@@ -1860,10 +1860,25 @@ fn stamp_turn_info_on_latest_assistant(
     usage: Option<forge_primitives::Usage>,
     total_cost_usd: Option<f64>,
 ) {
-    let Some(idx) =
+    let Some(tail_idx) =
         app.messages().iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
     else {
         return;
+    };
+    // A submit reparents the live bar onto a fresh tail placeholder, and
+    // turn exit strips that placeholder if still empty - so a Result
+    // racing the submit settles on the body row the bar was shed from.
+    let idx = if app.messages().get(tail_idx).is_some_and(|msg| msg.blocks.is_empty()) {
+        app.messages()[..tail_idx]
+            .iter()
+            .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+            .filter(|&earlier| {
+                let msg = &app.messages()[earlier];
+                !msg.blocks.is_empty() && !msg.turn_info.is_settled()
+            })
+            .unwrap_or(tail_idx)
+    } else {
+        tail_idx
     };
     let model = app.observed_assistant_model().map(ToOwned::to_owned);
     let usage = usage.filter(|u| !is_unattributed_usage(*u));
@@ -4390,6 +4405,147 @@ mod turn_end_context_usage_tests {
             rx.try_recv().is_err(),
             "above the token gate the turn-end poll must be gate-skipped"
         );
+    }
+}
+
+#[cfg(test)]
+mod submit_result_race_tests {
+    //! #777: a Result applied while the next turn's submit already sat
+    //! in the queue lands on that turn's empty placeholder, and the
+    //! turn-exit strip then deletes the figures with it. The turn's own
+    //! body row must keep its Result, and the queued turn must keep
+    //! its own.
+    use super::handle_sdk_message;
+    use crate::agent::model;
+    use crate::app::App;
+    use crate::app::MessageRole;
+    use forge_primitives::Message;
+
+    fn usage(input: u64, output: u64, read: u64, written: u64) -> forge_primitives::Usage {
+        forge_primitives::Usage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_input_tokens: read,
+            cache_creation_input_tokens: written,
+        }
+    }
+
+    fn assistant_envelope(id: &str, text: &str, usage: forge_primitives::Usage) -> Message {
+        Message::Assistant {
+            message: forge_primitives::AssistantEnvelope {
+                id: id.to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-opus-5".to_owned(),
+                content: vec![forge_primitives::ContentBlock::Text { text: text.to_owned() }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: Some(usage),
+            },
+            session_id: "session-1".to_owned(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    fn result_message(
+        duration_ms: u64,
+        duration_api_ms: u64,
+        usage: forge_primitives::Usage,
+        total_cost_usd: Option<f64>,
+    ) -> Message {
+        Message::Result {
+            subtype: "success".to_owned(),
+            session_id: "session-1".to_owned(),
+            is_error: false,
+            num_turns: 1,
+            duration_ms,
+            duration_api_ms,
+            stop_reason: Some("end_turn".to_owned()),
+            total_cost_usd,
+            usage: Some(usage),
+            result: None,
+            structured_output: None,
+            model_usage: None,
+            permission_denials: None,
+            errors: None,
+            uuid: None,
+            terminal_reason: None,
+        }
+    }
+
+    fn app_with_connection()
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
+        let mut app = App::test_default();
+        let rx = app.install_testing_stub();
+        app.set_session_id(Some(model::SessionId::new("session-1")));
+        (app, rx)
+    }
+
+    fn row_of<'a>(app: &'a App, marker: &str) -> &'a crate::app::TurnInfo {
+        app.messages()
+            .iter()
+            .find(|m| {
+                matches!(m.role, MessageRole::Assistant)
+                    && m.blocks.iter().any(|b| {
+                        matches!(b, crate::app::MessageBlock::Text(t) if t.text.contains(marker))
+                    })
+            })
+            .map(|m| &m.turn_info)
+            .expect("the turn's body row must exist")
+    }
+
+    /// Turn A streams its body; the user submits turn B while A's
+    /// Result is still pending; the CLI emits nothing more before that
+    /// Result. The Result then finds the submit's empty placeholder at
+    /// the tail, and turn exit strips the placeholder as an empty
+    /// bubble - taking A's settled row with it.
+    #[test]
+    fn a_result_raced_by_a_submit_keeps_the_turns_own_row() {
+        let (mut app, mut rx) = app_with_connection();
+
+        // Turn A: idle submit, then a streamed body.
+        app.status = crate::app::AppStatus::Ready;
+        app.input_mut().set_text("first");
+        crate::app::input_submit::submit_input(&mut app);
+        let _ = rx.try_recv();
+        handle_sdk_message(
+            &mut app,
+            assistant_envelope("msg_a", "answer part", usage(2, 5, 15_262, 62_706)),
+        );
+
+        // Turn B submitted while Result(A) sits unapplied.
+        app.input_mut().set_text("second");
+        crate::app::input_submit::submit_input(&mut app);
+        let _ = rx.try_recv();
+
+        handle_sdk_message(
+            &mut app,
+            result_message(4_675, 3_807, usage(2, 5, 15_262, 62_706), Some(0.634_826)),
+        );
+
+        let a_row = row_of(&app, "answer part");
+        assert_eq!(
+            a_row.duration_ms,
+            Some(4_675),
+            "turn A's Result must settle on turn A's own body row"
+        );
+        assert_eq!(
+            a_row.input_tokens,
+            Some(2),
+            "turn A's accounting must survive the raced turn exit"
+        );
+
+        // The queued turn runs and keeps its own row.
+        handle_sdk_message(
+            &mut app,
+            assistant_envelope("msg_b", "turn two answer", usage(4, 7, 16_000, 100)),
+        );
+        handle_sdk_message(&mut app, result_message(900, 6_500, usage(4, 7, 16_000, 100), None));
+
+        let b_row = row_of(&app, "turn two answer");
+        assert_eq!(b_row.duration_ms, Some(900), "turn B's Result settles on turn B's own row");
+        assert_eq!(b_row.output_tokens, Some(7), "turn B wears its own figures, not turn A's");
     }
 }
 
