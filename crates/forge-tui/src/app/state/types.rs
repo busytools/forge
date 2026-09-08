@@ -42,7 +42,9 @@ pub struct StopHookSummaryState {
 #[derive(Debug, Clone)]
 pub struct StopHookEntry {
     pub command: String,
-    pub duration_ms: u64,
+    /// Milliseconds the hook took; `None` on 2.1.263's plugin-injected
+    /// entries, which carry no `durationMs`.
+    pub duration_ms: Option<u64>,
 }
 
 /// Lifecycle status of a Monitor (`Monitor` tool_use).
@@ -482,8 +484,9 @@ impl WorkflowEntry {
                 // one this field is documented to carry.
                 self.final_result_summary = Some(preview.to_owned());
             }
-            // 2.1.263 agent entries may arrive without phase tagging;
-            // such an event has no phase to attach to.
+            // Agent entries may arrive without phase tagging (observed
+            // outside the pinned corpus); such an event has no phase
+            // to attach to.
             let Some((phase_index, phase_title)) = phase_index.as_ref().zip(phase_title.as_ref())
             else {
                 continue;
@@ -957,6 +960,41 @@ mod tests {
         assert_eq!(entry.phases[0].status, PhaseStatus::Completed);
         assert_eq!(entry.status, WorkflowStatus::Completed);
         assert_eq!(entry.final_result_summary.as_deref(), Some("{\"answer\":\"pong\"}"));
+    }
+
+    /// A phase-less agent entry carries no phase to attach logs to, but
+    /// its `done` result must still populate `final_result_summary` -
+    /// the result walk is phase-free. Drop that and a phase-less
+    /// workflow renders as completed with an empty result line.
+    #[test]
+    fn a_phase_less_done_agent_still_populates_the_result_summary() {
+        let mut entry = WorkflowEntry {
+            tool_use_id: "tu".to_owned(),
+            task_id: None,
+            meta_name: "w".to_owned(),
+            meta_description: None,
+            phases: Vec::new(),
+            status: WorkflowStatus::InProgress,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        };
+        let events = vec![forge_primitives::WorkflowProgressEvent::WorkflowAgent {
+            index: 1,
+            label: "solo".to_owned(),
+            phase_index: None,
+            phase_title: None,
+            state: "done".to_owned(),
+            last_tool_name: Some("StructuredOutput".to_owned()),
+            last_tool_summary: Some("pong".to_owned()),
+            result_preview: Some("{\"answer\":\"pong\"}".to_owned()),
+        }];
+        entry.apply_workflow_progress(&events);
+        assert_eq!(entry.final_result_summary.as_deref(), Some("{\"answer\":\"pong\"}"));
+        assert!(
+            entry.phases.is_empty(),
+            "a phase-less entry creates no phase rows - the defensive create must not fire \
+             on a None phase",
+        );
     }
 
     #[test]

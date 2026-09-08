@@ -103,10 +103,10 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
 /// end, which is why the row keeps its own copy.
 fn handle_thinking_tokens(app: &mut App, estimated_tokens_delta: i64) {
     let delta = u64::try_from(estimated_tokens_delta).unwrap_or_else(|_| {
-        // Every delta across the 2.1.220 baselines is non-negative, and
-        // a block boundary restarts at the new block's first increment
-        // rather than stepping back. A negative one means the field
-        // changed meaning, so count nothing rather than guess.
+        // Every delta the baselines have ever carried is non-negative,
+        // and a block boundary restarts at the new block's first
+        // increment rather than stepping back. A negative one means the
+        // field changed meaning, so count nothing rather than guess.
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "thinking_tokens_negative_delta",
@@ -2180,7 +2180,7 @@ mod stamp_turn_info_tests {
     //! pinned in `replay.rs`.
     use super::stamp_turn_info_on_latest_assistant;
     use super::stamp_turn_info_on_latest_assistant as stamp;
-    use super::{handle_thinking_tokens, handle_user, record_live_turn_usage};
+    use super::{handle_sdk_message, handle_thinking_tokens, handle_user, record_live_turn_usage};
     use crate::app::{App, ChatMessage, MessageRole, TurnInfo};
 
     fn usage(input: u64, output: u64, read: u64, written: u64) -> forge_primitives::Usage {
@@ -2314,6 +2314,30 @@ mod stamp_turn_info_tests {
             latest_turn_info(&app).thinking_tokens,
             Some(50),
             "turn two has thought 50, so that is what it reports - not 133",
+        );
+    }
+
+    /// The dispatcher arm for `Message::ThinkingTokens` was the last
+    /// wire-driven path into the accumulator; the 2.1.263 baselines
+    /// carry no such frames, so this pins the routing itself: a frame
+    /// through `handle_sdk_message` advances the live row's estimate.
+    #[test]
+    fn a_thinking_tokens_frame_through_the_dispatcher_advances_the_estimate() {
+        let mut app = app_with_assistant();
+        handle_sdk_message(
+            &mut app,
+            forge_primitives::Message::ThinkingTokens {
+                estimated_tokens: 164,
+                estimated_tokens_delta: 50,
+                uuid: "uuid_t".to_owned(),
+                session_id: String::new(),
+            },
+        );
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(50),
+            "the dispatcher must feed the DELTA field into the accumulator, not the \
+             block-restarting counter - 164 there would read as this turn's whole thinking",
         );
     }
 

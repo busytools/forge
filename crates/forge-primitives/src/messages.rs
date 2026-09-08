@@ -718,9 +718,9 @@ pub struct StopHookInfo {
     /// Command line that fired.
     pub command: String,
     /// How long the hook took, in milliseconds. Wire field is
-    /// `durationMs`.
-    #[serde(rename = "durationMs")]
-    pub duration_ms: u64,
+    /// `durationMs`; absent on 2.1.263's plugin-injected entries.
+    #[serde(rename = "durationMs", default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 /// Usage counters reported inside task-progress and task-notification frames.
@@ -808,9 +808,11 @@ pub enum WorkflowProgressEvent {
     WorkflowAgent {
         index: u32,
         label: String,
-        /// Phase the agent belongs to. 2.1.263 stopped tagging agent
-        /// entries with their phase; agents then arrive phase-less and
-        /// phase grouping relies on `workflow_phase` markers alone.
+        /// Phase the agent belongs to. The fields became optional:
+        /// phase-less agent entries were observed outside the pinned
+        /// corpus (proxy-routed capture), while the committed corpus
+        /// still tags every entry. Phase grouping then relies on
+        /// `workflow_phase` markers alone.
         #[serde(rename = "phaseIndex", default, skip_serializing_if = "Option::is_none")]
         phase_index: Option<u32>,
         #[serde(rename = "phaseTitle", default, skip_serializing_if = "Option::is_none")]
@@ -2208,9 +2210,43 @@ mod tests_message_extras {
         assert_eq!(actions, 2, "hookCount -> actions");
         assert_eq!(hook_infos.len(), 2);
         assert_eq!(hook_infos[0].command, "bash ~/.claude/hooks/cmux-notify.sh");
-        assert_eq!(hook_infos[0].duration_ms, 980);
+        assert_eq!(hook_infos[0].duration_ms, Some(980));
         assert_eq!(parent_tool_use_id.as_deref(), Some("uuid_2"));
         assert_eq!(session_id, "session_0");
+    }
+
+    #[test]
+    fn stop_hook_summary_entry_without_duration_decodes_typed() {
+        // 2.1.263 emits hookInfos entries without `durationMs` (observed
+        // for plugin-injected hooks), and prompt-driven hooks add
+        // `promptText`. The entry must still decode as the typed
+        // variant, not fall to the generic system bucket.
+        let raw = json!({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "hasOutput": true,
+            "hookCount": 2,
+            "hookErrors": [],
+            "hookInfos": [
+                {"command": "bash ~/.claude/hooks/cmux-notify.sh", "durationMs": 980},
+                {"command": "${CLAUDE_PLUGIN_ROOT}/hooks/reminder.sh",
+                 "promptText": "Check verification completeness"},
+            ],
+            "level": "suggestion",
+            "preventedContinuation": false,
+            "session_id": "session_0",
+            "stopReason": "",
+            "toolUseID": "5e586a7f",
+            "uuid": "uuid_3",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::StopHookSummary { actions, hook_infos, .. } = msg else {
+            panic!("expected StopHookSummary, got {msg:?}");
+        };
+        assert_eq!(actions, 2);
+        assert_eq!(hook_infos[0].duration_ms, Some(980));
+        assert_eq!(hook_infos[1].duration_ms, None, "durationMs may be absent");
+        assert_eq!(hook_infos[1].command, "${CLAUDE_PLUGIN_ROOT}/hooks/reminder.sh");
     }
 
     #[test]
@@ -2455,10 +2491,10 @@ mod tests_message_extras {
 
     #[test]
     fn workflow_task_progress_agent_without_phase_decodes_typed() {
-        // 2.1.263 stopped tagging workflow_agent entries with their
-        // phase: no `phaseIndex`/`phaseTitle` on the wire. The entry
-        // must still decode as a typed WorkflowAgent, not fall to the
-        // generic system bucket.
+        // Agent entries can arrive without `phaseIndex`/`phaseTitle`
+        // (observed outside the pinned corpus). The entry must still
+        // decode as a typed WorkflowAgent, not fall to the generic
+        // system bucket.
         let raw = json!({
             "type": "system",
             "subtype": "task_progress",
