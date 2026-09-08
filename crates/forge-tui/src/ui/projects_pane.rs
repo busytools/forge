@@ -3436,6 +3436,30 @@ mod tests {
         );
     }
 
+    /// A settled background session whose turn wrapped while the user
+    /// was elsewhere renders the completion diamond in place of the
+    /// idle bullet, until the session is opened.
+    #[test]
+    fn idle_project_with_unseen_completion_renders_diamond() {
+        use crate::app::session::SessionLifecycleState;
+
+        let project_path = "/tmp/bg-activity-project";
+        let (mut app, project, lead_key) =
+            app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
+        app.sessions.get_mut(&lead_key).expect("lead bucket").unseen_turn_completion = true;
+
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+
+        let row = rendered_row(&lines, "bg-activity-project");
+        assert!(row.contains('\u{25c6}'), "unseen completion renders the diamond; got: {row}");
+        assert!(
+            !row.contains('\u{25cf}'),
+            "the idle bullet yields to the diamond on that row; got: {row}"
+        );
+    }
+
     /// A non-focused session with a pending prompt still wins with the
     /// yellow △ even when it also has live background work - attention
     /// override stays ahead of the background-work spinner.
