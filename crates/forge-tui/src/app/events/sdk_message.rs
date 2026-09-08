@@ -2317,6 +2317,66 @@ mod stamp_turn_info_tests {
         );
     }
 
+    /// Two thinking blocks in one turn: the wire's cumulative counter
+    /// restarts with the second block, but the delta stream stays
+    /// additive, so the turn reports both blocks' totals (164 + 270),
+    /// not the last block's 270. Driven synthetically: the 2.1.263
+    /// baselines contain no `thinking_tokens` frames at all, so the
+    /// former baseline-driven version had no fixture.
+    #[test]
+    fn a_turn_with_two_thinking_blocks_sums_every_block() {
+        let mut app = app_with_assistant();
+        // Block one's counter runs 50, 164; block two restarts at 50
+        // and runs 150, 250, 270.
+        for delta in [50, 114, 50, 100, 100, 20] {
+            handle_thinking_tokens(&mut app, delta);
+        }
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(434),
+            "both thinking blocks count toward the turn - reading the raw counter instead \
+             of the delta stream would report only the last block's 270",
+        );
+    }
+
+    /// A settled turn keeps its own estimate: later turns' thinking
+    /// must not overwrite a row the Result already settled (the mirror
+    /// skips settled rows), and each later turn carries only its own
+    /// count.
+    #[test]
+    fn a_later_turns_thinking_does_not_overwrite_a_settled_row() {
+        let mut app = app_with_assistant();
+        handle_thinking_tokens(&mut app, 50);
+        handle_thinking_tokens(&mut app, 33);
+        stamp(&mut app, 9_717, Some(9_668), Some(usage(4, 186, 167_802, 825)), None);
+        let settled = latest_turn_info(&app);
+        assert_eq!(
+            settled.thinking_tokens,
+            Some(83),
+            "fixture guard: the first turn settled carrying its own estimate",
+        );
+
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        app.start_live_turn(std::time::Instant::now());
+        handle_thinking_tokens(&mut app, 70);
+        assert_eq!(
+            latest_turn_info(&app).thinking_tokens,
+            Some(70),
+            "turn two reports only its own count - the submit path reset the accumulator, \
+             so this is 70 and not turn one's 83 plus 70",
+        );
+        let first = app
+            .messages()
+            .iter()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("turn one's row");
+        assert_eq!(
+            first.turn_info.thinking_tokens,
+            Some(83),
+            "turn two's thinking must not overwrite the row the Result already settled",
+        );
+    }
+
     fn latest_turn_info(app: &App) -> TurnInfo {
         app.messages()
             .iter()
