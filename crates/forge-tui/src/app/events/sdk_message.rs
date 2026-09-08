@@ -2470,6 +2470,35 @@ mod stamp_turn_info_tests {
         );
     }
 
+    /// The race divert refuses a settled row even for a Result carrying
+    /// usage: in the next turn's submit-to-first-token window the tail
+    /// placeholder sits above a finished turn's body row, and diverting
+    /// there would overwrite figures the Result cannot belong to.
+    #[test]
+    fn a_usage_bearing_result_falls_back_to_the_placeholder_over_a_settled_row() {
+        let mut app = app_with_assistant();
+        app.active_messages_mut()[0]
+            .blocks
+            .push(crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete("body")));
+        stamp(&mut app, 4_675, Some(3_807), Some(usage(2, 5, 15_262, 62_706)), None);
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+
+        stamp(&mut app, 900, Some(2_693), Some(usage(4, 7, 16_000, 100)), None);
+
+        let rows: Vec<Option<u64>> = app
+            .messages()
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .map(|m| m.turn_info.duration_ms)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![Some(4_675), Some(900)],
+            "the race-window Result falls back to the tail placeholder and the settled row \
+             keeps turn one's figures",
+        );
+    }
+
     /// The CLI emits one assistant frame per content block, all sharing
     /// a `message.id` and repeating the same usage, so summing frame by
     /// frame double-counts. Figures are `permission_deny`'s three
