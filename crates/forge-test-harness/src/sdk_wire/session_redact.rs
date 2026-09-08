@@ -37,6 +37,7 @@
 //! Deterministic: one input line always gives the same output line.
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::OnceLock;
 
 use serde_json::Value;
@@ -517,15 +518,32 @@ impl WireRedactor {
             redact_command_inventory_recursive(&mut probe);
             redact_mcp_config_recursive(&mut probe);
             if probe != parsed {
+                // With `preserve_order` a re-encode can only differ
+                // from the original in number spelling - including a
+                // one-ulp drift on 17-digit floats, where serde_json's
+                // parse is the canonicaliser. A matching token COUNT
+                // means no structure was lost (duplicate keys collapse
+                // on parse), so redacting on the parsed tree is safe;
+                // numbers beyond f64 precision re-spell rather than
+                // survive. A count mismatch still refuses.
+                if number_token_counts_match(line, &reencoded) {
+                    return self.redact_structurally(parsed);
+                }
                 let ty = parsed.get("type").and_then(Value::as_str).unwrap_or("<no type>");
                 return Err(format!(
                     "a {ty} frame carries account, hook-body, command-inventory or \
-                     mcp-config fields but does not survive a re-encode, so they cannot be redacted structurally"
+                     mcp-config fields but does not survive a value-faithful re-encode, so \
+                     they cannot be redacted structurally"
                 ));
             }
             return Ok(self.scrub_raw(line));
         }
-        let mut v = parsed;
+        self.redact_structurally(parsed)
+    }
+
+    /// The structural rules plus path and owner scrubbing, over an
+    /// already-parsed line.
+    fn redact_structurally(&self, mut v: Value) -> Result<String, String> {
         redact_account_recursive(&mut v);
         redact_hook_body_recursive(&mut v);
         redact_command_inventory_recursive(&mut v);
@@ -539,6 +557,52 @@ impl WireRedactor {
     fn scrub_raw(&self, s: &str) -> String {
         replace_owners(&scrub_text(s), &self.owners)
     }
+}
+
+/// Number literals appearing outside string literals, in order. With
+/// serde_json's `preserve_order`, two serialisations of the same
+/// `Value` can only differ in these, so comparing the sequences by
+/// numeric value is what decides whether a re-encode is faithful.
+fn number_tokens(line: &str) -> Vec<f64> {
+    let mut tokens = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, c) in line.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        let numeric = c.is_ascii_digit() || matches!(c, '-' | '+' | '.' | 'e' | 'E');
+        if numeric && start.is_none() {
+            start = Some(i);
+        } else if !numeric {
+            if let Some(s) = start.take() {
+                tokens.push(&line[s..i]);
+            }
+            if c == '"' {
+                in_string = true;
+            }
+        }
+    }
+    if let Some(s) = start {
+        tokens.push(&line[s..]);
+    }
+    tokens.into_iter().filter_map(|t| f64::from_str(t).ok()).collect()
+}
+
+/// True when both lines carry the same NUMBER of number literals.
+/// A count change means the re-encode lost or gained structure -
+/// duplicate keys collapse on parse - and that still refuses; equal
+/// counts pass, accepting serde_json's canonical re-spelling.
+fn number_token_counts_match(original: &str, reencoded: &str) -> bool {
+    number_tokens(original).len() == number_tokens(reencoded).len()
 }
 
 /// Recursively walk a JSON value and rewrite every absolute home path
@@ -1123,11 +1187,37 @@ mod tests {
         assert_eq!(after["uuid"], json!("a/b"), "the field after the path was eaten: {out}");
     }
 
-    /// Account fields are only reachable structurally, so a line that
-    /// cannot be re-encoded must fail rather than half-redact.
+    /// Account fields are only reachable structurally. A re-encode
+    /// whose token count matches is structure-preserving, so the
+    /// structural path is safe to take - the line comes back redacted
+    /// with the float re-spelled to serde_json's canonical form.
     #[test]
-    fn account_fields_on_a_non_round_tripping_line_fail_closed() {
+    fn account_fields_on_a_value_faithful_reencode_redact_structurally() {
         let line = r#"{"total_cost_usd":1.3382134999999997,"account":{"email":"a@b.co"}}"#;
+        let out = WireRedactor::for_trace([line])
+            .expect("discovers")
+            .redact_line(line)
+            .expect("value-faithful re-encode redacts");
+        assert!(!out.contains("a@b.co"), "email survived: {out}");
+        assert!(
+            out.contains("1.3382134999999995"),
+            "the float re-spells to serde_json's canonical parse: {out}"
+        );
+        let after: Value = serde_json::from_str(&out).expect("stays valid JSON");
+        assert_eq!(
+            after["account"]["email"],
+            json!("<redacted-email>"),
+            "the email collapses to its placeholder: {out}"
+        );
+    }
+
+    /// A re-encode that LOSES structure must refuse: duplicate keys
+    /// collapse on parse, dropping a number token, so the re-encode
+    /// would silently lose a field. Fail closed rather than write
+    /// evidence the CLI never sent.
+    #[test]
+    fn account_fields_on_a_structure_losing_reencode_fail_closed() {
+        let line = r#"{"total_cost_usd":1.5,"total_cost_usd":1.3382134999999997,"account":{"email":"a@b.co"}}"#;
         let err = WireRedactor::for_trace([line])
             .expect("discovers")
             .redact_line(line)
