@@ -1226,16 +1226,6 @@ pub(super) fn apply_session_update_chat_appended(
     apply_sdk_message_presentation(app, session_id, msg);
 }
 
-/// True for a success `Result` frame - the wire shape a completed
-/// turn arrives as. Failed Results route through the turn-error
-/// handlers instead and must not arm the unseen-completion flag.
-fn is_success_result(msg: &forge_primitives::Message) -> bool {
-    matches!(
-        msg,
-        forge_primitives::Message::Result { is_error: false, subtype, .. } if subtype == "success"
-    )
-}
-
 fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_primitives::Message) {
     // For new sessions the CLI doesn't emit `system/init` until AFTER
     // the first user message lands (per `Client::spawn` docs), so
@@ -1364,7 +1354,11 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
         // UI state, pivots `active_session_key`, runs the body, and
         // restores the snapshot.
         let targets_background = app.active_session_key.as_ref() != Some(&session_key);
-        let success_result = is_success_result(&msg);
+        let success_result = matches!(
+            &msg,
+            forge_primitives::Message::Result { is_error, subtype, .. }
+                if super::sdk_message::is_success_result(*is_error, subtype)
+        );
         crate::app::active_bucket_scope::with_pivoted(app, session_key.clone(), |app| {
             super::sdk_message::handle_sdk_message(app, msg);
         });
