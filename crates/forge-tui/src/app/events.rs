@@ -5371,10 +5371,7 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            forge_workspace::SessionUpdate::TurnComplete {
-                key: bg.clone(),
-                terminal_reason: None,
-            },
+            forge_workspace::SessionUpdate::TurnComplete { key: bg.clone(), terminal_reason: None },
         );
 
         assert!(
@@ -5391,10 +5388,7 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            forge_workspace::SessionUpdate::TurnComplete {
-                key: bg.clone(),
-                terminal_reason: None,
-            },
+            forge_workspace::SessionUpdate::TurnComplete { key: bg.clone(), terminal_reason: None },
         );
         app.switch_active_session(bg.clone());
 
