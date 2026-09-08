@@ -549,12 +549,10 @@ fn append_org_project_row(
             !*is_focused && app.sessions.get(session_key).is_some_and(|b| b.failed_turn.is_some());
         // A live backgrounded task keeps the row spinning even after its
         // turn settles to Idle - pending input still wins over both.
-        let has_background_work = app
+        let (has_background_work, has_unseen_completion) = app
             .sessions
             .get(session_key)
-            .is_some_and(crate::app::session::UiSession::has_live_background_work);
-        let has_unseen_completion =
-            app.sessions.get(session_key).is_some_and(|b| b.unseen_turn_completion);
+            .map_or((false, false), |b| (b.has_live_background_work(), b.unseen_turn_completion));
         let (glyph, glyph_color) = if failed_turn {
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else if needs_attention {
@@ -793,12 +791,10 @@ fn append_worker_tree_children(
             && app.sessions.get(&worker.session_key).is_some_and(|b| b.failed_turn.is_some());
         // A worker running its own backgrounded task (e.g. a `gh run watch`)
         // spins its row like a lead does - same Idle-only promotion.
-        let has_background_work = app
+        let (has_background_work, has_unseen_completion) = app
             .sessions
             .get(&worker.session_key)
-            .is_some_and(crate::app::session::UiSession::has_live_background_work);
-        let has_unseen_completion =
-            app.sessions.get(&worker.session_key).is_some_and(|b| b.unseen_turn_completion);
+            .map_or((false, false), |b| (b.has_live_background_work(), b.unseen_turn_completion));
         let (glyph, glyph_color) = if failed_turn {
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else if needs_attention {
