@@ -2012,12 +2012,12 @@ fn apply_result_finalize(
     errors_array: Vec<String>,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
-    // `apply_result_finalize` only runs on the active session - the
-    // SDK message dispatcher in `super::client` adopts the message's
-    // session_id onto the active bucket before firing the sub-
-    // handlers. Cloning the active session_key here threads it
-    // through to the lifecycle handlers without leaking the
-    // multiplexer's routing concern into every sub-handler.
+    // Runs on the active-or-pivoted bucket: the SDK message
+    // dispatcher in `super::client` pivots `active_session_key` onto
+    // a background frame's own bucket before dispatching. Cloning
+    // the active session_key here threads it through to the
+    // lifecycle handlers without leaking the multiplexer's routing
+    // concern into every sub-handler.
     let active_key = app
         .active_session_key
         .clone()
