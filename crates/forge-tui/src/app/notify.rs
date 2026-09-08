@@ -159,11 +159,16 @@ impl NotificationManager {
         if let Some((title, body)) = &desktop {
             send_desktop_notification(title.clone(), body.clone());
         }
+        let dispatched = plan.ring_bell || plan.send_desktop || plan.osc9_text.is_some();
         tracing::info!(
             target: crate::logging::targets::APP_NOTIFY,
-            event_name = "notification_fired",
-            message = "unfocused notification dispatched",
-            outcome = "success",
+            event_name = if dispatched { "notification_fired" } else { "notification_planned_no_channels" },
+            message = if dispatched {
+                "unfocused notification dispatched"
+            } else {
+                "notification channel disabled; nothing dispatched"
+            },
+            outcome = if dispatched { "success" } else { "skipped" },
             event = ?event,
             channel = ?channel,
             ring_bell = plan.ring_bell,
@@ -293,9 +298,8 @@ fn send_osc9_notification(message: &str) {
     use std::io::Write;
 
     let sequence = osc9_escape_sequence(message);
-    let result = std::io::stdout()
-        .write_all(sequence.as_bytes())
-        .and_then(|()| std::io::stdout().flush());
+    let result =
+        std::io::stdout().write_all(sequence.as_bytes()).and_then(|()| std::io::stdout().flush());
     if let Err(error) = result {
         tracing::warn!(
             target: crate::logging::targets::APP_NOTIFY,
