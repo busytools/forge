@@ -248,3 +248,30 @@ async fn wire_capture_permission_request_hook() {
     .await
     .expect("scenario run");
 }
+
+#[tokio::test]
+#[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
+async fn wire_capture_stop_hook_error_notification() {
+    // A failing Stop hook (exit 2) is the emitter of the
+    // `system/notification` frame with key `stop-hook-error` - the only
+    // observed producer of that subtype on the 2.1.263 wire, and the
+    // reason the typed `Message::Notification` variant has a baseline.
+    let settings = r#"{
+        "hooks": {
+            "Stop": [{"hooks": [{"type": "command", "command": "exit 2"}]}]
+        }
+    }"#;
+
+    let opts = OptionsBuilder::new()
+        .max_turns(1)
+        .permission_mode(PermissionMode::AcceptEdits)
+        .settings(settings.to_string())
+        .build();
+
+    run_live_scenario("stop_hook_error", opts, |client, events| async move {
+        client.send_user_message("Reply with only the word ERROR.").await?;
+        Ok((client, events))
+    })
+    .await
+    .expect("scenario run");
+}
