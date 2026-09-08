@@ -258,8 +258,16 @@ pub(crate) mod test_capture {
 /// bounce in most terminal emulators.
 fn ring_bell() {
     use std::io::Write;
-    let _ = std::io::stdout().write_all(b"\x07");
-    let _ = std::io::stdout().flush();
+    let result = std::io::stdout().write_all(b"\x07").and_then(|()| std::io::stdout().flush());
+    if let Err(error) = result {
+        tracing::warn!(
+            target: crate::logging::targets::APP_NOTIFY,
+            event_name = "bell_send_failed",
+            message = "could not write the terminal bell",
+            outcome = "failure",
+            error_message = %error,
+        );
+    }
 }
 
 /// Spawn a background thread that sends an OS-native desktop notification.
@@ -285,8 +293,18 @@ fn send_osc9_notification(message: &str) {
     use std::io::Write;
 
     let sequence = osc9_escape_sequence(message);
-    let _ = std::io::stdout().write_all(sequence.as_bytes());
-    let _ = std::io::stdout().flush();
+    let result = std::io::stdout()
+        .write_all(sequence.as_bytes())
+        .and_then(|()| std::io::stdout().flush());
+    if let Err(error) = result {
+        tracing::warn!(
+            target: crate::logging::targets::APP_NOTIFY,
+            event_name = "osc9_send_failed",
+            message = "could not write the OSC 9 notification sequence",
+            outcome = "failure",
+            error_message = %error,
+        );
+    }
 }
 
 fn notification_plan(
