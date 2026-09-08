@@ -4,7 +4,7 @@
 //!
 //! ```bash
 //! cargo run -p forge-test-harness --example sdk_reredact_capture -- \
-//!   crates/forge-test-harness/baselines/sdk/2.1.220 \
+//!   crates/forge-test-harness/baselines/sdk \
 //!   .claude/skills/claude-cli-upgrade/reference-captures
 //! ```
 //!

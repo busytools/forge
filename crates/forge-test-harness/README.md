@@ -141,8 +141,9 @@ crates/forge-test-harness/
 │   ├── sdk_redact_session.rs           # session .jsonl -> committed baseline
 │   └── sdk_reredact_capture.rs         # re-redact a committed capture in place
 ├── baselines/
-│   └── sdk/2.1.220/                    # pinned CLI version at capture time
-│       └── <scenario>.jsonl            # 45 of them, one per scenario
+│   └── sdk/<PINNED_CLI_VERSION>/       # pinned CLI version at capture time
+│       ├── <scenario>.jsonl            # one per scenario
+│       └── legacy-surface/             # same scenarios on an unrecognized model
 └── tests/
     ├── sdk_replay.rs                   # always-on decode test across every baseline
     ├── sdk_capture_hygiene.rs          # committed captures are a redactor fixed point
@@ -184,12 +185,12 @@ session:
 ```bash
 cargo run -p forge-test-harness --example sdk_redact_session -- \
   "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>/<session>.jsonl" \
-  crates/forge-test-harness/baselines/sdk/2.1.220/real_session_<name>.jsonl
+  crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/real_session_<name>.jsonl
 ```
 
-One sample lives at `baselines/sdk/2.1.220/real_session_sample.jsonl`
- -  352 messages covering real multi-turn tool-use flows, all
-redaction-scrubbed.
+The committed `real_session_*` baselines live under the pinned CLI
+version's directory, regenerated at each upgrade from fresh
+multi-turn sessions (media block, tool round, stop-hook summary).
 
 ## Coverage map (wire surfaces vs. scenarios)
 
