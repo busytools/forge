@@ -16,6 +16,7 @@ pub mod targets {
     pub const APP_PASTE: &str = "app.paste";
     pub const APP_PERF: &str = "app.perf";
     pub const APP_PERMISSION: &str = "app.permission";
+    pub const APP_NOTIFY: &str = "app.notify";
     pub const APP_RENDER: &str = "app.render";
     pub const APP_SESSION: &str = "app.session";
     pub const APP_TOOL: &str = "app.tool";
