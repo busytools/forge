@@ -51,6 +51,9 @@ pub enum WorktreeError {
     /// git's stderr.
     #[error("git worktree remove failed: {0}")]
     RemoveFailed(String),
+    /// `git worktree add` ran but exited non-zero. Carries git's stderr.
+    #[error("git worktree add failed: {0}")]
+    CreateFailed(String),
 }
 
 /// Why a worktree is not safe to remove, or `None` when it is clean.
@@ -129,6 +132,35 @@ pub fn remove_worktree(path: &Path, force: bool) -> Result<(), WorktreeError> {
         Ok(())
     } else {
         Err(WorktreeError::RemoveFailed(String::from_utf8_lossy(&output.stderr).trim().to_owned()))
+    }
+}
+
+/// Recreate the worker worktree at `path` when a despawn (or an
+/// out-of-band removal) took it, so a resumed worker can run with its
+/// worktree as cwd again - the transcript lives under the worktree's
+/// storage key, so `claude --resume` cannot find it from any other
+/// directory. Anchored on the branch: attach the surviving
+/// `worktree-<label>` when despawn kept it, otherwise recreate the
+/// branch at the repo's current HEAD, the base a fresh `--worktree
+/// <label>` would use. An existing `path` is a no-op.
+pub fn ensure_worker_worktree(repo: &Path, label: &str, path: &Path) -> Result<(), WorktreeError> {
+    if path.exists() {
+        return Ok(());
+    }
+    let branch = format!("worktree-{label}");
+    let mut cmd = git_command::command("git");
+    cmd.arg("worktree").arg("add").arg("-q");
+    if branch_ref_exists(repo, &branch) {
+        cmd.arg(path).arg(&branch);
+    } else {
+        cmd.arg("-b").arg(&branch).arg(path);
+    }
+    cmd.current_dir(repo);
+    let output = cmd.output().map_err(|e| WorktreeError::GitSpawn(e.to_string()))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(WorktreeError::CreateFailed(git_error(&output)))
     }
 }
 
@@ -1220,6 +1252,57 @@ mod tests {
             reap_worktree_branch(dir.path(), "worktree-never-existed"),
             BranchReapOutcome::NotPresent
         );
+    }
+
+    #[test]
+    fn ensure_worker_worktree_leaves_an_existing_worktree_alone() {
+        let (dir, wt, branch) = init_repo_with_worker_worktree("lbl");
+        ensure_worker_worktree(dir.path(), "lbl", &wt).expect("existing worktree is a no-op");
+        assert!(wt.exists());
+        assert_eq!(worktree_branch(&wt).as_deref(), Some(branch.as_str()));
+    }
+
+    /// The despawn-kept-branch shape: the worktree was removed but the
+    /// branch survives (it held unreachable commits). Reattaching it must
+    /// bring the branch's content back with it, or the resumed worker
+    /// returns to an empty checkout.
+    #[test]
+    fn ensure_worker_worktree_reattaches_a_surviving_branch() {
+        let (dir, wt, branch) = init_repo_with_worker_worktree("lbl");
+        fs::write(wt.join("work.txt"), "a worker committed here").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "real work"]);
+        drop_worktree(dir.path(), &wt);
+        assert!(!wt.exists(), "fixture precondition: the worktree is gone");
+        assert!(branch_ref_exists(dir.path(), &branch), "fixture precondition: branch kept");
+
+        ensure_worker_worktree(dir.path(), "lbl", &wt).expect("reattach succeeds");
+        assert!(wt.exists(), "the worktree exists again");
+        assert_eq!(worktree_branch(&wt).as_deref(), Some(branch.as_str()));
+        assert!(
+            wt.join("work.txt").exists(),
+            "reattaching the branch restores its content"
+        );
+    }
+
+    /// The despawn-reaped-branch shape: nothing on the branch was
+    /// unreachable, so despawn deleted it. The branch is recreated at the
+    /// repo's current HEAD, the same base claude's fresh `--worktree
+    /// <label>` would use.
+    #[test]
+    fn ensure_worker_worktree_recreates_the_branch_when_reaped() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        drop_worktree(dir.path(), &wt);
+        assert_eq!(
+            reap_worktree_branch(dir.path(), "worktree-lbl"),
+            BranchReapOutcome::Reaped,
+            "fixture precondition: despawn reaped the branch"
+        );
+        assert!(!wt.exists());
+
+        ensure_worker_worktree(dir.path(), "lbl", &wt).expect("recreate succeeds");
+        assert!(wt.exists());
+        assert_eq!(worktree_branch(&wt).as_deref(), Some("worktree-lbl"));
     }
 
     #[test]
