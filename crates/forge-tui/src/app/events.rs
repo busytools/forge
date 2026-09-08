@@ -5385,16 +5385,30 @@ mod tests {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
         app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        // A second background session whose turn also wrapped unseen.
+        let other = forge_workspace::SessionKey::from_session_id("bg-session-2");
+        app.sessions.insert(other.clone(), crate::app::session::UiSession::new(other.clone()));
 
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::TurnComplete { key: bg.clone(), terminal_reason: None },
+        );
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnComplete {
+                key: other.clone(),
+                terminal_reason: None,
+            },
         );
         app.switch_active_session(bg.clone());
 
         assert!(
             !app.sessions.get(&bg).expect("bucket").unseen_turn_completion,
             "opening the session clears the unseen marker",
+        );
+        assert!(
+            app.sessions.get(&other).expect("bucket").unseen_turn_completion,
+            "switching to one session must not clear the other's unseen marker",
         );
     }
 
