@@ -135,32 +135,86 @@ pub fn remove_worktree(path: &Path, force: bool) -> Result<(), WorktreeError> {
     }
 }
 
-/// Recreate the worker worktree at `path` when a despawn (or an
-/// out-of-band removal) took it, so a resumed worker can run with its
-/// worktree as cwd again - the transcript lives under the worktree's
-/// storage key, so `claude --resume` cannot find it from any other
-/// directory. Anchored on the branch: attach the surviving
-/// `worktree-<label>` when despawn kept it, otherwise recreate the
-/// branch at the repo's current HEAD, the base a fresh `--worktree
-/// <label>` would use. An existing `path` is a no-op.
-pub fn ensure_worker_worktree(repo: &Path, label: &str, path: &Path) -> Result<(), WorktreeError> {
+/// What [`ensure_worker_worktree`] had to do, so a caller rolling back
+/// a refused spawn knows what it may delete: the worktree only when it
+/// was absent, the branch only when this call minted it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeEnsure {
+    /// `path` already stood; nothing was touched.
+    AlreadyPresent,
+    /// `path` was created and an existing `worktree-<label>` branch was
+    /// attached to it. The branch predates the call and may hold the
+    /// worker's only copy of its commits.
+    AttachedExistingBranch,
+    /// `path` was created and `worktree-<label>` was minted at the
+    /// repo's current HEAD.
+    CreatedWithNewBranch,
+}
+
+/// Recreate the worker worktree at `path` when a despawn removed it, so
+/// a resumed worker can run with its worktree as cwd again - the
+/// transcript lives under the worktree's storage key, so `claude
+/// --resume` cannot find it from any other directory. Anchored on the
+/// branch: attach the surviving `worktree-<label>` when despawn kept
+/// it, otherwise recreate the branch at the repo's current HEAD, the
+/// base a fresh `--worktree <label>` would use. An existing `path` is a
+/// no-op; an out-of-band `rm -rf` defeats this (git's stale
+/// registration makes `worktree add` fail with git's message, surfaced
+/// here).
+pub fn ensure_worker_worktree(
+    repo: &Path,
+    label: &str,
+    path: &Path,
+) -> Result<WorktreeEnsure, WorktreeError> {
     if path.exists() {
-        return Ok(());
+        return Ok(WorktreeEnsure::AlreadyPresent);
     }
     let branch = format!("worktree-{label}");
     let mut cmd = git_command::command("git");
     cmd.arg("worktree").arg("add").arg("-q");
-    if branch_ref_exists(repo, &branch) {
+    let outcome = if branch_ref_exists(repo, &branch) {
         cmd.arg(path).arg(&branch);
+        WorktreeEnsure::AttachedExistingBranch
     } else {
         cmd.arg("-b").arg(&branch).arg(path);
-    }
+        WorktreeEnsure::CreatedWithNewBranch
+    };
     cmd.current_dir(repo);
     let output = cmd.output().map_err(|e| WorktreeError::GitSpawn(e.to_string()))?;
     if output.status.success() {
-        Ok(())
+        Ok(outcome)
     } else {
         Err(WorktreeError::CreateFailed(git_error(&output)))
+    }
+}
+
+/// Undo the work [`ensure_worker_worktree`] did for a spawn that was
+/// then refused, so the refusal strands neither worktree nor branch.
+/// The worktree goes only when ensure created it, the branch only when
+/// ensure minted it - an `AttachedExistingBranch` keeps the branch,
+/// which predates the call and may hold the worker's only copy of its
+/// commits. Returns git's complaint when something had to stay behind;
+/// the spawn is already refused, so a failure is a warning, not an
+/// error.
+pub fn discard_worker_worktree(
+    repo: &Path,
+    label: &str,
+    path: &Path,
+    ensured: WorktreeEnsure,
+) -> Option<String> {
+    if matches!(ensured, WorktreeEnsure::AlreadyPresent) {
+        return None;
+    }
+    if let Err(err) = remove_worktree(path, true) {
+        return Some(err.to_string());
+    }
+    if !matches!(ensured, WorktreeEnsure::CreatedWithNewBranch) {
+        return None;
+    }
+    let branch = format!("worktree-{label}");
+    match reap_worktree_branch(repo, &branch) {
+        BranchReapOutcome::Reaped | BranchReapOutcome::NotPresent => None,
+        other => Some(format!("branch '{branch}' left behind: {other:?}")),
     }
 }
 
@@ -1257,7 +1311,8 @@ mod tests {
     #[test]
     fn ensure_worker_worktree_leaves_an_existing_worktree_alone() {
         let (dir, wt, branch) = init_repo_with_worker_worktree("lbl");
-        ensure_worker_worktree(dir.path(), "lbl", &wt).expect("existing worktree is a no-op");
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("no-op");
+        assert_eq!(outcome, WorktreeEnsure::AlreadyPresent, "nothing was touched");
         assert!(wt.exists());
         assert_eq!(worktree_branch(&wt).as_deref(), Some(branch.as_str()));
     }
@@ -1276,7 +1331,12 @@ mod tests {
         assert!(!wt.exists(), "fixture precondition: the worktree is gone");
         assert!(branch_ref_exists(dir.path(), &branch), "fixture precondition: branch kept");
 
-        ensure_worker_worktree(dir.path(), "lbl", &wt).expect("reattach succeeds");
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("reattach succeeds");
+        assert_eq!(
+            outcome,
+            WorktreeEnsure::AttachedExistingBranch,
+            "the branch predates the call, so a rollback must spare it"
+        );
         assert!(wt.exists(), "the worktree exists again");
         assert_eq!(worktree_branch(&wt).as_deref(), Some(branch.as_str()));
         assert!(wt.join("work.txt").exists(), "reattaching the branch restores its content");
@@ -1297,9 +1357,61 @@ mod tests {
         );
         assert!(!wt.exists());
 
-        ensure_worker_worktree(dir.path(), "lbl", &wt).expect("recreate succeeds");
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("recreate succeeds");
+        assert_eq!(outcome, WorktreeEnsure::CreatedWithNewBranch);
         assert!(wt.exists());
         assert_eq!(worktree_branch(&wt).as_deref(), Some("worktree-lbl"));
+    }
+
+    #[test]
+    fn discard_worker_worktree_removes_a_minted_worktree_and_branch() {
+        let (dir, wt, branch) = init_repo_with_worker_worktree("lbl");
+        drop_worktree(dir.path(), &wt);
+        assert_eq!(
+            reap_worktree_branch(dir.path(), &branch),
+            BranchReapOutcome::Reaped,
+            "fixture precondition: the branch is gone, so ensure must mint it"
+        );
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("recreate succeeds");
+        assert_eq!(outcome, WorktreeEnsure::CreatedWithNewBranch);
+
+        let warning = discard_worker_worktree(dir.path(), "lbl", &wt, outcome);
+        assert!(warning.is_none(), "a clean discard warns about nothing: {warning:?}");
+        assert!(!wt.exists(), "the minted worktree is gone");
+        assert!(!branch_exists(dir.path(), &branch), "the minted branch is reaped");
+    }
+
+    /// The attach case is the data-loss guard: the branch predates the
+    /// ensure and may hold the worker's only copy of its commits, so a
+    /// rollback removes the worktree and spares the branch.
+    #[test]
+    fn discard_worker_worktree_keeps_a_pre_existing_branch() {
+        let (dir, wt, branch) = init_repo_with_worker_worktree("lbl");
+        fs::write(wt.join("work.txt"), "a worker committed here").expect("write work");
+        run_git(&wt, &["add", "."]);
+        run_git(&wt, &["commit", "-q", "-m", "real work"]);
+        drop_worktree(dir.path(), &wt);
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("reattach succeeds");
+        assert_eq!(outcome, WorktreeEnsure::AttachedExistingBranch);
+
+        let warning = discard_worker_worktree(dir.path(), "lbl", &wt, outcome);
+        assert!(warning.is_none(), "a clean discard warns about nothing: {warning:?}");
+        assert!(!wt.exists(), "the worktree ensure created is gone");
+        assert!(branch_exists(dir.path(), &branch), "the pre-existing branch survives");
+        assert_eq!(
+            git_stdout(dir.path(), &["rev-list", "--count", &branch]),
+            "2",
+            "the branch's two commits (seed + the worker's) are all still reachable"
+        );
+    }
+
+    #[test]
+    fn discard_worker_worktree_is_a_noop_when_ensure_touched_nothing() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        let warning =
+            discard_worker_worktree(dir.path(), "lbl", &wt, WorktreeEnsure::AlreadyPresent);
+        assert!(warning.is_none());
+        assert!(wt.exists(), "an already-present worktree is left alone");
     }
 
     #[test]

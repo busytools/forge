@@ -11085,6 +11085,209 @@ provider = "anthropic"
         );
     }
 
+    /// A one-commit git repo as the project plus a workspace booted over
+    /// a one-project forge.toml naming it. Returns the workspace, the
+    /// project's key, and the label's worktree path (not created).
+    fn git_worker_fixture(
+        project: &tempfile::TempDir,
+        cfg: &tempfile::TempDir,
+        label: &str,
+    ) -> (Arc<Workspace>, crate::target::ProjectKey, PathBuf) {
+        let project_path = project.path().to_string_lossy().replace('\\', "/");
+        run_git_in(project.path(), &["init", "-q"]);
+        run_git_in(project.path(), &["config", "user.email", "t@example.com"]);
+        run_git_in(project.path(), &["config", "user.name", "Test"]);
+        std::fs::write(project.path().join("README.md"), "seed").expect("write seed");
+        run_git_in(project.path(), &["add", "."]);
+        run_git_in(project.path(), &["commit", "-q", "-m", "init"]);
+
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "demo"
+path = "{project_path}"
+
+[[accounts]]
+display_name = "acct-a"
+config_dir = "{}"
+provider = "anthropic"
+"#,
+                cfg.path().to_string_lossy().replace('\\', "/"),
+            ),
+        )
+        .expect("write forge.toml");
+
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let key =
+            ws.list_projects().into_iter().find(|v| v.name == "demo").expect("project").key.clone();
+        let worktree = project.path().join(".claude").join("worktrees").join(label);
+        (ws, key, worktree)
+    }
+
+    /// Write a `forge:worker:<label>` tagged transcript under the
+    /// worktree's storage key, computed while the worktree exists - the
+    /// way claude names the directory at session time.
+    fn write_tagged_transcript(
+        cfg: &tempfile::TempDir,
+        worktree: &std::path::Path,
+        session_id: &str,
+        label: &str,
+    ) {
+        let worktree_str = worktree.to_string_lossy().replace('\\', "/");
+        let storage_key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&worktree_str));
+        let jsonl_dir = forge_sdk::projects_dir_for(cfg.path()).join(&storage_key);
+        std::fs::create_dir_all(&jsonl_dir).expect("jsonl dir");
+        std::fs::write(
+            jsonl_dir.join(format!("{session_id}.jsonl")),
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{worktree_str}\",\"message\":{{\"content\":\"hi\"}}}}\n\
+                 {{\"type\":\"tag\",\"tag\":\"forge:worker:{label}\"}}\n"
+            ),
+        )
+        .expect("write tagged jsonl");
+    }
+
+    /// A typo'd label in a git project mints a worktree and a branch on
+    /// the ensure step, then refuses with NoPriorSession. The refusal
+    /// must undo both - otherwise every typo leaves an orphan branch
+    /// behind, the exact litter despawn's branch reap exists to prevent.
+    #[tokio::test]
+    async fn mcp_resume_refusal_does_not_strand_a_minted_worktree() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, worktree) = git_worker_fixture(&project, &cfg, "typo");
+        seed_catalog_session(&ws, &key, "lead-uuid");
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let err = facade
+            .spawn_worker(
+                &SessionKey::from_session_id("lead-uuid"),
+                "typo".to_owned(),
+                "charter".to_owned(),
+                None,
+                None,
+                false,
+                true,
+            )
+            .await
+            .expect_err("no prior session for the typo'd label");
+        assert_eq!(
+            err,
+            crate::mcp::workers::facade::WorkerSpawnError::NoPriorSession {
+                label: "typo".to_owned()
+            },
+        );
+        assert!(!worktree.exists(), "the worktree the refusal minted is rolled back");
+        assert!(
+            !forge_agent::env::worktree::branch_ref_exists(project.path(), "worktree-typo"),
+            "the branch the refusal minted is reaped"
+        );
+        assert!(
+            ws.drain_test_dispatch_buffer()
+                .iter()
+                .all(|c| !matches!(c, Command::SpawnWorker { .. })),
+            "the refusal happens before any dispatch",
+        );
+    }
+
+    /// The attach case is the data-loss guard: the branch predates the
+    /// spawn and holds the worker's only copy of its commits, so the
+    /// rollback removes the worktree it created and spares the branch.
+    #[tokio::test]
+    async fn mcp_resume_refusal_keeps_a_pre_existing_branch() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, worktree) = git_worker_fixture(&project, &cfg, "steward");
+        let worktree_str = worktree.to_string_lossy().replace('\\', "/");
+        run_git_in(
+            project.path(),
+            &["worktree", "add", "-q", "-b", "worktree-steward", worktree_str.as_str()],
+        );
+        std::fs::write(worktree.join("work.txt"), "a worker committed here").expect("write work");
+        run_git_in(&worktree, &["add", "."]);
+        run_git_in(&worktree, &["commit", "-q", "-m", "real work"]);
+        run_git_in(project.path(), &["worktree", "remove", "--force", worktree_str.as_str()]);
+        seed_catalog_session(&ws, &key, "lead-uuid");
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let err = facade
+            .spawn_worker(
+                &SessionKey::from_session_id("lead-uuid"),
+                "steward".to_owned(),
+                "charter".to_owned(),
+                None,
+                None,
+                false,
+                true,
+            )
+            .await
+            .expect_err("no prior session to resume");
+        assert!(matches!(
+            err,
+            crate::mcp::workers::facade::WorkerSpawnError::NoPriorSession { .. }
+        ));
+        assert!(!worktree.exists(), "the attached worktree is rolled back");
+        assert!(
+            forge_agent::env::worktree::branch_ref_exists(project.path(), "worktree-steward"),
+            "the pre-existing branch and its commits survive the refusal"
+        );
+    }
+
+    /// A refusal from the shared guard (label already live) arrives
+    /// after dispatch, so the rollback rides the reply path: the
+    /// worktree the ensure step minted is removed and its branch reaped.
+    #[tokio::test]
+    async fn mcp_label_live_refusal_rolls_back_a_minted_worktree() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, worktree) = git_worker_fixture(&project, &cfg, "steward");
+        let worktree_str = worktree.to_string_lossy().replace('\\', "/");
+        run_git_in(
+            project.path(),
+            &["worktree", "add", "-q", "-b", "worktree-steward", worktree_str.as_str()],
+        );
+        write_tagged_transcript(&cfg, &worktree, "550e8400-e29b-41d4-a716-446655440099", "steward");
+        run_git_in(project.path(), &["worktree", "remove", "--force", worktree_str.as_str()]);
+        run_git_in(project.path(), &["branch", "-D", "worktree-steward"]);
+        seed_catalog_session(&ws, &key, "lead-uuid");
+        // No dispatch intercept: the label-live refusal must come from
+        // the real shared core, which fires before any subprocess spawn.
+        ws.insert_live_worker(&key, worker_entry("steward", "live-session", "lead-uuid"));
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let err = facade
+            .spawn_worker(
+                &SessionKey::from_session_id("lead-uuid"),
+                "steward".to_owned(),
+                "charter".to_owned(),
+                None,
+                None,
+                false,
+                true,
+            )
+            .await
+            .expect_err("the label is already live");
+        let crate::mcp::workers::facade::WorkerSpawnError::DispatchFailed { message } = err else {
+            panic!("the label-live refusal classifies as DispatchFailed, got {err:?}");
+        };
+        assert!(message.contains("already live"), "the refusal is the label guard: {message}");
+        assert!(!worktree.exists(), "the minted worktree is rolled back");
+        assert!(
+            !forge_agent::env::worktree::branch_ref_exists(project.path(), "worktree-steward"),
+            "the minted branch is reaped"
+        );
+    }
+
     /// The motivating shape: a git worker despawned (worktree removed),
     /// then re-spawned with `resume_session`. The facade recreates the
     /// worktree before dispatch, because the transcript lives under the

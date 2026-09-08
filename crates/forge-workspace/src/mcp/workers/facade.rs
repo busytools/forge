@@ -406,6 +406,28 @@ fn classify_worker_identity(
     }
 }
 
+/// Undo the worktree a refused spawn's `ensure_worker_worktree` step
+/// created, so a refusal strands neither worktree nor branch. `ensured`
+/// is `None` when this spawn never touched a worktree.
+fn discard_refused_worktree(
+    repo: &std::path::Path,
+    label: &str,
+    ensured: Option<(std::path::PathBuf, forge_agent::env::worktree::WorktreeEnsure)>,
+) {
+    let Some((worktree, outcome)) = ensured else { return };
+    if let Some(warning) =
+        forge_agent::env::worktree::discard_worker_worktree(repo, label, &worktree, outcome)
+    {
+        tracing::warn!(
+            target: "forge_workspace::mcp::workers",
+            %label,
+            worktree = %worktree.display(),
+            %warning,
+            "a refused spawn's fresh worktree stayed behind"
+        );
+    }
+}
+
 /// Production impl. Holds a `Weak<Workspace>` so construction doesn't
 /// close a strong cycle through the Workspace -> bridge -> MCP ->
 /// Tool -> facade -> Workspace path. Every method starts with
@@ -478,7 +500,9 @@ impl WorkerFacade for ProdWorkerFacade {
         // removes it, the transcript lives under the worktree's storage
         // key, and that key only matches the scan's run-dir key while
         // the worktree stands (a missing path canonicalises to nothing,
-        // so on a symlinked root the two spellings diverge).
+        // so on a symlinked root the two spellings diverge). What ensure
+        // did is kept so a later refusal can undo exactly that work.
+        let mut ensured = None;
         let resume_existing = if resume_session {
             if is_git_repo_at_spawn {
                 let worktree = crate::mcp::workers::types::worker_tag_dir(
@@ -486,16 +510,20 @@ impl WorkerFacade for ProdWorkerFacade {
                     &label,
                     is_git_repo_at_spawn,
                 );
-                if let Err(err) = forge_agent::env::worktree::ensure_worker_worktree(
+                match forge_agent::env::worktree::ensure_worker_worktree(
                     &view.path, &label, &worktree,
                 ) {
-                    return Err(WorkerSpawnError::WorktreeCreationFailed {
-                        reason: err.to_string(),
-                    });
+                    Ok(outcome) => ensured = Some((worktree, outcome)),
+                    Err(err) => {
+                        return Err(WorkerSpawnError::WorktreeCreationFailed {
+                            reason: err.to_string(),
+                        });
+                    }
                 }
             }
             let Some(session_id) = ws.resolve_worker_resume_session(&view.path, &label).await
             else {
+                discard_refused_worktree(&view.path, &label, ensured.take());
                 return Err(WorkerSpawnError::NoPriorSession { label });
             };
             Some(session_id)
@@ -532,6 +560,7 @@ impl WorkerFacade for ProdWorkerFacade {
             return_to: tx,
         };
         if let Err(err) = ws.dispatch(cmd) {
+            discard_refused_worktree(&view.path, &persisted.label, ensured.take());
             return Err(WorkerSpawnError::DispatchFailed {
                 message: format!("dispatch failed: {err:?}"),
             });
@@ -556,7 +585,12 @@ impl WorkerFacade for ProdWorkerFacade {
                 }
                 Ok(reply)
             }
-            Ok(Err(message)) => Err(classify_worker_spawn_failure(&message, is_git_repo_at_spawn)),
+            Ok(Err(message)) => {
+                discard_refused_worktree(&view.path, &persisted.label, ensured.take());
+                Err(classify_worker_spawn_failure(&message, is_git_repo_at_spawn))
+            }
+            // No rollback here: a dropped reply means the command may
+            // still run, and the spawn it would do needs the worktree.
             Err(_) => Err(WorkerSpawnError::DispatchFailed {
                 message: "spawn handler dropped reply channel".into(),
             }),
