@@ -3555,8 +3555,8 @@ mod tests {
     fn glyph_promotes_to_spinner_only_over_idle() {
         use crate::app::session::SessionLifecycleState;
 
-        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, true, 'X', false);
-        assert_eq!(glyph, "X", "Idle + background work shows the spinner");
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, true, 'X', true);
+        assert_eq!(glyph, "X", "Idle + background work shows the spinner even with the flag armed");
 
         let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, false, 'X', false);
         assert_eq!(glyph, "\u{25cf}", "Idle + no background work keeps the bullet");

@@ -1859,13 +1859,14 @@ mod tests {
         (key_a, key_b)
     }
 
-    /// A success `Message::Result` frame - the wire shape a completed
-    /// turn actually arrives as.
-    fn success_result(session_id: &str) -> forge_primitives::Message {
+    /// A `Message::Result` frame: `is_error: false` is the success
+    /// shape a completed turn arrives as, `is_error: true` the failed
+    /// shape that must not arm the unseen-completion flag.
+    fn result_frame(session_id: &str, is_error: bool) -> forge_primitives::Message {
         forge_primitives::Message::Result {
             subtype: "success".to_owned(),
             session_id: session_id.to_owned(),
-            is_error: false,
+            is_error,
             num_turns: 1,
             duration_ms: 0,
             duration_api_ms: 0,
@@ -2685,7 +2686,7 @@ mod tests {
             &mut app,
             SessionUpdate::ChatAppended {
                 session_id: background.as_str().to_owned(),
-                msg: success_result(background.as_str()),
+                msg: result_frame(background.as_str(), false),
             },
         );
 
@@ -2712,13 +2713,42 @@ mod tests {
             &mut app,
             SessionUpdate::ChatAppended {
                 session_id: active.as_str().to_owned(),
-                msg: success_result(active.as_str()),
+                msg: result_frame(active.as_str(), false),
             },
         );
 
         assert!(
             !app.sessions.get(&active).expect("bucket").unseen_turn_completion,
             "a turn completing on the watched session must not arm the flag",
+        );
+    }
+
+    /// Only a success Result arms the unseen-completion flag: the
+    /// failed shape routes through the turn-error handlers and leaves
+    /// the flag alone.
+    #[test]
+    fn failed_result_does_not_arm_unseen_completion() {
+        let mut app = App::test_default();
+        let (active, background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_active = workspace.install_testing_stub(&active);
+        let _cmds_background = workspace.install_testing_stub(&background);
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ChatAppended {
+                session_id: background.as_str().to_owned(),
+                msg: result_frame(background.as_str(), true),
+            },
+        );
+
+        assert!(
+            !app.sessions.get(&background).expect("bg bucket").unseen_turn_completion,
+            "a failed Result must not arm the unseen-completion flag",
+        );
+        assert!(
+            !app.sessions.get(&active).expect("active bucket").unseen_turn_completion,
+            "no other bucket is touched either",
         );
     }
 
