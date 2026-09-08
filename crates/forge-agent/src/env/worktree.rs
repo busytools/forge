@@ -1279,10 +1279,7 @@ mod tests {
         ensure_worker_worktree(dir.path(), "lbl", &wt).expect("reattach succeeds");
         assert!(wt.exists(), "the worktree exists again");
         assert_eq!(worktree_branch(&wt).as_deref(), Some(branch.as_str()));
-        assert!(
-            wt.join("work.txt").exists(),
-            "reattaching the branch restores its content"
-        );
+        assert!(wt.join("work.txt").exists(), "reattaching the branch restores its content");
     }
 
     /// The despawn-reaped-branch shape: nothing on the branch was

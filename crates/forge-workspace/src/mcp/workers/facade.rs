@@ -89,6 +89,10 @@ pub enum WorkerSpawnError {
     /// pick a different label, or `git commit --allow-empty` first
     /// in the empty-repo case).
     WorktreeCreationFailed { reason: String },
+    /// `resume_session` was set but no prior session tagged
+    /// `forge:worker:<label>` exists in the caller's project, so there
+    /// is nothing to resume. Refused before any dispatch.
+    NoPriorSession { label: String },
 }
 
 /// Synchronous error from `update_worker`. Gating (lead-only, non-empty
@@ -253,6 +257,9 @@ pub trait WorkerFacade: Send + Sync {
     /// it replaces the generic restart note when this worker resumes
     /// after a forge restart. `interactive` keeps the built-in
     /// `AskUserQuestion` tool, which every other worker is denied.
+    /// `resume_session` resumes the label's most recent prior session
+    /// (the same pick a forge restart makes) instead of starting fresh;
+    /// `NoPriorSession` when the label has none.
     async fn spawn_worker(
         &self,
         caller: &SessionKey,
@@ -261,6 +268,7 @@ pub trait WorkerFacade: Send + Sync {
         kick: Option<String>,
         resume_kick: Option<String>,
         interactive: bool,
+        resume_session: bool,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError>;
 
     /// Merge the supplied fields onto the stored dynamic-worker row for
@@ -447,6 +455,7 @@ impl WorkerFacade for ProdWorkerFacade {
         kick: Option<String>,
         resume_kick: Option<String>,
         interactive: bool,
+        resume_session: bool,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label, &charter)?;
@@ -464,6 +473,35 @@ impl WorkerFacade for ProdWorkerFacade {
         // `handle_spawn_worker` core, so a boot re-spawn is deduped
         // against this one; a duplicate MCP spawn surfaces from there as
         // a dispatch error.
+        //
+        // The worktree is recreated BEFORE the resume scan: a despawn
+        // removes it, the transcript lives under the worktree's storage
+        // key, and that key only matches the scan's run-dir key while
+        // the worktree stands (a missing path canonicalises to nothing,
+        // so on a symlinked root the two spellings diverge).
+        let resume_existing = if resume_session {
+            if is_git_repo_at_spawn {
+                let worktree = crate::mcp::workers::types::worker_tag_dir(
+                    &view.path,
+                    &label,
+                    is_git_repo_at_spawn,
+                );
+                if let Err(err) = forge_agent::env::worktree::ensure_worker_worktree(
+                    &view.path, &label, &worktree,
+                ) {
+                    return Err(WorkerSpawnError::WorktreeCreationFailed {
+                        reason: err.to_string(),
+                    });
+                }
+            }
+            let Some(session_id) = ws.resolve_worker_resume_session(&view.path, &label).await
+            else {
+                return Err(WorkerSpawnError::NoPriorSession { label });
+            };
+            Some(session_id)
+        } else {
+            None
+        };
 
         // Row to persist on success. Captured before the values move
         // into the Command so a forge restart can re-spawn this dynamic
@@ -485,10 +523,9 @@ impl WorkerFacade for ProdWorkerFacade {
             label,
             charter,
             spawned_by_session_id: caller.as_str().to_owned(),
-            // MCP-driven spawn is always a fresh session - the LLM
-            // explicitly requested a NEW worker. Resume is for the
-            // lead Connected hook only.
-            resume_existing: None,
+            // Fresh unless the caller asked to resume; the resume
+            // resolution above fills in the real session id.
+            resume_existing,
             kick,
             interactive,
             from_boot_respawn: false,
@@ -734,9 +771,10 @@ impl WorkerFacade for ProdWorkerFacade {
 }
 
 /// A captured `MockWorkerFacade::spawn_worker` call:
-/// `(caller, label, resolved charter, kick, resume_kick, interactive)`.
+/// `(caller, label, resolved charter, kick, resume_kick, interactive,
+/// resume_session)`.
 #[cfg(any(test, feature = "testing"))]
-type RecordedSpawnCall = (SessionKey, String, String, Option<String>, Option<String>, bool);
+type RecordedSpawnCall = (SessionKey, String, String, Option<String>, Option<String>, bool, bool);
 
 /// A captured `MockWorkerFacade::update_worker` call:
 /// `(caller, label, charter, kick, resume_kick)`.
@@ -830,6 +868,7 @@ impl WorkerFacade for MockWorkerFacade {
         kick: Option<String>,
         resume_kick: Option<String>,
         interactive: bool,
+        resume_session: bool,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label, &charter)?;
@@ -840,6 +879,7 @@ impl WorkerFacade for MockWorkerFacade {
             kick,
             resume_kick,
             interactive,
+            resume_session,
         ));
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
@@ -1024,6 +1064,7 @@ mod mock_tests {
                 None,
                 None,
                 false,
+                false,
             )
             .await;
         assert!(matches!(res, Err(WorkerSpawnError::NotLeadCaller)));
@@ -1049,6 +1090,7 @@ mod mock_tests {
                 "charter".into(),
                 None,
                 None,
+                false,
                 false,
             )
             .await
@@ -1088,8 +1130,9 @@ mod mock_tests {
             lead.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
-        let res =
-            mock.spawn_worker(&lead, "reviewer".into(), "   ".into(), None, None, false).await;
+        let res = mock
+            .spawn_worker(&lead, "reviewer".into(), "   ".into(), None, None, false, false)
+            .await;
         assert!(matches!(res, Err(WorkerSpawnError::EmptyCharter)));
         assert_eq!(
             mock.spawn_calls.lock().len(),
