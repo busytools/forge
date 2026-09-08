@@ -16,16 +16,16 @@ use forge_sdk::mcp::McpServerBuilder;
 use forge_sdk::mcp::protocol::JsonRpcRequest;
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_test_harness::sdk_wire::{
-    PINNED_CLI_VERSION, baseline_dir, decode_all_inbound, load_baseline,
+    PINNED_CLI_VERSION, baseline_dir, decode_all_inbound, legacy_baseline_dir, load_baseline,
+    load_baseline_from,
 };
 
-fn committed_scenarios() -> Vec<String> {
-    let dir = baseline_dir();
+fn committed_scenarios_in(dir: &std::path::Path) -> Vec<String> {
     if !dir.exists() {
         return Vec::new();
     }
-    let mut scenarios: Vec<String> = std::fs::read_dir(&dir)
-        .expect("read baseline_dir")
+    let mut scenarios: Vec<String> = std::fs::read_dir(dir)
+        .expect("read baseline dir")
         .filter_map(std::result::Result::ok)
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
@@ -53,66 +53,73 @@ fn committed_scenarios() -> Vec<String> {
 async fn initialize_answers_the_requested_protocol_version() {
     let mut total = 0usize;
 
-    for scenario in committed_scenarios() {
-        let log = load_baseline(&scenario);
+    for dir in [baseline_dir(), legacy_baseline_dir()] {
+        for scenario in committed_scenarios_in(&dir) {
+            let log = load_baseline_from(&dir, &scenario);
 
-        let mut requests: std::collections::HashMap<String, JsonRpcRequest> =
-            std::collections::HashMap::new();
-        for line in log.inbound() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            let msg = &v["request"]["message"];
-            if v["request"]["subtype"] != "mcp_message" || msg["method"] != "initialize" {
-                continue;
+            let mut requests: std::collections::HashMap<String, JsonRpcRequest> =
+                std::collections::HashMap::new();
+            for line in log.inbound() {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let msg = &v["request"]["message"];
+                if v["request"]["subtype"] != "mcp_message" || msg["method"] != "initialize" {
+                    continue;
+                }
+                let (Some(id), Ok(req)) = (
+                    v["request_id"].as_str(),
+                    serde_json::from_value::<JsonRpcRequest>(msg.clone()),
+                ) else {
+                    continue;
+                };
+                requests.insert(id.to_owned(), req);
             }
-            let (Some(id), Ok(req)) =
-                (v["request_id"].as_str(), serde_json::from_value::<JsonRpcRequest>(msg.clone()))
-            else {
-                continue;
-            };
-            requests.insert(id.to_owned(), req);
-        }
 
-        let mut checked = 0usize;
-        for line in log.outbound() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            let resp = &v["response"];
-            let mcp = &resp["response"]["mcp_response"];
-            let Some(recorded) = mcp["result"]["protocolVersion"].as_str() else { continue };
+            let mut checked = 0usize;
+            for line in log.outbound() {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let resp = &v["response"];
+                let mcp = &resp["response"]["mcp_response"];
+                let Some(recorded) = mcp["result"]["protocolVersion"].as_str() else { continue };
 
-            let id = resp["request_id"].as_str().unwrap_or_default();
-            let req = requests.get(id).unwrap_or_else(|| {
-                panic!("{scenario}: initialize response {id} has no matching request")
-            });
+                let id = resp["request_id"].as_str().unwrap_or_default();
+                let req = requests.get(id).unwrap_or_else(|| {
+                    panic!("{scenario}: initialize response {id} has no matching request")
+                });
 
-            let asked = req.params.as_ref().and_then(|p| p["protocolVersion"].as_str());
-            assert_eq!(Some(recorded), asked, "{scenario}: capture answers a version nobody asked");
-            assert_eq!(mcp.get("id"), req.id.as_ref(), "{scenario}: inner JSON-RPC id differs");
+                let asked = req.params.as_ref().and_then(|p| p["protocolVersion"].as_str());
+                assert_eq!(
+                    Some(recorded),
+                    asked,
+                    "{scenario}: capture answers a version nobody asked"
+                );
+                assert_eq!(mcp.get("id"), req.id.as_ref(), "{scenario}: inner JSON-RPC id differs");
 
-            let info = &mcp["result"]["serverInfo"];
-            let live = McpServerBuilder::new(
-                info["name"].as_str().unwrap_or_default(),
-                info["version"].as_str().unwrap_or_default(),
-            )
-            .build()
-            .dispatch(req)
-            .await
-            .expect("initialize always answers");
-            let live = serde_json::to_value(&live).expect("serialise");
+                let info = &mcp["result"]["serverInfo"];
+                let live = McpServerBuilder::new(
+                    info["name"].as_str().unwrap_or_default(),
+                    info["version"].as_str().unwrap_or_default(),
+                )
+                .build()
+                .dispatch(req)
+                .await
+                .expect("initialize always answers");
+                let live = serde_json::to_value(&live).expect("serialise");
+                assert_eq!(
+                    live["result"]["protocolVersion"].as_str(),
+                    Some(recorded),
+                    "{scenario}: the code no longer answers what the baseline captured"
+                );
+                checked += 1;
+            }
+
             assert_eq!(
-                live["result"]["protocolVersion"].as_str(),
-                Some(recorded),
-                "{scenario}: the code no longer answers what the baseline captured"
+                checked,
+                requests.len(),
+                "{scenario}: {} initialize request(s) captured but {checked} answer(s) verified",
+                requests.len()
             );
-            checked += 1;
+            total += checked;
         }
-
-        assert_eq!(
-            checked,
-            requests.len(),
-            "{scenario}: {} initialize request(s) captured but {checked} answer(s) verified",
-            requests.len()
-        );
-        total += checked;
     }
 
     // Guards the whole thing going quiet if the correlation ever stops
@@ -157,7 +164,48 @@ fn the_compact_baseline_carries_a_real_compaction() {
 
 #[test]
 fn all_baselines_decode_cleanly() {
-    let dir = baseline_dir();
+    assert_corpus_decodes(&baseline_dir());
+}
+
+/// The legacy-surface corpus: the same scenarios captured with the
+/// CLI's ambient routing on a model id it does not recognize, whose
+/// init surface keeps the legacy tool set. The decoder must round-trip
+/// BOTH surfaces - a shape only the legacy surface emits (or only the
+/// pruned one) still has to decode.
+#[test]
+fn all_legacy_baselines_decode_cleanly() {
+    assert_corpus_decodes(&legacy_baseline_dir());
+}
+
+/// `SystemRepr` is untagged serde: a `notification` frame that stops
+/// matching the typed variant would fall back to the generic System
+/// bucket and every decode gate would stay green. The frame is asserted
+/// by name, through the decoder, so the baseline still reaches the
+/// typed variant.
+#[test]
+fn the_stop_hook_error_baseline_carries_the_notification_frame() {
+    let log = load_baseline("stop_hook_error");
+    let notifications = log
+        .inbound()
+        .iter()
+        .filter(|line| {
+            matches!(
+                decode_dispatch(line, 1),
+                DecodedLine::Message(Message::Notification { key: Some(key), .. })
+                    if key == "stop-hook-error"
+            )
+        })
+        .count();
+
+    assert!(
+        notifications >= 1,
+        "the stop_hook_error baseline carries no stop-hook-error notification frame, so the \
+         typed Notification variant is uncovered - a shape drift to the generic bucket would \
+         replay clean while covering nothing",
+    );
+}
+
+fn assert_corpus_decodes(dir: &std::path::Path) {
     if !dir.exists() {
         eprintln!(
             "no baselines directory at {} - skipping (run a live capture first)",
@@ -166,7 +214,7 @@ fn all_baselines_decode_cleanly() {
         return;
     }
 
-    let scenarios = committed_scenarios();
+    let scenarios = committed_scenarios_in(dir);
 
     if scenarios.is_empty() {
         eprintln!(
@@ -180,7 +228,7 @@ fn all_baselines_decode_cleanly() {
     let mut summary: Vec<(String, usize, usize, usize, usize)> = Vec::new();
 
     for scenario in &scenarios {
-        let log = load_baseline(scenario);
+        let log = load_baseline_from(dir, scenario);
         let report = decode_all_inbound(&log);
         // An empty baseline decodes to an empty report, and an empty
         // report is clean - so without a floor, a corpus that got
@@ -205,7 +253,8 @@ fn all_baselines_decode_cleanly() {
 
     eprintln!("pinned CLI version: {PINNED_CLI_VERSION}");
     eprintln!(
-        "scenarios: {} | decode summary (messages / controls / cancels / responses):",
+        "corpus {}: scenarios {} | decode summary (messages / controls / cancels / responses):",
+        dir.display(),
         scenarios.len()
     );
     for (name, m, c, cc, cr) in &summary {
