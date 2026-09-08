@@ -103,7 +103,7 @@ conformance-capture-sdk test:
         exit 1; \
     fi
     FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
-        --no-capture --run-ignored only --no-tests=fail {{test}}
+        --no-capture --run-ignored only --no-tests=fail -P capture {{test}}
 
 # Mirrors CI's `cargo doc --workspace --no-deps --all-features`.
 # `RUSTDOCFLAGS=-D warnings` denies rustdoc lints (broken links,

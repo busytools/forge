@@ -147,11 +147,24 @@ DO NOT run `cargo nextest run --test sdk_replay` here. It will panic - the harne
 
 Re-capture every scenario against the new CLI binary. With PINNED now pointing at NEW_VERSION, captures land in the fresh `baselines/sdk/<NEW_VERSION>/` directory; the OLD directory remains untouched for diffing.
 
+**The capture inherits the invoking session's environment.** The harness
+spawns `claude` as a child, so ambient `ANTHROPIC_*` routing, auth and
+model selection flow straight into the corpus. A session running through
+a proxy (OpenRouter, z-ai) captures THAT model's wire - including a
+different init tool surface (unrecognized model ids still list the Task*
+family; recognized Anthropic models do not). Pin the capture env
+explicitly: a `CLAUDE_CODE_OAUTH_TOKEN` with the proxy vars unset, and
+`ANTHROPIC_MODEL` set to the model the previous corpus used, so the diff
+isolates the CLI's version delta. The corpus records the CLI's own
+behaviour; the model is held constant only to make that readable.
+
 ```bash
 # Capture all scenarios fresh. FORGE_WIRE_CAPTURE=1 tells the harness
-# to write captures rather than replay-and-compare.
+# to write captures rather than replay-and-compare. -P capture lifts
+# nextest's 120s default terminate: CLI shutdown after stdin close can
+# linger past a minute (2.1.263), which is not a hang.
 FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
-  --no-capture --run-ignored only 2>&1 | tee /tmp/forge-cli-upgrade-check/capture.log
+  --no-capture --run-ignored only -P capture 2>&1 | tee /tmp/forge-cli-upgrade-check/capture.log
 
 # Confirm the new dir exists with a baseline per scenario.
 NEW_VERSION=$(grep -oP 'PINNED_CLI_VERSION: &str = "\K[^"]+' crates/forge-test-harness/src/sdk_wire.rs)
@@ -277,7 +290,7 @@ Live-capture a single scenario (or just `just conformance-capture-sdk
 
 ```bash
 FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
-    --no-capture --run-ignored only --no-tests=fail <test>
+    --no-capture --run-ignored only --no-tests=fail -P capture <test>
 ```
 
 `<test>` is the test name (`wire_capture_trivial_prompt`), not the
