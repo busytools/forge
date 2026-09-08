@@ -142,6 +142,12 @@ impl NotificationManager {
         context: &NotifyContext,
     ) {
         if self.terminal_focused {
+            tracing::debug!(
+                target: crate::logging::targets::APP_NOTIFY,
+                event_name = "notification_suppressed_focused",
+                message = "notification suppressed because terminal is focused",
+                event = ?event,
+            );
             return;
         }
         let text =
@@ -159,6 +165,17 @@ impl NotificationManager {
         if let Some((title, body)) = &desktop {
             send_desktop_notification(title.clone(), body.clone());
         }
+        tracing::info!(
+            target: crate::logging::targets::APP_NOTIFY,
+            event_name = "notification_fired",
+            message = "unfocused notification dispatched",
+            outcome = "success",
+            event = ?event,
+            channel = ?channel,
+            ring_bell = plan.ring_bell,
+            send_desktop = plan.send_desktop,
+            osc9 = plan.osc9_text.is_some(),
+        );
         // The `testing` feature records what was delivered so tests
         // can assert it; the sends above still run.
         #[cfg(feature = "testing")]
