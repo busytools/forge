@@ -304,6 +304,27 @@ pub enum Message {
         session_id: String,
     },
 
+    /// A long-running hook emitted interim output. Subtype
+    /// `"hook_progress"` (2.1.263).
+    HookProgress {
+        /// Stable id for this hook run, paired with [`Self::HookResponse`].
+        hook_id: String,
+        /// Hook matcher name (e.g. `"SessionStart:startup"`).
+        hook_name: String,
+        /// Hook event that fired it (e.g. `"SessionStart"`).
+        hook_event: String,
+        /// Raw stdout of the hook command so far.
+        stdout: String,
+        /// Raw stderr of the hook command so far.
+        stderr: String,
+        /// Combined output surfaced to the session so far.
+        output: String,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
     /// A compaction finished and the transcript was replaced. Subtype
     /// `"compact_boundary"`.
     ///
@@ -469,6 +490,7 @@ impl Message {
             | Message::BackgroundTasksChanged { session_id, .. }
             | Message::CommandsChanged { session_id, .. }
             | Message::HookStarted { session_id, .. }
+            | Message::HookProgress { session_id, .. }
             | Message::HookResponse { session_id, .. }
             | Message::CompactBoundary { session_id, .. }
             | Message::Result { session_id, .. }
@@ -1027,6 +1049,16 @@ enum TypedSystemRepr {
         uuid: String,
         session_id: String,
     },
+    HookProgress {
+        hook_id: String,
+        hook_name: String,
+        hook_event: String,
+        stdout: String,
+        stderr: String,
+        output: String,
+        uuid: String,
+        session_id: String,
+    },
     CompactBoundary {
         compact_metadata: CompactMetadataRepr,
         uuid: String,
@@ -1205,6 +1237,25 @@ impl From<MessageRepr> for Message {
                 output,
                 stdout,
                 stderr,
+                uuid,
+                session_id,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookProgress {
+                hook_id,
+                hook_name,
+                hook_event,
+                stdout,
+                stderr,
+                output,
+                uuid,
+                session_id,
+            })) => Message::HookProgress {
+                hook_id,
+                hook_name,
+                hook_event,
+                stdout,
+                stderr,
+                output,
                 uuid,
                 session_id,
             },
@@ -1456,6 +1507,25 @@ impl From<Message> for MessageRepr {
                 output,
                 stdout,
                 stderr,
+                uuid,
+                session_id,
+            })),
+            Message::HookProgress {
+                hook_id,
+                hook_name,
+                hook_event,
+                stdout,
+                stderr,
+                output,
+                uuid,
+                session_id,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookProgress {
+                hook_id,
+                hook_name,
+                hook_event,
+                stdout,
+                stderr,
+                output,
                 uuid,
                 session_id,
             })),
@@ -2315,6 +2385,30 @@ mod tests_message_extras {
         assert_eq!(outcome, "success");
         assert_eq!(exit_code, 0);
         assert_eq!(stdout, "index body");
+    }
+
+    #[test]
+    fn hook_progress_decodes_as_typed_variant() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "hook_progress",
+            "hook_id": "012697b9-e191-42e6-9385-cee11f7a17d3",
+            "hook_name": "SessionStart:startup",
+            "hook_event": "SessionStart",
+            "stdout": "{\"async\": true}",
+            "stderr": "",
+            "output": "{\"async\": true}",
+            "uuid": "28d6a071-ae36-4cb8-bbdb-86686acea753",
+            "session_id": "e30daa8a-1702-4afd-8379-cab1d235935e",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::HookProgress { hook_id, hook_name, hook_event, stdout, .. } = msg else {
+            panic!("expected HookProgress, got {msg:?}");
+        };
+        assert_eq!(hook_id, "012697b9-e191-42e6-9385-cee11f7a17d3");
+        assert_eq!(hook_name, "SessionStart:startup");
+        assert_eq!(hook_event, "SessionStart");
+        assert_eq!(stdout, "{\"async\": true}");
     }
 
     #[test]

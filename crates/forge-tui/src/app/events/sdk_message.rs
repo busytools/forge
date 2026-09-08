@@ -70,10 +70,12 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         // - 2.1.204 `hook_started` / `hook_response`: typed for
         //   wire-conformance; no UI surface yet (hook-activity is a
         //   separate feature).
+        // - 2.1.263 `hook_progress`: interim hook output, same stance.
         Message::StreamEvent { .. }
         | Message::Unknown { .. }
         | Message::TurnDuration { .. }
         | Message::HookStarted { .. }
+        | Message::HookProgress { .. }
         | Message::HookResponse { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
         Message::ThinkingTokens { estimated_tokens_delta, .. } => {

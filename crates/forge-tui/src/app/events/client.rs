@@ -67,6 +67,7 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
         forge_primitives::Message::BackgroundTasksChanged { .. } => "BackgroundTasksChanged",
         forge_primitives::Message::CommandsChanged { .. } => "CommandsChanged",
         forge_primitives::Message::HookStarted { .. } => "HookStarted",
+        forge_primitives::Message::HookProgress { .. } => "HookProgress",
         forge_primitives::Message::HookResponse { .. } => "HookResponse",
         forge_primitives::Message::CompactBoundary { .. } => "CompactBoundary",
         forge_primitives::Message::RateLimitEvent { .. } => "RateLimitEvent",
