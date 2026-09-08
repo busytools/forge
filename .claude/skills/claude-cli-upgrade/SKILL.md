@@ -156,13 +156,33 @@ family; recognized Anthropic models do not). Pin the capture env
 explicitly: a `CLAUDE_CODE_OAUTH_TOKEN` with the proxy vars unset, and
 `ANTHROPIC_MODEL` set to the model the previous corpus used, so the diff
 isolates the CLI's version delta. The corpus records the CLI's own
-behaviour; the model is held constant only to make that readable.
+behaviour; the model is held constant only to make that readable. The
+ambient config dir's own settings (hooks, plugins, MCP) ride along the
+same way; for a corpus free of machine-local content, point
+`CLAUDE_CONFIG_DIR` at a scratch directory for the capture run.
+
+**The ritual is dual-corpus.** The CLI tailors its surface by model
+recognition, so every upgrade captures and commits BOTH surfaces:
+
+- **Recognized-model corpus** -> `baselines/sdk/<NEW_VERSION>/`:
+  captured with the pinned env (OAuth + `ANTHROPIC_MODEL` set to the
+  model the previous corpus used).
+- **Legacy-surface corpus** -> `baselines/sdk/<NEW_VERSION>/legacy-surface/`:
+  captured with the session's ambient env, so the model id is one the
+  CLI does not recognize and the legacy full surface is what ships.
+  Promote with `cp target/wire-traces/capture-<scenario>-<ts>.jsonl \
+  crates/forge-test-harness/baselines/sdk/<NEW_VERSION>/legacy-surface/<scenario>.jsonl`.
+
+Diff and replay BOTH (replay runs `all_baselines_decode_cleanly` and
+`all_legacy_baselines_decode_cleanly`), classification-scan both, and
+the PR documents both tool surfaces.
 
 ```bash
 # Capture all scenarios fresh. FORGE_WIRE_CAPTURE=1 tells the harness
 # to write captures rather than replay-and-compare. -P capture lifts
 # nextest's 120s default terminate: CLI shutdown after stdin close can
 # linger past a minute (2.1.263), which is not a hang.
+# Run twice: once with the pinned env, once with the ambient env.
 FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
   --no-capture --run-ignored only -P capture 2>&1 | tee /tmp/forge-cli-upgrade-check/capture.log
 
