@@ -164,7 +164,7 @@ pub fn attach_recording(builder: OptionsBuilder) -> (OptionsBuilder, Arc<Mutex<T
 /// them. The `real_session_*` baselines have no capture recipe at all -
 /// they come from the `sdk_redact_session` example. The full ritual is
 /// in `.claude/skills/claude-cli-upgrade/`.
-pub const PINNED_CLI_VERSION: &str = "2.1.220";
+pub const PINNED_CLI_VERSION: &str = "2.1.263";
 
 /// Directory holding the committed trace baselines for the pinned CLI
 /// version. Resolves to
