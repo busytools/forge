@@ -11292,17 +11292,29 @@ provider = "anthropic"
     /// then re-spawned with `resume_session`. The facade recreates the
     /// worktree before dispatch, because the transcript lives under the
     /// worktree's storage key and the resumed subprocess needs that cwd.
+    ///
+    /// The project is reached through a symlink so the two spellings of
+    /// its worktree path can never agree by accident: the transcript's
+    /// dir was named from the real spelling (existing at write time, so
+    /// canonicalised), while a scan that runs without the worktree falls
+    /// back to the forge.toml spelling. Recreating before the scan is
+    /// what makes the two keys meet; reverted, this test fails on every
+    /// platform rather than only where the tempdir root is itself a
+    /// symlink.
     #[tokio::test]
     async fn mcp_resume_spawn_recreates_a_despawned_worktree() {
         let project = tempfile::tempdir().expect("project dir");
         let cfg = tempfile::tempdir().expect("cfg dir");
-        let project_path = project.path().to_string_lossy().replace('\\', "/");
         run_git_in(project.path(), &["init", "-q"]);
         run_git_in(project.path(), &["config", "user.email", "t@example.com"]);
         run_git_in(project.path(), &["config", "user.name", "Test"]);
         std::fs::write(project.path().join("README.md"), "seed").expect("write seed");
         run_git_in(project.path(), &["add", "."]);
         run_git_in(project.path(), &["commit", "-q", "-m", "init"]);
+
+        let via_link = project.path().join("via-link");
+        std::os::unix::fs::symlink(project.path(), &via_link).expect("symlink project root");
+        let project_path = via_link.to_string_lossy().replace('\\', "/");
 
         let forge_dir = cfg.path().join("forge");
         std::fs::create_dir_all(&forge_dir).expect("forge dir");
