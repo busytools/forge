@@ -88,6 +88,8 @@ struct SpawnArgs {
     resume_kick: Option<String>,
     #[serde(default)]
     interactive: bool,
+    #[serde(default)]
+    resume_session: bool,
 }
 
 #[async_trait::async_trait]
@@ -113,7 +115,11 @@ impl Tool for Spawn {
          re-spawned, resuming where it left off (a restarted worker is \
          told to continue, not start over), until you explicitly despawn \
          it with workers__despawn (or close its row in the Projects \
-         pane). PASS `resume_kick` FOR A LONG-LIVED WORKER whose restart \
+         pane). DESPAWNED A WORKER WHOSE CONTEXT YOU STILL WANT? Re-spawn \
+         the same label with `resume_session` set: it resumes the label's \
+         most recent prior session instead of starting fresh, and refuses \
+         when the label has no prior session to resume. \
+         PASS `resume_kick` FOR A LONG-LIVED WORKER whose restart \
          needs specific steps - re-read a file, catch up a queue, check \
          what was mid-run - rather than that generic continue; it \
          replaces the restart note on every resume. Omit it and the \
@@ -160,6 +166,10 @@ impl Tool for Spawn {
                     "type": "boolean",
                     "description": "Set true ONLY when the user asked for a worker they will talk to DIRECTLY and will have its row open. It keeps the built-in AskUserQuestion tool, which every other worker is denied: a worker's question renders in its own row, which nobody is usually watching, and an answer that does arrive is indistinguishable from a decision the user actually made - so a worker can attribute a choice to the user in good faith that the user never saw. Defaults to false, which is right for any worker you are spawning on your own initiative; that worker reaches the user through you, via its workers__ask('lead', ...). This is fixed at spawn - changing it means despawning the worker and spawning it again.",
                 },
+                "resume_session": {
+                    "type": "boolean",
+                    "description": "Set true to RESUME this label's most recent prior session instead of starting fresh - the same pick a forge restart makes - so the old conversation arrives as history and the worker continues where it left off. The natural move after despawning a worker whose context you still want: re-spawn the same label with this set. Refuses when no prior session tagged forge:worker:<label> exists for this project - spawn without it then. A live worker on the same label is still rejected; despawn or close it first. For a git worker the label's worktree is recreated if despawn removed it, so the resumed session lands back in its run directory.",
+                },
             },
             "required": ["label", "charter"],
             "additionalProperties": false,
@@ -191,6 +201,7 @@ impl Tool for Spawn {
                 args.kick,
                 args.resume_kick,
                 args.interactive,
+                args.resume_session,
             )
             .await
         {
@@ -243,6 +254,10 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         WorkerSpawnError::WorktreeCreationFailed { reason } => {
             format!("worktree creation failed: {reason}")
         }
+        WorkerSpawnError::NoPriorSession { label } => format!(
+            "no prior session tagged 'forge:worker:{label}' exists in this project, so there \
+             is nothing to resume; spawn without resume_session to start fresh"
+        ),
     }
 }
 
@@ -1333,6 +1348,10 @@ mod tests {
             !mock.spawn_calls.lock()[0].5,
             "absent interactive means the worker is not offered AskUserQuestion",
         );
+        assert!(
+            !mock.spawn_calls.lock()[0].6,
+            "absent resume_session means a fresh session, not a resume",
+        );
     }
 
     /// The lead is the party that knows whether the user asked for a
@@ -1362,6 +1381,39 @@ mod tests {
             .await;
         assert!(!output.is_error, "spawn with interactive should not error: {:?}", output.blocks);
         assert!(mock.spawn_calls.lock()[0].5, "interactive passes through");
+    }
+
+    /// `resume_session` is the lead's opt into resuming the label's most
+    /// recent prior session (the same pick a forge restart makes) rather
+    /// than starting fresh; the flag must reach the facade verbatim.
+    #[tokio::test]
+    async fn spawn_passes_resume_session_through_to_facade() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "t".into(),
+            rate_limited_account: None,
+            durability_warning: None,
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "steward",
+                    "charter": "Pick the sweep back up.",
+                    "resume_session": true,
+                }),
+            })
+            .await;
+        assert!(
+            !output.is_error,
+            "spawn with resume_session should not error: {:?}",
+            output.blocks
+        );
+        assert!(mock.spawn_calls.lock()[0].6, "resume_session passes through");
     }
 
     #[tokio::test]
