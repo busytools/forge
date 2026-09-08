@@ -493,18 +493,20 @@ impl WireRedactor {
         Ok(Self { owners })
     }
 
-    /// Redact one line, structurally where a no-op round trip is
-    /// byte-exact and by the text rules otherwise - serde_json parses
-    /// some 17-digit floats to a neighbouring f64, and a non-JSON line
-    /// has no structure to walk.
+    /// Redact one line, by one of three paths: structurally where the
+    /// no-op round trip is byte-exact; structurally again on a
+    /// structure-preserving re-encode (a number-token count match -
+    /// 17-digit floats re-spell under serde_json's parse, and that is
+    /// the canonicalisation); by the text rules otherwise, for a
+    /// non-JSON line or a JSON line with nothing structurally to
+    /// redact whose re-encode would differ.
     ///
     /// # Errors
     ///
     /// Serialisation failure, and account or hook-body fields on a line
-    /// that will not round-trip, which nothing but the structural rule
-    /// reaches. That arm is LIVE in this build: a `Value` round trip is
-    /// lossy on floats without `arbitrary_precision`, which would retire
-    /// it. The message names the frame's `type`, never the body it
+    /// whose re-encode loses structure (a number-token count mismatch -
+    /// duplicate keys collapse on parse). That arm is LIVE in this
+    /// build. The message names the frame's `type`, never the body it
     /// refused to write.
     pub fn redact_line(&self, line: &str) -> Result<String, String> {
         let Ok(parsed) = serde_json::from_str::<Value>(line) else {
@@ -561,8 +563,11 @@ impl WireRedactor {
 
 /// Number literals appearing outside string literals, in order. With
 /// serde_json's `preserve_order`, two serialisations of the same
-/// `Value` can only differ in these, so comparing the sequences by
-/// numeric value is what decides whether a re-encode is faithful.
+/// `Value` can only differ in these, so the number of these tokens is
+/// what decides whether a re-encode lost structure. Values are parsed
+/// to f64 only to keep the sequence numbers, not compared: a 17-digit
+/// float's parse drifts by one ulp, so equality would reject the very
+/// re-spelling this gate exists to allow.
 fn number_tokens(line: &str) -> Vec<f64> {
     let mut tokens = Vec::new();
     let mut start: Option<usize> = None;

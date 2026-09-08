@@ -177,11 +177,11 @@ fn all_legacy_baselines_decode_cleanly() {
     assert_corpus_decodes(&legacy_baseline_dir());
 }
 
-/// `SystemRepr` is untagged serde: a `notification` frame that stops
-/// matching the typed variant would fall back to the generic System
-/// bucket and every decode gate would stay green. The frame is asserted
-/// by name, through the decoder, so the baseline still reaches the
-/// typed variant.
+/// `SystemRepr` is untagged serde: a frame that stops matching its
+/// typed variant falls back to the generic System bucket and every
+/// decode gate stays green. The 2.1.263-only subtypes are asserted by
+/// name, through the decoder, so the baselines still reach the typed
+/// variants.
 #[test]
 fn the_stop_hook_error_baseline_carries_the_notification_frame() {
     let log = load_baseline("stop_hook_error");
@@ -202,6 +202,26 @@ fn the_stop_hook_error_baseline_carries_the_notification_frame() {
         "the stop_hook_error baseline carries no stop-hook-error notification frame, so the \
          typed Notification variant is uncovered - a shape drift to the generic bucket would \
          replay clean while covering nothing",
+    );
+}
+
+/// Same stance for `hook_progress`, the other subtype this upgrade
+/// typed; the corpus carries it one frame per scenario.
+#[test]
+fn committed_baselines_carry_hook_progress_frames_to_the_typed_variant() {
+    let log = load_baseline("trivial");
+    let progresses = log
+        .inbound()
+        .iter()
+        .filter(|line| {
+            matches!(decode_dispatch(line, 1), DecodedLine::Message(Message::HookProgress { .. }))
+        })
+        .count();
+
+    assert!(
+        progresses >= 1,
+        "the trivial baseline carries no hook_progress frame reaching the typed variant - a \
+         shape drift to the generic bucket would replay clean while covering nothing",
     );
 }
 
