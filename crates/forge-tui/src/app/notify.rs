@@ -142,12 +142,6 @@ impl NotificationManager {
         context: &NotifyContext,
     ) {
         if self.terminal_focused {
-            tracing::debug!(
-                target: crate::logging::targets::APP_NOTIFY,
-                event_name = "notification_suppressed_focused",
-                message = "notification suppressed because terminal is focused",
-                event = ?event,
-            );
             return;
         }
         let text =
@@ -210,6 +204,13 @@ impl crate::app::App {
             self.test_notifications.borrow_mut().push((event, context));
         }
         if self.notifications.is_focused() {
+            tracing::info!(
+                target: crate::logging::targets::APP_NOTIFY,
+                event_name = "notification_suppressed_focused",
+                message = "notification suppressed because terminal is focused",
+                outcome = "skipped",
+                event = ?event,
+            );
             return;
         }
         let context = self.notification_context(session_key);
