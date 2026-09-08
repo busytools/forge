@@ -120,6 +120,11 @@ pub struct UiSession {
     pub cancelled_turn_pending_hint: bool,
     /// Origin of the in-flight cancellation request, if any.
     pub pending_cancel: bool,
+    /// A turn completed while this session was not the active tab;
+    /// renders the Projects-pane completion glyph until the user
+    /// opens the session. Set by the background branch of
+    /// turn-complete, cleared by switch_active_session.
+    pub(crate) unseen_turn_completion: bool,
     /// Latest prompt suggestion from the SDK, shown in the input
     /// hint band.
     pub prompt_suggestion: Option<String>,
@@ -859,6 +864,7 @@ impl Default for UiSession {
             pending_compact_clear: bool::default(),
             cancelled_turn_pending_hint: bool::default(),
             pending_cancel: false,
+            unseen_turn_completion: bool::default(),
             prompt_suggestion: Option::default(),
             last_rate_limit_update: Option::default(),
             turn_notice_refs: Vec::default(),

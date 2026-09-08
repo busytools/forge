@@ -102,6 +102,9 @@ impl super::App {
         // session already focused is still the user settling where
         // they want to be.
         self.pending_spawn_focus = None;
+        if let Some(bucket) = self.sessions.get_mut(&key) {
+            bucket.unseen_turn_completion = false;
+        }
         if self.active_session_key.as_ref() == Some(&key) {
             // A same-key landing still settles the mirror: a focus
             // move that skipped re-derivation can leave it stale.

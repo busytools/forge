@@ -420,6 +420,9 @@ fn apply_turn_complete_presentation(
         if super::queued_turn::hold_background_open(app, session_key) {
             return;
         }
+        if let Some(session) = app.session_mut(session_key) {
+            session.unseen_turn_completion = true;
+        }
         if let Some(reason) = terminal_reason {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
