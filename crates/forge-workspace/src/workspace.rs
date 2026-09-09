@@ -1198,6 +1198,7 @@ impl Workspace {
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
                 accounts: project.accounts.clone(),
+                fallback_accounts: project.fallback_accounts.clone(),
                 sessions,
             });
         }
@@ -1925,9 +1926,9 @@ impl Workspace {
     fn best_tier_pool(&self, project_key: &ProjectKey) -> Option<(Vec<AccountKey>, usize)> {
         let (ready, degraded, saturated) = self.account_health_sets()?;
         let idx = self.config.projects.iter().position(|p| {
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
-                Some(&p.path.to_string_lossy()),
-            )) == *project_key
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &p.path.to_string_lossy(),
+            ))) == *project_key
         })?;
         let project = &self.config.projects[idx];
         let (pool, _) = crate::assignment_plan::tier_pool(
@@ -2112,10 +2113,7 @@ impl Workspace {
             .iter()
             .filter(|k| !accounts.is_experimental(k))
             .filter(|k| {
-                accounts
-                    .by_key
-                    .get(*k)
-                    .is_some_and(|s| matches!(s.loading, LoadingState::Ready))
+                accounts.by_key.get(*k).is_some_and(|s| matches!(s.loading, LoadingState::Ready))
             })
             .cloned()
             .collect();
@@ -2130,10 +2128,7 @@ impl Workspace {
             .iter()
             .filter(|k| !accounts.is_experimental(k))
             .filter(|k| {
-                accounts
-                    .by_key
-                    .get(*k)
-                    .is_some_and(|s| matches!(s.loading, LoadingState::Bailed))
+                accounts.by_key.get(*k).is_some_and(|s| matches!(s.loading, LoadingState::Bailed))
             })
             .cloned()
             .collect();
@@ -2586,26 +2581,37 @@ impl Workspace {
     /// order, each carrying its live rate-limit state for the
     /// `/account` picker. `allowed_accounts` is the project's
     /// forge.toml pin; empty falls back to every configured account
-    /// (matching `pick_for_project`'s resolution). `current_account`
-    /// is the session's active account display name, used to mark the
-    /// current row. Returns owned [`crate::AccountRow`]s so the TUI
-    /// holds a snapshot rather than the `AccountStateMap` lock.
+    /// (matching `pick_for_project`'s resolution). `fallback_accounts`
+    /// is the org's fallback list: unioned in (deduped) even when the
+    /// pin does not name them, and flagged for the picker's FALLBACK
+    /// group. `current_account` is the session's active account
+    /// display name, used to mark the current row. Returns owned
+    /// [`crate::AccountRow`]s so the TUI holds a snapshot rather than
+    /// the `AccountStateMap` lock.
     pub fn project_accounts_snapshot(
         &self,
         allowed_accounts: &[String],
+        fallback_accounts: &[String],
         current_account: Option<&str>,
     ) -> Vec<crate::AccountRow> {
         let accounts = self.accounts.lock();
         // Resolve the allow-list to concrete account names, falling
         // back to every configured account when the project pins none.
-        // Experimental accounts are then unioned in regardless of the
-        // org pin (deduped) - they are excluded from auto-assignment but
-        // globally selectable in the picker.
+        // Fallback names then join (deduped) - usually accounts the pin
+        // does not name, since the org never rotates through them.
+        // Experimental accounts are unioned in last regardless of the
+        // org pin (deduped) - they are excluded from auto-assignment
+        // but globally selectable in the picker.
         let mut names: Vec<String> = if allowed_accounts.is_empty() {
             accounts.ordered_keys.iter().map(|k| k.0.clone()).collect()
         } else {
             allowed_accounts.to_vec()
         };
+        for name in fallback_accounts {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
         for key in &accounts.ordered_keys {
             if accounts.is_experimental(key) && !names.contains(&key.0) {
                 names.push(key.0.clone());
@@ -2619,6 +2625,7 @@ impl Workspace {
                 let unusable = accounts.unusable_reason(&key);
                 let is_current = current_account == Some(name.as_str());
                 let experimental = accounts.is_experimental(&key);
+                let fallback = fallback_accounts.contains(&name) && !experimental;
                 let budget = account_budget(
                     &name,
                     accounts.provider_or_anthropic(&key),
@@ -2631,13 +2638,14 @@ impl Workspace {
                     unusable,
                     budget,
                     experimental,
+                    fallback,
                 })
             })
             .collect();
-        // Stable-sort so regular rows lead and experimental rows trail,
-        // matching the picker's EXPERIMENTAL group. `false` sorts before
+        // Stable-sort into [regular..., fallback..., experimental...],
+        // matching the picker's group order. `false` sorts before
         // `true`, and the sort preserves within-group order.
-        rows.sort_by_key(|row| row.experimental);
+        rows.sort_by_key(|row| (row.experimental, row.fallback));
         rows
     }
 
@@ -6525,7 +6533,7 @@ mod tests {
             *ws.accounts.lock() = map;
         }
 
-        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], Some("A"));
+        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &[], Some("A"));
 
         assert_eq!(rows.len(), 2, "one row per allow-list entry");
         assert_eq!(rows[0].display_name, "A", "allow-list order preserved");
@@ -6596,7 +6604,7 @@ mod tests {
         }
 
         // Allow-list pins only "A"; "Exp" is a different org's account.
-        let rows = ws.project_accounts_snapshot(&["A".to_owned()], Some("A"));
+        let rows = ws.project_accounts_snapshot(&["A".to_owned()], &[], Some("A"));
 
         assert_eq!(rows.len(), 2, "experimental Exp is unioned in despite not being pinned");
         assert_eq!(rows[0].display_name, "A", "regular allow-list rows come first");
@@ -6635,7 +6643,7 @@ mod tests {
         }
 
         // "Exp" is BOTH pinned by the allow-list AND experimental.
-        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "Exp".to_owned()], None);
+        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "Exp".to_owned()], &[], None);
 
         assert_eq!(rows.len(), 2, "no duplicate row for the already-pinned experimental account");
         let exp_rows: Vec<&crate::AccountRow> =
@@ -6674,11 +6682,64 @@ mod tests {
             *ws.accounts.lock() = map;
         }
 
-        let rows = ws.project_accounts_snapshot(&[], None);
+        let rows = ws.project_accounts_snapshot(&[], &[], None);
         let names: Vec<&str> = rows.iter().map(|r| r.display_name.as_str()).collect();
         assert_eq!(names, vec!["One", "Two"], "empty pin lists all accounts in order");
         assert!(rows.iter().all(|r| r.unusable.is_none()), "both under cap -> usable");
         assert!(rows.iter().all(|r| !r.is_current), "no current account when None passed");
+    }
+
+    /// Fallback rows are flagged against the org `fallback_accounts`
+    /// list the caller passes in, and an account that is BOTH fallback
+    /// and experimental stays experimental - that is the group it
+    /// renders in, matching its exclusion from every auto tier.
+    #[test]
+    fn project_accounts_snapshot_flags_fallback_rows_and_experimental_wins() {
+        let (ws, _rx) = Workspace::testing_stub();
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "A".to_owned(),
+                    config_dir: PathBuf::from("/cfg/A"),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                    permission_mode: None,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "B".to_owned(),
+                    config_dir: PathBuf::from("/cfg/B"),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                    permission_mode: None,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "Exp".to_owned(),
+                    config_dir: PathBuf::from("/cfg/Exp"),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    env: std::collections::HashMap::new(),
+                    experimental: true,
+                    permission_mode: None,
+                },
+            ]);
+            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("B".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            *ws.accounts.lock() = map;
+        }
+
+        let rows = ws.project_accounts_snapshot(
+            &["A".to_owned()],
+            &["B".to_owned(), "Exp".to_owned()],
+            Some("A"),
+        );
+
+        assert_eq!(rows[0].display_name, "A", "regular rows lead");
+        assert!(!rows[0].fallback, "a primary row is not flagged fallback");
+        let fallbacks: Vec<&str> =
+            rows.iter().filter(|r| r.fallback).map(|r| r.display_name.as_str()).collect();
+        assert_eq!(fallbacks, vec!["B"], "only the non-experimental fallback row is flagged");
     }
 
     /// The supersession guard that keeps an `/account` switch's
@@ -13125,7 +13186,8 @@ provider = "anthropic"
             .expect("the resume still resolves")
             .0;
         assert_eq!(
-            re_tiered, AccountKey("Api".to_owned()),
+            re_tiered,
+            AccountKey("Api".to_owned()),
             "the resume falls to the healthy fallback",
         );
         {
@@ -13142,7 +13204,11 @@ provider = "anthropic"
             .plan_assignment(&lead_target, Some(&resume_spawn_key))
             .expect("the resume still resolves")
             .0;
-        assert_eq!(kept, AccountKey("Api".to_owned()), "no churn once the recorded account is best");
+        assert_eq!(
+            kept,
+            AccountKey("Api".to_owned()),
+            "no churn once the recorded account is best"
+        );
     }
 
     /// An experimental account defined FIRST (Exp), a regular account

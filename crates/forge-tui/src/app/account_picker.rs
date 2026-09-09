@@ -161,6 +161,7 @@ mod tests {
                 resets_at: None,
             },
             experimental: false,
+            fallback: false,
         }
     }
 
@@ -218,6 +219,7 @@ mod tests {
                 resets_at: None,
             },
             experimental: true,
+            fallback: false,
         };
         open(&mut app, vec![row("A", false), exp]);
         handle_key(&mut app, key(KeyCode::Down));

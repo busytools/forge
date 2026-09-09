@@ -233,11 +233,7 @@ pub(crate) fn tier_pool(
             .collect::<Vec<_>>()
     };
     let primary_pool = |sources: &[AccountKey]| {
-        if accounts.is_empty() {
-            sources.to_vec()
-        } else {
-            intersect(accounts, sources)
-        }
+        if accounts.is_empty() { sources.to_vec() } else { intersect(accounts, sources) }
     };
     let fallback_pool = |sources: &[AccountKey]| intersect(fallback_accounts, sources);
 
@@ -771,7 +767,11 @@ mod tests {
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("sub")));
         assert!(plan.slot_degraded(&pk("p")));
         let worker = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true);
-        assert_eq!(worker, Some(ak("api")), "the fallback follows the primary in the degraded pool");
+        assert_eq!(
+            worker,
+            Some(ak("api")),
+            "the fallback follows the primary in the degraded pool"
+        );
     }
 
     #[test]

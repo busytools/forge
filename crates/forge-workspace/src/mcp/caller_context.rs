@@ -125,6 +125,7 @@ mod tests {
             "/tmp/myproj",
             "me",
             Vec::new(),
+            Vec::new(),
             vec![lead.clone(), worker.clone()],
         );
         ws.insert_live_worker(&key, worker_entry(worker.session.clone()));
@@ -181,6 +182,7 @@ mod tests {
                 "myproj",
                 "/tmp/myproj",
                 "me",
+                Vec::new(),
                 Vec::new(),
                 vec![session(lead_id), worker.clone()],
             )

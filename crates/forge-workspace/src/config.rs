@@ -9,12 +9,12 @@
 //! the first one (alphabetical) becomes the focused tab.
 //!
 //! **Selection policy.** A deterministic `AssignmentPlan`, computed
-//! once every account reaches a terminal loading state. Its pool is the
-//! org's `accounts` list in the order written there, narrowed to the
-//! accounts that came up `Ready` and then to those not at their cap,
-//! falling back to the capped ones only when every candidate is capped
-//! so a project never goes dark. Each project takes an offset from its
-//! position in the project list and a session lands on
+//! once every account reaches a terminal loading state. Its pool comes
+//! from a six-tier walk over the org's `accounts` primaries and
+//! `fallback_accounts` - ready-and-unsaturated first, then
+//! ready-saturated, then degraded; `assignment_plan.rs` documents the
+//! tiers. Each project takes an offset from its position in the
+//! project list and a session lands on
 //! `pool[(offset + session_n) % pool.len()]`. `experimental` accounts
 //! are excluded from the pool entirely. Utilization is never compared
 //! between accounts; it collapses to one boolean per account. A

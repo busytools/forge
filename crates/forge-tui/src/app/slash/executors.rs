@@ -81,14 +81,14 @@ fn handle_account_submit(app: &mut App, args: &[&str]) -> bool {
     let Some(workspace) = app.workspace.clone() else {
         return true;
     };
-    let allowed = workspace
+    let (allowed, fallbacks) = workspace
         .list_projects()
         .into_iter()
         .find(|view| view.name == project_name)
-        .map(|view| view.accounts)
+        .map(|view| (view.accounts, view.fallback_accounts))
         .unwrap_or_default();
     let current = app.active_account_display_name();
-    let rows = workspace.project_accounts_snapshot(&allowed, current.as_deref());
+    let rows = workspace.project_accounts_snapshot(&allowed, &fallbacks, current.as_deref());
     if rows.is_empty() {
         push_system_message(app, "No accounts configured for this project.");
         return true;

@@ -37,6 +37,9 @@ pub struct ProjectView {
     /// from the project's `[[orgs]]` entry. Non-empty (the config
     /// loader enforces).
     pub accounts: Vec<String>,
+    /// Fallback `display_name`s inherited from the project's `[[orgs]]`
+    /// entry, alongside `accounts`. Empty when the org names none.
+    pub fallback_accounts: Vec<String>,
     pub sessions: Vec<SessionView>,
 }
 
@@ -60,6 +63,7 @@ impl ProjectView {
             path: PathBuf::from(&display_path),
             display_path,
             accounts: Vec::new(),
+            fallback_accounts: Vec::new(),
             sessions,
         }
     }
@@ -74,6 +78,7 @@ impl ProjectView {
         display_path: impl Into<String>,
         org: impl Into<String>,
         accounts: Vec<String>,
+        fallback_accounts: Vec<String>,
         sessions: Vec<SessionView>,
     ) -> Self {
         let display_path = display_path.into();
@@ -84,6 +89,7 @@ impl ProjectView {
             path: PathBuf::from(&display_path),
             display_path,
             accounts,
+            fallback_accounts,
             sessions,
         }
     }
@@ -113,6 +119,10 @@ pub struct AccountRow {
     /// are offered globally (regardless of the project's org pin)
     /// because they are excluded from every auto-assignment path.
     pub experimental: bool,
+    /// `true` when the account is in the active session's org
+    /// `fallback_accounts`. Renders in the `FALLBACK` group; an
+    /// experimental account is never flagged (its own group wins).
+    pub fallback: bool,
 }
 
 /// How an account proves who it is, which is the only thing that
