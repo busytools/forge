@@ -1,16 +1,10 @@
 # Preflight - the launchpad's first view
 
-The launchpad is two views, and **preflight** is the first thing forge renders **on every route**. It resolves the accounts and, when dictation is switched on, fetches, verifies and loads its models, then hands over to wherever the invocation was headed: the projects view for `forge`, straight into chat for `forge <project>`. Shown once per run; every later `/launchpad` goes straight to the projects view.
-
-**Nothing spawns until every account has settled.** The assignment plan is only computed once they have, so a session started before that falls back to round-robin and can land on an account the project's org does not allow. Accounts rather than the whole of preflight, because the plan needs them and does not need the dictation weights - so the models keep loading alongside the session rather than delaying it.
-
-**Preflight completes when every account settles, not only when every account is `Ready`.** A bailed account rides along as degraded rather than holding boot: the assignment plan excludes it, the pollers keep re-probing it, and its row names the failure. Every failure state names its exits rather than leaving the reader on a screen with nothing to press. **Repairing an account's auth means editing `forge.toml`, and that needs a restart.** The env is read once at boot, so the pollers keep probing what they loaded until forge restarts. The screen states the restart without a number, because the pollers run under probe backoff and no single interval would be true.
+The first thing forge renders on every route: it resolves the accounts and, when dictation is on, fetches and loads its models, then hands over - to the projects view for `forge`, straight into chat for `forge <project>`. Shown once per run; later `/launchpad` goes straight to the projects view. Nothing spawns until every account settles - the assignment plan is computed only then, so a session started before it could land on an account the project's org does not allow. Preflight completes when every account settles, not only when all are Ready: a bailed account rides along as degraded and its row names the failure. Every failure state names its exits; repairing an account's auth means editing `forge.toml`, which needs a restart - the screen states the restart without a number.
 
 ## Preflight, resolving
 
-*visible: `ActiveView::Launchpad` before the hand-over*
-
-Two sibling sections at the same indent, sharing one row shape: two-cell indent, state glyph, name, right-aligned twelve-cell state column. The panel is `PICKER_WIDTH` - the same width the projects view uses - so the hand-over is a content swap rather than a resize. Model rows read by **role** with the file on a dim continuation line beneath: `transcribing model (cohere-transcribe-03-2026-Q4_K_M)` is 53 cells against a 38-cell name column. There is no summary line.
+Two sibling sections at the same indent, one row shape: two-cell indent, state glyph, name, right-aligned twelve-cell state column. The same panel width the projects view uses, so the hand-over is a content swap. Model rows read by role with the file on a dim continuation line beneath. No summary line.
 
 <div class="term">
 
@@ -43,21 +37,24 @@ Two sibling sections at the same indent, sharing one row shape: two-cell indent,
 
 </div>
 
-- **code** - `crates/forge-tui/src/ui/preflight.rs` (renderer) + `crates/forge-tui/src/app/preflight.rs` (hand-over latch + keyboard handler) · progress state from `crates/forge-workspace/src/dictate.rs`
-- **spinner** - The configured `SpinnerStyle` at its own cadence, through the same `App::active_spinner_glyph` every other animated surface reads. Change `[ui] spinner` and this moves with the rest.
-- **account states** - `○` yellow `resolving` = Loading · `●` green `ready` = probe returned · `⚠` red = Bailed on an auth failure, one label per class: `auth failed` = rejected credentials · `⚠` yellow = Bailed on a transient failure, one label per class: `unreachable` = the probe never got through, `fetch error` = a classed-but-unrecognised failure (a 5xx proxy, a body that will not decode, or a 200 whose body maps to nothing), `rate limited` = a 429 that waiting clears. The glyph colour splits by class the same way on the launchpad's chip row, which shares `account_glyph`.
-- **model states** - `queued` · `downloading` · `resuming` (a transfer that picked up a `.part`) · `verifying` · `ready` · `loading` · then `ready` again once the weights are in memory. A failure reads `bad hash` or `cancelled`, and a row nothing will now start reads `not started` rather than `queued`.
-- **both rows advance together** - `forge_dictate::prepare` gives each model a thread, so the pair costs the slower of the two rather than their sum - 5.3 s to 2.7 s verifying the shipped 3.07 GB warm. `queued` is therefore the moment before both start, not one model waiting on the other.
-- **keys** - <kbd>Esc</kbd> cancels an in-flight model download, which quits forge · <kbd>Ctrl+Q</kbd> quit. Every other key is consumed silently - there is nothing to navigate and the projects view underneath is not reachable yet.
-- **hand-over** - Latched, not re-evaluated. A token expiring mid-session takes an account `Ready → Bailed → Loading`, so the readiness condition genuinely goes false again while the user is working; without the latch that would throw them back onto a boot screen. The launchpad's own gate covers that window instead.
-- **short terminals** - The wordmark is dropped before any panel content when the block does not fit, because the failure screens' exits are the one thing this screen cannot clip. Past that the panel drops rows from the TOP rather than the bottom - the failure detail and the exits it names are appended last - and replaces them with a dim `… N more above`, so nothing vanishes unmarked. At 100x24 the bailed screen already overflows.
-- **no verify bar** - Verifying draws a spinner and no byte counter. `forge_dictate::Progress::Verifying` carries only a file name - hashing checkpoints cancellation rather than reporting progress.
+| State | Glyph | Meaning |
+|---|---|---|
+| `resolving` | `○` yellow | probe in flight |
+| `ready` | `●` green | probe returned |
+| `auth failed` | `⚠` red | rejected or expired credentials |
+| `unreachable`, `fetch error`, `rate limited` | `⚠` yellow | transient failures the pollers heal (`fetch error` is a classed-but-unrecognised failure: a 5xx proxy, a body that will not decode, a 200 mapping to nothing) |
+| Model states | | `queued`, `downloading`, `resuming` (picked up a `.part`), `verifying`, `ready`, `loading`, then `ready`; a failure reads `bad hash` or `cancelled`; a row nothing will now start reads `not started` |
+
+- The spinner is the configured `[ui] spinner` style at its own cadence, shared with every other animated surface.
+- <kbd>Esc</kbd> cancels an in-flight model download, which quits forge; <kbd>Ctrl+Q</kbd> quits. Every other key is consumed silently - the projects view underneath is not reachable yet.
+- The hand-over is latched: a mid-session Ready → Bailed → Loading flip never throws you back onto this screen - the launchpad's own gate covers the window.
+- The wordmark is dropped before any panel content when the block does not fit - the failure exits are the one thing this screen cannot clip. Past that rows drop from the TOP, replaced with a dim `… N more above`; the failure detail is appended last and never vanishes unmarked (at 100x24 the bailed screen already overflows).
+- Verifying draws a spinner and no byte counter - hashing checkpoints cancellation rather than reporting progress.
+- The two models prepare concurrently; the pair costs the slower of the two.
 
 ## Preflight fails: a bailed account
 
-*rides along as degraded - preflight hands over once the rest settles; the row clears on a config edit plus a restart, or when the 60 s usage poll re-probes a healed credential*
-
-The footer drops `esc` - there is nothing left to cancel - and the paths are printed in full. A command too long for the panel wraps after a `/` onto a deeper-indented continuation line; it is never elided.
+Rides along as degraded - the row clears on a config edit plus a restart, or when the poll re-probes a healed credential. The footer drops `esc` and the paths print in full; a command too long for the panel wraps after a `/` onto a deeper-indented continuation, never elided.
 
 <div class="term">
 
@@ -94,7 +91,17 @@ The footer drops `esc` - there is nothing left to cancel - and the paths are pri
 
 </div>
 
-An account whose `provider` is a base-url one (`codex`, `openrouter` or `zai`) has its credential in the `ANTHROPIC_AUTH_TOKEN` beside its base url. An `anthropic` account's credential is its setup token - `CLAUDE_CODE_OAUTH_TOKEN`, from its `[accounts.env]` or the global `[env]` - and its repair is a mint or re-mint. Re-authenticating the config dir is never the repair: it would authenticate whichever account owns the shared dir, not the one that failed. The branch is on the account class, not on the presence of `ANTHROPIC_BASE_URL`, so an `anthropic` account that happens to set one still gets token copy:
+<details>
+<summary>Bail classes and repair paths</summary>
+
+- A base-url account (`codex`, `openrouter` or `zai`) keeps its credential in `ANTHROPIC_AUTH_TOKEN` beside its base url. An `anthropic` account's credential is its setup token - `CLAUDE_CODE_OAUTH_TOKEN`, from its `[accounts.env]` or the global `[env]` - and its repair is a mint or re-mint. Re-authenticating the config dir is never the repair: it would authenticate whichever account owns the shared dir, not the one that failed. The branch is on the account class, not on whether `ANTHROPIC_BASE_URL` is set.
+- A token-mode account that is valid never reaches this screen: the usage endpoint refuses a setup token (it lacks the `user:profile` scope), so the token arm probes a minimal billed messages call whose response headers carry the 5-hour and 7-day windows. A 401 is a genuinely rejected token, and only that bails.
+- An endpoint that never answered reads `unreachable` or `fetch error`, the repair aimed at the endpoint rather than the token; a `rate limited` bail has no repair beyond waiting - the pollers keep retrying. forge does not hold boot for any of them.
+- Model verify failure: both digests are cut to twelve hex characters a side; a size mismatch is a different error with the crate's own wording, reading as a truncated download rather than corruption.
+
+</details>
+
+The token-path screens:
 
 <div class="term">
 
@@ -127,9 +134,7 @@ An account whose `provider` is a base-url one (`codex`, `openrouter` or `zai`) h
 
 </div>
 
-A token-mode account that is valid never reaches this screen at all: the usage endpoint refuses a setup token (it lacks the `user:profile` scope), so the token arm probes a minimal billed messages call instead and its response headers carry the 5-hour and 7-day windows. A 401 is a genuinely rejected token, and only that bails.
-
-An endpoint that never answered is a different failure, and the row says so: the last probe attempt classified the error, and an endpoint-class bail reads `unreachable` or `fetch error` (a proxy with a dead upstream 502s rather than refusing), with the repair aimed at the endpoint rather than the token. A `rate limited` bail has no repair at all beyond waiting: the pollers keep retrying. forge does not hold boot for any of them:
+An endpoint that never answered is a different failure, and the row says so:
 
 <div class="term">
 
@@ -159,9 +164,7 @@ An endpoint that never answered is a different failure, and the row says so: the
 
 ## Preflight fails: a model will not verify
 
-*the crate reports a mismatched file rather than repairing it*
-
-Both digests are cut to twelve hex characters a side. A size mismatch is a different error and gets the crate's own wording, which reads as a truncated download rather than as corruption.
+The crate reports a mismatched file rather than repairing it:
 
 <div class="term">
 
@@ -194,9 +197,7 @@ Both digests are cut to twelve hex characters a side. A size mismatch is a diffe
 
 ## First run, resume, and cancel
 
-*3.07 GB once, resumable, cancellable throughout*
-
-A fresh fetch carries the note saying what it is about to move and where it keeps what lands; a resume does not. The resume line names the byte count it found. **Cancelling quits forge** - there is no dictation-less runtime to fall back to - so the screen says what it kept and where before it goes, and only quits once that frame has been painted.
+A fresh fetch carries the note saying what it is about to move and where it keeps what lands; a resume names the byte count it found. **Cancelling quits forge** - there is no dictation-less runtime to fall back to - so the screen says what it kept and where before it goes, quitting only once that frame is painted.
 
 <div class="term">
 
@@ -237,7 +238,12 @@ A fresh fetch carries the note saying what it is about to move and where it keep
 
 </div>
 
-- **config** - `[dictate]` in `forge.toml`, off unless asked for: `enabled`, `models_dir`, `device`, `language`, `normalizer` (a bool - off halves the download and skips a pass per utterance), `max_capture_minutes`. An unknown key fails the load rather than being ignored. The model specs and the normalizer's three prompt axes stay internal - see **the section intro** and the crate docs.
-- **costs** - 3.07 GB on a first run, resumable via `.part` and SHA-256 verified. Every later run re-hashes both files end to end, about 2.7 s for the pair now the two hash concurrently, then loads the weights: 1.0 s warm, 7 s on a cold page cache. About 1.8 GB of physical footprint is then held for the run, which is what Activity Monitor reports against forge.
-- **cancel** - `ControlFlow::Break` out of the progress callback, surfacing as `Error::Cancelled`. Whatever reached `ready` stays installed and every in-flight `.part` is left where it is, so the next run resumes. Both models run at once, so a cancel can leave TWO partials while the screen's byte counts name only the transfer it is reported against; the other model's own row still carries its bar.
-- **cancel is not instant** - `verify()` hashes with no progress callback, so a `Break` is not seen until the hash it interrupted finishes - up to about 2.6 s on the shipped pair, during which the rows keep their last state and the footer still reads `esc  cancel and quit`. That predates the models being prepared concurrently and is [#799](https://github.com/busytools/forge/issues/799); what concurrency changed is that a cancel landing while one model downloads and the other verifies now waits for that verify, where serially the second model had not started.
+<details>
+<summary>Dictation config, costs, and cancel mechanics</summary>
+
+- 3.07 GB on a first run, resumable via `.part` and SHA-256 verified. Every later run re-hashes both files (about 2.7 s for the pair, concurrent) then loads the weights: 1.0 s warm, 7 s on a cold page cache. About 1.8 GB of physical footprint is held for the run.
+- `[dictate]` in `forge.toml`, off unless asked for: `enabled`, `models_dir`, `device`, `language`, `normalizer` (a bool - off halves the download and skips a pass per utterance), `max_capture_minutes`. An unknown key fails the load rather than being ignored. The model specs and the normalizer's prompt axes stay internal.
+- Cancel: whatever reached `ready` stays installed and every in-flight `.part` is left where it is, so the next run resumes. Both models run at once, so a cancel can leave TWO partials while the screen's byte counts name only the transfer they are reported against; the other model's own row still carries its bar.
+- Cancel is not instant: verifying hashes with no progress callback, so a cancel is not seen until the hash it interrupted finishes - up to about 2.6 s on the shipped pair, during which the rows keep their last state and the footer still reads `esc  cancel and quit` ([#799](https://github.com/busytools/forge/issues/799)).
+
+</details>
