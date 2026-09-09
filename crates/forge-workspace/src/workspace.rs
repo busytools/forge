@@ -13397,14 +13397,14 @@ provider = "anthropic"
             "the worker row sits out of the new pool and is untouched by the lead's re-tier",
         );
 
-        // The slot carries the refreshed pool: the next adhoc worker
-        // rotates into a fallback account, not back onto the capped
-        // primary the stale boot pool still held.
+        // The slot carries the refreshed pool AND the lead's re-tier
+        // re-baselined the rotation: the first fresh worker lands on
+        // the free fallback slot instead of colliding with the lead.
         let _ = workspace.extend_plan_for_adhoc_worker(&project_key, "w2");
         assert_eq!(
             row("w2"),
-            Some(AccountKey("Api1".to_owned())),
-            "the slot refresh rotated the fresh worker into the fallback pool",
+            Some(AccountKey("Api2".to_owned())),
+            "the first fresh worker lands on the free fallback slot",
         );
     }
 

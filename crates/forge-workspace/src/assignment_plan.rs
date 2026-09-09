@@ -162,6 +162,10 @@ impl AssignmentPlan {
         slot.degraded = degraded;
         slot.fallback = fallback;
         let account = if label == "lead" {
+            // The lead's re-tier re-baselines the rotation: it holds
+            // the offset slot, so the next fresh worker takes the one
+            // after it instead of whatever the stale counter says.
+            slot.next_session_n = 1;
             let idx = slot.offset % slot.pool.len();
             slot.pool[idx].clone()
         } else {
