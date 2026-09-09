@@ -1336,6 +1336,12 @@ impl Workspace {
                 accounts.pick_for_project(&project_account_pin)
             })
         });
+        tracing::info!(
+            target: "forge_workspace::account",
+            session = %session_key.as_str(),
+            account = %account_key.0,
+            "spawn bound to account",
+        );
 
         // Slow path: spawn fresh Agent bound to the picked account's
         // config_dir. The Agent stores it as a typed field; every
@@ -1931,7 +1937,7 @@ impl Workspace {
             ))) == *project_key
         })?;
         let project = &self.config.projects[idx];
-        let (pool, _) = crate::assignment_plan::tier_pool(
+        let (pool, _, _) = crate::assignment_plan::tier_pool(
             &project.accounts,
             &project.fallback_accounts,
             &ready,
@@ -2170,6 +2176,13 @@ impl Workspace {
                     target: "forge_workspace::assignment_plan",
                     project = ?project.key,
                     "project assigned from a degraded pool; every allow-listed account is terminal-not-Ready",
+                );
+            }
+            if fresh.slot_fallback(&project.key) {
+                tracing::warn!(
+                    target: "forge_workspace::assignment_plan",
+                    project = ?project.key,
+                    "project assigned from a fallback tier; no primary account is Ready and under its cap",
                 );
             }
         }

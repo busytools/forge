@@ -57,6 +57,10 @@ struct ProjectSlot {
     /// allow-listed account was terminal-but-not-Ready at compute
     /// time. Surfaced so callers can mark the assignment degraded.
     degraded: bool,
+    /// True when `pool` came from a fallback tier (2 or 4) - every
+    /// primary was saturated or down, so the rotation runs on the
+    /// org's `fallback_accounts`. Surfaced so callers can warn.
+    fallback: bool,
 }
 
 /// Deterministic assignment of `(project, session_label) -> account`.
@@ -159,6 +163,14 @@ impl AssignmentPlan {
         self.slots.get(project).is_some_and(|slot| slot.degraded)
     }
 
+    /// `true` when `project`'s pool came from a fallback tier (2 or
+    /// 4) - no primary account was Ready and under its cap, so the
+    /// rotation runs on the org's `fallback_accounts`. `false` for
+    /// unknown projects, degraded pools, and primary-tier pools.
+    pub fn slot_fallback(&self, project: &ProjectKey) -> bool {
+        self.slots.get(project).is_some_and(|slot| slot.fallback)
+    }
+
     /// Assign an account to a worker spawned mid-session via
     /// `workers__spawn` or similar adhoc path. Extends the
     /// project's assignment using the same modular-arithmetic shape
@@ -212,16 +224,17 @@ impl AssignmentPlan {
 /// (1) primaries Ready, not saturated; (2) fallbacks Ready, not
 /// saturated; (3) primaries Ready, saturated; (4) fallbacks Ready,
 /// saturated; (5) degraded accounts, primaries before fallbacks;
-/// (6) dark - an empty pool. The bool reports the degraded tier.
-/// Consumed by `compute_plan` (all projects at once) and by the resume
-/// path's single-project re-tier.
+/// (6) dark - an empty pool. The bools report the degraded tier and
+/// whether a fallback tier (2 or 4) won. Consumed by `compute_plan`
+/// (all projects at once) and by the resume path's single-project
+/// re-tier.
 pub(crate) fn tier_pool(
     accounts: &[String],
     fallback_accounts: &[String],
     ready: &[AccountKey],
     degraded: &[AccountKey],
     saturated: &[AccountKey],
-) -> (Vec<AccountKey>, bool) {
+) -> (Vec<AccountKey>, bool, bool) {
     // Intersect a name allow-list with a source account set. The
     // primary list defaults to the whole source when empty (the
     // common solo-account shape); an empty fallback list means no
@@ -246,18 +259,18 @@ pub(crate) fn tier_pool(
     let fallbacks_usable: Vec<AccountKey> =
         fallbacks.iter().filter(|k| !saturated.iter().any(|s| s == *k)).cloned().collect();
     if !primaries_usable.is_empty() {
-        (primaries_usable, false)
+        (primaries_usable, false, false)
     } else if !fallbacks_usable.is_empty() {
-        (fallbacks_usable, false)
+        (fallbacks_usable, false, true)
     } else if !primaries.is_empty() {
-        (primaries, false)
+        (primaries, false, false)
     } else if !fallbacks.is_empty() {
-        (fallbacks, false)
+        (fallbacks, false, true)
     } else {
         let mut pool = primary_pool(degraded);
         pool.extend(fallback_pool(degraded));
         let degraded = !pool.is_empty();
-        (pool, degraded)
+        (pool, degraded, false)
     }
 }
 
@@ -274,7 +287,7 @@ pub fn compute_plan(
     let mut plan = AssignmentPlan::default();
 
     for (project_idx, project) in projects.iter().enumerate() {
-        let (pool, degraded) = tier_pool(
+        let (pool, degraded, fallback) = tier_pool(
             &project.accounts,
             &project.fallback_accounts,
             ready_accounts,
@@ -289,7 +302,13 @@ pub fn compute_plan(
             // return None.
             plan.slots.insert(
                 project.key.clone(),
-                ProjectSlot { pool: Vec::new(), offset: 0, next_session_n: 0, degraded: false },
+                ProjectSlot {
+                    pool: Vec::new(),
+                    offset: 0,
+                    next_session_n: 0,
+                    degraded: false,
+                    fallback: false,
+                },
             );
             continue;
         }
@@ -301,8 +320,10 @@ pub fn compute_plan(
         // at 1 with the lead holding 0.
         plan.assignments.insert((project.key.clone(), "lead".to_owned()), pool[offset].clone());
 
-        plan.slots
-            .insert(project.key.clone(), ProjectSlot { pool, offset, next_session_n: 1, degraded });
+        plan.slots.insert(
+            project.key.clone(),
+            ProjectSlot { pool, offset, next_session_n: 1, degraded, fallback },
+        );
     }
 
     plan
@@ -737,6 +758,7 @@ mod tests {
         let projects = vec![project_with_fallbacks("p", &["sub"], &["api"])];
         let plan = compute_plan(&ready, &[], &saturated, &projects);
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("api")));
+        assert!(plan.slot_fallback(&pk("p")), "tier 2 marks the slot fallback");
         assert!(!plan.slot_degraded(&pk("p")));
     }
 
@@ -751,6 +773,7 @@ mod tests {
         let projects = vec![project_with_fallbacks("p", &["sub"], &["api2"])];
         let plan = compute_plan(&ready, &degraded, &saturated, &projects);
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("api2")));
+        assert!(plan.slot_fallback(&pk("p")), "tier 4 marks the slot fallback");
         assert!(
             !plan.slot_degraded(&pk("p")),
             "a saturated-Ready fallback pool is not the degraded tier",
@@ -796,5 +819,6 @@ mod tests {
         let projects = vec![project_with_fallbacks("p", &["sub"], &["api"])];
         let plan = compute_plan(&ready, &[], &[], &projects);
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("sub")));
+        assert!(!plan.slot_fallback(&pk("p")), "tier 1 is not a fallback tier");
     }
 }
