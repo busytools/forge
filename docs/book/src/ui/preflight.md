@@ -76,9 +76,9 @@ The footer drops `esc` - there is nothing left to cancel - and the paths are pri
         <span style="color:#7eb87a">●</span> normalization model                   <span class="dim">       ready</span>
           <span class="dim">(s1-mini-f16)</span>
 
-        <span class="#cf6171">Granite1 will not start a session. forge starts</span>
-        <span class="#cf6171">without it; fix the auth and restart forge to pick</span>
-        <span class="#cf6171">the re-mint up.</span>
+        <span class="error">Granite1 will not start a session. forge starts</span>
+        <span class="error">without it; fix the auth and restart forge to pick</span>
+        <span class="error">the re-mint up.</span>
 
         <span class="bold">Fix the auth</span>
           CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]
@@ -141,8 +141,8 @@ An endpoint that never answered is a different failure, and the row says so: the
         <span style="color:#7eb87a">●</span> Personal                              <span class="dim">       ready</span>
         <span style="color:#7eb87a">●</span> Codex                                 <span class="dim">       ready</span>
 
-        <span class="#cf6171">Granite1 cannot be reached. forge starts without</span>
-        <span class="#cf6171">it and keeps retrying.</span>
+        <span class="error">Granite1 cannot be reached. forge starts without</span>
+        <span class="error">it and keeps retrying.</span>
 
         <span class="bold">Check the endpoint</span>
           ANTHROPIC_BASE_URL in [accounts.env], or the
@@ -173,9 +173,9 @@ Both digests are cut to twelve hex characters a side. A size mismatch is a diffe
         <span style="color:#cf6171">⚠</span> <span class="bold">normalization model</span>                   <span style="color:#cf6171">    bad hash</span>
           <span class="dim">(s1-mini-f16)</span>
 
-        <span class="#cf6171">s1-mini-f16.gguf hashes to</span>
+        <span class="error">s1-mini-f16.gguf hashes to</span>
           <span class="bold">4f2b9c1a77e0</span>
-        <span class="#cf6171">expected</span>
+        <span class="error">expected</span>
           <span class="bold">0370da4f1bae</span>
 
         It is the right length, so this is corruption and
