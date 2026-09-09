@@ -110,7 +110,7 @@ If the script's `meta` block fails to parse (malformed script, missing `export c
 
 ## MONITORS
 
-Monitor's live tail and summary render in chat (see [Chat](./chat.md)); the per-monitor state feeds that chat block.
+Monitor's live tail and summary render in chat (see [Chat](./chat.md)); its state feeds the chat block.
 
 ## SUBAGENTS
 
