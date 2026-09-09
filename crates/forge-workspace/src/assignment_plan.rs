@@ -646,4 +646,21 @@ mod tests {
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), None);
         assert!(!plan.slot_degraded(&pk("p")));
     }
+
+    #[test]
+    fn compute_plan_prefers_a_saturated_ready_account_over_a_degraded_one() {
+        // `a` is Ready but at the cap, `b` is degraded. The saturated
+        // fallback fires before the degraded tier: a saturated account
+        // still logs in, a degraded one already failed its probe.
+        let ready = vec![ak("a")];
+        let degraded = vec![ak("b")];
+        let saturated = vec![ak("a")];
+        let projects = vec![project("p", &["a", "b"])];
+        let plan = compute_plan(&ready, &degraded, &saturated, &projects);
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
+        assert!(
+            !plan.slot_degraded(&pk("p")),
+            "a saturated-Ready pool is not the degraded tier",
+        );
+    }
 }
