@@ -599,7 +599,7 @@ fn status_row(
     let (db, level) = indicator.db_readout(now);
     #[allow(clippy::cast_possible_truncation)]
     let whole_db = db.round() as i64;
-    let db_text = format!("{whole_db} dB");
+    let db_text = format!("{whole_db:>3} dB");
     let db_colour = if recording && level > FLOOR_FRAC {
         rgbf(mix3(mix3(METER_LOW, ORANGE, 0.4 + 0.6 * level), HOT, level * 0.5))
     } else {
@@ -688,6 +688,41 @@ mod tests {
     use super::*;
     use crate::app::events::apply_session_update;
     use forge_workspace::{DictateOutcome, SessionUpdate};
+
+    /// A single-digit and a double-digit dB reading put the meter at
+    /// the same column: the readout is padded, so crossing the digit
+    /// boundary never shifts the meter. The row's trailing pad keeps
+    /// the TOTAL width constant either way - the prefix before the
+    /// meter cells is what the assertion must pin. Mutation-checked:
+    /// dropping the padding makes the prefixes 16 vs 17 and this dies.
+    #[test]
+    fn the_db_readout_holds_a_fixed_width_across_digit_counts() {
+        // Drive each take's envelope close to a steady peak (one rounds
+        // to single digits, the other to double), then advance the
+        // clock past the 5 Hz readout hold so the row shows the pushed
+        // level and not the initial one.
+        let pushed = |peaks: f32| {
+            let mut indicator = DictateIndicator::recording(-50.0, 1);
+            for _ in 0..200 {
+                indicator.push_level(peaks);
+            }
+            indicator
+        };
+        let mut single = pushed(-6.0);
+        let mut double = pushed(-16.0);
+        let later = Instant::now() + Duration::from_millis(250);
+        // The first 7 spans are the prefix (indent, dot, spacer, timer,
+        // spacer, dB text, spacer); the meter cells follow.
+        let prefix = |indicator: &mut DictateIndicator| {
+            let line = status_row(indicator, 80, true, 0.0, later);
+            line.spans.iter().take(7).map(|s| s.content.chars().count()).sum::<usize>()
+        };
+        assert_eq!(
+            prefix(&mut single),
+            prefix(&mut double),
+            "single- and double-digit dB must put the meter at the same column"
+        );
+    }
 
     fn rgb_distance(a: Color, b: Color) -> f32 {
         let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
