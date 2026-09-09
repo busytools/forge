@@ -1,7 +1,7 @@
 /* Terminal mockup styling for the book's UI surface pages.
-   Mirrors docs/forge-map.html's frame + inline color tokens, scoped
-   under .term so none of it leaks into the rest of the book. The
-   variables are forge-tui's current theme.rs values. */
+   Frame + inline color tokens, scoped under .term so none of it
+   leaks into the rest of the book. The variables are forge-tui's
+   current theme.rs values. */
 
 .term {
   --bg:            #0d1117;
