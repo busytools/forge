@@ -3,7 +3,6 @@ pub(crate) mod auto_continue;
 mod client;
 pub(crate) mod mouse;
 mod notices;
-pub(super) mod queued_turn;
 pub(super) mod rate_limit;
 mod sdk_message;
 mod session;
@@ -405,7 +404,6 @@ pub(super) fn handle_runtime_session_state_update(
             if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
                 && !app.is_compacting()
                 && !app.pending_cancel()
-                && !queued_turn::active_has_queued(app)
             {
                 app.status = AppStatus::Ready;
             }

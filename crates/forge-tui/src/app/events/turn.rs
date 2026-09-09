@@ -208,7 +208,6 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
         // Lifecycle: cancellation accepted - return active session
         // to Idle. (Steady-state TurnComplete fires shortly after,
         // also setting Idle - this is a defensive idempotent set.)
-        super::queued_turn::cancel(app, session_key);
         super::set_bucket_lifecycle_state(
             app,
             session_key,
@@ -235,7 +234,6 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
     // Drop the `session` mut borrow before reaching for the workspace.
     let _ = session;
     // Lifecycle: background cancel accepted - same Idle target.
-    super::queued_turn::cancel(app, session_key);
     super::set_bucket_lifecycle_state(
         app,
         session_key,
@@ -424,9 +422,6 @@ fn apply_turn_complete_presentation(
         // completion pings here beside the unseen flag; a queued
         // send's own turn pings at its completion.
         app.notify(super::super::notify::NotifyEvent::TurnComplete, session_key);
-        if super::queued_turn::hold_background_open(app, session_key) {
-            return;
-        }
         if let Some(reason) = terminal_reason {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -471,16 +466,6 @@ fn apply_turn_complete_presentation(
         );
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
-    // A mid-turn submit the CLI has queued must keep the spinner open
-    // across the pre-first-token gap of its turn, which nothing on the
-    // wire announces. Consulted before the completion ping: a queued
-    // send keeps the session visibly running, so it fires no
-    // "turn complete". Also ahead of the geometry net below - the
-    // count is authoritative, the net only catches shapes a submit
-    // that predates it could still produce.
-    if super::queued_turn::reopen_queued(app, session_key) {
-        return;
-    }
     // Under the background-frame pivot the completing key is an alias,
     // not the user's tab; its ping belongs to the dispatcher seam.
     if turn_was_active && !app.active_session_pivoted {
@@ -620,7 +605,6 @@ fn apply_turn_error_presentation(
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         let _ = session;
-        super::queued_turn::cancel(app, session_key);
         // Lifecycle: turn ended (with error) - return the background
         // bucket to Idle so the Projects pane drops the spinner glyph,
         // and reset the per-turn SDK state.
@@ -675,7 +659,6 @@ fn apply_turn_error_presentation(
             terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
         );
         *app.pending_submit_mut() = None;
-        super::queued_turn::cancel(app, session_key);
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         // Lifecycle: cancelled turn - back to Idle, reset turn_state.
         if let Some(key) = app.active_session_key.clone() {
@@ -748,7 +731,6 @@ fn apply_turn_error_presentation(
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.input_mut().clear();
     *app.pending_submit_mut() = None;
-    super::queued_turn::cancel(app, session_key);
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
         app.last_rate_limit_update()
@@ -1018,6 +1000,90 @@ mod tests {
                 desktop: Some(("beta".to_owned(), "turn complete".to_owned())),
             }],
             "the unfocused manager delivered the completion ping",
+        );
+    }
+
+    fn app_with_connection() -> App {
+        let mut app = App::test_default();
+        let _rx: tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> =
+            app.install_testing_stub();
+        app.set_session_id(Some(model::SessionId::new("session-1")));
+        app
+    }
+
+    /// TurnComplete settles the session regardless of a mid-turn
+    /// submit the CLI has queued: Idle in the same dispatch, the
+    /// completion notification fires, and nothing bridges into the
+    /// queued turn. When that turn starts it announces itself on the
+    /// wire and the loader comes back up from the beginning.
+    #[test]
+    fn mid_turn_submit_then_turn_complete_settles_idle_and_notifies() {
+        let mut app = app_with_connection();
+        let key = active_session_key(&app);
+
+        app.status = AppStatus::Ready;
+        app.input_mut().set_text("first");
+        crate::app::input_submit::submit_input(&mut app);
+        assert!(matches!(app.status, AppStatus::Thinking));
+
+        app.input_mut().set_text("second");
+        crate::app::input_submit::submit_input(&mut app);
+
+        apply_session_update_turn_complete(&mut app, &key, None);
+
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "the settle is unconditional, got {:?}",
+            app.status
+        );
+        let bucket = app.sessions.get(&key).expect("bucket present");
+        assert_eq!(
+            bucket.lifecycle_state,
+            crate::app::session::SessionLifecycleState::Idle,
+            "the bucket settles Idle in the same dispatch, not the queued turn's Running",
+        );
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![(
+                crate::app::notify::NotifyEvent::TurnComplete,
+                crate::app::notify::NotifyContext::default(),
+            )],
+            "the completion notification fires even with a queued send",
+        );
+        let last = app.messages().last().expect("messages present");
+        assert!(
+            !matches!(last.role, MessageRole::Assistant) || !last.blocks.is_empty(),
+            "no placeholder may be pushed for a turn that has not started",
+        );
+    }
+
+    /// The background arm of turn-complete settles Idle and notifies
+    /// in the same dispatch; nothing holds the pane glyph open for a
+    /// queued send anymore.
+    #[test]
+    fn background_success_result_notifies_even_with_a_queued_send() {
+        use crate::app::session::UiSession;
+        let mut app = App::test_default();
+        let bg_key = SessionKey::from_str_for_test("background-session");
+        let bg = UiSession::new(bg_key.clone());
+        app.sessions.insert(bg_key.clone(), bg);
+
+        apply_session_update_turn_complete(&mut app, &bg_key, None);
+
+        let bg = app.sessions.get(&bg_key).expect("bg present");
+        assert_eq!(
+            bg.lifecycle_state,
+            crate::app::session::SessionLifecycleState::Idle,
+            "the background bucket settles Idle in the same dispatch",
+        );
+        assert!(bg.unseen_turn_completion, "the unseen flag arms for the Projects pane");
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![(
+                crate::app::notify::NotifyEvent::TurnComplete,
+                crate::app::notify::NotifyContext::default(),
+            )],
+            "the completion notification fires even with a queued send pending",
         );
     }
 

@@ -360,13 +360,11 @@ mod tests {
     }
 
     /// A continuation is a mid-turn-capable dispatch: when any turn
-    /// (typed, or a counted cron/peer/gotify fire) starts inside the
-    /// backoff window, the helper signals `PromptQueuedWhileBusy` and
-    /// the TUI counts the continuation into the bridge; an idle fire
-    /// stays silent.
+    /// (typed, or a cron/peer/gotify fire) starts inside the backoff
+    /// window, the helper signals `PromptQueuedWhileBusy`; an idle
+    /// fire stays silent.
     #[test]
-    fn mid_turn_continuation_counts_as_a_queued_send_and_idle_fire_is_silent() {
-        use super::super::apply_session_update;
+    fn mid_turn_continuation_signals_prompt_queued_while_busy_and_idle_fire_is_silent() {
         use forge_workspace::SessionUpdate;
 
         let mut app = App::test_default();
@@ -404,8 +402,5 @@ mod tests {
             matches!(signal, SessionUpdate::PromptQueuedWhileBusy { .. }),
             "the signal carries the queue event, got {signal:?}",
         );
-        apply_session_update(&mut app, signal);
-        let bucket = app.sessions.get(&key).expect("bucket");
-        assert_eq!(bucket.queued_turn_sends, 1, "the continuation counts as one queued send");
     }
 }
