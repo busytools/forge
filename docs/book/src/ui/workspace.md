@@ -1,6 +1,6 @@
 # Workspace
 
-forge ships as a 5-crate runtime workspace. Only `forge-tui` renders to the terminal; the other four layer underneath through strict acyclic dependencies. `forge-test-harness` is the wire-conformance harness - not in the runtime path.
+forge ships as a 5-crate runtime workspace. Only `forge-tui` renders to the terminal; the other four layer underneath through strict acyclic dependencies.
 
 | Crate | Role | depends on |
 |---|---|---|
@@ -13,7 +13,7 @@ forge ships as a 5-crate runtime workspace. Only `forge-tui` renders to the term
 
 # Layout
 
-forge-tui's main frame is a strict vertical stack composed by `layout::compute`, flanked by inline side panes at the wider tiers. **This stack only renders in `ActiveView::Chat`.** When the user opens `/config`, forge swaps the entire frame to `ActiveView::Config` - chat / input / side panes all disappear. At terminal widths ≥160 cols the chat frame is flanked by a 32ch [Projects pane](./projects-pane.md) on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 40ch [Inspector pane](./inspector.md) on the right (carrying the live `TASKS` list from `TodoWrite`); between 120-159 cols they shrink to 24ch and 30ch respectively, with truncation; below 120 cols a single-row top bar replaces both panes - tapping the `▤` icon (or <kbd>Cmd+Left</kbd>; <kbd>Ctrl+Left</kbd> off macOS) opens the Projects overlay, tapping `▦` (or <kbd>Cmd+Right</kbd>; <kbd>Ctrl+Right</kbd> off macOS) opens the Inspector overlay.
+forge-tui's main frame is a strict vertical stack composed by `layout::compute`. When the user opens `/config`, forge swaps the entire frame to `ActiveView::Config` - chat / input / side panes all disappear. At terminal widths ≥160 cols the chat frame is flanked by a 32ch [Projects pane](./projects-pane.md) on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 40ch [Inspector pane](./inspector.md) on the right (carrying the live `TASKS` list from `TodoWrite`); between 120-159 cols they shrink to 24ch and 30ch respectively, with truncation; below 120 cols a single-row top bar replaces both panes - tapping the `▤` icon (or <kbd>Cmd+Left</kbd>; <kbd>Ctrl+Left</kbd> off macOS) opens the Projects overlay, tapping `▦` (or <kbd>Cmd+Right</kbd>; <kbd>Ctrl+Right</kbd> off macOS) opens the Inspector overlay.
 
 In `ActiveView::Chat` the central stack is:
 
@@ -21,7 +21,7 @@ In `ActiveView::Chat` the central stack is:
 2. `input` - the bordered input box (1 interior row, grows up to `MAX_INPUT_HEIGHT = 50` as the user types; its own thick top/bottom edges are the dividers - there are no separator rows)
 3. `help` - help overlay (0 when inactive, else `HELP_PANEL_HEIGHT = 14`)
 
-The mode / model / cwd / branch / usage **status used to sit as 2 rows below the input**; that row is gone. Mode / Model / Effort / usage moved to the [Projects pane](./projects-pane.md)'s bottom panel together with the account name and a per-window usage bar (5h, 7d); cwd and branch moved to the right-hand [Inspector pane](./inspector.md)'s `GIT` section (which also surfaces the per-file diff stats). The live todo list **used to sit above the input** as the `todo` panel (closed = 1-line compact, open = up to 5 rows, toggle on <kbd>Ctrl+T</kbd>); that panel is gone too - todos now render in the Inspector pane as its `TASKS` section.
+Mode / Model / Effort / usage moved to the [Projects pane](./projects-pane.md)'s bottom panel together with the account name and a per-window usage bar (5h, 7d); cwd and branch moved to the right-hand [Inspector pane](./inspector.md)'s `GIT` section (which also surfaces the per-file diff stats). Todos now render in the Inspector pane as its `TASKS` section.
 
 One `forge` process owns a config dir and drives every session inside it - a second `forge` on the same config dir is refused at boot with the holder's PID. The [Projects pane](./projects-pane.md) is the in-process coordinator view: every project, its live workers, and the session currently in the chat frame all belong to that one process.
 
@@ -50,4 +50,4 @@ One `forge` process owns a config dir and drives every session inside it - a sec
 
 </div>
 
-*Left padding is 2 cols across the chat body. The input is a thick-bordered RUST_ORANGE box; its own top and bottom edges are the dividers - no separator rows. The chat scrollbar (overflow only) is a `▐` thumb in `RUST_ORANGE` with no track, in a 1-col gutter reserved off the body's right edge (`CHAT_SCROLLBAR_WIDTH`). The bottom of the chat frame ends at the box's lower edge; the status pieces that used to sit below the input now live in the [Projects pane](./projects-pane.md)'s bottom panel, and the todo list that used to sit above the input is now in the [Inspector pane](./inspector.md)'s `TASKS` section.*
+*Left padding is 2 cols across the chat body. The input is a thick-bordered RUST_ORANGE box. The chat scrollbar (overflow only) is a `▐` thumb in `RUST_ORANGE` with no track, in a 1-col gutter reserved off the body's right edge (`CHAT_SCROLLBAR_WIDTH`). The bottom of the chat frame ends at the box's lower edge.*
