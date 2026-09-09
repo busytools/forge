@@ -8,9 +8,11 @@
 # surface-card / name / blurb), so index.md is held to the same ceiling
 # as prose.
 #
-# Div tracking keeps a depth for EVERY div and pops on close, so a
-# non-mockup div's close cannot drive the counter negative and zero out
-# the rest of the page. Residual hole, accepted: one stray close can pop
+# Div tracking keeps a depth for EVERY div; each frame records which
+# counter its open incremented (mockup, landing-card, or none), and a
+# close decrements only that counter - unknown and classless divs are
+# no-op frames whose text counts, so a close can never skew either
+# counter negative. Residual hole, accepted: one stray close can pop
 # one level early and un-strip until the next mockup open - fixing that
 # needs real HTML parsing, which a word-count gate does not owe.
 set -u
@@ -35,15 +37,15 @@ for f in src/ui/*.md; do
           tag = substr(rest, o, gt)
           d++
           if (tag ~ /class="(term|term-bar)"/ || tag ~ /display: *flex/) { mock++; kind[d] = 1 }
-          else if (tag ~ /class="(surface-grid|surface-card|name|blurb)"/) { blurb++; bflag[d] = 1 }
-          else bflag[d] = 0
+          else if (tag ~ /class="(surface-grid|surface-card|name|blurb)"/) { blurb++; kind[d] = 2 }
+          else kind[d] = 0
           line = line substr(rest, 1, o - 1)
           rest = substr(rest, o + gt)
         } else {
           if (d > 0) {
-            if (bflag[d]) blurb--
-            else mock--
-            delete bflag[d]
+            if (kind[d] == 1) mock--
+            else if (kind[d] == 2) blurb--
+            delete kind[d]
             d--
           }
           line = line substr(rest, 1, c - 1)
