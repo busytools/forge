@@ -9,7 +9,7 @@ Above the input a hint slot carries login, cancel and suggestion hints.
 <details>
 <summary>Hint slot</summary>
 
-A login hint: "Authentication required: <method> -- <description>" in yellow with a dim "Run \`claude auth login\` in another terminal to authenticate" beneath - two lines. A cancel hint: "Cancelling current turn... draft will auto-submit when ready." in dim, one line. A prompt suggestion: "Suggestion: <text>    Tab to accept" - dim label, white text, dim accept-hint, one line.
+A login hint: `Authentication required: <method> -- <description>` in yellow with a dim `Run \`claude auth login\` in another terminal to authenticate` beneath - two lines. A cancel hint: `Cancelling current turn... draft will auto-submit when ready.` in dim, one line. A prompt suggestion: `Suggestion: <text>    Tab to accept` - dim label, white text, dim accept-hint, one line.
 
 </details>
 

@@ -24,7 +24,7 @@ forge has no dedicated full-screen error views. Error and failure UI arrives as 
 
 </div>
 
-**Rate limit notice** - on `AllowedWarning` (Warning) or `Rejected` (Error). Three branches: org-level disabled extra usage points at `/extra-usage`, `/model`, or waiting for the window; near-threshold-without-overage reads "Near rate-limit threshold. Resets in 4h 23m at 14:30 UTC."; the general case reads "{Approaching | Rate limit reached}, you've used N% of your <type> rate limit." with the overage status and reset time. The same message tints the rate-limit chip on the assistant's reply.
+**Rate limit notice** - on `AllowedWarning` (Warning) or `Rejected` (Error). Three branches: org-level disabled extra usage points at `/extra-usage`, `/model`, or waiting for the window; near-threshold-without-overage reads "Near rate-limit threshold. Resets in 4h 23m at 14:30 UTC."; the general case reads "{Approaching | Rate limit reached}, you've used N% of your `<type>` rate limit." with the overage status and reset time. The same message tints the rate-limit chip on the assistant's reply.
 
 **Tool-use error** - a failed tool call renders the red `✗` icon with its error body in red; for Bash only the first non-empty stderr line shows. Internal failures (timeouts, panics, SDK protocol violations) render a bold red "Internal Agent SDK error" header over a red summary line instead.
 
