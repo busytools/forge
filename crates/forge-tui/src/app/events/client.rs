@@ -2778,6 +2778,59 @@ mod tests {
         );
     }
 
+    /// The restore half of the pivot marker: once a background frame
+    /// has been routed, the marker must be cleared again, or the tail
+    /// notify dies for the user's own tab. One background success
+    /// Result, then a turn completing on the truly active tab, must
+    /// leave exactly one ping per session.
+    #[test]
+    fn active_tab_pings_after_a_background_frame_routes_through_the_pivot() {
+        let mut app = App::test_default();
+        let (active, background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_active = workspace.install_testing_stub(&active);
+        let _cmds_background = workspace.install_testing_stub(&background);
+        if let Some(bucket) = app.sessions.get_mut(&active) {
+            bucket.project = Some("alpha".to_owned());
+        }
+        if let Some(bucket) = app.sessions.get_mut(&background) {
+            bucket.project = Some("beta".to_owned());
+        }
+        app.notifications.on_focus_lost();
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ChatAppended {
+                session_id: background.as_str().to_owned(),
+                msg: result_frame(background.as_str(), false),
+            },
+        );
+        app.status = crate::app::AppStatus::Thinking;
+        turn::apply_session_update_turn_complete(&mut app, &active, None);
+
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![
+                (
+                    crate::app::notify::NotifyEvent::TurnComplete,
+                    crate::app::notify::NotifyContext {
+                        project: Some("beta".to_owned()),
+                        worker_label: None,
+                    },
+                ),
+                (
+                    crate::app::notify::NotifyEvent::TurnComplete,
+                    crate::app::notify::NotifyContext {
+                        project: Some("alpha".to_owned()),
+                        worker_label: None,
+                    },
+                ),
+            ],
+            "one ping per completion: the background seam's, then the active tab's \
+             own - a marker left stuck suppresses the second",
+        );
+    }
+
     /// The active session's own success Result is seen by definition:
     /// the flag must not arm on the watched session.
     #[test]
