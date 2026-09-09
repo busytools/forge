@@ -175,17 +175,18 @@ mod tests {
             Some(UsageFetchStatus::RateLimited),
             "the rate-limit class is recorded for the row's reason text",
         );
-        // The server Retry-After schedules the re-probe; the local
-        // exponential default would be 30 s, so an hour-long gap
-        // proves the server value was honoured, not discarded.
+        // The server Retry-After schedules the re-probe (clamped to
+        // the 10-minute ceiling); the local exponential default would
+        // be 30 s, so a ten-minute gap proves the server value was
+        // honoured, not discarded.
         let gap = states
             .by_key
             .get(&key)
             .and_then(|s| s.next_probe_at)
             .map(|t| t.saturating_duration_since(Instant::now()));
         assert!(
-            gap.is_some_and(|g| g > Duration::from_secs(3599)),
-            "Retry-After retained in the probe schedule; got {gap:?}",
+            gap.is_some_and(|g| g > Duration::from_secs(599) && g <= Duration::from_secs(601)),
+            "Retry-After retained (clamped) in the probe schedule; got {gap:?}",
         );
     }
 

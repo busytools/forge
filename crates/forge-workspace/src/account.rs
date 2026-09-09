@@ -453,7 +453,7 @@ impl AccountStateMap {
             // (starts at 30 s), so the leaky-bucket actually gets
             // a chance to refill.
             let delay = match retry_after {
-                Some(d) if d >= std::time::Duration::from_secs(1) => d,
+                Some(d) if d >= std::time::Duration::from_secs(1) => d.min(BACKOFF_CAP),
                 _ => backoff_delay(state.consecutive_failures),
             };
             state.next_probe_at = Some(std::time::Instant::now() + delay);
@@ -772,6 +772,12 @@ fn is_rate_limited(snapshot: &UsageSnapshot) -> bool {
     windows.into_iter().flatten().any(UsageWindow::is_currently_limited)
 }
 
+/// Ceiling shared by the exponential schedule and the server
+/// `Retry-After` clamp. The hold-down this caps is the sole re-probe
+/// path for a settled account, so a bogus header must not hold one
+/// down arbitrarily long.
+const BACKOFF_CAP: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Per-account exponential backoff schedule for usage-probe
 /// failures. Doubles each consecutive failure, capped at 10
 /// minutes. The 60 s poll loop ticks ~once a minute; without
@@ -789,10 +795,9 @@ fn is_rate_limited(snapshot: &UsageSnapshot) -> bool {
 /// | 6+          | 10 min (cap) |
 fn backoff_delay(consecutive_failures: u32) -> std::time::Duration {
     use std::time::Duration;
-    const CAP: Duration = Duration::from_secs(600); // 10 min
     let exp = consecutive_failures.min(20); // shift saturates at 20; well under u64::MAX
     let seconds = 30_u64.saturating_mul(1_u64 << exp.saturating_sub(1));
-    Duration::from_secs(seconds).min(CAP)
+    Duration::from_secs(seconds).min(BACKOFF_CAP)
 }
 
 #[cfg(test)]
@@ -1352,21 +1357,37 @@ mod tests {
 
     #[test]
     fn retry_after_overrides_exponential_backoff() {
-        // Anthropic returns Retry-After: 3048 (seconds) for a deeply
-        // rate-limited account. Our local exponential schedule would
-        // pick 30 s for the first failure - vastly under-shoot the
-        // actual reset and re-trip the limit. The server-provided
-        // retry_after must win.
+        // The server-provided retry_after must win over the local
+        // exponential schedule - 30 s for a first failure would
+        // under-shoot the actual reset and re-trip the limit.
         use std::time::Duration;
         let mut map = AccountStateMap::new(&[make_account("Gateway1")]);
         let key = AccountKey("Gateway1".to_owned());
         let t0 = std::time::Instant::now();
-        map.set_last_error(&key, UsageFetchStatus::RateLimited, Some(Duration::from_secs(3048)));
+        map.set_last_error(&key, UsageFetchStatus::RateLimited, Some(Duration::from_secs(480)));
         let next = map.by_key.get(&key).and_then(|s| s.next_probe_at).expect("scheduled");
         let gap = next.saturating_duration_since(t0);
         assert!(
-            gap >= Duration::from_secs(3047) && gap <= Duration::from_secs(3050),
-            "next_probe_at ≈ now + 3048s; got {gap:?}",
+            gap >= Duration::from_secs(479) && gap <= Duration::from_secs(481),
+            "next_probe_at ≈ now + 480s; got {gap:?}",
+        );
+    }
+
+    #[test]
+    fn retry_after_is_clamped_to_the_backoff_ceiling() {
+        // The hold-down is the sole re-probe path for a settled
+        // account, so a bogus (or merely very large) header must not
+        // hold one down past the schedule's own 10-minute ceiling.
+        use std::time::Duration;
+        let mut map = AccountStateMap::new(&[make_account("Gateway1")]);
+        let key = AccountKey("Gateway1".to_owned());
+        let t0 = std::time::Instant::now();
+        map.set_last_error(&key, UsageFetchStatus::RateLimited, Some(Duration::from_secs(100_000)));
+        let next = map.by_key.get(&key).and_then(|s| s.next_probe_at).expect("scheduled");
+        let gap = next.saturating_duration_since(t0);
+        assert!(
+            gap >= Duration::from_secs(599) && gap <= Duration::from_secs(601),
+            "next_probe_at clamps to ≈ 600s; got {gap:?}",
         );
     }
 
