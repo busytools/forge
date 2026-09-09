@@ -280,7 +280,15 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             turn::apply_session_update_turn_error(app, &key, &message, class, terminal_reason);
         }
         SessionUpdate::PromptQueuedWhileBusy { key } => {
-            super::queued_turn::note_queued_dispatch(app, &key);
+            // TurnComplete settles regardless; a queued turn
+            // announces itself on the wire when it starts.
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "prompt_queued_while_busy",
+                message = "a dispatch landed while the session's turn was in flight",
+                outcome = "success",
+                session_key = %key.as_str(),
+            );
         }
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
             let applied =
