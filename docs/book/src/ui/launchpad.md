@@ -48,7 +48,7 @@ The identity block (wordmark + version + optional chip row) and the picker ride 
 | <kbd>Ctrl+Q</kbd> | Quit (≡ `/quit`) |
 | <kbd>Cmd+Left</kbd> <kbd>Cmd+Right</kbd> (<kbd>Ctrl+</kbd> off macOS) | Swallowed (no panes to toggle) |
 
-Enter follows the selected row's lifecycle, the footer hint labeling it: Idle / Running / Attention / AuthRequired / LoggedOut → `enter  open`, switching to the session; Sleeping → `enter  start`, spawning and staying here until the row reaches Idle (avoiding the chat's Connecting stub); Spawning → `enter  ⏳ spawning...`, a no-op; Failed → Enter is a no-op, <kbd>r</kbd> retries.
+Enter follows the selected row's lifecycle, the footer hint labeling it: Idle / Running / Attention / AuthRequired / LoggedOut → `enter  open`, switching to the session; Sleeping → `enter  start`, spawning and staying here until the row reaches Idle (avoiding the chat's Connecting stub); Spawning → `enter  ⏳ spawning…`, a no-op; Failed → Enter is a no-op, <kbd>r</kbd> retries.
 
 No input area, so slash commands are keys: `/help` ≡ <kbd>?</kbd>, `/quit` ≡ <kbd>Ctrl+Q</kbd>; `/config` and `/plugins` need a picked project first.
 
@@ -107,7 +107,7 @@ The launchpad blocks project-row clicks until every account reaches a terminal s
               <span class="dim">no usable accounts</span>
       <span class="dim">────────────────────────────────────────────────────────</span>
 
- <span class="dim">↑↓  navigate     enter  ⏳ loading accounts...     ?  help     ctrl+q  quit</span></pre>
+ <span class="dim">↑↓  navigate     enter  ⏳ loading accounts…     ?  help     ctrl+q  quit</span></pre>
 
 </div>
 
