@@ -140,7 +140,9 @@ impl AssignmentPlan {
     /// label takes a fresh slot in it, `offset` for the lead and the
     /// next counter slot (the `assign_adhoc_worker` arithmetic) for a
     /// worker, so two separately-resumed workers do not collapse onto
-    /// one account. Other rows unmoved. Returns the assigned account.
+    /// one account. Other rows unmoved. Returns the assigned account,
+    /// or `None` on an empty pool (mirroring `assign_adhoc_worker`),
+    /// leaving every row and slot untouched.
     pub(crate) fn retier_assignment(
         &mut self,
         project: &ProjectKey,
@@ -149,7 +151,10 @@ impl AssignmentPlan {
         offset: usize,
         degraded: bool,
         fallback: bool,
-    ) -> AccountKey {
+    ) -> Option<AccountKey> {
+        if pool.is_empty() {
+            return None;
+        }
         let slot = self.slots.entry(project.clone()).or_insert(ProjectSlot {
             pool: Vec::new(),
             offset,
@@ -175,7 +180,7 @@ impl AssignmentPlan {
             slot.pool[idx].clone()
         };
         self.assignments.insert((project.clone(), label.to_owned()), account.clone());
-        account
+        Some(account)
     }
 
     /// `true` when the plan has zero entries for `project`. Surfaced
@@ -772,6 +777,19 @@ mod tests {
         let plan = compute_plan(&ready, &degraded, &saturated, &projects);
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
         assert!(!plan.slot_degraded(&pk("p")), "a saturated-Ready pool is not the degraded tier");
+    }
+
+    #[test]
+    fn retier_assignment_refuses_an_empty_pool() {
+        // The panic contract stays local: an empty re-tier pool returns
+        // None instead of indexing, mirroring assign_adhoc_worker, and
+        // leaves the recorded row and slot untouched.
+        let accounts = vec![ak("a")];
+        let projects = vec![project("p", &["a"])];
+        let mut plan = compute_plan(&accounts, &[], &[], &projects);
+        let retiered = plan.retier_assignment(&pk("p"), "lead", Vec::new(), 0, false, false);
+        assert_eq!(retiered, None, "an empty pool is refused, not indexed");
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
     }
 
     #[test]

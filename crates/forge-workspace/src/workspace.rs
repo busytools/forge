@@ -1928,14 +1928,16 @@ impl Workspace {
                 let Some(plan) = plan_guard.as_mut() else {
                     return Some(recorded);
                 };
-                let account = plan.retier_assignment(
+                let Some(account) = plan.retier_assignment(
                     project_key,
                     label,
                     best.pool,
                     best.offset,
                     best.degraded,
                     best.fallback,
-                );
+                ) else {
+                    return Some(recorded);
+                };
                 drop(plan_guard);
                 tracing::info!(
                     target: "forge_workspace::assignment_plan",
