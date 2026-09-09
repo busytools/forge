@@ -85,7 +85,10 @@
 .term .dim          { color: var(--dim); }
 .term .muted-c      { color: var(--very-dim); }
 .term .success      { color: var(--success); }
+/* mdbook's general.css styles .warning::before with a 3rem info badge for
+   its own admonition blocks; our .warning is a colour class - kill the badge. */
 .term .warning      { color: var(--status-warn); }
+.term .warning::before { content: none; }
 .term .error        { color: var(--status-error); }
 .term .slash        { color: var(--slash); }
 .term .subagent     { color: var(--subagent); }
