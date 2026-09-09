@@ -134,27 +134,44 @@ impl AssignmentPlan {
         }
     }
 
-    /// Re-home one `(project, label)` assignment - the resume
-    /// re-tier's frozen-overlay extend: the row moves to `account`
-    /// while the project's slot bookkeeping swaps to the re-tiered
-    /// pool (the adhoc counter never regresses). Other rows unmoved.
+    /// Re-home a resume onto the re-tiered pool - the resume
+    /// re-tier's frozen-overlay extend: the project's slot swaps to
+    /// the re-tiered pool (the adhoc counter never regresses) and the
+    /// label takes a fresh slot in it, `offset` for the lead and the
+    /// next counter slot (the `assign_adhoc_worker` arithmetic) for a
+    /// worker, so two separately-resumed workers do not collapse onto
+    /// one account. Other rows unmoved. Returns the assigned account.
     pub(crate) fn retier_assignment(
         &mut self,
         project: &ProjectKey,
         label: &str,
-        account: AccountKey,
         pool: Vec<AccountKey>,
         offset: usize,
         degraded: bool,
         fallback: bool,
-    ) {
-        if let Some(slot) = self.slots.get_mut(project) {
-            slot.pool = pool;
-            slot.offset = offset;
-            slot.degraded = degraded;
-            slot.fallback = fallback;
-        }
-        self.assignments.insert((project.clone(), label.to_owned()), account);
+    ) -> AccountKey {
+        let slot = self.slots.entry(project.clone()).or_insert(ProjectSlot {
+            pool: Vec::new(),
+            offset,
+            next_session_n: 0,
+            degraded,
+            fallback,
+        });
+        slot.pool = pool;
+        slot.offset = offset;
+        slot.degraded = degraded;
+        slot.fallback = fallback;
+        let account = if label == "lead" {
+            let idx = slot.offset % slot.pool.len();
+            slot.pool[idx].clone()
+        } else {
+            let session_n = slot.next_session_n;
+            slot.next_session_n += 1;
+            let idx = (slot.offset + session_n) % slot.pool.len();
+            slot.pool[idx].clone()
+        };
+        self.assignments.insert((project.clone(), label.to_owned()), account.clone());
+        account
     }
 
     /// `true` when the plan has zero entries for `project`. Surfaced

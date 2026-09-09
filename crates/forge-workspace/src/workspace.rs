@@ -1916,21 +1916,19 @@ impl Workspace {
         };
         match self.best_tier_pool(project_key) {
             Some(best) if !best.pool.contains(&recorded) => {
-                let account = best.pool[best.offset].clone();
-                {
-                    let mut plan_guard = self.assignment_plan.lock();
-                    if let Some(plan) = plan_guard.as_mut() {
-                        plan.retier_assignment(
-                            project_key,
-                            label,
-                            account.clone(),
-                            best.pool,
-                            best.offset,
-                            best.degraded,
-                            best.fallback,
-                        );
-                    }
-                }
+                let mut plan_guard = self.assignment_plan.lock();
+                let Some(plan) = plan_guard.as_mut() else {
+                    return Some(recorded);
+                };
+                let account = plan.retier_assignment(
+                    project_key,
+                    label,
+                    best.pool,
+                    best.offset,
+                    best.degraded,
+                    best.fallback,
+                );
+                drop(plan_guard);
                 tracing::info!(
                     target: "forge_workspace::assignment_plan",
                     project = ?project_key,
@@ -13350,6 +13348,68 @@ provider = "anthropic"
             Some(AccountKey("Api1".to_owned())),
             "the slot refresh rotated the fresh worker into the fallback pool",
         );
+    }
+
+    /// A resumed worker takes its OWN rotation slot in the refreshed
+    /// pool - the `assign_adhoc_worker` arithmetic - so two workers
+    /// resumed one after the other do not collapse onto the same
+    /// account the way a fixed pool[offset] pick would force.
+    #[tokio::test]
+    async fn resumed_workers_take_their_own_rotation_slot() {
+        let dir = make_workspace_dir_multi_fallback();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api1".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api2".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+
+        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
+        );
+        for label in ["w1", "w2"] {
+            workspace.extend_plan_for_adhoc_worker(&project_key, label);
+            workspace.insert_live_worker(
+                &project_key,
+                crate::mcp::workers::types::WorkerEntry {
+                    label: label.to_owned(),
+                    charter: "test charter".to_owned(),
+                    session_key: SessionKey::from_session_id(format!("{label}-uuid")),
+                    status: forge_primitives::WorkerLiveness::Running,
+                    spawned_at: SystemTime::UNIX_EPOCH,
+                    spawned_by_session_id: "lead-uuid".to_owned(),
+                    needs_tag: false,
+                    is_git_repo_at_spawn: true,
+                    diagnostic: None,
+                    kick: None,
+                },
+            );
+        }
+
+        // The primary saturates with no recompute; both worker rows sit
+        // out of the fresh fallback pool.
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
+        }
+
+        let resume = |workspace: &Arc<Workspace>, session_id: &str| {
+            let target = SessionTarget::Session(SessionKey::from_session_id(session_id));
+            let spawn_key =
+                SessionKey::from_session_id(format!("__resume_worker_forge_x_{session_id}__"));
+            workspace
+                .plan_assignment(&target, Some(&spawn_key))
+                .expect("the worker resume resolves")
+                .0
+        };
+        let w1 = resume(&workspace, "w1-uuid");
+        let w2 = resume(&workspace, "w2-uuid");
+        assert_eq!(w1, AccountKey("Api2".to_owned()), "first resume takes the next counter slot");
+        assert_eq!(w2, AccountKey("Api1".to_owned()), "second resume rotates past it");
+        assert_ne!(w1, w2, "separately-resumed workers never collapse onto one account");
     }
 
     /// An experimental account defined FIRST (Exp), a regular account
