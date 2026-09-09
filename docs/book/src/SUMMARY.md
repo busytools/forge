@@ -8,6 +8,7 @@
 
 # UI surfaces
 
+- [UI surfaces](./ui/index.md)
 - [Workspace](./ui/workspace.md)
 - [Projects pane](./ui/projects-pane.md)
 - [Inspector](./ui/inspector.md)

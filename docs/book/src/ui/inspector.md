@@ -108,7 +108,7 @@ The focused session's cwd, the branch, an optional `PR #N → closes #M #K` row,
 
 </details>
 
-The GIT header carries a `🦉` glyph when any diff layer is populated - click it to open the [Diff overlay](./misc-surfaces.md). A <span class="addressed">💬 N</span> badge sits left of it when a worker has answered [review comments](./misc-surfaces.md) on this branch; background sessions surface the same signal as a NEEDS ATTENTION row.
+The GIT header carries a `🦉` glyph when any diff layer is populated - click it to open the [Diff overlay](./diff.md). A <span class="addressed">💬 N</span> badge sits left of it when a worker has answered [review comments](./diff.md) on this branch; background sessions surface the same signal as a NEEDS ATTENTION row.
 
 <details>
 <summary>Review-replies badge</summary>
@@ -236,6 +236,6 @@ chat continues here...
 <details>
 <summary>Click targets</summary>
 
-The `🦉` opens the [Diff overlay](./misc-surfaces.md) (present only when a layer is populated). The MCP SERVERS section is a whole-section click-through: header or any row opens the same `/mcp` view the slash command opens. Everything else is read-only - file tree, branch line, PR row, TASKS rows, PROCESSES rows. At Narrow tier the `▦` icon toggles the overlay; `✕` dismisses.
+The `🦉` opens the [Diff overlay](./diff.md) (present only when a layer is populated). The MCP SERVERS section is a whole-section click-through: header or any row opens the same `/mcp` view the slash command opens. Everything else is read-only - file tree, branch line, PR row, TASKS rows, PROCESSES rows. At Narrow tier the `▦` icon toggles the overlay; `✕` dismisses.
 
 </details>

@@ -98,3 +98,23 @@
 .term .bold         { font-weight: 700; }
 .term .italic       { font-style: italic; }
 .term .user-band    { background: var(--user-msg-bg); display: inline-block; }
+
+/* UI surfaces landing: a plain card grid, no JS. Colors ride the
+   8-digit-hex alpha channel so they read on every mdbook theme. */
+.surface-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+  margin: 1rem 0;
+}
+.surface-card {
+  display: block;
+  border: 1px solid #8884;
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-decoration: none;
+  color: inherit;
+}
+.surface-card:hover { border-color: #f47600; text-decoration: none; }
+.surface-card .name  { font-weight: 700; }
+.surface-card .blurb { font-size: 0.92em; opacity: 0.85; margin-top: 4px; }
