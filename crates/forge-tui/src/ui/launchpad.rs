@@ -421,7 +421,8 @@ fn render_identity_block(frame: &mut Frame, area: Rect, app: &App, y: u16) {
 }
 
 /// Render a centred line of per-account state chips. Each chip is
-/// `<glyph> <name>` separated by `  ` (two spaces) so the user can
+/// `<glyph> <name>` - with the recorded reason appended when the
+/// account bailed - separated by `  ` (two spaces) so the user can
 /// distinguish chips at a glance without staring at the row.
 fn centered_account_status_line(
     snapshot: &[forge_workspace::AccountLoadingRow],
@@ -435,16 +436,47 @@ fn centered_account_status_line(
             spans.push(Span::styled("  ".to_owned(), dim));
             text_width += 2;
         }
-        let (glyph, color) = super::preflight::account_glyph(row.state);
+        let (glyph, color) = super::preflight::account_glyph(row.state, row.last_error);
         spans.push(Span::styled(glyph.to_owned(), Style::default().fg(color)));
         spans.push(Span::styled(format!(" {}", row.display_name), dim));
         text_width += 1 + 1 + row.display_name.chars().count();
+        if let Some(reason) = failure_reason(row) {
+            let reason_style = Style::default().fg(color);
+            spans.push(Span::styled(format!(" - {reason}"), reason_style));
+            text_width += 3 + reason.chars().count();
+        }
     }
     let pad = usize::from(area_width).saturating_sub(text_width) / 2;
     let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 1);
     out.push(Span::raw(" ".repeat(pad)));
     out.extend(spans);
     Line::from(out)
+}
+
+/// The reason a failed chip carries after its name: the recorded
+/// failure class, with the remaining hold-down for a rate limit.
+/// `None` when the row has nothing recorded to say.
+fn failure_reason(row: &forge_workspace::AccountLoadingRow) -> Option<String> {
+    // A Ready account whose 60 s poll 429'd keeps its green dot; the
+    // recorded class is the bailed chip's reason, not a healthy
+    // account's.
+    if row.state != forge_workspace::LoadingState::Bailed {
+        return None;
+    }
+    match row.last_error {
+        Some(forge_workspace::UsageFetchStatus::RateLimited) => {
+            let hold = row
+                .retry_after
+                .map_or_else(String::new, |d| format!(" (retry after {}s)", d.as_secs()));
+            Some(format!("rate limited{hold}"))
+        }
+        Some(forge_workspace::UsageFetchStatus::Unauthorized) => Some("unauthorized".to_owned()),
+        Some(forge_workspace::UsageFetchStatus::Expired) => Some("expired".to_owned()),
+        Some(forge_workspace::UsageFetchStatus::NetworkFailed) => Some("unreachable".to_owned()),
+        // The 200-shape-drift settle records no class - an endpoint
+        // answering badly, same family as `Other`.
+        Some(forge_workspace::UsageFetchStatus::Other) | None => Some("fetch error".to_owned()),
+    }
 }
 
 pub(super) fn centered_text_line(text: &str, area_width: u16, style: Style) -> Line<'static> {
@@ -825,7 +857,7 @@ fn worker_lifecycle(
 /// can unconditionally extend.
 ///
 /// Chip text is `[<account>]`; color tracks the underlying
-/// `SessionChipState`: `Normal` = DIM, `AtCap` =
+/// `SessionChipState`: `Normal` = DIM, `AtCap` / `Degraded` =
 /// STATUS_WARNING, `Bailed` = STATUS_ERROR with a `⚠ ` prefix. The
 /// account name truncates to fit within `CHIP_MAX_WIDTH - 2`
 /// brackets minus the prefix.
@@ -836,7 +868,9 @@ fn account_chip_spans(chip: Option<&SessionChipInfo>) -> (Vec<Span<'static>>, us
     };
     let (style, prefix) = match chip.state {
         SessionChipState::Normal => (Style::default().fg(theme::DIM), ""),
-        SessionChipState::AtCap => (Style::default().fg(theme::STATUS_WARNING), ""),
+        SessionChipState::AtCap | SessionChipState::Degraded => {
+            (Style::default().fg(theme::STATUS_WARNING), "")
+        }
         SessionChipState::Bailed => (Style::default().fg(theme::STATUS_ERROR), "\u{26a0} "),
     };
     let name_budget = CHIP_MAX_WIDTH.saturating_sub(2).saturating_sub(prefix.chars().count());
@@ -1311,6 +1345,96 @@ mod tests {
             .iter()
             .find(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("no rendered row contains {needle:?}; got {rendered:#?}"))
+    }
+
+    #[test]
+    fn a_rate_limited_account_renders_a_yellow_glyph_and_reason() {
+        let row = forge_workspace::AccountLoadingRow {
+            display_name: "Stargate".to_owned(),
+            state: forge_workspace::LoadingState::Bailed,
+            last_error: Some(forge_workspace::UsageFetchStatus::RateLimited),
+            retry_after: Some(Duration::from_secs(3600)),
+            auth: forge_workspace::AccountAuth::Token,
+        };
+        let line = centered_account_status_line(std::slice::from_ref(&row), 80);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("Stargate - rate limited (retry after 3600s)"),
+            "the reason rides the row; got {text:?}",
+        );
+        let glyph = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{26a0}'))
+            .expect("warning glyph present");
+        assert_eq!(
+            glyph.style.fg,
+            Some(theme::STATUS_WARNING),
+            "a rate-limited bail is warning yellow, not the error red",
+        );
+    }
+
+    #[test]
+    fn an_auth_failed_account_renders_red_not_yellow() {
+        let row = forge_workspace::AccountLoadingRow {
+            display_name: "Stargate".to_owned(),
+            state: forge_workspace::LoadingState::Bailed,
+            last_error: Some(forge_workspace::UsageFetchStatus::Unauthorized),
+            retry_after: Some(Duration::from_secs(30)),
+            auth: forge_workspace::AccountAuth::Token,
+        };
+        let line = centered_account_status_line(std::slice::from_ref(&row), 80);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("unauthorized"), "the auth reason rides the row; got {text:?}");
+        assert!(!text.contains("rate limited"), "an auth bail never reads as a rate limit");
+        assert!(
+            !text.contains("retry after"),
+            "only a rate limit carries a hold-down suffix; got {text:?}",
+        );
+        let glyph = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{26a0}'))
+            .expect("warning glyph present");
+        assert_eq!(
+            glyph.style.fg,
+            Some(theme::STATUS_ERROR),
+            "an auth-failed bail stays the error red",
+        );
+    }
+
+    #[test]
+    fn a_shape_drift_bail_renders_the_fetch_error_reason() {
+        // The 200-shape-drift settle records no error class, so the
+        // row carries the same "fetch error" phrase preflight renders
+        // for the identical state rather than a bare glyph.
+        let row = forge_workspace::AccountLoadingRow {
+            display_name: "Stargate".to_owned(),
+            state: forge_workspace::LoadingState::Bailed,
+            last_error: None,
+            retry_after: None,
+            auth: forge_workspace::AccountAuth::Token,
+        };
+        let line = centered_account_status_line(std::slice::from_ref(&row), 80);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("fetch error"), "the drift bail names its class; got {text:?}");
+    }
+
+    #[test]
+    fn a_ready_account_with_a_failed_poll_renders_no_reason() {
+        // A Ready account whose 60 s poll 429'd keeps its green dot;
+        // the recorded class must not render as a bailed chip's reason
+        // next to it.
+        let row = forge_workspace::AccountLoadingRow {
+            display_name: "Stargate".to_owned(),
+            state: forge_workspace::LoadingState::Ready,
+            last_error: Some(forge_workspace::UsageFetchStatus::RateLimited),
+            retry_after: Some(Duration::from_secs(30)),
+            auth: forge_workspace::AccountAuth::Token,
+        };
+        let line = centered_account_status_line(std::slice::from_ref(&row), 80);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!text.contains(" - "), "a Ready chip carries no failure reason; got {text:?}");
     }
 
     /// The geometry claim: a worker row's chip opens at the same column

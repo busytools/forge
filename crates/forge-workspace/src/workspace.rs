@@ -129,7 +129,7 @@ pub struct SessionChipInfo {
 }
 
 /// Visual category for a session chip. The renderer maps these to
-/// foreground colors + (for `Bailed`) a leading `⚠ ` glyph.
+/// foreground colors + (for `Bailed` alone) a leading `⚠ ` glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionChipState {
     /// Account is Ready and within budget. DIM foreground.
@@ -140,10 +140,14 @@ pub enum SessionChipState {
     /// every account is capped the plan is forced to assign one
     /// anyway, so every session's chip shows this state.
     AtCap,
-    /// Account flipped to Bailed. Red foreground + `⚠ ` prefix.
-    /// The session's spawn would fall through to round-robin until
-    /// the 60 s usage poller flips the account back to Ready.
+    /// Account Bailed on an auth failure (rejected or expired
+    /// credentials). Red foreground + `⚠ ` prefix; the repair is an
+    /// env edit plus a restart.
     Bailed,
+    /// Account Bailed on a transient failure (rate limit, unreachable
+    /// endpoint, malformed response). Warning yellow, no glyph - the
+    /// same split the account rows render; the pollers heal it.
+    Degraded,
 }
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
@@ -1710,6 +1714,11 @@ impl Workspace {
                 display_name: k.0.clone(),
                 state: accounts.loading_state(k),
                 last_error: accounts.usage_error(k),
+                retry_after: accounts
+                    .by_key
+                    .get(k)
+                    .and_then(|s| s.next_probe_at)
+                    .and_then(|t| t.checked_duration_since(std::time::Instant::now())),
                 auth: accounts.auth(k).unwrap_or(crate::views::AccountAuth::Token),
             })
             .collect()
@@ -1800,8 +1809,11 @@ impl Workspace {
     /// known, or the label has no assignment.
     ///
     /// State derivation:
-    /// - `LoadingState::Bailed` -> `SessionChipState::Bailed`
-    ///   (renderer renders red with a `⚠ ` prefix).
+    /// - `LoadingState::Bailed` splits by the recorded failure class,
+    ///   the same split the account rows render: auth failures
+    ///   (`Unauthorized` / `Expired`) -> `SessionChipState::Bailed`
+    ///   (red with a `⚠ ` prefix); transient classes and an unrecorded
+    ///   bail -> `Degraded` (warning yellow, the pollers heal it).
     /// - `Ready` + any usage window at the cap (the same
     ///   `is_saturated` signal the assignment plan uses to avoid an
     ///   account) -> `AtCap` (yellow; the session still spawns but
@@ -1821,10 +1833,16 @@ impl Workspace {
         let accounts = self.accounts.lock();
         let loading = accounts.loading_state(&account_key);
         let saturated = accounts.is_saturated(&account_key);
+        let last_error = accounts.usage_error(&account_key);
         drop(accounts);
 
         let state = match loading {
-            crate::account::LoadingState::Bailed => SessionChipState::Bailed,
+            crate::account::LoadingState::Bailed => match last_error {
+                Some(
+                    account::UsageFetchStatus::Unauthorized | account::UsageFetchStatus::Expired,
+                ) => SessionChipState::Bailed,
+                _ => SessionChipState::Degraded,
+            },
             crate::account::LoadingState::Ready if saturated => SessionChipState::AtCap,
             _ => SessionChipState::Normal,
         };
@@ -1997,19 +2015,21 @@ impl Workspace {
     /// Recompute the `AssignmentPlan` from the current ready-account
     /// set when every account has reached a terminal `LoadingState`.
     /// No-op when accounts are still loading - the boot-time
-    /// `account_loader` task re-calls this after each state
-    /// transition, so the plan ends up populated on the first
-    /// `all_loaded`-true call. Subsequent transitions (e.g., a
-    /// runtime 401 flipping a Ready account to Bailed) also trigger
-    /// a recompute via the same path; Section 4.4 of #246 swaps
-    /// this for a frozen-overlay variant that preserves existing
-    /// assignments while extending the plan with newly-recovered
-    /// accounts.
+    /// `account_loader` task calls this as each account settles, so
+    /// the plan ends up populated on the first `all_loaded`-true
+    /// call, and the usage poller's success arm calls it when a
+    /// clean probe heals a Bailed account. The frozen-overlay merge
+    /// preserves existing assignments while extending the pools with
+    /// newly-recovered accounts.
     pub(crate) fn recompute_plan_if_ready(&self) {
         use crate::account::LoadingState;
         use crate::assignment_plan::{ProjectInput, compute_plan};
 
-        let (ready_accounts, saturated): (Vec<AccountKey>, Vec<AccountKey>) = {
+        let (ready_accounts, degraded_accounts, saturated): (
+            Vec<AccountKey>,
+            Vec<AccountKey>,
+            Vec<AccountKey>,
+        ) = {
             let accounts = self.accounts.lock();
             if !accounts.all_loaded() {
                 return;
@@ -2019,13 +2039,13 @@ impl Workspace {
             // empty `accounts` list the pool IS this slice, so HashMap
             // randomness would assign the lead to a different account
             // across restarts.
+            // Experimental accounts never enter the assignment pool
+            // (leads and workers alike) even when a project's
+            // org pins them; they are reachable only via the
+            // `/account` picker.
             let ready: Vec<AccountKey> = accounts
                 .ordered_keys
                 .iter()
-                // Experimental accounts never enter the assignment pool
-                // (leads and workers alike) even when a project's
-                // org pins them; they are reachable only via the
-                // `/account` picker.
                 .filter(|k| !accounts.is_experimental(k))
                 .filter(|k| {
                     accounts
@@ -2035,12 +2055,30 @@ impl Workspace {
                 })
                 .cloned()
                 .collect();
+            // Terminal-but-not-Ready: Bailed accounts (the boot probe
+            // settled rate-limited or auth-failed). The plan falls
+            // back to these when a project's ready pool is empty
+            // rather than going dark - spawning on a degraded account
+            // is legitimate because the 429 hit the usage probe, not
+            // inference.
+            let degraded: Vec<AccountKey> = accounts
+                .ordered_keys
+                .iter()
+                .filter(|k| !accounts.is_experimental(k))
+                .filter(|k| {
+                    accounts
+                        .by_key
+                        .get(*k)
+                        .is_some_and(|s| matches!(s.loading, LoadingState::Bailed))
+                })
+                .cloned()
+                .collect();
             // Accounts that loaded fine but sit at the usage cap. The
             // plan prefers the rest so a freshly-exhausted account
             // doesn't get sessions assigned to it on boot.
             let saturated: Vec<AccountKey> =
                 ready.iter().filter(|k| accounts.is_saturated(k)).cloned().collect();
-            (ready, saturated)
+            (ready, degraded, saturated)
         };
 
         let projects: Vec<ProjectInput> = self
@@ -2057,7 +2095,16 @@ impl Workspace {
             })
             .collect();
 
-        let mut fresh = compute_plan(&ready_accounts, &saturated, &projects);
+        let mut fresh = compute_plan(&ready_accounts, &degraded_accounts, &saturated, &projects);
+        for project in &projects {
+            if fresh.slot_degraded(&project.key) {
+                tracing::warn!(
+                    target: "forge_workspace::assignment_plan",
+                    project = ?project.key,
+                    "project assigned from a degraded pool; every allow-listed account is terminal-not-Ready",
+                );
+            }
+        }
 
         // A worker that spawned while the accounts were still loading
         // found no plan to extend, and nothing downstream would ever give
@@ -2071,9 +2118,18 @@ impl Workspace {
                 self.list_live_workers(&input.key).into_iter().map(|w| w.label).collect();
             labels.sort();
             for label in labels {
-                fresh.assign_adhoc_worker(&input.key, &label, |k| {
+                if let Some(assigned) = fresh.assign_adhoc_worker(&input.key, &label, |k| {
                     usable.is_empty() || usable.contains(k)
-                });
+                }) && !usable.is_empty()
+                    && !usable.contains(&assigned)
+                {
+                    tracing::warn!(
+                        target: "forge_workspace::account",
+                        label = %label,
+                        account = %assigned.0,
+                        "recompute seeded a live worker onto a rate-limited or bailed account",
+                    );
+                }
             }
         }
 
@@ -2304,7 +2360,7 @@ impl Workspace {
             let fetch_result = crate::provider_probe::probe_via_backend(provider, &env).await;
             match fetch_result {
                 Ok(snapshot) => {
-                    self.accounts.lock().set_usage(&key, snapshot);
+                    self.record_usage_success(&key, snapshot);
                     any_success = true;
                 }
                 Err(forge_providers::ProbeError::Unmappable(message)) => {
@@ -2387,6 +2443,36 @@ impl Workspace {
                 accounts = account_count,
                 "usage cache updated in the store after a successful poll round",
             );
+        }
+    }
+
+    /// Write one successful poll result and, when it heals a Bailed
+    /// account, recompute the assignment plan so the recovered account
+    /// rejoins its project pools behind the frozen overlay - existing
+    /// assignments keep their accounts, only new sessions pick it up.
+    /// Without the recompute a healed account stays out of every pool
+    /// until restart.
+    pub(crate) fn record_usage_success(
+        &self,
+        key: &AccountKey,
+        snapshot: forge_primitives::usage::UsageSnapshot,
+    ) {
+        use crate::account::LoadingState;
+        let healed = {
+            let mut accounts = self.accounts.lock();
+            let healed = accounts.loading_state(key) == LoadingState::Bailed;
+            accounts.set_usage(key, snapshot);
+            healed
+        };
+        if healed {
+            tracing::info!(
+                target: "forge_workspace::account",
+                event_name = "account_healed",
+                account = %key.0,
+                outcome = "ready",
+                "Bailed -> Ready on a clean usage poll; the plan picks the account up for new sessions",
+            );
+            self.recompute_plan_if_ready();
         }
     }
 
@@ -13032,6 +13118,52 @@ provider = "anthropic"
         assert!(plan.is_none(), "plan stays None while accounts are still Loading");
     }
 
+    /// A healed account rejoins the assignment plan the moment the
+    /// usage poller writes its clean probe: the frozen overlay keeps
+    /// existing assignments while the recovered account enters the
+    /// pool for new sessions. Removing the recompute call inside
+    /// `record_usage_success` leaves the pool frozen at [Alpha] and
+    /// this test's worker lands on Alpha instead of Beta.
+    #[tokio::test]
+    async fn record_usage_success_heals_a_bailed_account_into_the_plan() {
+        let dir = make_workspace_dir_246_two_accounts();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let snapshot = forge_primitives::usage::UsageSnapshot {
+            source: forge_primitives::usage::UsageSourceKind::Oauth,
+            fetched_at: std::time::SystemTime::UNIX_EPOCH,
+            five_hour: None,
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            spend: None,
+            balance: None,
+        };
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Alpha".to_owned()), snapshot.clone());
+            accounts
+                .set_loading(&AccountKey("Beta".to_owned()), crate::account::LoadingState::Bailed);
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+
+        // Heal Beta exactly the way the usage poller's success arm does.
+        workspace.record_usage_success(&AccountKey("Beta".to_owned()), snapshot);
+
+        let mut plan_guard = workspace.assignment_plan.lock();
+        let plan = plan_guard.as_mut().expect("plan populated while accounts settle");
+        let worker = plan.assign_adhoc_worker(&project_key, &"w1".to_owned(), |_| true);
+        assert_eq!(
+            worker,
+            Some(AccountKey("Beta".to_owned())),
+            "the healed account must have joined the pool for new sessions",
+        );
+    }
+
     #[tokio::test]
     async fn recompute_plan_if_ready_populates_plan_when_all_ready() {
         let dir = make_workspace_dir_246();
@@ -13522,7 +13654,50 @@ provider = "anthropic"
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
         workspace.recompute_plan_if_ready();
-        // Now flip to Bailed.
+        // Now flip to Bailed on an auth failure - the red class.
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_loading(
+                &AccountKey("Stargate".to_owned()),
+                crate::account::LoadingState::Bailed,
+            );
+            accounts.set_last_error(
+                &AccountKey("Stargate".to_owned()),
+                crate::account::UsageFetchStatus::Unauthorized,
+                None,
+            );
+        }
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        assert_eq!(chip.state, SessionChipState::Bailed);
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_degraded_branch() {
+        // A Bailed account with no auth class recorded - the
+        // shape-drift settle, or a rate limit - is the warning-yellow
+        // Degraded chip, the same split the account rows render.
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+                spend: None,
+                balance: None,
+            };
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
         workspace
             .account_states()
             .lock()
@@ -13532,7 +13707,7 @@ provider = "anthropic"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
-        assert_eq!(chip.state, SessionChipState::Bailed);
+        assert_eq!(chip.state, SessionChipState::Degraded);
     }
 }
 
