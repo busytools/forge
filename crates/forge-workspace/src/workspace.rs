@@ -2659,7 +2659,11 @@ impl Workspace {
                 let unusable = accounts.unusable_reason(&key);
                 let is_current = current_account == Some(name.as_str());
                 let experimental = accounts.is_experimental(&key);
-                let fallback = fallback_accounts.contains(&name) && !experimental;
+                // A dual-listed account is primary-tier: the pin's
+                // membership wins over the fallback list. An empty pin
+                // means every account is primary (the un-pinned shape).
+                let in_pin = allowed_accounts.is_empty() || allowed_accounts.contains(&name);
+                let fallback = fallback_accounts.contains(&name) && !in_pin && !experimental;
                 let budget = account_budget(
                     &name,
                     accounts.provider_or_anthropic(&key),

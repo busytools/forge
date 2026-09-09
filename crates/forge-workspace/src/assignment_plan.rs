@@ -279,8 +279,15 @@ pub(crate) fn tier_pool(
     } else if !fallbacks.is_empty() {
         (fallbacks, false, true)
     } else {
+        // A dual-listed account is primary-tier: primary membership
+        // wins, so the fallback half never duplicates it into the
+        // rotation.
         let mut pool = primary_pool(degraded);
-        pool.extend(fallback_pool(degraded));
+        for account in fallback_pool(degraded) {
+            if !pool.contains(&account) {
+                pool.push(account);
+            }
+        }
         let degraded = !pool.is_empty();
         (pool, degraded, false)
     }
@@ -744,6 +751,21 @@ mod tests {
         let plan = compute_plan(&ready, &degraded, &saturated, &projects);
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
         assert!(!plan.slot_degraded(&pk("p")), "a saturated-Ready pool is not the degraded tier");
+    }
+
+    #[test]
+    fn compute_plan_degraded_pool_dedups_a_dual_listed_account() {
+        // `b` is both primary and fallback, all three degraded: the
+        // degraded pool holds it once, primary membership winning. A
+        // duplicate would rotate it twice - w2 lands on `c` with the
+        // dedup, on `b` again without it.
+        let degraded = vec![ak("a"), ak("b"), ak("c")];
+        let projects = vec![project_with_fallbacks("p", &["a", "b"], &["b", "c"])];
+        let mut plan = compute_plan(&[], &degraded, &[], &projects);
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
+        let _ = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true);
+        let w2 = plan.assign_adhoc_worker(&pk("p"), &"w2".into(), |_| true);
+        assert_eq!(w2, Some(ak("c")), "the dual-listed account is not rotated twice");
     }
 
     #[test]
