@@ -4,7 +4,7 @@
 
 forge has no dedicated full-screen error views. Error and failure UI arrives as system-message notices in the chat scrollback (see [Chat](./chat.md)) at one of three severities; the scrollback is the only error surface, and on a fatal connection error the input area locks with a hint rather than being replaced.
 
-**Connection failed** - the CLI cannot start or the subprocess dies. The body is the failure line plus `Input disabled after an error. Press Ctrl+Q to quit and try again.`; the session id, account and MCP state reset, pending submits clear, and the input goes read-only.
+**Connection failed** - the CLI cannot start or the subprocess dies. The body is the failure line plus `Input disabled after an error. Press Ctrl+Q to quit and try again.`; the session id, account and MCP state reset, usage resets, pending submits clear, and the input goes read-only.
 
 <div class="term">
 
@@ -24,7 +24,7 @@ forge has no dedicated full-screen error views. Error and failure UI arrives as 
 
 </div>
 
-**Rate limit notice** - on `AllowedWarning` (Warning) or `Rejected` (Error). Three branches: org-level disabled extra usage points at `/extra-usage`, `/model`, or waiting for the window; near-threshold-without-overage reads "Near rate-limit threshold. Resets in 4h 23m at 14:30 UTC."; the general case reads "{Approaching | Rate limit reached}, you've used N% of your `<type>` rate limit." with the overage status and reset time. The same message tints the rate-limit chip on the assistant's reply.
+**Rate limit notice** - on `AllowedWarning` (Warning) or `Rejected` (Error). Three branches: org-level disabled extra usage reads "Extra usage credit is required to continue. Use /extra-usage to enable it, /model to switch models, or wait for the rate-limit window to reset."; near-threshold-without-overage reads "Near rate-limit threshold. Resets in 4h 23m at 14:30 UTC."; the general case reads "{Approaching | Rate limit reached}, you've used N% of your `<type>` rate limit." with the overage status and reset time. The same message tints the rate-limit chip on the assistant's reply.
 
 **Tool-use error** - a failed tool call renders the red `✗` icon with its error body in red; for Bash only the first non-empty stderr line shows. Internal failures (timeouts, panics, SDK protocol violations) render a bold red "Internal Agent SDK error" header over a red summary line instead.
 

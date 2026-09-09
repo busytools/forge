@@ -18,7 +18,7 @@ The band caps at 5 rows (a dim `+N more` tail) and pushes GIT down while present
 | Row | Glyph | Detail |
 |---|---|---|
 | Waiting on the user | `△` yellow | `permission · <Tool> · <age>` or `question · <age>` |
-| Turn died | `✕` red | `failed · <classification>[ HTTP <status>] · <age>` (e.g. `failed · server_error HTTP 529 · 3m`); the failure wins when both signals are live on one session |
+| Turn died | `✕` red | `failed · <classification>[ HTTP <status>] · <age>` (e.g. `failed · server_error HTTP 529 · 3m`), falling back to `connection error` for a turn that died without any retries; the failure wins when both signals are live on one session |
 | Review replies waiting | `💬` addressed | `review replies · <N> · <age>` - a worker answered comments on a review this session filed; ranks below the other two, nothing is blocked on it |
 
 <details>
@@ -111,7 +111,8 @@ The focused session's cwd, the branch, an optional `PR #N → closes #M #K` row,
 - Clean tree on the default branch: path + branch row only (yellow `HEAD` when detached).
 - Uncommitted edits only: layer 1 renders below the branch row. Committed-but-unmerged only: layer 2 (`1 commit vs <default>` singular at one). Both: layer 1 first, layer 2 beneath.
 - Scanner unhealthy: a dim warning line "`git scanner unhealthy, see logs`" replaces the layer content, distinct from a legitimate non-repo.
-- The `PR #N` row resolves against the branch's newest pushed commit sha, not the branch name, so a worktree whose local branch differs from the PR's head ref still resolves; stacked PRs render the most recently updated. Clicking the row opens the PR in the system browser (a failed open surfaces a chat warning). GitHub-only via `gh` - other remotes render no row. The closing-issue list truncates to a trailing `...` when it would overflow. Rows are suppressed when there is no open PR, the branch is the default or detached, nothing of HEAD's ancestry is pushed, or `gh` cannot run - a resolved row survives transient `gh` failures until the next lookup succeeds.
+- The `PR #N` row resolves against the branch's newest pushed commit sha, not the branch name, so a worktree whose local branch differs from the PR's head ref still resolves; stacked PRs render the most recently updated. `gh` re-shells out only when that sha moved, the branch changed, or the 5-minute refresh timer (300 s) elapsed; same-branch scans reuse the cached row. Clicking the row opens the PR in the system browser (a failed open surfaces a chat warning). GitHub-only via `gh` - other remotes render no row. The closing-issue list truncates to a trailing `...` when it would overflow. Rows are suppressed when there is no open PR, the branch is the default or detached, nothing of HEAD's ancestry is pushed, or `gh` cannot run - a resolved row survives transient `gh` failures until the next lookup succeeds.
+- Poll exclusions: synthetic spawn buckets and pre-connect buckets skip the refresh, and a cwd change invalidates the cached snapshot via a generation bump, so any in-flight scan against the old cwd is dropped.
 
 </details>
 
@@ -120,7 +121,7 @@ The GIT header carries a `🦉` glyph when any diff layer is populated - click i
 <details>
 <summary>Review-replies badge</summary>
 
-`N` counts the threads whose latest turn is the worker's and whose state is `Addressed` or `Outdated`, in the same accent as the comment cards. Only a reviewer reply, a `✓ Resolve` or a `↺ Reopen` retires a thread - opening `/diff` or reading a card does not. The count recomputes from the store whenever `/diff` hydrates its threads, and once per session shortly after boot so a restart leaves the signal dark for no longer than that. The badge hides when the header describes a different branch than the count was recorded against, and renders with or without the `🦉`, so a branch whose diff has since been committed away still surfaces its unread answers.
+`N` counts the threads whose latest turn is the worker's and whose state is `Addressed` or `Outdated`, in the same accent as the comment cards. Only a reviewer reply, a `✓ Resolve` or a `↺ Reopen` retires a thread - opening `/diff` or reading a card does not. The count is fed by the worker's turn-end notice, recomputes from the store whenever `/diff` hydrates its threads, and recomputes once per session shortly after boot so a restart leaves the signal dark for no longer than that. The badge hides when the header describes a different branch than the count was recorded against, and renders with or without the `🦉`, so a branch whose diff has since been committed away still surfaces its unread answers.
 
 </details>
 

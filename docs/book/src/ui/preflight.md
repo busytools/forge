@@ -1,10 +1,17 @@
 # Preflight - the launchpad's first view
 
-The first thing forge renders on every route: it resolves the accounts and, when dictation is on, fetches and loads its models, then hands over - to the projects view for `forge`, straight into chat for `forge <project>`. Shown once per run; later `/launchpad` goes straight to the projects view. Nothing spawns until every account settles - the assignment plan is computed only then, so a session started before it could land on an account the project's org does not allow. Preflight completes when every account settles, not only when all are Ready: a bailed account is degraded rather than holding boot, and its row names the failure. Every failure state names its exits; repairing an account's auth means editing `forge.toml`, which needs a restart - the screen states the restart without a number.
+The first thing forge renders on every route: it resolves the accounts and, when dictation is on, fetches and loads its models, then hands over - to the projects view for `forge`, straight into chat for `forge <project>`. Shown once per run; later `/launchpad` goes straight to the projects view. Nothing spawns until every account settles - the assignment plan is computed only then, so a session started before that falls back to round-robin and could land on an account the project's org does not allow. Preflight completes when every account settles, not only when all are Ready: a bailed account is degraded rather than holding boot, and its row names the failure. Every failure state names its exits; repairing an account's auth means editing `forge.toml`, which needs a restart - the screen states the restart without a number.
 
 ## Preflight, resolving
 
 Two sibling sections at the same indent, one row shape: two-cell indent, state glyph, name, right-aligned twelve-cell state column. The same panel width the projects view uses, so the hand-over is a content swap. Model rows read by role with the file on a dim continuation line beneath. No summary line.
+
+<details>
+<summary>Why accounts gate but dictation does not</summary>
+
+The assignment plan needs settled accounts and does not need the dictation weights, so only the accounts hold the screen - the models keep loading alongside the session rather than delaying it. `queued` is therefore the moment before both models start, not one model waiting on the other.
+
+</details>
 
 <div class="term">
 
@@ -50,7 +57,6 @@ Two sibling sections at the same indent, one row shape: two-cell indent, state g
 - The hand-over is latched: a mid-session Ready → Bailed → Loading flip never throws you back onto this screen - the launchpad's own gate covers the window.
 - The wordmark is dropped before any panel content when the block does not fit - the failure exits are the one thing this screen cannot clip. Past that rows drop from the TOP, replaced with a dim `… N more above`; the failure detail is appended last and never vanishes unmarked (at 100x24 the bailed screen already overflows).
 - Verifying draws a spinner and no byte counter - hashing checkpoints cancellation rather than reporting progress.
-- The two models prepare concurrently; the pair costs the slower of the two.
 
 ## Preflight fails: a bailed account
 

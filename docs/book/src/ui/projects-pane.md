@@ -2,7 +2,7 @@
 
 The left-side pane: every project from `forge.toml`, grouped by org, with the active session's account and usage panel at the bottom.
 
-Wide (160 cols up): 32ch inline pane. Medium (120-159): 24ch, truncated. Narrow (under 120): a top bar plus an on-demand full-screen overlay. Orgs and projects sort alphabetically, two blank rows between orgs; no recency sort, no drilldown - a project's only children are its live workers. Rows are mouse-only; the chat input keeps keyboard focus. A live row carries ` x `; a sleeping row shows its last-activity age.
+Wide (160 cols up): 32ch inline pane. Medium (120-159): 24ch, truncated. Narrow (under 120): a top bar plus an on-demand full-screen overlay. Orgs and projects sort alphabetically, two blank rows between orgs; no recency sort, no drilldown - a project's only children are its live workers. Rows are mouse-only.
 
 <div class="term">
 
@@ -100,7 +100,7 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 
 | Glyph | Meaning | Color |
 |---|---|---|
-| `⠋` | A turn in progress - or a settled session with live background work, so the row keeps spinning | rust orange on the focused row, default on background rows |
+| `⠋` | A turn in progress - or a settled session with live background work, so the row keeps spinning | rust orange on the focused row, default on background rows; the attention / died / auth glyphs keep their own even with live background work - the promotion is over the idle bullet only |
 | `△` | Attention: a pending permission prompt | yellow |
 | `✕` | A turn on this background session died; outranks `△` | red |
 | `⚠` | Auth required | |
@@ -116,6 +116,7 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 - Org headers, tree connectors `├─` / `└─` / `│`, rules and panel labels render dim; the top-bar `▤` is dim when the overlay is closed and rust orange bold when open; the overlay `✕` is dim; the close button ` x ` is gray bold on the slate background; the active project name and `PROJECTS` banner are rust orange bold; other live project names default bold; the sleeping project row is dim throughout.
 - Spend amounts are green bold and flat - money, not a fraction of a cap. `not set` and the spend secondary row are dim. Duration lines are dim, warning-colored on the two auth-repair states `⚠ expired` / `unauthorized`. Bar fill and the `cap` bar use the position gradient, sized from the bar's cell count - the rightmost filled cell names the zone.
 - Money with no reading renders `$-`, never `$0.00`; the cap row shows <code>&mdash;</code> and the last line names why (`no probe yet`, or the failure). Cap changes land on the next poll, without a restart. The gradient's remainder cells go to the leftmost zones; empty cells stay `░` dim. The compaction count is singular at 1 (`1 compaction`).
+- The panel's shape, position and labelling stay put across session switches - Mode / Model / Ctx flip with the session, the panel does not move. The panel skips entirely below 24 pane rows; a short project list leaves its unused rows blank rather than letting the panel slide up, and the list region scrolls within itself on overflow.
 
 </details>
 
@@ -133,7 +134,14 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 
 </details>
 
-Narrow: the top bar shows `▤  <active-project>·<active-session>`; tap `▤` (or <kbd>Cmd+Left</kbd>; <kbd>Ctrl+Left</kbd> off macOS) to expand the full-screen overlay: the same list full-width, the same panel at the bottom, `✕` dismisses, <kbd>Esc</kbd> closes, `▤` toggles. Picking a row switches and closes in one action, anywhere except the right-edge control gutter (the row's `x` when live, inert otherwise). An aggregate unread badge on `▤` is deferred.
+Narrow: the top bar shows `▤  <active-project>·<active-session>`; tap `▤` (or <kbd>Cmd+Left</kbd>; <kbd>Ctrl+Left</kbd> off macOS) to expand the full-screen overlay: the same list full-width, the same panel at the bottom, `✕` dismisses, <kbd>Esc</kbd> closes, `▤` toggles. Picking a row switches and closes in one action, anywhere except the right-edge control gutter.
+
+<details>
+<summary>Narrow-tier notes</summary>
+
+The control gutter carries the row's `x` when live and is inert otherwise; an aggregate unread badge on `▤` is deferred. The overlay body is the same tree full-width (the banner and rule span the overlay, not the pane's 1-col pad) with the panel docked at the bottom. A live row carries ` x `; a sleeping row shows its last-activity age; the chat input keeps keyboard focus.
+
+</details>
 
 <div class="term">
 
@@ -197,7 +205,7 @@ The overlay's body is the same tree full-width (banner and rule span the overlay
 <details>
 <summary>Worker rows</summary>
 
-Rendered at every tier (Wide / Medium / the Narrow overlay). A project's spawned workers render as a tree-subtree beneath the lead row, connectors at column 4. Worker rows are flat regardless of who spawned them - a worker spawning a sub-worker still appears as a sibling under the same project (grouping by spawner is deferred to v2). A worker without a kick waits for its first message: charter text alone does not start it.
+Rendered at every tier (Wide / Medium / the Narrow overlay). A project's spawned workers render as a tree-subtree beneath the lead row, connectors at column 4. Worker rows are flat regardless of who spawned them - a worker spawning a sub-worker still appears as a sibling under the same project (grouping by spawner is deferred to v2). A worker without a kick waits for its first message: charter text alone does not start it. A provided kick is delivered the moment the worker connects, through a rate-limited dispatcher, as a plain first user turn.
 
 <div class="term">
 
@@ -235,8 +243,8 @@ Rendered at every tier (Wide / Medium / the Narrow overlay). A project's spawned
 
 **`workers__despawn` (the lead's clean-close)** - The pane's ` x ` button leaves the worktree and review state alone. `workers__despawn` (lead-only, programmatic) runs the same teardown AND removes the git worktree: a clean one goes; one with uncommitted or untracked changes or unpushed commits blocks the despawn and the worker stays live, unless `force=true` tears it down and discards - nothing is ever silently discarded. A worktree-cleanup failure surfaces as a warning on the result and never rolls back the kill. The toast states the outcome verbatim: `Worker <label> closed. Worktree removed from .claude/worktrees/<label>/`, or `Worker <label> closed. Worktree removal failed; it is still at .claude/worktrees/<label>/`.
 
-After a successful removal the worker's `worktree-<label>` branch is reaped when deleting it would strand no commit - every commit on it must be reachable from some other ref (a remote-tracking ref counts, so a pushed branch is reapable). A branch carrying commits reachable from nothing else stays in place, named in a warning with its tip sha and the commands to inspect and delete it.
+After a successful removal the worker's `worktree-<label>` branch is reaped when deleting it would strand no commit - every commit on it must be reachable from some other ref (a remote-tracking ref counts, so a pushed branch is reapable) or from some worktree's HEAD; reachability, not merged-ness, so a squash merge is irrelevant. A branch carrying commits reachable from nothing else stays in place, named in a warning with its tip sha and the commands to inspect and delete it. The disposition a close reports is decided by whether the directory is still on disk, not by git's exit code; a branch git cannot inspect counts as present, so nothing is discarded on an unreadable repo.
 
-Review threads and reviews held for a branch that no longer resolves as any local head or remote-tracking ref are dropped by a sweep at boot rather than by the despawn itself; a branch that still exists as a remote keeps its review state through the reap, and a branch the worker created itself is left standing. The sweep skips shallow or single-branch clones. Auto-close-when-idle is a deferred follow-on; despawn is always explicit.
+Review threads and reviews held for a branch that no longer resolves as any local head or remote-tracking ref are dropped by a sweep at boot rather than by the despawn itself; a branch that still exists as a remote keeps its review state through the reap, and a branch the worker created itself is left standing. The sweep skips shallow or single-branch clones, skips projects whose root does not answer as a work-tree root or that are not in `forge.toml`, skips the `worktree-<label>` of any registered worker, and refuses a project outright when most of its stored branches read as dead and the repo holds fewer than three branch refs. Auto-close-when-idle is a deferred follow-on; despawn is always explicit.
 
 </details>

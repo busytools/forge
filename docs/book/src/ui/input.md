@@ -4,6 +4,13 @@
 
 The composer box grows from 1 row up to 50 as you type: a thick rust-orange border with no separator rows, a rust-orange `➤` prompt char, dim italic placeholder, slash commands in light magenta.
 
+<details>
+<summary>Composer mechanics</summary>
+
+The composer renders in the chat view and disappears whenever a full-frame view (config, diff, usage, plugins) owns the frame. The box is a text-area backed for cursor, selection and paste-burst handling. The login hint appears when the CLI reports that authentication is required; a prompt with no decision reason or display description lands as the common-case permission dock.
+
+</details>
+
 Above the input a hint slot carries login, cancel and suggestion hints.
 
 <details>
@@ -39,12 +46,12 @@ While the session is connecting the entire input area is replaced with a spinner
 
 ### Dictation status row
 
-With `[dictate]` enabled and the models loaded, a take lives entirely inside the composer's interior: idle reserves nothing, recording grows the interior one row, and the row collapses when the take resolves.
+With `[dictate]` enabled and the models loaded after preflight, a take lives entirely inside the composer's interior: idle reserves nothing, recording grows the interior one row, and the row collapses when the take resolves.
 
 <details>
 <summary>Status row: anatomy, states, notices</summary>
 
-The status row occupies the same slot the notice row uses, so the two never coexist: a stamped notice keeps the slot and the status row does not render. Level readings arrive every 50 ms, each the peak over the window since the previous one. A long take is cut into segments at measured pause boundaries, and each segment transcribes while the microphone is still recording - the row shows those words as a settled count long before the speaker stops.
+The status row occupies the same slot the notice row uses, so the two never coexist: a stamped notice keeps the slot and the status row does not render. The notice row is the one row that ever changes the box height, and it only appears when there is something to say. Level readings arrive every 50 ms, each the peak over the window since the previous one. The meter runs an envelope in the dB domain - attack 0.6, release 0.25 per 50 ms tick, fast up and slower down, scaled against the envelope's own recent dynamic range via max and min followers; the span never drops under 8 dB and carries 2 dB of headroom, softened with a 0.9 gamma onto the block ramp. The composer border eases at 0.12 per 50 ms tick, time-scaled, toward the hot tint. A long take is cut into segments at measured pause boundaries, and each segment transcribes while the microphone is still recording - the row shows those words as a settled count long before the speaker stops.
 
 <div class="term">
 
@@ -107,7 +114,7 @@ Notices: a quiet room carries its own measured peak and offers a retry (DIM); ev
 
 ## Autocomplete dropdown
 
-Open while you type one of four triggers: `/` (slash commands), `@` (files), `&` (subagents), `:` (emoji). A rounded-border dropdown anchored to the input; the title names the mode in dim - ` Commands (N) `, ` /<cmd> Args (N) `, ` Files & Folders `, ` Subagents (N) `, ` Emoji `. Row caps: slash 20, mention 32, emoji 10, subagent 8, clamped to what fits above or below the input, scrolling in place. Each item: a 3-char prefix (` ▸ ` rust orange bold when selected), primary text with the match highlighted, an optional dim description. Slash commands are magenta in the input but default fg inside the dropdown.
+Open while you type one of four triggers: `/` (slash commands), `@` (files), `&` (subagents), `:` (emoji). A rounded-border dropdown anchored to the input; the title names the mode in dim - ` Commands (N) `, ` /<cmd> Args (N) `, ` Files & Folders `, ` Subagents (N) `, ` Emoji `. Row caps: slash 20, mention 32, emoji 10, subagent 8, clamped to what fits above or below the input, scrolling in place. Each item: a 3-char prefix (` ▸ ` rust orange bold when selected), primary text with the case-insensitive match highlighted, an optional dim description. Slash commands are magenta in the input but default fg inside the dropdown.
 
 <div class="term">
 
@@ -154,7 +161,7 @@ Not chat-only: it also serves the /diff inline comment editor and the Finish-rev
 <details>
 <summary>Emoji picker rules</summary>
 
-The `:` counts only at the start of a line or directly after whitespace, and the query must be `[a-z0-9_+-]` - so `http://`, `10:30`, `note:todo` and `Foo::bar` never open a picker (the same rule `@` uses). The table is a curated ~200 GitHub / Slack shortcodes sorted by name (deliberately not the full Unicode set); ranking is exact match, then prefix, then substring, ties alphabetical.
+The `:` counts only at the start of a line or directly after whitespace, and the query must be `[a-z0-9_+-]` - so `http://`, `10:30`, `note:todo` and `Foo::bar` never open a picker (the same rule `@` uses). The table is a curated ~200 GitHub / Slack shortcodes sorted by name (deliberately not the full Unicode set), with a test enforcing the ordering and rejecting duplicates; ranking is exact match, then prefix, then substring, ties alphabetical. While open in the /diff overlay or the finish-review modal, `:` then <kbd>Esc</kbd> cannot fall through to the overlay's finish review - the picker owns the key first.
 
 </details>
 
