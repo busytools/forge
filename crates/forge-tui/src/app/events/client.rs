@@ -1372,7 +1372,6 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
             && let Some(bucket) = app.sessions.get_mut(&session_key)
         {
             bucket.unseen_turn_completion = true;
-            let _ = bucket;
             app.notify(crate::app::notify::NotifyEvent::TurnComplete, &session_key);
         }
         app.needs_redraw = true;
