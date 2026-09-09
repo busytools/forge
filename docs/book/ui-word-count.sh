@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # Prose word-count gate for the book's ui/ pages: words outside mockup
-# blocks (term / term-bar / surface-grid / flex divs only, so reader-
-# facing div prose cannot escape the gate) and <details> blocks, measured
-# per page. Fails the run when any page exceeds 600.
+# blocks (term / term-bar / flex divs only, so reader-facing div prose
+# cannot escape the gate) and <details> blocks, measured per page. Fails
+# the run when any page exceeds 600.
 #
-# --strict also counts surface-grid blurbs, so the landing page's card
-# text is held to the same ceiling as prose.
+# --strict also counts the landing page's card text (surface-grid /
+# surface-card / name / blurb), so index.md is held to the same ceiling
+# as prose.
+#
+# Div tracking keeps a depth for EVERY div and pops on close, so a
+# non-mockup div's close cannot drive the counter negative and zero out
+# the rest of the page. Residual hole, accepted: one stray close can pop
+# one level early and un-strip until the next mockup open - fixing that
+# needs real HTML parsing, which a word-count gate does not owe.
 set -u
 cd "$(dirname "$0")"
 
@@ -16,23 +23,38 @@ fail=0
 for f in src/ui/*.md; do
   words=$(awk -v strict="$strict" '
     {
-      line = $0
-      stripped = 0
-      while (match(line, /<div[^>]*>/)) {
-        tag = substr(line, RSTART, RLENGTH)
-        if (tag ~ /class="(term|term-bar|surface-grid)"/ || tag ~ /display: *flex/) {
-          divs++
-          line = substr(line, RSTART + RLENGTH)
-          stripped = 1
-        } else break
+      rest = $0
+      line = ""
+      while (1) {
+        o = index(rest, "<div")
+        c = index(rest, "</div>")
+        if (o == 0 && c == 0) { line = line rest; break }
+        if (o != 0 && (c == 0 || o < c)) {
+          gt = index(substr(rest, o), ">")
+          if (gt == 0) { line = line rest; break }
+          tag = substr(rest, o, gt)
+          d++
+          if (tag ~ /class="(term|term-bar)"/ || tag ~ /display: *flex/) { mock++; kind[d] = 1 }
+          else if (tag ~ /class="(surface-grid|surface-card|name|blurb)"/) { blurb++; bflag[d] = 1 }
+          else bflag[d] = 0
+          line = line substr(rest, 1, o - 1)
+          rest = substr(rest, o + gt)
+        } else {
+          if (d > 0) {
+            if (bflag[d]) blurb--
+            else mock--
+            delete bflag[d]
+            d--
+          }
+          line = line substr(rest, 1, c - 1)
+          rest = substr(rest, c + 6)
+        }
       }
-      line = (stripped ? line : $0)
-      while (match(line, /<\/div>/)) { divs--; line = substr(line, RSTART + RLENGTH) }
-      if (divs == 0) $0 = line
+      if (mock == 0) $0 = line
       if (/<details>/) { det++; next }
       if (/<\/details>/) { det--; next }
-      if (divs == 0 && det == 0) {
-        if (strict == 0 && $0 ~ /class="blurb"/) next
+      if (mock == 0 && det == 0 && (strict == 1 || blurb == 0)) {
+        if ($0 ~ /class="blurb"/) next
         gsub(/\|/, " ")
         if ($0 !~ /^[ \t-]+$/) print
       }
