@@ -1058,15 +1058,26 @@ mod tests {
     }
 
     /// The background arm of turn-complete settles Idle and notifies
-    /// in the same dispatch; nothing holds the pane glyph open for a
-    /// queued send anymore.
+    /// in the same dispatch, with a workspace dispatch queued behind
+    /// the running turn; nothing holds the pane glyph open for the
+    /// gap anymore.
     #[test]
     fn background_success_result_notifies_even_with_a_queued_send() {
+        use super::super::apply_session_update;
         use crate::app::session::UiSession;
+        use forge_workspace::SessionUpdate;
         let mut app = App::test_default();
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let bg = UiSession::new(bg_key.clone());
+        let mut bg = UiSession::new(bg_key.clone());
+        bg.lifecycle_state = crate::app::session::SessionLifecycleState::Running;
         app.sessions.insert(bg_key.clone(), bg);
+
+        // The workspace's mid-turn dispatch signal precedes the Result
+        // in production; drive that sequence rather than seeding state.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PromptQueuedWhileBusy { key: bg_key.clone() },
+        );
 
         apply_session_update_turn_complete(&mut app, &bg_key, None);
 
