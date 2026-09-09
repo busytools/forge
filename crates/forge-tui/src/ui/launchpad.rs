@@ -421,7 +421,8 @@ fn render_identity_block(frame: &mut Frame, area: Rect, app: &App, y: u16) {
 }
 
 /// Render a centred line of per-account state chips. Each chip is
-/// `<glyph> <name>` separated by `  ` (two spaces) so the user can
+/// `<glyph> <name>` - with the recorded reason appended when the
+/// account bailed - separated by `  ` (two spaces) so the user can
 /// distinguish chips at a glance without staring at the row.
 fn centered_account_status_line(
     snapshot: &[forge_workspace::AccountLoadingRow],
@@ -435,16 +436,40 @@ fn centered_account_status_line(
             spans.push(Span::styled("  ".to_owned(), dim));
             text_width += 2;
         }
-        let (glyph, color) = super::preflight::account_glyph(row.state);
+        let (glyph, color) = super::preflight::account_glyph(row.state, row.last_error);
         spans.push(Span::styled(glyph.to_owned(), Style::default().fg(color)));
         spans.push(Span::styled(format!(" {}", row.display_name), dim));
         text_width += 1 + 1 + row.display_name.chars().count();
+        if let Some(reason) = failure_reason(row) {
+            let reason_style = Style::default().fg(color);
+            spans.push(Span::styled(format!(" - {reason}"), reason_style));
+            text_width += 3 + reason.chars().count();
+        }
     }
     let pad = usize::from(area_width).saturating_sub(text_width) / 2;
     let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 1);
     out.push(Span::raw(" ".repeat(pad)));
     out.extend(spans);
     Line::from(out)
+}
+
+/// The reason a failed chip carries after its name: the recorded
+/// failure class, with the remaining hold-down for a rate limit.
+/// `None` when the row has nothing recorded to say.
+fn failure_reason(row: &forge_workspace::AccountLoadingRow) -> Option<String> {
+    match row.last_error {
+        Some(forge_workspace::UsageFetchStatus::RateLimited) => {
+            let hold = row
+                .retry_after
+                .map_or_else(String::new, |d| format!(" (retry after {}s)", d.as_secs()));
+            Some(format!("rate limited{hold}"))
+        }
+        Some(forge_workspace::UsageFetchStatus::Unauthorized) => Some("unauthorized".to_owned()),
+        Some(forge_workspace::UsageFetchStatus::Expired) => Some("expired".to_owned()),
+        Some(forge_workspace::UsageFetchStatus::NetworkFailed) => Some("unreachable".to_owned()),
+        Some(forge_workspace::UsageFetchStatus::Other) => Some("fetch error".to_owned()),
+        None => None,
+    }
 }
 
 pub(super) fn centered_text_line(text: &str, area_width: u16, style: Style) -> Line<'static> {
@@ -1311,6 +1336,62 @@ mod tests {
             .iter()
             .find(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("no rendered row contains {needle:?}; got {rendered:#?}"))
+    }
+
+    #[test]
+    fn a_rate_limited_account_renders_a_yellow_glyph_and_reason() {
+        let row = forge_workspace::AccountLoadingRow {
+            display_name: "Stargate".to_owned(),
+            state: forge_workspace::LoadingState::Bailed,
+            last_error: Some(forge_workspace::UsageFetchStatus::RateLimited),
+            retry_after: Some(Duration::from_secs(3600)),
+            auth: forge_workspace::AccountAuth::Token,
+        };
+        let line = centered_account_status_line(std::slice::from_ref(&row), 80);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("Stargate - rate limited (retry after 3600s)"),
+            "the reason rides the row; got {text:?}",
+        );
+        let glyph = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{26a0}'))
+            .expect("warning glyph present");
+        assert_eq!(
+            glyph.style.fg,
+            Some(theme::STATUS_WARNING),
+            "a rate-limited bail is warning yellow, not the error red",
+        );
+    }
+
+    #[test]
+    fn an_auth_failed_account_renders_red_not_yellow() {
+        let row = forge_workspace::AccountLoadingRow {
+            display_name: "Stargate".to_owned(),
+            state: forge_workspace::LoadingState::Bailed,
+            last_error: Some(forge_workspace::UsageFetchStatus::Unauthorized),
+            retry_after: Some(Duration::from_secs(30)),
+            auth: forge_workspace::AccountAuth::Token,
+        };
+        let line = centered_account_status_line(std::slice::from_ref(&row), 80);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("unauthorized"), "the auth reason rides the row; got {text:?}");
+        assert!(!text.contains("rate limited"), "an auth bail never reads as a rate limit");
+        assert!(
+            !text.contains("retry after"),
+            "only a rate limit carries a hold-down suffix; got {text:?}",
+        );
+        let glyph = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{26a0}'))
+            .expect("warning glyph present");
+        assert_eq!(
+            glyph.style.fg,
+            Some(theme::STATUS_ERROR),
+            "an auth-failed bail stays the error red",
+        );
     }
 
     /// The geometry claim: a worker row's chip opens at the same column

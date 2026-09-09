@@ -56,15 +56,26 @@ const PANEL_BOTTOM_MARGIN: u16 = 1;
 /// launchpad's own per-account row so the two surfaces cannot drift
 /// apart on what green means.
 ///
-/// `Bailed` is [`theme::STATUS_ERROR`] rather than the warning yellow:
-/// on the one screen that gates forge starting, loading and failed
-/// must not differ only by glyph. The project row's own account chip
-/// uses the same red for the same state.
-pub(super) fn account_glyph(state: LoadingState) -> (&'static str, Color) {
+/// A Bailed account splits by the recorded failure class: an auth
+/// failure is the account's own credential and stays
+/// [`theme::STATUS_ERROR`]; the transient classes (a 429, an endpoint
+/// that is down or answering badly) wear the warning yellow the
+/// pollers heal without the user touching anything. A bail with
+/// nothing recorded is the 200-shape-drift settle - transient by
+/// elimination.
+pub(super) fn account_glyph(
+    state: LoadingState,
+    error: Option<UsageFetchStatus>,
+) -> (&'static str, Color) {
     match state {
         LoadingState::Loading => ("\u{25cb}", Color::Yellow),
         LoadingState::Ready => ("\u{25cf}", Color::Green),
-        LoadingState::Bailed => ("\u{26a0}", theme::STATUS_ERROR),
+        LoadingState::Bailed => match error {
+            Some(UsageFetchStatus::Unauthorized | UsageFetchStatus::Expired) => {
+                ("\u{26a0}", theme::STATUS_ERROR)
+            }
+            _ => ("\u{26a0}", theme::STATUS_WARNING),
+        },
     }
 }
 
@@ -250,25 +261,25 @@ fn is_first_run_transfer(model: &DictateModel) -> bool {
 }
 
 fn account_row(row: &AccountLoadingRow, width: u16) -> Line<'static> {
-    let (glyph, color) = account_glyph(row.state);
+    let (glyph, color) = account_glyph(row.state, row.last_error);
     let (state, state_style, name_style) = match row.state {
         LoadingState::Ready => ("ready", dim(), Style::default()),
         LoadingState::Loading => ("resolving", dim(), Style::default()),
         LoadingState::Bailed => {
             // The state column carries the classified failure: an auth
             // problem, a rate limit, and an endpoint that is down or
-            // answering badly are three different repairs.
+            // answering badly are three different repairs. A bail with
+            // nothing recorded is shape drift - an endpoint answering
+            // badly, never an auth problem.
             let state = match row.last_error {
                 Some(UsageFetchStatus::NetworkFailed) => "unreachable",
-                Some(UsageFetchStatus::Other) => "fetch error",
+                Some(UsageFetchStatus::Other) | None => "fetch error",
                 Some(UsageFetchStatus::RateLimited) => "rate limited",
-                _ => "auth failed",
+                Some(UsageFetchStatus::Unauthorized | UsageFetchStatus::Expired) => "auth failed",
             };
-            (
-                state,
-                Style::default().fg(theme::STATUS_ERROR),
-                Style::default().add_modifier(Modifier::BOLD),
-            )
+            // The label rides the glyph's colour: the transient
+            // classes are a warning the pollers heal, not a failure.
+            (state, Style::default().fg(color), Style::default().add_modifier(Modifier::BOLD))
         }
     };
     status_row(glyph, color, &row.display_name, name_style, state, state_style, width)
@@ -387,8 +398,12 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
         .workspace
         .as_ref()
         .map_or_else(|| "forge.toml".to_owned(), |ws| home_relative(&ws.config_path()));
-    let endpoint_failing =
-        matches!(row.last_error, Some(UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other));
+    // A bail with nothing recorded is the 200-shape-drift settle - an
+    // endpoint answering badly, same family as `Other`.
+    let endpoint_failing = matches!(
+        row.last_error,
+        Some(UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other) | None
+    );
     let rate_limited = row.last_error == Some(UsageFetchStatus::RateLimited);
 
     let mut lines = if endpoint_failing {

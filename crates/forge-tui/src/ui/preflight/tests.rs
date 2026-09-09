@@ -75,7 +75,13 @@ fn account_with(
     state: LoadingState,
     auth: forge_workspace::AccountAuth,
 ) -> AccountLoadingRow {
-    AccountLoadingRow { display_name: name.to_owned(), state, last_error: None, auth }
+    AccountLoadingRow {
+        display_name: name.to_owned(),
+        state,
+        last_error: None,
+        retry_after: None,
+        auth,
+    }
 }
 
 fn bailed_with_error(
@@ -165,7 +171,11 @@ fn a_model_reads_by_role_with_its_file_beneath() {
 fn a_bailed_account_names_both_exits() {
     let text = flatten(&bail_detail(
         &App::test_default(),
-        &account("Granite1", LoadingState::Bailed),
+        &bailed_with_error(
+            "Granite1",
+            forge_workspace::AccountAuth::Token,
+            forge_workspace::UsageFetchStatus::Unauthorized,
+        ),
         PICKER_WIDTH,
     ))
     .join("\n");
@@ -225,7 +235,7 @@ fn the_repair_and_retry_lines_differ_by_account_class() {
     let render = |auth| {
         flatten(&bail_detail(
             &App::test_default(),
-            &account_with("Granite1", LoadingState::Bailed, auth),
+            &bailed_with_error("Granite1", auth, forge_workspace::UsageFetchStatus::Unauthorized),
             PICKER_WIDTH,
         ))
         .join("\n")
@@ -258,11 +268,11 @@ fn the_repair_and_retry_lines_differ_by_account_class() {
     );
 }
 
-/// An account whose endpoint is down settles `Bailed` on its own - the
-/// loader retries, hits its cap, and stops. Holding preflight after
-/// that buys nothing: the launchpad's gate already counts `Bailed` as
-/// terminal, the plan excludes the account, and the pollers keep
-/// re-probing, so degraded rides along instead of holding boot.
+/// An account whose endpoint is down settles `Bailed` in the loader's
+/// single pass. Holding preflight after that buys nothing: the
+/// launchpad's gate already counts `Bailed` as terminal, the plan
+/// excludes the account, and the pollers keep re-probing, so degraded
+/// rides along instead of holding boot.
 #[tokio::test]
 async fn preflight_hands_over_when_an_account_settles_bailed() {
     let config_dir = tempfile::tempdir().expect("tempdir");
@@ -322,7 +332,9 @@ fn the_state_column_names_the_failure_class() {
         (Some(forge_workspace::UsageFetchStatus::Other), "fetch error"),
         (Some(forge_workspace::UsageFetchStatus::RateLimited), "rate limited"),
         (Some(forge_workspace::UsageFetchStatus::Unauthorized), "auth failed"),
-        (None, "auth failed"),
+        // A bail with nothing recorded is the 200-shape-drift settle:
+        // an endpoint answering badly, never an auth problem.
+        (None, "fetch error"),
     ] {
         let row = row_text(status);
         assert!(row.trim_end().ends_with(label), "{status:?} must read as {label:?}; got {row:?}");
@@ -356,6 +368,10 @@ async fn the_recorded_failure_rides_the_snapshot_to_the_row() {
         rows[0].last_error,
         Some(forge_workspace::UsageFetchStatus::NetworkFailed),
         "the recorded failure reaches the snapshot; got {rows:?}",
+    );
+    assert!(
+        rows[0].retry_after.is_some(),
+        "the scheduled re-probe hold-down rides the snapshot; got {rows:?}",
     );
 
     let mut app = App::test_default();
@@ -564,14 +580,29 @@ fn the_unreachable_repair_differs_by_account_class() {
     );
 }
 
-/// `Bailed` is red rather than the shipped warning yellow. On the one
-/// screen that gates forge starting, mid-flight and failed must not
-/// differ only by glyph.
+/// The Bailed split: an auth failure is the account's own credential
+/// and stays the error red; the transient classes wear the warning
+/// yellow the pollers heal without the user touching anything.
 #[test]
-fn a_bailed_account_is_red_not_yellow() {
-    assert_eq!(account_glyph(LoadingState::Bailed).1, theme::STATUS_ERROR);
-    assert_eq!(account_glyph(LoadingState::Loading).1, Color::Yellow);
-    assert_eq!(account_glyph(LoadingState::Ready).1, Color::Green);
+fn a_bailed_account_splits_yellow_and_red_by_failure_class() {
+    assert_eq!(
+        account_glyph(LoadingState::Bailed, Some(UsageFetchStatus::Unauthorized)).1,
+        theme::STATUS_ERROR,
+    );
+    assert_eq!(
+        account_glyph(LoadingState::Bailed, Some(UsageFetchStatus::Expired)).1,
+        theme::STATUS_ERROR,
+    );
+    assert_eq!(
+        account_glyph(LoadingState::Bailed, Some(UsageFetchStatus::RateLimited)).1,
+        theme::STATUS_WARNING,
+    );
+    assert_eq!(
+        account_glyph(LoadingState::Bailed, Some(UsageFetchStatus::NetworkFailed)).1,
+        theme::STATUS_WARNING,
+    );
+    assert_eq!(account_glyph(LoadingState::Loading, None).1, Color::Yellow,);
+    assert_eq!(account_glyph(LoadingState::Ready, None).1, Color::Green);
 }
 
 /// The Dictation section is absent entirely when dictation is off, and
@@ -1094,6 +1125,8 @@ async fn a_short_terminal_drops_the_wordmark_rather_than_the_exits() {
         workspace.seed_test_account_state(name, LoadingState::Ready);
     }
     workspace.seed_test_account_state("Granite1", LoadingState::Bailed);
+    workspace
+        .seed_test_account_failure("Granite1", forge_workspace::UsageFetchStatus::Unauthorized);
     workspace.seed_test_dictate_snapshot(DictateSnapshot {
         models: vec![
             model(

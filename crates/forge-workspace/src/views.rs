@@ -147,6 +147,10 @@ pub struct AccountLoadingRow {
     /// lets a bailed row say `unreachable` when the endpoint is simply
     /// down rather than `auth failed`.
     pub last_error: Option<crate::account::UsageFetchStatus>,
+    /// Remaining hold-down before the pollers re-probe a failed
+    /// account - the server `Retry-After` for a 429, the exponential
+    /// schedule otherwise. `None` when nothing is scheduled.
+    pub retry_after: Option<std::time::Duration>,
     /// Which repair instruction a bailed row earns.
     pub auth: AccountAuth,
 }

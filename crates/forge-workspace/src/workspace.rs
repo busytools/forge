@@ -1710,6 +1710,11 @@ impl Workspace {
                 display_name: k.0.clone(),
                 state: accounts.loading_state(k),
                 last_error: accounts.usage_error(k),
+                retry_after: accounts
+                    .by_key
+                    .get(k)
+                    .and_then(|s| s.next_probe_at)
+                    .and_then(|t| t.checked_duration_since(std::time::Instant::now())),
                 auth: accounts.auth(k).unwrap_or(crate::views::AccountAuth::Token),
             })
             .collect()
