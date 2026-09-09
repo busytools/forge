@@ -2751,7 +2751,7 @@ impl Workspace {
             SessionTarget::Default => self.config.default_project().clone(),
             SessionTarget::Named(name) => self
                 .find_project_by_name(name)
-                .map_or_else(|_| self.config.default_project().clone(), |p| p.clone()),
+                .map_or_else(|_| self.config.default_project().clone(), std::clone::Clone::clone),
             SessionTarget::Session(key) => {
                 let matched = self.cwd_for_session(key).and_then(|cwd| {
                     // A worktree cwd is a subdir of its project root, so
@@ -2759,7 +2759,7 @@ impl Workspace {
                     // instead of exact equality before reading the pin.
                     self.project_name_for_path(&cwd)
                         .and_then(|name| self.find_project_by_name(&name).ok())
-                        .map(|p| p.clone())
+                        .cloned()
                 });
                 matched.unwrap_or_else(|| self.config.default_project().clone())
             }
