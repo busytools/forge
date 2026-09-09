@@ -40,7 +40,7 @@
 
 - The styles are design intent, not a guarantee: a style never animates quicker than `[ui] fps` can paint - a clamp currently dormant, since the quickest style (braille, 32 ms) outruns the 30 ms repaint floor, so every style runs at its own intent. Reduced motion floors the fast styles. The cadence shown is the style's intent.
 - <kbd>Enter</kbd> and `/spinner <name>` write the choice to the machine-local store, never `forge.toml`; at the next boot the stored override layers over the `[ui] spinner` default, which falls back to `braille`. The store write affects only later launches.
-- The overlay is modal, over chat and launchpad alike; fully transient - only the committed style persists, and it works identically from both views. Colors: border and selection marker rust orange; highlighted row rust orange bold; unselected key/cadence and hints dim.
+- The overlay is modal, over chat and launchpad alike; fully transient - only the committed style persists, and it works identically from both views. Keyboard-only; mouse-click selection is a possible follow-up. Colors: border and selection marker rust orange; highlighted row rust orange bold; unselected key/cadence and hints dim.
 
 </details>
 
@@ -74,7 +74,7 @@
 <summary>Model picker details</summary>
 
 - <kbd>Enter</kbd> takes the same path as `/model <id>`: an optimistic footer-chip update, then the dispatch - the CLI confirms the live model on its next frame. The rows snapshot carries the session they came from; if the active session changed between open and commit, the commit is refused with a visible notice instead of dispatching.
-- The overlay is modal, and clicks behind it are ignored - the guard is shared by every picker overlay, so a pane click cannot switch the active session under an open modal. Fully transient: rows snapshot at open, nothing persists. Opened from the chat input only (the launchpad has no input to type `/model` into). The highlight seeds to the running model - matched by requested id, then resolved id, case-insensitively - falling back to row 0 when it is not among the rows.
+- The overlay is modal, and clicks behind it are ignored - the guard is shared by every picker overlay, so a pane click cannot switch the active session under an open modal. Fully transient: rows snapshot at open, nothing persists. Keyboard-only; mouse-click selection is a possible follow-up. Opened from the chat input only (the launchpad has no input to type `/model` into). The highlight seeds to the running model - matched by requested id, then resolved id, case-insensitively - falling back to row 0 when it is not among the rows.
 - Colors: border, selection marker and the current-model dot rust orange; the highlighted name rust orange bold; unselected descriptions and hints dim.
 
 </details>
