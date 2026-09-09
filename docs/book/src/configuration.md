@@ -60,10 +60,10 @@ under. Rules enforced at load:
 `fallback_accounts` is the org's second tier: assignment prefers a
 fallback over a saturated or down primary, and returns to the primary
 when it heals. The names also render in the `/account` picker's
-FALLBACK group and stay hand-selectable. Unlike `accounts`, the list is
-not validated at load - a name matching no `[[accounts]]` entry simply
-drops out at assignment time. An account may appear in both lists; it
-is then primary-tier only. See [the launchpad's pool
+FALLBACK group and stay hand-selectable. The list is validated at load
+exactly like `accounts`: a name matching no `[[accounts]]` entry fails
+the boot, naming the account and the valid names. An account may appear
+in both lists; it is then primary-tier only. See [the launchpad's pool
 description](./launchpad.md) for the full tier order.
 
 ## `[[orgs.projects]]`

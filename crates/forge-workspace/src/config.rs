@@ -103,8 +103,8 @@ struct OrgEntry {
     /// to spawn under. Required; cross-validated against `[[accounts]]`.
     accounts: Vec<String>,
     /// Fallback `display_name`s used when every pinned account is
-    /// unavailable. Absent -> empty. Unlike `accounts`, names are not
-    /// validated at load: an unknown name drops out at plan time.
+    /// unavailable. Absent -> empty. Validated against `[[accounts]]`
+    /// exactly like `accounts`.
     #[serde(default)]
     fallback_accounts: Vec<String>,
     #[serde(default)]
@@ -468,7 +468,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         if org_entry.accounts.is_empty() {
             return Err(WorkspaceError::EmptyOrgAccounts { path, org: org_entry.name });
         }
-        for account in &org_entry.accounts {
+        for account in org_entry.accounts.iter().chain(&org_entry.fallback_accounts) {
             if !seen_account_names.contains(account) {
                 let mut valid: Vec<&str> = seen_account_names.iter().map(String::as_str).collect();
                 valid.sort_unstable();
@@ -1783,7 +1783,7 @@ provider = "anthropic"
 [[orgs]]
 name = "Tiered"
 accounts = ["Codex"]
-fallback_accounts = ["Router", "Ghost"]
+fallback_accounts = ["Router"]
 
 [[orgs.projects]]
 name = "forge"
@@ -1810,14 +1810,43 @@ provider = "anthropic"
         );
         let config = load_from_dir(dir.path()).expect("fallback_accounts parse");
         let forge = named(&config, "forge");
-        assert_eq!(forge.fallback_accounts, vec!["Router", "Ghost"]);
-        // "Ghost" is undeclared: unlike `accounts`, fallback names are
-        // not validated at load - the plan drops them at compute time.
+        assert_eq!(forge.fallback_accounts, vec!["Router"]);
         let spare = named(&config, "spare");
         assert!(
             spare.fallback_accounts.is_empty(),
             "absent fallback_accounts -> empty vec, not an error",
         );
+    }
+
+    #[test]
+    fn unknown_fallback_account_errors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+fallback_accounts = ["Bogus"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test-config-stargate"
+provider = "anthropic"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("unknown fallback should error");
+        match err {
+            WorkspaceError::UnknownOrgAccount { org, account, .. } => {
+                assert_eq!(org, "Personal");
+                assert_eq!(account, "Bogus");
+            }
+            other => panic!("expected UnknownOrgAccount, got {other:?}"),
+        }
     }
 
     #[test]
