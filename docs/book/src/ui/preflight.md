@@ -21,8 +21,8 @@ Two sibling sections at the same indent, sharing one row shape: two-cell indent,
             <span class="rust-orange bold">██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  </span>
             <span class="rust-orange bold">██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗</span>
             <span class="rust-orange bold">╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝</span>
-                          <span class="dim">v1.0.21+2fa7c87</span>
-                          <span class="dim">claude 2.1.201</span>
+                          <span class="dim">v1.0.53+3cda0dee</span>
+                          <span class="dim">claude 2.1.263</span>
 
       <span class="dim">────────────────────────────────────────────────────────</span>
         <span class="dim bold">Accounts</span>

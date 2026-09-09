@@ -22,8 +22,8 @@ The identity block (wordmark + version + optional update line + the account chip
             <span class="rust-orange bold">██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗</span>
             <span class="rust-orange bold">╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝</span>
 
-                          <span class="dim">v0.15.1+7d88141</span>
-                          <span class="dim">claude 2.1.133</span>
+                          <span class="dim">v1.0.53+3cda0dee</span>
+                          <span class="dim">claude 2.1.263</span>
 
       <span class="dim">────────────────────────────────────────────────────</span>
         <span class="dim">Busytools</span>                                        <span class="rust-orange">▐</span>
@@ -92,8 +92,8 @@ The identity block's chip row **appears only while some account is non-`Ready`**
 <div class="term">
 
   <pre class="indent">
-                                  <span class="dim">v0.15.1+7d88141</span>
-                                  <span class="dim">claude 2.1.133</span>
+                                  <span class="dim">v1.0.53+3cda0dee</span>
+                                  <span class="dim">claude 2.1.263</span>
 
           <span style="color:#cfc26b">○</span> <span class="dim">gateway</span>   <span style="color:#cfc26b">○</span> <span class="dim">gateway1</span>   <span style="color:#7eb87a">●</span> <span class="dim">personal</span>   <span style="color:#cfc26b">⚠</span> <span class="dim">stargate</span> <span style="color:#cfc26b">- rate limited (retry after 3600s)</span>
 

@@ -50,8 +50,8 @@ Project rows are mouse-only; chat input keeps keyboard focus. Click any project 
                            <span class="dim">4d 4h</span>
 
 
-  <span class="dim">forge  </span>  v1.0.0+7d88141
-  <span class="dim">claude </span>  v2.1.220   <span class="warning">↑ v2.1.225</span>
+  <span class="dim">forge  </span>  v1.0.53+3cda0dee
+  <span class="dim">claude </span>  v2.1.263   <span class="warning">↑ v2.1.266</span>
 </pre>
 
 </div>
@@ -71,7 +71,7 @@ The same panel on an **API-billed** account (`provider = "openrouter"`). The `5h
   <span class="dim">cap</span>  <span class="success">▓▓▓▓▓</span><span class="warning">▓▓▓▓▓</span><span class="accent">▓▓</span><span class="dim">░░░░░░░</span>   62%
 <span class="dim">            $7.60 left · monthly</span>
 
-  <span class="dim">forge  </span>  v1.0.0+7d88141
+  <span class="dim">forge  </span>  v1.0.53+3cda0dee
 </pre>
 
 <pre>
@@ -85,7 +85,7 @@ The same panel on an **API-billed** account (`provider = "openrouter"`). The `5h
   <span class="dim">cap</span>                    <span class="dim">not set</span>
 <span class="dim">                    no limit set</span>
 
-  <span class="dim">forge  </span>  v1.0.0+7d88141
+  <span class="dim">forge  </span>  v1.0.53+3cda0dee
 </pre>
 
 </div>
@@ -154,8 +154,8 @@ Once the overlay is open, the body is replaced by the full project list (same or
 <span class="dim">                                            4d 4h</span>
 
 
-<span class="dim">  forge    </span>v0.15.1+7d88141
-<span class="dim">  claude   </span>v2.0.45<span class="warning">  ↑ v2.0.50</span>
+<span class="dim">  forge    </span>v1.0.53+3cda0dee
+<span class="dim">  claude   </span>v2.1.263<span class="warning">  ↑ v2.1.266</span>
 </pre>
 
 </div>

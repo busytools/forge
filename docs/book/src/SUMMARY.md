@@ -5,8 +5,6 @@
 - [Install and build](./install.md)
 - [forge.toml reference](./configuration.md)
 - [Architecture](./architecture.md)
-- [The wire contract](./wire-contract.md)
-- [Contributing](./contributing.md)
 
 # UI surfaces
 
@@ -22,3 +20,8 @@
 - [Miscellaneous surfaces](./ui/misc-surfaces.md)
 - [Pickers and overlays](./ui/pickers.md)
 - [Usage](./ui/usage.md)
+
+# Contributor
+
+- [Contributing](./contributing.md)
+- [The wire contract](./wire-contract.md)

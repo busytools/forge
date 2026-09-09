@@ -51,7 +51,7 @@ Banner is the literal text "**Overview**" in RUST_ORANGE bold. Body is a Ferris-
   <span class="accent">          / '-----' \ </span>
 
 
-  <span class="dim">Version:      </span><span class="dim">0.14.2 · 7d88141</span>
+  <span class="dim">Version:      </span><span class="dim">1.0.53 · 3cda0dee</span>
   <span class="dim">Account:      </span><span class="accent bold">Stargate · team</span>
   <span class="dim">cwd:          ~/Projects/forge</span>
   <span class="dim">Session ID:   550e8400-e29b-41d4-a716-446655440000</span>
