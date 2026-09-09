@@ -159,6 +159,22 @@ impl NotificationManager {
         if let Some((title, body)) = &desktop {
             send_desktop_notification(title.clone(), body.clone());
         }
+        let dispatched = plan.ring_bell || plan.send_desktop || plan.osc9_text.is_some();
+        tracing::info!(
+            target: crate::logging::targets::APP_NOTIFY,
+            event_name = if dispatched { "notification_fired" } else { "notification_planned_no_channels" },
+            message = if dispatched {
+                "unfocused notification dispatched"
+            } else {
+                "notification channel disabled; nothing dispatched"
+            },
+            outcome = if dispatched { "success" } else { "skipped" },
+            event = ?event,
+            channel = ?channel,
+            ring_bell = plan.ring_bell,
+            send_desktop = plan.send_desktop,
+            osc9 = plan.osc9_text.is_some(),
+        );
         // The `testing` feature records what was delivered so tests
         // can assert it; the sends above still run.
         #[cfg(feature = "testing")]
@@ -193,6 +209,13 @@ impl crate::app::App {
             self.test_notifications.borrow_mut().push((event, context));
         }
         if self.notifications.is_focused() {
+            tracing::info!(
+                target: crate::logging::targets::APP_NOTIFY,
+                event_name = "notification_suppressed_focused",
+                message = "notification suppressed because terminal is focused",
+                outcome = "skipped",
+                event = ?event,
+            );
             return;
         }
         let context = self.notification_context(session_key);
@@ -240,8 +263,16 @@ pub(crate) mod test_capture {
 /// bounce in most terminal emulators.
 fn ring_bell() {
     use std::io::Write;
-    let _ = std::io::stdout().write_all(b"\x07");
-    let _ = std::io::stdout().flush();
+    let result = std::io::stdout().write_all(b"\x07").and_then(|()| std::io::stdout().flush());
+    if let Err(error) = result {
+        tracing::warn!(
+            target: crate::logging::targets::APP_NOTIFY,
+            event_name = "bell_send_failed",
+            message = "could not write the terminal bell",
+            outcome = "failure",
+            error_message = %error,
+        );
+    }
 }
 
 /// Spawn a background thread that sends an OS-native desktop notification.
@@ -267,8 +298,17 @@ fn send_osc9_notification(message: &str) {
     use std::io::Write;
 
     let sequence = osc9_escape_sequence(message);
-    let _ = std::io::stdout().write_all(sequence.as_bytes());
-    let _ = std::io::stdout().flush();
+    let result =
+        std::io::stdout().write_all(sequence.as_bytes()).and_then(|()| std::io::stdout().flush());
+    if let Err(error) = result {
+        tracing::warn!(
+            target: crate::logging::targets::APP_NOTIFY,
+            event_name = "osc9_send_failed",
+            message = "could not write the OSC 9 notification sequence",
+            outcome = "failure",
+            error_message = %error,
+        );
+    }
 }
 
 fn notification_plan(

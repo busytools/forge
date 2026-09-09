@@ -122,10 +122,22 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
         Event::Paste(text) => dispatch_paste_by_view(app, &text),
         Event::FocusGained => {
             app.notifications.on_focus_gained();
+            tracing::info!(
+                target: crate::logging::targets::APP_NOTIFY,
+                event_name = "terminal_focus_gained",
+                message = "terminal reported focus gained",
+                outcome = "success",
+            );
             true
         }
         Event::FocusLost => {
             app.notifications.on_focus_lost();
+            tracing::info!(
+                target: crate::logging::targets::APP_NOTIFY,
+                event_name = "terminal_focus_lost",
+                message = "terminal reported focus lost",
+                outcome = "success",
+            );
             true
         }
         Event::Resize(width, height) => {

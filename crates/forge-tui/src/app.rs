@@ -130,9 +130,23 @@ pub(crate) fn suspend_terminal() {
         std::io::stdout(),
         crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
-        crossterm::event::DisableFocusChange,
-        PopKeyboardEnhancementFlags
     );
+    match crossterm::execute!(std::io::stdout(), crossterm::event::DisableFocusChange) {
+        Ok(()) => tracing::info!(
+            target: crate::logging::targets::APP_NOTIFY,
+            event_name = "focus_reporting_disabled",
+            message = "focus change reporting disabled while a child owns the terminal",
+            outcome = "success",
+        ),
+        Err(error) => tracing::warn!(
+            target: crate::logging::targets::APP_NOTIFY,
+            event_name = "focus_reporting_disable_failed",
+            message = "could not disable focus change reporting",
+            outcome = "failure",
+            error_message = %error,
+        ),
+    }
+    let _ = crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     // Turn off any-motion tracking (1003) and reset the OS pointer to
     // the arrow so an exited forge / child process doesn't inherit a
     // stale shape.
@@ -211,7 +225,24 @@ pub(crate) fn resume_terminal() {
         std::io::stdout(),
         crossterm::event::EnableBracketedPaste,
         crossterm::event::EnableMouseCapture,
-        crossterm::event::EnableFocusChange,
+    );
+    match crossterm::execute!(std::io::stdout(), crossterm::event::EnableFocusChange) {
+        Ok(()) => tracing::info!(
+            target: crate::logging::targets::APP_NOTIFY,
+            event_name = "focus_reporting_enabled",
+            message = "focus change reporting requested from the terminal",
+            outcome = "success",
+        ),
+        Err(error) => tracing::warn!(
+            target: crate::logging::targets::APP_NOTIFY,
+            event_name = "focus_reporting_enable_failed",
+            message = "could not request focus change reporting",
+            outcome = "failure",
+            error_message = %error,
+        ),
+    }
+    let _ = crossterm::execute!(
+        std::io::stdout(),
         PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
     );
     // Any-motion mouse tracking (1003) so forge receives hover-move
