@@ -512,12 +512,12 @@ The Task* quartet and `Workflow` render nothing in chat - live state lives in th
 
 ## Monitor
 
-While the monitor runs the block shows the header, the `$ command`, and the last 5 output lines updating in place; when it ends a dim summary line stays. Monitor's only surface in the TUI.
+While the monitor runs the block shows the header, the `$ command`, and the last 12 output lines updating in place; when it ends a dim summary line stays. Monitor's only surface in the TUI.
 
 <div class="term">
 
   <pre class="indent">
-  <span class="dim italic">// alive - last 5 lines, updating in place</span>
+  <span class="dim italic">// alive - last 12 lines, updating in place</span>
   <span class="accent bold">◉</span> <span class="bold">Monitor</span> <span class="dim">· ci-watch · persistent</span>
   <span class="dim">   │ $ gh run watch 18234567</span>
   <span class="dim">   │ * build  · in_progress</span>
