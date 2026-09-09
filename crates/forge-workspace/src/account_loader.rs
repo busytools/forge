@@ -26,8 +26,8 @@
 
 use std::sync::Weak;
 
-use forge_primitives::usage::oauth::OauthUsageError;
 use forge_primitives::usage::UsageSnapshot;
+use forge_primitives::usage::oauth::OauthUsageError;
 use forge_providers::ProbeError;
 
 use crate::account::{AccountKey, LoadingState};
@@ -55,12 +55,12 @@ fn settle_probe_result(
             LoadingState::Bailed
         }
         Err(err) => {
-            let status = crate::workspace::classify_oauth_usage_error(err);
+            let failure_class = crate::workspace::classify_oauth_usage_error(err);
             let retry_after = match err {
                 ProbeError::Fetch(OauthUsageError::RateLimited { retry_after }) => *retry_after,
                 _ => None,
             };
-            states.set_last_error(key, status, retry_after);
+            states.set_last_error(key, failure_class, retry_after);
             // set_last_error bails only on the auth classes; the
             // transient ones need the explicit terminal settle.
             states.set_loading(key, LoadingState::Bailed);
@@ -195,10 +195,7 @@ mod tests {
             &Err(ProbeError::Fetch(OauthUsageError::Unauthorized(401))),
         );
         assert_eq!(state, LoadingState::Bailed);
-        assert_eq!(
-            states.usage_error(&key),
-            Some(UsageFetchStatus::Unauthorized),
-        );
+        assert_eq!(states.usage_error(&key), Some(UsageFetchStatus::Unauthorized),);
     }
 
     #[test]

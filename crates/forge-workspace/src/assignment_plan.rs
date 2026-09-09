@@ -257,10 +257,8 @@ pub fn compute_plan(
         // at 1 with the lead holding 0.
         plan.assignments.insert((project.key.clone(), "lead".to_owned()), pool[offset].clone());
 
-        plan.slots.insert(
-            project.key.clone(),
-            ProjectSlot { pool, offset, next_session_n: 1, degraded },
-        );
+        plan.slots
+            .insert(project.key.clone(), ProjectSlot { pool, offset, next_session_n: 1, degraded });
     }
 
     plan
