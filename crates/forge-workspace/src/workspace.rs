@@ -1344,8 +1344,9 @@ impl Workspace {
         let (account_key, account_dir) = forced_account.unwrap_or_else(|| {
             self.plan_assignment(&target, spawn_key.as_ref()).unwrap_or_else(|| {
                 let project_account_pin = self.project_accounts_for(&target);
+                let fallback_pin = self.project_fallback_accounts_for(&target);
                 let accounts = self.accounts.lock();
-                accounts.pick_for_project(&project_account_pin)
+                accounts.pick_for_project(&project_account_pin, &fallback_pin)
             })
         });
         tracing::info!(
@@ -2733,12 +2734,24 @@ impl Workspace {
     /// a non-empty list. This mirrors the "use what we know" intent
     /// rather than a global account fallback.
     fn project_accounts_for(&self, target: &SessionTarget) -> Vec<String> {
+        self.project_pin_for(target).accounts
+    }
+
+    /// The fallback pin for `target`, resolved the same way
+    /// [`Self::project_accounts_for`] resolves the primary pin.
+    fn project_fallback_accounts_for(&self, target: &SessionTarget) -> Vec<String> {
+        self.project_pin_for(target).fallback_accounts
+    }
+
+    /// The `LoadedProject` whose pins a spawn under `target` inherits,
+    /// falling back to the default project on any miss (so both pins
+    /// stay one resolution).
+    fn project_pin_for(&self, target: &SessionTarget) -> LoadedProject {
         match target {
-            SessionTarget::Default => self.config.default_project().accounts.clone(),
-            SessionTarget::Named(name) => self.find_project_by_name(name).map_or_else(
-                |_| self.config.default_project().accounts.clone(),
-                |p| p.accounts.clone(),
-            ),
+            SessionTarget::Default => self.config.default_project().clone(),
+            SessionTarget::Named(name) => self
+                .find_project_by_name(name)
+                .map_or_else(|_| self.config.default_project().clone(), |p| p.clone()),
             SessionTarget::Session(key) => {
                 let matched = self.cwd_for_session(key).and_then(|cwd| {
                     // A worktree cwd is a subdir of its project root, so
@@ -2746,9 +2759,9 @@ impl Workspace {
                     // instead of exact equality before reading the pin.
                     self.project_name_for_path(&cwd)
                         .and_then(|name| self.find_project_by_name(&name).ok())
-                        .map(|p| p.accounts.clone())
+                        .map(|p| p.clone())
                 });
-                matched.unwrap_or_else(|| self.config.default_project().accounts.clone())
+                matched.unwrap_or_else(|| self.config.default_project().clone())
             }
             // A fresh worker spawn's project_key is always the parent
             // project's (the worktree is created post-spawn via
@@ -2763,10 +2776,7 @@ impl Workspace {
                         &p.path.to_string_lossy(),
                     )) == project_key.as_str()
                 })
-                .map_or_else(
-                    || self.config.default_project().accounts.clone(),
-                    |p| p.accounts.clone(),
-                ),
+                .map_or_else(|| self.config.default_project().clone(), |p| (*p).clone()),
         }
     }
 
