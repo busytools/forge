@@ -980,6 +980,14 @@ mod tests {
             matches!(app.status, AppStatus::Ready),
             "the focused session's own status is untouched"
         );
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![(
+                crate::app::notify::NotifyEvent::TurnComplete,
+                crate::app::notify::NotifyContext::default(),
+            )],
+            "the held-open settle still pings - the notify sits above hold_background_open",
+        );
     }
 
     /// An idle-path submit clears any stale queued-send state and does

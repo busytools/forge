@@ -26,8 +26,10 @@ where
 {
     let prior_active = app.active_session_key.clone();
     let prior_status = app.status.clone();
+    let prior_pivot = std::mem::replace(&mut app.active_session_pivoted, true);
     app.active_session_key = Some(target_key);
     let r = body(app);
+    app.active_session_pivoted = prior_pivot;
     app.active_session_key = prior_active;
     app.status = prior_status;
     r

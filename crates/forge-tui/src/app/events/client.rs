@@ -1366,12 +1366,14 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
         // active and never reaches the reducer's background arm, so
         // the dispatcher is the writer production reaches: a success
         // Result on a non-active bucket arms its unseen-completion
-        // flag.
+        // flag and raises the completion ping.
         if targets_background
             && success_result
             && let Some(bucket) = app.sessions.get_mut(&session_key)
         {
             bucket.unseen_turn_completion = true;
+            let _ = bucket;
+            app.notify(crate::app::notify::NotifyEvent::TurnComplete, &session_key);
         }
         app.needs_redraw = true;
         return;
@@ -2697,6 +2699,82 @@ mod tests {
         assert!(
             !app.sessions.get(&active).expect("active bucket").unseen_turn_completion,
             "the watched session must stay clean",
+        );
+    }
+
+    /// The production shape of a background completion - a success
+    /// `Message::Result` on a non-active bucket - raises the
+    /// completion ping. The reducer's background arm is unreachable
+    /// under the pivot, so the dispatcher seam is the notify site,
+    /// beside the unseen-completion write it already owns.
+    #[test]
+    fn background_success_result_notifies_when_unfocused() {
+        let mut app = App::test_default();
+        let (active, background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_active = workspace.install_testing_stub(&active);
+        let _cmds_background = workspace.install_testing_stub(&background);
+        if let Some(bucket) = app.sessions.get_mut(&background) {
+            bucket.project = Some("beta".to_owned());
+        }
+        app.notifications.on_focus_lost();
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ChatAppended {
+                session_id: background.as_str().to_owned(),
+                msg: result_frame(background.as_str(), false),
+            },
+        );
+
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![(
+                crate::app::notify::NotifyEvent::TurnComplete,
+                crate::app::notify::NotifyContext {
+                    project: Some("beta".to_owned()),
+                    worker_label: None,
+                },
+            )],
+            "a background success Result pings with that session's project",
+        );
+    }
+
+    /// When the focused tab is mid-turn, the pivot runs the active arm
+    /// whose tail notify would fire with the background key. The seam
+    /// is the one writer: exactly one completion ping per background
+    /// Result, never two.
+    #[test]
+    fn background_result_notifies_once_when_the_focused_tab_is_busy() {
+        let mut app = App::test_default();
+        let (active, background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_active = workspace.install_testing_stub(&active);
+        let _cmds_background = workspace.install_testing_stub(&background);
+        if let Some(bucket) = app.sessions.get_mut(&background) {
+            bucket.project = Some("beta".to_owned());
+        }
+        app.status = crate::app::AppStatus::Thinking;
+        app.notifications.on_focus_lost();
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ChatAppended {
+                session_id: background.as_str().to_owned(),
+                msg: result_frame(background.as_str(), false),
+            },
+        );
+
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![(
+                crate::app::notify::NotifyEvent::TurnComplete,
+                crate::app::notify::NotifyContext {
+                    project: Some("beta".to_owned()),
+                    worker_label: None,
+                },
+            )],
+            "one background completion, one ping - the pivot tail must not double it",
         );
     }
 

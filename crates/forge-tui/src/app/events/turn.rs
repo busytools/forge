@@ -420,6 +420,10 @@ fn apply_turn_complete_presentation(
         if let Some(session) = app.session_mut(session_key) {
             session.unseen_turn_completion = true;
         }
+        // The tail notify is active-arm only, so a background
+        // completion pings here beside the unseen flag; a queued
+        // send's own turn pings at its completion.
+        app.notify(super::super::notify::NotifyEvent::TurnComplete, session_key);
         if super::queued_turn::hold_background_open(app, session_key) {
             return;
         }
@@ -477,7 +481,9 @@ fn apply_turn_complete_presentation(
     if super::queued_turn::reopen_queued(app, session_key) {
         return;
     }
-    if turn_was_active {
+    // Under the background-frame pivot the completing key is an alias,
+    // not the user's tab; its ping belongs to the dispatcher seam.
+    if turn_was_active && !app.active_session_pivoted {
         app.notify(super::super::notify::NotifyEvent::TurnComplete, session_key);
     }
     // Mid-turn submits leave user bubbles after the active assistant.
@@ -977,19 +983,41 @@ mod tests {
         );
     }
 
-    /// The notify call lives only on the active-session path - the
-    /// background branch returns before it. Pinned so a refactor that
-    /// moves the notify across the branch is a decision, not drift.
+    /// A background turn completion pings like the active tab's own.
+    /// The manager is flipped unfocused so the real delivery path
+    /// runs; the capture pins the event plus the event session's
+    /// context (project from the completing bucket, not the active
+    /// tab's).
     #[test]
-    fn background_turn_complete_notifies_nothing() {
+    fn background_turn_complete_notifies_when_unfocused() {
         let mut app = App::test_default();
         let background = seed_bucket(&mut app, "session-bg", "beta");
+        app.notifications = crate::app::notify::NotificationManager::new(
+            forge_workspace::Osc9NotificationMode::Off,
+        );
+        app.notifications.on_focus_lost();
 
         apply_session_update_turn_complete(&mut app, &background, None);
 
-        assert!(
-            crate::app::notify::test_capture::take_notifications(&app).is_empty(),
-            "a background turn completion is silent",
+        assert_eq!(
+            crate::app::notify::test_capture::take_notifications(&app),
+            vec![(
+                crate::app::notify::NotifyEvent::TurnComplete,
+                crate::app::notify::NotifyContext {
+                    project: Some("beta".to_owned()),
+                    worker_label: None,
+                },
+            )],
+            "a background turn completion notifies with that session's project",
+        );
+        assert_eq!(
+            app.notifications.take_delivered(),
+            vec![crate::app::notify::DeliveredNotification {
+                osc9_line: None,
+                bell: true,
+                desktop: Some(("beta".to_owned(), "turn complete".to_owned())),
+            }],
+            "the unfocused manager delivered the completion ping",
         );
     }
 
