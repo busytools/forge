@@ -1,15 +1,18 @@
 # Workspace
 
-forge ships as a 5-crate runtime workspace. Only `forge-tui` renders to the terminal; the other four layer underneath through strict acyclic dependencies.
+forge ships as a 9-crate workspace. Only `forge-tui` renders to the terminal; the rest layer underneath through strict acyclic dependencies. `forge-test-harness` is the wire-conformance harness - not in the runtime path.
 
 | Crate | Role | depends on |
 |---|---|---|
-| forge-primitives | Wire-shape types shared across forge-* crates. Message envelopes, content blocks, hook/permission/option/subagent data, render-side views, channel commands, IDs. No logic, no I/O, no async. | nothing forge-shaped |
-| forge-sdk | Wraps the `claude` CLI subprocess. Owns the stream-json codec, transport, control dispatch, in-process MCP host, callback registries, and Options builder. | forge-primitives |
-| forge-agent | Drives one forge-sdk Client behind a channel-based Agent / AgentHandle API. Owns userdata (settings, trust, sessions catalog, memory, plugins), cloud (oauth/usage/account), env (git context), translate, and tooling. | forge-primitives, forge-sdk |
-| forge-workspace | Multi-session orchestrator and TUI-facing facade. Per-session `DomainSession` holds operational state; per-session `SessionTask` actors pump `AgentHandle::take_events()` into `SessionUpdate`s and route `Command`s back. The single point of contact between TUI and the agent layer. | forge-primitives, forge-agent |
-| forge-tui | Native ratatui terminal interface. Pure view layer; consumes `SessionUpdate` and dispatches `Command` via `forge-workspace`. Holds per-session `UiSession` for presentation state (messages, viewport, input editor, hover hints). **The subject of this map.** | forge-primitives, forge-workspace |
-| forge-test-harness | Wire-conformance harness. `sdk_wire` scope (forge-sdk ↔ claude CLI). Replay-based offline tests + opt-in live capture. Not in the runtime path. | forge-sdk (transitively gets forge-primitives) |
+| forge-primitives | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side views. Pure data. | nothing forge-shaped |
+| forge-dictate | The dictation primitive: audio in, text out. Owns its model files, speech recognition and normalization. Depends on no forge-* crate and knows nothing about a host. | nothing forge-shaped |
+| forge-providers | One backend per provider token: credential resolution, the usage probe's HTTP and payload mapping, billing shape, the OpenRouter model catalog. | forge-primitives |
+| forge-connectors | One module per inbound connector: the stream client, REST lookups and matching for one external integration (Gotify today). | forge-primitives |
+| forge-sdk | Wraps the `claude` CLI subprocess: stream-json codec, transport, control dispatch, in-process MCP host, Options builder. | forge-primitives |
+| forge-agent | Drives one SDK client behind a channel-based `Agent` / `AgentHandle`. User-data reads, cloud calls, environment probes, event translation, tooling. | forge-primitives, forge-sdk, forge-providers |
+| forge-workspace | Multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. | forge-primitives, forge-agent, forge-sdk, forge-dictate, forge-providers, forge-connectors |
+| forge-tui | The view layer, and the `forge` binary. Rendering, input handling, per-session presentation state. No direct `forge-agent` dependency. **The subject of these pages.** | forge-primitives, forge-workspace |
+| forge-test-harness | Wire-conformance harness: replay-based offline tests plus opt-in live capture. Not in the runtime path. | forge-primitives, forge-sdk (+ forge-workspace as a dev-dependency) |
 
 # Layout
 
