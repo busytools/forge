@@ -130,6 +130,17 @@ impl AssignmentPlan {
         }
     }
 
+    /// Re-home one `(project, label)` assignment - the resume
+    /// re-tier's frozen-overlay extend. Other entries unmoved.
+    pub(crate) fn retier_assignment(
+        &mut self,
+        project: &ProjectKey,
+        label: &str,
+        account: AccountKey,
+    ) {
+        self.assignments.insert((project.clone(), label.to_owned()), account);
+    }
+
     /// `true` when the plan has zero entries for `project`. Surfaced
     /// to the launchpad so projects whose pool resolved to empty
     /// (the allow-list intersects neither the ready nor the degraded
@@ -197,6 +208,63 @@ impl AssignmentPlan {
     }
 }
 
+/// The six-tier pool for one project, first non-empty tier winning:
+/// (1) primaries Ready, not saturated; (2) fallbacks Ready, not
+/// saturated; (3) primaries Ready, saturated; (4) fallbacks Ready,
+/// saturated; (5) degraded accounts, primaries before fallbacks;
+/// (6) dark - an empty pool. The bool reports the degraded tier.
+/// Consumed by `compute_plan` (all projects at once) and by the resume
+/// path's single-project re-tier.
+pub(crate) fn tier_pool(
+    accounts: &[String],
+    fallback_accounts: &[String],
+    ready: &[AccountKey],
+    degraded: &[AccountKey],
+    saturated: &[AccountKey],
+) -> (Vec<AccountKey>, bool) {
+    // Intersect a name allow-list with a source account set. The
+    // primary list defaults to the whole source when empty (the
+    // common solo-account shape); an empty fallback list means no
+    // fallbacks, never "every account".
+    let intersect = |names: &[String], sources: &[AccountKey]| {
+        names
+            .iter()
+            .filter_map(|name| sources.iter().find(|k| k.0 == *name).cloned())
+            .collect::<Vec<_>>()
+    };
+    let primary_pool = |sources: &[AccountKey]| {
+        if accounts.is_empty() {
+            sources.to_vec()
+        } else {
+            intersect(accounts, sources)
+        }
+    };
+    let fallback_pool = |sources: &[AccountKey]| intersect(fallback_accounts, sources);
+
+    // Tier 3 only fires once every ready primary is saturated, so
+    // taking the ready primaries whole is the saturated tier.
+    let primaries = primary_pool(ready);
+    let fallbacks = fallback_pool(ready);
+    let primaries_usable: Vec<AccountKey> =
+        primaries.iter().filter(|k| !saturated.iter().any(|s| s == *k)).cloned().collect();
+    let fallbacks_usable: Vec<AccountKey> =
+        fallbacks.iter().filter(|k| !saturated.iter().any(|s| s == *k)).cloned().collect();
+    if !primaries_usable.is_empty() {
+        (primaries_usable, false)
+    } else if !fallbacks_usable.is_empty() {
+        (fallbacks_usable, false)
+    } else if !primaries.is_empty() {
+        (primaries, false)
+    } else if !fallbacks.is_empty() {
+        (fallbacks, false)
+    } else {
+        let mut pool = primary_pool(degraded);
+        pool.extend(fallback_pool(degraded));
+        let degraded = !pool.is_empty();
+        (pool, degraded)
+    }
+}
+
 /// Compute the boot-time assignment plan from the ready and degraded
 /// account sets + the project list. Pure function: same inputs always
 /// produce the same output. Section 4.4 of #246 uses a frozen-overlay
@@ -210,47 +278,13 @@ pub fn compute_plan(
     let mut plan = AssignmentPlan::default();
 
     for (project_idx, project) in projects.iter().enumerate() {
-        // Intersect a name allow-list with a source account set. The
-        // primary list defaults to the whole source when empty (the
-        // common solo-account shape); an empty fallback list means no
-        // fallbacks, never "every account".
-        let intersect = |names: &[String], sources: &[AccountKey]| {
-            names
-                .iter()
-                .filter_map(|name| sources.iter().find(|k| k.0 == *name).cloned())
-                .collect::<Vec<_>>()
-        };
-        let primary_pool = |sources: &[AccountKey]| {
-            if project.accounts.is_empty() {
-                sources.to_vec()
-            } else {
-                intersect(&project.accounts, sources)
-            }
-        };
-        let fallback_pool = |sources: &[AccountKey]| intersect(&project.fallback_accounts, sources);
-
-        // Tier walk, first non-empty tier wins. Tier 3 only fires once
-        // every ready primary is saturated, so taking the ready
-        // primaries whole is the saturated tier.
-        let primaries = primary_pool(ready_accounts);
-        let fallbacks = fallback_pool(ready_accounts);
-        let primaries_usable: Vec<AccountKey> =
-            primaries.iter().filter(|k| !saturated.iter().any(|s| s == *k)).cloned().collect();
-        let fallbacks_usable: Vec<AccountKey> =
-            fallbacks.iter().filter(|k| !saturated.iter().any(|s| s == *k)).cloned().collect();
-        let (mut pool, mut degraded) = if !primaries_usable.is_empty() {
-            (primaries_usable, false)
-        } else if !fallbacks_usable.is_empty() {
-            (fallbacks_usable, false)
-        } else if !primaries.is_empty() {
-            (primaries, false)
-        } else if !fallbacks.is_empty() {
-            (fallbacks, false)
-        } else {
-            let mut degraded_pool = primary_pool(degraded_accounts);
-            degraded_pool.extend(fallback_pool(degraded_accounts));
-            (degraded_pool, true)
-        };
+        let (pool, degraded) = tier_pool(
+            &project.accounts,
+            &project.fallback_accounts,
+            ready_accounts,
+            degraded_accounts,
+            saturated,
+        );
 
         if pool.is_empty() {
             // Project has no usable account. Record an empty slot so
