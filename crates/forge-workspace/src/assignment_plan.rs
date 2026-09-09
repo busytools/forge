@@ -663,4 +663,22 @@ mod tests {
             "a saturated-Ready pool is not the degraded tier",
         );
     }
+
+    #[test]
+    fn compute_plan_degraded_pool_respects_the_allow_list() {
+        // Both accounts degraded; the project pins only `a`. The
+        // degraded pool is the allow-list intersection, not every
+        // degraded account - `b` must never be assigned to this
+        // project.
+        let degraded = vec![ak("a"), ak("b")];
+        let projects = vec![project("p", &["a"])];
+        let mut plan = compute_plan(&[], &degraded, &[], &projects);
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
+        let worker = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true);
+        assert_eq!(
+            worker,
+            Some(ak("a")),
+            "the pool holds only the allow-listed degraded account",
+        );
+    }
 }
