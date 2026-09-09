@@ -1,0 +1,97 @@
+/* Terminal mockup styling for the book's UI surface pages.
+   Mirrors docs/forge-map.html's frame + inline color tokens, scoped
+   under .term so none of it leaks into the rest of the book. The
+   variables are forge-tui's current theme.rs values. */
+
+.term {
+  --bg:            #0d1117;
+  --panel:         #161922;
+  --panel-hi:      #1d2230;
+  --panel-lo:      #0a0d12;
+  --border:        #232733;
+  --text:          #e0e4ec;
+  --muted:         #98a0ad;
+  --subtle:        #6c7281;
+  --very-dim:      #4a4f5a;
+  --rust-orange:   #f47600;
+  --dim:           #7a7a7a;
+  --user-msg-bg:   #282c34;
+  --status-error:  #cf6171;
+  --status-warn:   #d6c46a;
+  --slash:         #c084dc;
+  --subagent:      #88c0d8;
+  --gotify:        #4ec9c9;
+  --experimental:  #c9a13b;
+  --addressed:     #61a0e0;
+  --success:       #82c76b;
+  --code-bg:       #131722;
+
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Berkeley Mono", "JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+.term-bar {
+  padding: 6px 12px;
+  background: var(--panel-hi);
+  color: var(--subtle);
+  font-size: 11.5px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.term-bar .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.term-bar .dot.r { background: #ff5f56; }
+.term-bar .dot.y { background: #ffbd2e; }
+.term-bar .dot.g { background: #27c93f; }
+
+.term-bar .label { margin-left: 8px; }
+
+.term pre {
+  margin: 0;
+  padding: 10px 0;
+  white-space: pre;
+  overflow: visible;
+  background: transparent;
+  font-size: inherit;
+  font-family: inherit;
+  line-height: inherit;
+}
+
+.term pre.indent {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+/* Inline color tokens, valid only inside a mockup. */
+.term .accent       { color: var(--rust-orange); }
+.term .accent-bold  { color: var(--rust-orange); font-weight: 700; }
+.term .rust-orange  { color: var(--rust-orange); }
+.term .dim          { color: var(--dim); }
+.term .muted-c      { color: var(--very-dim); }
+.term .success      { color: var(--success); }
+.term .warning      { color: var(--status-warn); }
+.term .error        { color: var(--status-error); }
+.term .slash        { color: var(--slash); }
+.term .subagent     { color: var(--subagent); }
+.term .gotify       { color: var(--gotify); }
+.term .experimental { color: var(--experimental); }
+.term .addressed    { color: var(--addressed); }
+.term .bold         { font-weight: 700; }
+.term .italic       { font-style: italic; }
+.term .user-band    { background: var(--user-msg-bg); display: inline-block; }
