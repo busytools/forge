@@ -358,6 +358,12 @@ pub struct App {
     /// `None` only in the brief pre-Connect window where no session
     /// has landed in the map yet.
     pub active_session_key: Option<forge_workspace::SessionKey>,
+    /// True while `active_session_key` is a pivot alias: a background
+    /// frame is being routed through the active accessors and the
+    /// user's real tab is not the one addressed. Set and restored by
+    /// `active_bucket_scope::with_pivoted`; the turn-complete notify
+    /// gate reads it to leave background pings to the dispatcher seam.
+    pub active_session_pivoted: bool,
     /// Synthetic spawn key the user asked to be taken to, set when a
     /// click wakes a cold project and consumed by the `Spawning`
     /// reducer once that bucket exists. The reducer cannot focus
@@ -934,6 +940,7 @@ impl App {
             #[rustfmt::skip] #[cfg(feature = "testing")] test_notifications: std::cell::RefCell::new(Vec::new()),
             sessions,
             active_session_key: Some(pending_key),
+            active_session_pivoted: false,
             pending_spawn_focus: None,
             forge_crons: Vec::new(),
             forge_schedule_rows: Vec::new(),
