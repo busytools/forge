@@ -601,6 +601,9 @@ fn a_bailed_account_splits_yellow_and_red_by_failure_class() {
         account_glyph(LoadingState::Bailed, Some(UsageFetchStatus::NetworkFailed)).1,
         theme::STATUS_WARNING,
     );
+    // A bail with nothing recorded is the 200-shape-drift settle -
+    // transient by elimination, never the auth red.
+    assert_eq!(account_glyph(LoadingState::Bailed, None).1, theme::STATUS_WARNING,);
     assert_eq!(account_glyph(LoadingState::Loading, None).1, Color::Yellow,);
     assert_eq!(account_glyph(LoadingState::Ready, None).1, Color::Green);
 }

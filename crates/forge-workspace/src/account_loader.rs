@@ -211,6 +211,9 @@ mod tests {
     fn settle_probe_result_bails_unmappable_without_an_error_record() {
         let mut states = states_with_one_account();
         let key = AccountKey("test".to_owned());
+        // A stale record from an earlier probe must not survive the
+        // shape-drift bail - the bail records nothing and clears.
+        states.set_last_error(&key, UsageFetchStatus::RateLimited, None);
         let state = settle_probe_result(
             &mut states,
             &key,
