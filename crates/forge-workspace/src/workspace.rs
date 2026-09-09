@@ -2002,14 +2002,12 @@ impl Workspace {
     /// Recompute the `AssignmentPlan` from the current ready-account
     /// set when every account has reached a terminal `LoadingState`.
     /// No-op when accounts are still loading - the boot-time
-    /// `account_loader` task re-calls this after each state
-    /// transition, so the plan ends up populated on the first
-    /// `all_loaded`-true call. Subsequent transitions (e.g., a
-    /// runtime 401 flipping a Ready account to Bailed) also trigger
-    /// a recompute via the same path; Section 4.4 of #246 swaps
-    /// this for a frozen-overlay variant that preserves existing
-    /// assignments while extending the plan with newly-recovered
-    /// accounts.
+    /// `account_loader` task calls this as each account settles, so
+    /// the plan ends up populated on the first `all_loaded`-true
+    /// call, and the usage poller's success arm calls it when a
+    /// clean probe heals a Bailed account. The frozen-overlay merge
+    /// preserves existing assignments while extending the pools with
+    /// newly-recovered accounts.
     pub(crate) fn recompute_plan_if_ready(&self) {
         use crate::account::LoadingState;
         use crate::assignment_plan::{ProjectInput, compute_plan};
@@ -2340,7 +2338,7 @@ impl Workspace {
             let fetch_result = crate::provider_probe::probe_via_backend(provider, &env).await;
             match fetch_result {
                 Ok(snapshot) => {
-                    self.accounts.lock().set_usage(&key, snapshot);
+                    self.record_usage_success(&key, snapshot);
                     any_success = true;
                 }
                 Err(forge_providers::ProbeError::Unmappable(message)) => {
@@ -2423,6 +2421,25 @@ impl Workspace {
                 accounts = account_count,
                 "usage cache updated in the store after a successful poll round",
             );
+        }
+    }
+
+    /// Write one successful poll result and, when it heals a Bailed
+    /// account, recompute the assignment plan so the recovered account
+    /// rejoins its project pools behind the frozen overlay - existing
+    /// assignments keep their accounts, only new sessions pick it up.
+    /// Without the recompute a healed account stays out of every pool
+    /// until restart.
+    pub(crate) fn record_usage_success(&self, key: &AccountKey, snapshot: forge_primitives::usage::UsageSnapshot) {
+        use crate::account::LoadingState;
+        let healed = {
+            let mut accounts = self.accounts.lock();
+            let healed = accounts.loading_state(key) == LoadingState::Bailed;
+            accounts.set_usage(key, snapshot);
+            healed
+        };
+        if healed {
+            self.recompute_plan_if_ready();
         }
     }
 
@@ -13066,6 +13083,54 @@ provider = "anthropic"
         workspace.recompute_plan_if_ready();
         let plan = workspace.assignment_plan.lock();
         assert!(plan.is_none(), "plan stays None while accounts are still Loading");
+    }
+
+    /// A healed account rejoins the assignment plan the moment the
+    /// usage poller writes its clean probe: the frozen overlay keeps
+    /// existing assignments while the recovered account enters the
+    /// pool for new sessions. Removing the recompute call inside
+    /// `record_usage_success` leaves the pool frozen at [Alpha] and
+    /// this test's worker lands on Alpha instead of Beta.
+    #[tokio::test]
+    async fn record_usage_success_heals_a_bailed_account_into_the_plan() {
+        let dir = make_workspace_dir_246_two_accounts();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let snapshot = forge_primitives::usage::UsageSnapshot {
+            source: forge_primitives::usage::UsageSourceKind::Oauth,
+            fetched_at: std::time::SystemTime::UNIX_EPOCH,
+            five_hour: None,
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            spend: None,
+            balance: None,
+        };
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Alpha".to_owned()), snapshot.clone());
+            accounts.set_loading(
+                &AccountKey("Beta".to_owned()),
+                crate::account::LoadingState::Bailed,
+            );
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+
+        // Heal Beta exactly the way the usage poller's success arm does.
+        workspace.record_usage_success(&AccountKey("Beta".to_owned()), snapshot);
+
+        let mut plan_guard = workspace.assignment_plan.lock();
+        let plan = plan_guard.as_mut().expect("plan populated while accounts settle");
+        let worker = plan.assign_adhoc_worker(&project_key, &"w1".to_owned(), |_| true);
+        assert_eq!(
+            worker,
+            Some(AccountKey("Beta".to_owned())),
+            "the healed account must have joined the pool for new sessions",
+        );
     }
 
     #[tokio::test]

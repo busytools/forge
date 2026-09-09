@@ -17,12 +17,11 @@
 //!   which also schedules the poller's re-probe.
 //!
 //! Healing is the pollers' job: the 60 s usage poller re-probes
-//! accounts once their `Retry-After` / backoff window passes and
-//! flips `Bailed` -> `Ready` via `set_usage`, and
-//! `recompute_plan_if_ready` merges the recovered account into the
-//! assignment plan without shifting running sessions. A rate-limited
-//! probe does not mean inference is limited - the session surfaces
-//! its own error if it is.
+//! accounts once their `Retry-After` / backoff window passes, flips
+//! `Bailed` -> `Ready`, and recomputes the assignment plan so the
+//! recovered account rejoins its pools without shifting running
+//! sessions. A rate-limited probe does not mean inference is
+//! limited - the session surfaces its own error if it is.
 
 use std::sync::Weak;
 
