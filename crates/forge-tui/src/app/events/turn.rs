@@ -417,6 +417,9 @@ fn apply_turn_complete_presentation(
             session_key,
             crate::app::session::SessionLifecycleState::Idle,
         );
+        if let Some(session) = app.session_mut(session_key) {
+            session.unseen_turn_completion = true;
+        }
         if super::queued_turn::hold_background_open(app, session_key) {
             return;
         }

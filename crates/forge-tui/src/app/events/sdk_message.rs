@@ -2001,6 +2001,13 @@ fn record_live_turn_usage(
     app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(idx));
 }
 
+/// True for a success `Result` - the wire shape a completed turn
+/// arrives as. Failed Results route through the turn-error handlers
+/// instead.
+pub(super) fn is_success_result(is_error: bool, subtype: &str) -> bool {
+    !is_error && subtype == "success"
+}
+
 /// On a successful Result, finalise any still-open tool_calls
 /// (terminal "completed") and trigger the App's TurnComplete handler.
 /// On a failed Result, finalise with "failed", classify the
@@ -2012,17 +2019,17 @@ fn apply_result_finalize(
     errors_array: Vec<String>,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
-    // `apply_result_finalize` only runs on the active session - the
-    // SDK message dispatcher in `super::client` adopts the message's
-    // session_id onto the active bucket before firing the sub-
-    // handlers. Cloning the active session_key here threads it
-    // through to the lifecycle handlers without leaking the
-    // multiplexer's routing concern into every sub-handler.
+    // Runs on the active-or-pivoted bucket: the SDK message
+    // dispatcher in `super::client` pivots `active_session_key` onto
+    // a background frame's own bucket before dispatching. Cloning
+    // the active session_key here threads it through to the
+    // lifecycle handlers without leaking the multiplexer's routing
+    // concern into every sub-handler.
     let active_key = app
         .active_session_key
         .clone()
         .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-    if !is_error && subtype == "success" {
+    if is_success_result(is_error, subtype) {
         let _: () = app.with_turn_state_mut(|ts| ts.last_assistant_error = None);
         finalize_open_tool_calls(app, forge_primitives::ToolCallStatus::Completed);
         super::turn::handle_turn_complete_event(app, &active_key, terminal_reason);

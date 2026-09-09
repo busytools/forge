@@ -549,16 +549,22 @@ fn append_org_project_row(
             !*is_focused && app.sessions.get(session_key).is_some_and(|b| b.failed_turn.is_some());
         // A live backgrounded task keeps the row spinning even after its
         // turn settles to Idle - pending input still wins over both.
-        let has_background_work = app
+        let (has_background_work, has_unseen_completion) = app
             .sessions
             .get(session_key)
-            .is_some_and(crate::app::session::UiSession::has_live_background_work);
+            .map_or((false, false), |b| (b.has_live_background_work(), b.unseen_turn_completion));
         let (glyph, glyph_color) = if failed_turn {
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
         } else {
-            glyph_for_lifecycle(*lifecycle, *is_focused, has_background_work, spinner_glyph)
+            glyph_for_lifecycle(
+                *lifecycle,
+                *is_focused,
+                has_background_work,
+                spinner_glyph,
+                has_unseen_completion,
+            )
         };
         let name_style = if *is_focused {
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
@@ -785,10 +791,10 @@ fn append_worker_tree_children(
             && app.sessions.get(&worker.session_key).is_some_and(|b| b.failed_turn.is_some());
         // A worker running its own backgrounded task (e.g. a `gh run watch`)
         // spins its row like a lead does - same Idle-only promotion.
-        let has_background_work = app
+        let (has_background_work, has_unseen_completion) = app
             .sessions
             .get(&worker.session_key)
-            .is_some_and(crate::app::session::UiSession::has_live_background_work);
+            .map_or((false, false), |b| (b.has_live_background_work(), b.unseen_turn_completion));
         let (glyph, glyph_color) = if failed_turn {
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else if needs_attention {
@@ -799,7 +805,13 @@ fn append_worker_tree_children(
             // human-readable reason (set by transition_worker_to_failed).
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else {
-            glyph_for_lifecycle(lifecycle, is_focused, has_background_work, spinner_glyph)
+            glyph_for_lifecycle(
+                lifecycle,
+                is_focused,
+                has_background_work,
+                spinner_glyph,
+                has_unseen_completion,
+            )
         };
 
         // Left-indent (1) + org trunk column (3) so the worker's tree
@@ -991,6 +1003,7 @@ fn glyph_for_lifecycle(
     session_is_active: bool,
     has_background_work: bool,
     spinner_glyph: char,
+    has_unseen_completion: bool,
 ) -> (String, Color) {
     // Spinner cases - an in-progress turn, or an otherwise-Idle session with
     // a live backgrounded task - come from the shared session_shows_spinner
@@ -1008,6 +1021,9 @@ fn glyph_for_lifecycle(
         // Inactive rows look interchangeable). Active-session bullet
         // picks up the accent colour to match its bold label.
         SessionLifecycleState::Idle => {
+            if has_unseen_completion {
+                return ("\u{25c6}".to_owned(), theme::COMPLETION);
+            }
             let color = if session_is_active { theme::RUST_ORANGE } else { theme::DIM };
             ("●".to_owned(), color)
         }
@@ -3416,6 +3432,30 @@ mod tests {
         );
     }
 
+    /// A settled background session whose turn wrapped while the user
+    /// was elsewhere renders the completion diamond in place of the
+    /// idle bullet, until the session is opened.
+    #[test]
+    fn idle_project_with_unseen_completion_renders_diamond() {
+        use crate::app::session::SessionLifecycleState;
+
+        let project_path = "/tmp/bg-activity-project";
+        let (mut app, project, lead_key) =
+            app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
+        app.sessions.get_mut(&lead_key).expect("lead bucket").unseen_turn_completion = true;
+
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+
+        let row = rendered_row(&lines, "bg-activity-project");
+        assert!(row.contains('\u{25c6}'), "unseen completion renders the diamond; got: {row}");
+        assert!(
+            !row.contains('\u{25cf}'),
+            "the idle bullet yields to the diamond on that row; got: {row}"
+        );
+    }
+
     /// A non-focused session with a pending prompt still wins with the
     /// yellow △ even when it also has live background work - attention
     /// override stays ahead of the background-work spinner.
@@ -3459,6 +3499,55 @@ mod tests {
         );
     }
 
+    /// The attention family outranks the unseen-completion diamond on
+    /// the row itself: a pending prompt shows yellow △ and a dead turn
+    /// shows red ✕, with the flag armed underneath both.
+    #[test]
+    fn attention_and_failed_turn_outrank_unseen_completion_on_the_row() {
+        use crate::app::session::SessionLifecycleState;
+        use std::time::SystemTime;
+
+        let project_path = "/tmp/bg-activity-project";
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+
+        // Pending prompt + armed flag: yellow △ wins.
+        let (mut app, project, lead_key) =
+            app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
+        app.active_session_key = None;
+        {
+            let lead = app.sessions.get_mut(&lead_key).expect("lead bucket");
+            lead.unseen_turn_completion = true;
+            lead.prompt_queue.push_back(crate::app::prompt::PromptState::from_permission(
+                "tc-bg".to_owned(),
+                crate::app::prompt::tests::make_permission_request(),
+            ));
+        }
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+        let row = rendered_row(&lines, "bg-activity-project");
+        assert!(row.contains('\u{25b3}'), "pending prompt shows the yellow △; got: {row}");
+        assert!(!row.contains('\u{25c6}'), "the diamond never masks △; got: {row}");
+
+        // Dead turn + armed flag: red ✕ wins.
+        let (mut app, project, lead_key) =
+            app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
+        app.active_session_key = None;
+        {
+            let lead = app.sessions.get_mut(&lead_key).expect("lead bucket");
+            lead.unseen_turn_completion = true;
+            lead.failed_turn = Some(crate::app::FailedTurn {
+                error: forge_primitives::ApiRetryError::ServerError,
+                status: Some(529),
+                failed_at: SystemTime::UNIX_EPOCH,
+            });
+        }
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+        let row = rendered_row(&lines, "bg-activity-project");
+        assert!(row.contains('\u{2715}'), "a dead turn shows the red ✕; got: {row}");
+        assert!(!row.contains('\u{25c6}'), "the diamond never masks ✕; got: {row}");
+    }
+
     /// Background work promotes ONLY an Idle session to the spinner.
     /// Attention / AuthRequired must keep their own glyph so a live task
     /// never masks a session that needs the user (pending prompt / login).
@@ -3466,21 +3555,48 @@ mod tests {
     fn glyph_promotes_to_spinner_only_over_idle() {
         use crate::app::session::SessionLifecycleState;
 
-        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, true, 'X');
-        assert_eq!(glyph, "X", "Idle + background work shows the spinner");
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, true, 'X', true);
+        assert_eq!(glyph, "X", "Idle + background work shows the spinner even with the flag armed");
 
-        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, false, 'X');
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, false, 'X', false);
         assert_eq!(glyph, "\u{25cf}", "Idle + no background work keeps the bullet");
 
         let (glyph, color) =
-            glyph_for_lifecycle(SessionLifecycleState::Attention, false, true, 'X');
+            glyph_for_lifecycle(SessionLifecycleState::Attention, false, true, 'X', false);
         assert_eq!(glyph, "\u{25b3}", "Attention keeps its triangle even with background work");
         assert_eq!(color, theme::STATUS_WARNING);
 
         let (glyph, color) =
-            glyph_for_lifecycle(SessionLifecycleState::AuthRequired, false, true, 'X');
+            glyph_for_lifecycle(SessionLifecycleState::AuthRequired, false, true, 'X', false);
         assert_eq!(glyph, "\u{26a0}", "AuthRequired keeps its warning even with background work");
         assert_eq!(color, theme::STATUS_WARNING);
+    }
+
+    /// A background session whose turn wrapped unseen renders the
+    /// dim-green diamond instead of the idle bullet.
+    #[test]
+    fn unseen_completion_renders_diamond_over_the_idle_bullet() {
+        use crate::app::session::SessionLifecycleState;
+
+        let (glyph, color) =
+            glyph_for_lifecycle(SessionLifecycleState::Idle, false, false, 'X', true);
+        assert_eq!(glyph, "\u{25c6}", "unseen completion shows the diamond");
+        assert_eq!(color, theme::COMPLETION, "the diamond carries the completion color");
+    }
+
+    /// The completion flag is informational: the spinner gate and the
+    /// Attention arm outrank it by construction.
+    #[test]
+    fn spinner_and_attention_outrank_unseen_completion() {
+        use crate::app::session::SessionLifecycleState;
+
+        let (glyph, _) =
+            glyph_for_lifecycle(SessionLifecycleState::Running, false, false, 'X', true);
+        assert_eq!(glyph, "X", "a running session keeps its spinner");
+
+        let (glyph, _) =
+            glyph_for_lifecycle(SessionLifecycleState::Attention, false, false, 'X', true);
+        assert_eq!(glyph, "\u{25b3}", "attention keeps its triangle");
     }
 
     /// A worker whose own session is Idle but has a live backgrounded task

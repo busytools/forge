@@ -1353,9 +1353,26 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
         // `active_bucket_scope::with_pivoted` snapshots the visible
         // UI state, pivots `active_session_key`, runs the body, and
         // restores the snapshot.
-        crate::app::active_bucket_scope::with_pivoted(app, session_key, |app| {
+        let targets_background = app.active_session_key.as_ref() != Some(&session_key);
+        let success_result = matches!(
+            &msg,
+            forge_primitives::Message::Result { is_error, subtype, .. }
+                if super::sdk_message::is_success_result(*is_error, subtype)
+        );
+        crate::app::active_bucket_scope::with_pivoted(app, session_key.clone(), |app| {
             super::sdk_message::handle_sdk_message(app, msg);
         });
+        // Under the pivot the finalize path sees the background key as
+        // active and never reaches the reducer's background arm, so
+        // the dispatcher is the writer production reaches: a success
+        // Result on a non-active bucket arms its unseen-completion
+        // flag.
+        if targets_background
+            && success_result
+            && let Some(bucket) = app.sessions.get_mut(&session_key)
+        {
+            bucket.unseen_turn_completion = true;
+        }
         app.needs_redraw = true;
         return;
     }
@@ -1840,6 +1857,30 @@ mod tests {
         app.active_session_key = Some(key_a.clone());
         app.needs_redraw = false;
         (key_a, key_b)
+    }
+
+    /// A `Message::Result` frame: `is_error: false` is the success
+    /// shape a completed turn arrives as, `is_error: true` the failed
+    /// shape that must not arm the unseen-completion flag.
+    fn result_frame(session_id: &str, is_error: bool) -> forge_primitives::Message {
+        forge_primitives::Message::Result {
+            subtype: "success".to_owned(),
+            session_id: session_id.to_owned(),
+            is_error,
+            num_turns: 1,
+            duration_ms: 0,
+            duration_api_ms: 0,
+            stop_reason: Some("end_turn".to_owned()),
+            total_cost_usd: None,
+            usage: None,
+            result: None,
+            structured_output: None,
+            model_usage: None,
+            permission_denials: None,
+            errors: None,
+            uuid: None,
+            terminal_reason: None,
+        }
     }
 
     /// Read the `account_info` field on the bucket for `key`.
@@ -2626,6 +2667,88 @@ mod tests {
         assert!(
             connecting.session_usage.context_usage_in_flight,
             "connecting session requests its own context usage",
+        );
+    }
+
+    /// A success `Message::Result` frame is the production shape of
+    /// "the turn completed" - nothing constructs
+    /// `SessionUpdate::TurnComplete` - so the background dispatch is
+    /// the writer that must arm the unseen-completion flag.
+    #[test]
+    fn background_success_result_arms_unseen_completion() {
+        let mut app = App::test_default();
+        let (active, background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_active = workspace.install_testing_stub(&active);
+        let _cmds_background = workspace.install_testing_stub(&background);
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ChatAppended {
+                session_id: background.as_str().to_owned(),
+                msg: result_frame(background.as_str(), false),
+            },
+        );
+
+        assert!(
+            app.sessions.get(&background).expect("bg bucket").unseen_turn_completion,
+            "a background success Result must arm the unseen-completion flag",
+        );
+        assert!(
+            !app.sessions.get(&active).expect("active bucket").unseen_turn_completion,
+            "the watched session must stay clean",
+        );
+    }
+
+    /// The active session's own success Result is seen by definition:
+    /// the flag must not arm on the watched session.
+    #[test]
+    fn active_success_result_arms_nothing() {
+        let mut app = App::test_default();
+        let (active, _background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_active = workspace.install_testing_stub(&active);
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ChatAppended {
+                session_id: active.as_str().to_owned(),
+                msg: result_frame(active.as_str(), false),
+            },
+        );
+
+        assert!(
+            !app.sessions.get(&active).expect("bucket").unseen_turn_completion,
+            "a turn completing on the watched session must not arm the flag",
+        );
+    }
+
+    /// Only a success Result arms the unseen-completion flag: the
+    /// failed shape routes through the turn-error handlers and leaves
+    /// the flag alone.
+    #[test]
+    fn failed_result_does_not_arm_unseen_completion() {
+        let mut app = App::test_default();
+        let (active, background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_active = workspace.install_testing_stub(&active);
+        let _cmds_background = workspace.install_testing_stub(&background);
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ChatAppended {
+                session_id: background.as_str().to_owned(),
+                msg: result_frame(background.as_str(), true),
+            },
+        );
+
+        assert!(
+            !app.sessions.get(&background).expect("bg bucket").unseen_turn_completion,
+            "a failed Result must not arm the unseen-completion flag",
+        );
+        assert!(
+            !app.sessions.get(&active).expect("active bucket").unseen_turn_completion,
+            "no other bucket is touched either",
         );
     }
 

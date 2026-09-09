@@ -27,6 +27,9 @@ pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
 // addition surface, for the collapsed "✓ RESOLVED" review-comment row.
 pub const REVIEW_RESOLVED: Color = Color::Rgb(130, 199, 107);
 
+// Completion glyph on a Projects-pane row whose turn finished unseen.
+pub const COMPLETION: Color = REVIEW_RESOLVED;
+
 // Addressed review-thread accent - a blue for a thread a worker replied
 // to (Open -> Addressed), and the worker turn's dot on the conversation
 // rail. Distinct from REVIEW_RESOLVED (green) and RUST_ORANGE (the
