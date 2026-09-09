@@ -2119,9 +2119,18 @@ impl Workspace {
                 self.list_live_workers(&input.key).into_iter().map(|w| w.label).collect();
             labels.sort();
             for label in labels {
-                fresh.assign_adhoc_worker(&input.key, &label, |k| {
+                if let Some(assigned) = fresh.assign_adhoc_worker(&input.key, &label, |k| {
                     usable.is_empty() || usable.contains(k)
-                });
+                }) && !usable.is_empty()
+                    && !usable.contains(&assigned)
+                {
+                    tracing::warn!(
+                        target: "forge_workspace::account",
+                        label = %label,
+                        account = %assigned.0,
+                        "recompute seeded a live worker onto a rate-limited or bailed account",
+                    );
+                }
             }
         }
 
