@@ -71,7 +71,7 @@ Notices stay single-line with a `⚠` modifier inline.
 
 ## Gotify notification chat block
 
-Every matched Gotify notification delivered into a subscribed session echoes into the chat as an external-notification block, ahead of the response it triggers. It is an external event, not agent traffic: a Gotify source label, the `◈` glyph in place of `▶`, and an `app 'X' - priority N` header over the title then message. The priority number renders in warning at or above 5, otherwise dim.
+Every matched Gotify notification delivered into a subscribed session echoes into the chat as an external-notification block, ahead of the response it triggers - every notification is its own turn. It is an external event, not agent traffic: a Gotify source label, the `◈` glyph in place of `▶`, and an `app 'X' - priority N` header over the title then message. The priority number renders in warning at or above 5, otherwise dim.
 
 <div class="term">
 
@@ -87,8 +87,6 @@ Every matched Gotify notification delivered into a subscribed session echoes int
      <span class="dim">&#x2514;&#x2500; 3 failed SSH logins from 192.0.2.5 in 60s</span></pre>
 
 </div>
-
-The priority number renders in warning at or above 5, otherwise dim.
 
 <details>
 <summary>Gotify block details</summary>
