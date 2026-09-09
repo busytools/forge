@@ -226,7 +226,7 @@ Every tool invocation renders through one path: a title row at column 2, body li
 
 ## Standard row
 
-Single line: 2-space indent, status icon in its status color, kind icon and kind label in white bold, then the display title in default foreground. Body lines prefix with a dim `  │  `, last `  └─ `. A title claude already sends starting with the kind label is not doubled.
+Single line: 2-space indent, status icon in its status color, kind icon and kind label in white bold, then the display title in default foreground. Body lines prefix with a dim `  │  `, last `  └─ `.
 
 <details>
 <summary>Collapse behavior</summary>
@@ -267,7 +267,7 @@ Server-side tool variants (ToolSearch, web_search, web_fetch, advisor, plus the 
 <details>
 <summary>Collapse behavior</summary>
 
-**Plan-mode aliases**: in plan mode the Write title becomes "Create Plan" and Edit / MultiEdit "Update Plan" - the kind label still renders.
+**Plan-mode aliases**: in plan mode the Write title becomes "Create Plan" and Edit / MultiEdit "Update Plan" - the kind label still renders. A title claude already sends starting with the kind label is not doubled.
 
 </details>
 

@@ -230,9 +230,12 @@ A comment whose turns span several rounds is listed under every review it has a 
 
 </details>
 
-### Key-hints bar
+<details>
+<summary>Key-hints bar</summary>
 
 Pinned to the overlay's bottom row: `↑↓ scroll · PgUp/Dn page · t split/unified · click line comment · click file jump · l reviews · Esc finish review`, with the current mode (`unified` / `split`) right-justified. A saved comment adds a `N comments pending` prefix, and the <kbd>Esc</kbd> label reads `finish review` only when this session left a user turn no review has sealed - a fresh comment or a reply on an already-filed thread - and `close` otherwise; resolve and reopen live on each comment box's button row, not on the bar. With an editor open it reads `Enter save · Esc cancel input`.
+
+</details>
 
 ### Narrow tier
 
