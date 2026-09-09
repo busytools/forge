@@ -171,6 +171,8 @@ impl NotificationManager {
             outcome = if dispatched { "success" } else { "skipped" },
             event = ?event,
             channel = ?channel,
+            title = %text.title,
+            detail = %text.detail,
             ring_bell = plan.ring_bell,
             send_desktop = plan.send_desktop,
             osc9 = plan.osc9_text.is_some(),
