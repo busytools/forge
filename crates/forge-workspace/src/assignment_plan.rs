@@ -8,14 +8,16 @@
 //! (boot-not-yet-loaded path).
 //!
 //! Algorithm (per spec §3 of #246):
-//! - Pool: a project's `accounts` list filtered against the set of
-//!   accounts currently in `LoadingState::Ready`, then narrowed to
-//!   those not at the usage cap. Missing or empty `accounts` field
-//!   defaults to "every ready account." Three fallback tiers keep a
-//!   project assigned: saturated Ready accounts (every candidate
-//!   capped), then degraded accounts (every allow-listed account
-//!   terminal-but-not-Ready; spawning on one is legitimate because
-//!   the 429 hit the usage probe, not inference), then dark.
+//! - Pool: six tiers in priority order; the first non-empty tier
+//!   supplies the pool. (1) primaries Ready, not saturated; (2)
+//!   fallbacks Ready, not saturated; (3) primaries Ready, saturated;
+//!   (4) fallbacks Ready, saturated; (5) degraded accounts
+//!   (terminal-but-not-Ready; spawning on one is legitimate because
+//!   the 429 hit the usage probe, not inference), primaries before
+//!   fallbacks; (6) dark. Primaries are the org's `accounts` list
+//!   (missing or empty defaults to every ready account); fallbacks
+//!   the org's `fallback_accounts` list (empty means none). Missing
+//!   allow-listed names drop out of their tier.
 //! - Offset: each project's position in the projects list, mod the
 //!   pool size. Spreads the workload so different projects don't all
 //!   hammer the first account.
@@ -77,6 +79,9 @@ pub struct ProjectInput {
     /// Empty/missing -> defaults to all ready accounts at compute
     /// time.
     pub accounts: Vec<String>,
+    /// Fallback account names from `[[orgs]].fallback_accounts`
+    /// (inherited). Empty -> no fallback tiers.
+    pub fallback_accounts: Vec<String>,
 }
 
 impl AssignmentPlan {
@@ -205,38 +210,47 @@ pub fn compute_plan(
     let mut plan = AssignmentPlan::default();
 
     for (project_idx, project) in projects.iter().enumerate() {
-        // Intersect a source account set with the project's
-        // `accounts` allow-list. Empty allow-list defaults to the
-        // whole source.
-        let pool_from = |sources: &[AccountKey]| {
+        // Intersect a name allow-list with a source account set. The
+        // primary list defaults to the whole source when empty (the
+        // common solo-account shape); an empty fallback list means no
+        // fallbacks, never "every account".
+        let intersect = |names: &[String], sources: &[AccountKey]| {
+            names
+                .iter()
+                .filter_map(|name| sources.iter().find(|k| k.0 == *name).cloned())
+                .collect::<Vec<_>>()
+        };
+        let primary_pool = |sources: &[AccountKey]| {
             if project.accounts.is_empty() {
                 sources.to_vec()
             } else {
-                project
-                    .accounts
-                    .iter()
-                    .filter_map(|name| sources.iter().find(|k| k.0 == *name).cloned())
-                    .collect()
+                intersect(&project.accounts, sources)
             }
         };
-        let candidates: Vec<AccountKey> = pool_from(ready_accounts);
+        let fallback_pool = |sources: &[AccountKey]| intersect(&project.fallback_accounts, sources);
 
-        // Prefer accounts that aren't at the usage cap. Fall back to
-        // the full candidate set only when every candidate is saturated,
-        // so an all-exhausted org still gets assigned rather than going
-        // dark.
-        let usable: Vec<AccountKey> =
-            candidates.iter().filter(|k| !saturated.iter().any(|s| s == *k)).cloned().collect();
-        let mut pool = if usable.is_empty() { candidates } else { usable };
-
-        // Degraded fallback: no ready candidate at all - assign from
-        // the project's terminal-but-not-Ready accounts rather than
-        // going dark.
-        let mut degraded = false;
-        if pool.is_empty() {
-            pool = pool_from(degraded_accounts);
-            degraded = !pool.is_empty();
-        }
+        // Tier walk, first non-empty tier wins. Tier 3 only fires once
+        // every ready primary is saturated, so taking the ready
+        // primaries whole is the saturated tier.
+        let primaries = primary_pool(ready_accounts);
+        let fallbacks = fallback_pool(ready_accounts);
+        let primaries_usable: Vec<AccountKey> =
+            primaries.iter().filter(|k| !saturated.iter().any(|s| s == *k)).cloned().collect();
+        let fallbacks_usable: Vec<AccountKey> =
+            fallbacks.iter().filter(|k| !saturated.iter().any(|s| s == *k)).cloned().collect();
+        let (mut pool, mut degraded) = if !primaries_usable.is_empty() {
+            (primaries_usable, false)
+        } else if !fallbacks_usable.is_empty() {
+            (fallbacks_usable, false)
+        } else if !primaries.is_empty() {
+            (primaries, false)
+        } else if !fallbacks.is_empty() {
+            (fallbacks, false)
+        } else {
+            let mut degraded_pool = primary_pool(degraded_accounts);
+            degraded_pool.extend(fallback_pool(degraded_accounts));
+            (degraded_pool, true)
+        };
 
         if pool.is_empty() {
             // Project has no usable account. Record an empty slot so
@@ -277,7 +291,15 @@ mod tests {
     }
 
     fn project(key: &str, accounts: &[&str]) -> ProjectInput {
-        ProjectInput { key: pk(key), accounts: accounts.iter().map(|s| (*s).to_owned()).collect() }
+        project_with_fallbacks(key, accounts, &[])
+    }
+
+    fn project_with_fallbacks(key: &str, accounts: &[&str], fallbacks: &[&str]) -> ProjectInput {
+        ProjectInput {
+            key: pk(key),
+            accounts: accounts.iter().map(|s| (*s).to_owned()).collect(),
+            fallback_accounts: fallbacks.iter().map(|s| (*s).to_owned()).collect(),
+        }
     }
 
     #[test]
@@ -673,5 +695,72 @@ mod tests {
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
         let worker = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true);
         assert_eq!(worker, Some(ak("a")), "the pool holds only the allow-listed degraded account");
+    }
+
+    #[test]
+    fn saturated_primary_falls_to_ready_fallback() {
+        // The primary is Ready but at its cap and the fallback is
+        // Ready: tier 1 is empty, so the lead falls to tier 2 instead
+        // of the saturated primary.
+        let ready = vec![ak("sub"), ak("api")];
+        let saturated = vec![ak("sub")];
+        let projects = vec![project_with_fallbacks("p", &["sub"], &["api"])];
+        let plan = compute_plan(&ready, &[], &saturated, &projects);
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("api")));
+        assert!(!plan.slot_degraded(&pk("p")));
+    }
+
+    #[test]
+    fn saturated_fallback_beats_going_dark() {
+        // The primary bailed and the fallback is Ready but at its cap:
+        // tier 4 supplies the pool so the project assigns rather than
+        // going dark - and the slot is not marked degraded.
+        let ready = vec![ak("api2")];
+        let degraded = vec![ak("sub")];
+        let saturated = vec![ak("api2")];
+        let projects = vec![project_with_fallbacks("p", &["sub"], &["api2"])];
+        let plan = compute_plan(&ready, &degraded, &saturated, &projects);
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("api2")));
+        assert!(
+            !plan.slot_degraded(&pk("p")),
+            "a saturated-Ready fallback pool is not the degraded tier",
+        );
+    }
+
+    #[test]
+    fn degraded_is_the_last_tier() {
+        // Every allow-listed account bailed: the degraded tier assigns
+        // primaries before fallbacks and marks the slot degraded.
+        let degraded = vec![ak("sub"), ak("api")];
+        let projects = vec![project_with_fallbacks("p", &["sub"], &["api"])];
+        let mut plan = compute_plan(&[], &degraded, &[], &projects);
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("sub")));
+        assert!(plan.slot_degraded(&pk("p")));
+        let worker = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true);
+        assert_eq!(worker, Some(ak("api")), "the fallback follows the primary in the degraded pool");
+    }
+
+    #[test]
+    fn no_fallback_config_is_byte_identical_to_today() {
+        // The primary is saturated and no fallbacks are configured:
+        // the existing never-go-dark saturated fallback (tier 3)
+        // assigns the primary itself - the fallback tiers never
+        // contribute.
+        let ready = vec![ak("sub")];
+        let saturated = vec![ak("sub")];
+        let projects = vec![project("p", &["sub"])];
+        let plan = compute_plan(&ready, &[], &saturated, &projects);
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("sub")));
+        assert!(!plan.slot_degraded(&pk("p")));
+    }
+
+    #[test]
+    fn ready_primary_beats_ready_fallback() {
+        // Both Ready and unsaturated: tier 1 wins, the lead stays on
+        // the primary.
+        let ready = vec![ak("sub"), ak("api")];
+        let projects = vec![project_with_fallbacks("p", &["sub"], &["api"])];
+        let plan = compute_plan(&ready, &[], &[], &projects);
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("sub")));
     }
 }

@@ -2092,6 +2092,7 @@ impl Workspace {
                     )),
                 ),
                 accounts: p.accounts.clone(),
+                fallback_accounts: p.fallback_accounts.clone(),
             })
             .collect();
 
@@ -5958,6 +5959,7 @@ impl Workspace {
             display_path: path.to_owned(),
             org: "TestOrg".to_owned(),
             accounts: vec!["acct-a".to_owned()],
+            fallback_accounts: Vec::new(),
             auto_start: false,
             env: std::collections::HashMap::new(),
             max_workers: None,

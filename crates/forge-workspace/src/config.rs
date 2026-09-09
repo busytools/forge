@@ -102,6 +102,11 @@ struct OrgEntry {
     /// Account `display_name`s every project in this org is allowed
     /// to spawn under. Required; cross-validated against `[[accounts]]`.
     accounts: Vec<String>,
+    /// Fallback `display_name`s used when every pinned account is
+    /// unavailable. Absent -> empty. Unlike `accounts`, names are not
+    /// validated at load: an unknown name drops out at plan time.
+    #[serde(default)]
+    fallback_accounts: Vec<String>,
     #[serde(default)]
     projects: Vec<ProjectEntry>,
 }
@@ -227,6 +232,9 @@ pub(crate) struct LoadedProject {
     /// here so callers don't need to walk the org list on every
     /// resolution.
     pub accounts: Vec<String>,
+    /// Cached fallback list from the project's org, alongside
+    /// `accounts`. Absent key -> empty.
+    pub fallback_accounts: Vec<String>,
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
@@ -498,6 +506,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 display_path: project_entry.path,
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
+                fallback_accounts: org_entry.fallback_accounts.clone(),
                 auto_start: project_entry.auto_start,
                 env,
                 max_workers,
@@ -1763,6 +1772,52 @@ provider = "anthropic"
             }
             other => panic!("expected UnknownOrgAccount, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn org_fallback_accounts_parse_and_inherit_to_projects() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Tiered"
+accounts = ["Codex"]
+fallback_accounts = ["Router", "Ghost"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[orgs]]
+name = "Plain"
+accounts = ["Codex"]
+
+[[orgs.projects]]
+name = "spare"
+path = "~/Projects/spare"
+
+[[accounts]]
+display_name = "Codex"
+config_dir = "/tmp/forge-test/claude-codex"
+provider = "anthropic"
+
+[[accounts]]
+display_name = "Router"
+config_dir = "/tmp/forge-test/claude-router"
+provider = "anthropic"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("fallback_accounts parse");
+        let forge = named(&config, "forge");
+        assert_eq!(forge.fallback_accounts, vec!["Router", "Ghost"]);
+        // "Ghost" is undeclared: unlike `accounts`, fallback names are
+        // not validated at load - the plan drops them at compute time.
+        let spare = named(&config, "spare");
+        assert!(
+            spare.fallback_accounts.is_empty(),
+            "absent fallback_accounts -> empty vec, not an error",
+        );
     }
 
     #[test]
