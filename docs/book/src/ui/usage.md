@@ -79,5 +79,3 @@ Grouping by model swaps the table in place - full model ids render without trunc
 The scan reads the one real `~/.claude/projects` JSONL pool off the render thread (canonicalized so the symlinked per-account dirs resolve to it once; Syncthing conflict copies skipped), sums each assistant record's usage per model and day deduped by message id, folds each slug to its repo, and rolls the windows against the cached pricing table. Scope: the summary, both groupings and windows over the deduped pool; per-account breakdown is impossible (shared pool, no per-account tag), and a live burn-rate strip (tokens/min across live agents, exhaustion projection) is deferred to phase 2.
 
 </details>
-
-</details>
