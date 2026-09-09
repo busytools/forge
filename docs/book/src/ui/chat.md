@@ -265,7 +265,7 @@ Server-side tool variants (ToolSearch, web_search, web_fetch, advisor, plus the 
 </details>
 
 <details>
-<summary>Collapse behavior</summary>
+<summary>Title mangling</summary>
 
 **Plan-mode aliases**: in plan mode the Write title becomes "Create Plan" and Edit / MultiEdit "Update Plan" - the kind label still renders. A title claude already sends starting with the kind label is not doubled.
 
