@@ -129,8 +129,7 @@ pub struct SessionChipInfo {
 }
 
 /// Visual category for a session chip. The renderer maps these to
-/// foreground colors + (for `Bailed` / `Degraded`) a leading `⚠ `
-/// glyph.
+/// foreground colors + (for `Bailed` alone) a leading `⚠ ` glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionChipState {
     /// Account is Ready and within budget. DIM foreground.
@@ -146,8 +145,8 @@ pub enum SessionChipState {
     /// env edit plus a restart.
     Bailed,
     /// Account Bailed on a transient failure (rate limit, unreachable
-    /// endpoint, malformed response). Warning yellow + `⚠ ` prefix -
-    /// the same split the account rows render; the pollers heal it.
+    /// endpoint, malformed response). Warning yellow, no glyph - the
+    /// same split the account rows render; the pollers heal it.
     Degraded,
 }
 
