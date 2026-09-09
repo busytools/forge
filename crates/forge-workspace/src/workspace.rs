@@ -6795,6 +6795,47 @@ mod tests {
         assert_eq!(fallbacks, vec!["B"], "only the non-experimental fallback row is flagged");
     }
 
+    /// An account sitting in BOTH the allow-list and the fallback list
+    /// renders once, flagged primary - the fallback list adds nothing
+    /// for an account the pin already names.
+    #[test]
+    fn project_accounts_snapshot_lists_a_dual_listed_fallback_once_as_primary() {
+        let (ws, _rx) = Workspace::testing_stub();
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "A".to_owned(),
+                    config_dir: PathBuf::from("/cfg/A"),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                    permission_mode: None,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "B".to_owned(),
+                    config_dir: PathBuf::from("/cfg/B"),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                    permission_mode: None,
+                },
+            ]);
+            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("B".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            *ws.accounts.lock() = map;
+        }
+
+        let rows = ws.project_accounts_snapshot(
+            &["A".to_owned(), "B".to_owned()],
+            &["B".to_owned()],
+            Some("A"),
+        );
+
+        assert_eq!(rows.len(), 2, "no duplicate row for the dual-listed account");
+        assert_eq!(rows[1].display_name, "B");
+        assert!(!rows[1].fallback, "a dual-listed account stays primary-flagged");
+    }
+
     /// The supersession guard that keeps an `/account` switch's
     /// re-spawn intact: a stale predecessor task exiting must NOT wipe
     /// the successor's pool entry, command sender, or domain handle -
