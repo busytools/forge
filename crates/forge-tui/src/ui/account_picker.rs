@@ -32,9 +32,10 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let project = app.active_project_name().unwrap_or_else(|| "project".to_owned());
 
     let has_experimental = state.rows.iter().any(|row| row.experimental);
+    let has_fallback = state.rows.iter().any(|row| row.fallback);
     // header + blank + N rows + blank + footer, inside a 1-cell border.
-    // The EXPERIMENTAL group adds a blank separator + its own header.
-    let group_lines = if has_experimental { 2 } else { 0 };
+    // Each present group adds a blank separator + its own header.
+    let group_lines = if has_experimental { 2 } else { 0 } + if has_fallback { 2 } else { 0 };
     let body_lines = state.rows.len().saturating_add(4).saturating_add(group_lines);
     let height = u16::try_from(body_lines).unwrap_or(0).saturating_add(2);
     let overlay = centered(area, WIDTH, height);
@@ -69,22 +70,22 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     ));
     lines.push(Line::default());
 
-    // Rows arrive pre-sorted [regular..., experimental...]. Emit a dim
-    // EXPERIMENTAL header at the boundary (reusing the launchpad's
-    // org-grouping shape). The header is a plain line - it never
-    // consumes a highlight index, so arrow-nav still maps straight onto
+    // Rows arrive pre-sorted [regular..., fallback..., experimental...].
+    // Emit a dim header at each group boundary (reusing the launchpad's
+    // org-grouping shape). Headers are plain lines - they never consume
+    // a highlight index, so arrow-nav still maps straight onto
     // `state.rows`.
+    let mut fallback_header_drawn = false;
     let mut experimental_header_drawn = false;
     for (idx, row) in state.rows.iter().enumerate() {
+        if row.fallback && !fallback_header_drawn {
+            lines.push(Line::default());
+            lines.push(group_header("FALLBACK"));
+            fallback_header_drawn = true;
+        }
         if row.experimental && !experimental_header_drawn {
             lines.push(Line::default());
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    "EXPERIMENTAL",
-                    Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            lines.push(group_header("EXPERIMENTAL"));
             experimental_header_drawn = true;
         }
         lines.push(account_row_line(row, idx == state.highlight, inner_w));
@@ -115,11 +116,18 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     }
     used += 2;
 
-    // Status tag, right-aligned. Experimental rows prefix an amber
-    // `experimental` tag + a dim separator so the reason they are
-    // grouped is legible even without the section header. Measured
-    // before the name, because on a narrow row the name is what gives
-    // way to keep it.
+    // Status tag, right-aligned. Grouped rows (experimental, fallback)
+    // prefix their group's tag + a dim separator so the reason they sit
+    // apart is legible even without the section header. Measured before
+    // the name, because on a narrow row the name is what gives way to
+    // keep it.
+    let prefix = if row.experimental {
+        Some(("experimental", theme::EXPERIMENTAL))
+    } else if row.fallback {
+        Some(("fallback", theme::DIM))
+    } else {
+        None
+    };
     let (tag, tag_color) = match row.unusable {
         None => ("usable", Color::Green),
         Some(Unusable::Saturated) => ("limit hit", theme::STATUS_ERROR),
@@ -129,14 +137,13 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     };
     let sep = " \u{00B7} ";
     let tag_w = display_len(tag);
-    // The amber prefix gives way only after the budget block and the
-    // name column, and before the tag ever would: the EXPERIMENTAL
-    // header above the group already says why these rows sit apart,
-    // so a squeezed row loses nothing the header does not carry.
-    let show_prefix = row.experimental
-        && used + display_len("experimental") + display_len(sep) + tag_w + TAG_GAP <= inner_w;
-    let tag_block =
-        if show_prefix { display_len("experimental") + display_len(sep) + tag_w } else { tag_w };
+    // The prefix gives way only after the budget block and the name
+    // column, and before the tag ever would: the group header above
+    // already says why these rows sit apart, so a squeezed row loses
+    // nothing the header does not carry.
+    let prefix_w = prefix.as_ref().map_or(0, |(label, _)| display_len(label) + display_len(sep));
+    let show_prefix = prefix.is_some() && used + prefix_w + tag_w + TAG_GAP <= inner_w;
+    let tag_block = if show_prefix { prefix_w + tag_w } else { tag_w };
 
     // Name, padded, then a separator column - `truncate_pad` pads TO
     // its width, so a name that already fills it would otherwise run
@@ -163,13 +170,25 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
 
     let pad = inner_w.saturating_sub(used + tag_block);
     spans.push(Span::raw(" ".repeat(pad)));
-    if show_prefix {
-        spans.push(Span::styled("experimental", Style::default().fg(theme::EXPERIMENTAL)));
+    if let Some((label, color)) = prefix.filter(|_| show_prefix) {
+        spans.push(Span::styled(label.to_owned(), Style::default().fg(color)));
         spans.push(Span::styled(sep.to_owned(), Style::default().fg(theme::DIM)));
     }
     spans.push(Span::styled(tag.to_owned(), Style::default().fg(tag_color)));
 
     Line::from(spans)
+}
+
+/// A dim group header line, indented to the rows like the launchpad's
+/// org headers.
+fn group_header(label: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            label.to_owned(),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+        ),
+    ])
 }
 
 /// The budget block, rendered to fit `room`.
@@ -438,6 +457,7 @@ mod tests {
             unusable: None,
             budget: AccountBudget::Api { daily: 0.56, weekly: 1.25, monthly: 20.30 },
             experimental: true,
+            fallback: false,
         }];
         crate::app::account_picker::open(&mut app, rows);
 
@@ -465,6 +485,7 @@ mod tests {
                 unusable: None,
                 budget: AccountBudget::Unknown { spend_billed: false },
                 experimental: false,
+                fallback: false,
             },
             AccountRow {
                 display_name: "NoFigures".to_owned(),
@@ -479,6 +500,7 @@ mod tests {
                     resets_at: None,
                 },
                 experimental: false,
+                fallback: false,
             },
             AccountRow {
                 display_name: "HalfKnown".to_owned(),
@@ -493,6 +515,7 @@ mod tests {
                     resets_at: None,
                 },
                 experimental: false,
+                fallback: false,
             },
             AccountRow {
                 display_name: "Fresh".to_owned(),
@@ -505,6 +528,7 @@ mod tests {
                     resets_at: None,
                 },
                 experimental: false,
+                fallback: false,
             },
         ];
         crate::app::account_picker::open(&mut app, rows);
@@ -591,7 +615,10 @@ mod tests {
                     Some(Unusable::ProbeBlocked),
                     Some(Unusable::Bailed),
                 ] {
-                    for experimental in [true, false] {
+                    // The (true, true) pair is a shape production never
+                    // makes: an experimental account is never flagged
+                    // fallback.
+                    for (experimental, fallback) in [(false, false), (false, true), (true, false)] {
                         let row = AccountRow {
                             display_name: "OpenRouter".to_owned(),
                             config_dir: PathBuf::from("/c/x"),
@@ -599,6 +626,7 @@ mod tests {
                             unusable,
                             budget: budget.clone(),
                             experimental,
+                            fallback,
                         };
                         let line = account_row_line(&row, true, inner_w);
                         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
@@ -610,24 +638,32 @@ mod tests {
                                 "auth failed or expired"
                             }
                         };
-                        let case =
-                            format!("{label} w={inner_w} unusable={unusable:?} exp={experimental}");
+                        let case = format!(
+                            "{label} w={inner_w} unusable={unusable:?} exp={experimental} fb={fallback}"
+                        );
 
                         assert!(
                             width <= inner_w,
                             "{case} overflows at {width} of {inner_w}: |{text}|",
                         );
                         assert!(text.ends_with(tag), "{case} lost its tag: |{text}|");
-                        // What precedes the tag: the dim separator on an
-                        // experimental row, otherwise the padding gap -
-                        // which is also what an experimental row falls
-                        // back to when it is too narrow to carry the
-                        // amber prefix beside the tag. The experimental
-                        // shape is the one where welding is possible at
-                        // all, so it must not be excused.
+                        // What precedes the tag: the dim separator on a
+                        // grouped row, otherwise the padding gap - which
+                        // is also what a grouped row falls back to when
+                        // it is too narrow to carry the prefix beside the
+                        // tag. The grouped shape is the one where welding
+                        // is possible at all, so it must not be excused.
                         let before = &text[..text.len() - tag.len()];
-                        let prefix_fits = experimental
-                            && 2 + display_len("experimental") + 3 + tag.len() + TAG_GAP <= inner_w;
+                        let prefix_label = if experimental {
+                            Some("experimental")
+                        } else if fallback {
+                            Some("fallback")
+                        } else {
+                            None
+                        };
+                        let prefix_fits = prefix_label.is_some_and(|label| {
+                            2 + display_len(label) + 3 + tag.len() + TAG_GAP <= inner_w
+                        });
                         let expected_lead = if prefix_fits { " \u{00B7} " } else { " " };
                         assert!(
                             before.ends_with(expected_lead),
@@ -657,6 +693,7 @@ mod tests {
                     resets_at: None,
                 },
                 experimental: false,
+                fallback: false,
             }];
             crate::app::account_picker::open(&mut app, rows);
 
@@ -691,6 +728,7 @@ mod tests {
                 resets_at: None,
             },
             experimental: false,
+            fallback: false,
         }];
         crate::app::account_picker::open(&mut app, rows);
 
@@ -717,6 +755,7 @@ mod tests {
             unusable: Some(Unusable::ProbeBlocked),
             budget: AccountBudget::Api { daily: 0.0, weekly: 0.0, monthly: 0.0 },
             experimental: true,
+            fallback: false,
         }];
         crate::app::account_picker::open(&mut app, rows);
 
@@ -750,6 +789,7 @@ mod tests {
                 resets_at: None,
             },
             experimental: false,
+            fallback: false,
         }];
         assert_eq!(
             "OpenRouter".chars().count(),
@@ -782,6 +822,7 @@ mod tests {
                     resets_at: Some(future),
                 },
                 experimental: false,
+                fallback: false,
             },
             AccountRow {
                 display_name: "Gateway1".to_owned(),
@@ -794,6 +835,7 @@ mod tests {
                     resets_at: None,
                 },
                 experimental: false,
+                fallback: false,
             },
         ];
         crate::app::account_picker::open(&mut app, rows);
@@ -821,6 +863,87 @@ mod tests {
     }
 
     #[test]
+    fn fallback_accounts_render_their_own_dim_group_and_stay_selectable() {
+        let mut app = App::test_default();
+        let rows = vec![
+            AccountRow {
+                display_name: "Gateway".to_owned(),
+                config_dir: PathBuf::from("/c/gateway"),
+                is_current: true,
+                unusable: None,
+                budget: AccountBudget::Subscription {
+                    five_hour_util: Some(10.0),
+                    seven_day_util: Some(5.0),
+                    resets_at: None,
+                },
+                experimental: false,
+                fallback: false,
+            },
+            AccountRow {
+                display_name: "Router".to_owned(),
+                config_dir: PathBuf::from("/c/router"),
+                is_current: false,
+                unusable: None,
+                budget: AccountBudget::Subscription {
+                    five_hour_util: Some(20.0),
+                    seven_day_util: Some(8.0),
+                    resets_at: None,
+                },
+                experimental: false,
+                fallback: true,
+            },
+            AccountRow {
+                display_name: "Codex".to_owned(),
+                config_dir: PathBuf::from("/c/codex"),
+                is_current: false,
+                unusable: None,
+                budget: AccountBudget::Subscription {
+                    five_hour_util: Some(20.0),
+                    seven_day_util: Some(8.0),
+                    resets_at: None,
+                },
+                experimental: true,
+                fallback: false,
+            },
+        ];
+        crate::app::account_picker::open(&mut app, rows);
+
+        let lines = render_picker(&app, 80, 20);
+        let joined = lines.join("\n");
+        assert!(joined.contains("FALLBACK"), "fallback section header present: {joined}");
+
+        let gateway_idx = lines.iter().position(|l| l.contains("Gateway")).expect("gateway idx");
+        let fallback_header_idx =
+            lines.iter().position(|l| l.contains("FALLBACK")).expect("fallback header idx");
+        let router_idx = lines.iter().position(|l| l.contains("Router")).expect("router idx");
+        let exp_header_idx =
+            lines.iter().position(|l| l.contains("EXPERIMENTAL")).expect("exp header idx");
+        let codex_idx = lines.iter().position(|l| l.contains("Codex")).expect("codex idx");
+        assert!(
+            gateway_idx < fallback_header_idx && fallback_header_idx < router_idx,
+            "the FALLBACK header sits between the regular and fallback rows",
+        );
+        assert!(
+            router_idx < exp_header_idx && exp_header_idx < codex_idx,
+            "the fallback group precedes the experimental group",
+        );
+        let router = lines.iter().find(|l| l.contains("Router")).expect("router row");
+        assert!(router.contains("fallback"), "the fallback row carries its tag: {router}");
+
+        // The fallback row is selectable like any other: one Down from
+        // the current row lands on it.
+        crate::app::account_picker::handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Down,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        let state = app.account_picker.as_ref().expect("picker still open");
+        assert_eq!(state.selected().map(|r| r.display_name.as_str()), Some("Router"));
+    }
+
+    #[test]
     fn renders_experimental_group_with_amber_tag() {
         let mut app = App::test_default();
         let rows = vec![
@@ -835,6 +958,7 @@ mod tests {
                     resets_at: None,
                 },
                 experimental: false,
+                fallback: false,
             },
             AccountRow {
                 display_name: "Codex".to_owned(),
@@ -847,6 +971,7 @@ mod tests {
                     resets_at: None,
                 },
                 experimental: true,
+                fallback: false,
             },
         ];
         crate::app::account_picker::open(&mut app, rows);

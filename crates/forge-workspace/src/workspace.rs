@@ -116,6 +116,18 @@ pub(crate) struct KickRequest {
     pub prompt_body: String,
 }
 
+/// The best available tier pool for one project against live health:
+/// what a fresh compute would assign from, plus the tier flags the
+/// slot bookkeeping carries. Produced by
+/// [`Workspace::best_tier_pool`] for the resume re-tier.
+#[derive(Debug)]
+struct BestTier {
+    pool: Vec<AccountKey>,
+    offset: usize,
+    degraded: bool,
+    fallback: bool,
+}
+
 /// Per-session chip the Projects pane renders next to each row.
 /// Carries the assigned account display name + the visual-state
 /// category derived by `Workspace::session_chip_for`.
@@ -1198,6 +1210,7 @@ impl Workspace {
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
                 accounts: project.accounts.clone(),
+                fallback_accounts: project.fallback_accounts.clone(),
                 sessions,
             });
         }
@@ -1331,10 +1344,17 @@ impl Workspace {
         let (account_key, account_dir) = forced_account.unwrap_or_else(|| {
             self.plan_assignment(&target, spawn_key.as_ref()).unwrap_or_else(|| {
                 let project_account_pin = self.project_accounts_for(&target);
+                let fallback_pin = self.project_fallback_accounts_for(&target);
                 let accounts = self.accounts.lock();
-                accounts.pick_for_project(&project_account_pin)
+                accounts.pick_for_project(&project_account_pin, &fallback_pin)
             })
         });
+        tracing::info!(
+            target: "forge_workspace::account",
+            session = %session_key.as_str(),
+            account = %account_key.0,
+            "spawn bound to account",
+        );
 
         // Slow path: spawn fresh Agent bound to the picked account's
         // config_dir. The Agent stores it as a typed field; every
@@ -1868,13 +1888,96 @@ impl Workspace {
         spawn_key: Option<&SessionKey>,
     ) -> Option<(AccountKey, std::path::PathBuf)> {
         let (project_key, label) = self.plan_lookup_keys(target, spawn_key)?;
-        let plan_guard = self.assignment_plan.lock();
-        let plan = plan_guard.as_ref()?;
-        let account_key = plan.lookup(&project_key, &label)?.clone();
-        drop(plan_guard);
+        // `__resume_` synth keys are exactly the flows that pass
+        // `--resume` (lead drilldown + worker respawn); every other
+        // shape is a fresh spawn whose plan row is the tier walk's own
+        // output.
+        let is_resume = spawn_key.is_some_and(|k| k.as_str().starts_with("__resume_"));
+        // A worker-resume key resolving to the lead label means the
+        // registry lost the worker and the lookup degraded - re-tiering
+        // would rewrite the LEAD's row, so the spawn keeps the recorded
+        // lookup instead.
+        let degraded_worker_resume = spawn_key
+            .is_some_and(|k| k.as_str().starts_with("__resume_worker_"))
+            && label == "lead";
+        let account_key = if is_resume && !degraded_worker_resume {
+            self.retier_on_resume(&project_key, &label)?
+        } else {
+            let plan_guard = self.assignment_plan.lock();
+            let plan = plan_guard.as_ref()?;
+            plan.lookup(&project_key, &label)?.clone()
+        };
         let accounts = self.accounts.lock();
         let dir = accounts.config_dir(&account_key)?.clone();
         Some((account_key, dir))
+    }
+
+    /// Resume re-tier: a resumed session is not a running one, so the
+    /// frozen overlay does not pin it. A recorded account still inside
+    /// the best available tier keeps its assignment; one outside it
+    /// moves to the account a fresh compute would pick and rewrites the
+    /// plan row, leaving every other session unmoved.
+    fn retier_on_resume(&self, project_key: &ProjectKey, label: &str) -> Option<AccountKey> {
+        let recorded = {
+            let plan_guard = self.assignment_plan.lock();
+            plan_guard.as_ref()?.lookup(project_key, &label.to_owned()).cloned()?
+        };
+        match self.best_tier_pool(project_key) {
+            Some(best) if !best.pool.contains(&recorded) => {
+                let mut plan_guard = self.assignment_plan.lock();
+                let Some(plan) = plan_guard.as_mut() else {
+                    return Some(recorded);
+                };
+                let Some(account) = plan.retier_assignment(
+                    project_key,
+                    label,
+                    best.pool,
+                    best.offset,
+                    best.degraded,
+                    best.fallback,
+                ) else {
+                    return Some(recorded);
+                };
+                drop(plan_guard);
+                tracing::info!(
+                    target: "forge_workspace::assignment_plan",
+                    project = ?project_key,
+                    label = %label,
+                    from = %recorded.0,
+                    to = %account.0,
+                    "resume re-tiered onto the current best account",
+                );
+                Some(account)
+            }
+            _ => Some(recorded),
+        }
+    }
+
+    /// The best available tier pool for `project_key` against live
+    /// account health, with the offset a fresh compute would take
+    /// within it and the tier flags the slot bookkeeping carries.
+    /// `None` while accounts are still loading, for a project absent
+    /// from the config, or when every tier lands dark.
+    fn best_tier_pool(&self, project_key: &ProjectKey) -> Option<BestTier> {
+        let (ready, degraded, saturated) = self.account_health_sets()?;
+        let idx = self.config.projects.iter().position(|p| {
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &p.path.to_string_lossy(),
+            ))) == *project_key
+        })?;
+        let project = &self.config.projects[idx];
+        let (pool, degraded, fallback) = crate::assignment_plan::tier_pool(
+            &project.accounts,
+            &project.fallback_accounts,
+            &ready,
+            &degraded,
+            &saturated,
+        );
+        if pool.is_empty() {
+            return None;
+        }
+        let offset = idx % pool.len();
+        Some(BestTier { pool, offset, degraded, fallback })
     }
 
     /// Derive `(project_key, session_label)` from a spawn target +
@@ -2021,64 +2124,63 @@ impl Workspace {
     /// clean probe heals a Bailed account. The frozen-overlay merge
     /// preserves existing assignments while extending the pools with
     /// newly-recovered accounts.
-    pub(crate) fn recompute_plan_if_ready(&self) {
+    /// The non-experimental ready / degraded / saturated account sets
+    /// the assignment plan consumes, in forge.toml definition order.
+    /// `None` while any account is still loading.
+    fn account_health_sets(&self) -> Option<(Vec<AccountKey>, Vec<AccountKey>, Vec<AccountKey>)> {
         use crate::account::LoadingState;
+
+        let accounts = self.accounts.lock();
+        if !accounts.all_loaded() {
+            return None;
+        }
+        // Iterate in forge.toml definition order, not HashMap order:
+        // compute_plan is documented pure, and for a project with an
+        // empty `accounts` list the pool IS this slice, so HashMap
+        // randomness would assign the lead to a different account
+        // across restarts.
+        // Experimental accounts never enter the assignment pool
+        // (leads and workers alike) even when a project's
+        // org pins them; they are reachable only via the
+        // `/account` picker.
+        let ready: Vec<AccountKey> = accounts
+            .ordered_keys
+            .iter()
+            .filter(|k| !accounts.is_experimental(k))
+            .filter(|k| {
+                accounts.by_key.get(*k).is_some_and(|s| matches!(s.loading, LoadingState::Ready))
+            })
+            .cloned()
+            .collect();
+        // Terminal-but-not-Ready: Bailed accounts (the boot probe
+        // settled rate-limited or auth-failed). The plan falls
+        // back to these when a project's ready pool is empty
+        // rather than going dark - spawning on a degraded account
+        // is legitimate because the 429 hit the usage probe, not
+        // inference.
+        let degraded: Vec<AccountKey> = accounts
+            .ordered_keys
+            .iter()
+            .filter(|k| !accounts.is_experimental(k))
+            .filter(|k| {
+                accounts.by_key.get(*k).is_some_and(|s| matches!(s.loading, LoadingState::Bailed))
+            })
+            .cloned()
+            .collect();
+        // Accounts that loaded fine but sit at the usage cap. The
+        // plan prefers the rest so a freshly-exhausted account
+        // doesn't get sessions assigned to it on boot.
+        let saturated: Vec<AccountKey> =
+            ready.iter().filter(|k| accounts.is_saturated(k)).cloned().collect();
+        Some((ready, degraded, saturated))
+    }
+
+    pub(crate) fn recompute_plan_if_ready(&self) {
         use crate::assignment_plan::{ProjectInput, compute_plan};
 
-        let (ready_accounts, degraded_accounts, saturated): (
-            Vec<AccountKey>,
-            Vec<AccountKey>,
-            Vec<AccountKey>,
-        ) = {
-            let accounts = self.accounts.lock();
-            if !accounts.all_loaded() {
-                return;
-            }
-            // Iterate in forge.toml definition order, not HashMap order:
-            // compute_plan is documented pure, and for a project with an
-            // empty `accounts` list the pool IS this slice, so HashMap
-            // randomness would assign the lead to a different account
-            // across restarts.
-            // Experimental accounts never enter the assignment pool
-            // (leads and workers alike) even when a project's
-            // org pins them; they are reachable only via the
-            // `/account` picker.
-            let ready: Vec<AccountKey> = accounts
-                .ordered_keys
-                .iter()
-                .filter(|k| !accounts.is_experimental(k))
-                .filter(|k| {
-                    accounts
-                        .by_key
-                        .get(*k)
-                        .is_some_and(|s| matches!(s.loading, LoadingState::Ready))
-                })
-                .cloned()
-                .collect();
-            // Terminal-but-not-Ready: Bailed accounts (the boot probe
-            // settled rate-limited or auth-failed). The plan falls
-            // back to these when a project's ready pool is empty
-            // rather than going dark - spawning on a degraded account
-            // is legitimate because the 429 hit the usage probe, not
-            // inference.
-            let degraded: Vec<AccountKey> = accounts
-                .ordered_keys
-                .iter()
-                .filter(|k| !accounts.is_experimental(k))
-                .filter(|k| {
-                    accounts
-                        .by_key
-                        .get(*k)
-                        .is_some_and(|s| matches!(s.loading, LoadingState::Bailed))
-                })
-                .cloned()
-                .collect();
-            // Accounts that loaded fine but sit at the usage cap. The
-            // plan prefers the rest so a freshly-exhausted account
-            // doesn't get sessions assigned to it on boot.
-            let saturated: Vec<AccountKey> =
-                ready.iter().filter(|k| accounts.is_saturated(k)).cloned().collect();
-            (ready, degraded, saturated)
+        let Some((ready_accounts, degraded_accounts, saturated)) = self.account_health_sets()
+        else {
+            return;
         };
 
         let projects: Vec<ProjectInput> = self
@@ -2092,6 +2194,7 @@ impl Workspace {
                     )),
                 ),
                 accounts: p.accounts.clone(),
+                fallback_accounts: p.fallback_accounts.clone(),
             })
             .collect();
 
@@ -2102,6 +2205,13 @@ impl Workspace {
                     target: "forge_workspace::assignment_plan",
                     project = ?project.key,
                     "project assigned from a degraded pool; every allow-listed account is terminal-not-Ready",
+                );
+            }
+            if fresh.slot_fallback(&project.key) {
+                tracing::warn!(
+                    target: "forge_workspace::assignment_plan",
+                    project = ?project.key,
+                    "project assigned from a fallback tier; no primary account is Ready and under its cap",
                 );
             }
         }
@@ -2513,26 +2623,37 @@ impl Workspace {
     /// order, each carrying its live rate-limit state for the
     /// `/account` picker. `allowed_accounts` is the project's
     /// forge.toml pin; empty falls back to every configured account
-    /// (matching `pick_for_project`'s resolution). `current_account`
-    /// is the session's active account display name, used to mark the
-    /// current row. Returns owned [`crate::AccountRow`]s so the TUI
-    /// holds a snapshot rather than the `AccountStateMap` lock.
+    /// (matching `pick_for_project`'s resolution). `fallback_accounts`
+    /// is the org's fallback list: unioned in (deduped) even when the
+    /// pin does not name them, and flagged for the picker's FALLBACK
+    /// group. `current_account` is the session's active account
+    /// display name, used to mark the current row. Returns owned
+    /// [`crate::AccountRow`]s so the TUI holds a snapshot rather than
+    /// the `AccountStateMap` lock.
     pub fn project_accounts_snapshot(
         &self,
         allowed_accounts: &[String],
+        fallback_accounts: &[String],
         current_account: Option<&str>,
     ) -> Vec<crate::AccountRow> {
         let accounts = self.accounts.lock();
         // Resolve the allow-list to concrete account names, falling
         // back to every configured account when the project pins none.
-        // Experimental accounts are then unioned in regardless of the
-        // org pin (deduped) - they are excluded from auto-assignment but
-        // globally selectable in the picker.
+        // Fallback names then join (deduped) - usually accounts the pin
+        // does not name, since the org never rotates through them.
+        // Experimental accounts are unioned in last regardless of the
+        // org pin (deduped) - they are excluded from auto-assignment
+        // but globally selectable in the picker.
         let mut names: Vec<String> = if allowed_accounts.is_empty() {
             accounts.ordered_keys.iter().map(|k| k.0.clone()).collect()
         } else {
             allowed_accounts.to_vec()
         };
+        for name in fallback_accounts {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
         for key in &accounts.ordered_keys {
             if accounts.is_experimental(key) && !names.contains(&key.0) {
                 names.push(key.0.clone());
@@ -2546,6 +2667,11 @@ impl Workspace {
                 let unusable = accounts.unusable_reason(&key);
                 let is_current = current_account == Some(name.as_str());
                 let experimental = accounts.is_experimental(&key);
+                // A dual-listed account is primary-tier: the pin's
+                // membership wins over the fallback list. An empty pin
+                // means every account is primary (the un-pinned shape).
+                let in_pin = allowed_accounts.is_empty() || allowed_accounts.contains(&name);
+                let fallback = fallback_accounts.contains(&name) && !in_pin && !experimental;
                 let budget = account_budget(
                     &name,
                     accounts.provider_or_anthropic(&key),
@@ -2558,13 +2684,14 @@ impl Workspace {
                     unusable,
                     budget,
                     experimental,
+                    fallback,
                 })
             })
             .collect();
-        // Stable-sort so regular rows lead and experimental rows trail,
-        // matching the picker's EXPERIMENTAL group. `false` sorts before
+        // Stable-sort into [regular..., fallback..., experimental...],
+        // matching the picker's group order. `false` sorts before
         // `true`, and the sort preserves within-group order.
-        rows.sort_by_key(|row| row.experimental);
+        rows.sort_by_key(|row| (row.experimental, row.fallback));
         rows
     }
 
@@ -2609,12 +2736,24 @@ impl Workspace {
     /// a non-empty list. This mirrors the "use what we know" intent
     /// rather than a global account fallback.
     fn project_accounts_for(&self, target: &SessionTarget) -> Vec<String> {
+        self.project_pin_for(target).accounts
+    }
+
+    /// The fallback pin for `target`, resolved the same way
+    /// [`Self::project_accounts_for`] resolves the primary pin.
+    fn project_fallback_accounts_for(&self, target: &SessionTarget) -> Vec<String> {
+        self.project_pin_for(target).fallback_accounts
+    }
+
+    /// The `LoadedProject` whose pins a spawn under `target` inherits,
+    /// falling back to the default project on any miss (so both pins
+    /// stay one resolution).
+    fn project_pin_for(&self, target: &SessionTarget) -> LoadedProject {
         match target {
-            SessionTarget::Default => self.config.default_project().accounts.clone(),
-            SessionTarget::Named(name) => self.find_project_by_name(name).map_or_else(
-                |_| self.config.default_project().accounts.clone(),
-                |p| p.accounts.clone(),
-            ),
+            SessionTarget::Default => self.config.default_project().clone(),
+            SessionTarget::Named(name) => self
+                .find_project_by_name(name)
+                .map_or_else(|_| self.config.default_project().clone(), std::clone::Clone::clone),
             SessionTarget::Session(key) => {
                 let matched = self.cwd_for_session(key).and_then(|cwd| {
                     // A worktree cwd is a subdir of its project root, so
@@ -2622,9 +2761,9 @@ impl Workspace {
                     // instead of exact equality before reading the pin.
                     self.project_name_for_path(&cwd)
                         .and_then(|name| self.find_project_by_name(&name).ok())
-                        .map(|p| p.accounts.clone())
+                        .cloned()
                 });
-                matched.unwrap_or_else(|| self.config.default_project().accounts.clone())
+                matched.unwrap_or_else(|| self.config.default_project().clone())
             }
             // A fresh worker spawn's project_key is always the parent
             // project's (the worktree is created post-spawn via
@@ -2639,10 +2778,7 @@ impl Workspace {
                         &p.path.to_string_lossy(),
                     )) == project_key.as_str()
                 })
-                .map_or_else(
-                    || self.config.default_project().accounts.clone(),
-                    |p| p.accounts.clone(),
-                ),
+                .map_or_else(|| self.config.default_project().clone(), |p| (*p).clone()),
         }
     }
 
@@ -5958,6 +6094,7 @@ impl Workspace {
             display_path: path.to_owned(),
             org: "TestOrg".to_owned(),
             accounts: vec!["acct-a".to_owned()],
+            fallback_accounts: Vec::new(),
             auto_start: false,
             env: std::collections::HashMap::new(),
             max_workers: None,
@@ -6451,7 +6588,7 @@ mod tests {
             *ws.accounts.lock() = map;
         }
 
-        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], Some("A"));
+        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &[], Some("A"));
 
         assert_eq!(rows.len(), 2, "one row per allow-list entry");
         assert_eq!(rows[0].display_name, "A", "allow-list order preserved");
@@ -6522,7 +6659,7 @@ mod tests {
         }
 
         // Allow-list pins only "A"; "Exp" is a different org's account.
-        let rows = ws.project_accounts_snapshot(&["A".to_owned()], Some("A"));
+        let rows = ws.project_accounts_snapshot(&["A".to_owned()], &[], Some("A"));
 
         assert_eq!(rows.len(), 2, "experimental Exp is unioned in despite not being pinned");
         assert_eq!(rows[0].display_name, "A", "regular allow-list rows come first");
@@ -6561,7 +6698,7 @@ mod tests {
         }
 
         // "Exp" is BOTH pinned by the allow-list AND experimental.
-        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "Exp".to_owned()], None);
+        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "Exp".to_owned()], &[], None);
 
         assert_eq!(rows.len(), 2, "no duplicate row for the already-pinned experimental account");
         let exp_rows: Vec<&crate::AccountRow> =
@@ -6600,11 +6737,105 @@ mod tests {
             *ws.accounts.lock() = map;
         }
 
-        let rows = ws.project_accounts_snapshot(&[], None);
+        let rows = ws.project_accounts_snapshot(&[], &[], None);
         let names: Vec<&str> = rows.iter().map(|r| r.display_name.as_str()).collect();
         assert_eq!(names, vec!["One", "Two"], "empty pin lists all accounts in order");
         assert!(rows.iter().all(|r| r.unusable.is_none()), "both under cap -> usable");
         assert!(rows.iter().all(|r| !r.is_current), "no current account when None passed");
+    }
+
+    /// Fallback rows are flagged against the org `fallback_accounts`
+    /// list the caller passes in, and an account that is BOTH fallback
+    /// and experimental stays experimental - that is the group it
+    /// renders in, matching its exclusion from every auto tier.
+    #[test]
+    fn project_accounts_snapshot_flags_fallback_rows_and_experimental_wins() {
+        let (ws, _rx) = Workspace::testing_stub();
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "A".to_owned(),
+                    config_dir: PathBuf::from("/cfg/A"),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                    permission_mode: None,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "B".to_owned(),
+                    config_dir: PathBuf::from("/cfg/B"),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                    permission_mode: None,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "Exp".to_owned(),
+                    config_dir: PathBuf::from("/cfg/Exp"),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    env: std::collections::HashMap::new(),
+                    experimental: true,
+                    permission_mode: None,
+                },
+            ]);
+            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("B".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            *ws.accounts.lock() = map;
+        }
+
+        let rows = ws.project_accounts_snapshot(
+            &["A".to_owned()],
+            &["B".to_owned(), "Exp".to_owned()],
+            Some("A"),
+        );
+
+        assert_eq!(rows[0].display_name, "A", "regular rows lead");
+        assert!(!rows[0].fallback, "a primary row is not flagged fallback");
+        let fallbacks: Vec<&str> =
+            rows.iter().filter(|r| r.fallback).map(|r| r.display_name.as_str()).collect();
+        assert_eq!(fallbacks, vec!["B"], "only the non-experimental fallback row is flagged");
+    }
+
+    /// An account sitting in BOTH the allow-list and the fallback list
+    /// renders once, flagged primary - the fallback list adds nothing
+    /// for an account the pin already names.
+    #[test]
+    fn project_accounts_snapshot_lists_a_dual_listed_fallback_once_as_primary() {
+        let (ws, _rx) = Workspace::testing_stub();
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "A".to_owned(),
+                    config_dir: PathBuf::from("/cfg/A"),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                    permission_mode: None,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "B".to_owned(),
+                    config_dir: PathBuf::from("/cfg/B"),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    env: std::collections::HashMap::new(),
+                    experimental: false,
+                    permission_mode: None,
+                },
+            ]);
+            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("B".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            *ws.accounts.lock() = map;
+        }
+
+        let rows = ws.project_accounts_snapshot(
+            &["A".to_owned(), "B".to_owned()],
+            &["B".to_owned()],
+            Some("A"),
+        );
+
+        assert_eq!(rows.len(), 2, "no duplicate row for the dual-listed account");
+        assert_eq!(rows[1].display_name, "B");
+        assert!(!rows[1].fallback, "a dual-listed account stays primary-flagged");
     }
 
     /// The supersession guard that keeps an `/account` switch's
@@ -12911,6 +13142,75 @@ provider = "anthropic"
         dir
     }
 
+    /// One primary (Sub) with one fallback (Api), so a saturation on
+    /// the primary is the exact shape where a resume must re-tier.
+    fn make_workspace_dir_primary_and_fallback() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Sub"]
+fallback_accounts = ["Api"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Sub"
+config_dir = "/tmp/forge-test/claude-sub"
+provider = "anthropic"
+
+[[accounts]]
+display_name = "Api"
+config_dir = "/tmp/forge-test/claude-api"
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    /// One primary with TWO fallbacks, so a re-tiered pool has more
+    /// than one slot to rotate into.
+    fn make_workspace_dir_multi_fallback() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Sub"]
+fallback_accounts = ["Api1", "Api2"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Sub"
+config_dir = "/tmp/forge-test/claude-sub"
+provider = "anthropic"
+
+[[accounts]]
+display_name = "Api1"
+config_dir = "/tmp/forge-test/claude-api1"
+provider = "anthropic"
+
+[[accounts]]
+display_name = "Api2"
+config_dir = "/tmp/forge-test/claude-api2"
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
     /// Resuming a worker from the Projects-pane drilldown dispatches
     /// `SessionTarget::Session(<worker uuid>)` under a `__resume_<id>__`
     /// spawn key the registry has never seen, so the spawn-key lookup
@@ -12973,6 +13273,258 @@ provider = "anthropic"
             "the worker draws its own plan row, not the lead's",
         );
         assert_ne!(assigned, lead_account, "lead and worker are on different accounts here");
+    }
+
+    /// A resumed session is not a running one, so the frozen overlay
+    /// does not pin it: when the recorded account is no longer in the
+    /// best available tier, the resume re-tiers onto the better
+    /// account and rewrites the plan row. The resumed-worker test
+    /// above pins the companion: a recorded account still inside the
+    /// best tier keeps its assignment.
+    #[tokio::test]
+    async fn resume_retiers_when_the_recorded_account_is_no_longer_best() {
+        let dir = make_workspace_dir_primary_and_fallback();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+
+        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
+        );
+        // Seed the catalog so the lead's Session target resolves to its
+        // project the way a drilldown resume needs.
+        workspace.record_connected_session(&project_path, "lead-uuid", None);
+
+        let lead_target = SessionTarget::Session(SessionKey::from_session_id("lead-uuid"));
+        let resume_spawn_key = SessionKey::from_session_id("__resume_lead-uuid__".to_owned());
+        let recorded = workspace
+            .plan_assignment(&lead_target, Some(&resume_spawn_key))
+            .expect("the resume resolves through the plan")
+            .0;
+        assert_eq!(recorded, AccountKey("Sub".to_owned()), "boot recorded the primary");
+
+        // The primary hits its cap while the fallback stays healthy.
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
+        }
+
+        let re_tiered = workspace
+            .plan_assignment(&lead_target, Some(&resume_spawn_key))
+            .expect("the resume still resolves")
+            .0;
+        assert_eq!(
+            re_tiered,
+            AccountKey("Api".to_owned()),
+            "the resume falls to the healthy fallback",
+        );
+        {
+            let plan = workspace.assignment_plan.lock();
+            assert_eq!(
+                plan.as_ref().expect("plan populated").lookup(&project_key, &"lead".to_owned()),
+                Some(&AccountKey("Api".to_owned())),
+                "the plan row records the re-tiered account",
+            );
+        }
+
+        // A second resume with the recorded account already best keeps it.
+        let kept = workspace
+            .plan_assignment(&lead_target, Some(&resume_spawn_key))
+            .expect("the resume still resolves")
+            .0;
+        assert_eq!(
+            kept,
+            AccountKey("Api".to_owned()),
+            "no churn once the recorded account is best"
+        );
+    }
+
+    /// The re-tier is a single-row frozen-overlay extend plus a slot
+    /// refresh: the lead moves to the fallback while a worker row that
+    /// sits out of the new pool stays untouched, and a fresh adhoc
+    /// worker rotates into the REFRESHED pool rather than the stale
+    /// boot pool.
+    #[tokio::test]
+    async fn resume_retier_refreshes_the_slot_and_leaves_other_rows_untouched() {
+        let dir = make_workspace_dir_multi_fallback();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api1".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api2".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+
+        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
+        );
+        workspace.record_connected_session(&project_path, "lead-uuid", None);
+        workspace.extend_plan_for_adhoc_worker(&project_key, "w1");
+
+        // The primary hits its cap; the fallbacks stay healthy. No
+        // recompute runs, so the slot still holds the stale boot pool -
+        // exactly the state a resume can land in.
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
+        }
+
+        let lead_target = SessionTarget::Session(SessionKey::from_session_id("lead-uuid"));
+        let resume_spawn_key = SessionKey::from_session_id("__resume_lead-uuid__".to_owned());
+        let re_tiered = workspace
+            .plan_assignment(&lead_target, Some(&resume_spawn_key))
+            .expect("the resume resolves")
+            .0;
+        assert_eq!(re_tiered, AccountKey("Api1".to_owned()), "the lead re-tiers to the fallback");
+
+        let row = |label: &str| -> Option<AccountKey> {
+            workspace
+                .assignment_plan
+                .lock()
+                .as_ref()
+                .expect("plan")
+                .lookup(&project_key, &label.to_owned())
+                .cloned()
+        };
+        assert_eq!(
+            row("w1"),
+            Some(AccountKey("Sub".to_owned())),
+            "the worker row sits out of the new pool and is untouched by the lead's re-tier",
+        );
+
+        // The slot carries the refreshed pool AND the lead's re-tier
+        // re-baselined the rotation: the first fresh worker lands on
+        // the free fallback slot instead of colliding with the lead.
+        let _ = workspace.extend_plan_for_adhoc_worker(&project_key, "w2");
+        assert_eq!(
+            row("w2"),
+            Some(AccountKey("Api2".to_owned())),
+            "the first fresh worker lands on the free fallback slot",
+        );
+    }
+
+    /// A resumed worker takes its OWN rotation slot in the refreshed
+    /// pool - the `assign_adhoc_worker` arithmetic - so two workers
+    /// resumed one after the other do not collapse onto the same
+    /// account the way a fixed pool[offset] pick would force.
+    #[tokio::test]
+    async fn resumed_workers_take_their_own_rotation_slot() {
+        let dir = make_workspace_dir_multi_fallback();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api1".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api2".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+
+        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
+        );
+        for label in ["w1", "w2"] {
+            workspace.extend_plan_for_adhoc_worker(&project_key, label);
+            workspace.insert_live_worker(
+                &project_key,
+                crate::mcp::workers::types::WorkerEntry {
+                    label: label.to_owned(),
+                    charter: "test charter".to_owned(),
+                    session_key: SessionKey::from_session_id(format!("{label}-uuid")),
+                    status: forge_primitives::WorkerLiveness::Running,
+                    spawned_at: SystemTime::UNIX_EPOCH,
+                    spawned_by_session_id: "lead-uuid".to_owned(),
+                    needs_tag: false,
+                    is_git_repo_at_spawn: true,
+                    diagnostic: None,
+                    kick: None,
+                },
+            );
+        }
+
+        // The primary saturates with no recompute; both worker rows sit
+        // out of the fresh fallback pool.
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
+        }
+
+        let resume = |workspace: &Arc<Workspace>, session_id: &str| {
+            let target = SessionTarget::Session(SessionKey::from_session_id(session_id));
+            let spawn_key =
+                SessionKey::from_session_id(format!("__resume_worker_forge_x_{session_id}__"));
+            workspace
+                .plan_assignment(&target, Some(&spawn_key))
+                .expect("the worker resume resolves")
+                .0
+        };
+        let w1 = resume(&workspace, "w1-uuid");
+        let w2 = resume(&workspace, "w2-uuid");
+        assert_eq!(w1, AccountKey("Api2".to_owned()), "first resume takes the next counter slot");
+        assert_eq!(w2, AccountKey("Api1".to_owned()), "second resume rotates past it");
+        assert_ne!(w1, w2, "separately-resumed workers never collapse onto one account");
+    }
+
+    /// A worker-resume spawn key whose worker the registry has lost
+    /// (a dead worker resurrecting through a stale catalog row)
+    /// degrades plan_lookup_keys to the "lead" label. The re-tier must
+    /// refuse to write in that shape: the spawn keeps the recorded
+    /// lookup and the LEAD's plan row stays untouched.
+    #[tokio::test]
+    async fn a_worker_resume_resolved_to_lead_never_rewrites_the_lead_row() {
+        let dir = make_workspace_dir_primary_and_fallback();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+
+        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
+        );
+        // A dead worker's catalog row: the session id answers under the
+        // project's cwd, but no live WorkerEntry carries it.
+        workspace.record_connected_session(&project_path, "dead-worker-uuid", None);
+
+        // The primary saturates; a live lead resume WOULD re-tier here.
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
+        }
+
+        let worker_target = SessionTarget::Session(SessionKey::from_session_id("dead-worker-uuid"));
+        let worker_spawn_key =
+            SessionKey::from_session_id("__resume_worker_forge_x_dead-worker-uuid__".to_owned());
+        let assigned = workspace
+            .plan_assignment(&worker_target, Some(&worker_spawn_key))
+            .expect("the degraded resolution still answers");
+        assert_eq!(
+            assigned,
+            (AccountKey("Sub".to_owned()), std::path::PathBuf::from("/tmp/forge-test/claude-sub")),
+            "the spawn keeps the recorded lead lookup",
+        );
+        let lead_row = workspace
+            .assignment_plan
+            .lock()
+            .as_ref()
+            .expect("plan")
+            .lookup(&project_key, &"lead".to_owned())
+            .cloned();
+        assert_eq!(
+            lead_row,
+            Some(AccountKey("Sub".to_owned())),
+            "the lead's plan row was not rewritten by a worker's resume",
+        );
     }
 
     /// An experimental account defined FIRST (Exp), a regular account

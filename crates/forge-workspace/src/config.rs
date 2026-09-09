@@ -9,12 +9,12 @@
 //! the first one (alphabetical) becomes the focused tab.
 //!
 //! **Selection policy.** A deterministic `AssignmentPlan`, computed
-//! once every account reaches a terminal loading state. Its pool is the
-//! org's `accounts` list in the order written there, narrowed to the
-//! accounts that came up `Ready` and then to those not at their cap,
-//! falling back to the capped ones only when every candidate is capped
-//! so a project never goes dark. Each project takes an offset from its
-//! position in the project list and a session lands on
+//! once every account reaches a terminal loading state. Its pool comes
+//! from a six-tier walk over the org's `accounts` primaries and
+//! `fallback_accounts` - ready-and-unsaturated first, then
+//! ready-saturated, then degraded; `assignment_plan.rs` documents the
+//! tiers. Each project takes an offset from its position in the
+//! project list and a session lands on
 //! `pool[(offset + session_n) % pool.len()]`. `experimental` accounts
 //! are excluded from the pool entirely. Utilization is never compared
 //! between accounts; it collapses to one boolean per account. A
@@ -102,6 +102,11 @@ struct OrgEntry {
     /// Account `display_name`s every project in this org is allowed
     /// to spawn under. Required; cross-validated against `[[accounts]]`.
     accounts: Vec<String>,
+    /// Fallback `display_name`s used when every pinned account is
+    /// unavailable. Absent -> empty. Validated against `[[accounts]]`
+    /// exactly like `accounts`.
+    #[serde(default)]
+    fallback_accounts: Vec<String>,
     #[serde(default)]
     projects: Vec<ProjectEntry>,
 }
@@ -227,6 +232,9 @@ pub(crate) struct LoadedProject {
     /// here so callers don't need to walk the org list on every
     /// resolution.
     pub accounts: Vec<String>,
+    /// Cached fallback list from the project's org, alongside
+    /// `accounts`. Absent key -> empty.
+    pub fallback_accounts: Vec<String>,
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
@@ -460,7 +468,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         if org_entry.accounts.is_empty() {
             return Err(WorkspaceError::EmptyOrgAccounts { path, org: org_entry.name });
         }
-        for account in &org_entry.accounts {
+        for account in org_entry.accounts.iter().chain(&org_entry.fallback_accounts) {
             if !seen_account_names.contains(account) {
                 let mut valid: Vec<&str> = seen_account_names.iter().map(String::as_str).collect();
                 valid.sort_unstable();
@@ -498,6 +506,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 display_path: project_entry.path,
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
+                fallback_accounts: org_entry.fallback_accounts.clone(),
                 auto_start: project_entry.auto_start,
                 env,
                 max_workers,
@@ -1756,6 +1765,81 @@ provider = "anthropic"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("unknown account should error");
+        match err {
+            WorkspaceError::UnknownOrgAccount { org, account, .. } => {
+                assert_eq!(org, "Personal");
+                assert_eq!(account, "Bogus");
+            }
+            other => panic!("expected UnknownOrgAccount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn org_fallback_accounts_parse_and_inherit_to_projects() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Tiered"
+accounts = ["Codex"]
+fallback_accounts = ["Router"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[orgs]]
+name = "Plain"
+accounts = ["Codex"]
+
+[[orgs.projects]]
+name = "spare"
+path = "~/Projects/spare"
+
+[[accounts]]
+display_name = "Codex"
+config_dir = "/tmp/forge-test/claude-codex"
+provider = "anthropic"
+
+[[accounts]]
+display_name = "Router"
+config_dir = "/tmp/forge-test/claude-router"
+provider = "anthropic"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("fallback_accounts parse");
+        let forge = named(&config, "forge");
+        assert_eq!(forge.fallback_accounts, vec!["Router"]);
+        let spare = named(&config, "spare");
+        assert!(
+            spare.fallback_accounts.is_empty(),
+            "absent fallback_accounts -> empty vec, not an error",
+        );
+    }
+
+    #[test]
+    fn unknown_fallback_account_errors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+fallback_accounts = ["Bogus"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test-config-stargate"
+provider = "anthropic"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("unknown fallback should error");
         match err {
             WorkspaceError::UnknownOrgAccount { org, account, .. } => {
                 assert_eq!(org, "Personal");

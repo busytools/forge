@@ -43,6 +43,7 @@ An array of tables. At least one is required, or the load fails with
 |---|---|---|---|
 | `name` | string | yes | Must be unique across orgs. |
 | `accounts` | array of strings | yes | Each entry must match an `[[accounts]]` `display_name`. |
+| `fallback_accounts` | array of strings | no | Fallback accounts assignment falls to when the pinned accounts are unavailable. Absent means none. |
 | `projects` | array of tables | yes | Written as `[[orgs.projects]]`. An org with none fails the load. |
 
 `accounts` is the account subset every project in this org may spawn
@@ -55,6 +56,15 @@ under. Rules enforced at load:
 - A list containing only accounts marked `experimental = true` fails,
   because such an org would leave its projects with nothing to spawn
   under.
+
+`fallback_accounts` is the org's second tier: assignment prefers a
+fallback over a saturated or down primary, and returns to the primary
+when it heals. The names also render in the `/account` picker's
+FALLBACK group and stay hand-selectable. The list is validated at load
+exactly like `accounts`: a name matching no `[[accounts]]` entry fails
+the boot, naming the account and the valid names. An account may appear
+in both lists; it is then primary-tier only. See [the launchpad's pool
+description](./launchpad.md) for the full tier order.
 
 ## `[[orgs.projects]]`
 
