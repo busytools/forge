@@ -35,7 +35,7 @@ Input-editing shortcuts swap modifiers per OS: macOS uses `Cmd+Z` / `Cmd+Shift+Z
 
 ## Welcome
 
-The first message in a fresh chat - a regular scrollback message, not an overlay: an rust-orange bold "Overview" banner over a Ferris-says ASCII block (rust orange), a metadata block (Version, Account, cwd, Session ID), and one rotating tip. The account line shows `Account: <display name> · <tier>` when workspace routing picked the account from `forge.toml`, falling back to `Subscription: <tier>` otherwise.
+The first message in a fresh chat - a regular scrollback message, not an overlay: a rust-orange bold "Overview" banner over a Ferris-says ASCII block (rust orange), a metadata block (Version, Account, cwd, Session ID), and one rotating tip. The account line shows `Account: <display name> · <tier>` when workspace routing picked the account from `forge.toml`, falling back to `Subscription: <tier>` otherwise.
 
 <div class="term">
 
@@ -63,4 +63,4 @@ The first message in a fresh chat - a regular scrollback message, not an overlay
 
 </div>
 
-- The ASCII art and field labels are dim except the rust-orange art and the rust-orange bold account value; the tip is dim.
+- The ASCII art is rust orange; the field labels, the other field values and the tip are dim; the account value is rust orange bold.
