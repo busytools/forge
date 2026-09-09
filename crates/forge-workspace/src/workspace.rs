@@ -116,6 +116,18 @@ pub(crate) struct KickRequest {
     pub prompt_body: String,
 }
 
+/// The best available tier pool for one project against live health:
+/// what a fresh compute would assign from, plus the tier flags the
+/// slot bookkeeping carries. Produced by
+/// [`Workspace::best_tier_pool`] for the resume re-tier.
+#[derive(Debug)]
+struct BestTier {
+    pool: Vec<AccountKey>,
+    offset: usize,
+    degraded: bool,
+    fallback: bool,
+}
+
 /// Per-session chip the Projects pane renders next to each row.
 /// Carries the assigned account display name + the visual-state
 /// category derived by `Workspace::session_chip_for`.
@@ -1903,12 +1915,20 @@ impl Workspace {
             plan_guard.as_ref()?.lookup(project_key, &label.to_owned()).cloned()?
         };
         match self.best_tier_pool(project_key) {
-            Some((pool, offset)) if !pool.contains(&recorded) => {
-                let best = pool[offset].clone();
+            Some(best) if !best.pool.contains(&recorded) => {
+                let account = best.pool[best.offset].clone();
                 {
                     let mut plan_guard = self.assignment_plan.lock();
                     if let Some(plan) = plan_guard.as_mut() {
-                        plan.retier_assignment(project_key, label, best.clone());
+                        plan.retier_assignment(
+                            project_key,
+                            label,
+                            account.clone(),
+                            best.pool,
+                            best.offset,
+                            best.degraded,
+                            best.fallback,
+                        );
                     }
                 }
                 tracing::info!(
@@ -1916,10 +1936,10 @@ impl Workspace {
                     project = ?project_key,
                     label = %label,
                     from = %recorded.0,
-                    to = %best.0,
+                    to = %account.0,
                     "resume re-tiered onto the current best account",
                 );
-                Some(best)
+                Some(account)
             }
             _ => Some(recorded),
         }
@@ -1927,9 +1947,10 @@ impl Workspace {
 
     /// The best available tier pool for `project_key` against live
     /// account health, with the offset a fresh compute would take
-    /// within it. `None` while accounts are still loading, for a
-    /// project absent from the config, or when every tier lands dark.
-    fn best_tier_pool(&self, project_key: &ProjectKey) -> Option<(Vec<AccountKey>, usize)> {
+    /// within it and the tier flags the slot bookkeeping carries.
+    /// `None` while accounts are still loading, for a project absent
+    /// from the config, or when every tier lands dark.
+    fn best_tier_pool(&self, project_key: &ProjectKey) -> Option<BestTier> {
         let (ready, degraded, saturated) = self.account_health_sets()?;
         let idx = self.config.projects.iter().position(|p| {
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -1937,7 +1958,7 @@ impl Workspace {
             ))) == *project_key
         })?;
         let project = &self.config.projects[idx];
-        let (pool, _, _) = crate::assignment_plan::tier_pool(
+        let (pool, degraded, fallback) = crate::assignment_plan::tier_pool(
             &project.accounts,
             &project.fallback_accounts,
             &ready,
@@ -1948,7 +1969,7 @@ impl Workspace {
             return None;
         }
         let offset = idx % pool.len();
-        Some((pool, offset))
+        Some(BestTier { pool, offset, degraded, fallback })
     }
 
     /// Derive `(project_key, session_label)` from a spawn target +
@@ -13091,6 +13112,43 @@ provider = "anthropic"
         dir
     }
 
+    /// One primary with TWO fallbacks, so a re-tiered pool has more
+    /// than one slot to rotate into.
+    fn make_workspace_dir_multi_fallback() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Sub"]
+fallback_accounts = ["Api1", "Api2"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Sub"
+config_dir = "/tmp/forge-test/claude-sub"
+provider = "anthropic"
+
+[[accounts]]
+display_name = "Api1"
+config_dir = "/tmp/forge-test/claude-api1"
+provider = "anthropic"
+
+[[accounts]]
+display_name = "Api2"
+config_dir = "/tmp/forge-test/claude-api2"
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
     /// Resuming a worker from the Projects-pane drilldown dispatches
     /// `SessionTarget::Session(<worker uuid>)` under a `__resume_<id>__`
     /// spawn key the registry has never seen, so the spawn-key lookup
@@ -13221,6 +13279,72 @@ provider = "anthropic"
             kept,
             AccountKey("Api".to_owned()),
             "no churn once the recorded account is best"
+        );
+    }
+
+    /// The re-tier is a single-row frozen-overlay extend plus a slot
+    /// refresh: the lead moves to the fallback while a worker row that
+    /// sits out of the new pool stays untouched, and a fresh adhoc
+    /// worker rotates into the REFRESHED pool rather than the stale
+    /// boot pool.
+    #[tokio::test]
+    async fn resume_retier_refreshes_the_slot_and_leaves_other_rows_untouched() {
+        let dir = make_workspace_dir_multi_fallback();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api1".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api2".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+
+        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
+        );
+        workspace.record_connected_session(&project_path, "lead-uuid", None);
+        workspace.extend_plan_for_adhoc_worker(&project_key, "w1");
+
+        // The primary hits its cap; the fallbacks stay healthy. No
+        // recompute runs, so the slot still holds the stale boot pool -
+        // exactly the state a resume can land in.
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
+        }
+
+        let lead_target = SessionTarget::Session(SessionKey::from_session_id("lead-uuid"));
+        let resume_spawn_key = SessionKey::from_session_id("__resume_lead-uuid__".to_owned());
+        let re_tiered = workspace
+            .plan_assignment(&lead_target, Some(&resume_spawn_key))
+            .expect("the resume resolves")
+            .0;
+        assert_eq!(re_tiered, AccountKey("Api1".to_owned()), "the lead re-tiers to the fallback");
+
+        let row = |label: &str| -> Option<AccountKey> {
+            workspace
+                .assignment_plan
+                .lock()
+                .as_ref()
+                .expect("plan")
+                .lookup(&project_key, &label.to_owned())
+                .cloned()
+        };
+        assert_eq!(
+            row("w1"),
+            Some(AccountKey("Sub".to_owned())),
+            "the worker row sits out of the new pool and is untouched by the lead's re-tier",
+        );
+
+        // The slot carries the refreshed pool: the next adhoc worker
+        // rotates into a fallback account, not back onto the capped
+        // primary the stale boot pool still held.
+        let _ = workspace.extend_plan_for_adhoc_worker(&project_key, "w2");
+        assert_eq!(
+            row("w2"),
+            Some(AccountKey("Api1".to_owned())),
+            "the slot refresh rotated the fresh worker into the fallback pool",
         );
     }
 

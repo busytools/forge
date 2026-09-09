@@ -135,13 +135,25 @@ impl AssignmentPlan {
     }
 
     /// Re-home one `(project, label)` assignment - the resume
-    /// re-tier's frozen-overlay extend. Other entries unmoved.
+    /// re-tier's frozen-overlay extend: the row moves to `account`
+    /// while the project's slot bookkeeping swaps to the re-tiered
+    /// pool (the adhoc counter never regresses). Other rows unmoved.
     pub(crate) fn retier_assignment(
         &mut self,
         project: &ProjectKey,
         label: &str,
         account: AccountKey,
+        pool: Vec<AccountKey>,
+        offset: usize,
+        degraded: bool,
+        fallback: bool,
     ) {
+        if let Some(slot) = self.slots.get_mut(project) {
+            slot.pool = pool;
+            slot.offset = offset;
+            slot.degraded = degraded;
+            slot.fallback = fallback;
+        }
         self.assignments.insert((project.clone(), label.to_owned()), account);
     }
 
