@@ -858,7 +858,7 @@ fn worker_lifecycle(
 /// can unconditionally extend.
 ///
 /// Chip text is `[<account>]`; color tracks the underlying
-/// `SessionChipState`: `Normal` = DIM, `AtCap` =
+/// `SessionChipState`: `Normal` = DIM, `AtCap` / `Degraded` =
 /// STATUS_WARNING, `Bailed` = STATUS_ERROR with a `⚠ ` prefix. The
 /// account name truncates to fit within `CHIP_MAX_WIDTH - 2`
 /// brackets minus the prefix.
@@ -869,7 +869,9 @@ fn account_chip_spans(chip: Option<&SessionChipInfo>) -> (Vec<Span<'static>>, us
     };
     let (style, prefix) = match chip.state {
         SessionChipState::Normal => (Style::default().fg(theme::DIM), ""),
-        SessionChipState::AtCap => (Style::default().fg(theme::STATUS_WARNING), ""),
+        SessionChipState::AtCap | SessionChipState::Degraded => {
+            (Style::default().fg(theme::STATUS_WARNING), "")
+        }
         SessionChipState::Bailed => (Style::default().fg(theme::STATUS_ERROR), "\u{26a0} "),
     };
     let name_budget = CHIP_MAX_WIDTH.saturating_sub(2).saturating_sub(prefix.chars().count());

@@ -129,7 +129,8 @@ pub struct SessionChipInfo {
 }
 
 /// Visual category for a session chip. The renderer maps these to
-/// foreground colors + (for `Bailed`) a leading `⚠ ` glyph.
+/// foreground colors + (for `Bailed` / `Degraded`) a leading `⚠ `
+/// glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionChipState {
     /// Account is Ready and within budget. DIM foreground.
@@ -140,10 +141,14 @@ pub enum SessionChipState {
     /// every account is capped the plan is forced to assign one
     /// anyway, so every session's chip shows this state.
     AtCap,
-    /// Account flipped to Bailed. Red foreground + `⚠ ` prefix.
-    /// The session's spawn would fall through to round-robin until
-    /// the 60 s usage poller flips the account back to Ready.
+    /// Account Bailed on an auth failure (rejected or expired
+    /// credentials). Red foreground + `⚠ ` prefix; the repair is an
+    /// env edit plus a restart.
     Bailed,
+    /// Account Bailed on a transient failure (rate limit, unreachable
+    /// endpoint, malformed response). Warning yellow + `⚠ ` prefix -
+    /// the same split the account rows render; the pollers heal it.
+    Degraded,
 }
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
@@ -1805,8 +1810,11 @@ impl Workspace {
     /// known, or the label has no assignment.
     ///
     /// State derivation:
-    /// - `LoadingState::Bailed` -> `SessionChipState::Bailed`
-    ///   (renderer renders red with a `⚠ ` prefix).
+    /// - `LoadingState::Bailed` splits by the recorded failure class,
+    ///   the same split the account rows render: auth failures
+    ///   (`Unauthorized` / `Expired`) -> `SessionChipState::Bailed`
+    ///   (red with a `⚠ ` prefix); transient classes and an unrecorded
+    ///   bail -> `Degraded` (warning yellow, the pollers heal it).
     /// - `Ready` + any usage window at the cap (the same
     ///   `is_saturated` signal the assignment plan uses to avoid an
     ///   account) -> `AtCap` (yellow; the session still spawns but
@@ -1826,10 +1834,16 @@ impl Workspace {
         let accounts = self.accounts.lock();
         let loading = accounts.loading_state(&account_key);
         let saturated = accounts.is_saturated(&account_key);
+        let last_error = accounts.usage_error(&account_key);
         drop(accounts);
 
         let state = match loading {
-            crate::account::LoadingState::Bailed => SessionChipState::Bailed,
+            crate::account::LoadingState::Bailed => match last_error {
+                Some(account::UsageFetchStatus::Unauthorized | account::UsageFetchStatus::Expired) => {
+                    SessionChipState::Bailed
+                }
+                _ => SessionChipState::Degraded,
+            },
             crate::account::LoadingState::Ready if saturated => SessionChipState::AtCap,
             _ => SessionChipState::Normal,
         };
@@ -13630,7 +13644,50 @@ provider = "anthropic"
             accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
         }
         workspace.recompute_plan_if_ready();
-        // Now flip to Bailed.
+        // Now flip to Bailed on an auth failure - the red class.
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_loading(
+                &AccountKey("Stargate".to_owned()),
+                crate::account::LoadingState::Bailed,
+            );
+            accounts.set_last_error(
+                &AccountKey("Stargate".to_owned()),
+                crate::account::UsageFetchStatus::Unauthorized,
+                None,
+            );
+        }
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        assert_eq!(chip.state, SessionChipState::Bailed);
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_degraded_branch() {
+        // A Bailed account with no auth class recorded - the
+        // shape-drift settle, or a rate limit - is the warning-yellow
+        // Degraded chip, the same split the account rows render.
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+                spend: None,
+                balance: None,
+            };
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
         workspace
             .account_states()
             .lock()
@@ -13640,7 +13697,7 @@ provider = "anthropic"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
-        assert_eq!(chip.state, SessionChipState::Bailed);
+        assert_eq!(chip.state, SessionChipState::Degraded);
     }
 }
 
