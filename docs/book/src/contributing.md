@@ -16,6 +16,13 @@ denied, `cargo nextest run --workspace --all-features`, and
 `cargo doc`. CI's set minus its `cargo check --release` job. Green
 before you open a pull request.
 
+## The book's own gate
+
+`docs/book/ui-word-count.sh` holds every `docs/book/src/ui/` page under
+600 words of prose outside mockups and collapsed blocks (`--strict`
+also counts the landing page's card text). Run it after editing a
+surface page.
+
 ## The rules that bite first
 
 - **Clippy runs at `pedantic`, denied.** `unwrap`, `expect`, `panic`,
