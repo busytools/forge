@@ -163,10 +163,9 @@ config directory: a sync tool that replaces the file
 by rename would swap the lock out from under a running process on
 another machine.
 
-## The UI surface map
+## The UI surface pages
 
-[`docs/forge-map.html`](https://github.com/busytools/forge/blob/main/docs/forge-map.html)
-is the visual reference for every surface `forge-tui` can currently
-render, with mockups, glyph tables and colour tables. It is scoped to
-current state only. Open it in a browser rather than reading the
-source; it is a single self-contained page.
+The [UI surface pages](./ui/workspace.md) under `ui/` in this book are
+the visual reference for every surface `forge-tui` can currently
+render, with mockups, glyph tables and colour tables. They are scoped
+to current state only.

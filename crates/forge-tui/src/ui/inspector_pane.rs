@@ -4867,7 +4867,7 @@ mod tests {
             assert!(row(2).contains("Alerts"), "w={width}: the first subscription follows it");
 
             // Medium is the tightest pane the header has to survive, so
-            // pin both literal layouts - these are what the forge-map
+            // pin both literal layouts - these are what the book's UI-page
             // mockups reproduce. Spelt out rather than recomputed from the
             // production formula, which would assert nothing.
             if width == 24 {

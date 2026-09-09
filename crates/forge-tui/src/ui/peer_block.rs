@@ -25,7 +25,7 @@
 //! fresh; results aren't cached (text is small, render frames don't
 //! call this hot enough to need a cache).
 //!
-//! Visual reference: `docs/forge-map.html#peer-block`.
+//! Visual reference: `docs/book/src/ui/peers.md`.
 
 use crate::app::ToolCallInfo;
 use crate::ui::chat_tree;

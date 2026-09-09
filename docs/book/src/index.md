@@ -6,9 +6,9 @@ two things sharing a repository:
 - **A multi-session terminal UI.** One `forge` process holds many
   `claude` sessions across several projects and several accounts, with
   a launchpad, per-session chat, a projects pane and an inspector. The
-  full set of surfaces it can render is catalogued in
-  [`docs/forge-map.html`](https://github.com/busytools/forge/blob/main/docs/forge-map.html),
-  which is kept in step with the code.
+  full set of surfaces it can render is catalogued in the
+  [UI surface pages](./ui/workspace.md), which are kept in step with
+  the code.
 - **An SDK for the `claude` CLI.** `forge-sdk` spawns the binary and
   speaks its stream-json protocol over stdio: the codec, the transport,
   control-request dispatch, and an in-process MCP host.
