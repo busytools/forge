@@ -1839,9 +1839,9 @@ impl Workspace {
 
         let state = match loading {
             crate::account::LoadingState::Bailed => match last_error {
-                Some(account::UsageFetchStatus::Unauthorized | account::UsageFetchStatus::Expired) => {
-                    SessionChipState::Bailed
-                }
+                Some(
+                    account::UsageFetchStatus::Unauthorized | account::UsageFetchStatus::Expired,
+                ) => SessionChipState::Bailed,
                 _ => SessionChipState::Degraded,
             },
             crate::account::LoadingState::Ready if saturated => SessionChipState::AtCap,
@@ -2453,7 +2453,11 @@ impl Workspace {
     /// assignments keep their accounts, only new sessions pick it up.
     /// Without the recompute a healed account stays out of every pool
     /// until restart.
-    pub(crate) fn record_usage_success(&self, key: &AccountKey, snapshot: forge_primitives::usage::UsageSnapshot) {
+    pub(crate) fn record_usage_success(
+        &self,
+        key: &AccountKey,
+        snapshot: forge_primitives::usage::UsageSnapshot,
+    ) {
         use crate::account::LoadingState;
         let healed = {
             let mut accounts = self.accounts.lock();
@@ -13139,10 +13143,8 @@ provider = "anthropic"
         {
             let mut accounts = workspace.account_states().lock();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), snapshot.clone());
-            accounts.set_loading(
-                &AccountKey("Beta".to_owned()),
-                crate::account::LoadingState::Bailed,
-            );
+            accounts
+                .set_loading(&AccountKey("Beta".to_owned()), crate::account::LoadingState::Bailed);
         }
         workspace.recompute_plan_if_ready();
         let project_key =

@@ -2042,8 +2042,11 @@ mod tests {
         );
         map.set_loading(&k, LoadingState::Bailed);
         assert!(!map.scheduler_should_probe(&k), "an active hold-down gates the re-probe");
-        map.by_key.get_mut(&k).unwrap().next_probe_at =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        map.by_key.get_mut(&k).unwrap().next_probe_at = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .expect("test clock is not at the Instant floor"),
+        );
         assert!(
             map.scheduler_should_probe(&k),
             "an expired hold-down re-opens the probe even though the account is terminal",

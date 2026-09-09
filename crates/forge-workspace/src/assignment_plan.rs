@@ -658,10 +658,7 @@ mod tests {
         let projects = vec![project("p", &["a", "b"])];
         let plan = compute_plan(&ready, &degraded, &saturated, &projects);
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
-        assert!(
-            !plan.slot_degraded(&pk("p")),
-            "a saturated-Ready pool is not the degraded tier",
-        );
+        assert!(!plan.slot_degraded(&pk("p")), "a saturated-Ready pool is not the degraded tier");
     }
 
     #[test]
@@ -675,10 +672,6 @@ mod tests {
         let mut plan = compute_plan(&[], &degraded, &[], &projects);
         assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
         let worker = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true);
-        assert_eq!(
-            worker,
-            Some(ak("a")),
-            "the pool holds only the allow-listed degraded account",
-        );
+        assert_eq!(worker, Some(ak("a")), "the pool holds only the allow-listed degraded account");
     }
 }

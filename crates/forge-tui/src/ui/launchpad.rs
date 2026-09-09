@@ -473,10 +473,9 @@ fn failure_reason(row: &forge_workspace::AccountLoadingRow) -> Option<String> {
         Some(forge_workspace::UsageFetchStatus::Unauthorized) => Some("unauthorized".to_owned()),
         Some(forge_workspace::UsageFetchStatus::Expired) => Some("expired".to_owned()),
         Some(forge_workspace::UsageFetchStatus::NetworkFailed) => Some("unreachable".to_owned()),
-        Some(forge_workspace::UsageFetchStatus::Other) => Some("fetch error".to_owned()),
-        // The 200-shape-drift settle records nothing; the bare yellow
-        // glyph would read as a render bug rather than a verdict.
-        None => Some("fetch error".to_owned()),
+        // The 200-shape-drift settle records no class - an endpoint
+        // answering badly, same family as `Other`.
+        Some(forge_workspace::UsageFetchStatus::Other) | None => Some("fetch error".to_owned()),
     }
 }
 
@@ -1435,10 +1434,7 @@ mod tests {
         };
         let line = centered_account_status_line(std::slice::from_ref(&row), 80);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            !text.contains(" - "),
-            "a Ready chip carries no failure reason; got {text:?}",
-        );
+        assert!(!text.contains(" - "), "a Ready chip carries no failure reason; got {text:?}");
     }
 
     /// The geometry claim: a worker row's chip opens at the same column
