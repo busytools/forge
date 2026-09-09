@@ -1,6 +1,6 @@
 # Launchpad - project picker
 
-The floor of the UI, the second of the launchpad's two views - [preflight](./preflight.md) hands over once everything has resolved. Full-frame when forge starts without a project argument and for every later `/launchpad`; both side panes hide. <kbd>Esc</kbd> is a no-op; <kbd>Ctrl+Q</kbd> quits. Boot is argv-only: `forge` → preflight → this picker, `forge <project>` → preflight → that project's chat. No remember-last persistence.
+The floor of the UI, the second of the launchpad's two views - [preflight](./preflight.md) hands over once everything has resolved. Full-frame when forge starts without a project argument and for every later `/launchpad`. <kbd>Esc</kbd> is a no-op; <kbd>Ctrl+Q</kbd> quits. Boot is argv-only: `forge` → preflight → this picker, `forge <project>` → preflight → that project's chat. No remember-last persistence.
 
 ## Launchpad full-screen layout
 
@@ -48,7 +48,7 @@ The identity block (wordmark + version + optional chip row) and the picker ride 
 | <kbd>Ctrl+Q</kbd> | Quit (≡ `/quit`) |
 | <kbd>Cmd+Left</kbd> <kbd>Cmd+Right</kbd> (<kbd>Ctrl+</kbd> off macOS) | Swallowed (no panes to toggle) |
 
-Enter follows the selected row's lifecycle, the footer hint labeling it: Idle / Running / Attention / AuthRequired / LoggedOut → `enter  open`, switching to the session; Sleeping → `enter  start`, spawning and staying here until the row reaches Idle (avoiding the chat's Connecting stub); Spawning → `enter  ⏳ spawning…`, a no-op; Failed → Enter is a no-op, <kbd>r</kbd> retries.
+Enter follows the selected row's lifecycle, the footer hint labeling it: Idle / Running / Attention / AuthRequired / LoggedOut → `enter  open`, switching to the session; Sleeping → `enter  start`, spawning and staying here until the row reaches Idle (avoiding the chat's Connecting stub); Spawning → `enter  ⏳ spawning…`, a no-op; Failed → Enter is a no-op, <kbd>r</kbd> retries (drops the failed bucket and dispatches a fresh spawn).
 
 No input area, so slash commands are keys: `/help` ≡ <kbd>?</kbd>, `/quit` ≡ <kbd>Ctrl+Q</kbd>; `/config` and `/plugins` need a picked project first.
 
@@ -57,7 +57,7 @@ No input area, so slash commands are keys: `/help` ≡ <kbd>?</kbd>, `/quit` ≡
 
 - The wordmark is a 43x6 ANSI Shadow figlet in rust orange bold; version lines, org headers, tree connectors, footer hint, account hints and pending glyphs (`○`) are dim; the idle `●` and the running / spawning spinner are rust orange; a failed `✗` is error red; the update indicator (`↑ vX.Y.Z available`) is rust orange; the scrollbar (overflow only) is a rust-orange thumb over a dim track in a 1-col gutter at the box's right edge.
 - `[ui] spinner` (one of `braille` / `phase_of_moon` / `ember` / `bars_v` / `star` / `sparkle`, default `braille`) is the active spinner style for every animated surface; `/spinner` overrides it live and persists to the machine-local store (see [the /spinner picker](./pickers.md)). `[ui] fps` (30-240, default 120) is how often the loop repaints while a spinner animates; the gate never goes coarser than 30 ms, out-of-range values clamp with a warning without stopping boot, and a reduced-motion preference keeps its own fixed cadence. No frame rate makes a spinner spin faster than its style asks.
-- The terminal tab title tracks activity, not the turn: it pulses whenever anything is happening - a turn, a compaction, live background work in any session, a model download - and goes idle otherwise, deliberately diverging from the chat when a turn ends with backgrounded work still running. Its pulse runs on its own fixed 30 ms step, not on `fps`.
+- The terminal tab title tracks activity, not the turn: it pulses whenever anything is happening - a turn, a compaction, live background work in any session, a model download - and goes idle otherwise, deliberately diverging from the chat when a turn ends with backgrounded work still running. Its pulse runs on its own fixed 30 ms step, not on `fps` - two glyphs alternating every ten steps; driven at 120 fps it blinks at 12 Hz.
 
 </details>
 
