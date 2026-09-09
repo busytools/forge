@@ -1892,7 +1892,14 @@ impl Workspace {
         // shape is a fresh spawn whose plan row is the tier walk's own
         // output.
         let is_resume = spawn_key.is_some_and(|k| k.as_str().starts_with("__resume_"));
-        let account_key = if is_resume {
+        // A worker-resume key resolving to the lead label means the
+        // registry lost the worker and the lookup degraded - re-tiering
+        // would rewrite the LEAD's row, so the spawn keeps the recorded
+        // lookup instead.
+        let degraded_worker_resume = spawn_key
+            .is_some_and(|k| k.as_str().starts_with("__resume_worker_"))
+            && label == "lead";
+        let account_key = if is_resume && !degraded_worker_resume {
             self.retier_on_resume(&project_key, &label)?
         } else {
             let plan_guard = self.assignment_plan.lock();
@@ -13410,6 +13417,61 @@ provider = "anthropic"
         assert_eq!(w1, AccountKey("Api2".to_owned()), "first resume takes the next counter slot");
         assert_eq!(w2, AccountKey("Api1".to_owned()), "second resume rotates past it");
         assert_ne!(w1, w2, "separately-resumed workers never collapse onto one account");
+    }
+
+    /// A worker-resume spawn key whose worker the registry has lost
+    /// (a dead worker resurrecting through a stale catalog row)
+    /// degrades plan_lookup_keys to the "lead" label. The re-tier must
+    /// refuse to write in that shape: the spawn keeps the recorded
+    /// lookup and the LEAD's plan row stays untouched.
+    #[tokio::test]
+    async fn a_worker_resume_resolved_to_lead_never_rewrites_the_lead_row() {
+        let dir = make_workspace_dir_primary_and_fallback();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Api".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+
+        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
+        );
+        // A dead worker's catalog row: the session id answers under the
+        // project's cwd, but no live WorkerEntry carries it.
+        workspace.record_connected_session(&project_path, "dead-worker-uuid", None);
+
+        // The primary saturates; a live lead resume WOULD re-tier here.
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
+        }
+
+        let worker_target = SessionTarget::Session(SessionKey::from_session_id("dead-worker-uuid"));
+        let worker_spawn_key =
+            SessionKey::from_session_id("__resume_worker_forge_x_dead-worker-uuid__".to_owned());
+        let assigned = workspace
+            .plan_assignment(&worker_target, Some(&worker_spawn_key))
+            .expect("the degraded resolution still answers");
+        assert_eq!(
+            assigned,
+            (AccountKey("Sub".to_owned()), std::path::PathBuf::from("/tmp/forge-test/claude-sub")),
+            "the spawn keeps the recorded lead lookup",
+        );
+        let lead_row = workspace
+            .assignment_plan
+            .lock()
+            .as_ref()
+            .expect("plan")
+            .lookup(&project_key, &"lead".to_owned())
+            .cloned();
+        assert_eq!(
+            lead_row,
+            Some(AccountKey("Sub".to_owned())),
+            "the lead's plan row was not rewritten by a worker's resume",
+        );
     }
 
     /// An experimental account defined FIRST (Exp), a regular account
