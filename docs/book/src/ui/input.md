@@ -4,7 +4,7 @@
 
 *visible: in `ActiveView::Chat` (hidden when a full-frame view is active). Height grows from 1 row up to `MAX_INPUT_HEIGHT = 50` as the user types.*
 
-Backed by `tui-textarea` for cursor / selection / paste-burst handling. The box is a `BorderType::Thick` `Borders::ALL` block drawn by `input.rs` in RUST_ORANGE bold - no separate separator rows. Height grows from 1 row up to `MAX_INPUT_HEIGHT = 50` as the user types or pastes multi-line content. Prompt char is `➤` (`theme::PROMPT_CHAR`, U+27A4) in RUST_ORANGE. Placeholder text is in DIM italic. Slash commands typed in the input are coloured `SLASH_COMMAND` (light magenta) by `input.rs`.
+Backed by `tui-textarea` for cursor / selection / paste-burst handling. The box is a `BorderType::Thick` `Borders::ALL` block drawn by `input.rs` in RUST_ORANGE bold - no separate separator rows. Prompt char is `➤` (`theme::PROMPT_CHAR`, U+27A4) in RUST_ORANGE. Placeholder text is in DIM italic. Slash commands typed in the input are coloured `SLASH_COMMAND` (light magenta) by `input.rs`.
 
 Above the input there's a **hint slot** that grows the input region's height to accommodate. Possible hint rows (each takes 1+ lines):
 
@@ -38,7 +38,7 @@ When `app.status == AppStatus::Connecting`, the entire input area is replaced wi
 
 ### Dictation status row
 
-With `[dictate] enabled` and the models loaded (one `SessionUpdate::DictateAvailability` after preflight), a take lives entirely inside the composer's interior. Idle reserves nothing: the box is exactly as tall as the draft, and the old design's top-border meter cells are gone. When a recording starts the interior grows one row - the status row, the same slot the notice row uses, so the two never coexist (a stamped notice keeps the slot and the status row stands down). When the take resolves the row collapses and the box shrinks back. Level readings arrive as `DictateLevel` events every 50 ms, each the peak over the window since the previous one off the take-and-reset `CaptureMeter::level`. A long take is cut into segments at measured pause boundaries, and each segment transcribes while the microphone is still recording - the row shows those words as a settled count long before the speaker stops.
+With `[dictate] enabled` and the models loaded (one `SessionUpdate::DictateAvailability` after preflight), a take lives entirely inside the composer's interior. Idle reserves nothing: the box is exactly as tall as the draft. When a recording starts the interior grows one row - the status row, the same slot the notice row uses, so the two never coexist (a stamped notice keeps the slot and the status row stands down). When the take resolves the row collapses and the box shrinks back. Level readings arrive as `DictateLevel` events every 50 ms, each the peak over the window since the previous one off the take-and-reset `CaptureMeter::level`. A long take is cut into segments at measured pause boundaries, and each segment transcribes while the microphone is still recording - the row shows those words as a settled count long before the speaker stops.
 
 <div class="term">
 
@@ -50,7 +50,7 @@ With `[dictate] enabled` and the models loaded (one `SessionUpdate::DictateAvail
 
 </div>
 
-The row's anatomy is identical across both live states - indicator dot, `m:ss` timer, the live dB figure, label, meter, right-aligned esc hint - and only colour and freeze change on the handoff. While recording: an orange dot `●` pulsing on a 1.05 s cycle (held steady under reduced motion), an orange timer live off the take's own start stamp, a DIM `listening` label that grows a settled-segment count (`listening · 2 ready`) as `DictateProgress` steps arrive from the pipelined segments, and a 26-cell meter. The meter is normalized display-side, in `forge-tui`: the raw peak feed runs through an envelope in the dB domain (attack 0.6, release 0.25 per 50 ms tick - fast up, slower down), then scales against the envelope's own recent dynamic range - a max follower that grabs a peak and forgets it slowly, a min follower that catches valleys and climbs slowly back off them - so the ramp shows speech shape whatever the mic's AGC does to the overall level. The span never drops under 8 dB and carries 2 dB of headroom, so a fresh peak maps just under full scale; the feed is gated at the take's own silence floor, then softened with a 0.9 gamma onto the block ramp `▁▂▃▄▅▆▇█`. Cells at or under the gate draw the floor glyph in DIM - so a bar that never leaves the floor is the same structural silence `Outcome::NoAudio` reports - and everything above grades dim through orange toward the hot tint rgb(255,176,88) by value. The composer border rides along: its colour eases (0.12 per 50 ms tick, time-scaled, no extra clock) toward the hot tint in proportion to the current level, never more than 35% of the way.
+The row's anatomy is identical across both live states - indicator dot, `m:ss` timer, the live dB figure, label, meter, right-aligned esc hint - and only colour and freeze change on the handoff. While recording: an orange dot `●` pulsing on a 1.05 s cycle (held steady under reduced motion), an orange timer live off the take's own start stamp, a DIM `listening` label that grows a settled-segment count (`listening · 2 ready`) as `DictateProgress` steps arrive from the pipelined segments, and a 26-cell meter. The meter is normalized display-side, in `forge-tui`: the raw peak feed runs through an envelope in the dB domain (attack 0.6, release 0.25 per 50 ms tick - fast up, slower down), then scales against the envelope's own recent dynamic range - a max follower that grabs a peak and forgets it slowly, a min follower that catches valleys and climbs slowly back off them. The span never drops under 8 dB and carries 2 dB of headroom; the feed is gated at the take's own silence floor, then softened with a 0.9 gamma onto the block ramp `▁▂▃▄▅▆▇█`. Cells at or under the gate draw the floor glyph in DIM - so a bar that never leaves the floor is the same structural silence `Outcome::NoAudio` reports - and everything above grades dim through orange toward the hot tint rgb(255,176,88) by value. The composer border rides along: its colour eases (0.12 per 50 ms tick, time-scaled, no extra clock) toward the hot tint in proportion to the current level, never more than 35% of the way.
 
 Between the timer and the label rides the live dB figure, such as `-18 dB`: its text is the held reading refreshed at 5 Hz whatever the frame rate, and its colour follows the current level - DIM while the feed sits at or under the gate, grading through orange toward the hot tint above it. The figure lives entirely in the status row, so the draft is never painted over and the caret stays the normal blinking block in every state, recording included. While transcribing the figure holds its last reading, DIM alongside the frozen meter.
 
@@ -64,7 +64,7 @@ Between the timer and the label rides the live dB figure, such as `-18 dB`: its 
 
 </div>
 
-The row renders the moment the phase flips, however brief the transcription - warm takes (roughly 115 ms for a 5-second clip) are visible too. The transcribing row keeps the same anatomy: a blue pulsing dot `◌` rgb(97,160,224), the timer frozen at the take's length and DIM, a DIM `transcribing` label, and the meter frozen at its last recording frame - no new animation appears out of nowhere; the cells only change colour, tinting dim toward blue. The border eases toward the same blue the moment the handoff lands. Pipelined segments have been settling since recording began; the stop makes the total known and the label tallies the remainder as `DictateProgress` steps arrive - `transcribing 2/6` counts segments settled against the final total, so only the tail is usually left. The row collapses the moment the take resolves; single-segment takes, the overwhelming case, never show a tally.
+The row renders the moment the phase flips, however brief the transcription - warm takes (roughly 115 ms for a 5-second clip) are visible too. The transcribing row keeps the same anatomy: a blue pulsing dot `◌` rgb(97,160,224), the timer frozen at the take's length and DIM, a DIM `transcribing` label, and the meter frozen at its last recording frame - the cells only change colour, tinting dim toward blue. The border eases toward the same blue the moment the handoff lands. Pipelined segments have been settling since recording began; the stop makes the total known and the label tallies the remainder as `DictateProgress` steps arrive - `transcribing 2/6` counts segments settled against the final total. The row collapses the moment the take resolves; single-segment takes never show a tally.
 
 **Done.** No landed row and no landed label. The row collapses, the text pastes at the caret, and the border takes one green beat rgb(130,199,107) for roughly 450 ms before easing back to the composer's normal orange; once the ease settles the border state is dropped entirely, so idle rendering is untouched by any of this.
 
@@ -93,7 +93,7 @@ The row renders the moment the phase flips, however brief the transcription - wa
 
 </div>
 
-Notices: a quiet room carries its own measured peak and offers a retry (DIM); every sample exactly zero is structural and sticky, so no retry is offered (red); a take that normalised to nothing says so (DIM); a truncated take lands its words plus a keep-going note (yellow); recognition failures are one grouped notice (DIM); a busy microphone names the holder, and a device that would not open is refused before recording starts (both red). Landed text inserts at the caret through the editor's own insertion path - never the paste dispatcher, so long takes are never collapsed to a placeholder - and a copy lands on the system clipboard alongside, so the words survive whatever happens to the draft. The take is bound to the session that started it: results route by session key, so switching tabs mid-transcription never moves the words to another composer. <kbd>Esc</kbd> discards a recording; while transcribing it abandons the ticket and only falls through to turn-cancellation when nothing is in flight.
+Notices: a quiet room carries its own measured peak and offers a retry (DIM); every sample exactly zero is structural and sticky, so no retry is offered (red); a take that normalised to nothing says so (DIM); a truncated take lands its words plus a keep-going note (yellow); recognition failures are one grouped notice (DIM); a busy microphone names the holder, and a device that would not open is refused before recording starts (both red). Landed text inserts at the caret through the editor's own insertion path - never the paste dispatcher, so long takes are never collapsed to a placeholder - and a copy lands on the system clipboard alongside. The take is bound to the session that started it: results route by session key, so switching tabs mid-transcription never moves the words to another composer. <kbd>Esc</kbd> discards a recording; while transcribing it abandons the ticket and only falls through to turn-cancellation when nothing is in flight.
 
 - **code** - `crates/forge-tui/src/ui/input.rs::render` · meter, status row and border state in `crates/forge-tui/src/app/dictate.rs` · recording lifecycle in `crates/forge-workspace/src/dictate.rs`
 - **exits** - <kbd>Esc</kbd> discards a recording and abandons a transcription in flight; it cancels a turn only when no take is live. A recording starts from the [push-to-talk key](./pickers.md).
@@ -148,7 +148,7 @@ Unlike `/`, `@` and `&`, this picker is **not chat-only**: it hangs off `App::fo
 
 - **code** - `crates/forge-tui/src/app/emoji.rs` (table, trigger detection, ranking, token replacement) · rows shared by both surfaces via `ui/autocomplete.rs::emoji_dropdown_lines` · /diff popup placement in `ui/diff_overlay.rs::render_emoji_dropdown`
 - **trigger rule** - The `:` counts only at the start of a line or directly after whitespace, and the query must be `[a-z0-9_+-]` - so `http://`, `10:30`, `note:todo` and `Foo::bar` never open a picker. Same rule `@` uses.
-- **emoji data** - A curated static table of ~200 GitHub / Slack shortcodes, sorted by name (a test enforces the ordering and rejects duplicates). Deliberately not the full Unicode set: the long tail is never scrolled to in a typeahead, and a crate carrying every sequence plus metadata is several hundred KB of generated tables for a cosmetic feature.
+- **emoji data** - A curated static table of ~200 GitHub / Slack shortcodes, sorted by name (a test enforces the ordering and rejects duplicates). Deliberately not the full Unicode set.
 - **ranking** - Exact match, then prefix matches, then substring matches; ties alphabetical.
 
 # Unified prompt (permission · plan · question)
@@ -201,7 +201,7 @@ The tool block above keeps its normal in-progress render (no inline expansion). 
 
 </div>
 
-**AskUserQuestion** - multi-select with notes-option toggled. Question header gets a `?` in RUST_ORANGE, the question body is white below it, options use checkbox markers (`[x]` / `[ ]`) before the icon; toggling the `... Tell Claude something else` entry expands an inline notes editor. The Notes row's `[x]` is display-only - it tracks the live notes buffer (so the user sees confirmation the typed content will be included on submit) AND the wire `annotation.notes` field carries the typed text independently of `selected_option_indices`:
+**AskUserQuestion** - multi-select with notes-option toggled. Question header gets a `?` in RUST_ORANGE, the question body is white below it, options use checkbox markers (`[x]` / `[ ]`) before the icon; toggling the `... Tell Claude something else` entry expands an inline notes editor. The Notes row's `[x]` is display-only - it tracks the live notes buffer AND the wire `annotation.notes` field carries the typed text independently of `selected_option_indices`:
 
 <div class="term">
 
@@ -222,9 +222,9 @@ The tool block above keeps its normal in-progress render (no inline expansion). 
 
 </div>
 
-**The dictate blip on the dock.** While a take is live, the pulsing circle blip - ● orange while recording, blue while transcribing, gone when the text lands - leads the dock's footer hint row, a fixed chrome spot visible whichever option holds the focus, so dictation is startable and stoppable with the dock up. The blip is the whole indicator on this surface: no timer, no dB figure, no meter. The first <kbd>Esc</kbd> with a take live abandons the take and the dock stands; the next one rejects it. Dictated words land in the notes draft (the chat composer's buffer) either way.
+**The dictate blip on the dock.** While a take is live, the pulsing circle blip - ● orange while recording, blue while transcribing, gone when the text lands - leads the dock's footer hint row, a fixed chrome spot visible whichever option holds the focus. The blip is the whole indicator on this surface: no timer, no dB figure, no meter. The first <kbd>Esc</kbd> with a take live abandons the take and the dock stands; the next one rejects it. Dictated words land in the notes draft (the chat composer's buffer) either way.
 
-**Queue indicator** - when the queue depth is > 1 (e.g. a background session's prompt is queued behind the active prompt), a dim line at the top of the dock body shows the count:
+**Queue indicator** - when the queue depth is > 1 (e.g. a background session's prompt is queued behind the active prompt):
 
 <div class="term">
 
@@ -253,7 +253,7 @@ The tool block above keeps its normal in-progress render (no inline expansion). 
 
 ### Where options come from
 
-Options are derived from the CLI's `permission_suggestions` field (one of the wire fields forge had been ignoring pre-redesign). Three \`PermissionUpdate\` variants drive the contextual options:
+Options are derived from the CLI's `permission_suggestions` field. Three \`PermissionUpdate\` variants drive the contextual options:
 
 - `addRules` (Read outside workspace) → "Allow always for {tool} · paths matching {pattern}". macOS `/tmp` + `/private/tmp` mirror entries are deduped for display but both rule entries are kept on the wire so the CLI installs both.
 - `addDirectories` (Write / Edit outside workspace) → "Allow always & add {dirs} to allowed dirs".
