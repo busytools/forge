@@ -254,25 +254,27 @@ inspected.
 10. **Generated planning docs stay out of the repo.** Design notes an
     agent produced for one piece of work are not documentation; add the
     path to `.git/info/exclude` rather than committing it.
-11. **`docs/forge-map.html` is visual truth.** It is the source of truth
-    for every UI surface forge-tui can currently render. Scope is
+11. **`docs/book/src/ui/` is visual truth.** The book's UI surface
+    pages (the "UI surfaces" part in `SUMMARY.md`) are the source of
+    truth for every UI surface forge-tui can currently render. Scope is
     **current state only** - no future ideas, no aspirational sketches.
     Anything new arrives in the same PR that lands the code.
 
     **The workflow for a UI change**, and the recommended path for any
     session that starts with one:
 
-    1. Read `docs/forge-map.html` first to confirm what is currently
-       implemented and where it lives.
-    2. Sketch the change in HTML - update the relevant section's
+    1. Read the relevant `docs/book/src/ui/` page first to confirm
+       what is currently implemented and where it lives.
+    2. Sketch the change in the page - update the relevant surface's
        mockup, prose, and any glyph or colour table entries.
     3. Apply the same change in the ratatui code.
-    4. Open the HTML in a browser and check it still matches the code.
-    5. Push both files together, code + HTML in one PR.
+    4. `mdbook serve docs/book` and check the page still matches the
+       code.
+    5. Push them together, code + page in one PR.
 
-    The HTML-first step forces a clear visual target before code edits
-    begin, and it keeps the doc honest. When in doubt about whether the
-    doc reflects reality, re-read the implementation and reconcile.
+    The page-first step forces a clear visual target before code edits
+    begin, and it keeps the doc honest. When in doubt about whether a
+    page reflects reality, re-read the implementation and reconcile.
 12. **Diagnostics are self-serve.** The artifacts are the perf log and
     tracing log under forge's app-support `logs/` dir, plus the JSONL
     session captures. Telemetry that needs a user to opt in is a forge
@@ -393,9 +395,9 @@ inspected.
     guarded unevenly, so grep for an assertion rather than assuming
     either way.
 18. **The published documentation is a separate obligation from the
-    map, with a different audience.** Rule 11 owns
-    `docs/forge-map.html`, the maintainer's visual record. This rule
-    covers `docs/book/`, the site users read at
+    UI surface pages, with a different audience.** Rule 11 owns the
+    book's `ui/` pages, the maintainer's visual record. This rule
+    covers the rest of `docs/book/`, the site users read at
     https://busytools.github.io/forge/.
 
     **The publish is automatic and the content is not.**
@@ -420,8 +422,9 @@ inspected.
       caveats.
     - `architecture.md` - crate count, layering diagram, crate table,
       placement guide, the TUI-to-workspace contract, the MCP tool
-      groups, the single-instance guard, the pointer to the surface
-      map. Its content is mirrored in `README.md` and this file.
+      groups, the single-instance guard, the pointer to the UI
+      surface pages. Its content is mirrored in `README.md` and this
+      file.
     - `wire-contract.md` - capture and replay modes, baseline layout.
     - `contributing.md` - the short-version house rules: `just check`'s
       composition, the denied lints, the gates. A changed recipe, lint
@@ -445,9 +448,10 @@ inspected.
     **Most changes owe the book nothing, and a rule read as owing
     something every time produces noise forever.** #744 is the clean
     example: a user-visible change to whether a question answers on the
-    first Enter, which did owe `docs/forge-map.html` and correctly
-    touched no book page, because no page describes per-key prompt
-    behaviour. User-visible is not the test; a page reading false is.
+    first Enter, which owed the visual-truth surface - then the
+    separate `docs/forge-map.html`; today the unified-prompt section of
+    `ui/input.md` - and touched no other book page. User-visible is not
+    the test; a page reading false is.
 
     #751 is the other shape, and it is not clean. Adding the seventh
     crate falsified `architecture.md`'s crate count, layering diagram,

@@ -14,3 +14,4 @@ create-missing = false
 git-repository-url = "https://github.com/busytools/forge"
 edit-url-template = "https://github.com/busytools/forge/edit/main/docs/book/{path}"
 default-theme = "rust"
+additional-css = ["src/mockup.css"]

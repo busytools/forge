@@ -391,7 +391,7 @@ pub struct SubagentEntry {
 
 /// Maximum children kept in the live tail before rolling into the
 /// `+N more` overflow on the terminal-summary line. Picked to match
-/// the SUBAGENTS mockup in `docs/forge-map.html`.
+/// the SUBAGENTS mockup in `docs/book/src/ui/inspector-processes.md`.
 pub const SUBAGENT_TAIL_CAP: usize = 4;
 
 /// A single Workflow entry surfaced in chat + the

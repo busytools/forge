@@ -70,10 +70,10 @@ and a clean replay. See
 [the wire contract page](https://busytools.github.io/forge/wire-contract.html)
 for the details.
 
-**UI changes update `docs/forge-map.html` in the same pull request.**
-That file is the visual record of every surface `forge-tui` can render,
-and it is scoped to current state, so it must never describe something
-the code does not ship.
+**UI changes update the book's `docs/book/src/ui/` pages in the same
+pull request.** Those pages are the visual record of every surface
+`forge-tui` can render, and they are scoped to current state, so they
+must never describe something the code does not ship.
 
 **A change that makes a page under `docs/book/` false updates it in the
 same pull request.** That directory is the published documentation, and

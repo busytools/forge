@@ -46,8 +46,8 @@ forge-test-harness->  primitives + sdk
 | [`forge-tui`](crates/forge-tui) | The view layer, and the `forge` binary. Rendering, input handling, per-session presentation state. No direct `forge-agent` dependency. |
 | [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness: replay-based offline tests plus opt-in live capture. |
 
-[`docs/forge-map.html`](docs/forge-map.html) is the visual map of every
-surface the TUI can currently render. Open it in a browser.
+The `UI surfaces` part of [the book](https://busytools.github.io/forge/)
+is the visual map of every surface the TUI can currently render.
 
 ## Getting started
 
