@@ -474,7 +474,9 @@ fn failure_reason(row: &forge_workspace::AccountLoadingRow) -> Option<String> {
         Some(forge_workspace::UsageFetchStatus::Expired) => Some("expired".to_owned()),
         Some(forge_workspace::UsageFetchStatus::NetworkFailed) => Some("unreachable".to_owned()),
         Some(forge_workspace::UsageFetchStatus::Other) => Some("fetch error".to_owned()),
-        None => None,
+        // The 200-shape-drift settle records nothing; the bare yellow
+        // glyph would read as a render bug rather than a verdict.
+        None => Some("fetch error".to_owned()),
     }
 }
 
@@ -1398,6 +1400,23 @@ mod tests {
             Some(theme::STATUS_ERROR),
             "an auth-failed bail stays the error red",
         );
+    }
+
+    #[test]
+    fn a_shape_drift_bail_renders_the_fetch_error_reason() {
+        // The 200-shape-drift settle records no error class, so the
+        // row carries the same "fetch error" phrase preflight renders
+        // for the identical state rather than a bare glyph.
+        let row = forge_workspace::AccountLoadingRow {
+            display_name: "Stargate".to_owned(),
+            state: forge_workspace::LoadingState::Bailed,
+            last_error: None,
+            retry_after: None,
+            auth: forge_workspace::AccountAuth::Token,
+        };
+        let line = centered_account_status_line(std::slice::from_ref(&row), 80);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("fetch error"), "the drift bail names its class; got {text:?}");
     }
 
     #[test]
