@@ -2439,6 +2439,13 @@ impl Workspace {
             healed
         };
         if healed {
+            tracing::info!(
+                target: "forge_workspace::account",
+                event_name = "account_healed",
+                account = %key.0,
+                outcome = "ready",
+                "Bailed -> Ready on a clean usage poll; the plan picks the account up for new sessions",
+            );
             self.recompute_plan_if_ready();
         }
     }
