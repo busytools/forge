@@ -43,7 +43,7 @@ An array of tables. At least one is required, or the load fails with
 |---|---|---|---|
 | `name` | string | yes | Must be unique across orgs. |
 | `accounts` | array of strings | yes | Each entry must match an `[[accounts]]` `display_name`. |
-| `fallback_accounts` | array of strings | no | absent | Fallback accounts assignment falls to when the pinned accounts are unavailable. |
+| `fallback_accounts` | array of strings | no | Fallback accounts assignment falls to when the pinned accounts are unavailable. Absent means none. |
 | `projects` | array of tables | yes | Written as `[[orgs.projects]]`. An org with none fails the load. |
 
 `accounts` is the account subset every project in this org may spawn
