@@ -70,7 +70,8 @@ Grouping by model swaps the table in place - full model ids render without trunc
 | Cost column | rust orange (the `TOTAL` cost accent-bold); GPT/Codex rows amber |
 | Unpriced `-` | dim |
 | Active group / window in the selector | rust orange bold; inactive dim |
-| `scratch` and `<synthetic>` row labels, rules, column labels, key hints | dim |
+| `scratch` and `<synthetic>` row labels, rules, column labels | dim |
+| Key hints | dim labels, rust-orange action words |
 
 <details>
 <summary>Data source and scope</summary>
