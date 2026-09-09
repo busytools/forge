@@ -107,7 +107,7 @@ Notices: a quiet room carries its own measured peak and offers a retry (DIM); ev
 
 ## Autocomplete dropdown
 
-Open while you type one of four triggers: `/` (slash commands), `@` (files), `&` (subagents), `:` (emoji). A rounded-border dropdown anchored to the input, its title naming the mode in dim, border dim. Row caps: slash 20, mention 32, emoji 10, subagent 8, clamped to what fits above or below the input, scrolling in place. Each item: a 3-char prefix (` ▸ ` rust orange bold when selected), primary text with the match highlighted, an optional dim description. Slash commands are magenta in the input but default fg inside the dropdown.
+Open while you type one of four triggers: `/` (slash commands), `@` (files), `&` (subagents), `:` (emoji). A rounded-border dropdown anchored to the input; the title names the mode in dim - ` Commands (N) `, ` /<cmd> Args (N) `, ` Files & Folders `, ` Subagents (N) `, ` Emoji `. Row caps: slash 20, mention 32, emoji 10, subagent 8, clamped to what fits above or below the input, scrolling in place. Each item: a 3-char prefix (` ▸ ` rust orange bold when selected), primary text with the match highlighted, an optional dim description. Slash commands are magenta in the input but default fg inside the dropdown.
 
 <div class="term">
 

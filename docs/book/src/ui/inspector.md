@@ -6,7 +6,7 @@ The right-side mirror of the [Projects pane](./projects-pane.md): 40ch at Wide (
 
 ## NEEDS ATTENTION
 
-Pinned below the banner, shown only when a background session has a prompt pending, a turn that died, or unread worker answers on its review comments. A dim-bold header carries a right-justified count; each row is a glyph, the white-bold project name, a dim `(role)` for workers, and a dim detail, stalest-first. The band caps at 5 rows (a dim `+N more` tail) and pushes GIT down while present.
+Pinned below the banner, shown only when a background session has a prompt pending, a turn that died, or unread worker answers on its review comments. A dim-bold header carries a right-justified count; each row is a glyph, the white-bold project name, a dim `(role)` for workers, and a dim detail, stalest-first. The band caps at 5 rows (a dim `+N more` tail) and pushes GIT down while present; its wait-age formats like the SCHEDULES countdowns (`20s`, `3m`, `1h`), ticking on the same ~1 s timer.
 
 | Row | Glyph | Detail |
 |---|---|---|
@@ -113,7 +113,7 @@ The GIT header carries a `🦉` glyph when any diff layer is populated - click i
 <details>
 <summary>Review-replies badge</summary>
 
-`N` counts the threads whose latest turn is the worker's and whose state is `Addressed` or `Outdated`, in the same accent as the comment cards. Only a reviewer reply, a `✓ Resolve` or a `↺ Reopen` retires a thread - opening `/diff` or reading a card does not. The badge hides when the header describes a different branch than the count was recorded against, and renders with or without the `🦉`, so a branch whose diff has since been committed away still surfaces its unread answers.
+`N` counts the threads whose latest turn is the worker's and whose state is `Addressed` or `Outdated`, in the same accent as the comment cards. Only a reviewer reply, a `✓ Resolve` or a `↺ Reopen` retires a thread - opening `/diff` or reading a card does not. The count recomputes from the store whenever `/diff` hydrates its threads, and once per session shortly after boot so a restart leaves the signal dark for no longer than that. The badge hides when the header describes a different branch than the count was recorded against, and renders with or without the `🦉`, so a branch whose diff has since been committed away still surfaces its unread answers.
 
 </details>
 

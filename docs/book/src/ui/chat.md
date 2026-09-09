@@ -226,7 +226,7 @@ Every tool invocation renders through one path: a title row at column 2, body li
 
 ## Standard row
 
-Single line: 2-space indent, status icon in its status color, kind icon and kind label in white bold, then the display title in default foreground. Body lines prefix with a dim `  │  `, last `  └─ `.
+Single line: 2-space indent, status icon in its status color, kind icon and kind label in white bold, then the display title in default foreground. Body lines prefix with a dim `  │  `, last `  └─ `. A title claude already sends starting with the kind label is not doubled.
 
 <details>
 <summary>Collapse behavior</summary>
