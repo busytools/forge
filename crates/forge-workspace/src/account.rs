@@ -2006,4 +2006,26 @@ mod tests {
         assert_eq!(map.loading_state(&key("Personal")), LoadingState::Bailed);
         assert!(map.all_loaded(), "Ready + Bailed are both terminal states");
     }
+
+    /// Terminality does not gate re-probing: a Bailed account re-enters
+    /// the poller's probe set the moment its hold-down expires, which
+    /// is the single-pass loader's whole healing path.
+    #[test]
+    fn a_bailed_account_probes_again_once_its_hold_down_expires() {
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = key("Gateway");
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(3600)),
+        );
+        map.set_loading(&k, LoadingState::Bailed);
+        assert!(!map.scheduler_should_probe(&k), "an active hold-down gates the re-probe");
+        map.by_key.get_mut(&k).unwrap().next_probe_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        assert!(
+            map.scheduler_should_probe(&k),
+            "an expired hold-down re-opens the probe even though the account is terminal",
+        );
+    }
 }
