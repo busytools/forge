@@ -448,10 +448,10 @@ inspected.
     **Most changes owe the book nothing, and a rule read as owing
     something every time produces noise forever.** #744 is the clean
     example: a user-visible change to whether a question answers on the
-    first Enter, which did owe the visual-truth map (then the separate
-    `docs/forge-map.html`) and correctly touched no other book page,
-    because no other page describes per-key prompt behaviour.
-    User-visible is not the test; a page reading false is.
+    first Enter, which owed the visual-truth surface - then the
+    separate `docs/forge-map.html`; today the unified-prompt section of
+    `ui/input.md` - and touched no other book page. User-visible is not
+    the test; a page reading false is.
 
     #751 is the other shape, and it is not clean. Adding the seventh
     crate falsified `architecture.md`'s crate count, layering diagram,
