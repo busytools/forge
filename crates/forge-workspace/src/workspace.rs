@@ -2009,7 +2009,11 @@ impl Workspace {
         use crate::account::LoadingState;
         use crate::assignment_plan::{ProjectInput, compute_plan};
 
-        let (ready_accounts, saturated): (Vec<AccountKey>, Vec<AccountKey>) = {
+        let (ready_accounts, degraded_accounts, saturated): (
+            Vec<AccountKey>,
+            Vec<AccountKey>,
+            Vec<AccountKey>,
+        ) = {
             let accounts = self.accounts.lock();
             if !accounts.all_loaded() {
                 return;
@@ -2019,13 +2023,13 @@ impl Workspace {
             // empty `accounts` list the pool IS this slice, so HashMap
             // randomness would assign the lead to a different account
             // across restarts.
+            // Experimental accounts never enter the assignment pool
+            // (leads and workers alike) even when a project's
+            // org pins them; they are reachable only via the
+            // `/account` picker.
             let ready: Vec<AccountKey> = accounts
                 .ordered_keys
                 .iter()
-                // Experimental accounts never enter the assignment pool
-                // (leads and workers alike) even when a project's
-                // org pins them; they are reachable only via the
-                // `/account` picker.
                 .filter(|k| !accounts.is_experimental(k))
                 .filter(|k| {
                     accounts
@@ -2035,12 +2039,30 @@ impl Workspace {
                 })
                 .cloned()
                 .collect();
+            // Terminal-but-not-Ready: Bailed accounts (the boot probe
+            // settled rate-limited or auth-failed). The plan falls
+            // back to these when a project's ready pool is empty
+            // rather than going dark - spawning on a degraded account
+            // is legitimate because the 429 hit the usage probe, not
+            // inference.
+            let degraded: Vec<AccountKey> = accounts
+                .ordered_keys
+                .iter()
+                .filter(|k| !accounts.is_experimental(k))
+                .filter(|k| {
+                    accounts
+                        .by_key
+                        .get(*k)
+                        .is_some_and(|s| matches!(s.loading, LoadingState::Bailed))
+                })
+                .cloned()
+                .collect();
             // Accounts that loaded fine but sit at the usage cap. The
             // plan prefers the rest so a freshly-exhausted account
             // doesn't get sessions assigned to it on boot.
             let saturated: Vec<AccountKey> =
                 ready.iter().filter(|k| accounts.is_saturated(k)).cloned().collect();
-            (ready, saturated)
+            (ready, degraded, saturated)
         };
 
         let projects: Vec<ProjectInput> = self
@@ -2057,7 +2079,16 @@ impl Workspace {
             })
             .collect();
 
-        let mut fresh = compute_plan(&ready_accounts, &saturated, &projects);
+        let mut fresh = compute_plan(&ready_accounts, &degraded_accounts, &saturated, &projects);
+        for project in &projects {
+            if fresh.slot_degraded(&project.key) {
+                tracing::warn!(
+                    target: "forge_workspace::assignment_plan",
+                    project = ?project.key,
+                    "project assigned from a degraded pool; every allow-listed account is terminal-not-Ready",
+                );
+            }
+        }
 
         // A worker that spawned while the accounts were still loading
         // found no plan to extend, and nothing downstream would ever give
