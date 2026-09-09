@@ -58,7 +58,7 @@ Project rows are mouse-only; chat input keeps keyboard focus. Click any project 
 
 The same panel on an **API-billed** account (`provider = "openrouter"`). The `5h` and `7d` groups are replaced by the spend group; everything above and below is unchanged, and the row count is identical so the project list above does not shift when the user switches account. Left, a key with a spending cap; right, one without.
 
-<div class="mock" style="display: flex; gap: 18px; flex-wrap: wrap;">
+<div style="display: flex; gap: 18px; flex-wrap: wrap;">
 
 <pre>
   <span class="dim">Ctx</span>  <span class="success">▓▓▓▓▓</span><span class="warning">▓▓</span><span class="dim">░░░░░░░░░░░░</span>   39%
