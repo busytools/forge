@@ -2,15 +2,13 @@
 
 ## Full-screen usage overlay (`/usage`)
 
-*visible: when `/usage` runs. Lives in `ActiveView::Usage` - chat / input / projects pane / inspector pane all disappear, same overlay pattern as [Diff](./misc-surfaces.md) / [Config](./misc-surfaces.md). Keyboard-only.*
+A pinned summary header - lifetime tokens and one notional cost, today / week / month quick totals, and the input / cache-write / cache-read / output split - over a scrollable table of the same data grouped by project (default) or by model (<kbd>g</kbd> flips it), for any window (<kbd>w</kbd> cycles today · week · month · lifetime, default lifetime). Rows sort by cost descending; a pinned `TOTAL` row and key hints sit at the bottom; <kbd>↑↓</kbd> / <kbd>PgUp/Dn</kbd> scroll the full list - every project reachable, no collapse. <kbd>Esc</kbd> closes; changing group or window returns the scroll to the top.
 
-A pinned **summary header** - lifetime tokens + one notional cost, today / this week / this month quick totals, and the input / cache-write / cache-read / output split - over a **scrollable table** of the same data grouped **by project** (default) or **by model** (<kbd>g</kbd> flips it), for any **window** (<kbd>w</kbd> cycles today · week · month · lifetime, default lifetime). Rows sort by cost descending; a pinned `TOTAL` row + key hints sit at the bottom; <kbd>↑↓</kbd> / <kbd>PgUp/Dn</kbd> scroll the full list (every project reachable, no collapse). <kbd>Esc</kbd> closes. Changing group or window returns the scroll to the top.
+The table is responsive: the label column fits the longest name (full model ids and long project names never truncate when they fit) and the six numeric columns spread across the remaining width. The notional caption sits right-justified on the summary's first row.
 
-The view sits on the **shared full-screen page scaffold** (`ui::page::render_page`) - the same titled box + full-width body + footer that [`/mcp` and `/plugins`](./misc-surfaces.md) and [`/diff`](./misc-surfaces.md) render on. The table is **responsive**: the label column fits the longest name (full model ids like `claude-sonnet-4-5` and long project names never truncate when they fit), and the six numeric columns spread across the remaining width so a wide terminal fills edge-to-edge rather than left-packing at a fixed cap. The notional / pricing-pending caption is right-justified on the summary's first row.
+All accounts pool into one aggregate (the per-account config dirs share one projects pool, so per-account is not separable), deduped by message id; worktree and sub-path slugs fold into their parent repo and `/tmp` folds to a single **scratch** bucket. The dollar column is **notional** - at API pricing, not a bill; GPT/Codex rows are flagged `(GPT approx)`; an unpriced model shows its tokens with a `-` cost.
 
-All accounts are pooled into one aggregate - the per-account config dirs symlink one shared `~/.claude/projects`, so per-account is not separable - deduped by `message.id`; grouping by project works because the session files are already per-project on disk. Worktree + sub-path slugs fold into their parent repo; `/tmp` folds to a single **scratch** bucket. The dollar column is **notional** (at API pricing, not a bill - the user is on subscriptions); GPT/Codex rows are flagged `(GPT approx)`; a `<synthetic>` or otherwise unpriced model shows its tokens with a `-` cost.
-
-Pricing is fetched at runtime from LiteLLM and cached in redb (no bundled table) - the first open with an empty cache shows tokens with a blank cost until the fetch lands, then re-prices; the cache refreshes about once a day. The scan reads the JSONL pool off-thread and is cached incrementally per file (by mtime + size), so reopening is fast. While no pricing is loaded (cold cache or a failed fetch) the header's right caption switches from `notional · at API pricing · not a bill` to a yellow `pricing pending or failed` and the LIFETIME headline cost blanks to a `-`, so an unpriced report never reads as a misleading `$0.00`.
+Pricing is fetched at runtime and cached (no bundled table) - the first open with an empty cache shows tokens with a blank cost until the fetch lands, then re-prices; the cache refreshes about once a day. The scan is cached incrementally per file, so reopening is fast. While no pricing is loaded the header caption switches to a yellow `pricing pending or failed` and the LIFETIME headline cost blanks to `-`, so an unpriced report never shows a misleading `$0.00`.
 
 <div class="term">
 
@@ -38,7 +36,7 @@ Pricing is fetched at runtime from LiteLLM and cached in redb (no bundled table)
 
 </div>
 
-Grouping by **model** (<kbd>g</kbd>) swaps the table in place - full model ids render without truncation and the label column widens to fit the longest name:
+Grouping by model swaps the table in place - full model ids render without truncation and the label column widens to fit:
 
 <div class="term">
 
@@ -57,8 +55,27 @@ Grouping by **model** (<kbd>g</kbd>) swaps the table in place - full model ids r
 
 </div>
 
-- **keys** - <kbd>g</kbd> toggle grouping (project ⇄ model) · <kbd>w</kbd> cycle window (today · week · month · lifetime) · <kbd>↑↓</kbd> / <kbd>PgUp/Dn</kbd> scroll the full list · <kbd>Esc</kbd> close. A group or window change resets the scroll to the top.
-- **color** - box title (`Usage`): the shared page scaffold's `DIM` titled border · header right caption: `notional · at API pricing · not a bill` in `DIM` when priced, `pricing pending or failed` in yellow when no pricing is loaded (the LIFETIME cost then blanks to `-` in `DIM`) · rules + column labels + `input` / `output` cells: `DIM` · `cache-write` column: yellow · `cache-read` column: green · `TOKENS`: bold · cost: RUST_ORANGE (headline + `TOTAL` accent-bold), GPT/Codex rows (by-model only) amber, unpriced `-`: `DIM` · active group / window in the selector: RUST_ORANGE bold, inactive: `DIM` · `scratch` and `<synthetic>` row labels: `DIM` · key hints: `DIM` labels + RUST_ORANGE actions.
-- **code** - `crates/forge-tui/src/ui/usage_overlay.rs::render` (summary + scrollable table + `TOTAL` through `ui::page::render_page`) · `crates/forge-tui/src/app/usage_overlay.rs` (state + off-thread scan spawn + drain + `g` / `w` / scroll keys) · `/usage` handler at `crates/forge-tui/src/app/slash/executors.rs::handle_usage_submit` · scan + windowing + pricing at `forge_workspace::Workspace::scan_usage` / `refresh_pricing` → `forge_agent::env::token_usage::{parse_file, fold_project, roll_up, pricing::fetch_litellm}` · redb caches `forge_workspace::store::{token_usage, pricing}`.
-- **data source** - The one real `~/.claude/projects/<slug>/*.jsonl` pool (canonicalized so the symlinked per-account dirs resolve to it once; Syncthing `.sync-conflict-*` copies skipped). Each `type:"assistant"` record's `message.usage` (input / cache_creation.ephemeral_{1h,5m} / cache_read / output) is summed per `(model, day)`, deduped by `message.id`, folded to a repo per slug (worktrees + sub-paths collapse, `/tmp` → scratch), and rolled into today / week / month / lifetime windows priced by the redb-cached LiteLLM table.
-- **scope** - v1: summary + both groupings + windows over the deduped pool. Per-account breakdown is impossible (shared pool, no per-account tag). A live burn-rate strip (tokens/min across live agents, exhaustion projection) is deferred to phase 2.
+| Key | Action |
+|---|---|
+| <kbd>g</kbd> | Toggle grouping (project ⇄ model) |
+| <kbd>w</kbd> | Cycle window (today · week · month · lifetime) |
+| <kbd>↑↓</kbd> / <kbd>PgUp/Dn</kbd> | Scroll the full list |
+| <kbd>Esc</kbd> | Close |
+
+| Cell or element | Color |
+|---|---|
+| `cache-write` column | yellow |
+| `cache-read` column | green |
+| `TOKENS` column | bold |
+| Cost column | rust orange (the `TOTAL` cost accent-bold); GPT/Codex rows amber |
+| Unpriced `-` | dim |
+| Active group / window in the selector | rust orange bold; inactive dim |
+| `scratch` and `<synthetic>` row labels, rules, column labels | dim |
+| Key hints | dim labels, rust-orange action words |
+
+<details>
+<summary>Data source and scope</summary>
+
+The scan reads the one real `~/.claude/projects` JSONL pool off the render thread (canonicalized so the symlinked per-account dirs resolve to it once; Syncthing conflict copies skipped), sums each assistant record's usage per model and day deduped by message id, folds each slug to its repo, and rolls the windows against the cached pricing table. Scope: the summary, both groupings and windows over the deduped pool; per-account breakdown is impossible (shared pool, no per-account tag), and a live burn-rate strip (tokens/min across live agents, exhaustion projection) is deferred to phase 2.
+
+</details>

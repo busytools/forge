@@ -64,7 +64,7 @@ FALLBACK group and stay hand-selectable. The list is validated at load
 exactly like `accounts`: a name matching no `[[accounts]]` entry fails
 the boot, naming the account and the valid names. An account may appear
 in both lists; it is then primary-tier only. See [the launchpad's pool
-description](./launchpad.md) for the full tier order.
+description](./ui/launchpad.md) for the full tier order.
 
 ## `[[orgs.projects]]`
 

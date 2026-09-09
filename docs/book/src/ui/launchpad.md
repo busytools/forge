@@ -1,14 +1,10 @@
 # Launchpad - project picker
 
-Floor of the UI, and the second of the launchpad's two views - [preflight](./preflight.md) comes first and hands over once everything has resolved. Renders as the entire frame when forge is invoked without a project argv (`forge` by itself) OR when the user runs `/launchpad` mid-session; every `/launchpad` after the first in a run lands straight here. Both side panes hide while launchpad is up; the ANSI Shadow wordmark + version metadata + org-grouped project picker + footer hint own the full window width. `Esc` is a no-op - the launchpad has nothing to dismiss to. `Ctrl+Q` still quits.
-
-Boot rule is argv-only, and now runs behind [preflight](./preflight.md) on both branches: `forge` ⇒ preflight ⇒ this picker, `forge <project-name>` ⇒ preflight ⇒ that project's chat. No "remember last picked" persistence, no `focus = true` override (the field is still parsed for back-compat but no longer affects routing).
+The floor of the UI, the second of the launchpad's two views - [preflight](./preflight.md) hands over once everything has resolved. Full-frame when forge starts without a project argument and for every later `/launchpad`; both side panes hide. <kbd>Esc</kbd> is a no-op; <kbd>Ctrl+Q</kbd> quits. Boot is argv-only: `forge` → preflight → this picker, `forge <project>` → preflight → that project's chat. No remember-last persistence.
 
 ## Launchpad full-screen layout
 
-*visible: `ActiveView::Launchpad` after the hand-over*
-
-The identity block (wordmark + version + optional update line + the account chip row when one is showing) and the picker box ride together as one **vertically-centered unit**; the single-row footer hint stays anchored to the terminal's bottom edge. The leftover height above the footer splits roughly symmetrically above the wordmark and below the box. The box grows to use most of the height left once the identity block is accounted for (capped) and windows its rows by a scroll offset that follows the selection, so a project past the fold scrolls into view instead of being clipped; a scrollbar appears on the box's right edge only when the list overflows. On a long list or short screen the block top-aligns and the box scrolls; short lists render short and centered.
+The identity block (wordmark + version + optional chip row) and the picker ride as one vertically-centered unit, the footer hint anchored to the bottom edge. The box grows capped and scrolls its rows to follow the selection; a scrollbar appears on the box's right edge only when the list overflows. A long list or short screen top-aligns the block; short lists render short and centered.
 
 <div class="term">
 
@@ -22,8 +18,8 @@ The identity block (wordmark + version + optional update line + the account chip
             <span class="rust-orange bold">██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗</span>
             <span class="rust-orange bold">╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝</span>
 
-                          <span class="dim">v0.15.1+7d88141</span>
-                          <span class="dim">claude 2.1.133</span>
+                          <span class="dim">v1.0.53+3cda0dee</span>
+                          <span class="dim">claude 2.1.263</span>
 
       <span class="dim">────────────────────────────────────────────────────</span>
         <span class="dim">Busytools</span>                                        <span class="rust-orange">▐</span>
@@ -42,27 +38,37 @@ The identity block (wordmark + version + optional update line + the account chip
 
 </div>
 
-- **code** - `crates/forge-tui/src/ui/launchpad.rs` (renderer) + `crates/forge-tui/src/app/launchpad.rs` (state + keyboard handler) · wordmark stored as `const FORGE_WORDMARK: [&str; 6]` (43 cols × 6 rows ANSI Shadow figlet)
-- **color** - wordmark: `RUST_ORANGE` + BOLD · version lines / org headers / tree connectors / footer hint / account hints / pending glyphs (`○`) / picker rules: `DIM` · idle `●`: `RUST_ORANGE` · running / spawning spinner: `RUST_ORANGE` · failed `✗`: `STATUS_ERROR` · selection indicator: `RUST_ORANGE` + BOLD `▶` arrow in a reserved 2-cell column at the row's left edge for clickable selections, `DIM` + BOLD `▶` when the selected row is in `Spawning` (signals "selected but not yet actionable") · spawning row name: `DIM` (not BOLD) reinforces "not yet interactive" · update indicator (`↑ vX.Y.Z available`): `RUST_ORANGE` · scrollbar (overflow only): `▐` thumb `RUST_ORANGE`, `│` track `DIM`, in a 1-col gutter at the box's right edge
-- **data sources** - Projects via `Workspace::list_projects()` grouped by org (alpha-sorted, alpha-sorted within each org) · per-row lifecycle from `UiSession::lifecycle_state` with fallback to `Sleeping` · last-activity from `ProjectView::sessions[0].last_activity` · account hint from `ProjectView::primary_account_hint()` (first item of the org's `accounts` list, lowercased) · forge version from `FORGE_VERSION_SHORT` · claude version + update flag from `app.cli_version_info` (async npm probe)
-- **keys** - <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> navigate (the list scrolls to keep the selection visible) · <kbd>Enter</kbd> intent-aware (open / start / blocked / no-op - see "Click intent" below) · <kbd>r</kbd> retry (only when row is Failed) · <kbd>?</kbd> toggle help (≡ `/help`) · <kbd>Esc</kbd> no-op · <kbd>Ctrl+Q</kbd> quit (≡ `/quit`) · <kbd>Cmd+Left</kbd> <kbd>Cmd+Right</kbd> (<kbd>Ctrl+Left</kbd> <kbd>Ctrl+Right</kbd> off macOS) swallowed (no panes to toggle)
-- **click intent** - Enter behavior depends on the selected row's lifecycle. Footer hint reflects this label.
-    - **Idle / Running / Attention / AuthRequired / LoggedOut** → "`enter  open`" → switch chat view to the session.
-    - **Sleeping** → "`enter  start`" → dispatch `Command::SpawnProject` and stay on the launchpad. The row transitions Sleeping → Spawning → Idle; a second Enter once it reaches Idle takes the user into chat. Avoids the chat-view "Connecting to Claude Code..." stub for cold projects.
-    - **Spawning** → "`enter  ⏳ spawning...`" → no-op. The row's dimmed name + DIM-coloured arrow when selected signal that the project isn't ready.
-    - **Failed** → "`r  retry`" → no-op on Enter; press <kbd>r</kbd> for the explicit retry path (drops failed bucket + dispatches fresh `SpawnProject`).
-- **slash subset** - The launchpad has no input area, so slash commands are reached through the corresponding keybindings: `/help` ≡ <kbd>?</kbd>, `/quit` ≡ <kbd>Ctrl+Q</kbd>. `/config` and `/plugins` live behind a picked project - open one with <kbd>Enter</kbd> first. The candidate-filter logic still recognises the four-command subset for any caller that queries it.
-- **config** - `[ui] spinner` (one of `braille` / `phase_of_moon` / `ember` / `bars_v` / `star` / `sparkle`, default `braille`) is the active spinner style for *every* animated surface - launchpad rows, chat thinking/working, input, projects pane, inspector - one `SpinnerStyle` source of truth. The legacy `launchpad_spinner` key still parses (serde alias). `/spinner` overrides it live and persists the choice to the machine-local redb store (under forge's app-support dir), layered over this forge.toml default (see [the /spinner picker](./pickers.md)).
+| Key | Action |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> | Navigate (the list scrolls with the selection) |
+| <kbd>Enter</kbd> | Open / start / no-op (see click intent) |
+| <kbd>r</kbd> | Retry - only when the row is Failed |
+| <kbd>?</kbd> | Toggle help (≡ `/help`) |
+| <kbd>Esc</kbd> | No-op |
+| <kbd>Ctrl+Q</kbd> | Quit (≡ `/quit`) |
+| <kbd>Cmd+Left</kbd> <kbd>Cmd+Right</kbd> (<kbd>Ctrl+</kbd> off macOS) | Swallowed (no panes to toggle) |
 
-  `[ui] fps` (whole number, `30`-`240`, default `120` - an 8.33ms repaint interval) is how often the run loop repaints while a spinner is animating, read once at startup. Everything else that drives a repaint - keystrokes, a settling smooth scroll, arriving session updates - already redraws on the next loop wake and is unaffected. The gate never goes coarser than 30ms, the pulse step described below. Spinner styles coarsen to what repaints allow, though no current style is quick enough to reach that: the quickest is `braille` at 32ms, so even the `30` floor paints every style at its own intent. Out-of-range values clamp with a warning and a non-integer falls back to the default; neither stops forge booting. Above 120 the loop's own 4ms wake tick tightens to half the frame interval, since a wake coarser than that cannot land on a frame boundary; at 120 and below it stays 4ms. A reduced-motion preference keeps its own fixed 120ms cadence regardless.
+Enter follows the selected row's lifecycle, the footer hint labeling it: Idle / Running / Attention / AuthRequired / LoggedOut → `enter  open`, switching to the session; Sleeping → `enter  start`, spawning and staying here until the row reaches Idle (avoiding the chat's Connecting stub); Spawning → `enter  ⏳ spawning…`, a no-op; Failed → Enter is a no-op, <kbd>r</kbd> retries.
 
-  **The tab title tracks activity, not the turn.** It shows the pulsing glyph whenever anything is happening - this session's turn, a compaction, or live background work in any session - and the idle glyph otherwise, off `App::shows_activity`, which the frame ticker also reads - the render loop wraps it as `is_animating` to add preflight, so the title pulses through a model download too. That means it deliberately diverges from the chat: when a turn ends with a backgrounded subagent still running, the chat goes quiet while the title keeps pulsing.
+No input area, so slash commands are keys: `/help` ≡ <kbd>?</kbd>, `/quit` ≡ <kbd>Ctrl+Q</kbd>; `/config` and `/plugins` need a picked project first.
 
-  `fps` controls repaints and nothing else. One surface animates off a separate pinned 30ms step (`App::spinner_frame`) and is deliberately *not* tied to it: the terminal tab-title pulse (two glyphs alternating every ten steps). It is not a spinner and does not scale - driven at 120fps it blinks at 12Hz. The visible spinner glyphs are separate again, deriving from the spinner epoch at their own `SpinnerStyle::cadence_ms`. No frame rate makes a spinner spin *faster* than its style asks, and none of the accepted rates is slow enough to make one slower - `RepaintCadence::effective_cadence_ms` resolves intent against capability, and every style currently lands on its own intent.
+<details>
+<summary>Wordmark, colors, spinner, tab title</summary>
 
-## Lifecycle row variants
+- The wordmark is a 43x6 ANSI Shadow figlet in rust orange bold; version lines, org headers, tree connectors, footer hint, account hints and pending glyphs (`○`) are dim; the idle `●` and the running / spawning spinner are rust orange; a failed `✗` is error red; the update indicator (`↑ vX.Y.Z available`) is rust orange; the scrollbar (overflow only) is a rust-orange thumb over a dim track in a 1-col gutter at the box's right edge.
+- `[ui] spinner` (one of `braille` / `phase_of_moon` / `ember` / `bars_v` / `star` / `sparkle`, default `braille`) is the active spinner style for every animated surface; `/spinner` overrides it live and persists to the machine-local store (see [the /spinner picker](./pickers.md)). `[ui] fps` (30-240, default 120) is how often the loop repaints while a spinner animates; the gate never goes coarser than 30 ms, out-of-range values clamp with a warning without stopping boot, and a reduced-motion preference keeps its own fixed cadence. No frame rate makes a spinner spin faster than its style asks.
+- The terminal tab title tracks activity, not the turn: it pulses whenever anything is happening - a turn, a compaction, live background work in any session, a model download - and goes idle otherwise, deliberately diverging from the chat when a turn ends with backgrounded work still running. Its pulse runs on its own fixed 30 ms step, not on `fps`.
 
-*drives glyph + colour + right column per row*
+</details>
+
+## Lifecycle rows
+
+| State | Glyph | Row |
+|---|---|---|
+| Connected (Idle) | `●` rust orange | bold name, relative time - clickable |
+| Spawning | spinner frame, rust orange | dim name (not bold) - not yet clickable |
+| Sleeping / AuthRequired / LoggedOut / Attention | `○` dim | dim circle, dim name |
+| Failed | `✗` red | bold name + a dim-red error sub-row beneath |
 
 <div class="term">
 
@@ -75,25 +81,17 @@ The identity block (wordmark + version + optional update line + the account chip
 
 </div>
 
-- **Failed row** - The error description renders as a DIM-red sub-row directly beneath the project name column (indented 8 cells from row start), truncated to picker width with `...`. The raw message lives in `UiSession::last_connection_error` (populated by the connection-failed event handler, cleared on a successful reconnect).
-- **Retry** - Pressing <kbd>r</kbd> while a Failed row is highlighted drops the failed bucket and dispatches a fresh `Command::SpawnProject`. Footer hint shows `r  retry` whenever the selected row is in Failed lifecycle (replaces the `enter  open` slot, since Enter is a no-op on Failed).
-- **Selection indicator** - A `RUST_ORANGE` BOLD `▶` arrow renders in a reserved 2-cell column on the left edge of the highlighted row; the rest of the row keeps its native state colors (state glyph, name, hints all visible). When the selected row is in the `Spawning` lifecycle, the arrow drops to `DIM` so the user can tell the focused row isn't actionable - Enter won't take them anywhere until the spawn completes.
+The selected row's `▶` arrow renders rust orange bold in a reserved 2-cell column, the rest of the row keeping native colors; when the selected row is Spawning the arrow drops to dim - Enter will not take you anywhere yet. A Failed row's error renders as a dim-red sub-row beneath the name, truncated with `...`; the footer hint shows `r  retry` when the selected row is Failed.
 
-## Account loading gate (#246)
+## Account loading gate
 
-*launchpad blocks project-row clicks until every account resolves*
-
-Forge boots one tokio task per `[[accounts]]` entry in `forge.toml`. Each task probes its account exactly once, through the backend its `provider` chooses (a minimal billed `/v1/messages` call for an Anthropic account's setup token, `/v1/key` for OpenRouter, `{host_root}/api/monitor/usage/quota/limit` for Z.ai), and every outcome settles terminal in that single round: 200 → `Ready`; any probe error → `Bailed`, with the recorded failure class and the server `Retry-After` (which schedules the pollers' re-probe) carried on the row. There is no retry loop - a 429 on the usage endpoint does not mean inference is limited. Project rows stay dimmed + unclickable until *every* account has reached a terminal state - one probe round-trip, not one rate-limit window.
-
-**The boot-time instance of this now happens on [preflight](./preflight.md), not here** - the launchpad can no longer be reached while accounts are still resolving. What remains is the mid-session case, which is live for the whole run: the 60 s usage poll takes an account `Ready → Bailed` on a 401, and takes it `Bailed → Ready` once the credential heals. The gate itself stays lifted through both directions - `all_accounts_loaded()` counts `Bailed` as terminal - so the flip is surfaced by the chip row below, whose visibility is deliberately wider than the gate, not by a re-lock of the project rows.
-
-The identity block's chip row **appears only while some account is non-`Ready`**, and hides rather than showing a permanently green line. The gate is global, so an account no project uses can block the whole picker.
+The launchpad blocks project-row clicks until every account reaches a terminal state - one probe round-trip each, no retry loop (a usage-endpoint 429 is not inference limiting). Boot holds on [preflight](./preflight.md); mid-session the 60 s poll can flip an account Ready → Bailed on a 401 and back once the credential heals, the gate counting Bailed as terminal throughout. The chip row appears only while some account is non-Ready, hiding rather than showing a permanently green line; the gate is global - an account no project uses can still block the picker.
 
 <div class="term">
 
   <pre class="indent">
-                                  <span class="dim">v0.15.1+7d88141</span>
-                                  <span class="dim">claude 2.1.133</span>
+                                  <span class="dim">v1.0.53+3cda0dee</span>
+                                  <span class="dim">claude 2.1.263</span>
 
           <span style="color:#cfc26b">○</span> <span class="dim">gateway</span>   <span style="color:#cfc26b">○</span> <span class="dim">gateway1</span>   <span style="color:#7eb87a">●</span> <span class="dim">personal</span>   <span style="color:#cfc26b">⚠</span> <span class="dim">stargate</span> <span style="color:#cfc26b">- rate limited (retry after 3600s)</span>
 
@@ -109,13 +107,24 @@ The identity block's chip row **appears only while some account is non-`Ready`**
               <span class="dim">no usable accounts</span>
       <span class="dim">────────────────────────────────────────────────────────</span>
 
- <span class="dim">↑↓  navigate     enter  ⏳ loading accounts...     ?  help     ctrl+q  quit</span></pre>
+ <span class="dim">↑↓  navigate     enter  ⏳ loading accounts…     ?  help     ctrl+q  quit</span></pre>
 
 </div>
 
-- **state glyphs** - `○` yellow = Loading (probe in flight) · `●` green = Ready (fresh probe; account available for assignment) · `⚠` red = Bailed on an auth failure (rejected or expired credentials; repair is an env edit plus a restart) · `⚠` yellow = Bailed on a transient failure (rate limit, unreachable endpoint, malformed response; the pollers heal it). A bailed chip appends its reason after the name - `- rate limited (retry after 3600s)` with the remaining hold-down, `- unauthorized` for the auth classes
-- **click gate** - Every project row downgrades to `Block` click intent while any account is non-terminal. Footer hint reads `⏳ loading accounts...` instead of the per-row spawn label. Once every account reaches Ready or Bailed, the gate lifts; rows un-dim and Enter resumes normal behavior. Reachable only mid-session now, via the recovery path above - at boot preflight holds the screen instead.
-- **per-project pool** - A project's pool comes from a six-tier walk over its `[[orgs]].accounts` primaries and `[[orgs]].fallback_accounts`, first non-empty tier winning: primary accounts that are `Ready` and not at the usage cap, then fallback accounts `Ready` and not capped, then primary accounts `Ready` at the cap (a session lands on a saturated (100%) account only when every earlier tier is empty), then fallback accounts `Ready` at the cap, then the project's `Bailed` accounts - primaries before fallbacks - (a rate-limited probe hits the usage endpoint, not inference, so spawning on one is legitimate), then dark. Only when every tier is empty does the project render a DIM `no usable accounts` sub-row and stay unclickable after the gate lifts. An org without `fallback_accounts` leaves tiers two and four empty and the walk behaves exactly as it did before fallbacks existed.
-- **per-row account chip** - Each project row carries a trailing `(<account>)` chip showing the lead session's assigned account from the AssignmentPlan; one worker row nests under the project per persisted dynamic worker, each carrying the same four elements the project row does - lifecycle glyph, name, its own chip, and the right-aligned activity column. A worker row's chip and its glyph are independent. The chip is the label's AssignmentPlan entry, which a worker gets when it spawns, so a label that has not spawned this boot renders no chip at all. The glyph is the row's lifecycle, so a persisted row with no live worker shows `○` whether or not it carries a chip. The activity column reads <code>&mdash;</code> for any worker that is neither spawning nor failed, because no per-worker activity timestamp exists. Chip color tracks the assigned account's runtime state, split the way the account rows split it: DIM = Normal, STATUS_WARNING with no glyph = at the usage cap (any window - 5h or weekly; the session still spawns but will throttle, and when every account is capped it was assigned only because nothing else was free) or Bailed on a transient failure (the pollers heal it), STATUS_ERROR + `⚠` = Bailed on an auth failure. Worker rows are info-only on the launchpad (selection stays on the project row).
-- **code** - `crates/forge-workspace/src/account.rs` (LoadingState enum + AccountStateMap.all_loaded) · `crates/forge-workspace/src/account_loader.rs` (per-account state machine) · `crates/forge-workspace/src/assignment_plan.rs` (deterministic `(project, label) -> account` mapping) · `crates/forge-tui/src/ui/launchpad.rs` (chip row + effective_click_intent gate)
-- **recovery** - The 60 s usage poll re-probes Bailed accounts once their recorded hold-down passes - the server `Retry-After` for a 429, the exponential backoff schedule otherwise, both capped at the same 10-minute ceiling. Once a healed credential probes clean again, the poll transitions the account Bailed -> Ready and recomputes the assignment plan with a frozen overlay - existing sessions keep their boot-time account, only NEW sessions pick up the recovered account.
+| Chip glyph | State |
+|---|---|
+| `○` yellow | Loading - probe in flight |
+| `●` green | Ready - available for assignment |
+| `⚠` red | Bailed on an auth failure (rejected or expired credentials; repair is an env edit plus a restart) |
+| `⚠` yellow | Bailed on a transient failure (rate limit, unreachable endpoint, malformed response; the pollers heal it) |
+
+A bailed chip appends its reason after the name - `- rate limited (retry after 3600s)`, `- unauthorized` for auth classes. While any account is non-terminal every project row downgrades to a blocked click and the footer reads `⏳ loading accounts...`; once the gate lifts rows un-dim and Enter resumes.
+
+<details>
+<summary>Per-project pool and account chips</summary>
+
+- A project's pool comes from a six-tier walk over its primary and fallback accounts, first non-empty tier winning: primaries Ready and not at the usage cap, then fallbacks Ready and not capped, then primaries at the cap (a session lands on a saturated 100% account only when every earlier tier is empty), then fallbacks at the cap, then the project's Bailed accounts - primaries before fallbacks (a rate-limited probe hits the usage endpoint, not inference, so spawning on one is legitimate) - then dark. Only when every tier is empty does the project render a dim `no usable accounts` sub-row and stay unclickable after the gate lifts.
+- Each project row carries a trailing `(<account>)` chip showing the lead session's assigned account; one worker row nests under the project per persisted dynamic worker, each with the same four elements - lifecycle glyph, name, its own chip, and the right-aligned activity column (<code>&mdash;</code> for a worker that is neither spawning nor failed). A worker's chip and its glyph are independent: a label that has not spawned this boot renders no chip, and a persisted row with no live worker shows `○` regardless. Chip color tracks the assigned account's runtime state: dim = normal; warning yellow, no glyph = at the usage cap (the session still spawns but will throttle) or bailed on a transient failure; error red + `⚠` = bailed on an auth failure. Worker rows are info-only - selection stays on the project row.
+- Recovery: the 60 s poll re-probes Bailed accounts once their recorded hold-down passes - the server `Retry-After` for a 429, exponential backoff otherwise, both capped at 10 minutes. A healed account flips Bailed → Ready and the assignment plan recomputes with a frozen overlay: existing sessions keep their boot-time account, only new sessions pick up the recovered one.
+
+</details>

@@ -1,22 +1,18 @@
 # Peer MCP - cross-agent coordination
 
-Every spawned `claude` child gets an in-process MCP server (`mcp__forge__*`) exposing four tools - `peers__whoami`, `peers__list_agents`, `peers__tell_agent`, `peers__ask_agent`. The forge.toml project name is the agent identity (one session per project). When the LLM in project **A** calls `ask_agent`, forge wraps the prompt in a bracket-prefixed envelope (e.g. `[Question id=q-XXXXXXXX from agent 'A' (org 'Personal') - reply with tell_agent in_reply_to=q-XXXXXXXX]`) and dispatches it as a synthetic user turn to project **B**. B's reply lands as another wrapped envelope on A's chat. The chat renderer pattern-matches the wrappers at render time and shows a styled **peer block** instead of the raw bracket prose.
+Every spawned `claude` child gets an in-process MCP server exposing the peer and cron tools (the table below). The `forge.toml` project name is the agent identity - one session per project. When the LLM in project A calls `peers__ask_agent`, forge wraps the prompt in a bracket-prefixed envelope and dispatches it as a synthetic user turn to project B; B's reply lands as another wrapped envelope on A's chat. The renderer matches the wrappers and shows a styled peer block instead of the raw bracket prose. All `mcp__forge__*` calls are auto-approved, and the default tool card is suppressed so the chat shows the styled block. See the [Projects pane](./projects-pane.md) for the per-row in-flight badges.
 
-Tool calls for `mcp__forge__peers__*` are auto-approved by `forge-sdk::control_dispatch` - the LLM never sees a permission prompt for peer coordination. The default tool-use card is suppressed via `hidden: true` on `ToolCallInfo` so the chat shows the styled **outbound peer block** in its place. See the [Projects pane](./projects-pane.md) for the per-row in-flight badge cluster.
+## Peer / worker chat blocks
 
-## Peer / worker chat blocks - one shape for every inbound + outbound envelope
+Every peer / worker tool call and inbound envelope renders as one block shape: a TitleCase verb names the kind, a directional icon (`⤴` out, `⤵` in) the direction, and the body indents under the tool-card connectors. No source label sits above - the row names its own kind and peer.
 
-*visible: every `mcp__forge__peers__*` / `mcp__forge__workers__ask|tell` tool call the LLM emits, and every inbound wrapped envelope (`[Question ...]`, `[Message ...]`, `[Reply ...]`, `[Late reply ...]`, `[Ask ... timed out ...]`, `[Ask ... has expired ...]`, `[Ask ... failed to deliver: ...]`, `[Worker ... spawn failed ...]`)*
-
-Five TitleCase verbs cover every variant; the verb names the kind, a leading directional kind-icon names the direction. Outbound (`Tell`, `Ask`) carries `⤴` (U+2934); inbound (`Message`, `Question`, `Reply`) carries `⤵` (U+2935). Each row reads `▶ ⤴ Verb name` (outbound) or `▶ ⤵ Verb name` (inbound) with the body indented under the standard tool-card tree connectors (`│  ` for continuation, `└─ ` for the last line). No source label sits above them: the row names its own kind and peer.
-
-| Verb | Direction | Wire shape |
+| Verb | Direction | Comes from |
 |---|---|---|
 | `Tell` | outbound unsolicited | `workers__tell` / `peers__tell_agent` |
 | `Ask` | outbound question | `workers__ask` / `peers__ask_agent` |
-| `Message` | inbound unsolicited | `[Message id=... from agent ...]` |
-| `Question` | inbound question | `[Question id=... from agent ...]` |
-| `Reply` | inbound response | `[Reply id=... from agent ...]` · `[Late reply ...]` carries a `⚠ late` modifier |
+| `Message` | inbound unsolicited | a `[Message ...]` envelope |
+| `Question` | inbound question | a `[Question ...]` envelope |
+| `Reply` | inbound response | a `[Reply ...]` envelope; a late one carries a `⚠ late` modifier |
 
 <div class="term">
 
@@ -62,19 +58,20 @@ Notices stay single-line with a `⚠` modifier inline.
 
 </div>
 
-- **code** - `crates/forge-tui/src/ui/peer_block.rs::detect_inbound` + `detect_outbound` + `render_block` (one renderer takes a TitleCase verb + name + optional modifier + body) · invoked from `ui::message::append_assistant_tool_block` + `append_user_blocks`
-- **collapse / expand** - body ellipsed to one line by default (collapsed shape: `└─ <first 60 chars>...`); click the row to expand the full body inline
-- **same-worker streak** - three consecutive envelopes from the same worker (per `chat::group_envelope_streak`) stack body lines under one header - no repeated `▶ Message <same-name>` rows. Same-project envelope streaks (different workers in the same project) still get one header per worker
-- **variants** - 5 main verbs (`Tell` · `Ask` · `Message` · `Question` · `Reply`) + 4 notice modifiers (`⚠ timed out` · `⚠ undeliverable` · `⚠ late` · `⚠ expired`) + 2 directional kind-icons (`⤴` outbound · `⤵` inbound) in the slot between the row glyph and the verb. Outbound covers `render_outbound` (Ask / Tell); inbound covers every `render_inbound` arm including the timeout / delivery-failure notices whose original asks were ours but whose notice envelopes arrived inbound. `[Worker ... spawn failed ...]` stays as a one-line system notice with no kind-icon (workspace-generated lifecycle event, not a peer comm)
-- **parser shape** - pure prefix string-match + manual field extraction (`take_until`, `rest_after_id`, `id_before`, `extract_from_agent_after`). No regex. Malformed envelopes fall through to the default user-message rendering rather than erroring
-- **suppression** - `crates/forge-tui/src/ui/tool_call.rs` sets `ToolCallInfo.hidden = true` for `mcp__forge__peers__*` and `mcp__forge__workers__ask` / `workers__tell`; `workers__spawn` / `workers__list` render as standard tool cards
-- **arrival order + running state** - an inbound peer / worker turn appends at the **tail** in arrival order - never repositioned above the in-flight assistant turn that holds the outbound send. Delivery then mirrors `input_submit::dispatch_prompt` exactly: strip any stranded empty placeholder (so rapid back-to-back delivery - a Gotify flood - never leaves a blank bubble between turns), open a fresh empty assistant placeholder at the tail, and reparent the active-turn pointer onto it (`App::push_active_turn_assistant_placeholder`) so the thinking spinner pins to the bottom above the input - not on a stale earlier assistant near the top - then flip the session to a running state (chat spinner + [Projects pane](./projects-pane.md) spin). All live in `sdk_message::push_peer_envelope_user_turn_if_present` (gated on `!replay_in_progress` so a resumed history doesn't open a live turn or stick the spinner)
+<details>
+<summary>Peer block details</summary>
 
-## Gotify notification chat block - inbound external notifications
+- Collapse: the body ellipses to one line (`└─ <first 60 chars>...`); click the row to expand the full body inline.
+- Same-worker streak: three consecutive envelopes from the same worker stack body lines under one header - no repeated `Message <same-name>` rows; different workers in the same project still get one header each.
+- `workers__spawn` / `workers__list` render as standard tool cards; only the ask / tell calls are suppressed.
+- Arrival order: an inbound turn appends at the tail in arrival order - never repositioned above the in-flight assistant turn that holds the outbound send. Delivery strips any stranded empty placeholder (so a rapid Gotify flood never leaves a blank bubble between turns), opens a fresh assistant placeholder at the tail so the thinking spinner pins to the bottom above the input, and flips the session to a running state (chat spinner plus a Projects-pane spin). A resumed history opens no live turn.
+- Malformed envelopes fall through to the default user-message rendering rather than erroring. A `[Worker ... spawn failed ...]` envelope stays a one-line system notice with no kind icon - a workspace lifecycle event, not agent traffic.
 
-*visible: every matched Gotify notification delivered into a subscribed session (project lead or a team worker), echoed as an inbound external-notification block at the tail, ahead of the response it triggers*
+</details>
 
-A matched notification is delivered as a user turn (every notification is its own turn) and echoed into the chat so the user sees what arrived. It reads as an external notification, not agent traffic: a Gotify source label where peer / worker traffic carries none, the ◈ gotify glyph (◈, not ▶), and an `app 'X' - priority N` header. The body carries the notification title then message under the standard tree connectors (`│  ` continuation, `└─` last).
+## Gotify notification chat block
+
+Every matched Gotify notification delivered into a subscribed session echoes into the chat as an external-notification block, ahead of the response it triggers - every notification is its own turn. It is an external event, not agent traffic: a Gotify source label, the `◈` glyph in place of `▶`, and an `app 'X' - priority N` header over the title then message. The priority number renders in warning at or above 5, otherwise dim.
 
 <div class="term">
 
@@ -91,19 +88,16 @@ A matched notification is delivered as a user turn (every notification is its ow
 
 </div>
 
-The priority number renders in warning at or above 5, otherwise dim.
+<details>
+<summary>Gotify block details</summary>
 
-- **code** - `crates/forge-tui/src/ui/peer_block.rs::detect_inbound` parses the `[Gotify - app '...', priority N]` prefix into `PeerInboundKind::Gotify`; `render_inbound` routes it to `render_gotify_notification`. The Gotify source label comes from `role_label_line` reading the cached `ChatMessage.is_gotify_envelope` flag (stamped at push time, mirroring the peer-envelope flag)
-- **data source** - `SessionUpdate::GotifyNotificationAppended { session_id, notification }` emitted by `spawn::push_gotify_notification_into_chat` at each delivery site (running lead / running team worker) and on the Connected drain for a spawned-to-deliver notification. The reducer forges a synthetic user turn from `GotifyNotification::to_prose()` - the same prose the session's LLM receives via `Command::Prompt`, so the existing `detect_inbound` matcher recognises it
-- **collapse / expand** - body ellipsed to one line by default (`└─ <first 60 chars>...`); click the row to expand the full body inline - same affordance as the peer block
-- **distinct from peer** - a Gotify notification is an external event, not agent traffic: it never merges into a peer messaging group (`PeerInboundKind::peer_sender_identity` returns `None` for it), keeps its own Gotify source label, and carries the ◈ gotify glyph in place of ▶
-- **arrival order + running state** - appends at the tail in arrival order, opens a fresh assistant placeholder at the tail so the thinking spinner pins to the bottom above the input, and flips the session to a running state on delivery - the same `push_peer_envelope_user_turn_if_present` path the **peer block** uses
+The block never merges into a peer messaging group - it keeps its own source label and the `◈` glyph. It appends at the tail in arrival order, opens a fresh assistant placeholder so the thinking spinner pins to the bottom, and flips the session to a running state - the same delivery path the peer block uses. Collapse is the same one-line ellipsis with click to expand.
 
-## Cron chat block - fired scheduled prompts
+</details>
 
-*visible: every durable cron that fires into its owner (the project lead or a worker, woken if asleep), echoed as a cron block at the tail, ahead of the response it triggers*
+## Cron chat block
 
-A due cron is delivered as a user turn (the session's LLM receives the raw prompt) and echoed into the chat so the user sees what fired. It reads as an internal scheduled event, not typed input: a Cron source label where peer / worker traffic carries none, the ◴ cron glyph (◴, the same glyph the [SCHEDULES](./inspector.md) section uses, not ▶), and the fired prompt under the standard tree connectors (`│  ` continuation, `└─` last). An overdue fire (forge or the owner was down through the scheduled minute) prefixes the prompt with a plain `[missed cron]` marker.
+Every durable cron that fires into its owner echoes into the chat as a cron block, ahead of the response it triggers. It is an internal scheduled event, not typed input: a Cron source label, the `◴` glyph (the same one the [SCHEDULES](./inspector-processes.md) section uses), and the fired prompt under the tree connectors. An overdue fire (forge or the owner was down through the scheduled minute) prefixes the prompt with a plain `[missed cron]` marker.
 
 <div class="term">
 
@@ -119,19 +113,16 @@ A due cron is delivered as a user turn (the session's LLM receives the raw promp
 
 </div>
 
-The `[Cron]` wrapper is display-only: it exists solely to drive the visible block and inherit the delivered-turn spinner. The subprocess receives the raw prompt via `Command::Prompt`, so the bracket never reaches the LLM.
+<details>
+<summary>Cron block details</summary>
 
-- **code** - `crates/forge-tui/src/ui/peer_block.rs::detect_inbound` parses the `[Cron]` prefix into `PeerInboundKind::Cron`; `render_inbound` routes it to `render_cron_prompt` (the ◴ glyph in `RUST_ORANGE`). The Cron source label comes from `role_label_line` reading the cached `ChatMessage.is_cron_envelope` flag (stamped at push time, mirroring the peer / gotify envelope flags)
-- **data source** - `SessionUpdate::CronPromptAppended { session_id, text }` emitted by `spawn::push_cron_prompt_into_chat` at the running-lead delivery site and on the Connected drain for a cron fired into an asleep project. The reducer forges a synthetic user turn wrapping the fired prompt in the display-only `[Cron]` prefix, so the existing `detect_inbound` matcher recognises it
-- **collapse / expand** - body ellipsed to one line by default (`└─ <first 60 chars>...`); click the row to expand the full prompt inline - same affordance as the peer / gotify blocks
-- **distinct from peer** - a fired cron is a scheduled internal event, not agent traffic: it never merges into a peer messaging group (`PeerInboundKind::peer_sender_identity` returns `None` for it), keeps its own Cron source label, and carries the ◴ cron glyph in place of ▶
-- **arrival order + running state** - appends at the tail in arrival order, opens a fresh assistant placeholder at the tail so the thinking spinner pins to the bottom above the input, and flips the session to a running state on delivery - the same `push_peer_envelope_user_turn_if_present` path the **peer** / **gotify** blocks use
+The `[Cron]` wrapper is display-only: it drives the visible block and inherits the delivered-turn spinner, while the subprocess receives the raw prompt - the bracket never reaches the LLM. The block never merges into a peer messaging group, keeps its own source label and the `◴` glyph, appends at the tail in arrival order with the same placeholder and running-state behavior as the peer and Gotify blocks, and collapses the same way.
 
-## Sidebar peer-activity badges (Projects pane)
+</details>
 
-*visible: per-row on every live (active) project row AND on every worker row in the [Projects pane](./projects-pane.md) when any of the four counters is non-zero*
+## Sidebar peer-activity badges
 
-Badge cluster between the row name and the close ` x ` button. Each badge is `·N` + glyph; counts of 0 are omitted entirely. Failure badges (`⌛`, `✕`) disappear 60 s after the counter last incremented. Workers carry their own per-session badges - a forge-asks-worker bumps the worker's `incoming`, a worker-asks-sibling bumps the worker's `outgoing`, so each row's counter reflects that row's own pending asks.
+On every live project row and worker row in the [Projects pane](./projects-pane.md), a badge cluster sits between the row name and the close ` x ` button. Each badge is `·N` plus a glyph; counts of 0 are omitted. Failure badges disappear 60 s after the counter last incremented. Workers carry their own per-session badges - a forge-asks-worker bumps the worker's `incoming`, a worker-asks-sibling bumps the worker's `outgoing`.
 
 <div class="term">
 
@@ -151,24 +142,28 @@ Badge cluster between the row name and the close ` x ` button. Each badge is `·
 | `·N⌛` | `PeerInflightStats.timed_out` | STATUS_WARNING | Asks this session sent that timed out (30-min default). Fades after 60 s. |
 | `·N✕` | `PeerInflightStats.delivery_failed` | STATUS_ERROR | Asks this session sent that failed to deliver (spawn / channel / connection error). Fades after 60 s. |
 
-- **code** - `crates/forge-tui/src/ui/projects_pane.rs::peer_badge_spans` · called from `append_org_project_row` (lead rows) AND `append_worker_tree_children` (worker rows) · reads `UiSession.peer_badges` + `peer_badges_last_failure_at` keyed by each row's own `session_key`
-- **wire** - `SessionUpdate::PeerInflightStatsChanged { key, stats }` from `forge-workspace` · reducer arm in `crates/forge-tui/src/app/events/client.rs` stamps both fields atomically
-- **fade window** - `PEER_FAILURE_FADE = Duration::from_secs(60)` · failure badges (`·N⌛` / `·N✕`) hide once `now - peer_badges_last_failure_at >= 60 s`
-- **idle rows** - no badge column. Sleeping projects have no `UiSession` bucket to read peer state from; the full name column gets the budget instead
+<details>
+<summary>Badge details</summary>
+
+Sleeping projects have no live state to read peer counters from, so their rows carry no badge column and the name gets the full width instead.
+
+</details>
 
 ## Tools exposed by the `mcp__forge__` server
 
-*scope: every spawned `claude` child. Auto-approved (no permission prompt)*
+Every spawned `claude` child gets these tools, all auto-approved.
+
+<details>
+<summary>The peer and cron tools</summary>
 
 | Tool | Inputs | Semantics |
 |---|---|---|
-| `peers__whoami` | - | Returns the caller's own `PeerStatus` (project name, org, cwd, current model, in-flight outgoing/incoming counts). |
-| `peers__list_agents` | - | Returns every project listed in `forge.toml` with its current liveness (running / sleeping / failed), current model, and in-flight counters. The caller's own row is included so the LLM can reason about its own identity in the list. |
-| `peers__tell_agent` | `target: string` · `message: string` · `in_reply_to: Option<string>` | Fire-and-forget message. Returns immediately with the synthesised `correlation_id` (`t-XXXXXXXX`). When `in_reply_to` is set, the workspace looks up the matching ask: a reply to a still-open ask renders as `Reply` and closes the ask; a reply whose target doesn't match (LLM hallucinated the wrong target) or whose id doesn't exist (stale / already answered) demotes to `Message` with a warn log and a `note` in the tool result so the replier can retry with the right id. |
-| `peers__ask_agent` | `target: string` · `prompt: string` | Returns immediately with a `correlation_id` (`q-XXXXXXXX`) and the ask transitions to in-flight. The reply lands as a synthetic user turn on the caller via the `[Reply ...]` envelope. The ask stays in-flight until a reply lands or the target is lost. `UnknownTarget` returns `is_error: true` synchronously; async failures (target spawn failed / channel closed / target connection died) fire `SessionUpdate::PeerAskFailed` + a wrapped `[Ask ... failed to deliver: ...]` envelope. |
-| `cron__create` | `schedule: Option<string>` (5-field cron) · `run_once_at: Option<string>` (RFC3339) · `prompt: string` · `description: Option<string>` (short what/why headline) | Register a durable cron for the caller's project (ANY-caller, like `workers__list`). Exactly one of `schedule` / `run_once_at`. Validates + computes `next_fire` in the host's LOCAL timezone, stamps the caller as owner (`team_role`: the lead, or a worker's label), persists to the machine-local store, returns the cron id. The optional `description` (trimmed; blank → `None`) headlines the row in the SCHEDULES section, falling back to the prompt's first line. On schedule the prompt fires into its owner, waking the project (lead + team together) when asleep; durable across restarts (catch-up-once on boot, marked missed when overdue). See the [SCHEDULES section](./inspector-processes.md). |
-| `cron__list` | - | Returns the caller's own crons (a lead sees lead crons, a worker its own) as `{id, project, schedule, prompt, next_fire}`. Any-caller. |
-| `cron__delete` | `id: string` | Delete a cron by id, scoped to the caller's own crons (a caller manages only what it created). Any-caller. |
+| `peers__whoami` | - | The caller's own status: project, org, cwd, model, in-flight counts. |
+| `peers__list_agents` | - | Every project in `forge.toml` with its liveness, model, and in-flight counters; the caller's own row included. |
+| `peers__tell_agent` | `target` · `message` · `in_reply_to` (optional) | Fire-and-forget; returns a correlation id. A reply to a still-open ask renders as `Reply` and closes it; a wrong target or stale id demotes to `Message`, with a note in the result to retry. |
+| `peers__ask_agent` | `target` · `prompt` | Returns a correlation id; the ask goes in-flight and the reply lands as a synthetic user turn. In-flight until a reply lands or the target is lost. An unknown target fails synchronously; async failures deliver a `[Ask ... failed to deliver: ...]` envelope. |
+| `cron__create` | `schedule` (5-field cron) or `run_once_at` (RFC3339) · `prompt` · `description` (optional) | Register a durable cron for the caller's project (any caller). Exactly one of schedule / run-once-at; `next_fire` in the host's local timezone; the caller stamped as owner. The description headlines the [SCHEDULES](./inspector-processes.md) row, else the prompt's first line. Fires into its owner, waking the project when asleep; durable across restarts with catch-up-once on boot. |
+| `cron__list` | - | The caller's own crons: id, project, schedule, prompt, next fire. |
+| `cron__delete` | `id` | Deletes a cron by id, scoped to the caller's own crons. |
 
-- **code** - `crates/forge-workspace/src/mcp/peers.rs` for the four peer Tool impls + `build_server` factory · `crates/forge-workspace/src/mcp/peers/facade.rs` for the `WorkspaceFacade` trait · `crates/forge-workspace/src/mcp/cron.rs` for the three cron Tool impls + `crates/forge-workspace/src/mcp/cron/facade.rs` (`CronFacade`) + `crates/forge-workspace/src/mcp/cron/schedule.rs` (parsing / next-fire) · all combined into one `forge` server by `mcp::build_forge_server`, attached per-session via `crates/forge-agent/src/forge_sdk_worker.rs::build_options_with_callback`
-- **auto-approve** - `crates/forge-sdk/src/control_dispatch.rs` fast-paths `tool_name.starts_with("mcp__forge__")` to `PermissionDecision::allow()` before the standard permission policy
+</details>
