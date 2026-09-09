@@ -2853,6 +2853,42 @@ mod tests {
         );
     }
 
+    /// REPRODUCTION for the wrong-title report: a background completion
+    /// in project "hub-modules" while the active tab is "core-v1" must
+    /// notify with the COMPLETING session's project in the title.
+    #[test]
+    fn background_completion_notifies_with_the_completing_sessions_project() {
+        let mut app = App::test_default();
+        let (active, background) = seed_two_sessions(&mut app);
+        // Distinct projects: the active tab is core-v1, the background
+        // session belongs to hub-modules.
+        app.sessions.get_mut(&active).expect("active").project = Some("core-v1".to_owned());
+        app.sessions.get_mut(&background).expect("bg").project = Some("hub-modules".to_owned());
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_active = workspace.install_testing_stub(&active);
+        let _cmds_background = workspace.install_testing_stub(&background);
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ChatAppended {
+                session_id: background.as_str().to_owned(),
+                msg: result_frame(background.as_str(), false),
+            },
+        );
+
+        let captured = crate::app::notify::test_capture::take_notifications(&app);
+        let fired: Vec<_> = captured
+            .iter()
+            .filter(|(event, _)| *event == crate::app::notify::NotifyEvent::TurnComplete)
+            .collect();
+        assert_eq!(fired.len(), 1, "exactly one TurnComplete notification: {captured:?}");
+        assert_eq!(
+            fired[0].1.project.as_deref(),
+            Some("hub-modules"),
+            "the title must name the COMPLETING session's project, got {captured:?}"
+        );
+    }
+
     /// Only a success Result arms the unseen-completion flag: the
     /// failed shape routes through the turn-error handlers and leaves
     /// the flag alone.
