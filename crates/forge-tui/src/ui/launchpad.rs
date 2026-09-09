@@ -457,6 +457,12 @@ fn centered_account_status_line(
 /// failure class, with the remaining hold-down for a rate limit.
 /// `None` when the row has nothing recorded to say.
 fn failure_reason(row: &forge_workspace::AccountLoadingRow) -> Option<String> {
+    // A Ready account whose 60 s poll 429'd keeps its green dot; the
+    // recorded class is the bailed chip's reason, not a healthy
+    // account's.
+    if row.state != forge_workspace::LoadingState::Bailed {
+        return None;
+    }
     match row.last_error {
         Some(forge_workspace::UsageFetchStatus::RateLimited) => {
             let hold = row
@@ -1391,6 +1397,26 @@ mod tests {
             glyph.style.fg,
             Some(theme::STATUS_ERROR),
             "an auth-failed bail stays the error red",
+        );
+    }
+
+    #[test]
+    fn a_ready_account_with_a_failed_poll_renders_no_reason() {
+        // A Ready account whose 60 s poll 429'd keeps its green dot;
+        // the recorded class must not render as a bailed chip's reason
+        // next to it.
+        let row = forge_workspace::AccountLoadingRow {
+            display_name: "Stargate".to_owned(),
+            state: forge_workspace::LoadingState::Ready,
+            last_error: Some(forge_workspace::UsageFetchStatus::RateLimited),
+            retry_after: Some(Duration::from_secs(30)),
+            auth: forge_workspace::AccountAuth::Token,
+        };
+        let line = centered_account_status_line(std::slice::from_ref(&row), 80);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            !text.contains(" - "),
+            "a Ready chip carries no failure reason; got {text:?}",
         );
     }
 
