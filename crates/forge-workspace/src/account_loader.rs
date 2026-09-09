@@ -167,6 +167,11 @@ mod tests {
         );
         assert_eq!(state, LoadingState::Bailed);
         assert_eq!(
+            states.loading_state(&key),
+            LoadingState::Bailed,
+            "the terminal settle is stored, not just returned",
+        );
+        assert_eq!(
             states.usage_error(&key),
             Some(UsageFetchStatus::RateLimited),
             "the rate-limit class is recorded for the row's reason text",
@@ -195,6 +200,11 @@ mod tests {
             &Err(ProbeError::Fetch(OauthUsageError::Unauthorized(401))),
         );
         assert_eq!(state, LoadingState::Bailed);
+        assert_eq!(
+            states.loading_state(&key),
+            LoadingState::Bailed,
+            "the terminal settle is stored, not just returned",
+        );
         assert_eq!(states.usage_error(&key), Some(UsageFetchStatus::Unauthorized),);
     }
 
@@ -208,6 +218,11 @@ mod tests {
             &Err(ProbeError::Unmappable("shape drift".to_owned())),
         );
         assert_eq!(state, LoadingState::Bailed);
+        assert_eq!(
+            states.loading_state(&key),
+            LoadingState::Bailed,
+            "the terminal settle is stored, not just returned",
+        );
         assert!(
             states.usage_error(&key).is_none(),
             "Unmappable records no error, preserving today's nuance",
@@ -220,6 +235,11 @@ mod tests {
         let key = AccountKey("test".to_owned());
         let state = settle_probe_result(&mut states, &key, &Ok(snapshot()));
         assert_eq!(state, LoadingState::Ready);
+        assert_eq!(
+            states.loading_state(&key),
+            LoadingState::Ready,
+            "the terminal settle is stored, not just returned",
+        );
         assert!(states.usage(&key).is_some(), "the snapshot is cached");
     }
 }
