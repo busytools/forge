@@ -1,14 +1,10 @@
 # Chat - message types
 
-Every message in the scrollback belongs to one role.
-
-Hovering the chat shows an I-beam pointer over selectable text and a hand over clickable blocks (tool calls, group headers, the scrollbar, pane rows). The shape is the OS pointer set via `OSC 22` (forge enables any-motion mouse tracking to drive it); it is not rendered by forge, so hovering never triggers a redraw. forge emits the default (arrow) shape once at startup, so the pointer is correct over chrome before the first hover.
+Every message in the scrollback belongs to one role. Hovering shows an I-beam over selectable text, a hand over clickable blocks - the OS pointer via `OSC 22`, the default arrow at startup.
 
 ## User message
 
-*visible: whenever the user has sent a turn*
-
-Role banner is the literal text "**User**" in `theme::DIM` bold (not the user's name, and not in RUST_ORANGE). Body block is rendered as a markdown text block with `USER_MSG_BG` applied as a per-cell background that extends to roughly the right edge.
+The banner is the literal text "User" in dim bold; the body is a markdown block on a slate background.
 
 <div class="term">
 
@@ -18,24 +14,20 @@ Role banner is the literal text "**User**" in `theme::DIM` bold (not the user's 
 
 </div>
 
-- **code** - `crates/forge-tui/src/ui/message.rs` · banner via `role_label_line(MessageRole::User)` · body via `append_user_blocks` with `text_block_layout(_, _, Some(theme::USER_MSG_BG), true)`
-- **color** - banner: `theme::DIM` + BOLD  ·  body bg: `theme::USER_MSG_BG` (`Rgb(40, 44, 52)`)  ·  body text: terminal default fg
-
 ## Assistant message
 
-*visible: every assistant turn*
+An assistant turn has no header row; a collapsible turn-info row trails the body - the spinner while the turn runs, `↳` once settled, dim `·`-separated fields, a `[▶ expand]` toggle. Body is full markdown.
 
-An assistant turn has no header row: the body starts on the first line. A collapsible **turn info** row trails the body as the last row, in the same shape as the stop-hook summary chip directly above it: one glyph at column 0, `·`-separated fields, all DIM, and a bracketed `[▶ expand]` toggle. That leading glyph is the **spinner while the turn runs** and `↳` once it settles. Body is full markdown via `tui-markdown` (which uses `pulldown-cmark`) with `syntect` for fenced code blocks.
+<details>
+<summary>Turn-info row: lifecycle and fields</summary>
 
-The row does not appear when the turn ends. It appears when the turn *starts* and counts up. Elapsed ticks; the thinking estimate and the input and cache tokens accumulate as each API call lands. Output tokens, cost and the API/local split do not exist until the `Message::Result` frame, so the collapsed row omits them and the expanded one dashes them, rather than showing a zero.
+The row appears when the turn starts and counts up: elapsed ticks, the thinking estimate and the input and cache tokens accumulate as each API call lands. Output tokens, cost and the API/local split do not exist until the turn's Result frame, so the collapsed row omits them and the expanded one dashes them rather than showing a zero.
 
-One row per turn while the turn runs on. A prompt submitted mid-turn with no cancel in flight rides the running turn rather than starting one (steering): the submit carries the running row onto the fresh tail placeholder with its clock intact and the message that was streaming sheds it. A prompt submitted over a pending cancel starts the row's clock over instead, matching the interrupted turn's restart. A delivered turn (peer, worker, cron, gotify) stamps its clock at the turn-open instead of at its first usage-bearing frame, so the row never sits as a bare loader while it waits.
+A prompt submitted mid-turn with no cancel in flight rides the running turn rather than starting one: the running row moves onto the fresh tail placeholder with its clock intact. A prompt submitted over a pending cancel restarts the row's clock, matching the interrupted turn's restart. A delivered turn (peer, worker, cron, gotify) stamps its clock at turn-open, so the row never sits as a bare loader.
 
-It carries no `turn info` label.
+**A running row may sit alone; a settled one may not.** Before any body exists the row is the only sign the turn is alive. Once the turn settles, a turn whose body rendered nothing visible gets no row, and a row with nothing stamped on it earns its line only while the session's turn clock is actually running.
 
-**A running row is allowed to sit alone; a settled one is not.** Before any body content exists the row is all there is to paint, and it is the only indication the turn is alive. Once the turn settles, a turn whose body rendered nothing visible gets no row. A row with nothing stamped on it yet earns its line only while nothing else on the message says so and the session's turn clock is actually running (a Result settles the clock, so post-turn traffic cannot revive the row).
-
-**Once the row has figures a compaction does show two spinners.** The compacting line says what is happening; the row says how long the turn has been going and what it has spent:
+**Once the row has figures, a compaction shows two spinners** - the compacting line says what is happening, the row says how long the turn has been going and what it has spent:
 
 <div class="term">
 
@@ -47,9 +39,9 @@ It carries no `turn info` label.
 
 </div>
 
-A turn reusing an unsettled one - a live tail whose pointer was lost, or a wire user prompt, which opens no placeholder of its own - shares the row until its Result replaces the fields, and both live writers skip a settled row, so the reuse never lands on finished figures. A tool_use opening after a settled row starts its own message rather than gluing in, and a Result racing a mid-turn submit settles on the body row the submit shed its bar from. A resumed session renders no turn-info row at all: replay synthesises only assistant and user messages, so no Result reaches the reducer and neither half of the row is ever known.
+A resumed session renders no turn-info row at all - replay synthesises only assistant and user messages, so neither half of the row is ever known.
 
-**Collapsed** is the default, and the expanded flag lives on the `ChatMessage` so it survives a re-render. **While the turn runs** the token field carries only its input half, since there is no honest output count yet, and under a minute the elapsed always ends in `.0` - a running row ticks in whole seconds and `format_turn_duration` shows tenths for anything under 60 s. The **thinking** estimate sits at position 2, and is a running-row field only:
+Collapsed is the default and the expanded flag survives a re-render. While the turn runs the token field carries only its input half, and the elapsed ticks in whole seconds. The thinking estimate sits at position 2 and is a running-row field only:
 
 <div class="term">
 
@@ -58,7 +50,7 @@ A turn reusing an unsettled one - a live tail whose pointer was lost, or a wire 
 
 </div>
 
-Settled, the spinner becomes `↳`, the output half of the token pair arrives, and **thinking** drops out. It stays visible in the expanded body:
+Settled, the spinner becomes `↳`, the output half of the token pair arrives, and thinking drops out of the collapsed row - it stays visible in the expanded body:
 
 <div class="term">
 
@@ -67,7 +59,7 @@ Settled, the spinner becomes `↳`, the output half of the token pair arrives, a
 
 </div>
 
-**Expanded** replaces the toggle label and adds an indented two-column body. An unknown cell renders `-`. A zero the wire actually reported is a measurement and renders as `0`:
+**Expanded** replaces the toggle label and adds an indented two-column body. An unknown cell renders `-`; a zero the wire actually reported is a measurement and renders as `0`:
 
 <div class="term">
 
@@ -87,7 +79,7 @@ Settled, the spinner becomes `↳`, the output half of the token pair arrives, a
 
 </div>
 
-**The body holds its height across the settle.** Open it on a running turn and it does not grow a row under the cursor when the Result lands - `local`, `thinking` and `session` are each held with a `-` rather than dropping out. Each holds as a bare dash: `local` without its `tools + hooks` tail and `session` without the `$` and the word `cumulative`:
+**The body holds its height across the settle** - open it on a running turn and it does not grow a row under the cursor when the Result lands. `local`, `thinking` and `session` each hold their line as a bare dash: `local` without its `tools + hooks` tail, `session` without the `$` and the word `cumulative`:
 
 <div class="term">
 
@@ -106,7 +98,9 @@ Settled, the spinner becomes `↳`, the output half of the token pair arrives, a
 
 </div>
 
-**The cache-percentage line is the deliberate exception** and stays conditional: it is the one row that is a sentence rather than a labelled cell. It appears as soon as a cache read is known, which is the turn's first assistant frame.
+**The cache-percentage line is the deliberate exception** - the one row that is a sentence rather than a labelled cell, appearing as soon as a cache read is known (the turn's first assistant frame).
+
+</details>
 
 <div class="term">
 
@@ -130,30 +124,44 @@ Settled, the spinner becomes `↳`, the output half of the token pair arrives, a
 
 </div>
 
-- **code** - `role_label_line` in `crates/forge-tui/src/ui/message.rs` returns `None` for Assistant, so no header row is pushed; `append_turn_info` appends the trailing row from `build_message_layout` · markdown via `crates/forge-tui/src/ui/markdown.rs`
-- **color** - every span on the row and its expanded body: `theme::DIM`  ·  body: terminal default fg with markdown styles  ·  inline code: `theme::DIM` tint
-- **order** - body → stop-hook summary chip → turn info → separator. The row carries no leading blank; the unconditional trailing separator still follows it, so messages stay one blank line apart.
-- **duration formatting** - `format_turn_duration`, shared with the expanded stop-hook rows: < 60s → `12.4s` (one decimal) · >= 60s → `1m 04s` · >= 1h → `1h 02m 04s`. Token counts use `format_token_count_short` (`4.2k`, `1.4M`) collapsed and full `1,102` grouping expanded.
-- **truncation** - The drop order is **stated, not positional**: `written` first, then `cached`, then `thinking`, then the token pair. `thinking` renders at position 2 but must shed *before* the token pair at position 3. The glyph, the elapsed time and the toggle are never dropped; below even that width the row wraps like any other line. Dropping the `turn info` label freed roughly twelve columns, so every threshold moved: the row now survives to a terminal about twelve columns narrower before it sheds its first field.
-- **field scope** - The wire mixes per-turn and session-cumulative fields, so the row cannot render `Message::Result` verbatim. `duration_ms` and `usage` are per turn. `duration_api_ms` is **session-cumulative**, so the turn's API time is its delta against the previous Result in that session; the naive `duration_ms - duration_api_ms` goes negative from the second turn onward. `local` is what is left after subtracting that delta, and is suppressed rather than clamped when the delta exceeds wall clock (concurrent subagent calls) or when the counter resets after a compaction. `total_cost_usd` is session-cumulative and is labelled `session` for that reason. `num_turns` is *not* the session's turn count despite its doc comment - it counts agentic iterations within the one request - so it is not rendered.
-- **missing values** - `usage` and `total_cost_usd` are both `Option` on the wire, and an absence is never rendered as `0`, because a zero is a claim and an absence is not. How it reads depends on the cell: an absent count drops out of the collapsed row and renders `-` in the expanded one, including the three rows that can be absent while the rest are present - `local`, `thinking` and `session` hold their line with a dash. `local` and `session` fill only when the Result lands; `thinking` fills during the turn if it fires at all, and stays a dash for a turn that never thought. The cache percentage is the single row that still drops rather than dash. A zero the wire did report is a measurement and renders as `0`.
-- **zero is not a measurement** - A `duration_api_ms` resolving to zero means the CLI attributed no API time, not that the turn was instant - the counter is millisecond-granular, so a turn that reached the API cannot register zero. An all-zero `usage` block says the same about tokens. Neither reaches the row: the `api` and `local` cells both render `-`, while the token cells keep whatever the turn's own assistant frames established - which on an interrupted turn are real running counts. The rule keys on the **whole** usage block: a lone zero inside a real one, a turn that wrote nothing new to the cache, is a measurement and renders as `0`.
-- **a row never mixes two Results** - A Result can reach a message that is not its own when a compaction emits one with no assistant message at all. A Result carrying usage overwrites every accounting field together and is allowed through even onto a settled row, while one with no usable token counts is refused by a settled row. The refusal is keyed on the settled row, not on the compaction: a compaction whose Result arrives after the previous turn settled (the one `compact.jsonl` captures) renders no row, which is the one shape left where a turn has no row of its own; one reaching a row that is still live does stamp its clock there.
-- **cache percentage** - `cache_read_input_tokens` over `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`. Both cache counters are **input** tokens - one written into the cache at a premium, one read back cheaply - so there is no output cache and neither is ever labelled as output. The expanded row names the denominator inline.
-- **thinking estimate** - Summed from `estimated_tokens_delta` on `system/thinking_tokens`, not read off `estimated_tokens`. **Both of that event's counters are documented as per-turn and both are per *thinking block***: measured across the 2.1.220 baselines, `exit_plan_mode` runs 50, 164 and then restarts at 50, 150, 250, 270 inside a single Result, and `permission_request_hook` does the same at 50, 71 then 50, 150. The restart carries `delta=50` rather than a negative step, so summing every delta is the exact per-turn total with no boundary to detect - verified equal to the sum of the per-block finals on all nine baselines that carry the event, with no negative delta anywhere. It is labelled `est` because it is the CLI's estimate of reasoning tokens, is not billed, and sits in the body rather than beside the billed counts. A turn that fired no such event renders `-`.
-- **stamp source** - Settled fields are stamped from `Message::Result` by `stamp_turn_info_on_latest_assistant` in `app/events/sdk_message.rs`, which invalidates the layout as well as the render cache because the row changes the message's height. When the Result finds the tail placeholder a mid-turn submit opened still empty, the stamp diverts to the nearest earlier unsettled body row. The end time is stamped locally on arrival: wall-clock is not on the wire. Running fields come from `AssistantEnvelope.usage`, deduplicated on `message.id` because the CLI splits one assistant message across a frame per content block and repeats the usage on each. `output_tokens` on those frames is the streaming `message_start` placeholder, not a count, so it is ignored until the Result lands. `system/turn_duration` never fires in 2.1.156 (verified across 43 baselines + 14 fresh captures, all zero); the prior chip read from that dead event and was deleted in #283. The thinking estimate accumulates on a session-scoped field which reaches the message through **four** writers, three of them assigning the field and the fourth replacing the whole `TurnInfo`: the thinking event (`mirror_thinking_tokens_onto_turn`), the live usage stamp (`record_live_turn_usage`), the settle (`stamp_turn_info_on_latest_assistant`) and turn start (`App::start_live_turn`). The count is established by a grep that matches whole-struct assignment as well as field assignment - `grep -rnE "turn_info\s*=|thinking_tokens\s*="` - rather than by the field-assignment pattern that names three.
+<details>
+<summary>Turn-info rules: fields, durations, truncation, zeros, reuse</summary>
 
-  The event can only ever write a number, so it is the usage stamp and the settle that **assign unconditionally**, which stops a turn reusing an unsettled row from inheriting the previous turn's estimate. Turn start covers the other path, resetting the row and the accumulator together. The two turn-boundary clears on the session field stay load-bearing, and the settle reads it before clearing it.
-- **ticking** - No new timer. While a turn runs the status is `Thinking` or `Running`, which already forces a repaint once per `repaint_interval`; the row's cache key carries elapsed *whole seconds*, so the *elapsed* moves that key only on a second boundary.
+- Every span on the row and its expanded body is dim; the body above is the terminal's default foreground with markdown styles and a dim tint on inline code.
+- Order: body, stop-hook summary chip, turn info, then the unconditional trailing separator - the row carries no leading blank, so messages stay one blank line apart.
+- Durations: under 60 s one decimal (`12.4s`); from 60 s `1m 04s`; from 1h `1h 02m 04s`. Token counts render collapsed (`4.2k`, `1.4M`) in the collapsed row and full grouped (`1,102`) expanded.
+- Truncation drop order is stated, not positional: `written` first, then `cached`, then `thinking`, then the token pair - thinking renders at position 2 but sheds before the token pair at position 3. The glyph, the elapsed time and the toggle are never dropped; below even that width the row wraps like any other line.
+- Field scope: the wire mixes per-turn and session-cumulative fields, so the row cannot render a Result verbatim. `duration_api_ms` is session-cumulative - the turn's API time is its delta against the previous Result - and `local` is what is left after subtracting that delta, suppressed rather than clamped when the delta exceeds wall clock (concurrent subagent calls) or when the counter resets after a compaction. `total_cost_usd` is session-cumulative, hence the `session` label. `num_turns` counts agentic iterations within one request, not the session's turns, and is not rendered.
+- Missing values: an absence is never rendered as `0` - a zero is a claim and an absence is not. An absent count drops out of the collapsed row and renders `-` in the expanded one; `local`, `thinking` and `session` hold their line with a dash. `local` and `session` fill only when the Result lands; `thinking` fills during the turn if it fires at all and stays a dash for a turn that never thought. The cache percentage is the single row that still drops rather than dash.
+- Zero is not a measurement: a `duration_api_ms` of zero means the CLI attributed no API time (the counter is millisecond-granular - a turn that reached the API cannot register zero), and an all-zero usage block says the same about tokens. Neither reaches the row - `api` and `local` both render `-` while the token cells keep the turn's own running counts. The rule keys on the whole usage block: a lone zero inside a real one is a measurement and renders as `0`.
+- A row never mixes two Results: a compaction can emit a Result with no assistant message at all. A Result carrying usage overwrites every accounting field together and is allowed through even onto a settled row; one with no usable token counts is refused by a settled row. A compaction whose Result arrives after the previous turn settled renders no row - the one shape where a turn has no row of its own; one reaching a still-live row does stamp its clock there.
+- A Monitor sitting between two peer envelopes drops that pair below the messaging-group threshold, so the pair renders as plain peer cards.
+- Cache percentage: cache reads over inputs plus cache writes - both cache counters are input tokens (one written at a premium, one read back cheaply), so there is no output cache and neither is ever labelled as output. The expanded row names the denominator inline.
+- Thinking estimate: summed from per-thinking-block deltas - the event's counters restart per block inside a single turn (measured across the 2.1.220 baselines: `exit_plan_mode` runs 50, 164 then restarts at 50, 150, 250, 270; `permission_request_hook` the same at 50, 71 then 50, 150), so summing every delta is the exact per-turn total with no boundary to detect. It is labelled `est` because it is the CLI's estimate of reasoning tokens, is not billed, and sits in the body rather than beside the billed counts. A turn that fired no such event renders `-`.
+- Settled fields stamp from the turn's Result; when the Result finds the tail placeholder a mid-turn submit opened still empty, the stamp diverts to the nearest earlier unsettled body row. `system/turn_duration` never fires on the 2.1.156 wire (verified across 43 baselines and 14 fresh captures, all zero) - the prior chip read from that dead event and was deleted in #283.
 
-  **That is not how often the message rebuilds.** The same signature folds the spinner glyph whenever the message is a running assistant, and the glyph turns over every 32ms on the default braille style - so a live turn's message re-lays out around 31 times a second, not once. Measured at roughly 28µs collapsed against 148µs expanded for a one-paragraph turn, an open body costs about 120µs per rebuild and 3.75ms of work per second, which is 22.5% of one 60fps frame budget.
-- **expand** - Click the row to toggle, same as the stop-hook summary chip and with the same hit-test shape plus a measured-width guard. It is in `pointer_shape_at`'s clickable set too, so it hovers as a hand rather than an I-beam. **Cmd+X** (Ctrl+X off macOS) reaches it through the existing toggle-all, which clears every per-row override in the active session so anything clicked open or shut returns to what the flipped flag now dictates - a turn info row clicked open snaps shut alongside a tool call clicked open. No new mechanism and no binding of its own. **The symmetry is one-way**: tool calls have an app-global `tools_collapsed` to return to, and the row has none, so expand-all opens the tool calls and still shuts the row.
+- Turn start resets the row and the accumulator together, and the usage stamp and settle assign unconditionally, so a turn reusing an unsettled row never inherits the previous turn's estimate.
+- Ticking: no new timer - the row's cache key carries elapsed whole seconds, so elapsed moves the key only on a second boundary; the spinner glyph folds into the same signature and turns over on the style's own cadence, re-laying the running message out each frame.
+
+</details>
+
+<details>
+<summary>Expanding the row</summary>
+
+Click the row to toggle it - the same affordance and hand pointer as the stop-hook summary chip. **Cmd+X** (Ctrl+X off macOS) toggle-all clears every per-row override in the active session, so anything clicked open or shut returns to what the flipped flag dictates; the symmetry is one-way - expand-all opens the tool calls and still shuts the row, which has no global state of its own.
+
+</details>
 
 ## Compacting indicator
 
-*visible: on the active turn's assistant message, while the session is compacting*
+While the session compacts the active assistant's status slot shows the spinner frame and "Compacting context..." in rust orange - the slot's only non-dim line.
 
-The first line of the active assistant message's status slot: `⠋ Compacting context...`, the leading glyph in the session's active spinner frame and the whole line in RUST_ORANGE - the only one of the slot's lines that is not `DIM`. It trails the message body, after a blank line when the body has content; on a body-less placeholder it is the whole body. Arming is wire-driven, never optimistic: `status:"compacting"` arrives through `apply_session_status_update` and each typed `compact_boundary` re-arms it via `handle_compaction_boundary_update` (recording the trigger and pre-tokens); it clears when the CLI reports the settle (`status:null`), which is also when a manual `/compact` emits its success notice.
+<details>
+<summary>Compacting details</summary>
+
+The line trails the body after a blank line (the whole body on a body-less placeholder), arms wire-driven, never optimistically, and clears when the CLI reports the settle. It does not replace a turn-info row that already has figures; the two render together (the two-spinner case above).
+
+</details>
 
 <div class="term">
 
@@ -162,17 +170,9 @@ The first line of the active assistant message's status slot: `⠋ Compacting co
 
 </div>
 
-**It does not replace the turn info row.** A turn info row that already has figures still renders beneath it, the two-spinner case shown under **Assistant message**.
+## Stop-hook summary
 
-- **code** - `crates/forge-tui/src/ui/message.rs::compacting_line`, pushed from `append_assistant_blocks` (body-less message) and `build_message_layout` (after the body); the active-turn restriction rides the `msg_spinner` gate, like the thinking flags
-- **color** - glyph + text: `RUST_ORANGE`
-- **data source** - `App::is_compacting`, driven by the CLI's session-status stream (`status:"compacting"`) and `compact_boundary` events; the glyph frame is the shared spinner (see [\[ui\] spinner](./pickers.md))
-
-## Stop-hook summary (end-of-turn)
-
-*visible: end of an assistant turn whose `system/stop_hook_summary` event reports `actions > 0`*
-
-Optional collapsed-by-default 1-liner appended to the end of an assistant turn when one or more `Stop`-event hooks executed during the turn. Click the `[▶ expand]` affordance (or keyboard toggle) to expand the summary text inline. When `actions == 0` the surface is hidden entirely (no row reserved). Sourced from `system/stop_hook_summary` (CLI 2.1.156+).
+When Stop-event hooks executed during the turn: a collapsed one-liner - click `[▶ expand]` to expand. Hidden at zero actions. All dim (CLI 2.1.156+).
 
 Collapsed:
 
@@ -195,16 +195,16 @@ Expanded:
 
 </div>
 
-- **code** - `crates/forge-tui/src/ui/message.rs` + per-message expand-state on `UiSession` (matches existing tool-card collapse pattern)
-- **color** - line + body: `theme::DIM`
-
 ## System notice
 
-*visible: rate-limit warnings, mode changes, parse errors, retries, slash-command output, connection failures*
+Rate-limit warnings, mode changes, parse errors, retries, slash-command output, connection failures. Banner: the literal severity word in bold - "Info" dim, "Warning" warning-yellow, "Error" error-red - body lines tinted to match, hard-wrapped.
 
-Banner is the literal severity word "**Info**" / "**Warning**" / "**Error**" in bold, colored by severity (Info=DIM, Warning=STATUS_WARNING, Error=STATUS_ERROR). Body lines are tinted with the same color via `tint_lines` after markdown rendering. Hard wraps at the terminal width.
+<details>
+<summary>Notice placement</summary>
 
-**Placement:** anchored to where the event happened. While a turn is in flight (status Thinking / Running) the notice inserts just above the active assistant placeholder, so a mid-turn notice (e.g. a worker-closed toast) flows inline with the conversation - the turn pointer shifts with the placeholder so the spinner stays put and the response keeps streaming there. When idle, or at turn end (an error / completion message), it appends at the tail. A rate-limit warning reaches the same inline position through the turn-notice path.
+Mid-turn the notice inserts just above the active assistant placeholder (the spinner stays put and the response keeps streaming there); idle or at turn end it appends at the tail. A rate-limit warning reaches the same inline position.
+
+</details>
 
 <div class="term">
 
@@ -220,25 +220,24 @@ Banner is the literal severity word "**Info**" / "**Warning**" / "**Error**" in 
 
 </div>
 
-- **code** - `crates/forge-tui/src/ui/message.rs::system_role_label_line` + `notice_block_layout` + `tint_lines`
-- **placement** - `crates/forge-tui/src/app/events.rs::insert_active_system_message` anchors above the in-flight assistant while running (via `insert_message_tracked`), tail otherwise
-- **severities** - `SystemSeverity::Info` → `theme::DIM` · `Warning` → `theme::STATUS_WARNING` · `Error` → `theme::STATUS_ERROR`
-
 # Tool calls
 
-Every tool invocation renders through the same path: a single title row at column 2 (status icon + kind icon + display title) followed, when there's body content, by lines prefixed with `  │  ` (DIM). No bordered cards - Bash, Read, Edit, Grep, etc. all share one shape. The body content varies by tool kind (raw terminal output for Bash, syntax-highlighted code for Read, unified diff for Edit / Write / MultiEdit, etc.).
+Every tool invocation renders through one path: a title row at column 2, body lines prefixed with a dim `  │  `, last `  └─ `. All tools share one shape; the body varies by kind.
 
-## Standard row (Read · Write · Edit · Grep · Glob · etc.)
+## Standard row
 
-*visible: any tool call that isn't Bash / TodoWrite / Subagent*
+Single line: 2-space indent, status icon in its status color, kind icon and kind label in white bold, then the display title in default foreground. Body lines prefix with a dim `  │  `, last `  └─ `.
 
-Single line: 2-space indent + status icon (success / fail / spinner) in status color + space + tool kind icon (white bold) + space + **kind label** (white bold - "Read", "Edit", "Bash", etc. from `theme::tool_name_label`) + space + display title (markdown inline spans, default fg). Body lines (when present) prefix each with "`  │  `" dim (5 chars: 2 + box-drawing-vertical + 2), last line with "`  └─ `" dim (5 chars). If `tc.title` from claude already starts with the kind label (e.g. claude often sends "Read /path/to/file.rs"), the duplicate prefix is stripped.
+<details>
+<summary>Collapse behavior</summary>
 
-**Collapsed** (when collapse is in effect and the tool call has no diff / pending permission / pending question): the body collapses to a single summary line "`  └─ <content_summary>  click or ctrl+x to expand`" (all DIM). The summary text comes from `content_summary` - last non-empty line of terminal output (capped at 80 chars), or the file name for a Diff, or an MCP resource path, etc.
+**Collapsed** (when collapse is in effect and the call carries no diff, pending permission or pending question): the body folds to one dim summary line, `  └─ <summary>  click or ctrl+x to expand` - the summary is the last non-empty output line (capped at 80 chars), or the file name for a diff, or an MCP resource path.
 
-**Collapse precedence (unified resolver):** every render-time "should this be collapsed?" decision routes through `crate::ui::collapse`. Two pure resolvers: `resolve_collapsed_bool(per_item, global_collapsed)` for 2-state items (loose tool-calls, peer/MCP blocks inbound + outbound) and `resolve_group_level(per_group, global_collapsed)` for 3-state items (tool-call groups, messaging groups) where absent + global-collapsed returns `L2Summary` and absent + global-expanded returns `L0Bodies`. Per-item state (the override fields) wins when present; absent falls through to `app.tools_collapsed`. The carve-out predicate `is_carved_out_from_global_directive(tc)` names the kinds that bypass the global directive entirely - Execute / Bash, diff content (Edit/Write/MultiEdit/NotebookEdit), and any tool that actually renders as a lifecycle block (`renders_as_lifecycle_block`, currently Monitor with parseable input) - those render expanded regardless. Keyed on the render rather than the tool name, so a Monitor whose input does not parse paints an ordinary card and stays collapsible.
+**Carved-out kinds render expanded regardless of the global collapse**: Bash, diff content (Edit / Write / MultiEdit / NotebookEdit), and any tool that renders as a lifecycle block - keyed on the render, so a Monitor whose input does not parse paints an ordinary card and stays collapsible.
 
-Ctrl+X (Cmd+X) is a **binary global toggle**, not a graduated cycle. Press 1 expands every non-carved-out kind (groups to `L0Bodies`, tools / peer / MCP to expanded); press 2 collapses everything (groups to `L2Summary`, tools / peer / MCP to collapsed). The gesture also clears every per-item override (`tc.collapsed_override`, `text.peer_collapsed_override`, `group_collapse_levels`, `messaging_group_collapse_levels`) so any row the user had clicked open or closed resets to its default-render state. The intermediate `L1Titles` group level stays reachable only via mouse-click on a group summary row (the per-group L2 → L1 → L0 click cycle is unchanged). At session start the global directive defaults to COLLAPSED, so a fresh chat opens compact.
+**Ctrl+X (Cmd+X) is a binary global toggle**, not a graduated cycle: once expands every non-carved-out kind, again collapses everything, and it clears every per-item override so a row clicked open or shut resets to its default-render state. The intermediate titles-only group level stays reachable only by clicking a group's summary row. Session start defaults to collapsed, so a fresh chat opens compact.
+
+</details>
 
 <div class="term">
 
@@ -258,20 +257,40 @@ Ctrl+X (Cmd+X) is a **binary global toggle**, not a graduated cycle. Press 1 exp
 
 </div>
 
-**Server-side tool variants** (`ServerToolUse` wire blocks - ToolSearch, web_search, web_fetch, advisor, plus the code-execution family) render through the same standard path. The wire `name` field is the discriminator (`tool_search_tool_regex` / `tool_search_tool_bm25` / `web_search` / `web_fetch` / `advisor`), and both the title formatter and the kind label map those lowercase wire names back to the familiar capitalised form so the card chrome is identical to the in-process equivalents. Result blocks land via the `advisor_tool_result` typed arm (advisor) or via the `is_tool_result_block_type` unknown-arm passthrough (web/tool_search results).
+<details>
+<summary>Server-side tool variants</summary>
 
-**ToolSearch has a second wire shape forge also renders.** Alongside the server `ServerToolUse` path above, an agent can call ToolSearch itself as a CLIENT `tool_use` (plain `tool_use` block, wire name literal `"ToolSearch"`, input `{query, max_results}`) - this is the deferred-tools tool a forge agent invokes when it doesn't have a tool's schema loaded yet. The title arm in `tool_title` pairs the client name with the server discriminators in one branch (`"ToolSearch" | "tool_search_tool_regex" | "tool_search_tool_bm25"`) so both shapes surface the query as `⌖ ToolSearch <query>`. The matching `tool_result` wire shape is an array of `{type: "tool_reference", tool_name: "..."}` blocks - `build_tool_result_fields` walks the array and synthesises a compact `Found <A>, <B>` body line, NOT the raw `<functions>` schema dump.
+Server-side tool variants (ToolSearch, web_search, web_fetch, advisor, plus the code-execution family) render through the same standard path - the lowercase wire names map back to the familiar capitalised labels, so the card chrome is identical to the in-process equivalents. ToolSearch also arrives as a client `tool_use` carrying `{query, max_results}`; both shapes surface the query as `⌖ ToolSearch <query>`, and its results render as a compact `Found <A>, <B>` body line rather than a raw schema dump.
 
-- **code** - `crates/forge-tui/src/ui/tool_call/standard.rs::render_tool_call_title`
-- **icons + labels** - per `theme::tool_name_label`: Read (⬚) · Write / Edit / MultiEdit / NotebookEdit / Delete (▣) · Grep / Glob / LS (⌕) · Bash (▶) · WebFetch / WebSearch (⊕) · Move / EnterWorktree (⇄) · ExitPlanMode / Config (⊙) · TodoWrite (◌) · Task / Agent → "Subagent" (◇) · ToolSearch (⌖) · Skill / Advisor (✦) · fallback "Tool" (○). The server-tool wire-name variants (`tool_search_tool_regex` / `tool_search_tool_bm25` / `web_search` / `web_fetch` / `advisor`) map to the same glyph + label so the in-process and server-side calls look identical.
-- **duplication strip** - if `tc.title` starts with "`<kind> `" (kind label + space), the prefix is stripped so we don't render "Read Read /path"
-- **plan-mode aliases** - when `current_mode_id == "plan"`: Write title becomes "Create Plan", Edit/MultiEdit becomes "Update Plan". The kind label still renders ("Write Create Plan" / "Edit Update Plan").
+</details>
+
+<details>
+<summary>Collapse behavior</summary>
+
+**Plan-mode aliases**: in plan mode the Write title becomes "Create Plan" and Edit / MultiEdit "Update Plan" - the kind label still renders.
+
+</details>
+
+| Kind | Glyph |
+|---|---|
+| Read | `⬚` |
+| Write / Edit / MultiEdit / NotebookEdit / Delete | `▣` |
+| Grep / Glob / LS | `⌕` |
+| Bash | `▶` |
+| WebFetch / WebSearch | `⊕` |
+| Move / EnterWorktree | `⇄` |
+| ExitPlanMode / Config | `⊙` |
+| TodoWrite | `◌` |
+| Task / Agent (labelled "Subagent") | `◇` |
+| ToolSearch | `⌖` |
+| Skill / Advisor | `✦` |
+| Fallback (labelled "Tool") | `○` |
+
+Status icons: `✓` success, `✗` failure, the spinner while running.
 
 ## Bash row
 
-*visible: every Bash tool call*
-
-Same standard tool-call shape - status icon + `▶` kind icon (white bold) + the command as the title. Body lines prefixed with `  │  ` (DIM) carry the terminal output through `render_terminal_output` (ANSI handling, output cap at `TERMINAL_MAX_LINES = 12`). Last line uses `  └─ `.
+The standard shape with the command as title; the body carries the terminal output capped at the last 12 lines; on failure only the first stderr line shows.
 
 <div class="term">
 
@@ -284,26 +303,29 @@ Same standard tool-call shape - status icon + `▶` kind icon (white bold) + the
 
 </div>
 
-- **code** - title via `standard::render_tool_call_title`, body via `standard::render_tool_content` (which dispatches to `render_terminal_output` when `tc.is_execute_tool()`). When the run failed, only the first non-empty stderr line is shown via `failed_execute_first_line`.
-- **icon** - kind icon `▶` (`U+25B6`) in white bold (matches every other tool icon's coloring).
-- **collapse** - same Ctrl+X / click behaviour as other tools - collapses to the single-line summary `  └─ <last output line>  click or ctrl+x to expand` in DIM.
-- **resolves** - [#39](https://github.com/busytools/forge/issues/39) - Bash no longer has its own bordered card. Same shape as Edit / Read / Grep. `render_execute_with_borders` deleted entirely.
+## Tool-call grouping (L2 / L1 / L0)
 
-## Chat tool-call grouping (L2 / L1 / L0)
+Consecutive tool calls between two user messages fold into one foldable group (threshold 1). Run-breakers (the diff tools, Monitor, the peer-block tools) render inline and split the run; chat-suppressed tools pass through so visible groups merge.
 
-*visible: any assistant message that produced one or more consecutive tool calls outside the special-render set (edits / writes / monitor / peer block)*
+<details>
+<summary>Group shapes, levels, click behavior</summary>
 
-Any consecutive tool calls between two user messages fold into one foldable header. The membership is render-class deny-list: a tool gets its own visible card only when it renders bespoke chat surface. **Run-breakers (always inline, never folded)**: Edit / Write / MultiEdit / NotebookEdit (inline diff view), Monitor (lifecycle block - and because it renders visibly it SPLITS a run rather than passing through it, so `Read,Read,Monitor,Read,Read` reads as two groups of two rather than one of four, and a Monitor between two peer envelopes drops that pair below the 2-envelope messaging-group threshold), and the peer block tools (`peers__ask_agent`, `peers__tell_agent`, `workers__ask`, `workers__tell`). Chat-suppressed tools (Task* / AskUserQuestion / Workflow / Schedule* / Cron*) render nothing visible and pass through the run, so adjacent visible groups merge across them. Everything else folds, including `WebSearch` / `WebFetch` / `LSP` / plain `mcp__*` calls.
+The L2 summary is one tree for every run: a parent count row - the aggregated status icon (spinner while any call runs, green check when all complete, red cross if any failed, hollow circle while only pending), bold glyph and label, the dim `ctrl+x to expand` hint - then one dim-connected child per kind (`├─` / `└─` with a `│` spine), each kind nesting one child row per resolved target (uncapped), or a bare row with `×N` when a target-less kind repeats. Same-glyph tools merge: Grep / Glob / LS become one `search` child, WebFetch / WebSearch one `web`, LSP `lsp`; MCP calls group by server under the `◈` marker, one child per call.
 
-The threshold is 1: a single groupable call also wears the foldable header and renders the same default **L2** summary line as a multi-call group. Per-group cycling is bound to mouse-click on a group's summary row, walking that group's level through L2 (summary) → L1 (title row) → L0 (title + body); single-item groups follow the same path so the chat surface stays uniform regardless of run length. ctrl+x is the session-wide tools-collapsed toggle, not a per-group cycle.
+Click a group's summary row to cycle it L2 (summary) → L1 (title rows) → L0 (title + full body, the standard per-tool render); a click on a single row inside an L1 group flips just that row's body. At L2 the members are hidden behind the summary and are not click targets - a click resolving to one is refused rather than toggling a body that is not on screen. Ctrl+x stays bound to the session-wide global toggle; per-group state is independent of it.
 
-**L2 summary** renders ONE consistent tree shape for every run - single-kind or many. The parent line is the count (`<status_icon> <N> tool calls   ctrl+x to expand`, no box corner); below it one child per kind carries the projects-pane tree connectors - `├─` for each kind, `└─` for the last - plus the `│` spine. A single-kind run is just a one-child tree. The 2-space LEFT indent aligns the leading icon with every other tool row; the connectors sit at column 2. The leading **status_icon** aggregates over the run (animated braille spinner while any call runs, green check when all complete, red cross if any failed, hollow circle when only pending). Glyph + label render BOLD; connectors, spine, targets and the `ctrl+x to expand` hint render DIM. The block carries a leading blank line.
+</details>
 
-**Per-kind children**: each kind is keyed by the glyph `theme::tool_name_label` assigns, so same-glyph tools merge - Grep / Glob / **LS** collapse to one `search` child, WebFetch / WebSearch to one `web`, LSP to `lsp`, and so on. No generic `calls` grab-bag. **Every kind follows one rule**: any kind with resolved targets **nests one child row per target** (uncapped - every resolved target gets a row, like read), whatever its call count; a target-less kind shows a bare row, with `×N` when called more than once. **Nothing wraps** - each row is a single line, and the nested target rows are the only ones that clip. Kind rows and the `×N` row render at their natural width, so a long kind label overflows at any width - `├─ ◈ plugin_context7_context7` is 31 cells. Separately, the target budget floors at 8 cells, so below a render width of 16 a child row overflows too. The outer layout char-wraps *without* the tree gutter, so either of those shears the tree. The parent count row is the exception - it is never clipped and is often the widest row, but it wraps because its connectors live on the rows below it. The spine holds `│` while a later kind follows, blank on the last. Kinds render in first-appearance order.
+<details>
+<summary>Row content and clipping</summary>
 
-**Read vs the rest (clip style)**: read relativizes each path against the project root (the session's `cwd_raw`) and clips with a **middle-ellipsis** (`crates/.../message.rs`) so the filename stays visible; every other kind clips **end-first** with `...` (keeping the head - the command name / domain / pattern start). `bash` shows Claude's human-readable `description`, `web` the URL (scheme stripped) or query, `toolsearch` the query, `skill` the invoked skill name (+ its `args` when the call carries any), `SendMessage` the recipient + summary (falling back to the full message), `Delete` / `Move` their paths, `LSP` the operation + file, `PushNotification` the message. **MCP by server**: every `mcp__<server>__<tool>` call keys by its server under the distinct `◈` marker (label = server name, target = the tool sub-name), nesting one child per call like every other kind. Peer / worker MCP tools stay run-breakers (they render peer blocks) and never fold here.
+- Nothing wraps: each row is a single line, and the nested target rows are the only ones that clip. Read relativizes each path against the project root and clips with a middle-ellipsis so the filename stays visible; every other kind clips end-first with `...`, keeping the head. The parent count row is never clipped and often the widest; the target budget floors at 8 cells, so below a render width of 16 a child row overflows, and the outer layout char-wraps without the tree gutter, so an overflowing row shears the tree.
+- Per-kind content: bash shows the human-readable description, web the URL (scheme stripped) or query, toolsearch the query, skill the invoked skill name (plus its args), SendMessage the recipient and summary (falling back to the full message), Delete / Move their paths, LSP the operation and file, PushNotification the message.
+- Kinds render in first-appearance order; the spine holds `│` while a later kind follows, blank on the last.
 
-Multi-kind run (the tree - every kind nests one row per instance):
+</details>
+
+Multi-kind run:
 
 <div class="term">
 
@@ -325,7 +347,7 @@ Multi-kind run (the tree - every kind nests one row per instance):
 
 </div>
 
-MCP calls group by server under the `◈` marker:
+MCP by server:
 
 <div class="term">
 
@@ -343,7 +365,7 @@ MCP calls group by server under the `◈` marker:
 
 </div>
 
-A single-kind run is a one-child tree - a lone read nests its file, a lone bash nests + clips its description:
+A single-kind run is a one-child tree:
 
 <div class="term">
 
@@ -383,7 +405,7 @@ A single-kind run is a one-child tree - a lone read nests its file, a lone bash 
 
 </div>
 
-**L1 expansion** (titles only, bodies still closed):
+L1 expansion (titles only, bodies still closed):
 
 <div class="term">
 
@@ -395,9 +417,7 @@ A single-kind run is a one-child tree - a lone read nests its file, a lone bash 
 
 </div>
 
-**L0 expansion** falls through to the standard per-tool render: each row renders title + full body, indented under the standard `│  ` / `└─` tree connectors. Individual rows still honour their per-tool `collapsed_override`, so a click on a row at L1 can still flip just that row's body open.
-
-**Mid-run breaker example**: a 3-Read run, an `Edit` breaker, then a 2-`Bash` run renders as two trees on either side of the `Edit` tool-card.
+A mid-run breaker:
 
 <div class="term">
 
@@ -417,24 +437,23 @@ A single-kind run is a one-child tree - a lone read nests its file, a lone bash 
 
 </div>
 
-- **code** - Render-class breaker predicate + partitioner: `crates/forge-tui/src/ui/message/grouping.rs` (`is_run_breaker` keys off `RenderToolCallContent::Diff` in `tc.content` and the by-name lifecycle / peer-block render sets; hidden / chat-suppressed tools pass through and don't break the run). Per-session level state: `UiSession.group_collapse_levels` (HashMap keyed by the leader tool's `tool_use_id`). Render dispatch: `append_assistant_blocks` in `ui/message.rs` partitions blocks per message and switches on level per group. Per-kind tally (`KindSummary` / `KindLine`, glyph-family keyed with MCP-by-server; every kind keeps one target per call, uncapped) lives in `ui/message/grouping.rs`. L2 render: `ui/tool_call/group.rs::render_group_summary_line(summary, aggregate_status, spinner_frame, max_width, project_root, chrome)` - a parent count row + one `├─`/`└─` child per kind. Every kind nests one clipped child row per target regardless of call count (a target-less kind shows `×N` when called more than once); read relativizes each path against `project_root` (threaded from `cwd_raw` via `MessageRenderContext::with_project_root`) and clips with a middle-ellipsis (`clip_middle`) keeping the filename, every other kind clips end-first (`clip_to_width`). ctrl+x: `keys.rs::toggle_all_tool_calls` flips the session-wide `tools_collapsed` flag and invalidates `Global`.
-- **cache** - The message render signature folds each Group's `(range, level, aggregate_status)` alongside the per-block hashes (`build_message_render_signature`), so a level flip or status transition on any one group invalidates only the affected message's cached layout. Spinner ticks invalidate the message cache (via the existing per-tool frame hash on InProgress tools) but NOT the layout cache - the single status_icon cell changes, line width stays stable.
-- **focus model** - Mouse click on a group's summary row cycles that group's level; the leader tool's `last_measured_y_in_msg` stamps the summary line's region so existing `locate_tool_call_block_at_click` resolves the click, and the mouse handler reclassifies via `grouping::group_hit_at`, scoping invalidation to `MessageChanged(msg_idx)`. At L2 the members are behind the summary and are NOT click targets: the render zeroes their hit-test rects, and a click that still resolves to one is refused rather than toggling a body that is not on screen. That refusal is reachable without any drift - the event loop drains queued terminal events without rendering between them, so a ctrl+x collapse and a click already in the tty buffer arrive back to back. ctrl+x stays bound to the session-wide global toggle - per-group state is independent of the global flag. Click on an individual row inside an L1 group flips just that row's body via the standard per-tool `collapsed_override` path.
-- **invariant** - `tool_group_l2_summary_clears_hit_geometry_for_the_blocks_it_hides` (`message.rs`) pins that an L2 render leaves no member holding a clickable rect, and `click_resolving_to_a_tool_block_hidden_by_an_l2_summary_does_not_toggle_it` (`mouse.rs`) pins the refusal at the click. `every_special_render_tool_is_a_run_breaker` (unit test in `grouping.rs`) enumerates every diff / lifecycle / peer-block tool with a bespoke visible render path and asserts the breaker predicate returns true. Chat-suppressed tools (Task* / AskUserQuestion / Schedule* / Cron*) are covered by the inverse test `run_breaker_false_for_hidden_chat_suppressed_tools`: they render nothing visible and must pass through the run. Adding a new bespoke visible renderer requires extending both the predicate AND the test enumeration in the same change; otherwise the next group containing the new tool folds and the bespoke render never fires.
+## Messaging grouping (L2 / L1 / L0)
 
-## Chat peer/worker messaging grouping (L2 / L1 / L0)
+A run of 2+ consecutive peer/worker messages within one message folds into one messaging group; a lone one renders as a plain peer card.
 
-*visible: a run of 2+ consecutive peer/worker MCP messages (`peers__*` / `workers__*` outbound + inbound envelopes) **within one message**. A lone messaging block renders as its plain peer card.*
+<details>
+<summary>Messaging group shape and kinds</summary>
 
-**Parallel to chat-tool-grouping**, grouped on the same scope: per message, with the message boundary a hard run-breaker (per #327). A run of peer/worker messages - outbound (`Tell`, `Ask`) and inbound (`Message`, `Question`, `Reply`) - folds into ONE messaging group; mixed direction lives in the same group (no split by direction). The partitioner is type-aware: peer/worker run produces a **messaging group**, tool-call run produces a **tool group**, adjacent and never merged.
+The L2 summary is the same tree the tool groups draw: a bare count parent (no target list), one child per envelope kind, one leaf per message - `<peer> · <first non-blank line>`, clipped so nothing wraps. The kind is the envelope kind, not the direction: `tell` / `ask` outbound, `message` / `question` / `reply` / `failed` / `spawn failed` inbound; direction survives as the per-row glyph (`⤴` out, `⤵` in). A kind with one message still gets its own leaf, every message keeps its own leaf (no `×N`), and failures stay in the group as warning-styled kind rows that drive the parent status icon. Consecutive incoming envelopes merge into one message at construction so an inbound run reaches the threshold; a Gotify notification sharing the message breaks the merge, so an external alert never renders as agent traffic. Mixed directions live in the same group.
 
-**Consecutive incoming envelopes merge into ONE message at construction** (`sdk_message.rs::push_peer_envelope_user_turn_if_present`), so a run of incoming messages is one message with N blocks and reaches the threshold. The merge appends to the tail when that message is already an envelope of the same kind - gated on the constructor, because the role label is picked from per-message flags and a Gotify notification sharing a message with peer traffic would render an external alert as agent traffic. The window bounds itself: once the agent produces output the tail is no longer an envelope message, so the next envelope starts fresh.
+</details>
 
-**L2 summary is a TREE**, drawn by the same `render_group_summary_line` the tool groups use - a parent count row, one `├─`/`└─` child per kind, one leaf per message. It is not a new collapse level; it is what the summary line renders.
+<details>
+<summary>Run boundaries and levels</summary>
 
-**The kind is the ENVELOPE KIND, not the direction.** A per-message group is always single-direction - inbound envelopes only live in user turns, outbound calls only in assistant turns - so a direction level would never discriminate. Envelope kind does: one turn genuinely fires two Tells and an Ask, and a run of incoming messages genuinely mixes a Reply with a Message. Seven kinds: `tell` and `ask` outbound, `message` / `question` / `reply` / `failed` / `spawn failed` inbound. Direction survives as the per-row glyph (`⤴` / `⤵`).
+A run never continues past its message: the assistant's reply is the next turn and renders as its own card; a plain user turn between two runs breaks them apart. Click a group's summary row to cycle L2 → L1 (per-message title rows, each with its direction glyph and target label) → L0 (the standard [peer-block render](./peers.md), each row re-collapsible); ctrl+x is the same global binary toggle.
 
-The parent row is a BARE count - no target list. Leaf rows are `<peer> · <first non-blank line of the body>`, clipped end-first to a computed per-row budget so nothing wraps and shears the tree. Every message keeps its own leaf: no `×N`, no `+N` overflow.
+</details>
 
 <div class="term">
 
@@ -448,10 +467,6 @@ The parent row is a BARE count - no target list. Leaf rows are `<peer> · <first
 
 </div>
 
-**Always nests, never inlines.** A kind with one message still gets its own leaf. The **tool tree** nests on the same rule.
-
-**Failures stay in the group and drive the parent status.** `failed` and `spawn failed` are kind rows like any other, styled as a warning. An inbound failure carries no `ToolCallStatus` of its own, so `aggregate_status` learns about it explicitly.
-
 <div class="term">
 
   <pre class="indent">
@@ -463,7 +478,7 @@ The parent row is a BARE count - no target list. Leaf rows are `<peer> · <first
 
 </div>
 
-**A run does not continue past its message.** Consecutive incoming envelopes merge into one message, but the assistant's reply is still the next turn, so the two are separate messages and render as two separate cards. A plain user turn between two runs breaks them apart. Each group covers exactly one message, and `KindSummary::total()` drives both the summary count and its pluralization.
+A plain user turn between two runs breaks them apart:
 
 <div class="term">
 
@@ -478,7 +493,7 @@ The parent row is a BARE count - no target list. Leaf rows are `<peer> · <first
 
 </div>
 
-**L1 expansion** renders the per-message title rows (no body) using the existing five-verb peer-block contract; each row keeps its own direction kind-icon (`⤴` outbound, `⤵` inbound) and target label:
+L1 expansion:
 
 <div class="term">
 
@@ -491,35 +506,13 @@ The parent row is a BARE count - no target list. Leaf rows are `<peer> · <first
 
 </div>
 
-**L0 expansion** falls through to the standard [peer-block render](./peers.md) per message - full body indented under `│  ` / `└─` tree connectors, each row's own `▶ Verb name` header naming the direction and the peer. Individual row body can still be re-collapsed via the standard `collapsed_override` path.
+## Task* and Workflow
 
-Click on a messaging group's summary row cycles its level (L2 → L1 → L0). `ctrl+x` (Cmd+X) is the binary global toggle: collapsed → L2, expanded → L0; the gesture also clears the per-group `messaging_group_collapse_levels` map alongside the tool-group map so a fresh resolve-from-global applies uniformly. `L1Titles` stays reachable only via the per-group click cycle.
+The Task* quartet and `Workflow` render nothing in chat - live state lives in the [Inspector](./inspector.md)'s `TASKS` and `WORKFLOWS` sections (Workflow's icon: `◆`).
 
-- **code** - `partition_blocks_into_render_units` in `crates/forge-tui/src/ui/message/grouping.rs`: the tool-call pass runs first, then `merge_messaging_groups` folds runs of peer/worker blocks into `RenderUnit::MessagingGroup { segments, group_leader_id }`. Each segment carries `block_range`, `KindSummary::total()`, per-direction targets and `aggregate_status`. Tool-call run → `RenderUnit::Group`; adjacent peer + tool runs never merge. Collapse state lives in `UiSession.messaging_group_collapse_levels`, keyed on the group leader: the leading outbound block's `tool_use_id`, or for an inbound-led run the envelope's own correlation id (`inbound-<id>`). The id comes from the envelope rather than the block's position, so history pruning and index shifts cannot re-target a collapse level onto a different group.
-- **cache** - The message render signature folds each `MessagingGroup` segment's `(block_range, level, aggregate_status, summary)` alongside the per-block hashes. A group lives entirely inside one message, so nothing another message does can change it and there is no cross-message cache coupling.
-- **focus model** - Mouse click on a messaging-group summary row cycles the group's level via `locate_tool_call_block_at_click` (outbound leaders) or `locate_peer_user_block_at_click` (inbound leaders) plus `grouping::messaging_group_hit_at(messages, msg_idx, block_idx)`. That lookup partitions the same single message the renderer partitioned, so a hit-test and a group on screen cannot disagree about scope; the hit's `is_leader` distinguishes the leading block from members the summary hides, which are refused rather than toggled. The leading block of the group carries the summary line's region - `last_measured_y_in_msg` on a tool call, `peer_last_measured_y_in_msg` on an inbound text block. `ctrl+x` stays the global tools-collapsed toggle. The inbound half of this path is reachable now that consecutive envelopes merge into one message.
-- **invariant** - In `grouping.rs`: `messaging_group_partitions_within_message_run`, `peer_run_across_turns_groups_per_message` (a run reaching the end of one message and continuing in a later one produces a separate group per message, with `assert_ne!` on the leaders so they cannot silently share a collapse key), `single_block_turns_do_not_group_across_the_boundary`, `messaging_group_splits_across_visible_block`, `messaging_and_tool_groups_never_merge`, and `inbound_led_runs_in_different_messages_get_distinct_leaders`, which pins that the collapse key comes from the envelope id rather than the block index. `peer_block.rs`'s `inbound_envelope_id_covers_every_header_shape` covers each real header plus the `None` rows that would otherwise fall back to a positional key. In `message.rs`: `peer_run_across_turns_renders_a_card_per_turn` pins the two-cards rendering above, and the three `*_clears_hit_geometry_*` tests pin that an L2 render leaves no hidden block holding a clickable rect. In `mouse.rs`: `click_on_messaging_group_summary_cycles_outbound_run` and its `_inbound_run` sibling cover both hit-test entry points, and `click_on_messaging_group_summary_invalidates_only_its_message` plus its inbound sibling assert the recorded invalidation level rather than a stale height - a stale height is what any invalidation produces, so only the level distinguishes a correct scope from a widened one. In `chat.rs`: `frame_cost_does_not_scale_with_session_size` fails if anything on the render path starts walking the whole session again, and `peer_dense_session_actually_forms_messaging_groups` guards its fixture against silently measuring nothing.
+## Monitor
 
-## Task* family (TaskCreate · TaskUpdate · TaskList · TaskGet)
-
-*visible: never in chat - the Task\* family is silent in the scrollback. The live task state lives in the [Inspector pane](./inspector.md)'s `TASKS` section.*
-
-CLI 2.1.156 retired the single-call `TodoWrite` in favour of an id-keyed quartet - `TaskCreate` (push one item, id parsed from result-text `Task #N created successfully:`), `TaskUpdate` (mutate by `taskId`; `status=deleted` removes), `TaskList` and `TaskGet` (read-only). Every call updates the Inspector pane in place; no chat noise. PR #269 shipped the renderer + reducer; PR #271's wire-conformance scenario locks the result-text parser shape.
-
-## Workflow tool call (chat surface)
-
-*not rendered in chat: the [Inspector pane](./inspector.md) `WORKFLOWS` section is the sole surface*
-
-Workflow's `tool_input.script` carries a JS source blob with `export const meta = {name, description, phases: [{title, detail}]}`. `Workflow` is chat-suppressed: the tool call renders nothing in the chat stream, and the live phase tree in the [Inspector pane](./inspector.md)'s `WORKFLOWS` section is the only surface (same pattern as Task* → TASKS).
-
-- **code** - state accumulates on `UiSession.workflows`; suppression is the `"Workflow"` arm of `is_chat_suppressed` in `app/events/tool_calls.rs` - see Inspector WORKFLOWS section
-- **icon** - kind icon `◆` (`U+25C6`, filled diamond) - distinct from Task/Agent `◇` (hollow diamond); RUST_ORANGE in the Inspector header
-
-## Monitor tool call (chat surface)
-
-*visible: live block in chat while the monitor runs; collapses to a one-line summary when it ends. No Inspector surface.*
-
-Monitor's `tool_input` is `{description, command, persistent: bool, timeout_ms: u64}`. While the monitor is alive the chat block shows the header, the watched `$ command`, and the last 5 lines of the watched command's output (from the on-disk `output_file`, refreshed on each `system/task_progress` event), drawn with the same `│` / `└─` tree connectors the other live sections use. When the monitor stops / completes / times out the tail drops and the block becomes a single DIM summary line that stays in scrollback. The full output lives in the session transcript.
+While the monitor runs the block shows the header, the `$ command`, and the last 5 output lines updating in place; when it ends a dim summary line stays. Monitor's only surface in the TUI.
 
 <div class="term">
 
@@ -537,26 +530,39 @@ Monitor's `tool_input` is `{description, command, persistent: bool, timeout_ms: 
 
 </div>
 
-While alive the block is live: as the watched command emits output, `refresh_monitor_output_tail_from_file` stamps the last 5 lines onto the Monitor `ToolCallInfo` and bumps its `render_epoch`, so the cached chat block re-renders in place - the same mechanism backgrounded `Bash` uses to stream into chat. `TaskStop` renders as a standard tool_use card with the `◍` glyph; the resulting `task_updated` status flip collapses the block to its summary line.
+<details>
+<summary>Monitor status and TaskStop</summary>
 
-**Which shape renders is decided by `ToolCallInfo.monitor_status`, mirrored from `MonitorEntry.status` - not by `ToolCallInfo.status`.** A Monitor's `tool_result` is only the `Monitor started (task ...)` ack and lands seconds after arming, so the TOOL CALL is `Completed` for nearly the whole time the monitor is alive. `Running` renders the live block, and each terminal variant renders its own word. In practice the wire produces only two of them - `handle_task_updated` maps `completed` to `Completed` and `failed` / `killed` / `stopped` all to `Stopped` - so `· timed out` has no live path today; the arm exists because `MonitorStatus` carries the variant.
+`◍` TaskStop renders as a standard card; its status flip collapses the block. Which shape renders is keyed on the monitor's own status, not the tool call's - the tool call completes seconds after arming while the monitor lives on. Running renders the live block; the wire folds failed / killed / stopped all into `Stopped`, so a watched command that failed arrives as `· stopped` and must not read as a success. `· timed out` has no live path today; the arm exists because the status carries the variant. The full output always lives in the session transcript.
 
-**Every row clips to the render width, header included.** The `$ command` row and each tail row carry the tree connectors, and the outer layout char-wraps *without* the gutter, so an overflowing child row shears the tree. The header clips too, which is where this block DIVERGES from the peer and tool-group trees: those let their parent row wrap because its connectors live on the children. The header's budget cascades - the `◉` glyph column is fixed, then the `Monitor` label, then the description - and the `· persistent` suffix is dropped before it can push the row over. All of them clip through the same helper the other trees use.
+</details>
 
-- **code** - `crates/forge-tui/src/ui/message.rs::render_lifecycle_one_liner` renders the alive block (header + `$ command` + last-5 tail) and the collapsed summary; the tail is stamped onto `ToolCallInfo.monitor_output_tail` and the liveness onto `ToolCallInfo.monitor_status`, both from `app::state` keyed by the wire `task_id`. State still accumulates on `UiSession.monitors`. The Inspector MONITORS section is removed, so this block is Monitor's only surface anywhere in the TUI.
-- **icon** - Monitor running: `◉` (`U+25C9`, fisheye) RUST_ORANGE bold; completed: `✓` green; stopped and timed out: `✗` red - the wire folds failed / killed / stopped all into `Stopped`, so a watched command that failed arrives as `· stopped` and must not read as a success. TaskStop: `◍` (`U+25CD`, circle with vertical fill - terminate). Tail lines + connectors: `DIM`.
+Running renders `◉` in rust orange bold, completed `✓` green, stopped `✗` red; TaskStop is `◍`.
 
-## AskUserQuestion (multi-question dispatch)
+<details>
+<summary>Header clipping</summary>
 
-*visible: every `AskUserQuestion` tool call (CLI 2.1.156+) - the model asks structured multi-option questions. UI is the existing [dock-morph widget](./input.md)*
+Every row clips to the render width, header included: the header's budget cascades - the `◉` glyph column, then the `Monitor` label, then the description - and the `· persistent` suffix is dropped before it can push the row over. The peer and tool-group trees let their parent row wrap because its connectors live on the children; this header clips.
 
-AskUserQuestion's `tool_input.questions` is an array - a single tool call can carry N questions. forge dispatches each question onto the session's `prompt_queue` as a separate `PromptState`; the existing [dock-morph widget](./input.md) already supports the Q-of-N indicator (see the "Q2 of 3" mockup in the [Unified prompt](./input.md) section).
+</details>
 
-While the dock prompt is live the tool call is chat-suppressed (`hidden: true`). Once the user answers, the submit handler records the resolved answer onto the tool call (`App::record_answered_question`), which un-hides it and renders a compact **answered-card** in the scrollback, so the Q&A survives after the dock clears. A picked option shows its label; a typed "Other" answer shows the literal text the user entered. **multiSelect** may carry BOTH - picked options AND a typed Other note - in which case the card renders both on their own answer lines (picked labels first, then the typed line). A multi-question call accumulates one question/answer pair per answered question.
+## AskUserQuestion
 
-Card chrome: the question line indents 2 spaces so the `?` lands in the tool-icon column (matching the standard tool row's `<icon>` at column 2); the answer line(s) nest one level deeper so the `→` sits at column 4, under the question text.
+One call can carry N questions (CLI 2.1.156+); each dispatches as its own dock prompt - the Q-of-N widget in [Input](./input.md).
 
-Wire shape per question: `{question, header, multiSelect, options: [{label, description}]}`. The `"(Recommended)"` suffix on `label` is a CLI-side convention - forge strips it, marks the option as recommended (bold), and pre-selects it. The universal "`... Tell Claude something else`" escape-hatch is appended to every question's options list (consistent with permission prompts).
+<details>
+<summary>Answered cards</summary>
+
+While the dock prompt is live the tool call is chat-suppressed; once answered it un-hides and renders a compact answered-card so the Q&A survives after the dock clears. A picked option shows its label; a typed "Other" answer shows the literal text. A multiSelect answer may carry both - picked labels first, then the typed line - and a multi-question call accumulates one pair per answered question. A `(Recommended)` suffix on a label is stripped and the option pre-selected; the "... Tell Claude something else" escape hatch appends to every question's options.
+
+</details>
+
+<details>
+<summary>Answered-card chrome</summary>
+
+The question line indents 2 spaces so the rust-orange bold `?` lands in the tool-icon column; the answer lines nest one level deeper, a dim `→` before the answer (green for a picked label, bold for typed text). Once un-hidden the card is a run-breaker, so it never folds into a group.
+
+</details>
 
 <div class="term">
 
@@ -573,14 +579,6 @@ Wire shape per question: `{question, header, multiSelect, options: [{label, desc
 
 </div>
 
-- **code** - `crates/forge-tui/src/app/events/tool_calls.rs` dispatches the AskUserQuestion tool_use to a sibling of `build_permission_options` (`build_question_options`) per question, pushing N `PromptState` entries onto `UiSession.prompt_queue`
-- **icon** - answered-card: `?` in RUST_ORANGE (bold) on each question line, a DIM `→` before the answer (success-green for a picked label, bold for typed text); the dock-morph widget shows the same `?` on the live question header
-- **render** - `crates/forge-tui/src/ui/message.rs::render_question_answered_card`, dispatched in `append_assistant_tool_block`; flagged a run-breaker in `grouping.rs::is_run_breaker` once un-hidden so the card never folds into a group
+## Subagent
 
-## Subagent (Task / Agent)
-
-*chat-suppressed - the dispatch + every child tool call render in the [Inspector SUBAGENTS section](./inspector-processes.md), never in chat*
-
-A Task / Agent dispatch is Inspector-only: the root tool call gets `ToolCallScope::SubagentRoot` and every nested child call gets `ToolCallScope::SubagentChild { parent_tool_use_id }`; both scopes set `hidden: true` in `tool_calls.rs:243`. The SUBAGENTS Inspector section is the sole surface - it renders the root header (with subagent_type + first line of the prompt) plus a live tail of the last 3-4 child tool calls, auto-clearing once every root reaches a terminal status. See the [SUBAGENTS section](./inspector-processes.md) for the full chrome.
-
-Backgrounded-task badges (`  [backgrounded]` / `  [assistant backgrounded]` via `tool_output_badge_spans`) remain available on the few non-subagent tools that still emit them (e.g. backgrounded Bash); subagent roots themselves never reach the chat tool-card renderer.
+Chat-suppressed: the dispatch and every child call render only in the [Inspector SUBAGENTS section](./inspector-processes.md). Backgrounded-task badges remain available on non-subagent tools.
