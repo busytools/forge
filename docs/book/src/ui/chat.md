@@ -297,8 +297,8 @@ The standard shape with the command as title; the body carries the terminal outp
   <pre class="indent">
   <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Bash</span> cargo nextest run -p forge-tui events::rate_limit
   <span class="dim">│  </span>$ cargo nextest run -p forge-tui events::rate_limit
-  <span class="dim">│  </span>   <span class="dim">Compiling forge-primitives v0.14.2</span>
-  <span class="dim">│  </span>   <span class="dim">Compiling forge-tui v0.14.2</span>
+  <span class="dim">│  </span>   <span class="dim">Compiling forge-primitives v1.0.53</span>
+  <span class="dim">│  </span>   <span class="dim">Compiling forge-tui v1.0.53</span>
   <span class="dim">└─ </span><span class="success">Summary [4.197s] 5 tests run: 5 passed, 1174 skipped</span></pre>
 
 </div>

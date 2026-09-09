@@ -17,7 +17,7 @@ One `forge` process owns one config dir and drives every session inside it - a s
 
   <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Bash</span> cargo nextest run -p forge-tui
   <span class="dim">│  </span>$ cargo nextest run -p forge-tui
-  <span class="dim">│  </span>   <span class="dim">Compiling forge-tui v0.14.2</span>
+  <span class="dim">│  </span>   <span class="dim">Compiling forge-tui v1.0.53</span>
   <span class="dim">└─ </span><span class="success">Summary [4.2s] 1565 tests run: 1565 passed</span>
   <span class="dim">8.7s</span>
   <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
