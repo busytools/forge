@@ -145,7 +145,7 @@ The durable signal is the session-scoped roster - the CLI's background-task regi
 
 ## SCHEDULES
 
-The session's pending time-based schedules: `ScheduleWakeup` wakeups (the /loop re-arm), `CronCreate` jobs, and durable forge crons. A wakeup stays one line: `⏰`, reason, a live `in <countdown>`. A cron reads as two lines: a bold headline (the description, else the prompt's first line) over a dim sub-line with the humanized schedule plus a right-justified badge.
+The session's pending time-based schedules: `ScheduleWakeup` wakeups (the /loop re-arm), `CronCreate` jobs, and durable forge crons. A wakeup stays one line: `⏰`, reason, a live `in <countdown>`. A cron takes two lines: a bold headline (the description, else the prompt's first line) over a dim sub-line with the humanized schedule plus a right-justified badge.
 
 <div class="term">
 

@@ -23,7 +23,7 @@ An assistant turn has no header row; a collapsible turn-info row trails the body
 
 The row appears when the turn starts and counts up: elapsed ticks, the thinking estimate and the input and cache tokens accumulate as each API call lands. Output tokens, cost and the API/local split do not exist until the turn's Result frame, so the collapsed row omits them and the expanded one dashes them rather than showing a zero.
 
-A prompt submitted mid-turn with no cancel in flight rides the running turn rather than starting one: the running row moves onto the fresh tail placeholder with its clock intact. A prompt submitted over a pending cancel restarts the row's clock, matching the interrupted turn's restart. A delivered turn (peer, worker, cron, gotify) stamps its clock at turn-open, so the row never sits as a bare loader.
+A prompt submitted mid-turn with no cancel in flight joins the running turn rather than starting one: the running row moves onto the fresh tail placeholder with its clock intact. A prompt submitted over a pending cancel restarts the row's clock, matching the interrupted turn's restart. A delivered turn (peer, worker, cron, gotify) stamps its clock at turn-open, so the row never renders as a bare loader.
 
 **A running row may sit alone; a settled one may not.** Before any body exists the row is the only sign the turn is alive. Once the turn settles, a turn whose body rendered nothing visible gets no row, and a row with nothing stamped on it earns its line only while the session's turn clock is actually running.
 

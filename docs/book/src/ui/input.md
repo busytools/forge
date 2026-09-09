@@ -44,7 +44,7 @@ With `[dictate]` enabled and the models loaded, a take lives entirely inside the
 <details>
 <summary>Status row: anatomy, states, notices</summary>
 
-The status row occupies the same slot the notice row uses, so the two never coexist - a stamped notice keeps the slot and the status row stands down. Level readings arrive every 50 ms, each the peak over the window since the previous one. A long take is cut into segments at measured pause boundaries, and each segment transcribes while the microphone is still recording - the row shows those words as a settled count long before the speaker stops.
+The status row occupies the same slot the notice row uses, so the two never coexist: a stamped notice keeps the slot and the status row does not render. Level readings arrive every 50 ms, each the peak over the window since the previous one. A long take is cut into segments at measured pause boundaries, and each segment transcribes while the microphone is still recording - the row shows those words as a settled count long before the speaker stops.
 
 <div class="term">
 
@@ -135,7 +135,7 @@ The slash list (also feeding `/help`) seeds at connect from the CLI's init and l
 
 Slack-shaped: `:` plus two characters opens it, typing filters, <kbd>Enter</kbd> or <kbd>Tab</kbd> replaces the whole token with the glyph, and a closing `:` on an exact shortcode lands it too - `:tada:` works straight through. <kbd>Esc</kbd> dismisses the picker only. Rows are the glyph then its `:name:` with the match highlighted, in the same rounded box as the other triggers.
 
-Not chat-only: it also serves the /diff inline comment editor and the Finish-review overview, and while open there it owns <kbd>Esc</kbd>, <kbd>Enter</kbd> and the arrows.
+Not chat-only: it also serves the /diff inline comment editor and the Finish-review overview, and while open there it captures <kbd>Esc</kbd>, <kbd>Enter</kbd> and the arrows.
 
 <div class="term">
 
