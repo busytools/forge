@@ -7,3 +7,18 @@
 - [Architecture](./architecture.md)
 - [The wire contract](./wire-contract.md)
 - [Contributing](./contributing.md)
+
+# UI surfaces
+
+- [Workspace](./ui/workspace.md)
+- [Projects pane](./ui/projects-pane.md)
+- [Inspector](./ui/inspector.md)
+- [Inspector processes](./ui/inspector-processes.md)
+- [Preflight](./ui/preflight.md)
+- [Launchpad](./ui/launchpad.md)
+- [Chat](./ui/chat.md)
+- [Peers](./ui/peers.md)
+- [Input](./ui/input.md)
+- [Miscellaneous surfaces](./ui/misc-surfaces.md)
+- [Pickers and overlays](./ui/pickers.md)
+- [Usage](./ui/usage.md)
