@@ -412,14 +412,14 @@ mod tests {
                 "\u{2b1a}",
                 "read",
                 2,
-                &["/repo/crates/forge-tui/src/ui/message.rs", "/repo/docs/forge-map.html"],
+                &["/repo/crates/forge-tui/src/ui/message.rs", "/repo/docs/book/src/ui/chat.md"],
             ),
             kl("\u{25b6}", "bash", 1, &["cargo check"]),
         ]);
         let lines = render_rooted(&s, ToolCallStatus::Completed, 90, "/repo");
         let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("crates/forge-tui/src/ui/message.rs"), "{joined:?}");
-        assert!(joined.contains("docs/forge-map.html"), "{joined:?}");
+        assert!(joined.contains("docs/book/src/ui/chat.md"), "{joined:?}");
         assert!(!joined.contains("/repo/"), "absolute root prefix must be stripped: {joined:?}");
     }
 
