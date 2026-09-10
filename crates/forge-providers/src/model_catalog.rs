@@ -117,7 +117,7 @@ fn models_url(base_url: &str) -> String {
 /// by their frontier completion price, so the strongest models surface
 /// first and a new release shows up on the next fetch without any
 /// hand-maintained constant going stale.
-
+///
 /// Per-family variant cap: the frontier row plus its cheaper variants
 /// (flash tiers etc.) under each family.
 const VARIANTS_PER_FAMILY: usize = 3;
@@ -141,7 +141,7 @@ fn family_key(id: &str) -> String {
         .find_map(|suffix| {
             lower.strip_suffix(suffix).and_then(|stripped| stripped.strip_suffix('-'))
         })
-        .map_or(rest.to_owned(), |base| base.to_owned());
+        .map_or(rest.to_owned(), ToOwned::to_owned);
     format!("{vendor}/{base}")
 }
 
