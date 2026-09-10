@@ -101,9 +101,8 @@ pub fn build_forge_server(
     builder = workers::add_tools(builder, worker_facade, caller_key.clone());
     builder = review::add_tools(builder, review_facade, caller_key.clone());
     builder = cron::add_tools(builder, cron_facade, caller_key.clone());
-    // `slack` takes no caller key, so `gotify` keeps the last move of it.
-    builder = slack::add_tools(builder, slack_facade);
-    builder = gotify::add_tools(builder, gotify_facade, caller_key);
+    builder = gotify::add_tools(builder, gotify_facade, caller_key.clone());
+    builder = slack::add_tools(builder, slack_facade, caller_key);
     builder.build()
 }
 
@@ -164,6 +163,8 @@ mod tests {
             "gotify__apps",
             "gotify__recent",
             "slack__list",
+            "slack__subscribe",
+            "slack__unsubscribe",
         ] {
             assert!(
                 debug.contains(expected),
@@ -218,6 +219,8 @@ mod tests {
             "gotify__apps",
             "gotify__recent",
             "slack__list",
+            "slack__subscribe",
+            "slack__unsubscribe",
         ] {
             assert!(
                 debug.contains(expected),

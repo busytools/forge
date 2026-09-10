@@ -1,8 +1,12 @@
 //! Slack connector shapes that cross a crate boundary: the `[[slack]]`
-//! config entry an operator writes, and the conversation shape
-//! `users.conversations` reports.
+//! config entry an operator writes, the conversation shape
+//! `users.conversations` reports, and the subscription record a session
+//! creates.
 
-use serde::Deserialize;
+use std::time::SystemTime;
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// One `[[slack]]` entry. The token is a credential, so it lives in
 /// `forge.toml` rather than in the state DB beside the subscriptions.
@@ -54,6 +58,40 @@ pub struct SlackConversation {
     /// The other member's user id, present on a DM.
     #[serde(default)]
     pub user: Option<String>,
+}
+
+/// What one subscription watches inside a workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SlackSubscriptionTarget {
+    /// Every DM in the workspace, group DMs included - the DM class the
+    /// design settled on, so a new DM needs no new subscription.
+    DirectMessages,
+    /// One conversation, with the mode that decides what reaches the session.
+    Conversation { id: String, mode: SlackWatchMode },
+}
+
+/// What a conversation subscription lets through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SlackWatchMode {
+    /// Every message.
+    All,
+    /// Only messages that mention the user.
+    MentionsOnly,
+}
+
+/// One watched target, owned by one session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlackSubscription {
+    pub id: Uuid,
+    /// The `[[slack]]` label this watches.
+    pub workspace: String,
+    /// Owning project. Named `project` and `team_role` to match
+    /// `GotifySubscription`; a rename would decode to `None` and silently
+    /// reroute every worker's subscription to the lead.
+    pub project: String,
+    pub team_role: Option<String>,
+    pub target: SlackSubscriptionTarget,
+    pub created_at: SystemTime,
 }
 
 #[cfg(test)]

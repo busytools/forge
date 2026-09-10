@@ -1,5 +1,6 @@
-//! The Slack seam on [`Workspace`]: one client per configured workspace
-//! and the boot verification that proves each token.
+//! The Slack seam on [`Workspace`]: one client per configured workspace,
+//! the subscription records sessions create, and the boot verification
+//! that proves each token.
 //!
 //! Everything here stays on `Workspace` as a second `impl` block, the
 //! way [`crate::gotify`] does, so the boot path and the `mcp::slack`
@@ -11,6 +12,7 @@ use std::sync::Arc;
 
 use forge_connectors::slack::{AuthTest, SlackClient};
 use forge_primitives::slack::SlackConfig;
+use uuid::Uuid;
 
 use crate::workspace::Workspace;
 
@@ -68,6 +70,68 @@ impl SlackWorkspaces {
 }
 
 impl Workspace {
+    /// Register a Slack subscription in the active set. Durable ones also
+    /// persist to the redb store; ephemeral ad-hoc-worker ones stay in
+    /// memory only and drop on restart.
+    pub(crate) fn add_slack_subscription(
+        &self,
+        sub: forge_primitives::slack::SlackSubscription,
+        durable: bool,
+    ) {
+        if durable
+            && let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::slack::insert(db, &sub)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "persisting a Slack subscription failed",
+            );
+        }
+        self.slack_subs.lock().push(sub);
+    }
+
+    /// Every Slack subscription owned in `project`, whichever session
+    /// owns it. Backs the phase 3 pump, which needs the whole set.
+    pub fn slack_subscriptions_for_project(
+        &self,
+        project: &str,
+    ) -> Vec<forge_primitives::slack::SlackSubscription> {
+        self.slack_subs.lock().iter().filter(|s| s.project == project).cloned().collect()
+    }
+
+    /// Remove the subscription `id` in `project` only when its owner
+    /// matches `owner` (`None` = a lead subscription, `Some(label)` =
+    /// that worker's), from both the active set and the redb store.
+    /// Returns whether an entry was removed. Backs the owner-scoped
+    /// `slack__unsubscribe` so a caller removes only what it subscribed.
+    pub(crate) fn remove_slack_subscription_owned_by(
+        &self,
+        project: &str,
+        id: Uuid,
+        owner: Option<&str>,
+    ) -> bool {
+        let removed = {
+            let mut subs = self.slack_subs.lock();
+            let before = subs.len();
+            subs.retain(|s| {
+                !(s.id == id && s.project == project && s.team_role.as_deref() == owner)
+            });
+            subs.len() != before
+        };
+        if removed
+            && let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::slack::remove(db, id)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "removing a persisted Slack subscription failed",
+            );
+        }
+        removed
+    }
+
     /// Prove each workspace's token once, logging the team it belongs to
     /// or the failure. Idempotent, and a no-op with no `[[slack]]` entry.
     pub fn start_slack_verification(self: &Arc<Self>) {
@@ -103,9 +167,54 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_primitives::slack::{SlackSubscription, SlackSubscriptionTarget};
+    use uuid::Uuid;
 
     fn cfg(workspace: &str, token: &str) -> SlackConfig {
         SlackConfig { workspace: workspace.to_owned(), token: token.to_owned(), poll_seconds: 30 }
+    }
+
+    fn sub_for(project: &str, team_role: Option<&str>) -> SlackSubscription {
+        SlackSubscription {
+            id: Uuid::new_v4(),
+            workspace: "acme".to_owned(),
+            project: project.to_owned(),
+            team_role: team_role.map(str::to_owned),
+            target: SlackSubscriptionTarget::DirectMessages,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn a_subscription_is_scoped_to_its_project_and_owner() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.add_slack_subscription(sub_for("forge", None), true);
+        ws.add_slack_subscription(sub_for("forge", Some("tester")), true);
+        ws.add_slack_subscription(sub_for("other", None), true);
+
+        let visible = ws.slack_subscriptions_for_project("forge");
+        assert_eq!(visible.len(), 2, "another project's subscription must not leak in");
+        assert!(visible.iter().any(|s| s.team_role.is_none()));
+        assert!(visible.iter().any(|s| s.team_role.as_deref() == Some("tester")));
+    }
+
+    #[test]
+    fn a_worker_cannot_remove_another_owners_subscription() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let lead = sub_for("forge", None);
+        ws.add_slack_subscription(lead.clone(), true);
+
+        assert!(
+            !ws.remove_slack_subscription_owned_by("forge", lead.id, Some("tester")),
+            "a worker must not remove the lead's subscription",
+        );
+        assert_eq!(
+            ws.slack_subscriptions_for_project("forge").len(),
+            1,
+            "a refused removal removes nothing",
+        );
+        assert!(ws.remove_slack_subscription_owned_by("forge", lead.id, None));
+        assert!(ws.slack_subscriptions_for_project("forge").is_empty());
     }
 
     #[test]

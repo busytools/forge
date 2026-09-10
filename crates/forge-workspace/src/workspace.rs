@@ -361,6 +361,11 @@ pub struct Workspace {
     /// keeps the Slack connector dormant. `pub(crate)` so the impl
     /// blocks in [`crate::slack`] and `crate::mcp::slack` can reach it.
     pub(crate) slack: Arc<crate::slack::SlackWorkspaces>,
+    /// Active Slack subscriptions (`mcp__forge__slack`). The set the
+    /// pump will read in phase 3; this phase only records it. Durable
+    /// ones are also persisted to `db` and reloaded here at boot.
+    /// `pub(crate)` so the impl block in [`crate::slack`] can reach it.
+    pub(crate) slack_subs: Mutex<Vec<forge_primitives::slack::SlackSubscription>>,
     /// Set the first time [`Workspace::start_slack_verification`] runs.
     /// Subsequent calls early-return to avoid spawning duplicate probes.
     pub(crate) slack_verification_started: std::sync::atomic::AtomicBool,
@@ -939,6 +944,17 @@ impl Workspace {
             }),
             None => Vec::new(),
         };
+        let slack_subs = match &db {
+            Some(db) => crate::store::slack::list(db).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "loading durable Slack subscriptions failed; starting with none",
+                );
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
 
         // Resolved here rather than lazily so a malformed `[[slack]]`
         // entry refuses the boot, the way the rest of forge.toml does.
@@ -1044,6 +1060,7 @@ impl Workspace {
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
             slack,
+            slack_subs: Mutex::new(slack_subs),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
@@ -6039,6 +6056,13 @@ impl Workspace {
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
+        // Built from the injected config the way `new` builds it, so a
+        // test that supplies a `[[slack]]` entry gets a workspace whose
+        // clients exist. `new` cannot fail here on a stub config.
+        let slack = Arc::new(
+            crate::slack::SlackWorkspaces::from_config(&config.slack, &reqwest::Client::new())
+                .unwrap_or_default(),
+        );
         let workspace = Self {
             config_dir,
             config,
@@ -6073,7 +6097,8 @@ impl Workspace {
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
-            slack: Arc::new(crate::slack::SlackWorkspaces::default()),
+            slack,
+            slack_subs: Mutex::new(Vec::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
