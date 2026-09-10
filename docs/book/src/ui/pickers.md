@@ -7,16 +7,16 @@
 <div class="term">
 
   <pre class="indent">
-                    <span class="dim">┌─ spinner ───────────────────────────┐</span>
-                    <span class="dim">│</span> <span class="accent-bold">▶ ⠹  braille  ·  32ms</span>                <span class="dim">│</span>
+                    <span class="dim">┌─ spinner ─────────────────────────────┐</span>
+                    <span class="dim">│</span> <span class="accent-bold">▶ ⠹  braille  ·  32ms</span>                 <span class="dim">│</span>
                     <span class="dim">│</span>   <span class="dim">◐  phase_of_moon  ·  90ms</span>           <span class="dim">│</span>
                     <span class="dim">│</span>   <span class="dim">✦  ember  ·  160ms</span>                  <span class="dim">│</span>
                     <span class="dim">│</span>   <span class="dim">▆  bars_v  ·  70ms</span>                  <span class="dim">│</span>
                     <span class="dim">│</span>   <span class="dim">✹  star  ·  130ms</span>                   <span class="dim">│</span>
                     <span class="dim">│</span>   <span class="dim">✧  sparkle  ·  160ms</span>                <span class="dim">│</span>
-                    <span class="dim">│</span>                                     <span class="dim">│</span>
+                    <span class="dim">│</span>                                       <span class="dim">│</span>
                     <span class="dim">│</span> <span class="dim">↑↓ preview   enter apply   esc cancel</span> <span class="dim">│</span>
-                    <span class="dim">└─────────────────────────────────────┘</span></pre>
+                    <span class="dim">└───────────────────────────────────────┘</span></pre>
 
 </div>
 
@@ -51,16 +51,16 @@
 <div class="term">
 
   <pre class="indent">
-                    <span class="dim">┌─ model ───────────────────────────────────────────────────────────┐</span>
-                    <span class="dim">│</span> <span class="accent-bold">▶ Z.ai: GLM 5.3 (Opus-class)  SWE-bench V 97% (vals.ai) · $4.40/M</span> <span class="dim">│</span>
+                    <span class="dim">┌─ model ────────────────────────────────────────────────────────────────┐</span>
+                    <span class="dim">│</span> <span class="accent-bold">▶ Z.ai: GLM 5.3 (Opus-class)  SWE-bench V 97% (vals.ai) · $4.40/M</span>      <span class="dim">│</span>
                     <span class="dim">│</span>   DeepSeek: DeepSeek V4 Pro 0813 (Opus-class)  <span class="dim">96.4% / 80.6% · $3.20/M</span> <span class="dim">│</span>
                     <span class="dim">│</span>   MoonshotAI: Kimi K3 (Opus-class)  <span class="dim">SWE-bench V 93.4% (anotherwrapper)</span> <span class="dim">│</span>
-                    <span class="dim">│</span> <span class="accent">●</span> Z.ai: GLM 5.3 Flash (Opus-class)  <span class="dim">~93% (vals.ai, independent)</span>      <span class="dim">│</span>
-                    <span class="dim">│</span>   DeepSeek: DeepSeek V4 Flash (Strong)  <span class="dim">SWE-bench V 91% (vals.ai)</span>     <span class="dim">│</span>
-                    <span class="dim">│</span>   <span class="dim">...</span>                                                               <span class="dim">│</span>
-                    <span class="dim">│</span>                                                                     <span class="dim">│</span>
-                    <span class="dim">│</span> <span class="dim">↑↓ move   enter switch   esc cancel   ● current</span>                     <span class="dim">│</span>
-                    <span class="dim">└───────────────────────────────────────────────────────────────────┘</span></pre>
+                    <span class="dim">│</span> <span class="accent">●</span> Z.ai: GLM 5.3 Flash (Opus-class)  <span class="dim">~93% (vals.ai, independent)</span>        <span class="dim">│</span>
+                    <span class="dim">│</span>   DeepSeek: DeepSeek V4 Flash (Strong)  <span class="dim">SWE-bench V 91% (vals.ai)</span>      <span class="dim">│</span>
+                    <span class="dim">│</span>   <span class="dim">...</span>                                                                  <span class="dim">│</span>
+                    <span class="dim">│</span>                                                                        <span class="dim">│</span>
+                    <span class="dim">│</span> <span class="dim">↑↓ move   enter switch   esc cancel   ● current</span>                        <span class="dim">│</span>
+                    <span class="dim">└────────────────────────────────────────────────────────────────────────┘</span></pre>
 
 </div>
 
@@ -132,13 +132,13 @@ In chat only, no turn gating: session-scoped overrides for the normalizer's thre
 <div class="term">
 
   <pre class="indent">
-              <span class="accent">┌────────────────────────────────────────────────────────────┐</span>
+              <span class="accent">┌──────────────────────────────────────────────────────────────┐</span>
               <span class="accent">│</span> <span class="accent-bold">Dictate</span>             <span class="dim">axes this session · device until restart</span> <span class="accent">│</span>
               <span class="accent">│</span>                                                              <span class="accent">│</span>
               <span class="accent">│</span>   <span class="dim">VOICE</span>                                                      <span class="accent">│</span>
               <span class="accent">│</span>     casual                                                   <span class="accent">│</span>
               <span class="accent">│</span>     semi-casual                                              <span class="accent">│</span>
-              <span class="accent">│</span>   <span class="accent">●</span> <span class="accent">▸</span> <span class="bold">semi-formal</span>                                           <span class="accent">│</span>
+              <span class="accent">│</span>   <span class="accent">●</span> <span class="accent">▸</span> <span class="bold">semi-formal</span>                                            <span class="accent">│</span>
               <span class="accent">│</span>     formal                                                   <span class="accent">│</span>
               <span class="accent">│</span>                                                              <span class="accent">│</span>
               <span class="accent">│</span>   <span class="dim">STRUCTURE</span>                                                  <span class="accent">│</span>
@@ -147,7 +147,7 @@ In chat only, no turn gating: session-scoped overrides for the normalizer's thre
               <span class="accent">│</span>                                                              <span class="accent">│</span>
               <span class="accent">│</span>   <span class="dim">DESTINATION</span>                                                <span class="accent">│</span>
               <span class="accent">│</span>   <span class="accent">●</span>   plain text                                             <span class="accent">│</span>
-              <span class="accent">│</span>   <span class="accent">●</span>   email layout  <span class="dim">· this session</span>                          <span class="accent">│</span>
+              <span class="accent">│</span>   <span class="accent">●</span>   email layout  <span class="dim">· this session</span>                           <span class="accent">│</span>
               <span class="accent">│</span>                                                              <span class="accent">│</span>
               <span class="accent">│</span>   <span class="dim">INPUT DEVICE</span>                                               <span class="accent">│</span>
               <span class="accent">│</span>     Device: Focusrite Scarlett 2i2      <span class="accent">active until restart</span> <span class="accent">│</span>
@@ -159,22 +159,22 @@ In chat only, no turn gating: session-scoped overrides for the normalizer's thre
               <span class="accent">│</span> <span class="dim">it declined, not that the setting failed.</span>                    <span class="accent">│</span>
               <span class="accent">│</span>                                                              <span class="accent">│</span>
               <span class="accent">│</span> <span class="dim">↑↓ move   enter set   esc close   ● in force</span>                 <span class="accent">│</span>
-              <span class="accent">└────────────────────────────────────────────────────────────┘</span>
+              <span class="accent">└──────────────────────────────────────────────────────────────┘</span>
 
-              <span class="accent">┌────────────────────────────────────────────────────────────┐</span>
-              <span class="accent">│</span> <span class="accent-bold">Input device</span>                             <span class="dim">reverts on restart</span> <span class="accent">│</span>
+              <span class="accent">┌──────────────────────────────────────────────────────────────┐</span>
+              <span class="accent">│</span> <span class="accent-bold">Input device</span>                             <span class="dim">reverts on restart</span>  <span class="accent">│</span>
               <span class="accent">│</span>                                                              <span class="accent">│</span>
-              <span class="accent">│</span>   <span class="accent">▸</span> <span class="bold">System default</span>   <span class="dim">no pin · now: MacBook Pro Microphone</span>   <span class="accent">│</span>
-              <span class="accent">│</span>     MacBook Pro Microphone   <span class="dim">system default input</span>           <span class="accent">│</span>
-              <span class="accent">│</span>   <span class="accent">●</span> <span class="bold">Focusrite Scarlett 2i2</span>                                    <span class="accent">│</span>
-              <span class="accent">│</span>     Shure SM7B                                                <span class="accent">│</span>
+              <span class="accent">│</span>   <span class="accent">▸</span> <span class="bold">System default</span>   <span class="dim">no pin · now: MacBook Pro Microphone</span>    <span class="accent">│</span>
+              <span class="accent">│</span>     MacBook Pro Microphone   <span class="dim">system default input</span>            <span class="accent">│</span>
+              <span class="accent">│</span>   <span class="accent">●</span> <span class="bold">Focusrite Scarlett 2i2</span>                                   <span class="accent">│</span>
+              <span class="accent">│</span>     Shure SM7B                                               <span class="accent">│</span>
               <span class="accent">│</span>                                                              <span class="accent">│</span>
               <span class="accent">│</span> <span class="dim">A pin follows the device id: unplugging it fails the take</span>    <span class="accent">│</span>
               <span class="accent">│</span> <span class="dim">instead of quietly recording on another input.</span>               <span class="accent">│</span>
               <span class="accent">│</span> <span class="dim">A pick lasts until restart; forge.toml keeps the default.</span>    <span class="accent">│</span>
               <span class="accent">│</span>                                                              <span class="accent">│</span>
               <span class="accent">│</span> <span class="dim">↑↓ move   enter select   esc back   ● in force</span>               <span class="accent">│</span>
-              <span class="accent">└────────────────────────────────────────────────────────────┘</span></pre>
+              <span class="accent">└──────────────────────────────────────────────────────────────┘</span></pre>
 
 </div>
 

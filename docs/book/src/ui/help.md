@@ -13,9 +13,9 @@ Toggled with <kbd>?</kbd>: a rounded panel above the input area, fixed 14 rows w
   <pre class="indent">
   <span class="dim">╭</span> <span class="accent bold">Help</span> <span class="dim">[</span><span class="accent bold">Keys</span><span class="dim"> | </span><span class="dim">Slash</span><span class="dim"> | </span><span class="dim">Subagents</span><span class="dim">]</span>  <span class="dim">(&lt; &gt; switch tabs)</span> <span class="dim">─────────────────╮</span>
   <span class="dim">│</span>                                                                     <span class="dim">│</span>
-  <span class="dim">│</span>     <span class="bold">↑ / ↓</span><span class="dim"> : </span>Scroll chat       <span class="bold">Esc</span><span class="dim"> : </span>Cancel current action          <span class="dim">│</span>
+  <span class="dim">│</span>     <span class="bold">↑ / ↓</span><span class="dim"> : </span>Scroll chat       <span class="bold">Esc</span><span class="dim"> : </span>Cancel current action           <span class="dim">│</span>
   <span class="dim">│</span>     <span class="bold">PgUp / PgDn</span><span class="dim"> : </span>Page         <span class="bold">Ctrl+C</span><span class="dim"> : </span>Interrupt response          <span class="dim">│</span>
-  <span class="dim">│</span>     <span class="bold">Ctrl+X</span><span class="dim"> : </span>Expand tool      <span class="bold">?</span><span class="dim"> : </span>Toggle help                    <span class="dim">│</span>
+  <span class="dim">│</span>     <span class="bold">Ctrl+X</span><span class="dim"> : </span>Expand tool      <span class="bold">?</span><span class="dim"> : </span>Toggle help                       <span class="dim">│</span>
   <span class="dim">│</span>                                                                     <span class="dim">│</span>
   <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
 
