@@ -83,14 +83,14 @@ Two rows pin above the FILES rail: a title (`COMMITS · <branch> vs <target> · 
 <span class="dim">│</span>                                <span class="dim">│</span>   <span style="color: cyan;">@@ -470,7 +470,9 @@</span>                                                                            <span class="dim">│</span>
 <span class="dim">│</span>  <span class="dim">crates/forge-tui/</span>             <span class="dim">│</span>     <span class="dim">470</span>     pub current_file_idx: usize,                                                         <span class="dim">│</span>
 <span class="dim">│</span>  <span class="dim">├─</span> <span class="accent">▸</span> <span class="accent">M</span> app/diff_overlay.rs <span class="accent">💬1</span><span class="dim">│</span>     <span class="dim">471</span> <span style="background:#67060c">&nbsp;<span class="error">-</span> pub body_scroll: u16,&nbsp;</span>                                                                <span class="dim">│</span>
-<span class="dim">│</span>  <span class="dim">├─</span>   <span class="accent">M</span> ui/diff_overlay.rs    <span class="dim">│</span>          <span style="background:#033a16">&nbsp;<span class="success">+</span> /// Scroll across the whole diff doc.&nbsp;</span>                                                <span class="dim">│</span>
-<span class="dim">│</span>  <span class="dim">└─</span>   <span class="success">A</span> env/git_diff/hunks.rs <span class="dim">│</span>     <span class="dim">472</span> <span style="background:#033a16">&nbsp;<span class="success">+</span> pub doc_scroll: u32,&nbsp;</span>                                                                  <span class="dim">│</span>
+<span class="dim">│</span>  <span class="dim">├─</span>   <span class="accent">M</span> ui/diff_overlay.rs    <span class="dim"> │</span>         <span style="background:#033a16">&nbsp;<span class="success">+</span> /// Scroll across the whole diff doc.&nbsp;</span>                                                <span class="dim">│</span>
+<span class="dim">│</span>  <span class="dim">└─</span>   <span class="success">A</span> env/git_diff/hunks.rs <span class="dim"> │</span>    <span class="dim">472</span> <span style="background:#033a16">&nbsp;<span class="success">+</span> pub doc_scroll: u32,&nbsp;</span>                                                                  <span class="dim">│</span>
 <span class="dim">│</span>                                <span class="dim">│</span>     <span class="dim">473</span>     pub comments: Vec&lt;HunkComment&gt;,                                                      <span class="dim">│</span>
-<span class="dim">│</span>                                <span class="dim">│</span>         <span class="dim">╭─ </span><span class="bold">💬 line 471</span> <span class="dim">· unfiled ···········</span> <span class="accent">OPEN</span> <span class="dim">─╮</span>                                          <span class="dim">│</span>
-<span class="dim">│</span>                                <span class="dim">│</span>         <span class="dim">│</span>  <span class="accent">●</span> <span class="accent">you</span>                             <span class="dim">│</span>                                          <span class="dim">│</span>
-<span class="dim">│</span>                                <span class="dim">│</span>         <span class="dim">│</span>    doc_scroll is the only scroll now  <span class="dim">│</span>                                          <span class="dim">│</span>
-<span class="dim">│</span>                                <span class="dim">│</span>         <span class="dim">│</span>  <span class="accent-bold">✓ Resolve</span>   <span class="dim">↺ Reopen</span>              <span class="dim">│</span>                                          <span class="dim">│</span>
-<span class="dim">│</span>                                <span class="dim">│</span>         <span class="dim">╰──────────────────────────────────────╯</span>                                          <span class="dim">│</span>
+<span class="dim">│</span>                                <span class="dim">│</span>         <span class="dim">╭─ </span><span class="bold">💬 line 471</span> <span class="dim">· unfiled ···········</span> <span class="accent">OPEN</span> <span class="dim">─╮</span>                                             <span class="dim">│</span>
+<span class="dim">│</span>                                <span class="dim">│</span>         <span class="dim">│</span>  <span class="accent">●</span> <span class="accent">you</span>                                   <span class="dim">│</span>                                             <span class="dim">│</span>
+<span class="dim">│</span>                                <span class="dim">│</span>         <span class="dim">│</span>    doc_scroll is the only scroll now     <span class="dim">│</span>                                             <span class="dim">│</span>
+<span class="dim">│</span>                                <span class="dim">│</span>         <span class="dim">│</span>  <span class="accent-bold">✓ Resolve</span>   <span class="dim">↺ Reopen</span>                    <span class="dim">│</span>                                             <span class="dim">│</span>
+<span class="dim">│</span>                                <span class="dim">│</span>         <span class="dim">╰──────────────────────────────────────────╯</span>                                             <span class="dim">│</span>
 <span class="dim">│</span>                                <span class="dim">│</span><span class="dim">└─ end app/diff_overlay.rs ───────────────────────────────────────────────────────────────────────</span><span class="dim">│</span>
 <span class="dim">│</span>                                <span class="dim">│</span>                                                                                                  <span class="dim">│</span>
 <span class="dim">│</span>                                <span class="dim">│</span><span style="background:#1b2130">  <span class="dim">▸</span> <span class="bold">ui/diff/old_split.rs</span>   <span class="error">deleted</span>                                                        <span class="success">+0</span> <span class="error">-120</span> </span><span class="dim">│</span>
@@ -129,7 +129,7 @@ A saved comment renders as a **conversation card** - header with the line number
 
   <pre class="indent">
                                 <span class="dim">│</span>     <span class="dim">4781</span> <span style="background:#033a16">&nbsp;<span class="success">+</span> push_peer_user_turn_into_chat(self, caller);&nbsp;</span>
-                                <span class="dim">│</span>         <span class="dim">╭─ </span><span class="bold">💬 line 4781</span> <span class="dim">· R2 ································</span> <span class="accent">OPEN</span> <span class="dim">─╮</span>
+                                <span class="dim">│</span>         <span class="dim">╭─ </span><span class="bold">💬 line 4781</span> <span class="dim">· R2 ·························</span> <span class="accent">OPEN</span> <span class="dim">─╮</span>
                                 <span class="dim">│</span>         <span class="dim">│</span>                                                    <span class="dim">│</span>
                                 <span class="dim">│</span>         <span class="dim">│</span>  <span class="accent">●</span> <span class="accent">you</span>  <span class="dim">✎</span>                                          <span class="dim">│</span>
                                 <span class="dim">│</span>         <span class="dim">│</span>  <span class="dim">│</span> does this fire for the failure path too?        <span class="dim">│</span>
@@ -142,7 +142,7 @@ A saved comment renders as a **conversation card** - header with the line number
                                 <span class="dim">│</span>         <span class="dim">│</span>                                                    <span class="dim">│</span>
                                 <span class="dim">│</span>         <span class="dim">│</span>  <span class="accent-bold">✓ Resolve</span>   <span class="dim">↺ Reopen</span>                              <span class="dim">│</span>
                                 <span class="dim">│</span>         <span class="dim">╰────────────────────────────────────────────────────╯</span>
-                                <span class="dim">│</span>         <span class="dim">╭─ </span><span class="bold">💬 line 58</span> <span class="dim">· R1 ······························</span> <span class="warning">OUTDATED</span> <span class="dim">─╮</span>
+                                <span class="dim">│</span>         <span class="dim">╭─ </span><span class="bold">💬 line 58</span> <span class="dim">· R1 ·······················</span> <span class="warning">OUTDATED</span> <span class="dim">─╮</span>
                                 <span class="dim">│</span>         <span class="dim">│</span>                                                    <span class="dim">│</span>
                                 <span class="dim">│</span>         <span class="dim">│</span>  <span class="accent">●</span> <span class="accent">you</span>  <span class="dim">✎</span>                                          <span class="dim">│</span>
                                 <span class="dim">│</span>         <span class="dim">│</span>    guard the None case                             <span class="dim">│</span>
@@ -189,13 +189,13 @@ The caller resolves to its project and branch the same way the peers tools do; a
 
   <pre class="indent">
 <span class="accent-bold">┏━ Finish review · 3 comments ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
-<span class="accent-bold">┃</span>    <span class="dim">· error.rs:88    swallows the decode error, no signal</span>    <span class="accent-bold">┃</span>
+<span class="accent-bold">┃</span>    <span class="dim">· error.rs:88    swallows the decode error, no signal</span>  <span class="accent-bold">┃</span>
 <span class="accent-bold">┃</span>    <span class="dim">· retry.rs:212   is the backoff actually capped?</span>       <span class="accent-bold">┃</span>
-<span class="accent-bold">┃</span>    <span class="dim">· parser.rs:41   () on empty input - intended?</span>        <span class="accent-bold">┃</span>
-<span class="accent-bold">┃</span>                                                             <span class="accent-bold">┃</span>
+<span class="accent-bold">┃</span>    <span class="dim">· parser.rs:41   () on empty input - intended?</span>         <span class="accent-bold">┃</span>
+<span class="accent-bold">┃</span>                                                           <span class="accent-bold">┃</span>
 <span class="accent-bold">┃</span> <span class="accent">➤</span> <span class="dim">Solid overall. Two nits on error handling and one</span>       <span class="accent-bold">┃</span>
-<span class="accent-bold">┃</span>   <span class="dim">question on the retry path.</span>                              <span class="accent-bold">┃</span>
-<span class="accent-bold">┃</span>                                                             <span class="accent-bold">┃</span>
+<span class="accent-bold">┃</span>   <span class="dim">question on the retry path.</span>                             <span class="accent-bold">┃</span>
+<span class="accent-bold">┃</span>                                                           <span class="accent-bold">┃</span>
 <span class="accent-bold">┃</span>  <span class="accent-bold">[ Submit review ]</span>     <span class="dim">Ctrl+Enter submit · Esc back</span>       <span class="accent-bold">┃</span>
 <span class="accent-bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
 
@@ -295,11 +295,11 @@ The stepper mockup shows commit mode on a 5-commit branch: the title and control
   <pre class="indent">
   <span class="accent">◀</span> <span class="dim">[</span><span class="bold">2 / 5</span><span class="dim">]</span>  <span class="warning">a3f9c1e</span>  <span class="bold">fix the rate-limit threshold check</span>  <span class="accent">▶</span>   <span class="accent-bold">⌄ jump</span>
         <span class="dim">┌──────────────────────────────────────────────────────┐</span>
-        <span class="dim">│</span> All changes <span class="dim">(whole branch, one diff)</span>                <span class="dim">│</span>
-        <span class="dim">│</span> <span class="dim">──────────────────────────────────────────────────</span> <span class="dim">│</span>
-        <span class="dim">│</span> <span class="dim">1 · </span><span class="warning">7c1d02a</span> <span class="dim">add the overage helper</span>               <span class="dim">│</span>
+        <span class="dim">│</span> All changes <span class="dim">(whole branch, one diff)</span>                 <span class="dim">│</span>
+        <span class="dim">│</span> <span class="dim">──────────────────────────────────────────────────</span>   <span class="dim">│</span>
+        <span class="dim">│</span> <span class="dim">1 · </span><span class="warning">7c1d02a</span> <span class="dim">add the overage helper</span>                   <span class="dim">│</span>
         <span class="dim">│</span> <span class="accent">2 · </span><span class="accent-bold">a3f9c1e fix the rate-limit threshold check</span> <span class="accent">● 1 ◂</span> <span class="dim">│</span>
-        <span class="dim">│</span> <span class="dim">3 · </span><span class="warning">e55f210</span> <span class="dim">wire the warning banner</span>          <span class="accent">● 1</span>  <span class="dim">│</span>
+        <span class="dim">│</span> <span class="dim">3 · </span><span class="warning">e55f210</span> <span class="dim">wire the warning banner</span>          <span class="accent">● 1</span>     <span class="dim">│</span>
         <span class="dim">└──────────────────────────────────────────────────────┘</span>
   <span class="dim">↑↓</span> <span class="accent">move</span>  <span class="dim">·</span>  <span class="dim">enter</span> <span class="accent">go to commit</span>  <span class="dim">·</span>  <span class="dim">Esc</span> <span class="accent">close menu</span></pre>
 
