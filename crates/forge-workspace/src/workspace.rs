@@ -357,6 +357,13 @@ pub struct Workspace {
     /// (no subscriptions) or unconfigured. Guards against double-starting.
     /// `pub(crate)` so the impl block in [`crate::gotify`] can reach it.
     pub(crate) gotify_subsystem: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// One Slack client per `[[slack]]` entry, resolved at boot. Empty
+    /// keeps the Slack connector dormant. `pub(crate)` so the impl
+    /// blocks in [`crate::slack`] and `crate::mcp::slack` can reach it.
+    pub(crate) slack: Arc<crate::slack::SlackWorkspaces>,
+    /// Set the first time [`Workspace::start_slack_verification`] runs.
+    /// Subsequent calls early-return to avoid spawning duplicate probes.
+    pub(crate) slack_verification_started: std::sync::atomic::AtomicBool,
     /// Per-project in-flight guard for the lead Connected
     /// hook's catalog scan. Inserted synchronously when
     /// `respawn_workers_for_lead` starts; removed when
@@ -933,6 +940,25 @@ impl Workspace {
             None => Vec::new(),
         };
 
+        // Resolved here rather than lazily so a malformed `[[slack]]`
+        // entry refuses the boot, the way the rest of forge.toml does.
+        // The client goes through the same TLS-trust helper the Gotify
+        // seam uses, so NODE_EXTRA_CA_CERTS behaves identically.
+        let slack_http = forge_agent::http_trust::with_extra_roots(reqwest::Client::builder())
+            .build()
+            .map_err(|error| WorkspaceError::ConfigInvalid {
+                path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                message: format!("slack http client: {error}"),
+            })?;
+        let slack = Arc::new(
+            crate::slack::SlackWorkspaces::from_config(&config.slack, &slack_http).map_err(
+                |message| WorkspaceError::ConfigInvalid {
+                    path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                    message,
+                },
+            )?,
+        );
+
         // Catalog scan reads against the workspace's canonical
         // `config_dir` (where forge.toml lives). Each spawn binds to
         // its own account `config_dir` separately; multi-account
@@ -1017,6 +1043,8 @@ impl Workspace {
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
+            slack,
+            slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
@@ -1435,6 +1463,7 @@ impl Workspace {
             let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
+            let slack_facade = crate::mcp::slack::facade::ProdSlackFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
             crate::mcp::build_forge_server(
                 workspace_facade,
@@ -1442,6 +1471,7 @@ impl Workspace {
                 review_facade,
                 cron_facade,
                 gotify_facade,
+                slack_facade,
                 resolver,
                 session_kind,
             )
@@ -6043,6 +6073,8 @@ impl Workspace {
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
+            slack: Arc::new(crate::slack::SlackWorkspaces::default()),
+            slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
@@ -10733,6 +10765,7 @@ mod worker_respawn_tests {
             crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
             crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
             crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
+            crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
             crate::mcp::peers::facade::CallerKeyResolver::from_fixed(SessionKey::from_session_id(
                 "caller",
             )),

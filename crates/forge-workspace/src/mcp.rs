@@ -38,6 +38,7 @@ use crate::mcp::cron::facade::CronFacade;
 use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::{CallerKeyResolver, WorkspaceFacade};
 use crate::mcp::review::facade::ReviewFacade;
+use crate::mcp::slack::facade::SlackFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub(crate) mod caller_context;
@@ -45,6 +46,7 @@ pub mod cron;
 pub mod gotify;
 pub mod peers;
 pub mod review;
+pub mod slack;
 pub mod workers;
 
 /// Identifies which kind of session the MCP server is being built
@@ -88,6 +90,7 @@ pub fn build_forge_server(
     review_facade: Arc<dyn ReviewFacade>,
     cron_facade: Arc<dyn CronFacade>,
     gotify_facade: Arc<dyn GotifyFacade>,
+    slack_facade: Arc<dyn SlackFacade>,
     caller_key: CallerKeyResolver,
     kind: SessionKind,
 ) -> McpServer {
@@ -98,6 +101,8 @@ pub fn build_forge_server(
     builder = workers::add_tools(builder, worker_facade, caller_key.clone());
     builder = review::add_tools(builder, review_facade, caller_key.clone());
     builder = cron::add_tools(builder, cron_facade, caller_key.clone());
+    // `slack` takes no caller key, so `gotify` keeps the last move of it.
+    builder = slack::add_tools(builder, slack_facade);
     builder = gotify::add_tools(builder, gotify_facade, caller_key);
     builder.build()
 }
@@ -110,6 +115,7 @@ mod tests {
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::review::facade::MockReviewFacade;
+    use crate::mcp::slack::facade::MockSlackFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
 
     fn fake_key(s: &str) -> SessionKey {
@@ -123,6 +129,7 @@ mod tests {
         let review_facade = MockReviewFacade::new().into_arc();
         let cron_facade = MockCronFacade::new().into_arc();
         let gotify_facade = MockGotifyFacade::new().into_arc();
+        let slack_facade = MockSlackFacade::new().into_arc();
         let resolver = CallerKeyResolver::from_fixed(fake_key("test"));
         let server = build_forge_server(
             workspace_facade,
@@ -130,6 +137,7 @@ mod tests {
             review_facade,
             cron_facade,
             gotify_facade,
+            slack_facade,
             resolver,
             SessionKind::Lead,
         );
@@ -155,6 +163,7 @@ mod tests {
             "gotify__unsubscribe",
             "gotify__apps",
             "gotify__recent",
+            "slack__list",
         ] {
             assert!(
                 debug.contains(expected),
@@ -174,6 +183,7 @@ mod tests {
         let review_facade = MockReviewFacade::new().into_arc();
         let cron_facade = MockCronFacade::new().into_arc();
         let gotify_facade = MockGotifyFacade::new().into_arc();
+        let slack_facade = MockSlackFacade::new().into_arc();
         let resolver = CallerKeyResolver::from_fixed(fake_key("test"));
         let server = build_forge_server(
             workspace_facade,
@@ -181,6 +191,7 @@ mod tests {
             review_facade,
             cron_facade,
             gotify_facade,
+            slack_facade,
             resolver,
             SessionKind::Worker,
         );
@@ -206,6 +217,7 @@ mod tests {
             "gotify__unsubscribe",
             "gotify__apps",
             "gotify__recent",
+            "slack__list",
         ] {
             assert!(
                 debug.contains(expected),

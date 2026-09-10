@@ -31,12 +31,13 @@ forge-test-harness ─→ primitives + sdk + workspace
   CLI.
 - **`forge-connectors`** - one module per inbound connector: the
   stream client, REST lookups, subscription matching and subsystem
-  pump for one external integration (Gotify today). Depends on
-  forge-primitives only; the subscription set, the app index and
+  pump for one external integration (Gotify and Slack today). Depends
+  on forge-primitives only. Gotify's subscription set, app index and
   message dispatch into sessions arrive through the `GotifyHost` port
-  forge-workspace implements, so the crate stays stream + mapping and
-  holds no workspace state. No generic connector trait: one connector
-  exists, and a trait waits until the variety is real.
+  forge-workspace implements; Slack's client is called by workspace
+  code directly. Either way the crate stays stream + mapping and holds
+  no workspace state. No generic connector trait: the variety is still
+  two, and a trait waits until it is real.
 - **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
 - **`forge-agent`** - drives one SDK Client behind a channel-based
@@ -88,9 +89,9 @@ Work top-down; first match wins.
 4. **Inbound connector I/O for an external integration?** (its stream
    client, REST lookups, subscription matching, reconnecting
    subsystem pump) -> `forge-connectors`, one module per connector.
-   The connector holds no workspace state; what it needs from the
-   workspace arrives through the `GotifyHost` port forge-workspace
-   implements.
+   The connector holds no workspace state: Gotify reaches the
+   workspace through the `GotifyHost` port forge-workspace implements,
+   and Slack holds only its Web API client.
 5. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.

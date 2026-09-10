@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use forge_primitives::GotifyConfig;
 use forge_primitives::account::Provider;
 use forge_primitives::permission::PermissionMode;
+use forge_primitives::slack::SlackConfig;
 use serde::Deserialize;
 
 use crate::error::WorkspaceError;
@@ -54,6 +55,10 @@ struct ForgeToml {
     /// stays dormant.
     #[serde(default)]
     gotify: Option<GotifyConfig>,
+    /// Optional `[[slack]]` sections - one entry per workspace. Absent or
+    /// empty → the connector stays dormant.
+    #[serde(default)]
+    slack: Vec<SlackConfig>,
     /// Optional `[plugins]` section - opt-in plugin auto-update.
     /// Absent section → all defaults, which leaves auto-update off.
     #[serde(default)]
@@ -211,6 +216,9 @@ pub(crate) struct LoadedConfig {
     /// `[gotify]` server connection, or `None` when the section is
     /// absent (Gotify disabled).
     pub gotify: Option<GotifyConfig>,
+    /// `[[slack]]` workspaces. An absent or empty list leaves the
+    /// connector dormant, the way an absent `[gotify]` does.
+    pub slack: Vec<SlackConfig>,
     /// `[plugins]` section knobs. Absent section means auto-update is
     /// off.
     pub plugins: PluginSettings,
@@ -296,6 +304,7 @@ impl LoadedConfig {
             ui: UiSettings::default(),
             dictate: crate::dictate::DictateSettings::default(),
             gotify: None,
+            slack: Vec::new(),
             plugins: PluginSettings::default(),
         }
     }
@@ -553,6 +562,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         ui: parsed.ui,
         dictate: parsed.dictate,
         gotify: parsed.gotify,
+        slack: parsed.slack,
         plugins: parsed.plugins,
     })
 }
@@ -856,6 +866,36 @@ providers = "anthropic"
             message.contains("providers"),
             "the error has to name the offending key, got: {message}",
         );
+    }
+
+    #[test]
+    fn slack_section_parses_and_rejects_an_unknown_key() {
+        let toml = r#"
+[[slack]]
+workspace = "acme"
+token = "xoxp-test"
+poll_seconds = 45
+"#;
+        let parsed: ForgeToml = toml::from_str(toml).expect("slack section parses");
+        assert_eq!(parsed.slack.len(), 1);
+        assert_eq!(parsed.slack[0].workspace, "acme");
+        assert_eq!(parsed.slack[0].poll_seconds, 45);
+
+        let bad = r#"
+[[slack]]
+workspace = "acme"
+token = "xoxp-test"
+poll_second = 45
+"#;
+        let err = toml::from_str::<ForgeToml>(bad).expect_err("a near-miss key must fail loudly");
+        assert!(err.to_string().contains("poll_second"), "got: {err}");
+    }
+
+    #[test]
+    fn slack_poll_seconds_defaults_to_thirty() {
+        let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
+        let parsed: ForgeToml = toml::from_str(toml).expect("parses without poll_seconds");
+        assert_eq!(parsed.slack[0].poll_seconds, 30);
     }
 
     #[test]

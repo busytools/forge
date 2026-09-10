@@ -319,6 +319,28 @@ Optional. Absent means the Gotify integration stays dormant.
 
 Both are mandatory once the section is present; neither has a default.
 
+## `[[slack]]`
+
+Optional, and repeatable: one entry per Slack workspace. Absent or empty
+means the Slack connector stays dormant.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `workspace` | string | none | Label for this workspace, distinct per entry. It addresses the workspace in `slack__list`. |
+| `token` | string | none | User token, `xoxp-...`. |
+| `poll_seconds` | integer | `30` | Sweep interval for this workspace, in seconds. |
+
+`workspace` and `token` are mandatory once an entry is present. Three
+mistakes fail the load rather than booting a connector that cannot work:
+an empty `workspace`, an empty `token`, and two entries sharing a
+`workspace` label. An unknown key inside an entry is rejected, so a
+near-miss fails loudly.
+
+The token is a credential, so it lives here rather than in the state
+store beside the subscriptions. forge proves it with `auth.test` at boot
+and logs the team and user it resolves to, or the failure; a workspace
+whose token fails stays dormant without stopping the boot.
+
 ## `[plugins]`
 
 Optional. Absent means plugin auto-update is off, which is also what an
@@ -346,7 +368,7 @@ being ignored. Keys an older forge read here (`trusted_marketplaces`,
 
 The top-level document does not reject unknown tables, so a section
 forge no longer reads is ignored rather than failing the load. The
-places that do reject unknown fields are `[[accounts]]`,
+places that do reject unknown fields are `[[accounts]]`, `[[slack]]`,
 `[projects.<name>]`, `[dictate]` and `[plugins]`.
 
 ## A complete example
@@ -420,6 +442,11 @@ max_capture_minutes = 30
 [gotify]
 url = "https://gotify.example"
 client_token = "CxxxxxxxxxxxxxxxA"
+
+[[slack]]
+workspace = "acme"
+token = "xoxp-xxxxxxxxxxxx"
+poll_seconds = 30
 
 [plugins]
 auto_update = true
