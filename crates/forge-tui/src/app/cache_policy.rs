@@ -37,8 +37,8 @@ pub struct TextSplitDecision {
 }
 
 pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplitDecision> {
+    let code = crate::ui::fence::code_ranges(text);
     let bytes = text.as_bytes();
-    let mut in_fence = false;
     let mut i = 0usize;
 
     let mut soft_newline = None;
@@ -49,11 +49,7 @@ pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplit
     let mut post_hard_sentence = None;
 
     while i < bytes.len() {
-        if (i == 0 || bytes[i - 1] == b'\n') && bytes[i..].starts_with(b"```") {
-            in_fence = !in_fence;
-        }
-
-        if !in_fence {
+        if !code.iter().any(|range| range.contains(&i)) {
             if i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
                 let split_at = i + 2;
                 if split_at < bytes.len() {

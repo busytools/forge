@@ -4,6 +4,7 @@ use crate::app::{
     StopHookEntry, SystemSeverity, TextBlock, TurnInfo, WelcomeBlock, hash_text_block_content,
     hash_welcome_block_content,
 };
+use crate::ui::fence;
 use crate::ui::peer_block;
 use crate::ui::theme;
 use crate::ui::tool_call;
@@ -2324,36 +2325,67 @@ fn tint_lines(lines: &mut [Line<'static>], color: Color) {
     }
 }
 
-/// Preprocess markdown that `tui_markdown` doesn't handle well.
-/// Headings (`# Title`) become `**Title**` (bold) with a blank line before.
-/// Handles variations: `#Title`, `#  Title`, `  ## Title  `, etc.
-/// Links are left as-is -- `tui_markdown` handles `[title](url)` natively.
-///
-/// HTML tags outside fenced code blocks are stripped because
-/// `tui_markdown::from_str` emits per-element WARN events for every
-/// HTML element it encounters (peaks at 50K+/sec on streaming chats
-/// with HTML content). `<br>` / `<br/>` / `<br />` become newlines
-/// to preserve the author's line-break intent; other tags
-/// (`<div>`, `<b>`, `<i>`, ...) drop the tag and keep the inner
-/// content. Inside fenced code blocks (triple-backtick), HTML-like
-/// text is preserved verbatim so Rust generics (`Vec<T>`), JSX, and
-/// other code that LOOKS like HTML survives untouched.
+/// Render preprocessed markdown: prose through `tui_markdown`, fenced
+/// code through its own panel. Splitting first is what keeps the code
+/// verbatim - `tui_markdown` prints the delimiters itself.
+fn render_markdown_segments(
+    text: &str,
+    width: u16,
+    bg: Option<Color>,
+    preserve_newlines: bool,
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for segment in fence::segments(text) {
+        match segment.kind {
+            fence::SegmentKind::Prose(prose) => {
+                let body = if preserve_newlines {
+                    force_markdown_line_breaks(prose)
+                } else {
+                    prose.to_owned()
+                };
+                out.extend(super::document_table::render_markdown_with_tables(&body, width, bg));
+            }
+            fence::SegmentKind::Code { language, body } => {
+                // `tui_markdown` separates a block from what precedes it.
+                if out.last().is_some_and(|line| !line_is_blank(line)) {
+                    out.push(Line::default());
+                }
+                out.extend(fence::render_code_panel(body, language, width));
+            }
+        }
+    }
+    out
+}
+
+/// Rewrite prose that `tui_markdown` doesn't handle well, leaving fenced
+/// code verbatim: its content must survive untouched so Rust generics
+/// (`Vec<T>`), JSX, and other code that LOOKS like HTML is not mistaken
+/// for markup.
 fn preprocess_markdown(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
-    let mut in_fence = false;
+    for segment in fence::segments(text) {
+        match segment.kind {
+            fence::SegmentKind::Code { .. } => result.push_str(&text[segment.range]),
+            fence::SegmentKind::Prose(prose) => result.push_str(&preprocess_prose(prose)),
+        }
+    }
+    result
+}
+
+/// Headings (`# Title`) become `**Title**` (bold) with a blank line
+/// before; `#Title`, `#  Title` and `  ## Title  ` all hit it. Links are
+/// left as-is -- `tui_markdown` handles `[title](url)` natively.
+///
+/// HTML tags are stripped because `tui_markdown::from_str` emits
+/// per-element WARN events for every HTML element it encounters (peaks at
+/// 50K+/sec on streaming chats with HTML content). `<br>` / `<br/>` /
+/// `<br />` become newlines to preserve the author's line-break intent;
+/// other tags (`<div>`, `<b>`, `<i>`, ...) drop the tag and keep the inner
+/// content.
+fn preprocess_prose(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-        if in_fence {
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
         if trimmed.starts_with('#') {
             // Strip all leading '#' characters
             let after_hashes = trimmed.trim_start_matches('#');
@@ -2466,11 +2498,8 @@ pub(super) fn render_text_cached(
 
     // Build a render function that handles preprocessing + tui_markdown
     let render_fn = |src: &str| -> Vec<Line<'static>> {
-        let mut preprocessed = preprocess_markdown(src);
-        if preserve_newlines {
-            preprocessed = force_markdown_line_breaks(&preprocessed);
-        }
-        super::document_table::render_markdown_with_tables(&preprocessed, width, bg)
+        let preprocessed = preprocess_markdown(src);
+        render_markdown_segments(&preprocessed, width, bg, preserve_newlines)
     };
     let render_key = MarkdownRenderKey { width, bg, preserve_newlines };
 
@@ -2887,6 +2916,42 @@ mod tests {
         let result = force_markdown_line_breaks("\n");
         // One empty line, should stay empty with trailing newline
         assert_eq!(result, "\n");
+    }
+
+    // Fenced code blocks
+
+    fn row_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    fn assert_renders_code_panel(lines: &[Line<'static>], role: &str) {
+        let body = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(body.contains("fn main() {}"), "{role}: the code body is missing: {body:?}");
+        assert!(!body.contains("```"), "{role}: the fence delimiters reached the render: {body:?}");
+        let labelled = lines.iter().any(|line| {
+            line.spans.iter().any(|span| span.style.bg == Some(theme::CODE_PANEL_BG))
+                && row_text(line).contains("rust")
+        });
+        assert!(
+            labelled,
+            "{role}: no panel row carries the info string and the panel bg: {body:?}"
+        );
+    }
+
+    const FENCED_MESSAGE: &str = "Here is the guard:\n\n```rust\nfn main() {}\n```\n\n";
+
+    #[test]
+    fn a_user_fenced_block_renders_as_a_code_panel() {
+        let mut block = TextBlock::from_complete(FENCED_MESSAGE);
+        let rendered = text_block_layout(&mut block, 80, Some(theme::USER_MSG_BG), true);
+        assert_renders_code_panel(&rendered.lines, "user");
+    }
+
+    #[test]
+    fn an_assistant_fenced_block_renders_as_a_code_panel() {
+        let mut block = TextBlock::from_complete(FENCED_MESSAGE);
+        let rendered = assistant_text_block_layout(&mut block, 80, false);
+        assert_renders_code_panel(&rendered.lines, "assistant");
     }
 
     fn make_text_message(role: MessageRole, text: &str) -> ChatMessage {

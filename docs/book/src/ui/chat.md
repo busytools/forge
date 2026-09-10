@@ -125,13 +125,14 @@ Settled, the spinner becomes `↳`, the output half of the token pair arrives, a
 
   Here's the function:
 
-      <span class="dim">fn is_near_threshold_without_overage(</span>
-      <span class="dim">    update: &amp;model::RateLimitUpdate,</span>
-      <span class="dim">) -&gt; bool {</span>
-      <span class="dim">    matches!(update.status, RateLimitStatus::AllowedWarning)</span>
-      <span class="dim">        &amp;&amp; update.is_using_overage == Some(false)</span>
-      <span class="dim">        &amp;&amp; update.surpassed_threshold.is_some_and(|t| t &gt; 0.0)</span>
-      <span class="dim">}</span>
+  <span class="code-panel">  <span class="code-label">rust</span>                                                                     </span>
+  <span class="code-panel">  fn is_near_threshold_without_overage(                                    </span>
+  <span class="code-panel">      update: &amp;model::RateLimitUpdate,                                     </span>
+  <span class="code-panel">  ) -&gt; bool {                                                              </span>
+  <span class="code-panel">      matches!(update.status, RateLimitStatus::AllowedWarning)             </span>
+  <span class="code-panel">          &amp;&amp; update.is_using_overage == Some(false)                        </span>
+  <span class="code-panel">          &amp;&amp; update.surpassed_threshold.is_some_and(|t| t &gt; 0.0)           </span>
+  <span class="code-panel">  }                                                                        </span>
 
   Tests pass. Want me to push?
   <span class="dim">&#x21b3; 1m 19s &#xb7; 4.2k&#x2191; 1.1k&#x2193; &#xb7; 93% cached &#xb7; 3.1k written [&#x25b6; expand]</span></pre>
@@ -165,6 +166,30 @@ Settled, the spinner becomes `↳`, the output half of the token pair arrives, a
 <summary>Expanding the row</summary>
 
 Click the row to toggle it - the same affordance and hand pointer as the stop-hook summary chip. **Cmd+X** (Ctrl+X off macOS) toggle-all clears every per-row override in the active session, so anything clicked open or shut returns to what the flipped flag dictates; the symmetry is one-way - expand-all opens the tool calls and still shuts the row, which has no global state of its own.
+
+</details>
+
+## Code block
+
+A fenced code block is a quiet panel: a lifted background, no box-drawing glyphs and no fence delimiters, on both roles. The fence's info string is a dim label on the panel's first row; the code under it is syntax highlighted through the same lookup tool-call bodies use. Backtick and tilde fences both work, a closing fence must be at least as long as its opener, and either fence line may be indented up to three spaces.
+
+<div class="term">
+
+  <pre class="indent">
+  <span class="code-panel">  <span class="code-label">toml</span>                                                                     </span>
+  <span class="code-panel">  [accounts.env]                                                           </span>
+  <span class="code-panel">  CLAUDE_CODE_OAUTH_TOKEN = "..."                                          </span></pre>
+
+</div>
+
+<details>
+<summary>Code block rules</summary>
+
+- The panel owns its wrapping. A long line wraps inside the panel instead of running past its right edge, and every row carries the background to the panel's full width, so the block reads as one surface rather than a patch per span.
+- The info string is passed to the syntax lookup whole and trimmed. An absent or unresolvable language renders the code plain, with no label row.
+- An unterminated fence stays a panel to the end of the message, so a code block still streaming never flickers between panel and prose.
+- Blank prose around the fence collapses to a single separator row above the panel.
+- The panel is a plain body block: no collapse state and no click target.
 
 </details>
 

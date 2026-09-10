@@ -572,18 +572,15 @@ impl IncrementalMarkdown {
 }
 
 fn find_first_stable_split(text: &str) -> Option<usize> {
-    let mut in_fenced_code = false;
+    let code = crate::ui::fence::code_ranges(text);
     let mut saw_nonblank = false;
     let mut blank_run_end = None;
     let mut offset = 0usize;
 
     for line in text.split_inclusive('\n') {
+        let in_fenced_code = code.iter().any(|range| range.contains(&offset));
         offset += line.len();
         let trimmed = line.trim_end_matches('\n').trim();
-        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
-        if is_fence {
-            in_fenced_code = !in_fenced_code;
-        }
 
         let is_blank = trimmed.is_empty();
         if !in_fenced_code && is_blank {

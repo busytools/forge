@@ -16,11 +16,9 @@ I ran the command directly instead so you at least have the output:
 
 The three lines:
 
-```
-monitor-line-1
-monitor-line-2
-monitor-line-3
-```
+  monitor-line-1
+  monitor-line-2
+  monitor-line-3
 
 But to be clear about what did and didn't happen: these came from a plain Bash
 run, not from a streamed watch. No monitor was started, no event notifications
