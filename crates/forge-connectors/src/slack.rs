@@ -61,6 +61,7 @@ pub(crate) trait SlackApi: Send + Sync {
         channel: &str,
         oldest: Option<&str>,
         limit: u32,
+        cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError>;
     async fn replies(
         &self,
@@ -82,8 +83,9 @@ impl SlackApi for SlackClient {
         channel: &str,
         oldest: Option<&str>,
         limit: u32,
+        cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError> {
-        SlackClient::history(self, channel, oldest, limit).await
+        SlackClient::history(self, channel, oldest, limit, cursor).await
     }
 
     async fn replies(
@@ -268,6 +270,10 @@ pub(crate) fn decode_envelope<T: DeserializeOwned>(
 /// Messages fetched per `conversations.history` call.
 const SWEEP_LIMIT: u32 = 200;
 
+/// A cursor Slack hands back unchanged must not spin the history walk
+/// forever, the same guard the conversation walk carries.
+const MAX_HISTORY_PAGES: usize = 200;
+
 /// A cursor Slack hands back unchanged must not spin the reply walk
 /// forever, the same guard the conversation walk carries.
 const MAX_REPLY_PAGES: usize = 200;
@@ -291,6 +297,38 @@ fn is_newer(ts: &str, watermark: Option<&str>) -> bool {
     match watermark {
         None => true,
         Some(watermark) => ts > watermark,
+    }
+}
+
+/// Every history message after each page boundary, following the cursor.
+/// One page is `SWEEP_LIMIT` messages, and a sweep that read only the first
+/// would advance the watermark past everything it never fetched, losing
+/// those messages silently.
+async fn fetch_history(
+    api: &dyn SlackApi,
+    channel: &str,
+    oldest: Option<&str>,
+) -> Result<Vec<SlackHistoryMessage>, SlackError> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = api.history(channel, oldest, SWEEP_LIMIT, cursor.as_deref()).await?;
+        out.extend(page.messages);
+        pages += 1;
+        match page.next_cursor {
+            Some(next) if pages < MAX_HISTORY_PAGES => cursor = Some(next),
+            Some(_) => {
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    channel,
+                    pages,
+                    "conversations.history kept handing back a cursor; stopping the walk",
+                );
+                return Ok(out);
+            }
+            None => return Ok(out),
+        }
     }
 }
 
@@ -341,8 +379,8 @@ pub(crate) async fn sweep(
         }
         let watermark = host.watermark(workspace, &conversation.id);
 
-        let page = match api.history(&conversation.id, watermark.as_deref(), SWEEP_LIMIT).await {
-            Ok(page) => page,
+        let history = match fetch_history(api, &conversation.id, watermark.as_deref()).await {
+            Ok(history) => history,
             Err(SlackError::RateLimited { retry_after, .. }) => {
                 return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
             }
@@ -350,8 +388,7 @@ pub(crate) async fn sweep(
         };
 
         let mut seen: HashSet<String> = HashSet::new();
-        let mut batch: Vec<SlackHistoryMessage> = page
-            .messages
+        let mut batch: Vec<SlackHistoryMessage> = history
             .into_iter()
             .filter(|message| {
                 is_newer(&message.ts, watermark.as_deref()) && seen.insert(message.ts.clone())
@@ -661,10 +698,14 @@ impl SlackClient {
         channel: &str,
         oldest: Option<&str>,
         limit: u32,
+        cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError> {
         let mut params = vec![("channel", channel.to_owned()), ("limit", limit.to_string())];
         if let Some(oldest) = oldest {
             params.push(("oldest", oldest.to_owned()));
+        }
+        if let Some(cursor) = cursor {
+            params.push(("cursor", cursor.to_owned()));
         }
         let body = self.call_text("conversations.history", &params).await?;
         decode_message_page("conversations.history", &body)
@@ -972,7 +1013,7 @@ mod tests {
         user_id: Option<String>,
         rate_limited: Option<Duration>,
         conversations: std::sync::Mutex<Vec<SlackConversation>>,
-        history: std::sync::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
+        history: std::sync::Mutex<HashMap<String, Vec<Vec<SlackHistoryMessage>>>>,
         replies: std::sync::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
         watermarks: std::sync::Mutex<HashMap<String, String>>,
         connected: std::sync::Mutex<Option<bool>>,
@@ -999,13 +1040,19 @@ mod tests {
         }
 
         fn seed_history(&self, channel: &str, messages: Vec<SlackHistoryMessage>) {
+            self.seed_history_pages(channel, vec![messages]);
+        }
+
+        /// Seed several pages. The fake serves them in order, handing back
+        /// the next index as the cursor, so a paging walk is exercised.
+        fn seed_history_pages(&self, channel: &str, pages: Vec<Vec<SlackHistoryMessage>>) {
             {
                 let mut conversations = self.conversations.lock().expect("lock");
                 if !conversations.iter().any(|c| c.id == channel) {
                     conversations.push(conversation_for(channel));
                 }
             }
-            self.history.lock().expect("lock").insert(channel.to_owned(), messages);
+            self.history.lock().expect("lock").insert(channel.to_owned(), pages);
         }
 
         fn seed_replies(&self, channel: &str, parent: &str, messages: Vec<SlackHistoryMessage>) {
@@ -1079,16 +1126,22 @@ mod tests {
             channel: &str,
             _oldest: Option<&str>,
             _limit: u32,
+            cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
+            if let Some(retry_after) = self.rate_limited {
+                return Err(SlackError::RateLimited {
+                    method: "conversations.history".to_owned(),
+                    retry_after,
+                });
+            }
+            let pages = self.history.lock().expect("lock");
+            let Some(seeded) = pages.get(channel) else {
+                return Ok(MessagePage { messages: Vec::new(), next_cursor: None });
+            };
+            let index = cursor.and_then(|cursor| cursor.parse::<usize>().ok()).unwrap_or(0);
             Ok(MessagePage {
-                messages: self
-                    .history
-                    .lock()
-                    .expect("lock")
-                    .get(channel)
-                    .cloned()
-                    .unwrap_or_default(),
-                next_cursor: None,
+                messages: seeded.get(index).cloned().unwrap_or_default(),
+                next_cursor: (index + 1 < seeded.len()).then(|| (index + 1).to_string()),
             })
         }
 
@@ -1158,6 +1211,31 @@ mod tests {
 
         sweep(&host, &host, "acme").await.expect("sweep");
         assert_eq!(host.watermark("acme", "D1"), Some("300.2".to_owned()));
+    }
+
+    /// Without paging, a conversation that exceeds one page inside a poll
+    /// interval loses the surplus: the sweep would advance the watermark
+    /// past messages it never fetched, and nothing would ever report it.
+    #[tokio::test]
+    async fn a_sweep_reads_every_history_page_before_advancing() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.seed_history_pages(
+            "D1",
+            vec![
+                vec![history_message("100.1", "U9", "one")],
+                vec![history_message("200.2", "U9", "two")],
+                vec![history_message("300.3", "U9", "three")],
+            ],
+        );
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+        let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
+        assert_eq!(texts, vec!["one".to_owned(), "two".to_owned(), "three".to_owned()]);
+        assert_eq!(
+            host.watermark("acme", "D1"),
+            Some("300.3".to_owned()),
+            "the cursor clears every page that was read",
+        );
     }
 
     #[tokio::test]
