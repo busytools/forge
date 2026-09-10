@@ -194,7 +194,9 @@ pub const CURATED: &[CuratedModel] = &[
         source: Some("vals.ai, independent"),
         researched: "2026-09-10",
         open: true,
-        note: Some("cheapest curated row; forge.toml default. Z.ai launch: TB2.1 84.3 (Opus 4.8 85.0); DeepSWE 63.4 (58.0)"),
+        note: Some(
+            "cheapest curated row; forge.toml default. Z.ai launch: TB2.1 84.3 (Opus 4.8 85.0); DeepSWE 63.4 (58.0)",
+        ),
     },
     CuratedModel {
         slug: "deepseek/deepseek-v4.1-flash",
