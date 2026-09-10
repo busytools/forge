@@ -6,11 +6,148 @@
 //! logical failure, so a 200 is not success. Only a 429 arrives as a
 //! status, and it carries `Retry-After`.
 
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
-use forge_primitives::slack::SlackConversation;
+use tokio::sync::oneshot;
+
+use forge_primitives::slack::{
+    SlackConversation, SlackMessage, SlackSubscription, SlackSubscriptionTarget, SlackWatchMode,
+};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+
+/// What the pump needs from the workspace. The connector holds no state
+/// of its own, so the subscription set, the watermarks and the liveness
+/// flag all live behind this.
+pub trait SlackHost: Send + Sync {
+    /// A ready client for this workspace, or an error when the workspace is
+    /// not configured. The host builds it, so the token stays with the
+    /// workspace and the connector never asks for the credential itself.
+    fn client(&self, workspace: &str, timeout: Duration) -> Result<SlackClient, String>;
+
+    /// The authenticated user's id for a workspace, resolved at boot.
+    /// Needed to recognise `<@U...>` mentions.
+    fn user_id(&self, workspace: &str) -> Option<String>;
+
+    /// The subscriptions scoped to one workspace.
+    fn subscriptions(&self, workspace: &str) -> Vec<SlackSubscription>;
+
+    /// The last timestamp delivered for a conversation, or `None` when it
+    /// has never been swept.
+    fn watermark(&self, workspace: &str, conversation: &str) -> Option<String>;
+
+    /// Record the last timestamp delivered. A `ts` is a string with a
+    /// microsecond fraction; never round-trip it through a number.
+    fn set_watermark(&self, workspace: &str, conversation: &str, ts: &str);
+
+    /// Liveness for the Inspector's status line.
+    fn set_connected(&self, workspace: &str, connected: bool);
+
+    /// Hand one matched message to its subscriber's session.
+    fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage);
+}
+
+/// The Web API calls the pump makes, behind a trait so a sweep can be
+/// driven from seeded responses instead of a live workspace. It abstracts
+/// this one connector's surface; it is not a trait shared between
+/// connectors.
+#[async_trait::async_trait]
+pub(crate) trait SlackApi: Send + Sync {
+    async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError>;
+    async fn history(
+        &self,
+        channel: &str,
+        oldest: Option<&str>,
+        limit: u32,
+    ) -> Result<MessagePage, SlackError>;
+    async fn replies(
+        &self,
+        channel: &str,
+        ts: &str,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<MessagePage, SlackError>;
+}
+
+#[async_trait::async_trait]
+impl SlackApi for SlackClient {
+    async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
+        SlackClient::list_conversations(self).await
+    }
+
+    async fn history(
+        &self,
+        channel: &str,
+        oldest: Option<&str>,
+        limit: u32,
+    ) -> Result<MessagePage, SlackError> {
+        SlackClient::history(self, channel, oldest, limit).await
+    }
+
+    async fn replies(
+        &self,
+        channel: &str,
+        ts: &str,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<MessagePage, SlackError> {
+        SlackClient::replies(self, channel, ts, limit, cursor).await
+    }
+}
+
+/// Whether `text` carries a mention of `user_id`.
+pub fn mentions(text: &str, user_id: &str) -> bool {
+    text.contains(&format!("<@{user_id}>"))
+}
+
+/// Whether one subscription wants this message. A message the user
+/// authored himself is never wanted, or an agent answering in Slack would
+/// answer itself.
+fn matches(
+    subscription: &SlackSubscription,
+    conversation: &SlackConversation,
+    author: Option<&str>,
+    text: &str,
+    user_id: &str,
+) -> bool {
+    if author == Some(user_id) {
+        return false;
+    }
+    match &subscription.target {
+        SlackSubscriptionTarget::DirectMessages => conversation.is_im || conversation.is_mpim,
+        SlackSubscriptionTarget::Conversation { id, mode } => {
+            id == &conversation.id
+                && match mode {
+                    SlackWatchMode::All => true,
+                    SlackWatchMode::MentionsOnly => mentions(text, user_id),
+                }
+        }
+    }
+}
+
+/// Whether any of `subscriptions` wants this message.
+pub fn wants(
+    subscriptions: &[SlackSubscription],
+    conversation: &SlackConversation,
+    author: Option<&str>,
+    text: &str,
+    user_id: &str,
+) -> bool {
+    subscriptions.iter().any(|s| matches(s, conversation, author, text, user_id))
+}
+
+/// Whether any subscription names this conversation, ignoring the mode and
+/// the author. Decides which conversations a sweep fetches history for: a
+/// mentions-only subscription still has to look, or it would never see a
+/// mention arrive.
+fn targets(subscriptions: &[SlackSubscription], conversation: &SlackConversation) -> bool {
+    subscriptions.iter().any(|s| match &s.target {
+        SlackSubscriptionTarget::DirectMessages => conversation.is_im || conversation.is_mpim,
+        SlackSubscriptionTarget::Conversation { id, .. } => id == &conversation.id,
+    })
+}
 
 const API_ROOT: &str = "https://slack.com/api";
 
@@ -128,6 +265,216 @@ pub(crate) fn decode_envelope<T: DeserializeOwned>(
     Ok(envelope.value)
 }
 
+/// Messages fetched per `conversations.history` call.
+const SWEEP_LIMIT: u32 = 200;
+
+/// A cursor Slack hands back unchanged must not spin the reply walk
+/// forever, the same guard the conversation walk carries.
+const MAX_REPLY_PAGES: usize = 200;
+
+/// How long a pump waits on one Web API call.
+const PUMP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What one sweep did.
+#[derive(Debug)]
+pub(crate) struct SweepOutcome {
+    pub delivered: usize,
+    /// Set when a call was throttled, so the caller backs off rather than
+    /// hammering. A 429 is a report, not an error.
+    pub rate_limited: Option<Duration>,
+}
+
+/// Whether `ts` is strictly after `watermark`. Timestamps are compared as
+/// the strings Slack sent: they carry a microsecond fraction, and parsing
+/// one to a number loses it and silently moves the cursor.
+fn is_newer(ts: &str, watermark: Option<&str>) -> bool {
+    match watermark {
+        None => true,
+        Some(watermark) => ts > watermark,
+    }
+}
+
+/// Every reply in a thread, following the cursor. Dedupe is the caller's:
+/// Slack pages newest-first and repeats the parent on every page.
+async fn fetch_replies(
+    api: &dyn SlackApi,
+    channel: &str,
+    ts: &str,
+) -> Result<Vec<SlackHistoryMessage>, SlackError> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = api.replies(channel, ts, SWEEP_LIMIT, cursor.as_deref()).await?;
+        out.extend(page.messages);
+        pages += 1;
+        match page.next_cursor {
+            Some(next) if pages < MAX_REPLY_PAGES => cursor = Some(next),
+            _ => return Ok(out),
+        }
+    }
+}
+
+/// One pass over a workspace's subscribed conversations: fetch what is
+/// newer than each conversation's watermark, follow the threads of the
+/// parents that report replies, and hand every survivor to the host.
+pub(crate) async fn sweep(
+    host: &dyn SlackHost,
+    api: &dyn SlackApi,
+    workspace: &str,
+) -> Result<SweepOutcome, SlackError> {
+    let subscriptions = host.subscriptions(workspace);
+    let user_id = host.user_id(workspace).unwrap_or_default();
+
+    let conversations = match api.list_conversations().await {
+        Ok(conversations) => conversations,
+        Err(SlackError::RateLimited { retry_after, .. }) => {
+            return Ok(SweepOutcome { delivered: 0, rate_limited: Some(retry_after) });
+        }
+        Err(error) => return Err(error),
+    };
+
+    let mut delivered = 0;
+    for conversation in &conversations {
+        if !targets(&subscriptions, conversation) {
+            continue;
+        }
+        let watermark = host.watermark(workspace, &conversation.id);
+
+        let page = match api.history(&conversation.id, watermark.as_deref(), SWEEP_LIMIT).await {
+            Ok(page) => page,
+            Err(SlackError::RateLimited { retry_after, .. }) => {
+                return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
+            }
+            Err(error) => return Err(error),
+        };
+
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut batch: Vec<SlackHistoryMessage> = page
+            .messages
+            .into_iter()
+            .filter(|message| {
+                is_newer(&message.ts, watermark.as_deref()) && seen.insert(message.ts.clone())
+            })
+            .collect();
+
+        // Thread replies never appear in `conversations.history`, so a
+        // parent that reports replies is the only way to reach them.
+        let parents: Vec<String> = batch
+            .iter()
+            .filter(|message| message.reply_count > 0 && message.thread_ts.is_none())
+            .map(|message| message.ts.clone())
+            .collect();
+        for parent in parents {
+            let replies = match fetch_replies(api, &conversation.id, &parent).await {
+                Ok(replies) => replies,
+                Err(SlackError::RateLimited { retry_after, .. }) => {
+                    return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
+                }
+                Err(error) => return Err(error),
+            };
+            for reply in replies {
+                if is_newer(&reply.ts, watermark.as_deref()) && seen.insert(reply.ts.clone()) {
+                    batch.push(reply);
+                }
+            }
+        }
+
+        let label =
+            conversation.name.clone().or_else(|| conversation.user.clone()).unwrap_or_default();
+        for message in &batch {
+            let Some(subscription) = subscriptions.iter().find(|subscription| {
+                matches(
+                    subscription,
+                    conversation,
+                    message.user.as_deref(),
+                    &message.text,
+                    &user_id,
+                )
+            }) else {
+                continue;
+            };
+            host.deliver(
+                subscription,
+                &SlackMessage {
+                    workspace: workspace.to_owned(),
+                    conversation: conversation.id.clone(),
+                    conversation_label: label.clone(),
+                    ts: message.ts.clone(),
+                    thread_ts: message.thread_ts.clone(),
+                    user: message.user.clone(),
+                    text: message.text.clone(),
+                },
+            );
+            delivered += 1;
+        }
+
+        // Advanced last, so a crash before this point re-delivers rather
+        // than skips; delivery is idempotent on the timestamp.
+        if let Some(newest) = batch.iter().map(|message| message.ts.as_str()).max() {
+            host.set_watermark(workspace, &conversation.id, newest);
+        }
+    }
+
+    Ok(SweepOutcome { delivered, rate_limited: None })
+}
+
+/// The wait before the next sweep: the configured interval, or a rate
+/// limit's delay when one was reported.
+pub(crate) fn next_interval(configured: Duration, rate_limited: Option<Duration>) -> Duration {
+    rate_limited.map_or(configured, |delay| delay.min(RETRY_CAP))
+}
+
+/// Sweep one workspace forever, until `shutdown` fires. The first sweep is
+/// delayed by the interval so a boot with many workspaces does not burst.
+pub async fn run_workspace_pump(
+    host: Arc<dyn SlackHost>,
+    workspace: String,
+    poll_seconds: u64,
+    mut shutdown: oneshot::Receiver<()>,
+) {
+    let interval = Duration::from_secs(poll_seconds);
+    let Ok(client) = host.client(&workspace, PUMP_TIMEOUT) else {
+        tracing::warn!(
+            target: "forge_connectors::slack",
+            workspace = %workspace,
+            "no client for this workspace; its pump stays down",
+        );
+        return;
+    };
+
+    let mut wait = interval;
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => break,
+            () = tokio::time::sleep(wait) => {}
+        }
+        wait = interval;
+        match sweep(host.as_ref(), &client, &workspace).await {
+            Ok(outcome) => {
+                host.set_connected(&workspace, true);
+                tracing::debug!(
+                    target: "forge_connectors::slack",
+                    workspace = %workspace,
+                    delivered = outcome.delivered,
+                    "slack sweep finished",
+                );
+                wait = next_interval(interval, outcome.rate_limited);
+            }
+            Err(error) => {
+                host.set_connected(&workspace, false);
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    workspace = %workspace,
+                    %error,
+                    "slack sweep failed",
+                );
+            }
+        }
+    }
+    host.set_connected(&workspace, false);
+}
+
 /// `auth.test` - who the token belongs to.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuthTest {
@@ -179,6 +526,66 @@ fn page_from_raw(raw: RawConversationsPage) -> ConversationsPage {
     let cursor = (!raw.response_metadata.next_cursor.is_empty())
         .then_some(raw.response_metadata.next_cursor);
     ConversationsPage { conversations: raw.channels, next_cursor: cursor }
+}
+
+/// One message off `conversations.history` or `conversations.replies`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlackHistoryMessage {
+    pub ts: String,
+    pub user: Option<String>,
+    pub text: String,
+    /// `None` for a top-level message, the parent's `ts` for a reply.
+    pub thread_ts: Option<String>,
+    /// Non-zero on a parent whose thread has replies.
+    pub reply_count: u32,
+}
+
+/// One page of a conversation's messages. Both `conversations.history` and
+/// `conversations.replies` answer with this shape.
+#[derive(Debug)]
+pub struct MessagePage {
+    pub messages: Vec<SlackHistoryMessage>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawMessagePage {
+    #[serde(default)]
+    messages: Vec<RawWireMessage>,
+    #[serde(default)]
+    response_metadata: Metadata,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawWireMessage {
+    ts: String,
+    #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    thread_ts: Option<String>,
+    #[serde(default)]
+    reply_count: u32,
+}
+
+/// Split out of the async path so the decode is testable without HTTP.
+fn decode_message_page(method: &str, body: &str) -> Result<MessagePage, SlackError> {
+    let raw: RawMessagePage = decode_envelope(method, body)?;
+    let cursor = (!raw.response_metadata.next_cursor.is_empty())
+        .then_some(raw.response_metadata.next_cursor);
+    let messages = raw
+        .messages
+        .into_iter()
+        .map(|message| SlackHistoryMessage {
+            ts: message.ts,
+            user: message.user,
+            text: message.text,
+            thread_ts: message.thread_ts,
+            reply_count: message.reply_count,
+        })
+        .collect();
+    Ok(MessagePage { messages, next_cursor: cursor })
 }
 
 impl SlackClient {
@@ -246,6 +653,44 @@ impl SlackClient {
         self.call("auth.test", &[]).await
     }
 
+    /// One page of a conversation's history. `oldest` is omitted entirely
+    /// on a first sweep: Slack treats an empty `oldest` differently from
+    /// an absent one.
+    pub async fn history(
+        &self,
+        channel: &str,
+        oldest: Option<&str>,
+        limit: u32,
+    ) -> Result<MessagePage, SlackError> {
+        let mut params = vec![("channel", channel.to_owned()), ("limit", limit.to_string())];
+        if let Some(oldest) = oldest {
+            params.push(("oldest", oldest.to_owned()));
+        }
+        let body = self.call_text("conversations.history", &params).await?;
+        decode_message_page("conversations.history", &body)
+    }
+
+    /// One page of a thread's replies. Slack pages newest-first and repeats
+    /// the parent on every page, so the caller dedupes by `ts`.
+    pub async fn replies(
+        &self,
+        channel: &str,
+        ts: &str,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<MessagePage, SlackError> {
+        let mut params = vec![
+            ("channel", channel.to_owned()),
+            ("ts", ts.to_owned()),
+            ("limit", limit.to_string()),
+        ];
+        if let Some(cursor) = cursor {
+            params.push(("cursor", cursor.to_owned()));
+        }
+        let body = self.call_text("conversations.replies", &params).await?;
+        decode_message_page("conversations.replies", &body)
+    }
+
     /// Every conversation the token's user is a member of, paging to the end.
     pub async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
         let mut out = Vec::new();
@@ -281,6 +726,7 @@ impl SlackClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     /// Pinned against literals, not against `RETRY_FALLBACK` / `RETRY_CAP`:
     /// asserting the output equals the constant the function itself applies
@@ -382,6 +828,402 @@ mod tests {
             encode_form(&[("cursor", String::new())]),
             "cursor=",
             "an empty value still emits its name"
+        );
+    }
+
+    fn sub_for(target: SlackSubscriptionTarget) -> SlackSubscription {
+        SlackSubscription {
+            id: uuid::Uuid::new_v4(),
+            workspace: "acme".to_owned(),
+            project: "forge".to_owned(),
+            team_role: None,
+            target,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    fn conversation_channel(id: &str, name: &str) -> SlackConversation {
+        SlackConversation {
+            id: id.to_owned(),
+            name: Some(name.to_owned()),
+            is_channel: true,
+            is_private: false,
+            is_im: false,
+            is_mpim: false,
+            is_archived: false,
+            user: None,
+        }
+    }
+
+    fn conversation_im(id: &str, user: &str) -> SlackConversation {
+        SlackConversation {
+            id: id.to_owned(),
+            name: None,
+            is_channel: false,
+            is_private: false,
+            is_im: true,
+            is_mpim: false,
+            is_archived: false,
+            user: Some(user.to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_mention_is_the_literal_token_and_nothing_looser() {
+        assert!(mentions("hey <@U123> look", "U123"));
+        assert!(!mentions("hey U123 look", "U123"), "a bare id is not a mention");
+        assert!(!mentions("hey <@U1234> look", "U123"), "a longer id must not match");
+        assert!(mentions("<@U123>", "U123"), "a mention with no surrounding text still counts");
+    }
+
+    #[test]
+    fn a_dm_subscription_wants_every_dm() {
+        let subs = vec![sub_for(SlackSubscriptionTarget::DirectMessages)];
+        let dm = conversation_im("D1", "U9");
+        assert!(wants(&subs, &dm, Some("U9"), "anything", "U1"));
+    }
+
+    #[test]
+    fn a_mentions_only_channel_filters_on_the_token() {
+        let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
+            id: "C1".to_owned(),
+            mode: SlackWatchMode::MentionsOnly,
+        })];
+        let channel = conversation_channel("C1", "general");
+        assert!(!wants(&subs, &channel, Some("U9"), "no mention here", "U1"));
+        assert!(wants(&subs, &channel, Some("U9"), "ping <@U1>", "U1"));
+    }
+
+    #[test]
+    fn the_users_own_messages_are_never_delivered() {
+        // Otherwise the connector echoes back everything the user says, and an
+        // agent answering in Slack would answer itself.
+        let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
+            id: "C1".to_owned(),
+            mode: SlackWatchMode::All,
+        })];
+        let channel = conversation_channel("C1", "general");
+        assert!(!wants(&subs, &channel, Some("U1"), "my own words", "U1"));
+    }
+
+    #[test]
+    fn an_unsubscribed_conversation_is_never_wanted() {
+        let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
+            id: "C1".to_owned(),
+            mode: SlackWatchMode::All,
+        })];
+        assert!(!wants(&subs, &conversation_channel("C2", "other"), Some("U9"), "hi", "U1"));
+    }
+
+    #[test]
+    fn a_history_page_decodes_its_messages_and_the_cursor() {
+        let body = r#"{
+          "ok": true,
+          "messages": [
+            {"ts":"100.000001","user":"U9","text":"hello","thread_ts":"100.000001","reply_count":3},
+            {"ts":"200.000002","user":"U8","text":"plain"}
+          ],
+          "response_metadata": {"next_cursor": "cur1"}
+        }"#;
+        let page = decode_message_page("conversations.history", body).expect("decodes");
+        assert_eq!(page.messages.len(), 2, "every message in the page is kept");
+        assert_eq!(page.messages[0].ts, "100.000001", "the ts survives as the string Slack sent");
+        assert_eq!(page.messages[0].reply_count, 3, "the reply count drives thread following");
+        assert_eq!(page.messages[0].thread_ts.as_deref(), Some("100.000001"));
+        assert_eq!(page.messages[1].thread_ts, None, "a top-level message has no thread");
+        assert_eq!(page.next_cursor.as_deref(), Some("cur1"));
+
+        let last = decode_message_page(
+            "conversations.history",
+            r#"{"ok":true,"messages":[],"response_metadata":{"next_cursor":""}}"#,
+        )
+        .expect("an empty cursor means the last page");
+        assert_eq!(last.next_cursor, None);
+    }
+
+    /// The decoder keeps the repeat: Slack returns the parent on every page
+    /// of `conversations.replies`, and deduping is the sweep's job.
+    #[test]
+    fn a_replies_page_keeps_the_repeated_parent_for_the_caller_to_dedupe() {
+        let body = r#"{
+          "ok": true,
+          "messages": [
+            {"ts":"100.0","user":"U9","text":"root"},
+            {"ts":"200.1","user":"U8","text":"reply one"},
+            {"ts":"100.0","user":"U9","text":"root"},
+            {"ts":"300.2","user":"U8","text":"reply two"}
+          ]
+        }"#;
+        let page = decode_message_page("conversations.replies", body).expect("decodes");
+        assert_eq!(page.messages.len(), 4, "the decoder does not dedupe");
+        assert_eq!(
+            page.messages.iter().filter(|m| m.ts == "100.0").count(),
+            2,
+            "the parent arrives twice and the caller is the one that folds it",
+        );
+    }
+
+    /// Drives both ports from seeded responses, so a sweep runs with no
+    /// workspace and no network. One type implements both traits because
+    /// the sweep's two arguments are the same double in every test.
+    #[derive(Default)]
+    struct FakeHost {
+        subscriptions: Vec<SlackSubscription>,
+        user_id: Option<String>,
+        rate_limited: Option<Duration>,
+        conversations: std::sync::Mutex<Vec<SlackConversation>>,
+        history: std::sync::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
+        replies: std::sync::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
+        watermarks: std::sync::Mutex<HashMap<String, String>>,
+        connected: std::sync::Mutex<Option<bool>>,
+        delivered: std::sync::Mutex<Vec<SlackMessage>>,
+    }
+
+    fn conversation_for(id: &str) -> SlackConversation {
+        let is_im = id.starts_with('D');
+        SlackConversation {
+            id: id.to_owned(),
+            name: (!is_im).then(|| id.to_lowercase()),
+            is_channel: !is_im,
+            is_private: false,
+            is_im,
+            is_mpim: false,
+            is_archived: false,
+            user: is_im.then(|| "U9".to_owned()),
+        }
+    }
+
+    impl FakeHost {
+        fn with_subscriptions(subscriptions: Vec<SlackSubscription>) -> Self {
+            Self { subscriptions, user_id: Some("U1".to_owned()), ..Self::default() }
+        }
+
+        fn seed_history(&self, channel: &str, messages: Vec<SlackHistoryMessage>) {
+            {
+                let mut conversations = self.conversations.lock().expect("lock");
+                if !conversations.iter().any(|c| c.id == channel) {
+                    conversations.push(conversation_for(channel));
+                }
+            }
+            self.history.lock().expect("lock").insert(channel.to_owned(), messages);
+        }
+
+        fn seed_replies(&self, channel: &str, parent: &str, messages: Vec<SlackHistoryMessage>) {
+            self.replies.lock().expect("lock").insert(format!("{channel}/{parent}"), messages);
+        }
+
+        fn fail_with_rate_limit(&mut self, retry_after: Duration) {
+            self.rate_limited = Some(retry_after);
+        }
+
+        fn delivered(&self) -> Vec<SlackMessage> {
+            self.delivered.lock().expect("lock").clone()
+        }
+
+        fn connected(&self) -> Option<bool> {
+            *self.connected.lock().expect("lock")
+        }
+    }
+
+    impl SlackHost for FakeHost {
+        fn client(&self, _workspace: &str, _timeout: Duration) -> Result<SlackClient, String> {
+            Ok(SlackClient::new(reqwest::Client::new(), "xoxp-test".to_owned()))
+        }
+
+        fn user_id(&self, _workspace: &str) -> Option<String> {
+            self.user_id.clone()
+        }
+
+        fn subscriptions(&self, _workspace: &str) -> Vec<SlackSubscription> {
+            self.subscriptions.clone()
+        }
+
+        fn watermark(&self, workspace: &str, conversation: &str) -> Option<String> {
+            self.watermarks
+                .lock()
+                .expect("lock")
+                .get(&format!("{workspace}/{conversation}"))
+                .cloned()
+        }
+
+        fn set_watermark(&self, workspace: &str, conversation: &str, ts: &str) {
+            self.watermarks
+                .lock()
+                .expect("lock")
+                .insert(format!("{workspace}/{conversation}"), ts.to_owned());
+        }
+
+        fn set_connected(&self, _workspace: &str, connected: bool) {
+            *self.connected.lock().expect("lock") = Some(connected);
+        }
+
+        fn deliver(&self, _subscription: &SlackSubscription, message: &SlackMessage) {
+            self.delivered.lock().expect("lock").push(message.clone());
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SlackApi for FakeHost {
+        async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
+            if let Some(retry_after) = self.rate_limited {
+                return Err(SlackError::RateLimited {
+                    method: "users.conversations".to_owned(),
+                    retry_after,
+                });
+            }
+            Ok(self.conversations.lock().expect("lock").clone())
+        }
+
+        async fn history(
+            &self,
+            channel: &str,
+            _oldest: Option<&str>,
+            _limit: u32,
+        ) -> Result<MessagePage, SlackError> {
+            Ok(MessagePage {
+                messages: self
+                    .history
+                    .lock()
+                    .expect("lock")
+                    .get(channel)
+                    .cloned()
+                    .unwrap_or_default(),
+                next_cursor: None,
+            })
+        }
+
+        async fn replies(
+            &self,
+            channel: &str,
+            ts: &str,
+            _limit: u32,
+            _cursor: Option<&str>,
+        ) -> Result<MessagePage, SlackError> {
+            Ok(MessagePage {
+                messages: self
+                    .replies
+                    .lock()
+                    .expect("lock")
+                    .get(&format!("{channel}/{ts}"))
+                    .cloned()
+                    .unwrap_or_default(),
+                next_cursor: None,
+            })
+        }
+    }
+
+    fn history_message(ts: &str, user: &str, text: &str) -> SlackHistoryMessage {
+        SlackHistoryMessage {
+            ts: ts.to_owned(),
+            user: Some(user.to_owned()),
+            text: text.to_owned(),
+            thread_ts: None,
+            reply_count: 0,
+        }
+    }
+
+    fn sub_dm(workspace: &str) -> SlackSubscription {
+        let mut sub = sub_for(SlackSubscriptionTarget::DirectMessages);
+        sub.workspace = workspace.to_owned();
+        sub
+    }
+
+    fn sub_channel(workspace: &str, id: &str, mode: SlackWatchMode) -> SlackSubscription {
+        let mut sub = sub_for(SlackSubscriptionTarget::Conversation { id: id.to_owned(), mode });
+        sub.workspace = workspace.to_owned();
+        sub
+    }
+
+    #[tokio::test]
+    async fn a_sweep_delivers_only_what_follows_the_watermark() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.seed_history(
+            "D1",
+            vec![history_message("200.1", "U9", "newer"), history_message("100.1", "U9", "older")],
+        );
+        host.set_watermark("acme", "D1", "150.0");
+
+        let outcome = sweep(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(outcome.delivered, 1);
+        assert_eq!(host.delivered()[0].text, "newer");
+    }
+
+    #[tokio::test]
+    async fn a_sweep_advances_the_watermark_to_the_newest_seen() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.seed_history(
+            "D1",
+            vec![history_message("200.1", "U9", "a"), history_message("300.2", "U9", "b")],
+        );
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(host.watermark("acme", "D1"), Some("300.2".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_is_reported_rather_than_retried_inline() {
+        let mut host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.fail_with_rate_limit(Duration::from_secs(7));
+
+        let outcome = sweep(&host, &host, "acme").await.expect("a 429 is not an error");
+        assert_eq!(outcome.rate_limited, Some(Duration::from_secs(7)));
+    }
+
+    #[tokio::test]
+    async fn a_message_in_a_thread_pulls_its_replies_and_dedupes_the_parent() {
+        // The measured behaviour: replies page newest-first and repeat the
+        // parent on every page, so the parent arrives once per page without
+        // dedupe.
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        let mut root = history_message("100.0", "U9", "root");
+        root.reply_count = 2;
+        host.seed_history("C1", vec![root]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                history_message("100.0", "U9", "root"),
+                history_message("200.1", "U8", "reply one"),
+                history_message("100.0", "U9", "root"),
+                history_message("300.2", "U8", "reply two"),
+            ],
+        );
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+        let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
+        assert_eq!(
+            texts,
+            vec!["root".to_owned(), "reply one".to_owned(), "reply two".to_owned()],
+            "the parent must not be delivered once per page",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_pump_stops_when_the_shutdown_fires() {
+        let host = Arc::new(FakeHost::with_subscriptions(vec![sub_dm("acme")]));
+        let (tx, rx) = oneshot::channel();
+        let pump = tokio::spawn(run_workspace_pump(host.clone(), "acme".to_owned(), 3600, rx));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(()).expect("signal shutdown");
+        tokio::time::timeout(Duration::from_secs(2), pump)
+            .await
+            .expect("the pump must not outlive its shutdown")
+            .expect("no panic");
+        assert_eq!(host.connected(), Some(false), "the pump marks itself disconnected on exit");
+    }
+
+    #[test]
+    fn next_interval_takes_the_rate_limit_delay_when_one_was_reported() {
+        assert_eq!(
+            next_interval(Duration::from_secs(30), Some(Duration::from_secs(7))),
+            Duration::from_secs(7),
+        );
+        assert_eq!(next_interval(Duration::from_secs(30), None), Duration::from_secs(30));
+        assert_eq!(
+            next_interval(Duration::from_secs(30), Some(Duration::from_secs(600))),
+            Duration::from_secs(60),
+            "a hostile Retry-After is capped",
         );
     }
 

@@ -1247,6 +1247,7 @@ name = "forge-connectors"
 version = "1.0.55"
 dependencies = [
  "anyhow",
+ "async-trait",
  "forge-primitives",
  "form_urlencoded",
  "futures",

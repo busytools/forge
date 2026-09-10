@@ -69,6 +69,46 @@ fn read_all(db: &Db) -> anyhow::Result<Vec<SlackSubscription>> {
     Ok(out)
 }
 
+/// Keyed by the workspace label and the conversation id, not by the
+/// subscription: a conversation can be watched by more than one
+/// subscription, and the cursor belongs to the conversation.
+const WATERMARKS: TableDefinition<&str, &str> = TableDefinition::new("slack_watermarks");
+
+/// `\u{0}` joins the pair. A Slack conversation id is alphanumeric and a
+/// workspace label is a TOML string, so neither carries one.
+fn watermark_key(workspace: &str, conversation: &str) -> String {
+    format!("{workspace}\u{0}{conversation}")
+}
+
+/// The last `ts` delivered for a conversation in a workspace, or `None`
+/// when that conversation has never been swept.
+pub fn watermark(db: &Db, workspace: &str, conversation: &str) -> anyhow::Result<Option<String>> {
+    let key = watermark_key(workspace, conversation);
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(WATERMARKS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    match table.get(key.as_str())? {
+        Some(value) => Ok(Some(value.value().to_owned())),
+        None => Ok(None),
+    }
+}
+
+/// Record the last `ts` delivered for a conversation. Stored as the string
+/// Slack sent it, never as a number.
+pub fn set_watermark(db: &Db, workspace: &str, conversation: &str, ts: &str) -> anyhow::Result<()> {
+    let key = watermark_key(workspace, conversation);
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(WATERMARKS)?;
+        table.insert(key.as_str(), ts)?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +149,53 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
         assert!(list(&db).expect("a fresh database has no table yet").is_empty());
+    }
+
+    #[test]
+    fn a_watermark_round_trips_as_the_string_slack_sent() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        // Trailing zeros and a microsecond fraction: a value that has been
+        // through an f64 comes back as "1700000000.0001" and silently moves
+        // the cursor, so pin the exact text.
+        let ts = "1700000000.000100";
+        set_watermark(&db, "acme", "C1", ts).expect("set");
+        assert_eq!(
+            watermark(&db, "acme", "C1").expect("get"),
+            Some(ts.to_owned()),
+            "the ts must survive verbatim, never as a number",
+        );
+    }
+
+    #[test]
+    fn an_unset_watermark_reads_as_none() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        assert_eq!(
+            watermark(&db, "acme", "C1").expect("a fresh database has no table yet"),
+            None,
+            "a conversation never swept has no cursor, which is not an error",
+        );
+    }
+
+    #[test]
+    fn a_watermark_is_scoped_to_its_workspace_and_conversation() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        set_watermark(&db, "acme", "C1", "100.000001").expect("set acme/C1");
+        set_watermark(&db, "acme", "C2", "200.000002").expect("set acme/C2");
+        set_watermark(&db, "beta", "C1", "300.000003").expect("set beta/C1");
+
+        assert_eq!(watermark(&db, "acme", "C1").expect("get"), Some("100.000001".to_owned()));
+        assert_eq!(watermark(&db, "acme", "C2").expect("get"), Some("200.000002".to_owned()));
+        assert_eq!(
+            watermark(&db, "beta", "C1").expect("get"),
+            Some("300.000003".to_owned()),
+            "the same conversation id in another workspace keeps its own cursor",
+        );
+        assert_eq!(watermark(&db, "beta", "C2").expect("get"), None);
     }
 
     #[test]

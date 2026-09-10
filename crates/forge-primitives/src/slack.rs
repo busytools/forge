@@ -94,6 +94,22 @@ pub struct SlackSubscription {
     pub created_at: SystemTime,
 }
 
+/// One message as the pump sees it, after matching. Carries what delivery
+/// needs and nothing the wire happened to include.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlackMessage {
+    pub workspace: String,
+    pub conversation: String,
+    /// Conversation name for display; the DM partner's id when unnamed.
+    /// Not `Option`, so a caller never has to invent a fallback.
+    pub conversation_label: String,
+    pub ts: String,
+    /// `None` for a top-level message, the thread's parent `ts` otherwise.
+    pub thread_ts: Option<String>,
+    pub user: Option<String>,
+    pub text: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
