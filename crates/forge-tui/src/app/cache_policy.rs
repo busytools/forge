@@ -48,8 +48,14 @@ pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplit
     let mut post_hard_newline = None;
     let mut post_hard_sentence = None;
 
+    // The ranges are in source order, so one cursor walks them with `i`
+    // instead of re-checking every range at every byte.
+    let mut next_range = 0usize;
     while i < bytes.len() {
-        if !code.iter().any(|range| range.contains(&i)) {
+        while code.get(next_range).is_some_and(|range| range.end <= i) {
+            next_range += 1;
+        }
+        if !code.get(next_range).is_some_and(|range| range.contains(&i)) {
             if i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
                 let split_at = i + 2;
                 if split_at < bytes.len() {
@@ -155,5 +161,17 @@ mod tests {
     fn split_ignores_double_newline_inside_fence() {
         let text = "```rust\nfirst\n\nsecond\n```";
         assert!(find_text_split(text, *default_cache_split_policy()).is_none());
+    }
+
+    #[test]
+    fn split_ignores_double_newline_inside_a_tilde_fence() {
+        let text = "~~~~\nfirst\n\nsecond\n~~~~\n\nafter";
+        let decision =
+            find_text_split(text, *default_cache_split_policy()).expect("expected a split");
+        assert_eq!(
+            &text[..decision.split_at],
+            "~~~~\nfirst\n\nsecond\n~~~~\n\n",
+            "the blank line inside the tilde fence is not a boundary"
+        );
     }
 }

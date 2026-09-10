@@ -186,7 +186,7 @@ A fenced code block is a quiet panel: a lifted background, no box-drawing glyphs
 <summary>Code block rules</summary>
 
 - The panel owns its wrapping. A long line wraps inside the panel instead of running past its right edge, and every row carries the background to the panel's full width, so the block reads as one surface rather than a patch per span.
-- The info string is passed to the syntax lookup whole and trimmed. An absent or unresolvable language renders the code plain, with no label row.
+- The info string labels the panel whenever the fence carries one, and goes to the syntax lookup whole and trimmed. A language syntect cannot resolve still labels the block; its code renders plain.
 - An unterminated fence stays a panel to the end of the message, so a code block still streaming never flickers between panel and prose.
 - Blank prose around the fence collapses to a single separator row above the panel.
 - The panel is a plain body block: no collapse state and no click target.

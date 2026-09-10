@@ -12,6 +12,8 @@ use std::panic::{self, AssertUnwindSafe};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
+use super::fence;
+
 thread_local! {
     /// Set while a markdown render runs inside the `catch_unwind` guard
     /// below. The process-wide panic hook (see `app::install_panic_hook`)
@@ -112,22 +114,23 @@ fn normalize_task_list_markers(text: &str) -> Cow<'_, str> {
     if !text.contains('[') {
         return Cow::Borrowed(text);
     }
+    let code = fence::code_ranges(text);
     let mut out = String::with_capacity(text.len());
     let mut changed = false;
-    let mut in_fence = false;
+    let mut next_range = 0usize;
+    let mut offset = 0usize;
     for line in text.split_inclusive('\n') {
-        let (content, newline) =
-            line.strip_suffix('\n').map_or((line, ""), |stripped| (stripped, "\n"));
-        let trimmed = content.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
-            out.push_str(line);
-            continue;
+        while code.get(next_range).is_some_and(|range| range.end <= offset) {
+            next_range += 1;
         }
+        let in_fence = code.get(next_range).is_some_and(|range| range.contains(&offset));
+        offset += line.len();
         if in_fence {
             out.push_str(line);
             continue;
         }
+        let (content, newline) =
+            line.strip_suffix('\n').map_or((line, ""), |stripped| (stripped, "\n"));
         if let Some(rewritten) = rewrite_task_line(content) {
             changed = true;
             out.push_str(&rewritten);
@@ -256,6 +259,17 @@ mod tests {
         let input = "```\n- [ ] not a task in code\n```\n- [ ] real task";
         let out = normalize_task_list_markers(input);
         assert_eq!(out.as_ref(), "```\n- [ ] not a task in code\n```\n- \u{2610} real task");
+    }
+
+    #[test]
+    fn normalize_skips_a_four_backtick_fence() {
+        let input = "````\n```\n- [ ] not a task in code\n```\n````\n- [ ] real task";
+        let out = normalize_task_list_markers(input);
+        assert_eq!(
+            out.as_ref(),
+            "````\n```\n- [ ] not a task in code\n```\n````\n- \u{2610} real task",
+            "the inner fence is content, so its task marker stays verbatim"
+        );
     }
 
     #[test]

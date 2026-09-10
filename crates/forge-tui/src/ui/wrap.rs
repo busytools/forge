@@ -97,6 +97,15 @@ fn control_picture(ch: char) -> char {
     }
 }
 
+/// Split a line's leading whitespace off its content.
+pub(crate) fn split_leading_whitespace(text: &str) -> (&str, &str) {
+    let split_at = text
+        .char_indices()
+        .find_map(|(idx, ch)| (!ch.is_whitespace()).then_some(idx))
+        .unwrap_or(text.len());
+    text.split_at(split_at)
+}
+
 pub(crate) fn line_display_width(line: &Line<'_>) -> usize {
     line.spans.iter().map(|span| display_width(span.content.as_ref())).sum()
 }

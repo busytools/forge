@@ -34,14 +34,12 @@ struct FenceLine<'a> {
     rest: &'a str,
 }
 
-/// A fence line indented by at most three spaces: more than that is an
-/// indented code block, and a tab counts as four.
+/// Indentation is ignored rather than capped at CommonMark's three
+/// spaces: a fence indented four spaces sits under a list item in real
+/// output, and dropping it into prose mangles its content instead of
+/// showing it.
 fn fence_line(line: &str) -> Option<FenceLine<'_>> {
-    let indent = line.len() - line.trim_start_matches(' ').len();
-    if indent > 3 {
-        return None;
-    }
-    let body = &line[indent..];
+    let body = line.trim_start();
     let marker = body.chars().next()?;
     if !matches!(marker, '`' | '~') {
         return None;
@@ -71,8 +69,25 @@ fn closes_fence(line: &str, open: &OpenFence<'_>) -> bool {
 
 pub(crate) fn segments(text: &str) -> Vec<Segment<'_>> {
     let mut out = Vec::new();
+    walk_segments(text, |segment| out.push(segment));
+    out
+}
+
+/// Byte spans of every fenced code block, fence lines included but not
+/// the newline that ends the closing one.
+pub(crate) fn code_ranges(text: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    walk_segments(text, |segment| {
+        if matches!(segment.kind, SegmentKind::Code { .. }) {
+            ranges.push(segment.range);
+        }
+    });
+    ranges
+}
+
+fn walk_segments<'t>(text: &'t str, mut visit: impl FnMut(Segment<'t>)) {
     let mut prose_start = 0usize;
-    let mut open: Option<OpenFence<'_>> = None;
+    let mut open: Option<OpenFence<'t>> = None;
     let mut offset = 0usize;
 
     for line in text.split_inclusive('\n') {
@@ -81,7 +96,7 @@ pub(crate) fn segments(text: &str) -> Vec<Segment<'_>> {
             None => {
                 if let Some((marker, run, language)) = open_fence(content) {
                     if prose_start < offset {
-                        out.push(prose(text, prose_start..offset));
+                        visit(prose(text, prose_start..offset));
                     }
                     open = Some(OpenFence {
                         marker,
@@ -95,7 +110,7 @@ pub(crate) fn segments(text: &str) -> Vec<Segment<'_>> {
             Some(current) => {
                 if closes_fence(content, &current) {
                     let end = offset + content.len();
-                    out.push(Segment {
+                    visit(Segment {
                         kind: SegmentKind::Code {
                             language: current.language,
                             body: &text[current.body_start..offset],
@@ -112,31 +127,20 @@ pub(crate) fn segments(text: &str) -> Vec<Segment<'_>> {
     }
 
     match open {
-        Some(current) => out.push(Segment {
+        Some(current) => visit(Segment {
             kind: SegmentKind::Code {
                 language: current.language,
                 body: &text[current.body_start..],
             },
             range: current.opener_start..text.len(),
         }),
-        None if prose_start < text.len() => out.push(prose(text, prose_start..text.len())),
+        None if prose_start < text.len() => visit(prose(text, prose_start..text.len())),
         None => {}
     }
-    out
 }
 
 fn prose(text: &str, range: Range<usize>) -> Segment<'_> {
     Segment { kind: SegmentKind::Prose(&text[range.clone()]), range }
-}
-
-/// Byte spans of every fenced code block, fence lines included but not
-/// the newline that ends the closing one.
-pub(crate) fn code_ranges(text: &str) -> Vec<Range<usize>> {
-    segments(text)
-        .into_iter()
-        .filter(|segment| matches!(segment.kind, SegmentKind::Code { .. }))
-        .map(|segment| segment.range)
-        .collect()
 }
 
 /// Columns of the panel kept clear left of the code.
@@ -163,17 +167,59 @@ pub(crate) fn render_code_panel(body: &str, language: &str, width: u16) -> Vec<L
     // which would be a blank row the code does not have.
     let source = body.strip_suffix('\n').unwrap_or(body);
     for line in highlight::highlight_code(source, Some(language)) {
-        let chunks: Vec<StyledChunk> = line
-            .spans
+        let (indent, content) = split_line_indent(line.spans);
+        // Tabs expand rather than picturing as U+2409, so a tab-indented
+        // file reads at the same depth as its neighbours.
+        let indent = wrap::replace_control_chars(wrap::expand_tabs(&indent)).into_owned();
+        let wrap_width = content_width.saturating_sub(wrap::display_width(&indent)).max(1);
+        let chunks: Vec<StyledChunk> = content
             .into_iter()
-            .map(|span| StyledChunk { text: span.content.into_owned(), style: span.style })
+            .map(|span| StyledChunk {
+                text: wrap::replace_control_chars(wrap::expand_tabs(span.content.as_ref()))
+                    .into_owned(),
+                style: span.style,
+            })
             .collect();
-        for wrapped in wrap::wrap_styled_chunks(&chunks, content_width) {
-            lines.push(panel_row(wrapped.spans, panel_width));
+
+        for wrapped in wrap::wrap_styled_chunks(&chunks, wrap_width) {
+            let mut spans = Vec::with_capacity(wrapped.spans.len() + 1);
+            if !indent.is_empty() {
+                spans.push(Span::raw(indent.clone()));
+            }
+            spans.extend(wrapped.spans);
+            lines.push(panel_row(spans, panel_width));
         }
     }
 
     lines
+}
+
+/// Peel a line's leading whitespace off its spans so the panel can paint
+/// it explicitly: `wrap_styled_chunks` drops a leading whitespace token,
+/// which is right for prose and flattens every level of code indentation.
+fn split_line_indent(spans: Vec<Span<'static>>) -> (String, Vec<Span<'static>>) {
+    let mut indent = String::new();
+    let mut content = Vec::new();
+    let mut peeling = true;
+
+    for span in spans {
+        if !peeling {
+            content.push(span);
+            continue;
+        }
+        let text = span.content.into_owned();
+        let split = text
+            .char_indices()
+            .find_map(|(idx, ch)| (!ch.is_whitespace()).then_some(idx))
+            .unwrap_or(text.len());
+        indent.push_str(&text[..split]);
+        if split < text.len() {
+            peeling = false;
+            content.push(Span::styled(text[split..].to_owned(), span.style));
+        }
+    }
+
+    (indent, content)
 }
 
 /// One panel row: the pad, the wrapped code, then background to the right
@@ -264,18 +310,33 @@ mod tests {
     }
 
     #[test]
-    fn fences_may_be_indented_up_to_three_spaces() {
-        let text = "   ```rust\n   let a = 1;\n   ```";
+    fn an_indented_fence_still_takes_its_content_verbatim() {
+        let text = "    ```rust\n    let a: Vec<T> = vec![];\n    ```";
         let segments = segments(text);
-        assert_eq!(segments.len(), 1, "an indented fence is still a fence: {segments:?}");
-        assert_eq!(code(&segments[0]), ("rust", "   let a = 1;\n"));
+        assert_eq!(segments.len(), 1, "an indented fence is a fence: {segments:?}");
+        assert_eq!(code(&segments[0]), ("rust", "    let a: Vec<T> = vec![];\n"));
     }
 
     #[test]
-    fn four_spaces_of_indent_is_not_a_fence() {
-        let text = "    ```\n    let a = 1;\n    ```";
+    fn a_closing_fence_carrying_an_info_string_is_code() {
+        let text = "```\n```rust\nlet a = 1;\n```";
         let segments = segments(text);
-        assert_eq!(segments.len(), 1, "an indented code block is not a fence: {segments:?}");
+        assert_eq!(segments.len(), 1, "the inner fence line is content: {segments:?}");
+        assert_eq!(code(&segments[0]), ("", "```rust\nlet a = 1;\n"));
+    }
+
+    #[test]
+    fn the_info_string_is_trimmed() {
+        let text = "```  rust  \nlet a = 1;\n```";
+        let segments = segments(text);
+        assert_eq!(code(&segments[0]).0, "rust", "the info string is trimmed");
+    }
+
+    #[test]
+    fn a_backtick_info_string_holding_a_backtick_is_not_a_fence() {
+        let text = "```a`b\nlet a = 1;";
+        let segments = segments(text);
+        assert_eq!(segments.len(), 1, "the line is a paragraph: {segments:?}");
         assert_eq!(prose(&segments[0]), text);
     }
 
@@ -304,44 +365,69 @@ mod tests {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
     }
 
-    fn panel_text(lines: &[Line<'static>]) -> String {
-        lines.iter().map(row_text).collect::<Vec<_>>().join("\n")
+    /// Panel rows with their right-edge fill trimmed, so a row is
+    /// compared by what it says rather than by how far it is padded.
+    fn panel_rows(lines: &[Line<'static>]) -> Vec<String> {
+        lines.iter().map(|line| row_text(line).trim_end().to_owned()).collect()
+    }
+
+    fn assert_paints_what_it_measures(lines: &[Line<'static>]) {
+        for line in lines {
+            let measured: usize = line.spans.iter().map(Span::width).sum();
+            let painted: usize = line
+                .spans
+                .iter()
+                .map(|span| {
+                    span.styled_graphemes(Style::default())
+                        .map(|grapheme| wrap::display_width(grapheme.symbol))
+                        .sum::<usize>()
+                })
+                .sum();
+            assert_eq!(
+                measured,
+                painted,
+                "row charges a column it does not paint: {:?}",
+                row_text(line)
+            );
+        }
     }
 
     #[test]
     fn the_panel_labels_the_code_with_its_info_string() {
         let lines = render_code_panel("fn main() {}\n", "rust", 40);
-        let first = lines.first().expect("a panel has a label row");
-        assert!(
-            row_text(first).contains("rust"),
-            "info string is the label: {:?}",
-            row_text(first)
-        );
+        assert_eq!(panel_rows(&lines), ["  rust", "  fn main() {}"]);
         assert_eq!(
-            first.spans[1].style.fg,
+            lines[0].spans[1].style.fg,
             Some(theme::CODE_PANEL_LABEL),
             "the label is dim against the code"
         );
-        assert!(
-            panel_text(&lines).contains("fn main() {}"),
-            "the body renders: {:?}",
-            panel_text(&lines)
-        );
+    }
+
+    #[test]
+    fn the_panel_keeps_every_level_of_indentation() {
+        let lines = render_code_panel("fn f() {\n    nested();\n}\n", "rust", 40);
+        assert_eq!(panel_rows(&lines), ["  rust", "  fn f() {", "      nested();", "  }"]);
+    }
+
+    #[test]
+    fn a_tab_paints_every_column_it_measures() {
+        let indented = render_code_panel("\tfn main() {}\n", "rust", 40);
+        assert_eq!(panel_rows(&indented), ["  rust", "      fn main() {}"]);
+        assert_paints_what_it_measures(&indented);
+        assert_paints_what_it_measures(&render_code_panel("let a = 1;\t// note\n", "", 40));
     }
 
     #[test]
     fn the_panel_prints_no_fence_delimiters() {
         let lines = render_code_panel("let a = 1;\n", "rust", 40);
-        let text = panel_text(&lines);
+        let text = panel_rows(&lines).join("\n");
         assert!(!text.contains("```"), "delimiters never reach the panel: {text:?}");
     }
 
     #[test]
     fn a_panel_without_a_language_starts_at_the_code() {
         let lines = render_code_panel("plain text\n", "", 40);
-        let text = panel_text(&lines);
-        assert_eq!(lines.len(), 1, "no label row: {text:?}");
-        assert!(text.contains("plain text"), "the body renders: {text:?}");
+        assert_eq!(panel_rows(&lines), ["  plain text"], "no label row");
     }
 
     #[test]
@@ -360,6 +446,7 @@ mod tests {
                 row_text(line)
             );
         }
+        assert_paints_what_it_measures(&lines);
     }
 
     #[test]
@@ -369,7 +456,7 @@ mod tests {
         assert!(
             lines.len() > 1,
             "the line wraps rather than overflowing: {:?}",
-            panel_text(&lines)
+            panel_rows(&lines)
         );
         for line in &lines {
             assert_eq!(wrap::line_display_width(line), 20, "every row ends at the panel edge");
@@ -379,7 +466,7 @@ mod tests {
     #[test]
     fn a_blank_line_in_the_code_keeps_its_row() {
         let lines = render_code_panel("let a = 1;\n\nlet b = 2;\n", "", 40);
-        assert_eq!(lines.len(), 3, "the interior blank line stays: {:?}", panel_text(&lines));
+        assert_eq!(panel_rows(&lines), ["  let a = 1;", "", "  let b = 2;"]);
     }
 
     #[test]
