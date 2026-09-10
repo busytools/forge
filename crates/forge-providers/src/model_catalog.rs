@@ -4,9 +4,9 @@
 //! [`ProviderBackend::model_catalog`](crate::ProviderBackend::model_catalog).
 //!
 //! `GET {base}/v1/models` is public (no auth, free) and carries every
-//! model the account can name. forge serves only the curated ten - a
-//! maintained constant in this module - enriched with live price and
-//! context figures from the fetch. Same URL-join lesson as the
+//! model the account can name. The `/model` picker is built dynamically
+//! from the fetch - families ordered by frontier price, variants capped -
+//! enriched with live price and context figures. Same URL-join lesson as the
 //! openrouter backend's key url: `ANTHROPIC_BASE_URL` already ends
 //! in `/api`, so only the `/v1/models` tail is appended.
 
