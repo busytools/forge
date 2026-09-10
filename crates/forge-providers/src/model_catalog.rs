@@ -121,9 +121,6 @@ fn models_url(base_url: &str) -> String {
 /// and current-build aliases under each vendor.
 const VARIANTS_PER_VENDOR: usize = 4;
 
-/// How many vendors the picker serves, strongest first.
-const VENDORS_SHOWN: usize = 8;
-
 /// Vendor part of a model id: everything before the `/`. OpenRouter
 /// writes current-build aliases with a `~` prefix
 /// (`~z-ai/glm-flash-latest`); the alias belongs to the vendor it names.
@@ -283,7 +280,7 @@ pub(crate) fn curated_available_models(catalog: &[CatalogModel]) -> Vec<Availabl
     });
 
     let mut rows = Vec::new();
-    for (_, variants) in vendors.iter().take(VENDORS_SHOWN) {
+    for (_, variants) in &vendors {
         for (variant_idx, model) in variants.iter().take(VARIANTS_PER_VENDOR).enumerate() {
             let out_price = price_label(&model.pricing.completion).unwrap_or_default();
             let frontier = if variant_idx == 0 { "frontier - " } else { "" };
