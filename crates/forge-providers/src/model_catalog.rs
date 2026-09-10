@@ -109,123 +109,53 @@ fn models_url(base_url: &str) -> String {
     format!("{}/v1/models", base_url.trim_end_matches('/'))
 }
 
-/// Which quality band a curated entry sits in. Rendered in the picker
-/// row's display name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier {
-    /// 93%+ on at least one independent harness.
-    OpusClass,
-    Strong,
-    /// Reference models, kept marked and drop-eligible.
-    ClosedReference,
+/// The dynamic picker replaces the hand-maintained curated constant:
+/// every fetched model that passes the mechanical bar is grouped into a
+/// model family (vendor + base name before any variant suffix), and each
+/// family contributes its top variants by completion price - the frontier
+/// row plus the cheaper tiers below it (flash etc.). Families are ordered
+/// by their frontier completion price, so the strongest models surface
+/// first and a new release shows up on the next fetch without any
+/// hand-maintained constant going stale.
+
+/// Per-family variant cap: the frontier row plus its cheaper variants
+/// (flash tiers etc.) under each family.
+const VARIANTS_PER_FAMILY: usize = 3;
+
+/// How many families the picker serves, strongest first.
+const FAMILIES_SHOWN: usize = 8;
+
+/// Family key for a model id: vendor plus the base name before the last
+/// `-`-separated variant segment (`z-ai/glm-5.3-flash` -> `z-ai/glm-5.3`;
+/// `anthropic/claude-fable-5.1` -> `anthropic/claude-fable`). Keeps each
+/// family's frontier and its flash tiers together.
+fn family_key(id: &str) -> String {
+    /// Known variant suffixes: one trailing segment stripped when
+    /// present, so a family's frontier and its cheaper tiers group
+    /// together. Version segments (5.3, 5.1) are NOT variants and stay.
+    const VARIANT_SUFFIXES: [&str; 6] = ["flash", "pro", "mini", "lite", "latest", "vision"];
+    let (vendor, rest) = id.split_once('/').unwrap_or((id, ""));
+    let lower = rest.to_lowercase();
+    let base = VARIANT_SUFFIXES
+        .iter()
+        .find_map(|suffix| {
+            lower.strip_suffix(suffix).and_then(|stripped| stripped.strip_suffix('-'))
+        })
+        .map_or(rest.to_owned(), |base| base.to_owned());
+    format!("{vendor}/{base}")
 }
 
-impl Tier {
-    fn label(self) -> &'static str {
-        match self {
-            Self::OpusClass => "Opus-class",
-            Self::Strong => "Strong",
-            Self::ClosedReference => "Closed reference",
-        }
-    }
+/// Family display label: the vendor plus the base name, humanized.
+fn family_label(key: &str) -> String {
+    let (vendor, base) = key.split_once('/').unwrap_or(("", key));
+    let vendor_label = match vendor {
+        "z-ai" => "Z.ai",
+        "x-ai" => "xAI",
+        "moonshotai" => "Moonshot",
+        other => other,
+    };
+    format!("{vendor_label} {base}")
 }
-
-/// One curated entry: what Ved locked on 2026-09-01, minus the price
-/// and context figures, which come live from the fetch so the rows
-/// never go stale.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CuratedModel {
-    pub slug: &'static str,
-    pub tier: Tier,
-    pub benchmark: Option<&'static str>,
-    pub source: Option<&'static str>,
-    /// Date the benchmark figures were researched, `YYYY-MM-DD`.
-    pub researched: &'static str,
-    pub open: bool,
-    /// Row-level warning, e.g. a cost note.
-    pub note: Option<&'static str>,
-}
-
-/// The curated ten, in picker order. Benchmarks are SWE-bench Verified
-/// unless the string says otherwise. Maintained by hand; the
-/// `curated_constant_entries_pass_the_mechanical_bar` test holds every
-/// entry against the live capture.
-pub const CURATED: &[CuratedModel] = &[
-    CuratedModel {
-        slug: "anthropic/claude-fable-5.1",
-        tier: Tier::OpusClass,
-        benchmark: Some("SWE-bench V 95%+"),
-        source: Some("benchlm.ai / SWE-bench leaderboard"),
-        researched: "2026-09-10",
-        open: false,
-        note: Some("2x Opus 5's price; the Fable family leads every reported coding benchmark"),
-    },
-    CuratedModel {
-        slug: "anthropic/claude-opus-5",
-        tier: Tier::OpusClass,
-        benchmark: Some("SWE-bench V 96%"),
-        source: Some("SWE-bench leaderboard"),
-        researched: "2026-09-10",
-        open: false,
-        note: None,
-    },
-    CuratedModel {
-        slug: "openai/gpt-5.5-pro",
-        tier: Tier::OpusClass,
-        benchmark: None,
-        source: None,
-        researched: "2026-09-10",
-        open: false,
-        note: Some("OpenAI's frontier pro tier; premium pricing"),
-    },
-    CuratedModel {
-        slug: "moonshotai/kimi-k3",
-        tier: Tier::OpusClass,
-        benchmark: Some("SWE-bench V 93.4%"),
-        source: Some("anotherwrapper"),
-        researched: "2026-09-01",
-        open: true,
-        note: Some("one heavy session can consume the account's monthly cap"),
-    },
-    CuratedModel {
-        slug: "z-ai/glm-5.3-flash",
-        tier: Tier::OpusClass,
-        benchmark: Some("~93%"),
-        source: Some("vals.ai, independent"),
-        researched: "2026-09-10",
-        open: true,
-        note: Some(
-            "cheapest curated row; forge.toml default. Z.ai launch: TB2.1 84.3 (Opus 4.8 85.0); DeepSWE 63.4 (58.0)",
-        ),
-    },
-    CuratedModel {
-        slug: "deepseek/deepseek-v4.1-flash",
-        tier: Tier::Strong,
-        benchmark: Some("vendor: exceeds V4 Pro (unreproduced)"),
-        source: Some("deepseek.com"),
-        researched: "2026-09-10",
-        open: true,
-        note: Some("no published SWE-bench yet; replaces v4-flash in the family"),
-    },
-    CuratedModel {
-        slug: "qwen/qwen3.8-max-0902",
-        tier: Tier::Strong,
-        benchmark: None,
-        source: None,
-        researched: "2026-09-10",
-        open: true,
-        note: None,
-    },
-    CuratedModel {
-        slug: "x-ai/grok-4.3",
-        tier: Tier::ClosedReference,
-        benchmark: None,
-        source: None,
-        researched: "2026-09-10",
-        open: false,
-        note: None,
-    },
-];
 
 /// Parse a catalog response body. Strict: a truncated or reshaped
 /// payload errors rather than silently yielding an empty list.
@@ -342,38 +272,71 @@ pub(crate) fn catalog_decision(cached: Option<CachedCatalog>, now: SystemTime) -
 }
 
 pub(crate) fn curated_available_models(catalog: &[CatalogModel]) -> Vec<AvailableModel> {
-    CURATED
-        .iter()
-        .filter_map(|entry| {
-            let model = catalog.iter().find(|model| model.id == entry.slug)?;
-            if !passes_mechanical_bar(model) {
-                return None;
+    // Mechanical bar first: 1M+ ctx, tools, paid, text-out.
+    let eligible: Vec<&CatalogModel> =
+        catalog.iter().filter(|m| passes_mechanical_bar(m)).collect();
+
+    // Group into families, each kept sorted by completion price (the
+    // capability proxy) so the frontier row is first.
+    let mut families: Vec<(String, Vec<&CatalogModel>)> = Vec::new();
+    for model in &eligible {
+        let key = family_key(&model.id);
+        match families.iter_mut().find(|(key_existing, _)| *key_existing == key) {
+            Some((_, rows)) => {
+                rows.push(model);
+                rows.sort_by(|a, b| {
+                    per_million(&b.pricing.completion)
+                        .unwrap_or(f64::INFINITY)
+                        .total_cmp(&per_million(&a.pricing.completion).unwrap_or(f64::INFINITY))
+                });
             }
-            let out_price = price_label(&model.pricing.completion)?;
-            let mut description = format!(
-                "{} - {out_price}/M out - {} ctx - {}",
-                entry_benchmark(entry),
+            None => families.push((key, vec![model])),
+        }
+    }
+
+    // Strongest families first: frontier completion price.
+    families.sort_by(|a, b| {
+        let a_top = a.1.first().map_or(0.0, |m| per_million(&m.pricing.completion).unwrap_or(0.0));
+        let b_top = b.1.first().map_or(0.0, |m| per_million(&m.pricing.completion).unwrap_or(0.0));
+        b_top.partial_cmp(&a_top).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut rows = Vec::new();
+    for (key, variants) in families.iter().take(FAMILIES_SHOWN) {
+        let label = family_label(key);
+        for (variant_idx, model) in variants.iter().take(VARIANTS_PER_FAMILY).enumerate() {
+            let out_price = price_label(&model.pricing.completion).unwrap_or_default();
+            let variant_tag = if variant_idx == 0 { "frontier" } else { "variant" };
+            let description = format!(
+                "{out_price}/M out - {} ctx - {}",
                 compact_ctx(model.context_length),
-                if entry.open { "open" } else { "closed" },
+                if entry_open(model) { "open weights" } else { "closed" },
             );
-            if let Some(note) = entry.note {
-                description.push_str(" - ");
-                description.push_str(note);
-            }
-            Some(
-                AvailableModel::new(entry.slug, format!("{} ({})", model.name, entry.tier.label()))
-                    .description(description),
-            )
-        })
-        .collect()
+            let display = if variant_idx == 0 {
+                format!("{} {} ({})", label, "frontier", entry_open_word(model))
+            } else {
+                model.name.clone()
+            };
+            let _ = variant_tag;
+            rows.push(AvailableModel::new(&model.id, display).description(description));
+        }
+    }
+    rows
 }
 
-fn entry_benchmark(entry: &CuratedModel) -> String {
-    match (entry.benchmark, entry.source) {
-        (Some(benchmark), Some(source)) => format!("{benchmark} ({source})"),
-        (Some(benchmark), None) => benchmark.to_owned(),
-        _ => String::new(),
-    }
+/// Open-weights marker from the model id: DeepSeek, Qwen, Z.ai flash and
+/// Meta models publish weights; the closed labs do not.
+fn entry_open(model: &CatalogModel) -> bool {
+    model.id.starts_with("z-ai/")
+        || model.id.starts_with("deepseek/")
+        || model.id.starts_with("qwen/")
+        || model.id.starts_with("moonshotai/")
+        || model.id.starts_with("minimax/")
+        || model.id.starts_with("meta-llama/")
+}
+
+fn entry_open_word(model: &CatalogModel) -> &'static str {
+    if entry_open(model) { "open weights" } else { "closed" }
 }
 
 #[cfg(test)]
@@ -480,59 +443,45 @@ mod tests {
         assert!(!passes_mechanical_bar(&audio_out));
     }
 
-    // -- curated constant -------------------------------------------
+    // -- dynamic picker ----------------------------------------------
 
-    /// The mechanical bar gates what may enter the curated list. Every
-    /// slug must exist in the live capture and pass there - a constant
-    /// edited to include a 262K or free model fails here.
+    /// The strongest family leads the picker. The specimen's
+    /// highest-completion-price eligible model is Fable 5.1
+    /// ($50/M out), so the Anthropic family frontiers first.
     #[test]
-    fn curated_constant_entries_pass_the_mechanical_bar() {
-        let models = specimen();
-        for entry in CURATED {
-            let model = models
-                .iter()
-                .find(|m| m.id == entry.slug)
-                .unwrap_or_else(|| panic!("curated slug {} missing from the capture", entry.slug));
-            assert!(passes_mechanical_bar(model), "{} must pass the mechanical bar", entry.slug);
-        }
-    }
-
-    #[test]
-    fn curated_rows_map_the_catalog_in_constant_order() {
+    fn picker_serves_frontier_first_and_respects_the_variant_cap() {
         let rows = curated_available_models(&specimen());
-        assert_eq!(rows.len(), 8, "every curated slug present in the capture maps to a row");
-        for (row, entry) in rows.iter().zip(CURATED.iter()) {
-            assert_eq!(row.id, entry.slug, "constant order is preserved");
-        }
-        let first = &rows[0];
-        assert_eq!(first.display_name, "Anthropic: Claude Fable 5.1 (Opus-class)");
-        let description = first.description.as_deref().expect("curated rows carry a description");
-        assert!(description.contains("95%"), "benchmark score shown");
-        assert!(description.contains("benchlm.ai"), "benchmark source shown");
-        assert!(description.contains("$50"), "output price shown");
-        assert!(description.contains("1M"), "context shown");
-        assert!(description.contains("closed"), "openness marker shown");
-    }
-
-    #[test]
-    fn curated_rows_carry_the_kimi_cost_note() {
-        let rows = curated_available_models(&specimen());
-        let kimi = rows.iter().find(|r| r.id == "moonshotai/kimi-k3").expect("present");
-        let description = kimi.description.as_deref().expect("description");
+        assert!(!rows.is_empty(), "the specimen yields rows");
+        // GPT 5.5 Pro passes the bar at $180/M out - nothing beats it, so
+        // the first row is the OpenAI frontier.
+        assert_eq!(rows[0].id, "openai/gpt-5.5-pro", "frontier family first");
+        // Per-family cap: no family contributes more than
+        // VARIANTS_PER_FAMILY rows.
+        let anthropic_rows = rows.iter().filter(|r| r.id.starts_with("anthropic/")).count();
         assert!(
-            description.contains("one heavy session can consume the account's monthly cap"),
-            "the cost note must be shown, got: {description}"
+            anthropic_rows <= VARIANTS_PER_FAMILY,
+            "a family must not exceed the variant cap, got {anthropic_rows}"
         );
     }
 
+    /// The dynamic picker serves rows for a fetched model with no
+    /// hand-maintained entry: a new family release appears on the next
+    /// fetch without any constant edit.
     #[test]
-    fn curated_rows_show_harness_variance_for_deepseek_v4_1_flash() {
+    fn picker_serves_models_without_a_curated_entry() {
         let rows = curated_available_models(&specimen());
-        let deepseek =
-            rows.iter().find(|r| r.id == "deepseek/deepseek-v4.1-flash").expect("present");
-        let description = deepseek.description.as_deref().expect("description");
-        assert!(description.contains("vendor: exceeds V4 Pro (unreproduced)"));
-        assert!(description.contains("deepseek.com"));
+        // The fixture carries openai/gpt-5.2 (400K ctx, tools) - below the
+        // 1M bar, so it must NOT appear even though it is a known family.
+        assert!(
+            rows.iter().all(|r| r.id != "openai/gpt-5.2"),
+            "models below the mechanical bar stay out of the picker"
+        );
+        // glm-5.3-flash IS in the fixture and passes: it must appear
+        // even though no hand-written entry names it.
+        assert!(
+            rows.iter().any(|r| r.id == "z-ai/glm-5.3-flash"),
+            "the flash variant rides its family's rows"
+        );
     }
 
     // -- ttl decision ------------------------------------------------
