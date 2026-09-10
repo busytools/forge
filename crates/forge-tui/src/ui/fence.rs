@@ -171,6 +171,10 @@ pub(crate) fn render_code_panel(body: &str, language: &str, width: u16) -> Vec<L
         // Tabs expand rather than picturing as U+2409, so a tab-indented
         // file reads at the same depth as its neighbours.
         let indent = wrap::replace_control_chars(wrap::expand_tabs(&indent)).into_owned();
+        // An indent deeper than the panel has columns for is clipped, so
+        // the row still ends at the panel edge instead of running past
+        // it, and the content keeps a column of its own.
+        let indent = wrap::truncate_to_width(&indent, content_width.saturating_sub(1));
         let wrap_width = content_width.saturating_sub(wrap::display_width(&indent)).max(1);
         let chunks: Vec<StyledChunk> = content
             .into_iter()
@@ -430,14 +434,12 @@ mod tests {
         assert_eq!(panel_rows(&lines), ["  plain text"], "no label row");
     }
 
-    #[test]
-    fn every_panel_row_paints_the_background_to_the_full_width() {
-        let lines = render_code_panel("fn main() {}\n", "rust", 40);
-        for line in &lines {
+    fn assert_panel_rows_fill(lines: &[Line<'static>], width: usize) {
+        for line in lines {
             assert_eq!(
                 wrap::line_display_width(line),
-                40,
-                "row does not reach the panel edge: {:?}",
+                width,
+                "row does not end at the panel edge: {:?}",
                 row_text(line)
             );
             assert!(
@@ -446,7 +448,13 @@ mod tests {
                 row_text(line)
             );
         }
-        assert_paints_what_it_measures(&lines);
+        assert_paints_what_it_measures(lines);
+    }
+
+    #[test]
+    fn every_panel_row_paints_the_background_to_the_full_width() {
+        assert_panel_rows_fill(&render_code_panel("fn main() {}\n", "rust", 40), 40);
+        assert_panel_rows_fill(&render_code_panel(&format!("{}x\n", " ".repeat(40)), "", 20), 20);
     }
 
     #[test]

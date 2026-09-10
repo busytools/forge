@@ -2546,7 +2546,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::widgets::{Paragraph, Wrap};
 
-    // preprocess_markdown
+    // preprocess_prose
 
     #[test]
     fn preprocess_h1_heading() {
