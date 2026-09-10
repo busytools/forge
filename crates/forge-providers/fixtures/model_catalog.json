@@ -771,7 +771,7 @@
         "tools",
         "verbosity"
       ],
-      "id": "anthropic/claude-fable-latest",
+      "id": "~anthropic/claude-fable-latest",
       "name": "Anthropic: Claude Fable Latest"
     },
     {

@@ -118,14 +118,17 @@ fn models_url(base_url: &str) -> String {
 /// next fetch without any hand-maintained constant going stale.
 ///
 /// Per-vendor variant cap: the frontier row plus its cheaper variants
-/// (flash tiers etc.) under each vendor.
-const VARIANTS_PER_VENDOR: usize = 3;
+/// and current-build aliases under each vendor.
+const VARIANTS_PER_VENDOR: usize = 4;
 
 /// How many vendors the picker serves, strongest first.
 const VENDORS_SHOWN: usize = 8;
 
-/// Vendor part of a model id: everything before the `/`.
+/// Vendor part of a model id: everything before the `/`. OpenRouter
+/// writes current-build aliases with a `~` prefix
+/// (`~z-ai/glm-flash-latest`); the alias belongs to the vendor it names.
 fn vendor_of(id: &str) -> &str {
+    let id = id.strip_prefix('~').unwrap_or(id);
     id.split_once('/').map_or(id, |(vendor, _)| vendor)
 }
 
@@ -142,15 +145,15 @@ pub fn parse_catalog(body: &[u8]) -> Result<Vec<CatalogModel>, ModelCatalogError
 }
 
 /// The mechanical bar a model must pass to serve in the picker:
-/// 1M+ context, tool support, paid, text-out, and neither pricing-tier,
-/// preview nor alias rows (`:batch` halves the price for bulk
-/// throughput, `-latest` and `-exp` point at other rows).
+/// 1M+ context, tool support, paid, text-out, and neither pricing-tier
+/// nor preview rows (`:batch` halves the price for bulk throughput,
+/// `-exp` points at a preview build; `-latest` stays - it is a real
+/// purchasable build of the model it names).
 fn passes_mechanical_bar(model: &CatalogModel) -> bool {
     model.context_length >= 1_000_000
         && model.supported_parameters.iter().any(|parameter| parameter == "tools")
         && !model.id.ends_with(":free")
         && !model.id.ends_with(":batch")
-        && !model.id.ends_with("-latest")
         && !model.id.ends_with("-exp")
         && model.architecture.modality.rsplit("->").next() == Some("text")
 }
@@ -458,18 +461,21 @@ mod tests {
     /// Pricing-tier and alias rows never serve: `:batch` is the same
     /// model at bulk price, `-latest` points at a versioned slug.
     #[test]
-    fn picker_skips_batch_and_latest_alias_rows() {
+    fn picker_skips_batch_and_exp_keeps_latest() {
         let rows = curated_available_models(&specimen());
-        for alias in [
-            "z-ai/glm-5.3:batch",
-            "anthropic/claude-fable-latest",
-            "deepseek/deepseek-v4-flash-vision-exp",
-        ] {
+        for skipped in ["z-ai/glm-5.3:batch", "deepseek/deepseek-v4-flash-vision-exp"] {
             assert!(
-                rows.iter().all(|r| r.id != alias),
-                "alias row {alias} must stay out of the picker"
+                rows.iter().all(|r| r.id != skipped),
+                "row {skipped} must stay out of the picker"
             );
         }
+        // A `-latest` slug is a real purchasable build: it serves, and it
+        // groups under the vendor it names, not a `~`-prefixed ghost.
+        assert_eq!(vendor_of("~anthropic/claude-fable-latest"), "anthropic");
+        assert!(
+            rows.iter().any(|r| r.id == "~anthropic/claude-fable-latest"),
+            "the -latest build must stay in the picker"
+        );
     }
 
     // -- ttl decision ------------------------------------------------
