@@ -25,9 +25,9 @@ While the session is connecting the entire input area is replaced with a spinner
 <div class="term">
 
   <pre class="indent">
-  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
+  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
   <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
-  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
 
 </div>
 
@@ -38,9 +38,9 @@ While the session is connecting the entire input area is replaced with a spinner
   <pre class="indent">
   <span class="warning">Authentication required: claude.ai -- Anthropic OAuth (Pro)</span>
   <span class="dim">Run `claude auth login` in another terminal to authenticate</span>
-  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
+  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
   <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
-  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
 
 </div>
 
@@ -56,10 +56,10 @@ The status row occupies the same slot the notice row uses, so the two never coex
 <div class="term">
 
   <pre class="indent">
-  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>   recording - the interior grows one row; settled segments count on the label
-  <span class="accent">┃</span>  <span class="accent">●</span> <span class="accent">0:07</span> <span style="color:rgb(255,176,88)">-18 dB</span> <span class="dim">listening · 2 ready</span> <span class="dim">▁▂</span><span style="color:rgb(171,97,0)">▄▆</span><span style="color:rgb(255,176,88)">█</span><span style="color:rgb(171,97,0)">▅▃▂</span><span class="dim">▁▁</span><span style="color:rgb(171,97,0)">▃▅▆</span><span style="color:rgb(255,176,88)">█</span><span style="color:rgb(171,97,0)">▆▄▂</span><span class="dim">▁▁</span><span style="color:rgb(171,97,0)">▂▄</span><span style="color:rgb(255,176,88)">▆</span><span style="color:rgb(171,97,0)">▄▃▂</span><span class="dim">▁</span>       <span class="dim">esc cancel</span><span class="accent">┃</span>
+  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>   recording - the interior grows one row; settled segments count on the label
+  <span class="accent">┃</span>  <span class="accent">●</span> <span class="accent">0:07</span> <span style="color:rgb(255,176,88)">-18 dB</span> <span class="dim">listening · 2 ready</span> <span class="dim">▁▂</span><span style="color:rgb(171,97,0)">▄▆</span><span style="color:rgb(255,176,88)">█</span><span style="color:rgb(171,97,0)">▅▃▂</span><span class="dim">▁▁</span><span style="color:rgb(171,97,0)">▃▅▆</span><span style="color:rgb(255,176,88)">█</span><span style="color:rgb(171,97,0)">▆▄▂</span><span class="dim">▁▁</span><span style="color:rgb(171,97,0)">▂▄</span><span style="color:rgb(255,176,88)">▆</span><span style="color:rgb(171,97,0)">▄▃▂</span><span class="dim">▁</span>       <span class="dim">esc cancel</span> <span class="accent">┃</span>
   <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                            <span class="accent">┃</span>
-  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
 
 </div>
 
@@ -70,10 +70,10 @@ Between the timer and the label rides the live dB figure, such as `-18 dB`: refr
 <div class="term">
 
   <pre class="indent">
-  <span style="color:rgb(97,160,224)">┏</span><span style="color:rgb(97,160,224)">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span style="color:rgb(97,160,224)">┓</span>   transcribing - same anatomy, frozen and dimmed toward blue; multi-window takes tally the window on the label
-  <span style="color:rgb(97,160,224)">┃</span>  <span style="color:rgb(97,160,224)">◌</span> <span class="dim">0:07</span> <span class="dim">-18 dB</span> <span class="dim">transcribing 2/6</span> <span style="color:rgb(38,53,74)">▁▂</span><span style="color:rgb(47,72,109)">▄▆</span><span style="color:rgb(54,85,130)">█</span><span style="color:rgb(47,72,109)">▅▃▂</span><span style="color:rgb(38,53,74)">▁▁</span><span style="color:rgb(47,72,109)">▃▅▆</span><span style="color:rgb(54,85,130)">█</span><span style="color:rgb(47,72,109)">▆▄▂</span><span style="color:rgb(38,53,74)">▁▁</span><span style="color:rgb(47,72,109)">▂▄</span><span style="color:rgb(54,85,130)">▆</span><span style="color:rgb(47,72,109)">▄▃▂</span><span style="color:rgb(38,53,74)">▁</span>   <span class="dim">esc cancel</span><span style="color:rgb(97,160,224)">┃</span>
+  <span style="color:rgb(97,160,224)">┏</span><span style="color:rgb(97,160,224)">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span style="color:rgb(97,160,224)">┓</span>   transcribing - same anatomy, frozen and dimmed toward blue; multi-window takes tally the window on the label
+  <span style="color:rgb(97,160,224)">┃</span>  <span style="color:rgb(97,160,224)">◌</span> <span class="dim">0:07</span> <span class="dim">-18 dB</span> <span class="dim">transcribing 2/6</span> <span style="color:rgb(38,53,74)">▁▂</span><span style="color:rgb(47,72,109)">▄▆</span><span style="color:rgb(54,85,130)">█</span><span style="color:rgb(47,72,109)">▅▃▂</span><span style="color:rgb(38,53,74)">▁▁</span><span style="color:rgb(47,72,109)">▃▅▆</span><span style="color:rgb(54,85,130)">█</span><span style="color:rgb(47,72,109)">▆▄▂</span><span style="color:rgb(38,53,74)">▁▁</span><span style="color:rgb(47,72,109)">▂▄</span><span style="color:rgb(54,85,130)">▆</span><span style="color:rgb(47,72,109)">▄▃▂</span><span style="color:rgb(38,53,74)">▁</span>   <span class="dim">esc cancel</span>    <span style="color:rgb(97,160,224)">┃</span>
   <span style="color:rgb(97,160,224)">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span style="color:rgb(97,160,224)">┃</span>
-  <span style="color:rgb(97,160,224)">┗</span><span style="color:rgb(97,160,224)">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span style="color:rgb(97,160,224)">┛</span></pre>
+  <span style="color:rgb(97,160,224)">┗</span><span style="color:rgb(97,160,224)">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span style="color:rgb(97,160,224)">┛</span></pre>
 
 </div>
 
@@ -84,13 +84,13 @@ The row renders the moment the phase flips, however brief the transcription - wa
 <div class="term">
 
   <pre class="indent">
-  <span style="color:rgb(130,199,107)">┏</span><span style="color:rgb(130,199,107)">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span style="color:rgb(130,199,107)">┓</span>   done - one green beat while the text pastes
+  <span style="color:rgb(130,199,107)">┏</span><span style="color:rgb(130,199,107)">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span style="color:rgb(130,199,107)">┓</span>   done - one green beat while the text pastes
   <span style="color:rgb(130,199,107)">┃</span> <span class="accent">➤</span> fix the flaky retry test and<span style="color:rgb(130,199,107)">▊</span>                                             <span style="color:rgb(130,199,107)">┃</span>
-  <span style="color:rgb(130,199,107)">┗</span><span style="color:rgb(130,199,107)">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span style="color:rgb(130,199,107)">┛</span>
+  <span style="color:rgb(130,199,107)">┗</span><span style="color:rgb(130,199,107)">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span style="color:rgb(130,199,107)">┛</span>
 
-  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>   idle - dictation available, nothing reserved
+  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>   idle - dictation available, nothing reserved
   <span class="accent">┃</span> <span class="accent">➤</span> fix the flaky retry test and<span class="accent">▊</span>                                             <span class="accent">┃</span>
-  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
 
 </div>
 
@@ -99,10 +99,10 @@ The row renders the moment the phase flips, however brief the transcription - wa
 <div class="term">
 
   <pre class="indent">
-  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
-  <span class="accent">┃</span>  <span class="dim">nothing above -50 dBFS in 4s · loudest was -38.2 · try again</span>             <span class="accent">┃</span>
+  <span class="accent">┏</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┓</span>
+  <span class="accent">┃</span>  <span class="dim">nothing above -50 dBFS in 4s · loudest was -38.2 · try again</span>              <span class="accent">┃</span>
   <span class="accent">┃</span> <span class="accent">➤</span> <span class="dim italic">Type a message...</span>                                                        <span class="accent">┃</span>
-  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
+  <span class="accent">┗</span><span class="accent">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="accent">┛</span></pre>
 
 </div>
 
@@ -120,7 +120,7 @@ Open while you type one of four triggers: `/` (slash commands), `@` (files), `&`
 
   <pre class="indent">
   <span class="dim">╭ </span><span class="dim">Commands (4)</span><span class="dim"> ───────────────────────────────────────────────────────╮</span>
-  <span class="dim">│</span> <span class="accent bold">▸ </span>/clear           <span class="dim">  Clear chat history</span>                            <span class="dim">│</span>
+  <span class="dim">│</span> <span class="accent bold">▸ </span>/clear           <span class="dim">  Clear chat history</span>                             <span class="dim">│</span>
   <span class="dim">│</span>    /compact         <span class="dim">  Compact conversation context</span>                  <span class="dim">│</span>
   <span class="dim">│</span>    /<span style="text-decoration: underline">m</span>odel           <span class="dim">  Switch model</span>                                  <span class="dim">│</span>
   <span class="dim">│</span>    /help            <span class="dim">  Show help</span>                                     <span class="dim">│</span>
@@ -148,7 +148,7 @@ Not chat-only: it also serves the /diff inline comment editor and the Finish-rev
 
   <pre class="indent">
   <span class="dim">╭ </span><span class="dim">Emoji</span><span class="dim"> ───────────────────────────────────╮</span>
-  <span class="dim">│</span> <span class="accent bold">▸ </span>😄   :<span style="text-decoration: underline">sm</span>ile:                          <span class="dim">│</span>
+  <span class="dim">│</span> <span class="accent bold">▸ </span>😄   :<span style="text-decoration: underline">sm</span>ile:                           <span class="dim">│</span>
   <span class="dim">│</span>    😃   :<span style="text-decoration: underline">sm</span>iley:                         <span class="dim">│</span>
   <span class="dim">│</span>    😏   :<span style="text-decoration: underline">sm</span>irk:                          <span class="dim">│</span>
   <span class="dim">│</span>    🙂   :<span style="text-decoration: underline">s</span>lightly_s<span style="text-decoration: underline">m</span>iling_face:          <span class="dim">│</span>
@@ -175,18 +175,18 @@ Permission requests, plan approval and AskUserQuestion route through one widget 
 
 <div class="term">
 
-  <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+  <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="bold">Bash · git push origin polish/rate-limit-chip-softer-34</span>             <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Bash · git push *</span>                              <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
-<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
+<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
 
 </div>
 
@@ -194,7 +194,7 @@ Permission requests, plan approval and AskUserQuestion route through one widget 
 
 <div class="term">
 
-  <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+  <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="bold">Read · /tmp/forge-deny-scenario.txt</span>                                 <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span style="color:#d4b73e">⚠ Path is outside allowed working directories</span>                       <span class="accent bold">┃</span>
@@ -203,11 +203,11 @@ Permission requests, plan approval and AskUserQuestion route through one widget 
 <span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Read · paths matching //tmp/**</span>                 <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
-<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
+<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
 
 </div>
 
@@ -215,20 +215,20 @@ Permission requests, plan approval and AskUserQuestion route through one widget 
 
 <div class="term">
 
-  <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+  <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="accent">? </span><span class="bold">Environments (Q2 of 3)</span>                                            <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>  <span class="bold">Pick the environments to deploy to.</span>                                <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="bold">Pick the environments to deploy to.</span>                                 <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">[x]</span> <span class="success">✓</span> <span class="dim">Staging</span>                                                     <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">[x]</span> <span class="success">✓</span> <span class="dim">Production</span>                                                  <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="dim">[ ]</span> <span class="success">✓</span> <span class="dim">Development</span>                                                 <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">[x]</span> <span class="dim">...</span> <span class="bold">Tell Claude something else:</span>                              <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="bold">Also bump the queue worker concurrency_</span>                          <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">[x]</span> <span class="dim">...</span> <span class="bold">Tell Claude something else:</span>                               <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="bold">Also bump the queue worker concurrency_</span>                           <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">space toggle  ↑↓ move  ⏎ submit  esc cancel</span>                         <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
-<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
+<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
 
 </div>
 
@@ -243,7 +243,7 @@ While a take is live the pulsing circle blip - orange while recording, blue whil
 
 <div class="term">
 
-  <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+  <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">▼ 2 more pending after this</span>                                         <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="bold">Edit · src/foo.rs</span>                                                   <span class="accent bold">┃</span>
@@ -251,11 +251,11 @@ While a take is live the pulsing circle blip - orange while recording, blue whil
 <span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Edit · src/**</span>                                  <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
-<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
+<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
 
 </div>
 
