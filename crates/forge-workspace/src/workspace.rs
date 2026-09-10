@@ -366,6 +366,17 @@ pub struct Workspace {
     /// ones are also persisted to `db` and reloaded here at boot.
     /// `pub(crate)` so the impl block in [`crate::slack`] can reach it.
     pub(crate) slack_subs: Mutex<Vec<forge_primitives::slack::SlackSubscription>>,
+    /// Shutdown handles for the running Slack pumps, one per workspace
+    /// label. Slack has a pump per `[[slack]]` entry where Gotify has a
+    /// single server and a single handle.
+    pub(crate) slack_subsystem:
+        Mutex<std::collections::BTreeMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// Per-workspace pump liveness for the Inspector's SLACK section.
+    /// Keyed by label for the same reason.
+    pub(crate) slack_connected: Mutex<std::collections::BTreeMap<String, bool>>,
+    /// The authenticated user's id per workspace, resolved once by the
+    /// boot `auth.test` and needed to recognise `<@U...>` mentions.
+    pub(crate) slack_user_ids: Mutex<std::collections::BTreeMap<String, String>>,
     /// Set the first time [`Workspace::start_slack_verification`] runs.
     /// Subsequent calls early-return to avoid spawning duplicate probes.
     pub(crate) slack_verification_started: std::sync::atomic::AtomicBool,
@@ -1061,6 +1072,9 @@ impl Workspace {
             gotify_subsystem: Mutex::new(None),
             slack,
             slack_subs: Mutex::new(slack_subs),
+            slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
+            slack_connected: Mutex::new(std::collections::BTreeMap::new()),
+            slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
@@ -3471,6 +3485,15 @@ impl Workspace {
                         team_role.as_deref(),
                         notification,
                     );
+                }
+                Command::DeliverSlackMessage { project, team_role, message } => {
+                    let span = tracing::info_span!(
+                        "deliver_slack_message",
+                        project = %project,
+                        conversation = %message.conversation,
+                    );
+                    let _enter = span.enter();
+                    spawn::deliver_slack_message(self, &project, team_role.as_deref(), message);
                 }
                 Command::SwitchAccount { key, account_display_name, launch_settings } => {
                     let span = tracing::info_span!(
@@ -6099,6 +6122,9 @@ impl Workspace {
             gotify_subsystem: Mutex::new(None),
             slack,
             slack_subs: Mutex::new(Vec::new()),
+            slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
+            slack_connected: Mutex::new(std::collections::BTreeMap::new()),
+            slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),

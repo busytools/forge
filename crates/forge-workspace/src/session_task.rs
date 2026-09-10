@@ -407,6 +407,8 @@ impl SessionTask {
                     // Same for Gotify notification envelopes buffered while
                     // the project was asleep.
                     self.drain_pending_gotify_prompts();
+                    // Same for Slack messages buffered while it was asleep.
+                    self.drain_pending_slack_prompts();
                 }
                 // Re-tag must fire on BOTH first-Connected and
                 // post-/new Connected paths: a /new writes a fresh
@@ -1007,6 +1009,30 @@ impl SessionTask {
             }
         }
     }
+
+    /// first `Connected` event - Slack messages buffered while the project
+    /// was asleep. Each is re-dispatched as a plain user turn. No-op when
+    /// the buffer is empty.
+    fn drain_pending_slack_prompts(&self) {
+        let pending: Vec<forge_primitives::slack::SlackMessage> =
+            std::mem::take(&mut self.domain.lock().pending_slack_prompts);
+        if pending.is_empty() {
+            return;
+        }
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        for message in pending {
+            let prose = crate::spawn::slack_message_to_prose(&message);
+            if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, prose) {
+                tracing::warn!(
+                    target: "forge_workspace::session_task",
+                    key = %self.key.as_str(),
+                    error = ?err,
+                    "drain_pending_slack_prompts: dispatch failed; prompt dropped"
+                );
+                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
+            }
+        }
+    }
 }
 
 /// Drop hook: on SessionTask exit (any reason - graceful close,
@@ -1286,6 +1312,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverWorkerPrompt { .. }
         | Command::DeliverWorkerPromptToLead { .. }
         | Command::DeliverGotifyMessage { .. }
+        | Command::DeliverSlackMessage { .. }
         | Command::SwitchAccount { .. }
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }

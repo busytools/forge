@@ -229,6 +229,10 @@ fn apply_timer_tick(app: &mut App) {
     // project's subscriptions + stream connection status).
     app.refresh_gotify();
 
+    // Same cadence for the Inspector SLACK section's snapshot (active
+    // project's subscriptions + per-workspace pump liveness).
+    app.refresh_slack();
+
     // Restore each session's review-replies-waiting count from the store
     // once. Rides this tick because it needs the same
     // `git_scan_cwd_for_session` derivation the scan below does, but it

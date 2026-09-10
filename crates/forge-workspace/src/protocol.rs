@@ -390,6 +390,14 @@ pub enum Command {
         team_role: Option<String>,
         notification: crate::mcp::gotify::types::GotifyNotification,
     },
+    /// A matched Slack message resolved for delivery to its subscriber.
+    /// Handled by `spawn::deliver_slack_message`. App-level command
+    /// (`key()` returns `None`).
+    DeliverSlackMessage {
+        project: String,
+        team_role: Option<String>,
+        message: forge_primitives::slack::SlackMessage,
+    },
     /// Switch the live session `key` to `account_display_name`: tear
     /// down its current `claude` subprocess and re-spawn + resume the
     /// SAME `session_id` under the picked account's `config_dir`. The
@@ -520,6 +528,7 @@ impl Command {
             | Self::DeliverWorkerPrompt { .. }
             | Self::DeliverWorkerPromptToLead { .. }
             | Self::DeliverGotifyMessage { .. }
+            | Self::DeliverSlackMessage { .. }
             | Self::SwitchAccount { .. }
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
@@ -643,6 +652,13 @@ impl std::fmt::Debug for Command {
                 .field("team_role", team_role)
                 .field("app", &notification.app)
                 .field("priority", &notification.priority)
+                .finish_non_exhaustive(),
+            Self::DeliverSlackMessage { project, team_role, message } => f
+                .debug_struct("DeliverSlackMessage")
+                .field("project", project)
+                .field("team_role", team_role)
+                .field("conversation", &message.conversation)
+                .field("ts", &message.ts)
                 .finish_non_exhaustive(),
             Self::SwitchAccount { key, account_display_name, .. } => f
                 .debug_struct("SwitchAccount")

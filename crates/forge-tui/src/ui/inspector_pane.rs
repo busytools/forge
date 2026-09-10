@@ -647,6 +647,16 @@ fn append_body(
         append_gotify_section(lines, app, width);
     }
 
+    // SLACK sits below GOTIFY, rendered only while the active session owns
+    // at least one subscription. Liveness is per workspace, so it rides
+    // each row rather than the header.
+    if slack_section_visible(app) {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_slack_section(lines, app);
+    }
+
     // MCP SERVERS sits above PROCESSES and is sourced entirely from
     // the session's MCP snapshot, so every configured server renders -
     // sdk/in-process servers with no process, pending and failed ones
@@ -1736,6 +1746,74 @@ fn gotify_section_visible(app: &App) -> bool {
 /// to this session and none needs an owner label. Only invoked when
 /// [`gotify_section_visible`] holds, so the subscription set is never
 /// empty; the stream may be up or down.
+/// Whether anything is worth rendering: a session with no Slack
+/// subscription of its own has nothing to receive, so the section is
+/// omitted without consulting liveness at all.
+fn slack_section_visible(app: &App) -> bool {
+    !app.slack_subs.is_empty()
+}
+
+/// Render the Inspector SLACK section: a labelled header then one row per
+/// subscription. The snapshot is already scoped by owner in
+/// [`App::refresh_slack`], so every row belongs to this session. Liveness
+/// is keyed by workspace label, so it rides each row rather than a
+/// single-status header the way GOTIFY's does.
+fn append_slack_section(lines: &mut Vec<Line<'static>>, app: &App) {
+    lines.push(slack_header_line());
+    lines.push(Line::default());
+    for sub in &app.slack_subs {
+        let connected = app.slack_connected.get(&sub.workspace).copied().unwrap_or(false);
+        append_slack_subscription(lines, sub, connected);
+    }
+}
+
+/// SLACK section header: DIM-bold ` SLACK`. No status span: Slack has one
+/// pump per workspace, so there is no single connection to report here.
+fn slack_header_line() -> Line<'static> {
+    Line::from(vec![Span::styled(
+        " SLACK".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )])
+}
+
+/// Render one SLACK subscription: the workspace label in bold with its
+/// pump's status glyph beside it, then a DIM line naming what it watches.
+/// The `◈` / `⚠` pairing is the one [`gotify_header_line`] uses.
+fn append_slack_subscription(
+    lines: &mut Vec<Line<'static>>,
+    sub: &forge_primitives::slack::SlackSubscription,
+    connected: bool,
+) {
+    let indent = usize::from(PANE_PAD) + 2;
+    let (glyph, glyph_color) = if connected {
+        ("\u{25c8}", theme::RUST_ORANGE)
+    } else {
+        ("\u{26a0}", theme::STATUS_WARNING)
+    };
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(indent)),
+        Span::styled(sub.workspace.clone(), Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" ".to_owned()),
+        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+    ]));
+
+    let watching = match &sub.target {
+        forge_primitives::slack::SlackSubscriptionTarget::DirectMessages => {
+            "direct messages".to_owned()
+        }
+        forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, mode } => match mode {
+            forge_primitives::slack::SlackWatchMode::All => format!("{id} · every message"),
+            forge_primitives::slack::SlackWatchMode::MentionsOnly => {
+                format!("{id} · mentions only")
+            }
+        },
+    };
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(indent + 2)),
+        Span::styled(watching, Style::default().fg(theme::DIM)),
+    ]));
+}
+
 fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     lines.push(gotify_header_line(width, app.gotify_connected));
     lines.push(Line::default());
@@ -4621,6 +4699,76 @@ mod tests {
             min_priority,
             created_at: std::time::SystemTime::UNIX_EPOCH,
         }
+    }
+
+    fn slack_sub(
+        id: u128,
+        workspace: &str,
+        target: forge_primitives::slack::SlackSubscriptionTarget,
+    ) -> forge_primitives::slack::SlackSubscription {
+        forge_primitives::slack::SlackSubscription {
+            id: uuid::Uuid::from_u128(id),
+            workspace: workspace.to_owned(),
+            project: "p".to_owned(),
+            team_role: None,
+            target,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    fn render_slack_section(app: &App) -> String {
+        let mut lines = Vec::new();
+        append_slack_section(&mut lines, app);
+        lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_slack_section_is_hidden_with_no_subscriptions() {
+        let mut app = App::test_default();
+        app.slack_subs = Vec::new();
+        assert!(!slack_section_visible(&app), "a session watching nothing shows no section");
+    }
+
+    #[test]
+    fn the_slack_section_shows_the_workspace_and_its_liveness() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![slack_sub(
+            1,
+            "acme",
+            forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                id: "C1".to_owned(),
+                mode: forge_primitives::slack::SlackWatchMode::All,
+            },
+        )];
+        app.slack_connected = std::collections::BTreeMap::from([("acme".to_owned(), true)]);
+
+        assert!(slack_section_visible(&app));
+
+        let joined = render_slack_section(&app);
+        assert!(joined.contains("SLACK"), "the section header renders; got:\n{joined}");
+        assert!(joined.contains("acme"), "the workspace label renders; got:\n{joined}");
+        assert!(joined.contains("every message"), "the watch mode renders; got:\n{joined}");
+        assert!(
+            joined.contains('\u{25c8}'),
+            "a connected pump shows the connected glyph; got:\n{joined}",
+        );
+    }
+
+    #[test]
+    fn a_downtime_pump_renders_the_warning_glyph() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![slack_sub(
+            2,
+            "beta",
+            forge_primitives::slack::SlackSubscriptionTarget::DirectMessages,
+        )];
+        app.slack_connected = std::collections::BTreeMap::from([("beta".to_owned(), false)]);
+
+        let joined = render_slack_section(&app);
+        assert!(joined.contains("direct messages"), "the DM class renders; got:\n{joined}");
+        assert!(joined.contains("beta"), "the workspace label renders; got:\n{joined}");
+        assert!(joined.contains('\u{26a0}'), "a down pump shows the warning glyph; got:\n{joined}");
+        assert!(!joined.contains('\u{25c8}'), "and not the connected one; got:\n{joined}");
     }
 
     /// The snapshot is scoped to the session's own role before it

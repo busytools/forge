@@ -234,6 +234,8 @@ fn create_app_impl(
         forge_schedule_rows: Vec::new(),
         gotify_subs: Vec::new(),
         gotify_connected: false,
+        slack_subs: Vec::new(),
+        slack_connected: std::collections::BTreeMap::new(),
         help_view: HelpView::Keys,
         help_open: false,
         help_dialog: DialogState::default(),

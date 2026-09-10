@@ -57,7 +57,7 @@ A failure row is latched rather than re-derived - the turn is over - and clears 
 
 </div>
 
-Eight sections render in order, each hidden when its content set is empty, separated by dim rules: **GIT** (always), **TASKS** (todos or a verification nudge), **WORKFLOWS** (a live or recently completed Workflow call), **SUBAGENTS** (a dispatch in flight), **SCHEDULES** (a wakeup or cron still valid), **GOTIFY** (a `[gotify]` server configured), **MCP SERVERS** (at least one server), **PROCESSES** (a living process descendant). The chat scrollback no longer surfaces these tool cards - Workflow paints nothing, the others at most a minimal notice; Monitor renders in chat.
+Nine sections render in order, each hidden when its content set is empty, separated by dim rules: **GIT** (always), **TASKS** (todos or a verification nudge), **WORKFLOWS** (a live or recently completed Workflow call), **SUBAGENTS** (a dispatch in flight), **SCHEDULES** (a wakeup or cron still valid), **GOTIFY** (a `[gotify]` server configured), **SLACK** (the session owns a Slack subscription), **MCP SERVERS** (at least one server), **PROCESSES** (a living process descendant). The chat scrollback no longer surfaces these tool cards - Workflow paints nothing, the others at most a minimal notice; Monitor renders in chat.
 
 ## GIT
 

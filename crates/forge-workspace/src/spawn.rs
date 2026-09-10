@@ -27,6 +27,7 @@ use crate::target::ProjectKey;
 use crate::workspace::LiveWorkerRefusal;
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
+use forge_primitives::slack::SlackMessage;
 
 /// A failed prompt dispatch to a running target unwinds the echo's
 /// already-opened turn: without this its bar counts forever and the
@@ -609,6 +610,124 @@ pub(crate) fn deliver_gotify_message(
             project = %project,
             error = ?err,
             "gotify fire SpawnProject dispatch failed",
+        );
+    }
+}
+
+/// The user-turn prose for a delivered Slack message. Rendering it as a
+/// chat block of its own is a later concern; this lands as a plain turn.
+pub(crate) fn slack_message_to_prose(message: &SlackMessage) -> String {
+    let author = message.user.as_deref().unwrap_or("unknown");
+    format!(
+        "[Slack - workspace '{}', {}]\n{}: {}",
+        message.workspace, message.conversation_label, author, message.text,
+    )
+}
+
+/// Deliver one matched Slack message to its subscriber's session: dispatch
+/// it now when that session is running, buffer it on the session's own
+/// domain when it is still spawning. Mirrors [`deliver_gotify_message`],
+/// including its rule that a worker-owned subscription never falls through
+/// to the lead.
+pub(crate) fn deliver_slack_message(
+    workspace: &Arc<Workspace>,
+    project: &str,
+    team_role: Option<&str>,
+    message: SlackMessage,
+) {
+    let prose = slack_message_to_prose(&message);
+
+    if let Some(role) = team_role
+        && let Some(worker_key) = team_worker_key(workspace, project, role)
+    {
+        let connected = workspace
+            .domain_session_for(&worker_key)
+            .is_some_and(|d| d.lock().session_id.is_some());
+        if connected {
+            if let Err(err) = workspace.dispatch_workspace_prompt(&worker_key, prose) {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    project = %project,
+                    role = %role,
+                    error = ?err,
+                    "slack deliver to running team worker failed",
+                );
+                send_dispatch_turn_error(workspace, worker_key, &err);
+            }
+        } else if let Some(domain) = workspace.domain_session_for(&worker_key) {
+            domain.lock().pending_slack_prompts.push(message);
+        } else {
+            // Live entry exists but its DomainSession isn't registered yet
+            // (the sub-second window between insert_live_worker and the
+            // spawn's handle registration). Buffer on the worker's own
+            // key, the exact DomainSession the spawn registers.
+            let mut handles = workspace.domain_handles.lock();
+            let domain = handles
+                .entry(worker_key.clone())
+                .or_insert_with(|| {
+                    Arc::new(Mutex::new(DomainSession::new(worker_key.clone(), None)))
+                })
+                .clone();
+            drop(handles);
+            domain.lock().pending_slack_prompts.push(message);
+        }
+        return;
+    }
+
+    let running_lead =
+        workspace.list_projects().into_iter().find(|v| v.name == project).and_then(|v| {
+            let live_worker_keys: std::collections::HashSet<_> =
+                workspace.list_live_workers(&v.key).into_iter().map(|w| w.session_key).collect();
+            v.sessions
+                .into_iter()
+                .find(|s| s.is_open && !live_worker_keys.contains(&s.session))
+                .map(|s| s.session)
+        });
+
+    if let Some(target_key) = running_lead {
+        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, prose) {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = %project,
+                error = ?err,
+                "slack deliver to running project failed",
+            );
+            send_dispatch_turn_error(workspace, target_key, &err);
+        }
+        return;
+    }
+
+    // Asleep: buffer on the synthetic spawn key and spawn the project
+    // (only if it's a real forge.toml project).
+    if workspace.find_project_view_by_name(project).is_none() {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project,
+            "slack delivery target gone from forge.toml; skipping",
+        );
+        return;
+    }
+
+    let synth_key = SessionKey::from_session_id(format!("__spawn_{project}__"));
+    {
+        let mut handles = workspace.domain_handles.lock();
+        let domain = handles
+            .entry(synth_key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None))))
+            .clone();
+        drop(handles);
+        domain.lock().pending_slack_prompts.push(message);
+    }
+
+    if let Err(err) = workspace.dispatch(Command::SpawnProject {
+        project_name: project.to_owned(),
+        launch_settings: SessionLaunchSettings::default(),
+    }) {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project,
+            error = ?err,
+            "slack fire SpawnProject dispatch failed",
         );
     }
 }
@@ -2036,6 +2155,50 @@ provider = "anthropic"
             diagnostic: None,
             kick: None,
         }
+    }
+
+    fn slack_msg(text: &str) -> SlackMessage {
+        SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: "D1".to_owned(),
+            conversation_label: "U9".to_owned(),
+            ts: "100.000001".to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_slack_message_for_a_worker_targets_the_worker_not_the_lead() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("forge", "/tmp/slack-forge");
+        let key = ws.list_projects().into_iter().find(|v| v.name == "forge").expect("seeded").key;
+        ws.insert_live_worker(&key, fake_worker_entry("tester", "worker-uuid"));
+
+        deliver_slack_message(&ws, "forge", Some("tester"), slack_msg("hello"));
+
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let buffered = ws
+            .domain_session_for(&worker_key)
+            .expect("the worker's own domain session")
+            .lock()
+            .pending_slack_prompts
+            .len();
+        assert_eq!(buffered, 1, "the message lands on the worker that subscribed");
+        assert!(
+            ws.domain_session_for(&SessionKey::from_session_id("__spawn_forge__")).is_none(),
+            "a worker-owned subscription never falls through to the lead",
+        );
+    }
+
+    #[test]
+    fn slack_prose_names_the_workspace_and_the_author() {
+        let prose = slack_message_to_prose(&slack_msg("hello there"));
+        assert!(prose.starts_with("[Slack"), "the prefix a chat block would key on: {prose}");
+        assert!(prose.contains("acme"), "the workspace label is in the prose: {prose}");
+        assert!(prose.contains("U9"), "the author is in the prose: {prose}");
+        assert!(prose.contains("hello there"), "and so is the text: {prose}");
     }
 
     /// #1: the at-most-one-live-per-label guard lives in the shared

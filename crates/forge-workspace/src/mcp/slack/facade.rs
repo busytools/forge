@@ -192,13 +192,18 @@ impl SlackFacade for ProdSlackFacade {
             ids.push(sub.id);
             ws.add_slack_subscription(sub, durable);
         }
+        // A workspace that just gained its first subscription needs a pump.
+        ws.start_slack_subsystem();
         Ok(ids)
     }
 
     fn unsubscribe(&self, caller: &SessionKey, id: Uuid) -> bool {
         let Some(ws) = self.workspace.upgrade() else { return false };
         let Some(cx) = caller_context(&ws, caller) else { return false };
-        ws.remove_slack_subscription_owned_by(&cx.project_name, id, cx.worker_label.as_deref())
+        let removed =
+            ws.remove_slack_subscription_owned_by(&cx.project_name, id, cx.worker_label.as_deref());
+        ws.stop_slack_subsystem_if_idle();
+        removed
     }
 }
 
@@ -297,8 +302,10 @@ mod tests {
         (ws, facade)
     }
 
-    #[test]
-    fn subscribing_to_an_unknown_workspace_is_refused() {
+    /// `tokio::test`: a successful subscribe starts the workspace's pump,
+    /// which needs a runtime.
+    #[tokio::test]
+    async fn subscribing_to_an_unknown_workspace_is_refused() {
         // Bound, not inline: the facade holds a Weak, so a temporary Arc
         // would drop before the call and every error would come back as
         // UnknownCallerProject instead of the one under test.
@@ -310,8 +317,8 @@ mod tests {
         assert_eq!(err, SlackSubscribeError::UnknownWorkspace);
     }
 
-    #[test]
-    fn subscribing_to_dms_then_a_channel_yields_two_records() {
+    #[tokio::test]
+    async fn subscribing_to_dms_then_a_channel_yields_two_records() {
         let (ws, facade) = workspace_with_one_slack_workspace("acme");
         let first = facade
             .subscribe(&caller(), Some("acme"), SlackSubscribeRequest::DirectMessages)

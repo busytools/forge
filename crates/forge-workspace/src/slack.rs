@@ -9,9 +9,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use forge_connectors::slack::{AuthTest, SlackClient};
-use forge_primitives::slack::SlackConfig;
+use forge_connectors::slack::{AuthTest, SlackClient, SlackHost};
+use forge_primitives::slack::{SlackConfig, SlackMessage, SlackSubscription};
 use uuid::Uuid;
 
 use crate::workspace::Workspace;
@@ -91,8 +92,14 @@ impl Workspace {
         self.slack_subs.lock().push(sub);
     }
 
+    /// Per-workspace pump liveness, for the Inspector's SLACK section.
+    /// One entry per workspace a pump has reported on.
+    pub fn slack_connected_workspaces(&self) -> std::collections::BTreeMap<String, bool> {
+        self.slack_connected.lock().clone()
+    }
+
     /// Every Slack subscription owned in `project`, whichever session
-    /// owns it. Backs the phase 3 pump, which needs the whole set.
+    /// owns it. Backs the pump, which needs the whole set.
     pub fn slack_subscriptions_for_project(
         &self,
         project: &str,
@@ -141,17 +148,24 @@ impl Workspace {
         if self.slack_verification_started.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        let slack = Arc::clone(&self.slack);
+        let weak = Arc::downgrade(self);
         tokio::spawn(async move {
-            for (label, result) in slack.verify_all().await {
+            let Some(ws) = weak.upgrade() else { return };
+            for (label, result) in ws.slack.verify_all().await {
                 match result {
-                    Ok(auth) => tracing::info!(
-                        target: "forge_workspace::slack",
-                        workspace = %label,
-                        team = %auth.team,
-                        user = %auth.user,
-                        "slack workspace verified",
-                    ),
+                    Ok(auth) => {
+                        // Kept because the pump needs the id to recognise
+                        // `<@U...>` mentions, and `auth.test` is the only
+                        // call that reports it.
+                        ws.slack_user_ids.lock().insert(label.clone(), auth.user_id.clone());
+                        tracing::info!(
+                            target: "forge_workspace::slack",
+                            workspace = %label,
+                            team = %auth.team,
+                            user = %auth.user,
+                            "slack workspace verified",
+                        );
+                    }
                     Err(error) => tracing::warn!(
                         target: "forge_workspace::slack",
                         workspace = %label,
@@ -161,6 +175,142 @@ impl Workspace {
                 }
             }
         });
+    }
+
+    /// Start one pump per configured workspace that has at least one
+    /// subscription. Idempotent per workspace, and a no-op with no
+    /// `[[slack]]` entry.
+    pub fn start_slack_subsystem(self: &Arc<Self>) {
+        if self.slack.is_empty() {
+            return;
+        }
+        for label in self.slack.labels() {
+            if !self.slack_subs.lock().iter().any(|sub| sub.workspace == label) {
+                continue;
+            }
+            let mut guard = self.slack_subsystem.lock();
+            if guard.contains_key(&label) {
+                continue;
+            }
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+            guard.insert(label.clone(), shutdown_tx);
+            drop(guard);
+
+            let poll_seconds = self
+                .config
+                .slack
+                .iter()
+                .find(|config| config.workspace.trim() == label.as_str())
+                .map_or(30, |config| config.poll_seconds);
+            let host: Arc<dyn SlackHost> = Arc::new(SlackSubsystemHost::new(self));
+            tokio::spawn(forge_connectors::slack::run_workspace_pump(
+                host,
+                label,
+                poll_seconds,
+                shutdown_rx,
+            ));
+        }
+    }
+
+    /// Stop every Slack pump once no subscription remains, and mark each
+    /// workspace disconnected. No-op while any subscription is active.
+    pub fn stop_slack_subsystem_if_idle(&self) {
+        if !self.slack_subs.lock().is_empty() {
+            return;
+        }
+        let handles: Vec<_> =
+            std::mem::take(&mut *self.slack_subsystem.lock()).into_values().collect();
+        for handle in handles {
+            let _ = handle.send(());
+        }
+        for connected in self.slack_connected.lock().values_mut() {
+            *connected = false;
+        }
+    }
+}
+
+/// The [`SlackHost`] one pump drives: a `Weak<Workspace>` behind the port,
+/// so the workspace can drop while a pump runs and every port call then
+/// degrades to a no-op.
+pub(crate) struct SlackSubsystemHost(std::sync::Weak<Workspace>);
+
+impl SlackSubsystemHost {
+    pub(crate) fn new(workspace: &Arc<Workspace>) -> Self {
+        Self(Arc::downgrade(workspace))
+    }
+}
+
+impl SlackHost for SlackSubsystemHost {
+    fn client(&self, workspace: &str, timeout: Duration) -> Result<SlackClient, String> {
+        let ws = self.0.upgrade().ok_or("the workspace is gone")?;
+        let config = ws
+            .config
+            .slack
+            .iter()
+            .find(|config| config.workspace.trim() == workspace)
+            .ok_or_else(|| format!("no [[slack]] entry named '{workspace}'"))?;
+        let http =
+            forge_agent::http_trust::with_extra_roots(reqwest::Client::builder().timeout(timeout))
+                .build()
+                .map_err(|error| error.to_string())?;
+        Ok(SlackClient::new(http, config.token.clone()))
+    }
+
+    fn user_id(&self, workspace: &str) -> Option<String> {
+        self.0.upgrade()?.slack_user_ids.lock().get(workspace).cloned()
+    }
+
+    fn subscriptions(&self, workspace: &str) -> Vec<SlackSubscription> {
+        let Some(ws) = self.0.upgrade() else { return Vec::new() };
+        ws.slack_subs.lock().iter().filter(|sub| sub.workspace == workspace).cloned().collect()
+    }
+
+    fn watermark(&self, workspace: &str, conversation: &str) -> Option<String> {
+        let ws = self.0.upgrade()?;
+        let db = ws.db.lock();
+        let db = db.as_ref()?;
+        crate::store::slack::watermark(db, workspace, conversation).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "reading a Slack watermark failed; treating it as unset",
+            );
+            None
+        })
+    }
+
+    fn set_watermark(&self, workspace: &str, conversation: &str, ts: &str) {
+        let Some(ws) = self.0.upgrade() else { return };
+        let db = ws.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        if let Err(error) = crate::store::slack::set_watermark(db, workspace, conversation, ts) {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "writing a Slack watermark failed",
+            );
+        }
+    }
+
+    fn set_connected(&self, workspace: &str, connected: bool) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.slack_connected.lock().insert(workspace.to_owned(), connected);
+    }
+
+    fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) {
+        let Some(ws) = self.0.upgrade() else { return };
+        if let Err(err) = ws.dispatch(crate::protocol::Command::DeliverSlackMessage {
+            project: subscription.project.clone(),
+            team_role: subscription.team_role.clone(),
+            message: message.clone(),
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                project = %subscription.project,
+                error = ?err,
+                "slack DeliverSlackMessage dispatch failed",
+            );
+        }
     }
 }
 
@@ -183,6 +333,42 @@ mod tests {
             target: SlackSubscriptionTarget::DirectMessages,
             created_at: std::time::SystemTime::UNIX_EPOCH,
         }
+    }
+
+    /// A workspace whose `[[slack]]` holds exactly `label`. The tempdir
+    /// is returned so it outlives the workspace it names.
+    fn workspace_with_one_slack_workspace(label: &str) -> (Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.slack = vec![cfg(label, "xoxp-test")];
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config);
+        (ws, dir)
+    }
+
+    /// `tokio::test`: starting a subsystem spawns a pump, which needs a
+    /// runtime.
+    #[tokio::test]
+    async fn the_subsystem_does_not_start_without_subscriptions() {
+        let (ws, _dir) = workspace_with_one_slack_workspace("acme");
+        ws.start_slack_subsystem();
+        assert!(
+            ws.slack_subsystem.lock().is_empty(),
+            "a pump with nothing to watch is a task that only burns a timer",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_subsystem_starts_once_a_subscription_exists() {
+        let (ws, _dir) = workspace_with_one_slack_workspace("acme");
+        ws.add_slack_subscription(sub_for("acme", None), true);
+
+        ws.start_slack_subsystem();
+        assert_eq!(ws.slack_subsystem.lock().len(), 1, "one pump for the one configured workspace");
+
+        let id = ws.slack_subscriptions_for_project("acme")[0].id;
+        ws.remove_slack_subscription_owned_by("acme", id, None);
+        ws.stop_slack_subsystem_if_idle();
+        assert!(ws.slack_subsystem.lock().is_empty(), "the pump stops with its last subscription");
     }
 
     #[test]

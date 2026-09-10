@@ -394,6 +394,14 @@ pub struct App {
     /// least one owned subscription (see `gotify_section_visible`).
     pub gotify_subs: Vec<forge_primitives::GotifySubscription>,
     pub gotify_connected: bool,
+    /// The Slack subscriptions the active session itself created, plus
+    /// per-workspace pump liveness. Refreshed alongside
+    /// [`App::refresh_gotify`] and scoped by own `team_role`; the
+    /// Inspector SLACK section reads these each render. Liveness is keyed
+    /// by workspace label because Slack runs one pump per `[[slack]]`
+    /// entry, where Gotify has one server and a single bool.
+    pub slack_subs: Vec<forge_primitives::slack::SlackSubscription>,
+    pub slack_connected: std::collections::BTreeMap<String, bool>,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
     /// Whether the help overlay is explicitly open.
@@ -946,6 +954,8 @@ impl App {
             forge_schedule_rows: Vec::new(),
             gotify_subs: Vec::new(),
             gotify_connected: false,
+            slack_subs: Vec::new(),
+            slack_connected: std::collections::BTreeMap::new(),
             help_view: HelpView::Keys,
             help_open: false,
             help_dialog: dialog::DialogState::default(),
