@@ -142,15 +142,16 @@ pub fn parse_catalog(body: &[u8]) -> Result<Vec<CatalogModel>, ModelCatalogError
 }
 
 /// The mechanical bar a model must pass to serve in the picker:
-/// 1M+ context, tool support, paid, text-out, and neither pricing-tier
-/// nor alias rows (`:batch` halves the price for bulk throughput,
-/// `-latest` points at a versioned slug).
+/// 1M+ context, tool support, paid, text-out, and neither pricing-tier,
+/// preview nor alias rows (`:batch` halves the price for bulk
+/// throughput, `-latest` and `-exp` point at other rows).
 fn passes_mechanical_bar(model: &CatalogModel) -> bool {
     model.context_length >= 1_000_000
         && model.supported_parameters.iter().any(|parameter| parameter == "tools")
         && !model.id.ends_with(":free")
         && !model.id.ends_with(":batch")
         && !model.id.ends_with("-latest")
+        && !model.id.ends_with("-exp")
         && model.architecture.modality.rsplit("->").next() == Some("text")
 }
 
@@ -354,7 +355,7 @@ mod tests {
     #[test]
     fn parse_catalog_reads_the_live_capture_shape() {
         let models = specimen();
-        assert_eq!(models.len(), 20, "the fixture carries the curated set + negatives");
+        assert_eq!(models.len(), 21, "the fixture carries the curated set + negatives");
         let glm = models.iter().find(|m| m.id == "z-ai/glm-5.3").expect("glm-5.3 present");
         assert_eq!(glm.name, "Z.ai: GLM 5.3");
         assert_eq!(glm.context_length, 1_310_720);
@@ -459,7 +460,11 @@ mod tests {
     #[test]
     fn picker_skips_batch_and_latest_alias_rows() {
         let rows = curated_available_models(&specimen());
-        for alias in ["z-ai/glm-5.3:batch", "anthropic/claude-fable-latest"] {
+        for alias in [
+            "z-ai/glm-5.3:batch",
+            "anthropic/claude-fable-latest",
+            "deepseek/deepseek-v4-flash-vision-exp",
+        ] {
             assert!(
                 rows.iter().all(|r| r.id != alias),
                 "alias row {alias} must stay out of the picker"
@@ -538,7 +543,7 @@ mod tests {
         let client = reqwest::Client::builder().build().expect("client");
         let models =
             fetch_catalog(&client, &format!("http://127.0.0.1:{port}")).await.expect("fetch");
-        assert_eq!(models.len(), 20);
+        assert_eq!(models.len(), 21);
     }
 
     fn read_request(stream: &mut std::net::TcpStream) -> String {
