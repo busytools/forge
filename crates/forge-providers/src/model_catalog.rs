@@ -5,7 +5,7 @@
 //!
 //! `GET {base}/v1/models` is public (no auth, free) and carries every
 //! model the account can name. The `/model` picker is built dynamically
-//! from the fetch - families ordered by frontier price, variants capped -
+//! from the fetch - vendors ordered by frontier price, variants capped -
 //! enriched with live price and context figures. Same URL-join lesson as the
 //! openrouter backend's key url: `ANTHROPIC_BASE_URL` already ends
 //! in `/api`, so only the `/v1/models` tail is appended.
@@ -110,51 +110,23 @@ fn models_url(base_url: &str) -> String {
 }
 
 /// The dynamic picker replaces the hand-maintained curated constant:
-/// every fetched model that passes the mechanical bar is grouped into a
-/// model family (vendor + base name before any variant suffix), and each
-/// family contributes its top variants by completion price - the frontier
-/// row plus the cheaper tiers below it (flash etc.). Families are ordered
-/// by their frontier completion price, so the strongest models surface
-/// first and a new release shows up on the next fetch without any
-/// hand-maintained constant going stale.
+/// every fetched model that passes the mechanical bar is grouped by
+/// vendor, and each vendor contributes its top variants by completion
+/// price - the frontier row plus the cheaper tiers below it (flash
+/// etc.). Vendors are ordered by their frontier completion price, so the
+/// strongest models surface first and a new release shows up on the
+/// next fetch without any hand-maintained constant going stale.
 ///
-/// Per-family variant cap: the frontier row plus its cheaper variants
-/// (flash tiers etc.) under each family.
-const VARIANTS_PER_FAMILY: usize = 3;
+/// Per-vendor variant cap: the frontier row plus its cheaper variants
+/// (flash tiers etc.) under each vendor.
+const VARIANTS_PER_VENDOR: usize = 3;
 
-/// How many families the picker serves, strongest first.
-const FAMILIES_SHOWN: usize = 8;
+/// How many vendors the picker serves, strongest first.
+const VENDORS_SHOWN: usize = 8;
 
-/// Family key for a model id: vendor plus the base name before the last
-/// `-`-separated variant segment (`z-ai/glm-5.3-flash` -> `z-ai/glm-5.3`;
-/// `anthropic/claude-fable-5.1` -> `anthropic/claude-fable`). Keeps each
-/// family's frontier and its flash tiers together.
-fn family_key(id: &str) -> String {
-    /// Known variant suffixes: one trailing segment stripped when
-    /// present, so a family's frontier and its cheaper tiers group
-    /// together. Version segments (5.3, 5.1) are NOT variants and stay.
-    const VARIANT_SUFFIXES: [&str; 6] = ["flash", "pro", "mini", "lite", "latest", "vision"];
-    let (vendor, rest) = id.split_once('/').unwrap_or((id, ""));
-    let lower = rest.to_lowercase();
-    let base = VARIANT_SUFFIXES
-        .iter()
-        .find_map(|suffix| {
-            lower.strip_suffix(suffix).and_then(|stripped| stripped.strip_suffix('-'))
-        })
-        .map_or(rest.to_owned(), ToOwned::to_owned);
-    format!("{vendor}/{base}")
-}
-
-/// Family display label: the vendor plus the base name, humanized.
-fn family_label(key: &str) -> String {
-    let (vendor, base) = key.split_once('/').unwrap_or(("", key));
-    let vendor_label = match vendor {
-        "z-ai" => "Z.ai",
-        "x-ai" => "xAI",
-        "moonshotai" => "Moonshot",
-        other => other,
-    };
-    format!("{vendor_label} {base}")
+/// Vendor part of a model id: everything before the `/`.
+fn vendor_of(id: &str) -> &str {
+    id.split_once('/').map_or(id, |(vendor, _)| vendor)
 }
 
 /// Parse a catalog response body. Strict: a truncated or reshaped
@@ -169,12 +141,16 @@ pub fn parse_catalog(body: &[u8]) -> Result<Vec<CatalogModel>, ModelCatalogError
         .map_err(|error| ModelCatalogError::Decode(error.to_string()))
 }
 
-/// The mechanical bar a model must pass to serve in the curated list:
-/// 1M+ context, tool support, paid, text-out.
+/// The mechanical bar a model must pass to serve in the picker:
+/// 1M+ context, tool support, paid, text-out, and neither pricing-tier
+/// nor alias rows (`:batch` halves the price for bulk throughput,
+/// `-latest` points at a versioned slug).
 fn passes_mechanical_bar(model: &CatalogModel) -> bool {
     model.context_length >= 1_000_000
         && model.supported_parameters.iter().any(|parameter| parameter == "tools")
         && !model.id.ends_with(":free")
+        && !model.id.ends_with(":batch")
+        && !model.id.ends_with("-latest")
         && model.architecture.modality.rsplit("->").next() == Some("text")
 }
 
@@ -272,53 +248,47 @@ pub(crate) fn catalog_decision(cached: Option<CachedCatalog>, now: SystemTime) -
 }
 
 pub(crate) fn curated_available_models(catalog: &[CatalogModel]) -> Vec<AvailableModel> {
-    // Mechanical bar first: 1M+ ctx, tools, paid, text-out.
+    // Mechanical bar first: 1M+ ctx, tools, paid, text-out, no aliases.
     let eligible: Vec<&CatalogModel> =
         catalog.iter().filter(|m| passes_mechanical_bar(m)).collect();
 
-    // Group into families, each kept sorted by completion price (the
+    // Group by vendor, each kept sorted by completion price (the
     // capability proxy) so the frontier row is first.
-    let mut families: Vec<(String, Vec<&CatalogModel>)> = Vec::new();
+    let mut vendors: Vec<(&str, Vec<&CatalogModel>)> = Vec::new();
     for model in &eligible {
-        let key = family_key(&model.id);
-        match families.iter_mut().find(|(key_existing, _)| *key_existing == key) {
+        let vendor = vendor_of(&model.id);
+        match vendors.iter_mut().find(|(known, _)| *known == vendor) {
             Some((_, rows)) => {
                 rows.push(model);
                 rows.sort_by(|a, b| {
                     per_million(&b.pricing.completion)
                         .unwrap_or(f64::INFINITY)
                         .total_cmp(&per_million(&a.pricing.completion).unwrap_or(f64::INFINITY))
+                        .then_with(|| a.id.cmp(&b.id))
                 });
             }
-            None => families.push((key, vec![model])),
+            None => vendors.push((vendor, vec![model])),
         }
     }
 
-    // Strongest families first: frontier completion price.
-    families.sort_by(|a, b| {
+    // Strongest vendors first: frontier completion price.
+    vendors.sort_by(|a, b| {
         let a_top = a.1.first().map_or(0.0, |m| per_million(&m.pricing.completion).unwrap_or(0.0));
         let b_top = b.1.first().map_or(0.0, |m| per_million(&m.pricing.completion).unwrap_or(0.0));
-        b_top.partial_cmp(&a_top).unwrap_or(std::cmp::Ordering::Equal)
+        b_top.partial_cmp(&a_top).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(b.0))
     });
 
     let mut rows = Vec::new();
-    for (key, variants) in families.iter().take(FAMILIES_SHOWN) {
-        let label = family_label(key);
-        for (variant_idx, model) in variants.iter().take(VARIANTS_PER_FAMILY).enumerate() {
+    for (_, variants) in vendors.iter().take(VENDORS_SHOWN) {
+        for (variant_idx, model) in variants.iter().take(VARIANTS_PER_VENDOR).enumerate() {
             let out_price = price_label(&model.pricing.completion).unwrap_or_default();
-            let variant_tag = if variant_idx == 0 { "frontier" } else { "variant" };
+            let frontier = if variant_idx == 0 { "frontier - " } else { "" };
             let description = format!(
-                "{out_price}/M out - {} ctx - {}",
+                "{frontier}{out_price}/M out - {} ctx - {}",
                 compact_ctx(model.context_length),
                 if entry_open(model) { "open weights" } else { "closed" },
             );
-            let display = if variant_idx == 0 {
-                format!("{} {} ({})", label, "frontier", entry_open_word(model))
-            } else {
-                model.name.clone()
-            };
-            let _ = variant_tag;
-            rows.push(AvailableModel::new(&model.id, display).description(description));
+            rows.push(AvailableModel::new(&model.id, model.name.clone()).description(description));
         }
     }
     rows
@@ -333,10 +303,6 @@ fn entry_open(model: &CatalogModel) -> bool {
         || model.id.starts_with("moonshotai/")
         || model.id.starts_with("minimax/")
         || model.id.starts_with("meta-llama/")
-}
-
-fn entry_open_word(model: &CatalogModel) -> &'static str {
-    if entry_open(model) { "open weights" } else { "closed" }
 }
 
 #[cfg(test)]
@@ -388,7 +354,7 @@ mod tests {
     #[test]
     fn parse_catalog_reads_the_live_capture_shape() {
         let models = specimen();
-        assert_eq!(models.len(), 18, "the fixture carries the curated set + negatives");
+        assert_eq!(models.len(), 20, "the fixture carries the curated set + negatives");
         let glm = models.iter().find(|m| m.id == "z-ai/glm-5.3").expect("glm-5.3 present");
         assert_eq!(glm.name, "Z.ai: GLM 5.3");
         assert_eq!(glm.context_length, 1_310_720);
@@ -445,33 +411,37 @@ mod tests {
 
     // -- dynamic picker ----------------------------------------------
 
-    /// The strongest family leads the picker. The specimen's
-    /// highest-completion-price eligible model is Fable 5.1
-    /// ($50/M out), so the Anthropic family frontiers first.
+    /// The strongest vendor leads the picker, and no vendor exceeds the
+    /// per-vendor variant cap.
     #[test]
-    fn picker_serves_frontier_first_and_respects_the_variant_cap() {
+    fn picker_serves_the_strongest_vendor_first_within_the_variant_cap() {
         let rows = curated_available_models(&specimen());
         assert!(!rows.is_empty(), "the specimen yields rows");
         // GPT 5.5 Pro passes the bar at $180/M out - nothing beats it, so
         // the first row is the OpenAI frontier.
-        assert_eq!(rows[0].id, "openai/gpt-5.5-pro", "frontier family first");
-        // Per-family cap: no family contributes more than
-        // VARIANTS_PER_FAMILY rows.
-        let anthropic_rows = rows.iter().filter(|r| r.id.starts_with("anthropic/")).count();
+        assert_eq!(rows[0].id, "openai/gpt-5.5-pro", "strongest vendor first");
+        let openai_rows = rows.iter().filter(|r| r.id.starts_with("openai/")).count();
         assert!(
-            anthropic_rows <= VARIANTS_PER_FAMILY,
-            "a family must not exceed the variant cap, got {anthropic_rows}"
+            openai_rows <= VARIANTS_PER_VENDOR,
+            "a vendor must not exceed the variant cap, got {openai_rows}"
+        );
+        let vendors: Vec<String> = rows.iter().map(|r| vendor_of(&r.id).to_owned()).collect();
+        assert!(
+            vendors
+                .iter()
+                .all(|v| vendors.iter().filter(|w| *w == v).count() <= VARIANTS_PER_VENDOR),
+            "no vendor contributes more rows than the cap"
         );
     }
 
     /// The dynamic picker serves rows for a fetched model with no
-    /// hand-maintained entry: a new family release appears on the next
-    /// fetch without any constant edit.
+    /// hand-maintained entry: a new release appears on the next fetch
+    /// without any constant edit.
     #[test]
     fn picker_serves_models_without_a_curated_entry() {
         let rows = curated_available_models(&specimen());
         // The fixture carries openai/gpt-5.2 (400K ctx, tools) - below the
-        // 1M bar, so it must NOT appear even though it is a known family.
+        // 1M bar, so it must NOT appear even though it is a known vendor.
         assert!(
             rows.iter().all(|r| r.id != "openai/gpt-5.2"),
             "models below the mechanical bar stay out of the picker"
@@ -480,8 +450,21 @@ mod tests {
         // even though no hand-written entry names it.
         assert!(
             rows.iter().any(|r| r.id == "z-ai/glm-5.3-flash"),
-            "the flash variant rides its family's rows"
+            "the flash variant rides its vendor's rows"
         );
+    }
+
+    /// Pricing-tier and alias rows never serve: `:batch` is the same
+    /// model at bulk price, `-latest` points at a versioned slug.
+    #[test]
+    fn picker_skips_batch_and_latest_alias_rows() {
+        let rows = curated_available_models(&specimen());
+        for alias in ["z-ai/glm-5.3:batch", "anthropic/claude-fable-latest"] {
+            assert!(
+                rows.iter().all(|r| r.id != alias),
+                "alias row {alias} must stay out of the picker"
+            );
+        }
     }
 
     // -- ttl decision ------------------------------------------------
@@ -555,7 +538,7 @@ mod tests {
         let client = reqwest::Client::builder().build().expect("client");
         let models =
             fetch_catalog(&client, &format!("http://127.0.0.1:{port}")).await.expect("fetch");
-        assert_eq!(models.len(), 18);
+        assert_eq!(models.len(), 20);
     }
 
     fn read_request(stream: &mut std::net::TcpStream) -> String {
