@@ -152,22 +152,31 @@ pub struct CuratedModel {
 /// entry against the live capture.
 pub const CURATED: &[CuratedModel] = &[
     CuratedModel {
-        slug: "z-ai/glm-5.3",
+        slug: "anthropic/claude-fable-5.1",
         tier: Tier::OpusClass,
-        benchmark: Some("SWE-bench V 97%"),
-        source: Some("vals.ai"),
-        researched: "2026-09-01",
-        open: true,
+        benchmark: Some("SWE-bench V 95%+"),
+        source: Some("benchlm.ai / SWE-bench leaderboard"),
+        researched: "2026-09-10",
+        open: false,
+        note: Some("2x Opus 5's price; the Fable family leads every reported coding benchmark"),
+    },
+    CuratedModel {
+        slug: "anthropic/claude-opus-5",
+        tier: Tier::OpusClass,
+        benchmark: Some("SWE-bench V 96%"),
+        source: Some("SWE-bench leaderboard"),
+        researched: "2026-09-10",
+        open: false,
         note: None,
     },
     CuratedModel {
-        slug: "deepseek/deepseek-v4-pro-0813",
+        slug: "openai/gpt-5.5-pro",
         tier: Tier::OpusClass,
-        benchmark: Some("SWE-bench V 96.4% / 80.6%"),
-        source: Some("anotherwrapper / benchlm"),
-        researched: "2026-09-01",
-        open: true,
-        note: None,
+        benchmark: None,
+        source: None,
+        researched: "2026-09-10",
+        open: false,
+        note: Some("OpenAI's frontier pro tier; premium pricing"),
     },
     CuratedModel {
         slug: "moonshotai/kimi-k3",
@@ -183,44 +192,26 @@ pub const CURATED: &[CuratedModel] = &[
         tier: Tier::OpusClass,
         benchmark: Some("~93%"),
         source: Some("vals.ai, independent"),
-        researched: "2026-09-01",
+        researched: "2026-09-10",
         open: true,
-        note: Some("Z.ai launch: Terminal-Bench 2.1 84.3 (Opus 4.8 85.0); DeepSWE 63.4 (58.0)"),
+        note: Some("cheapest curated row; forge.toml default. Z.ai launch: TB2.1 84.3 (Opus 4.8 85.0); DeepSWE 63.4 (58.0)"),
     },
     CuratedModel {
-        slug: "deepseek/deepseek-v4-flash",
+        slug: "deepseek/deepseek-v4.1-flash",
         tier: Tier::Strong,
-        benchmark: Some("SWE-bench V 91%"),
-        source: Some("vals.ai"),
-        researched: "2026-09-01",
+        benchmark: Some("vendor: exceeds V4 Pro (unreproduced)"),
+        source: Some("deepseek.com"),
+        researched: "2026-09-10",
         open: true,
-        note: None,
+        note: Some("no published SWE-bench yet; replaces v4-flash in the family"),
     },
     CuratedModel {
-        slug: "minimax/minimax-m3",
+        slug: "qwen/qwen3.8-max-0902",
         tier: Tier::Strong,
-        benchmark: Some("~81%"),
-        source: None,
-        researched: "2026-09-01",
-        open: true,
-        note: None,
-    },
-    CuratedModel {
-        slug: "z-ai/glm-5.2",
-        tier: Tier::Strong,
-        benchmark: Some("78.7%"),
-        source: None,
-        researched: "2026-09-01",
-        open: true,
-        note: None,
-    },
-    CuratedModel {
-        slug: "google/gemini-2.5-flash",
-        tier: Tier::ClosedReference,
         benchmark: None,
         source: None,
-        researched: "2026-09-01",
-        open: false,
+        researched: "2026-09-10",
+        open: true,
         note: None,
     },
     CuratedModel {
@@ -228,17 +219,8 @@ pub const CURATED: &[CuratedModel] = &[
         tier: Tier::ClosedReference,
         benchmark: None,
         source: None,
-        researched: "2026-09-01",
+        researched: "2026-09-10",
         open: false,
-        note: None,
-    },
-    CuratedModel {
-        slug: "deepseek/deepseek-v4-pro",
-        tier: Tier::ClosedReference,
-        benchmark: None,
-        source: None,
-        researched: "2026-09-01",
-        open: true,
         note: None,
     },
 ];
@@ -441,7 +423,7 @@ mod tests {
     #[test]
     fn parse_catalog_reads_the_live_capture_shape() {
         let models = specimen();
-        assert_eq!(models.len(), 12, "the fixture carries ten curated + two negatives");
+        assert_eq!(models.len(), 18, "the fixture carries the curated set + negatives");
         let glm = models.iter().find(|m| m.id == "z-ai/glm-5.3").expect("glm-5.3 present");
         assert_eq!(glm.name, "Z.ai: GLM 5.3");
         assert_eq!(glm.context_length, 1_310_720);
@@ -516,18 +498,18 @@ mod tests {
     #[test]
     fn curated_rows_map_the_catalog_in_constant_order() {
         let rows = curated_available_models(&specimen());
-        assert_eq!(rows.len(), 10, "every curated slug present in the capture maps to a row");
+        assert_eq!(rows.len(), 8, "every curated slug present in the capture maps to a row");
         for (row, entry) in rows.iter().zip(CURATED.iter()) {
             assert_eq!(row.id, entry.slug, "constant order is preserved");
         }
         let first = &rows[0];
-        assert_eq!(first.display_name, "Z.ai: GLM 5.3 (Opus-class)");
+        assert_eq!(first.display_name, "Anthropic: Claude Fable 5.1 (Opus-class)");
         let description = first.description.as_deref().expect("curated rows carry a description");
-        assert!(description.contains("97%"), "benchmark score shown");
-        assert!(description.contains("vals.ai"), "benchmark source shown");
-        assert!(description.contains("$4.40"), "output price shown");
-        assert!(description.contains("1.31M"), "context shown");
-        assert!(description.contains("open"), "openness marker shown");
+        assert!(description.contains("95%"), "benchmark score shown");
+        assert!(description.contains("benchlm.ai"), "benchmark source shown");
+        assert!(description.contains("$50"), "output price shown");
+        assert!(description.contains("1M"), "context shown");
+        assert!(description.contains("closed"), "openness marker shown");
     }
 
     #[test]
@@ -542,13 +524,13 @@ mod tests {
     }
 
     #[test]
-    fn curated_rows_show_harness_variance_for_deepseek_pro_0813() {
+    fn curated_rows_show_harness_variance_for_deepseek_v4_1_flash() {
         let rows = curated_available_models(&specimen());
         let deepseek =
-            rows.iter().find(|r| r.id == "deepseek/deepseek-v4-pro-0813").expect("present");
+            rows.iter().find(|r| r.id == "deepseek/deepseek-v4.1-flash").expect("present");
         let description = deepseek.description.as_deref().expect("description");
-        assert!(description.contains("96.4%") && description.contains("80.6%"));
-        assert!(description.contains("anotherwrapper") && description.contains("benchlm"));
+        assert!(description.contains("vendor: exceeds V4 Pro (unreproduced)"));
+        assert!(description.contains("deepseek.com"));
     }
 
     // -- ttl decision ------------------------------------------------
@@ -622,7 +604,7 @@ mod tests {
         let client = reqwest::Client::builder().build().expect("client");
         let models =
             fetch_catalog(&client, &format!("http://127.0.0.1:{port}")).await.expect("fetch");
-        assert_eq!(models.len(), 12);
+        assert_eq!(models.len(), 18);
     }
 
     fn read_request(stream: &mut std::net::TcpStream) -> String {
