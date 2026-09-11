@@ -63,11 +63,11 @@ reasoning.
 
 **Config vs state.** `forge.toml` (under `<config_dir>/forge/`) is the
 only file forge reads for config: read-only, hand-authored, safe to
-sync. All runtime state (durable crons, Gotify subs, dynamic workers,
-`/spinner` override, usage cache) lives in one machine-local redb DB
-beside the lock. None of it belongs in a synced config dir: the DB
-churns roughly once a minute, redb's binary file cannot be merged, and
-the lock's inode must stay put.
+sync. All runtime state (durable crons, Gotify subs, Slack subs and
+sweep watermarks, dynamic workers, `/spinner` override, usage cache)
+lives in one machine-local redb DB beside the lock. None of it belongs
+in a synced config dir: the DB churns roughly once a minute, redb's
+binary file cannot be merged, and the lock's inode must stay put.
 
 ## Crate placement guide (where does my new code go?)
 

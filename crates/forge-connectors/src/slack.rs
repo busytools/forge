@@ -3053,9 +3053,10 @@ mod tests {
         );
     }
 
-    /// Fan-out on threads matches wave-one's delivery rule: every owner in
-    /// the record gets the reply, and one owner's failed delivery holds
-    /// the cursor below the reply instead of losing it.
+    /// Fan-out on threads delivers to every owner in the record, the way
+    /// a conversation's batch delivers to every matching subscription -
+    /// and one owner's failed delivery holds the cursor below the reply
+    /// instead of losing it.
     #[tokio::test]
     async fn every_owner_gets_a_thread_reply_and_a_failure_holds_the_cursor() {
         let host = FakeHost::with_subscriptions(vec![
