@@ -646,8 +646,11 @@ pub(crate) fn slack_message_to_prose(message: &SlackMessage) -> String {
 /// Deliver one matched Slack message to its subscriber's session: dispatch
 /// it now when that session is running, buffer it on the session's own
 /// domain when it is still spawning. Mirrors [`deliver_gotify_message`],
-/// including its rule that a worker-owned subscription never falls through
-/// to the lead.
+/// including its rule that a worker-owned subscription falls through to
+/// the lead only when the worker is gone entirely (teardown removed its
+/// subscriptions first, so this is the despawn race, not steady state) -
+/// and that fall-through commits under the worker's own dedupe key, so a
+/// durable worker that respawns later re-delivers what it missed.
 ///
 /// Returns whether the message reached a destination it can be read from:
 /// dispatched, or buffered for one that will. `false` tells the pump the

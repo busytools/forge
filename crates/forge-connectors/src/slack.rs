@@ -443,7 +443,7 @@ impl std::fmt::Debug for SlackClient {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SlackError {
     /// Slack answered `ok: false`. `needed` names the scope when it is a scope failure.
     Api { method: String, error: String, needed: Option<String> },
@@ -632,6 +632,19 @@ pub(crate) async fn sweep(
         return Ok(SweepOutcome { delivered: 0, rate_limited: None });
     }
     let user_id = host.user_id(workspace).unwrap_or_default();
+    if user_id.is_empty() {
+        // The own-message filter needs the id, and the agent's own posts
+        // go out as the user - sweeping without it would echo those
+        // replies back into the session. Fail quiet-but-visible rather
+        // than sweep half-blind; the host retries the id in the
+        // background.
+        tracing::warn!(
+            target: "forge_connectors::slack",
+            workspace,
+            "slack user id unresolved; the sweep is skipped this tick",
+        );
+        return Ok(SweepOutcome { delivered: 0, rate_limited: None });
+    }
 
     let mut conversations = match api.list_conversations().await {
         Ok(conversations) => conversations,
@@ -694,6 +707,14 @@ pub(crate) async fn sweep(
             // sweep continues with the conversations after it. The cursor
             // stays where it was, so nothing is skipped.
             Err(error) => {
+                // A conversation deleted on Slack's side is permanent, and
+                // returning Ok would hold the connected glyph over a row
+                // that can never deliver again.
+                if matches!(&error, SlackError::Api { error: api_error, .. }
+                    if api_error == "channel_not_found" || api_error == "invalid_channel_id")
+                {
+                    host.set_connected(workspace, false);
+                }
                 tracing::warn!(
                     target: "forge_connectors::slack",
                     workspace,
@@ -708,8 +729,20 @@ pub(crate) async fn sweep(
         // The DM class covers conversations that cannot be pre-seeded per
         // id, so first sight baselines instead of replaying: the newest
         // fetched ts becomes the cursor and the back catalogue is not new.
+        // Logged, because the same shape hides a named conversation whose
+        // subscribe-time cursor write failed - a swallowed backlog. That
+        // is still the right direction: refusing to sweep would deliver
+        // nothing forever, and replaying the backlog would spam every
+        // session watching it.
         if watermark.is_none() {
             if let Some(newest) = history.iter().map(|message| message.ts.as_str()).max() {
+                tracing::info!(
+                    target: "forge_connectors::slack",
+                    workspace,
+                    conversation = %conversation.id,
+                    cursor = %newest,
+                    "no cursor for this conversation; baselining at the newest message seen",
+                );
                 host.set_watermark(workspace, &conversation.id, newest);
             }
             continue;
@@ -870,12 +903,20 @@ pub(crate) async fn sweep(
                     }
                 };
             let mut newest_reply: Option<String> = None;
+            let mut walk_failed = false;
             for reply in replies {
                 // Slack repeats the parent on every page of the walk.
                 if reply.ts == thread.parent_ts
                     || !is_newer(&reply.ts, cursor.as_deref())
                     || !seen.insert(reply.ts.clone())
                 {
+                    continue;
+                }
+                // Replies never appear in history, so this walk is the one
+                // path that sees the agent's own answers to the threads it
+                // anchors - and they must not come back, or an agent
+                // answering the echo answers itself.
+                if reply.user.as_deref() == Some(user_id.as_str()) {
                     continue;
                 }
                 let mut all_handed = true;
@@ -906,8 +947,11 @@ pub(crate) async fn sweep(
                     }
                 }
                 if !all_handed {
-                    // The cursor stays below a reply that did not reach
-                    // every owner, so the next sweep re-delivers it.
+                    // Replies arrive newest-first, so any advance here
+                    // would jump ABOVE the reply that did not reach every
+                    // owner and never fetch it again. The cursor holds at
+                    // its previous value; dedupe absorbs the re-delivery.
+                    walk_failed = true;
                     break;
                 }
                 delivered += 1;
@@ -917,7 +961,7 @@ pub(crate) async fn sweep(
                     newest_reply = Some(reply.ts.clone());
                 }
             }
-            if let Some(newest) = newest_reply {
+            if !walk_failed && let Some(newest) = newest_reply {
                 host.set_thread_watermark(workspace, &conversation.id, &thread.parent_ts, &newest);
             }
         }
@@ -948,11 +992,17 @@ pub(crate) async fn sweep_mentions(
     workspace: &str,
 ) -> Result<SweepOutcome, SlackError> {
     let subscriptions = host.subscriptions(workspace);
-    let Some(subscription) =
-        subscriptions.iter().find(|s| matches!(s.target, SlackSubscriptionTarget::Mentions))
-    else {
+    // Every Mentions target gets the hit: a lead and a worker each asking
+    // to be told are two owners, and find-first would starve whichever
+    // sorted second. Same-owner re-delivery is absorbed by the
+    // destination dedupe.
+    let mention_subscriptions: Vec<&SlackSubscription> = subscriptions
+        .iter()
+        .filter(|s| matches!(s.target, SlackSubscriptionTarget::Mentions))
+        .collect();
+    if mention_subscriptions.is_empty() {
         return Ok(SweepOutcome { delivered: 0, rate_limited: None });
-    };
+    }
     // Without the authenticated user's id there is no token to search
     // for, and no way to tell the user's own messages from anyone else's.
     // Fail quiet-but-visible rather than sweeping half-blind.
@@ -1024,7 +1074,13 @@ pub(crate) async fn sweep_mentions(
                 text: hit.text.clone(),
                 files: hit.files.clone(),
             };
-            if !host.deliver(subscription, &message) {
+            let mut all_handed = true;
+            for subscription in &mention_subscriptions {
+                if !host.deliver(subscription, &message) {
+                    all_handed = false;
+                }
+            }
+            if !all_handed {
                 // Hits arrive newest-first, so a failed delivery means
                 // everything behind it is undelivered too: hold the
                 // cursor where it was, skip the auto-subscribe, and let
@@ -1034,20 +1090,22 @@ pub(crate) async fn sweep_mentions(
             // Ved's ask: a mention pulls the agent into the conversation, so
             // the reply back and forth does not need another subscription.
             host.auto_subscribe(workspace, &message);
-            // A mention inside a thread anchors that thread the same way:
-            // the back and forth continues under the parent, not the
-            // channel.
-            if let Some(parent_ts) = hit.thread_ts.clone() {
-                host.follow_thread(
-                    workspace,
-                    &hit.conversation_id,
-                    &parent_ts,
-                    SlackThreadOwner {
-                        project: subscription.project.clone(),
-                        team_role: subscription.team_role.clone(),
-                    },
-                    &hit.ts,
-                );
+            // A mention inside a thread anchors that thread the same way,
+            // once per owner that received it: the back and forth
+            // continues under the parent, not the channel.
+            for subscription in &mention_subscriptions {
+                if let Some(parent_ts) = hit.thread_ts.clone() {
+                    host.follow_thread(
+                        workspace,
+                        &hit.conversation_id,
+                        &parent_ts,
+                        SlackThreadOwner {
+                            project: subscription.project.clone(),
+                            team_role: subscription.team_role.clone(),
+                        },
+                        &hit.ts,
+                    );
+                }
             }
             delivered += 1;
             if newest.as_deref().is_none_or(|current| hit.ts.as_str() > current) {
@@ -1135,15 +1193,31 @@ pub async fn run_workspace_pump(
         match sweep_mentions(host.as_ref(), &client, &workspace).await {
             Ok(outcome) => {
                 if let Some(delay) = outcome.rate_limited {
-                    wait = next_interval(interval, Some(delay));
+                    // The conversation sweep may already have asked for a
+                    // longer wait; the longer backoff wins.
+                    wait = wait.max(next_interval(interval, Some(delay)));
                 }
             }
-            Err(error) => tracing::warn!(
-                target: "forge_connectors::slack",
-                workspace = %workspace,
-                %error,
-                "slack mention sweep failed",
-            ),
+            Err(error) => {
+                // The conversation sweep alone decides the glyph, so a
+                // mention stream failing every tick (a token without
+                // search scope, say) would read connected forever. When
+                // anyone subscribes to mentions, a failing mention sweep
+                // is exactly the condition the row is for.
+                if host
+                    .subscriptions(&workspace)
+                    .iter()
+                    .any(|sub| matches!(sub.target, SlackSubscriptionTarget::Mentions))
+                {
+                    host.set_connected(&workspace, false);
+                }
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    workspace = %workspace,
+                    %error,
+                    "slack mention sweep failed",
+                );
+            }
         }
     }
     host.set_connected(&workspace, false);
@@ -2028,10 +2102,12 @@ mod tests {
     #[derive(Default)]
     struct FakeHost {
         subscriptions: std::sync::Mutex<Vec<SlackSubscription>>,
-        user_id: Option<String>,
+        user_id_slot: std::sync::Mutex<Option<String>>,
         rate_limited: Option<Duration>,
         conversations: std::sync::Mutex<Vec<SlackConversation>>,
         history: std::sync::Mutex<HashMap<String, Vec<Vec<SlackHistoryMessage>>>>,
+        /// Seeded failures: channel -> the error history returns.
+        history_errors: std::sync::Mutex<HashMap<String, SlackError>>,
         replies: std::sync::Mutex<HashMap<String, Vec<Vec<SlackHistoryMessage>>>>,
         watermarks: std::sync::Mutex<HashMap<String, String>>,
         connected: std::sync::Mutex<Option<bool>>,
@@ -2068,7 +2144,7 @@ mod tests {
         fn with_subscriptions(subscriptions: Vec<SlackSubscription>) -> Self {
             Self {
                 subscriptions: std::sync::Mutex::new(subscriptions),
-                user_id: Some("U1".to_owned()),
+                user_id_slot: std::sync::Mutex::new(Some("U1".to_owned())),
                 ..Self::default()
             }
         }
@@ -2110,6 +2186,17 @@ mod tests {
             pages: Vec<Vec<SlackHistoryMessage>>,
         ) {
             self.replies.lock().expect("lock").insert(format!("{channel}/{parent}"), pages);
+        }
+
+        /// Make history for `channel` fail with a seeded error.
+        fn fail_history_with(&self, channel: &str, error: SlackError) {
+            self.history_errors.lock().expect("lock").insert(channel.to_owned(), error);
+        }
+
+        /// Resolve the user id late, or leave it unresolved with `None` -
+        /// the shape of a boot whose auth probe has not come back yet.
+        fn set_user_id(&self, id: Option<String>) {
+            *self.user_id_slot.lock().expect("lock") = id;
         }
 
         fn fail_with_rate_limit(&mut self, retry_after: Duration) {
@@ -2177,7 +2264,7 @@ mod tests {
         }
 
         fn user_id(&self, _workspace: &str) -> Option<String> {
-            self.user_id.clone()
+            self.user_id_slot.lock().expect("lock").clone()
         }
 
         fn subscriptions(&self, _workspace: &str) -> Vec<SlackSubscription> {
@@ -2333,7 +2420,7 @@ mod tests {
                 team: "Test".to_owned(),
                 user: "tester".to_owned(),
                 team_id: "T1".to_owned(),
-                user_id: self.user_id.clone().unwrap_or_default(),
+                user_id: self.user_id_slot.lock().expect("lock").clone().unwrap_or_default(),
                 url: "https://test.slack.com/".to_owned(),
             })
         }
@@ -2360,6 +2447,9 @@ mod tests {
                     method: "conversations.history".to_owned(),
                     retry_after,
                 });
+            }
+            if let Some(error) = self.history_errors.lock().expect("lock").get(channel) {
+                return Err(error.clone());
             }
             let pages = self.history.lock().expect("lock");
             let Some(seeded) = pages.get(channel) else {
@@ -3175,6 +3265,160 @@ mod tests {
             host.thread_cursor("acme", "C1", "100.0"),
             Some("300.0".to_owned()),
             "the cursor lands on the newest reply",
+        );
+    }
+
+    /// Replies never appear in history, so this walk is the one path that
+    /// sees the agent's own answers to the threads it anchors - and they
+    /// must not come back, or an agent answering the echo answers itself.
+    #[tokio::test]
+    async fn the_agents_own_replies_are_never_delivered_back_by_the_thread_walk() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        let mut parent = history_message("100.0", "U9", "trigger");
+        parent.reply_count = 2;
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        sweep(&host, &host, "acme").await.expect("trigger sweep");
+
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                history_message("150.0", "U1", "the agent's own reply"),
+                history_message("140.0", "U8", "someone else's reply"),
+            ],
+        );
+        sweep(&host, &host, "acme").await.expect("follow-up sweep");
+
+        let delivered = host.delivered();
+        assert!(
+            !delivered.iter().any(|message| message.text == "the agent's own reply"),
+            "the agent's own reply must not echo back: {delivered:?}",
+        );
+        assert!(
+            delivered.iter().any(|message| message.text == "someone else's reply"),
+            "and everyone else's replies still arrive",
+        );
+    }
+
+    /// The thread walk's failure hold: replies arrive newest-first, so a
+    /// failure on the OLDER reply means any cursor advance would jump
+    /// above the reply that did not reach every owner.
+    #[tokio::test]
+    async fn a_thread_walk_failure_holds_the_cursor_at_its_previous_value() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        let mut parent = history_message("100.0", "U9", "trigger");
+        parent.reply_count = 2;
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        sweep(&host, &host, "acme").await.expect("trigger sweep");
+        assert_eq!(host.thread_cursor("acme", "C1", "100.0"), Some("100.0".to_owned()));
+
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                history_message("300.0", "U8", "newer reply"),
+                history_message("200.0", "U8", "older reply fails"),
+            ],
+        );
+        // Attempts: the trigger (0), then the newer reply (1). The older
+        // reply's delivery (2) fails.
+        host.fail_delivery_at(2);
+        sweep(&host, &host, "acme").await.expect("follow-up sweep");
+
+        assert_eq!(
+            host.thread_cursor("acme", "C1", "100.0"),
+            Some("100.0".to_owned()),
+            "the walk's cursor holds below the failed reply instead of jumping past it",
+        );
+    }
+
+    /// Two owners asking to be told are two owners: every Mentions
+    /// subscription gets the hit, not whichever sorted first.
+    #[tokio::test]
+    async fn a_mention_reaches_every_mentions_subscription() {
+        let host = FakeHost::with_subscriptions(vec![
+            sub_conversation_owned_by("acme", "forge", Some("a"), "C1"),
+            {
+                let mut sub = sub_mentions("acme");
+                sub.team_role = Some("a".to_owned());
+                sub
+            },
+            {
+                let mut sub = sub_mentions("acme");
+                sub.team_role = Some("b".to_owned());
+                sub
+            },
+        ]);
+        host.set_watermark("acme", MENTION_CURSOR, "100.0");
+        host.seed_search(vec![search_match("150.0", "C9", "ping <@U1>")]);
+
+        sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        let owners: Vec<Option<String>> =
+            host.delivered_owners().iter().map(|owner| owner.team_role.clone()).collect();
+        assert!(
+            owners.iter().any(|role| role.as_deref() == Some("a")),
+            "the first owner receives the mention: {owners:?}",
+        );
+        assert!(
+            owners.iter().any(|role| role.as_deref() == Some("b")),
+            "the second mention subscription is not starved: {owners:?}",
+        );
+    }
+
+    /// Without the id there is no own-message filter, and the agent's own
+    /// posts go out as the user: sweeping would echo those replies back.
+    /// The sweep fails quiet-but-visible instead.
+    #[tokio::test]
+    async fn an_unresolved_user_id_skips_the_conversation_sweep() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.set_user_id(None);
+        host.seed_history("D1", vec![history_message("300.0", "U9", "pending")]);
+
+        let outcome = sweep(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(outcome.delivered, 0, "nothing is delivered half-blind");
+        assert!(host.delivered().is_empty(), "the pending window is not swept without the id");
+        assert_eq!(
+            host.watermark("acme", "D1").expect("watermark"),
+            None,
+            "and the cursor is untouched, so the next sweep picks the window up",
+        );
+    }
+
+    /// A conversation deleted on Slack's side never delivers again, and
+    /// returning Ok would hold the connected glyph over it.
+    #[tokio::test]
+    async fn a_deleted_conversation_flips_the_glyph_down() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
+        host.fail_history_with(
+            "C1",
+            SlackError::Api {
+                method: "conversations.history".to_owned(),
+                error: "channel_not_found".to_owned(),
+                needed: None,
+            },
+        );
+
+        sweep(&host, &host, "acme").await.expect("the row's failure is not the sweep's error");
+        assert_eq!(
+            host.connected(),
+            Some(false),
+            "a dead conversation must not read as a connected row",
         );
     }
 

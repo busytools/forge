@@ -14,7 +14,9 @@ pub(crate) mod facade;
 
 use std::sync::Arc;
 
-use forge_primitives::slack::{SlackConversation, SlackSubscriptionTarget, SlackWatchMode};
+use forge_primitives::slack::{
+    SlackConversation, SlackSubscription, SlackSubscriptionTarget, SlackWatchMode,
+};
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 use uuid::Uuid;
@@ -83,6 +85,25 @@ fn conversation_kind(conversation: &SlackConversation) -> &'static str {
     }
 }
 
+/// The caller's subscription ids that cover `conversation` - after a
+/// restart these are the only handle a session has to unsubscribe with.
+fn covering_subscription_ids(
+    conversation: &SlackConversation,
+    subscribed: &[SlackSubscription],
+) -> Vec<Uuid> {
+    subscribed
+        .iter()
+        .filter(|sub| match &sub.target {
+            SlackSubscriptionTarget::DirectMessages => conversation.is_im || conversation.is_mpim,
+            SlackSubscriptionTarget::Conversation { id, .. } => *id == conversation.id,
+            // A mention target is not a conversation subscription, so it
+            // marks no row.
+            SlackSubscriptionTarget::Mentions => false,
+        })
+        .map(|sub| sub.id)
+        .collect()
+}
+
 /// A conversation is watched when a target names its id, or - for a DM
 /// or group DM - when the caller watches the whole DM class.
 fn is_subscribed(conversation: &SlackConversation, subscribed: &[SlackSubscriptionTarget]) -> bool {
@@ -95,10 +116,12 @@ fn is_subscribed(conversation: &SlackConversation, subscribed: &[SlackSubscripti
     })
 }
 
-/// One row per conversation, marking the ones in `subscribed`.
+/// One row per conversation, marking the ones in `subscribed` and
+/// listing the caller's own subscription ids that cover it.
 fn list_rows(
     conversations: &[SlackConversation],
     subscribed: &[SlackSubscriptionTarget],
+    caller_subscriptions: &[SlackSubscription],
 ) -> Vec<serde_json::Value> {
     conversations
         .iter()
@@ -108,6 +131,10 @@ fn list_rows(
                 "name": conversation_name(conversation),
                 "kind": conversation_kind(conversation),
                 "subscribed": is_subscribed(conversation, subscribed),
+                "subscription_ids": covering_subscription_ids(conversation, caller_subscriptions)
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>(),
             })
         })
         .collect()
@@ -224,7 +251,9 @@ impl Tool for List {
         };
         match self.facade.conversations(args.workspace.as_deref()).await {
             Ok(conversations) => {
-                let subscribed = self.facade.subscribed_targets(&caller, args.workspace.as_deref());
+                let own = self.facade.subscribed_targets(&caller, args.workspace.as_deref());
+                let subscribed: Vec<SlackSubscriptionTarget> =
+                    own.iter().map(|sub| sub.target.clone()).collect();
                 let kept: Vec<SlackConversation> = conversations
                     .iter()
                     .filter(|conversation| {
@@ -232,7 +261,7 @@ impl Tool for List {
                     })
                     .cloned()
                     .collect();
-                let rows = list_rows(&kept, &subscribed);
+                let rows = list_rows(&kept, &subscribed, &own);
                 match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => {
@@ -1252,23 +1281,37 @@ mod tests {
         SlackSubscriptionTarget::Conversation { id: id.to_owned(), mode: SlackWatchMode::All }
     }
 
+    fn owned_sub(
+        id: Uuid,
+        target: SlackSubscriptionTarget,
+    ) -> forge_primitives::slack::SlackSubscription {
+        forge_primitives::slack::SlackSubscription {
+            id,
+            workspace: "acme".to_owned(),
+            project: "forge".to_owned(),
+            team_role: None,
+            target,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
     #[test]
     fn list_marks_a_conversation_as_subscribed_only_when_it_is() {
         let conversations = vec![channel("C1", "general")];
-        let rows = list_rows(&conversations, &[watching("C1")]);
+        let rows = list_rows(&conversations, &[watching("C1")], &[]);
         assert_eq!(rows.len(), 1, "one row per conversation");
         assert_eq!(rows[0]["id"], "C1");
         assert_eq!(rows[0]["name"], "general");
         assert_eq!(rows[0]["subscribed"], true);
 
-        let rows = list_rows(&conversations, &[]);
+        let rows = list_rows(&conversations, &[], &[]);
         assert_eq!(rows[0]["subscribed"], false, "an empty subscribed set marks nothing");
     }
 
     #[test]
     fn a_watched_conversation_is_marked_and_an_unwatched_one_is_not() {
         let conversations = vec![channel("C1", "general"), channel("C2", "random")];
-        let rows = list_rows(&conversations, &[watching("C1")]);
+        let rows = list_rows(&conversations, &[watching("C1")], &[]);
         let by_id =
             |id: &str| rows.iter().find(|row| row["id"] == id).expect("row for the id").clone();
         assert_eq!(by_id("C1")["subscribed"], true, "the watched channel is marked");
@@ -1278,7 +1321,7 @@ mod tests {
     #[test]
     fn the_dm_class_marks_every_dm_and_group_dm() {
         let conversations = vec![dm("D1", "U1"), dm("D2", "U2"), channel("C1", "general")];
-        let rows = list_rows(&conversations, &[SlackSubscriptionTarget::DirectMessages]);
+        let rows = list_rows(&conversations, &[SlackSubscriptionTarget::DirectMessages], &[]);
         let by_id =
             |id: &str| rows.iter().find(|row| row["id"] == id).expect("row for the id").clone();
         assert_eq!(by_id("D1")["subscribed"], true, "every DM is covered by the class");
@@ -1292,7 +1335,7 @@ mod tests {
 
     #[test]
     fn a_dm_with_no_name_is_named_after_its_partner() {
-        let rows = list_rows(&[dm("D1", "U9")], &[]);
+        let rows = list_rows(&[dm("D1", "U9")], &[], &[]);
         assert_eq!(rows[0]["name"], "U9", "a DM's display name falls back to the partner");
     }
 
@@ -1305,7 +1348,8 @@ mod tests {
         group_dm.is_channel = false;
         group_dm.is_mpim = true;
 
-        let rows = list_rows(&[channel("C1", "general"), dm("D1", "U9"), private, group_dm], &[]);
+        let rows =
+            list_rows(&[channel("C1", "general"), dm("D1", "U9"), private, group_dm], &[], &[]);
         let kinds: Vec<&str> =
             rows.iter().map(|row| row["kind"].as_str().unwrap_or_default()).collect();
         assert_eq!(kinds, vec!["public", "im", "private", "mpim"]);
@@ -1471,7 +1515,7 @@ mod tests {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.conversations_result.lock() =
             Some(Ok(vec![channel("C1", "general"), channel("C2", "random")]));
-        *mock.subscribed_targets.lock() = vec![watching("C1")];
+        *mock.subscribed_targets.lock() = vec![owned_sub(Uuid::from_u128(0x21), watching("C1"))];
         let tool = List { facade: mock.clone(), caller_key: resolver() };
 
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
@@ -1488,6 +1532,15 @@ mod tests {
         };
         assert_eq!(by_id("C1")["subscribed"], true, "the caller's target reaches its row");
         assert_eq!(by_id("C2")["subscribed"], false, "an unwatched row stays unmarked");
+        assert_eq!(
+            by_id("C1")["subscription_ids"].as_array().expect("the ids ride the watched row").len(),
+            1,
+            "the caller's own subscription id reaches the row",
+        );
+        assert!(
+            by_id("C2")["subscription_ids"].as_array().expect("ids ride every row").is_empty(),
+            "an unwatched row carries no subscription ids",
+        );
     }
 
     #[tokio::test]

@@ -247,6 +247,7 @@ impl Workspace {
         if removed.is_empty() {
             return;
         }
+        let mut workspaces: std::collections::HashSet<String> = std::collections::HashSet::new();
         for sub in &removed {
             if let Some(db) = self.db.lock().as_ref()
                 && let Err(error) = crate::store::slack::remove(db, sub.id)
@@ -257,13 +258,12 @@ impl Workspace {
                     "removing a persisted Slack subscription failed",
                 );
             }
-            self.prune_slack_thread_owners(
-                &sub.workspace,
-                &SlackThreadOwner {
-                    project: sub.project.clone(),
-                    team_role: sub.team_role.clone(),
-                },
-            );
+            let _ = workspaces.insert(sub.workspace.clone());
+        }
+        // The worker's subscriptions are all gone by now, so the
+        // alive-set prune drops exactly its ownership.
+        for workspace in workspaces {
+            self.prune_slack_threads(&workspace);
         }
     }
 
@@ -299,6 +299,16 @@ impl Workspace {
                 "writing a Slack watermark failed",
             );
         }
+    }
+
+    /// Whether the conversation (or the `__mentions__` stream) has a sweep
+    /// cursor yet. The cursor belongs to the conversation and is shared by
+    /// every owner watching it, so a second subscriber seeds only when
+    /// this is false.
+    pub(crate) fn slack_has_cursor(&self, workspace: &str, conversation: &str) -> bool {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return false };
+        matches!(crate::store::slack::watermark(db, workspace, conversation), Ok(Some(_)))
     }
 
     /// Track a thread because a delivered message anchors it, owned by the
@@ -494,10 +504,14 @@ impl Workspace {
             (owner.project.clone(), owner.team_role.clone())
         };
 
-        // The cursor starts at the mention that pulled us in. Without it
-        // the first sweep would deliver the newest page of the channel's
-        // history as if it were all new.
-        self.set_slack_watermark(workspace, conversation, since);
+        // The cursor starts at the mention that pulled us in - but only when
+        // the conversation has no cursor yet. The cursor is shared by
+        // every owner watching the conversation, and another owner's
+        // pending window must survive this auto-subscribe; the mention
+        // itself was delivered through search, not this cursor.
+        if !self.slack_has_cursor(workspace, conversation) {
+            self.set_slack_watermark(workspace, conversation, since);
+        }
 
         self.add_slack_subscription(
             forge_primitives::slack::SlackSubscription {
@@ -562,29 +576,46 @@ impl Workspace {
                 "removing a persisted Slack subscription failed",
             );
         }
-        self.prune_slack_thread_owners(
-            &removed_sub.workspace,
-            &SlackThreadOwner {
-                project: removed_sub.project.clone(),
-                team_role: removed_sub.team_role.clone(),
-            },
-        );
+        self.prune_slack_threads(&removed_sub.workspace);
         true
     }
 
-    /// Drop `owner` from every followed thread in `workspace`, deleting
-    /// the rows whose last owner goes. Runs when a subscription is
-    /// removed, so a thread whose conversation is no longer swept does
-    /// not freeze until some sweep happens to list it - the sweep-time
-    /// pruning in [`Self::slack_followed_threads`] is the backstop, not
-    /// the only chance.
-    fn prune_slack_thread_owners(&self, workspace: &str, owner: &SlackThreadOwner) {
+    /// Prune every followed thread in `workspace` against the same
+    /// predicate the sweep's listing uses: an owner survives only while
+    /// it holds ANY remaining subscription in the workspace. Runs when a
+    /// subscription is removed, so a thread whose conversation is no
+    /// longer swept does not freeze until some sweep happens to list it -
+    /// [`Self::slack_followed_threads`] re-prunes as a backstop. The
+    /// surviving set decides because an owner key removed with one
+    /// subscription may still hold others: a Mentions target anchors
+    /// threads in every conversation its mentions touched.
+    fn prune_slack_threads(&self, workspace: &str) {
         let db_guard = self.db.lock();
         let Some(db) = db_guard.as_ref() else { return };
-        let Ok(rows) = crate::store::slack::threads_for_workspace(db, workspace) else { return };
+        let Ok(rows) = crate::store::slack::threads_for_workspace(db, workspace) else {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                workspace,
+                "reading Slack threads for pruning failed",
+            );
+            return;
+        };
+        let alive_owners: std::collections::HashSet<(String, Option<String>)> = self
+            .slack_subs
+            .lock()
+            .iter()
+            .filter(|sub| sub.workspace == workspace)
+            .map(|sub| (sub.project.clone(), sub.team_role.clone()))
+            .collect();
         for (conversation, parent_ts, record) in rows {
-            let kept: Vec<SlackThreadOwner> =
-                record.owners.iter().filter(|kept| *kept != owner).cloned().collect();
+            let kept: Vec<SlackThreadOwner> = record
+                .owners
+                .iter()
+                .filter(|owner| {
+                    alive_owners.contains(&(owner.project.clone(), owner.team_role.clone()))
+                })
+                .cloned()
+                .collect();
             if kept.len() == record.owners.len() {
                 continue;
             }
@@ -678,11 +709,11 @@ impl Workspace {
                         "slack user id recovered on retry",
                     );
                 }
-                Err(error) => tracing::debug!(
+                Err(error) => tracing::warn!(
                     target: "forge_workspace::slack",
                     workspace = %label,
                     %error,
-                    "slack user-id retry failed",
+                    "slack user-id retry failed; the mention stream stays down",
                 ),
             }
         });
@@ -1047,6 +1078,33 @@ mod tests {
         );
     }
 
+    /// The auto-subscribe seeds only when no cursor exists: the cursor is
+    /// shared by every owner watching the conversation, and another
+    /// owner's pending window must survive the mention that pulled us in.
+    #[test]
+    fn an_auto_subscribe_never_resets_another_owners_cursor() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_mentions_for("forge", Some("tester")), true);
+        ws.set_slack_watermark("acme", "C1", "100.0");
+
+        assert!(
+            ws.auto_subscribe_slack_conversation("acme", "C1", "200.1"),
+            "the conversation is watched by nobody yet, so a record is added",
+        );
+        let db = ws.db.lock();
+        let cursor =
+            crate::store::slack::watermark(db.as_ref().expect("db installed"), "acme", "C1")
+                .expect("read");
+        assert_eq!(
+            cursor,
+            Some("100.0".to_owned()),
+            "the auto-subscribe never moves another owner's cursor",
+        );
+    }
+
     fn sub_for_conversation(project: &str, team_role: Option<&str>, id: &str) -> SlackSubscription {
         let mut sub = sub_for(project, team_role);
         sub.target =
@@ -1241,6 +1299,37 @@ mod tests {
             ws.slack_thread_watermark("acme", "C1", &parent).expect("read"),
             None,
             "the row is pruned at removal, never left for a sweep to find",
+        );
+    }
+
+    /// Pruning keys on the SURVIVING subscription set, not on the removed
+    /// owner identity: an owner whose C1 subscription is removed may
+    /// still hold a Mentions subscription anchoring threads elsewhere.
+    #[test]
+    fn removing_one_subscription_keeps_the_owners_surviving_anchors() {
+        let (host, ws, _dir) = host_with_c1_subscriber("forge", Some("tester"));
+        ws.add_slack_subscription(sub_mentions_for("forge", Some("tester")), true);
+        let parent = recent_ts();
+        host.follow_thread("acme", "C2", &parent, owner("forge", Some("tester")), &parent);
+
+        let c1_id = ws
+            .slack_subscriptions_for_project("forge")
+            .into_iter()
+            .find(|sub| {
+                sub.target
+                    == SlackSubscriptionTarget::Conversation {
+                        id: "C1".to_owned(),
+                        mode: SlackWatchMode::All,
+                    }
+            })
+            .expect("the C1 subscription")
+            .id;
+        assert!(ws.remove_slack_subscription_owned_by("forge", c1_id, Some("tester")));
+
+        assert_eq!(
+            host.followed_threads("acme", "C2").len(),
+            1,
+            "the owner's surviving Mentions subscription keeps its thread row",
         );
     }
 

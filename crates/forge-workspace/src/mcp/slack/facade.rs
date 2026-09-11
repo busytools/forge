@@ -188,9 +188,10 @@ fn safe_file_name(name: &str, fallback: &str) -> String {
     base.to_owned()
 }
 
-/// How long a held draft waits for the user before it is rejected. Long
+/// How long a held draft waits for the user before it expires. Long
 /// enough for a working session to reach the dock; short enough that a
-/// prompt nobody can answer does not hold a session forever.
+/// prompt nobody can answer does not hold a session forever. Expiry is
+/// its own outcome, distinct from a rejection.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// What a caller asked to watch, before it becomes records.
@@ -240,14 +241,15 @@ pub(crate) trait SlackFacade: Send + Sync {
         workspace: Option<&str>,
     ) -> Result<Vec<SlackConversation>, SlackListError>;
 
-    /// The subscription targets the caller OWNS in `workspace` - a lead's
-    /// the lead's, a worker's its own, never another owner's. What
-    /// `slack__list` marks, so one session never sees another's watches.
+    /// The caller's OWN subscriptions in `workspace` - a lead's the
+    /// lead's, a worker's its own, never another owner's. What
+    /// `slack__list` marks and reports ids for: after a restart the ids
+    /// are the only handle a session has to unsubscribe with.
     fn subscribed_targets(
         &self,
         caller: &SessionKey,
         workspace: Option<&str>,
-    ) -> Vec<SlackSubscriptionTarget>;
+    ) -> Vec<SlackSubscription>;
 
     /// Post a message, held for the user's decision first. Returns only
     /// once that decision is in, and nothing is sent unless it was an
@@ -691,14 +693,13 @@ impl SlackFacade for ProdSlackFacade {
         &self,
         caller: &SessionKey,
         workspace: Option<&str>,
-    ) -> Vec<SlackSubscriptionTarget> {
+    ) -> Vec<SlackSubscription> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
         let Some(label) = resolve_label(&ws.slack, workspace) else { return Vec::new() };
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
         ws.slack_subscriptions_for_project(&cx.project_name)
             .into_iter()
             .filter(|sub| sub.workspace == label && sub.team_role == cx.worker_label)
-            .map(|sub| sub.target)
             .collect()
     }
 
@@ -742,14 +743,18 @@ impl SlackFacade for ProdSlackFacade {
             };
             ids.push(sub.id);
             // A subscription starts from now, not from the channel's
-            // history: without a cursor the first sweep would deliver the
-            // newest page as if it were all new.
-            if let SlackSubscriptionTarget::Conversation { id, .. } = &sub.target {
+            // history - but only when the conversation has no cursor yet.
+            // The cursor belongs to the conversation and is shared by
+            // every owner watching it: a second subscriber resetting it
+            // would silently drop every owner's pending window.
+            if let SlackSubscriptionTarget::Conversation { id, .. } = &sub.target
+                && !ws.slack_has_cursor(&label, id)
+            {
                 ws.set_slack_watermark(&label, id, &slack_ts_now());
             }
             ws.add_slack_subscription(sub, durable);
         }
-        if mentions_requested {
+        if mentions_requested && !ws.slack_has_cursor(&label, MENTION_CURSOR) {
             ws.set_slack_watermark(&label, MENTION_CURSOR, &slack_ts_now());
         }
         // A workspace that just gained its first subscription needs a pump.
@@ -776,7 +781,7 @@ pub(crate) struct MockSlackFacade {
     pub conversations_result:
         parking_lot::Mutex<Option<Result<Vec<SlackConversation>, SlackListError>>>,
     pub subscribed_targets_calls: parking_lot::Mutex<Vec<Option<String>>>,
-    pub subscribed_targets: parking_lot::Mutex<Vec<SlackSubscriptionTarget>>,
+    pub subscribed_targets: parking_lot::Mutex<Vec<SlackSubscription>>,
     pub search_calls: parking_lot::Mutex<Vec<(Option<String>, String, u32)>>,
     pub search_result: parking_lot::Mutex<Option<Result<Vec<SlackSearchMatch>, SlackReadError>>>,
     pub user_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
@@ -910,7 +915,7 @@ impl SlackFacade for MockSlackFacade {
         &self,
         _caller: &SessionKey,
         workspace: Option<&str>,
-    ) -> Vec<SlackSubscriptionTarget> {
+    ) -> Vec<SlackSubscription> {
         self.subscribed_targets_calls.lock().push(workspace.map(str::to_owned));
         self.subscribed_targets.lock().clone()
     }
@@ -1635,6 +1640,24 @@ mod tests {
         (ws, facade)
     }
 
+    /// The same, with a store installed: the cursor tests need real
+    /// watermarks. The tempdir is returned so it outlives the db.
+    fn workspace_with_one_slack_workspace_and_store(
+        label: &str,
+    ) -> (tempfile::TempDir, Arc<Workspace>, Arc<dyn SlackFacade>) {
+        let dir = tempdir().expect("tempdir");
+        let mut config = LoadedConfig::empty_for_test();
+        config.slack = vec![cfg(label)];
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config);
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.seed_test_project("forge", "/tmp/slack-facade-scope");
+        ws.record_connected_session("/tmp/slack-facade-scope", "caller-uuid", None);
+        let facade = ProdSlackFacade::from_arc(&ws);
+        (dir, ws, facade)
+    }
+
     /// `tokio::test`: a successful subscribe starts the workspace's pump,
     /// which needs a runtime.
     /// Deduplication is deliberately not done: two sessions may each want
@@ -1680,6 +1703,74 @@ mod tests {
             .expect("channels");
         assert_eq!(first.len() + second.len(), 2);
         assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2);
+    }
+
+    /// The cursor belongs to the conversation and is shared by every
+    /// owner watching it: a second subscriber seeds only when none
+    /// exists, or every owner's pending window is silently dropped.
+    #[tokio::test]
+    async fn subscribing_to_a_watched_conversation_does_not_reset_its_cursor() {
+        let (_dir, ws, facade) = workspace_with_one_slack_workspace_and_store("acme");
+        ws.set_slack_watermark("acme", "C1", "100.0");
+
+        facade
+            .subscribe(
+                &caller(),
+                Some("acme"),
+                SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
+                    id: "C1".to_owned(),
+                    mode: SlackWatchMode::All,
+                }]),
+            )
+            .expect("subscribe to the watched conversation");
+
+        let db = ws.db.lock();
+        let cursor =
+            crate::store::slack::watermark(db.as_ref().expect("db installed"), "acme", "C1")
+                .expect("read");
+        assert_eq!(cursor, Some("100.0".to_owned()), "a second subscriber never moves the cursor");
+    }
+
+    /// The mention cursor is one per workspace: a second Mentions
+    /// subscription seeds nothing. A fresh workspace still seeds, because
+    /// the mention sweep has no baseline arm and a missing cursor would
+    /// replay its whole history.
+    #[tokio::test]
+    async fn a_second_mention_subscription_seeds_nothing_but_the_first_seeds() {
+        let (_dir, ws, facade) = workspace_with_one_slack_workspace_and_store("acme");
+
+        facade
+            .subscribe(&caller(), Some("acme"), SlackSubscribeRequest::Mentions)
+            .expect("the first mention subscriber");
+        let first = {
+            let db = ws.db.lock();
+            crate::store::slack::watermark(
+                db.as_ref().expect("db installed"),
+                "acme",
+                MENTION_CURSOR,
+            )
+            .expect("read")
+        };
+        assert!(first.is_some(), "the first Mentions subscription seeds the stream");
+
+        ws.set_slack_watermark("acme", MENTION_CURSOR, "100.0");
+        facade
+            .subscribe(&caller(), Some("acme"), SlackSubscribeRequest::Mentions)
+            .expect("the second Mentions subscription");
+        let second = {
+            let db = ws.db.lock();
+            crate::store::slack::watermark(
+                db.as_ref().expect("db installed"),
+                "acme",
+                MENTION_CURSOR,
+            )
+            .expect("read")
+        };
+        assert_eq!(
+            second,
+            Some("100.0".to_owned()),
+            "the second subscriber never resets the shared mention cursor",
+        );
     }
 
     #[tokio::test]
@@ -1769,16 +1860,23 @@ mod tests {
             .subscribe(&worker_key, Some("acme"), SlackSubscribeRequest::DirectMessages)
             .expect("the worker subscribes to the DM class");
 
+        let lead_targets: Vec<SlackSubscriptionTarget> =
+            facade.subscribed_targets(&lead, Some("acme")).into_iter().map(|s| s.target).collect();
         assert_eq!(
-            facade.subscribed_targets(&lead, Some("acme")),
+            lead_targets,
             vec![SlackSubscriptionTarget::Conversation {
                 id: "C1".to_owned(),
                 mode: SlackWatchMode::All,
             }],
             "the lead sees only its own record",
         );
+        let worker_targets: Vec<SlackSubscriptionTarget> = facade
+            .subscribed_targets(&worker_key, Some("acme"))
+            .into_iter()
+            .map(|s| s.target)
+            .collect();
         assert_eq!(
-            facade.subscribed_targets(&worker_key, Some("acme")),
+            worker_targets,
             vec![SlackSubscriptionTarget::DirectMessages],
             "the worker sees only its own record, never the lead's",
         );
