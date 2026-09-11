@@ -486,14 +486,16 @@ impl SlackFacade for ProdSlackFacade {
             .file_name()
             .map_or_else(|| "file".to_owned(), |name| name.to_string_lossy().into_owned());
 
-        // The draft carries the file name so the prompt says what is
-        // about to be sent, and the same gate answers it.
+        // The draft names where the bytes come from as well as what they
+        // will be called. The name is caller-controlled and can look
+        // innocuous, so approving it without the local path would be
+        // approving something the user has not seen.
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
             conversation: request.conversation.clone(),
             thread_ts: request.thread_ts.clone(),
-            text: format!("[file] {name}"),
+            text: format!("[file] {name}\nfrom {}", request.path.display()),
         };
         if !Self::await_approval(&ws, caller, draft).await {
             return Err(SlackAttachmentError::Rejected);
@@ -918,14 +920,19 @@ mod tests {
 
     /// A workspace whose one Slack workspace is the recording double, with
     /// a lead session recorded so the caller resolves to a project.
-    fn facade_with_recording_slack() -> (Arc<dyn SlackFacade>, Arc<Workspace>, Arc<RecordingApi>) {
+    fn facade_with_recording_slack() -> (
+        Arc<dyn SlackFacade>,
+        Arc<Workspace>,
+        Arc<RecordingApi>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+    ) {
         let dir = tempdir().expect("tempdir");
         let mut config = LoadedConfig::empty_for_test();
         config.slack = vec![cfg("acme")];
         let api = Arc::new(RecordingApi::default());
         let mut apis: BTreeMap<String, Arc<dyn SlackApi>> = BTreeMap::new();
         apis.insert("acme".to_owned(), api.clone());
-        let (ws, _rx) = Workspace::testing_stub_with_slack(
+        let (ws, rx) = Workspace::testing_stub_with_slack(
             dir.path().to_path_buf(),
             config,
             Arc::new(crate::slack::SlackWorkspaces::from_apis(apis)),
@@ -935,7 +942,7 @@ mod tests {
         // The own-message check reads the workspace's resolved user id.
         ws.slack_user_ids.lock().insert("acme".to_owned(), "U1".to_owned());
         let facade = ProdSlackFacade::from_arc(&ws);
-        (facade, ws, api)
+        (facade, ws, api, rx)
     }
 
     /// Wait for the blocked post to register its draft, then hand back its
@@ -1012,7 +1019,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_attachment_lands_on_disk_with_the_expected_bytes() {
-        let (facade, _ws, api) = facade_with_recording_slack();
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
         api.seed_file("F1", "notes.txt", b"attachment body");
         let dir = tempdir().expect("tempdir");
 
@@ -1025,7 +1032,7 @@ mod tests {
     async fn a_download_refuses_to_escape_the_chosen_directory() {
         // The name comes from Slack, so it is attacker-controlled input as
         // far as this code is concerned.
-        let (facade, _ws, api) = facade_with_recording_slack();
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
         api.seed_file("F1", "../../escape.txt", b"nope");
         let dir = tempdir().expect("tempdir");
 
@@ -1040,9 +1047,50 @@ mod tests {
         );
     }
 
+    /// The draft text is what the prompt shows. A file NAME is
+    /// caller-controlled and can look innocuous, so approving it without
+    /// the local path it comes from approves something the user has not
+    /// seen.
+    #[tokio::test]
+    async fn an_upload_draft_names_the_local_path_it_will_send() {
+        let (facade, ws, _api, mut rx) = facade_with_recording_slack();
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("file.txt");
+        std::fs::write(&source, b"payload").expect("write the source file");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            let source = source.clone();
+            async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
+        });
+
+        let mut seen = None;
+        for _ in 0..200 {
+            while let Ok(update) = rx.try_recv() {
+                if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } = update {
+                    seen = Some(draft.text);
+                }
+            }
+            if seen.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let text = seen.expect("the draft reaches the prompt");
+        assert!(text.contains("file.txt"), "the file name is shown: {text}");
+        assert!(
+            text.contains(&source.display().to_string()),
+            "and so is the local path it comes from: {text}",
+        );
+
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), false);
+        let _ = task.await;
+    }
+
     #[tokio::test]
     async fn an_upload_goes_through_the_gate() {
-        let (facade, ws, api) = facade_with_recording_slack();
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         let dir = tempdir().expect("tempdir");
         let source = dir.path().join("file.txt");
         std::fs::write(&source, b"payload").expect("write the source file");
@@ -1060,7 +1108,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_approved_upload_posts_the_bytes_then_completes() {
-        let (facade, ws, api) = facade_with_recording_slack();
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         let dir = tempdir().expect("tempdir");
         let source = dir.path().join("file.txt");
         std::fs::write(&source, b"payload").expect("write the source file");
@@ -1080,7 +1128,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rejected_draft_never_reaches_slack() {
-        let (facade, ws, api) = facade_with_recording_slack();
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         let task = tokio::spawn({
             let facade = facade.clone();
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
@@ -1099,7 +1147,7 @@ mod tests {
     /// for an approval.
     #[tokio::test]
     async fn a_draft_whose_answer_never_comes_posts_nothing() {
-        let (facade, ws, api) = facade_with_recording_slack();
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         let task = tokio::spawn({
             let facade = facade.clone();
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
@@ -1114,7 +1162,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_approved_draft_posts_exactly_once() {
-        let (facade, ws, api) = facade_with_recording_slack();
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         let task = tokio::spawn({
             let facade = facade.clone();
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
@@ -1128,7 +1176,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_thread_reply_carries_the_parent_ts() {
-        let (facade, ws, api) = facade_with_recording_slack();
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         let task = tokio::spawn({
             let facade = facade.clone();
             async move {
@@ -1149,7 +1197,7 @@ mod tests {
         // Slack's own rule: only the authenticated user's messages can be
         // updated. Refused locally so the agent gets a clear reason rather
         // than a wire error code.
-        let (facade, _ws, api) = facade_with_recording_slack();
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
         api.seed_author("100.0", "U-OTHER");
 
         let err = facade.edit(&caller(), edit_request("C1", "100.0", Some("new text"))).await;
@@ -1159,7 +1207,7 @@ mod tests {
 
     #[tokio::test]
     async fn editing_own_message_updates_it_once_approved() {
-        let (facade, ws, api) = facade_with_recording_slack();
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         api.seed_author("100.0", "U1");
 
         let task = tokio::spawn({
@@ -1175,7 +1223,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rejected_edit_leaves_the_message_untouched() {
-        let (facade, ws, api) = facade_with_recording_slack();
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         api.seed_author("100.0", "U1");
 
         let task = tokio::spawn({
@@ -1191,7 +1239,7 @@ mod tests {
 
     #[tokio::test]
     async fn deleting_own_message_removes_it_once_approved() {
-        let (facade, ws, api) = facade_with_recording_slack();
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         api.seed_author("100.0", "U1");
 
         let task = tokio::spawn({
@@ -1207,7 +1255,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rejected_delete_leaves_the_message_alone() {
-        let (facade, ws, api) = facade_with_recording_slack();
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         api.seed_author("100.0", "U1");
 
         let task = tokio::spawn({
@@ -1223,7 +1271,7 @@ mod tests {
 
     #[tokio::test]
     async fn reacting_adds_then_removes() {
-        let (facade, _ws, api) = facade_with_recording_slack();
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
 
         facade.react(react_request("C1", "100.0", "white_check_mark", true)).await.expect("added");
         facade
