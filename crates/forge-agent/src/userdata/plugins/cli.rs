@@ -400,9 +400,166 @@ pub async fn run_plugin_rollback(
     .map_err(|error| format!("Plugin rollback task failed: {error}"))?
 }
 
+/// A plugin's `claude plugin details` projection: the always-on token
+/// cost every session pays for the plugin being installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginDetails {
+    pub token_cost_always_on: u64,
+}
+
+/// The always-on token cost parsed from a details output, recorded
+/// from the CLI ("  Always-on:   ~450 tok   added to every session").
+fn parse_always_on_tokens(output: &str) -> Option<u64> {
+    let line = output.lines().find(|line| line.trim_start().starts_with("Always-on:"))?;
+    line.split(':')
+        .nth(1)?
+        .split_whitespace()
+        .find_map(|part| part.trim_start_matches('~').parse::<u64>().ok())
+}
+
+/// The CLI's own contract: an applied update lands only after a
+/// restart, stated in the update output.
+fn restart_required(output: &str) -> bool {
+    output.to_ascii_lowercase().contains("restart required")
+}
+
+/// One `claude plugin update` call: the combined CLI output (the
+/// update classifier reads it, the CLI exits 0 on some failures) plus
+/// whether the output states the restart contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateOutcome {
+    pub output: String,
+    pub restart_required: bool,
+}
+
+/// Update one installed plugin in one scope.
+pub async fn update_plugin(
+    claude_path: Option<PathBuf>,
+    cwd_raw: String,
+    plugin_id: &str,
+    scope: &str,
+) -> Result<UpdateOutcome, String> {
+    let args = plugin_update_args(plugin_id, scope);
+    let (_, output) = run_cli_command(cwd_raw, claude_path, args).await?;
+    let restart_required = restart_required(&output);
+    Ok(UpdateOutcome { output, restart_required })
+}
+
+/// One plugin's `claude plugin details` projection.
+pub async fn plugin_details(
+    claude_path: Option<PathBuf>,
+    cwd_raw: String,
+    plugin_id: String,
+) -> Result<PluginDetails, String> {
+    tokio::task::spawn_blocking(move || {
+        let claude_path = resolve_claude_path(claude_path)?;
+        let output = Command::new(&claude_path)
+            .args(["plugin", "details", &plugin_id])
+            .current_dir(&cwd_raw)
+            .output()
+            .map_err(|error| format!("Failed to run `claude plugin details`: {error}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(format!("`claude plugin details` failed: {stderr}"));
+        }
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        let token_cost_always_on = parse_always_on_tokens(&text)
+            .ok_or_else(|| "no Always-on cost in the `claude plugin details` output".to_owned())?;
+        Ok(PluginDetails { token_cost_always_on })
+    })
+    .await
+    .map_err(|error| format!("Plugin details task failed: {error}"))?
+}
+
+/// Token cost per plugin, keyed by the installed version it was
+/// fetched for: a plugin's cost changes only when its version does.
+#[derive(Default)]
+pub struct TokenCostCache {
+    entries: std::collections::HashMap<String, (String, PluginDetails)>,
+}
+
+impl TokenCostCache {
+    /// The plugin's always-on cost, fetched through `fetch` only when
+    /// no entry for the current version exists. A versionless plugin
+    /// (or a version whose details cannot be fetched) carries no cost.
+    pub async fn details_for<F, Fut>(
+        &mut self,
+        plugin_id: &str,
+        version: Option<&str>,
+        mut fetch: F,
+    ) -> Result<Option<PluginDetails>, String>
+    where
+        F: FnMut(String) -> Fut,
+        Fut: std::future::Future<Output = Result<PluginDetails, String>>,
+    {
+        let Some(version) = version else { return Ok(None) };
+        if let Some((cached_version, details)) = self.entries.get(plugin_id)
+            && cached_version == version
+        {
+            return Ok(Some(details.clone()));
+        }
+        let details = fetch(plugin_id.to_owned()).await?;
+        self.entries.insert(plugin_id.to_owned(), (version.to_owned(), details.clone()));
+        Ok(Some(details))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DETAILS_OUTPUT: &str = "superpowers 6.3.0\n  Description: Core skills library\n  Source: superpowers@claude-plugins-official\n\nComponent inventory\n  Skills (14)  brainstorming, test-driven-development\n  Agents (0)\n  Hooks (1)  SessionStart  (harness-only - no model context cost)\n  MCP servers (0)\n  LSP servers (0)\n\nProjected token cost\n  Always-on:   ~450 tok   added to every session\n\nPer-component (rounded)\n  component                       always-on  on-invoke\n  using-git-worktrees                   ~40      ~1.5k\n";
+
+    #[test]
+    fn always_on_tokens_parse_from_recorded_details_output() {
+        assert_eq!(parse_always_on_tokens(DETAILS_OUTPUT), Some(450));
+        assert_eq!(parse_always_on_tokens("no cost section"), None);
+    }
+
+    #[test]
+    fn restart_required_reads_the_cli_contract_line() {
+        assert!(restart_required(
+            "Plugin \"hello\" updated from 0.2.0 to 0.3.0 for scope user. Restart required to apply."
+        ));
+        assert!(!restart_required("hello is already at the latest version (0.2.0)."));
+    }
+
+    #[tokio::test]
+    async fn the_token_cost_cache_refetches_only_on_a_version_change() {
+        let mut cache = TokenCostCache::default();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0_u32));
+        let mut fetch = |plugin: String| {
+            calls.set(calls.get() + 1);
+            assert_eq!(plugin, "superpowers@probe-market");
+            let version = if calls.get() == 1 { "6.3.0" } else { "6.4.0" };
+            let version = version.to_owned();
+            async move {
+                Ok(PluginDetails {
+                    token_cost_always_on: if version == "6.3.0" { 450 } else { 460 },
+                })
+            }
+        };
+
+        let first = cache.details_for("superpowers@probe-market", Some("6.3.0"), &mut fetch).await;
+        assert_eq!(first.expect("first fetch").expect("some cost").token_cost_always_on, 450);
+        // Same version again: served from the cache, the fetcher never runs.
+        let second = cache.details_for("superpowers@probe-market", Some("6.3.0"), &mut fetch).await;
+        assert_eq!(second.expect("cached").expect("some cost").token_cost_always_on, 450);
+        assert_eq!(calls.get(), 1, "no refetch on an unchanged version");
+        // A moved version refetches.
+        let third = cache.details_for("superpowers@probe-market", Some("6.4.0"), &mut fetch).await;
+        assert_eq!(third.expect("refetched").expect("some cost").token_cost_always_on, 460);
+        assert_eq!(calls.get(), 2, "the version change drives exactly one refetch");
+    }
+
+    #[test]
+    fn a_versionless_plugin_never_fetches_token_cost() {
+        let mut cache = TokenCostCache::default();
+        let mut fetch = |_: String| async { Ok(PluginDetails { token_cost_always_on: 1 }) };
+        let result =
+            futures::executor::block_on(cache.details_for("x@probe-market", None, &mut fetch));
+        assert_eq!(result.expect("no version reads as no cost"), None);
+    }
 
     #[test]
     fn plugin_update_args_pin_the_cli_invocation() {

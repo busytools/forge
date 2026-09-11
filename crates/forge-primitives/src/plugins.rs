@@ -332,6 +332,184 @@ pub enum PluginUpdateTrigger {
     Auto,
 }
 
+/// One row of the Extensions page's shared grammar: a plugin, one of
+/// its components, or an MCP server. Flattened from a component scan
+/// by [`extension_rows`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionRow {
+    /// Stable row id: the plugin id for plugin rows,
+    /// `<kind>:<plugin-name>:<component>` for components.
+    pub id: String,
+    pub kind: ExtensionKind,
+    pub name: String,
+    /// The owning plugin for components, the marketplace for plugins.
+    pub source: String,
+    pub version: Option<String>,
+    pub available_version: Option<String>,
+    pub state: RowState,
+    /// Extra row context: hook trigger events, failure reasons.
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionKind {
+    Plugin,
+    Skill,
+    Agent,
+    Command,
+    Hook,
+    Lsp,
+    Mcp,
+}
+
+/// The row's health, as the Extensions page renders it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowState {
+    Current,
+    UpdateAvailable,
+    AvailableNotInstalled,
+    Disabled,
+    /// A health failure and its reason.
+    LoadFailed(String),
+    /// Installed as an auto-dependency; the payload is the reason
+    /// shown on the row (the CLI exposes no consumer name).
+    AutoDependency(String),
+    /// Applied but not live until a restart consumes it.
+    RestartRequired,
+}
+
+/// Flatten component scans into Extension page rows: one row per
+/// plugin followed by its component rows, in scan order.
+pub fn extension_rows(components: &[PluginComponents]) -> Vec<ExtensionRow> {
+    let mut rows = Vec::new();
+    for components in components {
+        let plugin_name =
+            components.plugin.split_once('@').map_or(components.plugin.as_str(), |(name, _)| name);
+        let state = plugin_row_state(components);
+        rows.push(ExtensionRow {
+            id: components.plugin.clone(),
+            kind: ExtensionKind::Plugin,
+            name: plugin_name.to_owned(),
+            source: components.marketplace.clone(),
+            version: components.version.clone(),
+            available_version: components.available_version.clone(),
+            state: state.clone(),
+            detail: match &state {
+                RowState::AutoDependency(reason) => Some(reason.clone()),
+                _ => None,
+            },
+        });
+        let inherited = match state {
+            // Auto-dependency provenance describes the plugin's
+            // install, not its components.
+            RowState::AutoDependency(_) => RowState::Current,
+            other => other,
+        };
+        for skills in &components.skills {
+            rows.push(component_row(
+                ExtensionKind::Skill,
+                &components.plugin,
+                plugin_name,
+                components,
+                skills,
+                inherited.clone(),
+            ));
+        }
+        for agent in &components.agents {
+            rows.push(component_row(
+                ExtensionKind::Agent,
+                &components.plugin,
+                plugin_name,
+                components,
+                agent,
+                inherited.clone(),
+            ));
+        }
+        for command in &components.commands {
+            rows.push(component_row(
+                ExtensionKind::Command,
+                &components.plugin,
+                plugin_name,
+                components,
+                command,
+                inherited.clone(),
+            ));
+        }
+        if !components.hooks.is_empty() {
+            rows.push(ExtensionRow {
+                id: format!("hooks:{plugin_name}"),
+                kind: ExtensionKind::Hook,
+                name: plugin_name.to_owned(),
+                source: components.plugin.clone(),
+                version: components.version.clone(),
+                available_version: components.available_version.clone(),
+                state: inherited.clone(),
+                detail: Some(components.hooks.join(", ")),
+            });
+        }
+        for server in &components.lsp_servers {
+            rows.push(component_row(
+                ExtensionKind::Lsp,
+                &components.plugin,
+                plugin_name,
+                components,
+                server,
+                inherited.clone(),
+            ));
+        }
+    }
+    rows
+}
+
+fn component_row(
+    kind: ExtensionKind,
+    plugin_id: &str,
+    plugin_name: &str,
+    components: &PluginComponents,
+    name: &str,
+    state: RowState,
+) -> ExtensionRow {
+    let kind_label = match kind {
+        ExtensionKind::Skill => "skill",
+        ExtensionKind::Agent => "agent",
+        ExtensionKind::Command => "command",
+        ExtensionKind::Lsp => "lsp",
+        _ => "component",
+    };
+    ExtensionRow {
+        id: format!("{kind_label}:{plugin_name}:{name}"),
+        kind,
+        name: name.to_owned(),
+        source: plugin_id.to_owned(),
+        version: components.version.clone(),
+        available_version: components.available_version.clone(),
+        state,
+        detail: None,
+    }
+}
+
+/// The plugin row's state from a scan result. Priority: not installed,
+/// then disabled, then an update, then the auto-dependency marker.
+fn plugin_row_state(components: &PluginComponents) -> RowState {
+    if !components.installed {
+        return RowState::AvailableNotInstalled;
+    }
+    if !components.enabled {
+        return RowState::Disabled;
+    }
+    let update_available = components
+        .available_version
+        .as_deref()
+        .is_some_and(|available| Some(available) != components.version.as_deref());
+    if update_available {
+        return RowState::UpdateAvailable;
+    }
+    if components.auto {
+        return RowState::AutoDependency("auto-installed".to_owned());
+    }
+    RowState::Current
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,5 +634,95 @@ mod tests {
         assert_eq!(rows[0].installed_version.as_deref(), Some("1.0.0"));
         assert_eq!(rows[0].available_version.as_deref(), Some("1.1.0"));
         assert_eq!(rows[0].marketplace, "probe-market");
+    }
+
+    fn scan_plugin(id: &str) -> PluginComponents {
+        PluginComponents {
+            plugin: id.to_owned(),
+            marketplace: "probe-market".to_owned(),
+            installed: true,
+            enabled: true,
+            ..PluginComponents::default()
+        }
+    }
+
+    #[test]
+    fn a_plugin_flattens_into_component_rows_with_exact_ids() {
+        let mut superpowers = scan_plugin("superpowers@probe-market");
+        superpowers.version = Some("6.3.0".to_owned());
+        superpowers.skills = vec!["brainstorming".to_owned(), "writing-plans".to_owned()];
+        superpowers.agents = vec!["code-reviewer".to_owned()];
+        superpowers.commands = vec!["review".to_owned()];
+        superpowers.hooks = vec!["SessionStart".to_owned()];
+        superpowers.lsp_servers = vec!["rust-analyzer".to_owned()];
+
+        let rows = extension_rows(&[superpowers]);
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "superpowers@probe-market",
+                "skill:superpowers:brainstorming",
+                "skill:superpowers:writing-plans",
+                "agent:superpowers:code-reviewer",
+                "command:superpowers:review",
+                "hooks:superpowers",
+                "lsp:superpowers:rust-analyzer",
+            ],
+            "plugin row first, then its components; got {ids:?}"
+        );
+        let hook = &rows[5];
+        assert_eq!(hook.kind, ExtensionKind::Hook);
+        assert_eq!(hook.detail.as_deref(), Some("SessionStart"));
+        assert_eq!(hook.source, "superpowers@probe-market");
+    }
+
+    #[test]
+    fn an_uninstalled_plugins_skills_render_available_not_installed() {
+        let mut gone = scan_plugin("gone@probe-market");
+        gone.installed = false;
+        gone.enabled = false;
+        gone.version = None;
+        gone.available_version = Some("6.4.0".to_owned());
+        gone.skills = vec!["writing-skills".to_owned()];
+
+        let rows = extension_rows(&[gone]);
+        assert_eq!(rows[0].state, RowState::AvailableNotInstalled);
+        assert_eq!(rows[1].id, "skill:gone:writing-skills");
+        assert_eq!(rows[1].state, RowState::AvailableNotInstalled);
+        assert_eq!(rows[1].available_version.as_deref(), Some("6.4.0"));
+    }
+
+    #[test]
+    fn an_auto_installed_plugin_wears_the_marker_on_its_plugin_row_only() {
+        let mut leyline = scan_plugin("leyline@probe-market");
+        leyline.auto = true;
+        leyline.skills = vec!["utility".to_owned()];
+
+        let rows = extension_rows(&[leyline]);
+        assert_eq!(
+            rows[0].state,
+            RowState::AutoDependency("auto-installed".to_owned()),
+            "the plugin row carries the marker"
+        );
+        assert_eq!(rows[1].state, RowState::Current, "components do not inherit it");
+    }
+
+    #[test]
+    fn a_disabled_plugin_marks_every_row_disabled_and_an_update_outranks_current() {
+        let mut off = scan_plugin("off@probe-market");
+        off.enabled = false;
+        off.version = Some("1.0.0".to_owned());
+        off.skills = vec!["one".to_owned()];
+        let mut stale = scan_plugin("stale@probe-market");
+        stale.version = Some("1.0.0".to_owned());
+        stale.available_version = Some("2.0.0".to_owned());
+        stale.commands = vec!["do".to_owned()];
+
+        let rows = extension_rows(&[off, stale]);
+        assert_eq!(rows[0].state, RowState::Disabled);
+        assert_eq!(rows[1].state, RowState::Disabled);
+        assert_eq!(rows[2].state, RowState::UpdateAvailable);
+        assert_eq!(rows[3].state, RowState::UpdateAvailable);
     }
 }
