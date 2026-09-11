@@ -356,7 +356,7 @@ fn request_disk_refresh_with(
     );
 }
 
-/// The CLI refresh for the manual `r` and post-action paths. The `r` and post-action paths. The
+/// The CLI refresh for the manual `r` and post-action paths. The
 /// token-cost fetch is deliberately NOT awaited here: the inventory
 /// event goes out first so paint never waits on a `claude` spawn, and
 /// a follow-up task lands the costs through a costs-only event.

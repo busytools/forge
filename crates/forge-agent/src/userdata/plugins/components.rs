@@ -211,33 +211,45 @@ impl Manifests {
                 if !candidate.is_file() {
                     continue;
                 }
-                match std::fs::read_to_string(&candidate)
-                    .map_err(|error| error.to_string())
-                    .and_then(|text| {
-                        serde_json::from_str::<MarketplaceManifest>(&text)
-                            .map_err(|error| error.to_string())
-                    }) {
-                    Ok(manifest) => {
-                        loaded.insert(name.clone());
-                        for plugin in manifest.plugins {
-                            entries.insert((name.clone(), plugin.name.clone()), plugin);
-                        }
-                    }
+                // Read failure and parse failure are different classes:
+                // a permission-denied manifest is not "failed to parse".
+                match std::fs::read_to_string(&candidate) {
                     Err(error) => {
                         tracing::warn!(
                             target: "forge_agent::userdata::plugins",
                             path = %candidate.display(),
                             error = %error,
-                            "marketplace manifest failed to parse",
+                            "marketplace manifest cannot be read",
                         );
-                        // A present-but-broken manifest must never read
-                        // as a cache-miss: that sends the user to
-                        // Repair against a healthy clone.
                         errors.insert(
                             name.clone(),
-                            format!("marketplace.json failed to parse: {error}"),
+                            format!("marketplace.json cannot be read: {error}"),
                         );
+                        break;
                     }
+                    Ok(text) => match serde_json::from_str::<MarketplaceManifest>(&text) {
+                        Ok(manifest) => {
+                            loaded.insert(name.clone());
+                            for plugin in manifest.plugins {
+                                entries.insert((name.clone(), plugin.name.clone()), plugin);
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "forge_agent::userdata::plugins",
+                                path = %candidate.display(),
+                                error = %error,
+                                "marketplace manifest failed to parse",
+                            );
+                            // A present-but-broken manifest must never
+                            // read as a cache-miss: that sends the user
+                            // to Repair against a healthy clone.
+                            errors.insert(
+                                name.clone(),
+                                format!("marketplace.json failed to parse: {error}"),
+                            );
+                        }
+                    },
                 }
                 break;
             }
@@ -511,16 +523,31 @@ pub fn scan_extensions(
 
 /// The CLI's marketplace registry (`known_marketplaces.json` beside
 /// the clones), read once for both the source entries and the health.
-/// A corrupt registry reads empty with its parse error carried back -
-/// the health rows must name it, not render the tab as an absence.
+/// A corrupt OR unreadable registry reads empty with its error carried
+/// back - the health rows must name it, not render the tab as an
+/// absence. Missing is the expected fresh-install case and stays
+/// silent.
 fn read_marketplace_registry(marketplaces_root: &Path) -> (KnownMarketplaces, Option<String>) {
     let registry_path =
         marketplaces_root.parent().map(|plugins_root| plugins_root.join("known_marketplaces.json"));
     let Some(path) = registry_path else {
         return (KnownMarketplaces { entries: BTreeMap::new() }, None);
     };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return (KnownMarketplaces { entries: BTreeMap::new() }, None);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (KnownMarketplaces { entries: BTreeMap::new() }, None);
+        }
+        Err(error) => {
+            let message = format!("known_marketplaces.json cannot be read: {error}");
+            tracing::warn!(
+                target: "forge_agent::userdata::plugins",
+                path = %path.display(),
+                error = %error,
+                "marketplace registry cannot be read; the configured marketplaces cannot be listed",
+            );
+            return (KnownMarketplaces { entries: BTreeMap::new() }, Some(message));
+        }
     };
     match serde_json::from_str::<KnownMarketplaces>(&text) {
         Ok(registry) => (registry, None),
@@ -1109,6 +1136,59 @@ mod tests {
             !scan.marketplace_sources.is_empty(),
             "the configured sources still list by clone dir: {:?}",
             scan.marketplace_sources
+        );
+    }
+
+    /// An UNREADABLE registry is the sibling class: it warns and the
+    /// clone rows carry the error, exactly like the parse class.
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_marketplace_registry_also_carries_the_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = fixture();
+        let path = fixture.plugins_root.join("known_marketplaces.json");
+        std::fs::write(&path, "{ fine").expect("write registry");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod away");
+        let scan =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir);
+        let probe =
+            scan.marketplace_health.iter().find(|row| row.name == "probe-market").expect("row");
+        let error = probe.load_error.as_deref().expect("the read error surfaces");
+        assert!(
+            error.contains("known_marketplaces.json cannot be read"),
+            "the read class, not absence and not parse: {error}"
+        );
+        assert!(
+            !scan.marketplace_sources.is_empty(),
+            "the clone rows still list: {:?}",
+            scan.marketplace_sources
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("restore for tempdir cleanup");
+    }
+
+    /// A manifest that exists but cannot be READ is its own class -
+    /// never "failed to parse", which would misdiagnose healthy JSON.
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_manifest_names_the_read_class() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = fixture();
+        let manifest =
+            fixture.marketplaces_root.join("probe-market/.claude-plugin/marketplace.json");
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod away");
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .marketplace_health;
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o644))
+            .expect("restore for tempdir cleanup");
+        let probe = rows.iter().find(|row| row.name == "probe-market").expect("probe row");
+        let error = probe.load_error.as_deref().expect("the read error surfaces");
+        assert!(
+            error.contains("cannot be read") && !error.contains("failed to parse"),
+            "the read class is named, not a parse diagnosis: {error}"
         );
     }
 
