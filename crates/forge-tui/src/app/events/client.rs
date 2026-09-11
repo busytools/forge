@@ -3555,6 +3555,9 @@ mod tests {
     fn question_request_event_raises_the_question_notification() {
         let mut app = App::test_default();
         let (key_a, _key_b) = seed_two_sessions(&mut app);
+        if let Some(bucket) = app.sessions.get_mut(&key_a) {
+            bucket.project = Some("alpha".to_owned());
+        }
         apply_session_update(
             &mut app,
             SessionUpdate::QuestionRequest {
@@ -3567,7 +3570,10 @@ mod tests {
             crate::app::notify::test_capture::take_notifications(&app),
             vec![(
                 crate::app::notify::NotifyEvent::QuestionRequired,
-                crate::app::notify::NotifyContext::default(),
+                crate::app::notify::NotifyContext {
+                    project: Some("alpha".to_owned()),
+                    worker_label: None,
+                },
             )],
             "an enqueued question raises QuestionRequired",
         );
@@ -3579,6 +3585,9 @@ mod tests {
     fn permission_request_event_raises_the_permission_notification() {
         let mut app = App::test_default();
         let (key_a, _key_b) = seed_two_sessions(&mut app);
+        if let Some(bucket) = app.sessions.get_mut(&key_a) {
+            bucket.project = Some("alpha".to_owned());
+        }
         apply_session_update(
             &mut app,
             SessionUpdate::PermissionRequest {
@@ -3591,7 +3600,10 @@ mod tests {
             crate::app::notify::test_capture::take_notifications(&app),
             vec![(
                 crate::app::notify::NotifyEvent::PermissionRequired,
-                crate::app::notify::NotifyContext::default(),
+                crate::app::notify::NotifyContext {
+                    project: Some("alpha".to_owned()),
+                    worker_label: None,
+                },
             )],
             "an enqueued permission request raises PermissionRequired",
         );
