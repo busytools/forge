@@ -465,7 +465,15 @@ impl SlackFacade for ProdSlackFacade {
 
         let name = safe_file_name(&file.name, &file.id);
         let path = request.dir.join(name);
-        std::fs::write(&path, bytes).map_err(|err| SlackAttachmentError::Io(err.to_string()))?;
+        // The name comes from Slack and the directory is not exclusive to
+        // this call, so never clobber a file already sitting there.
+        use std::io::Write as _;
+        let mut handle = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|err| SlackAttachmentError::Io(err.to_string()))?;
+        handle.write_all(&bytes).map_err(|err| SlackAttachmentError::Io(err.to_string()))?;
         Ok(path)
     }
 
@@ -1044,6 +1052,27 @@ mod tests {
             path.parent(),
             Some(dir.path()),
             "the file must land directly in the chosen directory, never above it: {path:?}",
+        );
+    }
+
+    /// The name comes from Slack and the directory is not exclusive to
+    /// this call, so a fetch must never clobber something already there.
+    #[tokio::test]
+    async fn a_download_refuses_to_clobber_an_existing_file() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_file("F1", "notes.txt", b"new bytes");
+        let dir = tempdir().expect("tempdir");
+        let existing = dir.path().join("notes.txt");
+        std::fs::write(&existing, b"precious").expect("write the existing file");
+
+        assert!(
+            facade.fetch_attachment(fetch_request("F1", dir.path())).await.is_err(),
+            "an existing file must not be overwritten",
+        );
+        assert_eq!(
+            std::fs::read(&existing).expect("read back"),
+            b"precious",
+            "and the existing file is untouched",
         );
     }
 
