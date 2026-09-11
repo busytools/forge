@@ -2428,7 +2428,12 @@ fn indent_row(line: Line<'static>, width: usize, gutter: u16) -> Vec<Line<'stati
         return vec![gutter_row(line, gutter)];
     }
     let (indent, content) = fence::split_line_indent(line.spans);
-    let budget = width.saturating_sub(wrap::display_width(&indent)).max(1);
+    // An indent deeper than the content has columns for is clipped, the
+    // way the code panel clips: indent + wrap budget always fits the row,
+    // so no emitted row exceeds the chat width and the measured height
+    // stays what is drawn.
+    let indent = wrap::truncate_to_width(&indent, width.saturating_sub(1));
+    let budget = width.saturating_sub(wrap::display_width(&indent));
     let chunks: Vec<wrap::StyledChunk> = content
         .into_iter()
         .map(|span| wrap::StyledChunk { text: span.content.into_owned(), style: span.style })
@@ -2644,6 +2649,7 @@ mod tests {
     use crate::app::{ChatMessage, MessageBlock, NoticeBlock, TextBlock, TextBlockSpacing};
     use pretty_assertions::assert_eq;
     use ratatui::widgets::{Paragraph, Wrap};
+    use unicode_width::UnicodeWidthStr;
 
     // preprocess_prose
 
@@ -3060,6 +3066,28 @@ mod tests {
     /// zero would put text under the rule.
     #[test]
     fn every_user_row_is_indented_past_the_gutter() {
+        // A wrapped paragraph pins the continuation rows; a deeply nested
+        // list pins that a leading indent wider than the content has left
+        // never pushes a row past the chat width - the measured height is
+        // only honest while every emitted row fits.
+        let cases = ["word ".repeat(20), format!("{}- item\n", "    ".repeat(20))];
+        for text in &cases {
+            let mut messages = [make_text_message(MessageRole::User, &format!("{text}\n"))];
+            let rows = rendered_rows(&render_one_lines_with(
+                &mut messages,
+                0,
+                40,
+                options_without_separator(),
+            ));
+            let body: Vec<&String> = rows.iter().skip(1).collect();
+            for row in &body {
+                assert!(row.starts_with("  "), "every user row starts past the gutter: {row:?}");
+                assert!(
+                    UnicodeWidthStr::width(row.as_str()) <= 40,
+                    "row {row:?} exceeds the chat width"
+                );
+            }
+        }
         let long = "word ".repeat(20);
         let mut messages = [make_text_message(MessageRole::User, &format!("{long}\n"))];
         let rows = rendered_rows(&render_one_lines_with(
@@ -3068,12 +3096,7 @@ mod tests {
             40,
             options_without_separator(),
         ));
-        let body: Vec<&String> = rows.iter().skip(1).collect();
-        assert!(body.len() > 2, "the line must wrap to pin the continuation rows: {body:?}");
-        for row in &body {
-            assert!(row.starts_with("  "), "every user row starts past the gutter: {row:?}");
-            assert!(row.chars().count() <= 40, "row {row:?} exceeds the chat width");
-        }
+        assert!(rows.len() > 3, "the line must wrap to pin the continuation rows: {rows:?}");
     }
 
     #[test]
