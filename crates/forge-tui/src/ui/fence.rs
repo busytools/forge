@@ -198,10 +198,10 @@ pub(crate) fn render_code_panel(body: &str, language: &str, width: u16) -> Vec<L
     lines
 }
 
-/// Peel a line's leading whitespace off its spans so the panel can paint
+/// Peel a line's leading whitespace off its spans so a wrapper can re-emit
 /// it explicitly: `wrap_styled_chunks` drops a leading whitespace token,
 /// which is right for prose and flattens every level of code indentation.
-fn split_line_indent(spans: Vec<Span<'static>>) -> (String, Vec<Span<'static>>) {
+pub(crate) fn split_line_indent(spans: Vec<Span<'static>>) -> (String, Vec<Span<'static>>) {
     let mut indent = String::new();
     let mut content = Vec::new();
     let mut peeling = true;

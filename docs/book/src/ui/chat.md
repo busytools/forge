@@ -11,12 +11,12 @@ The clickable set: tool calls, group headers, the scrollbar, pane rows. forge en
 
 ## User message
 
-The banner is the literal text "User" in dim bold; the body is a markdown block on a slate background.
+The banner is the literal text "User" in dim bold; the body is full markdown with a rust-orange rule painted down the left of every row the turn occupies - prose rows, rows a paragraph wrap adds, and code-panel rows alike. There is no background fill.
 
 <details>
-<summary>User banner</summary>
+<summary>The gutter rule</summary>
 
-The banner is not the user's name. The background is the theme's user-message color (see [Reference](./reference.md)) applied per cell, extending to roughly the right edge, with the text in the terminal's default foreground.
+The rule is `▌` in [rust orange](./reference.md) on column 0, drawn after the turn renders rather than prefixed onto the text: a prefix span would survive only the first row of each wrapped line. Column 1 stays blank and the body starts at column 2. The rule covers the rows the turn's text body occupies and nothing else - not the "User" banner, not the blank separator below the turn, not the neighbouring messages - so it clips correctly when the turn is scrolled off the top of the viewport.
 
 </details>
 
@@ -24,7 +24,8 @@ The banner is not the user's name. The background is the theme's user-message co
 
   <pre class="indent">
   <span class="dim bold">User</span>
-  <span class="user-band">  Read the rate-limit code and add a softer wording branch.                </span></pre>
+  <span class="rust-orange">&#x258c;</span>  Read the rate-limit code and add a
+  <span class="rust-orange">&#x258c;</span>  softer wording branch.</pre>
 
 </div>
 
@@ -186,6 +187,7 @@ A fenced code block is a quiet panel: a lifted background, no box-drawing glyphs
 <summary>Code block rules</summary>
 
 - The panel owns its wrapping. A long line wraps inside the panel instead of running past its right edge, and every row carries the background to the panel's full width, so the block reads as one surface rather than a patch per span.
+- Inside a user turn the panel renders two columns narrower, so the gutter rule keeps its own two columns and the panel's pad lands its code one nesting level deeper than the turn's prose. An assistant turn's panel keeps the full width.
 - The info string labels the panel whenever the fence carries one, and goes to the syntax lookup whole and trimmed. A language syntect cannot resolve still labels the block; its code renders plain.
 - An unterminated fence stays a panel to the end of the message, so a code block still streaming never flickers between panel and prose.
 - Blank prose around the fence collapses to a single separator row above the panel.
