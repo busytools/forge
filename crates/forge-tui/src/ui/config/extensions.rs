@@ -107,36 +107,44 @@ fn action_row_line(app: &App) -> Line<'static> {
 fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
     let list_area =
         if area.width > 1 { area.inner(Margin { vertical: 0, horizontal: 1 }) } else { area };
-    let rendered = match app.plugins.active_tab {
+    match app.plugins.active_tab {
+        // The MCP page moves under this tab unchanged in behaviour:
+        // its own summary, list, states and actions render here.
         ExtensionsTab::Mcps => {
-            let section = crate::app::mcp_servers::collect_mcp_servers(app);
-            mcp_server_lines(&section.rows)
+            super::mcp::render(frame, list_area, app);
+            return;
         }
-        ExtensionsTab::Marketplaces => marketplace_lines(app, list_area.width),
-        tab => {
-            let rows = visible_rows(app, tab);
-            if rows.is_empty() {
-                empty_tab_lines(app, tab)
-            } else {
-                let selected = if app.plugins.search_focused {
-                    None
-                } else {
-                    Some(app.plugins.selected_index_for(tab))
-                };
-                render_extension_rows(&rows, usize::from(list_area.width.max(1)))
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, mut line)| {
-                        if Some(index) == selected
-                            && let Some(span) = line.spans.first_mut()
-                        {
-                            span.content = format!("> {}", span.content).into();
-                        }
-                        line
-                    })
-                    .collect::<Vec<_>>()
-            }
+        ExtensionsTab::Marketplaces => {
+            frame.render_widget(
+                Paragraph::new(marketplace_lines(app, list_area.width)).wrap(Wrap { trim: false }),
+                list_area,
+            );
+            return;
         }
+        _ => {}
+    }
+    let tab = app.plugins.active_tab;
+    let rows = visible_rows(app, tab);
+    let rendered = if rows.is_empty() {
+        empty_tab_lines(app, tab)
+    } else {
+        let selected = if app.plugins.search_focused {
+            None
+        } else {
+            Some(app.plugins.selected_index_for(tab))
+        };
+        render_extension_rows(&rows, usize::from(list_area.width.max(1)))
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut line)| {
+                if Some(index) == selected
+                    && let Some(span) = line.spans.first_mut()
+                {
+                    span.content = format!("> {}", span.content).into();
+                }
+                line
+            })
+            .collect::<Vec<_>>()
     };
     frame.render_widget(Paragraph::new(rendered).wrap(Wrap { trim: false }), list_area);
 }
@@ -198,27 +206,6 @@ fn marketplace_lines(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
 
 fn display_row_name(text: &str) -> String {
     text.to_owned()
-}
-
-/// The Mcps tab hosts the MCP page's content: server name, scope, and
-/// state on one grammar row each.
-fn mcp_server_lines(rows: &[crate::app::mcp_servers::McpServerRow]) -> Vec<Line<'static>> {
-    rows.iter()
-        .map(|row| {
-            Line::from(vec![
-                Span::styled(
-                    format!(" {} ", theme::ICON_COMPLETED),
-                    Style::default().fg(theme::REVIEW_RESOLVED),
-                ),
-                Span::styled(
-                    row.name.clone(),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(row.detail.clone(), Style::default().fg(theme::DIM)),
-            ])
-        })
-        .collect()
 }
 
 #[cfg(test)]

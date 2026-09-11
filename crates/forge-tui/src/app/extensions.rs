@@ -29,7 +29,7 @@ pub use state::{
 // Plugin registry types defined in forge_primitives::plugins;
 // re-exported here so the existing forge-tui import paths resolve.
 pub use forge_primitives::plugins::{
-    ExtensionRow, InstalledPluginEntry, MarketplaceEntry, MarketplaceHealth,
+    ExtensionKind, ExtensionRow, InstalledPluginEntry, MarketplaceEntry, MarketplaceHealth,
     MarketplaceSourceEntry, PluginRunRowStatus, PluginUpdateAvailability, PluginUpdateRecord,
     PluginUpdateRun, PluginUpdateRunRow, PluginUpdateTrigger, PluginsCliActionSuccess,
     PluginsInventorySnapshot, extension_rows, update_availability,
@@ -121,6 +121,25 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     match (key.code, key.modifiers) {
+        // The Mcps tab keeps the MCP page's own keys: Up/Down select,
+        // Enter opens the server's actions, r refreshes the snapshot.
+        (KeyCode::Up | KeyCode::Down, KeyModifiers::NONE)
+            if app.plugins.active_tab == ExtensionsTab::Mcps =>
+        {
+            crate::app::config::mcp::handle_mcp_key(app, key)
+        }
+        (KeyCode::Enter, _)
+            if app.plugins.active_tab == ExtensionsTab::Mcps && !app.plugins.search_focused =>
+        {
+            crate::app::config::mcp::handle_mcp_key(app, key)
+        }
+        (KeyCode::Char(ch), modifiers)
+            if matches!(ch, 'r' | 'R')
+                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+                && app.plugins.active_tab == ExtensionsTab::Mcps =>
+        {
+            crate::app::config::mcp::handle_mcp_key(app, key)
+        }
         (KeyCode::Left, KeyModifiers::NONE) => {
             app.plugins.active_tab = app.plugins.active_tab.prev();
             app.plugins.search_focused = false;
@@ -320,6 +339,7 @@ pub(crate) fn apply_inventory_refresh_success(
     app.plugins.marketplace = snapshot.marketplace;
     app.plugins.marketplaces = snapshot.marketplaces;
     app.plugins.rows = extension_rows(&snapshot.components);
+    annotate_lsp_rows(&mut app.plugins.rows);
     app.plugins.health = snapshot.marketplace_health;
     // Merge, not replace: the costs map is a version-keyed cache, so a
     // refresh that fetched nothing keeps every badge on screen.
@@ -462,6 +482,21 @@ pub(crate) fn ordered_installed<'a>(
 
 pub(crate) fn visible_marketplaces(state: &PluginsState) -> Vec<&MarketplaceSourceEntry> {
     state.marketplaces.iter().collect()
+}
+
+/// LSP rows state whether the server binary is on PATH; the check
+/// runs once per refresh, not per frame.
+fn annotate_lsp_rows(rows: &mut [ExtensionRow]) {
+    let path = std::env::var_os("PATH").map(|path| path.to_string_lossy().into_owned());
+    for row in rows.iter_mut().filter(|row| row.kind == ExtensionKind::Lsp) {
+        let on_path =
+            path.as_deref().is_some_and(|path| skills::lsp_binary_on_path(&row.name, Some(path)));
+        row.detail = Some(if on_path {
+            format!("{}: on PATH", row.name)
+        } else {
+            format!("{}: missing", row.name)
+        });
+    }
 }
 
 pub(crate) fn display_label(raw: &str) -> String {

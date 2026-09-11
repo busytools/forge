@@ -1,4 +1,4 @@
-mod mcp;
+pub(crate) mod mcp;
 mod mcp_overlay;
 mod overlay_input;
 pub mod store;

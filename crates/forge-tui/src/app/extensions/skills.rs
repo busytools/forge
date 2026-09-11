@@ -19,6 +19,19 @@ const ACTION_COLUMN: usize = 12;
 /// The status column never shrinks below this, whatever the width.
 const MIN_STATUS_COLUMN: usize = 24;
 
+/// Whether an LSP server binary resolves on `path_var`. `path_var` is
+/// injected so tests need not touch the process environment.
+pub fn lsp_binary_on_path(server_binary: &str, path_var: Option<&str>) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(path_var) = path_var else { return false };
+    path_var.split(':').any(|dir| {
+        let candidate = std::path::Path::new(dir).join(server_binary);
+        candidate
+            .metadata()
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    })
+}
+
 /// Build the tab's row lines. `rows` are the tab's already-filtered
 /// rows; the name column truncates so every row stays one line.
 pub fn render_extension_rows(rows: &[&ExtensionRow], width: usize) -> Vec<Line<'static>> {
@@ -46,6 +59,9 @@ fn extension_row_line(row: &ExtensionRow, width: usize) -> Line<'static> {
 
     if let Some(badge) = state_badge(row) {
         spans.push(Span::styled(format!(" [{badge}]"), Style::default().fg(theme::STATUS_WARNING)));
+    }
+    if let Some(detail) = row.detail.as_deref() {
+        spans.push(Span::styled(format!("  {detail}"), Style::default().fg(theme::DIM)));
     }
     if let Some(action) = row_action(row) {
         spans.push(Span::styled(
@@ -237,5 +253,71 @@ mod tests {
         assert_eq!(lines.len(), 1, "one row, one line: {text:?}");
         assert!(text[0].ends_with("1.0.0 -> 2.0.0 available  Update"), "got {:?}", text[0]);
         assert!(text[0].contains('\u{2026}'), "the name truncated: {:?}", text[0]);
+    }
+
+    /// Hook rows name their trigger events on the row.
+    #[test]
+    fn hook_rows_carry_their_trigger_events() {
+        let mut hooks = row("superpowers", "superpowers@probe", RowState::Current, Some("6.3.0"));
+        hooks.kind = forge_primitives::plugins::ExtensionKind::Hook;
+        hooks.detail = Some("SessionStart, PreToolUse".to_owned());
+        let refs = vec![&hooks];
+
+        let lines = render_extension_rows(&refs, 100);
+        let text: String = lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(
+            text,
+            "\u{2713} superpowers  superpowers@probe  installed 6.3.0  SessionStart, PreToolUse",
+            "the triggers ride the row: {text}"
+        );
+    }
+
+    /// An LSP row shows whether the server binary is on PATH.
+    #[test]
+    fn lsp_rows_state_the_binary_check() {
+        let mut on = row("rust-analyzer", "lsp-plugin@probe", RowState::Current, Some("1.0.0"));
+        on.kind = forge_primitives::plugins::ExtensionKind::Lsp;
+        on.detail = Some("rust-analyzer: on PATH".to_owned());
+        let mut missing = row("gopls", "lsp-plugin@probe", RowState::Current, Some("1.0.0"));
+        missing.kind = forge_primitives::plugins::ExtensionKind::Lsp;
+        missing.detail = Some("gopls: missing".to_owned());
+        let refs = vec![&on, &missing];
+
+        let lines = render_extension_rows(&refs, 100);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert_eq!(
+            text[0],
+            "\u{2713} rust-analyzer  lsp-plugin@probe  installed 1.0.0  rust-analyzer: on PATH",
+            "present binary: {text:?}"
+        );
+        assert_eq!(
+            text[1], "\u{2713} gopls  lsp-plugin@probe  installed 1.0.0  gopls: missing",
+            "missing binary: {text:?}"
+        );
+    }
+
+    /// The PATH check walks `:`-separated dirs and requires an
+    /// executable file; a missing PATH or a bare directory misses.
+    #[test]
+    fn the_path_check_accepts_only_executables_on_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let binary = dir.path().join("gopls");
+        std::fs::write(&binary, b"#!/bin/sh").expect("write binary");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let path = format!("{}:{}", dir.path().display(), "/usr/bin");
+        assert!(lsp_binary_on_path("gopls", Some(path.as_str())));
+        assert!(!lsp_binary_on_path("rust-analyzer", Some(path.as_str())), "not present");
+        assert!(!lsp_binary_on_path("gopls", None), "no PATH, no binary");
+
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        assert!(
+            !lsp_binary_on_path("gopls", Some(path.as_str())),
+            "a non-executable file is not a server binary"
+        );
     }
 }

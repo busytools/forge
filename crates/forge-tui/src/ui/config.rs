@@ -869,6 +869,57 @@ mod tests {
         assert!(rendered.contains("Enter confirm"), "the help: {rendered}");
     }
 
+    /// The Mcps tab hosts the MCP page's content: the same summary
+    /// and server rows the standalone /mcp view rendered.
+    #[test]
+    fn the_mcps_tab_renders_the_existing_mcp_rows() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Mcps;
+        // The MCP body is session-backed: bind the testing stub and a
+        // session id so the live list renders instead of the
+        // no-session notice.
+        app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+            name: "plugin:context7:context7".to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            server_info: Some(forge_primitives::McpServerInfo {
+                name: "Context7".to_owned(),
+                version: "1.0.0".to_owned(),
+            }),
+            error: None,
+            config: Some(serde_json::json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@upstash/context7-mcp"],
+                "env": {},
+            })),
+            scope: Some("user".to_owned()),
+            tools: Some(vec![forge_primitives::McpToolInfo {
+                name: "resolve-library-id".to_owned(),
+                description: None,
+                annotations: None,
+            }]),
+            sampling_configured: None,
+            sampling_required: None,
+        }];
+
+        terminal
+            .draw(|frame| {
+                super::render_extensions(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("context7"), "the server row: {rendered}");
+        assert!(rendered.contains("1 tool"), "the tool count detail: {rendered}");
+        assert!(rendered.contains("total 1"), "the summary line: {rendered}");
+    }
+
     #[test]
     fn config_footer_renders_status_message_when_present() {
         let backend = TestBackend::new(100, 24);
