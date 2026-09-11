@@ -107,8 +107,12 @@ pub struct PluginComponents {
     pub hooks: Vec<String>,
     /// The plugin ships `.mcp.json`.
     pub mcp: bool,
-    /// LSP server names the marketplace manifest declares.
-    pub lsp_servers: Vec<String>,
+    /// LSP servers the marketplace manifest declares: server key to
+    /// the binary command it launches.
+    pub lsp_servers: BTreeMap<String, String>,
+    /// Why the plugin could not be scanned, when it is registered but
+    /// its on-disk copy is gone or unreadable.
+    pub load_error: Option<String>,
 }
 
 /// One marketplace's on-disk health for the Extensions page.
@@ -421,6 +425,15 @@ pub fn extension_rows(components: &[PluginComponents]) -> Vec<ExtensionRow> {
             state: state.clone(),
             detail: match &state {
                 RowState::AutoDependency(reason) => Some(reason.clone()),
+                // The auto marker would otherwise vanish whenever an
+                // update is available; the update badge outranks, the
+                // marker rides the detail.
+                _ if components.auto
+                    && components.installed
+                    && state == RowState::UpdateAvailable =>
+                {
+                    Some("auto-installed".to_owned())
+                }
                 _ => None,
             },
         });
@@ -472,7 +485,7 @@ pub fn extension_rows(components: &[PluginComponents]) -> Vec<ExtensionRow> {
                 detail: Some(components.hooks.join(", ")),
             });
         }
-        for server in &components.lsp_servers {
+        for server in components.lsp_servers.keys() {
             rows.push(component_row(
                 ExtensionKind::Lsp,
                 &components.plugin,
@@ -513,9 +526,13 @@ fn component_row(
     }
 }
 
-/// The plugin row's state from a scan result. Priority: not installed,
-/// then disabled, then an update, then the auto-dependency marker.
+/// The plugin row's state from a scan result. Priority: a load
+/// failure, then not installed, then disabled, then an update, then
+/// the auto-dependency marker.
 fn plugin_row_state(components: &PluginComponents) -> RowState {
+    if let Some(reason) = &components.load_error {
+        return RowState::LoadFailed(reason.clone());
+    }
     if !components.installed {
         return RowState::AvailableNotInstalled;
     }
@@ -679,7 +696,7 @@ mod tests {
         superpowers.agents = vec!["code-reviewer".to_owned()];
         superpowers.commands = vec!["review".to_owned()];
         superpowers.hooks = vec!["SessionStart".to_owned()];
-        superpowers.lsp_servers = vec!["rust-analyzer".to_owned()];
+        superpowers.lsp_servers.insert("rust-analyzer".to_owned(), "rust-analyzer".to_owned());
 
         let rows = extension_rows(&[superpowers]);
         let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();

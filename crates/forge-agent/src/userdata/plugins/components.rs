@@ -41,6 +41,14 @@ struct RegistryEntry {
     version: Option<String>,
     #[serde(default)]
     auto: Option<bool>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(rename = "installedAt", default)]
+    installed_at: Option<String>,
+    #[serde(rename = "lastUpdated", default)]
+    last_updated: Option<String>,
+    #[serde(rename = "projectPath", default)]
+    project_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -101,10 +109,25 @@ fn scan_component_dir(dir: &Path, gated: bool) -> Option<DirComponents> {
     let skills = list_subdirs(&dir.join("skills"));
     let agents = list_md_files(&dir.join("agents"));
     let commands = list_md_files(&dir.join("commands"));
-    let hooks = read_json(&dir.join("hooks/hooks.json"))
-        .and_then(|doc| doc.get("hooks").and_then(|hooks| hooks.as_object().cloned()))
-        .map(|hooks| hooks.keys().cloned().collect())
-        .unwrap_or_default();
+    let hooks_path = dir.join("hooks/hooks.json");
+    let hooks = if hooks_path.is_file() {
+        read_json(&hooks_path)
+            .and_then(|doc| {
+                doc.get("hooks")
+                    .and_then(|hooks| hooks.as_object())
+                    .map(|hooks| hooks.keys().cloned().collect::<Vec<_>>())
+            })
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    target: "forge_agent::userdata::plugins",
+                    path = %hooks_path.display(),
+                    "hooks.json exists but does not parse; its triggers are not shown",
+                );
+                Vec::new()
+            })
+    } else {
+        Vec::new()
+    };
     Some(DirComponents { skills, agents, commands, hooks, mcp: dir.join(".mcp.json").is_file() })
 }
 
@@ -133,16 +156,22 @@ fn list_md_files(dir: &Path) -> Vec<String> {
 }
 
 /// Every marketplace manifest readable under the clones root, keyed by
-/// (marketplace name, plugin name).
+/// (marketplace name, plugin name), plus per-marketplace parse errors
+/// and which clones produced a readable manifest - the distinction a
+/// zero-plugin manifest needs to avoid reading as a cache-miss.
 struct Manifests {
     entries: BTreeMap<(String, String), ManifestPlugin>,
+    errors: BTreeMap<String, String>,
+    loaded: std::collections::BTreeSet<String>,
 }
 
 impl Manifests {
     fn load(marketplaces_root: &Path) -> Self {
         let mut entries = BTreeMap::new();
+        let mut errors = BTreeMap::new();
+        let mut loaded = std::collections::BTreeSet::new();
         let Ok(marketplaces) = std::fs::read_dir(marketplaces_root) else {
-            return Self { entries };
+            return Self { entries, errors, loaded };
         };
         for marketplace in marketplaces.flatten() {
             if !marketplace.file_type().is_ok_and(|t| t.is_dir()) {
@@ -154,16 +183,30 @@ impl Manifests {
                 [dir.join("marketplace.json"), dir.join(".claude-plugin/marketplace.json")]
             {
                 let Some(doc) = read_json(&candidate) else { continue };
-                let Ok(manifest) = serde_json::from_value::<MarketplaceManifest>(doc) else {
-                    break;
-                };
-                for plugin in manifest.plugins {
-                    entries.insert((name.clone(), plugin.name.clone()), plugin);
+                match serde_json::from_value::<MarketplaceManifest>(doc) {
+                    Ok(manifest) => {
+                        loaded.insert(name.clone());
+                        for plugin in manifest.plugins {
+                            entries.insert((name.clone(), plugin.name.clone()), plugin);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "forge_agent::userdata::plugins",
+                            path = %candidate.display(),
+                            error = %error,
+                            "marketplace manifest failed to parse",
+                        );
+                        errors.insert(
+                            name.clone(),
+                            format!("marketplace.json parse failed: {error}"),
+                        );
+                    }
                 }
                 break;
             }
         }
-        Self { entries }
+        Self { entries, errors, loaded }
     }
 
     fn plugin(&self, marketplace: &str, name: &str) -> Option<&ManifestPlugin> {
@@ -171,16 +214,61 @@ impl Manifests {
     }
 }
 
+/// One combined disk scan: everything a refresh needs without a CLI
+/// spawn - registry-derived installed entries, manifest-derived
+/// available entries and marketplace sources, per-plugin component
+/// inventories, and per-marketplace health, over one shared manifest
+/// load so a corrupt manifest surfaces the same error on both halves.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ExtensionScan {
+    pub installed: Vec<forge_primitives::plugins::InstalledPluginEntry>,
+    pub marketplace: Vec<forge_primitives::plugins::MarketplaceEntry>,
+    pub marketplace_sources: Vec<forge_primitives::plugins::MarketplaceSourceEntry>,
+    pub components: Vec<PluginComponents>,
+    pub marketplace_health: Vec<MarketplaceHealth>,
+}
+
+/// Read the plugin registry. A file that exists but does not parse is
+/// warned and reads as empty - the distinction a fresh install (no
+/// file) must not lose.
+fn read_registry(plugins_root: &Path) -> PluginRegistry {
+    let path = plugins_root.join("installed_plugins.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return PluginRegistry { plugins: BTreeMap::new() };
+    };
+    match serde_json::from_str::<serde_json::Value>(&text)
+        .map_err(|error| error.to_string())
+        .and_then(|doc| {
+            serde_json::from_value::<PluginRegistry>(doc).map_err(|error| error.to_string())
+        }) {
+        Ok(registry) => registry,
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_agent::userdata::plugins",
+                path = %path.display(),
+                error = %error,
+                "installed_plugins.json exists but does not parse; reading as an empty registry",
+            );
+            PluginRegistry { plugins: BTreeMap::new() }
+        }
+    }
+}
+
 /// Scan the plugin cache and marketplace manifests into per-plugin
 /// component inventories, one entry per plugin the registry or a
 /// manifest knows about. Installed plugins scan their registry
-/// `installPath`; uninstalled ones their marketplace clone source.
-pub fn scan_components(plugins_root: &Path, marketplaces_root: &Path) -> Vec<PluginComponents> {
-    let registry = read_json(&plugins_root.join("installed_plugins.json"))
-        .and_then(|doc| serde_json::from_value::<PluginRegistry>(doc).ok())
-        .unwrap_or(PluginRegistry { plugins: BTreeMap::new() });
+/// `installPath`; uninstalled ones their marketplace clone source. A
+/// registry entry whose directory is gone emits a LoadFailed row
+/// rather than disappearing.
+pub fn scan_extensions(
+    plugins_root: &Path,
+    marketplaces_root: &Path,
+    config_dir: &Path,
+) -> ExtensionScan {
+    let registry = read_registry(plugins_root);
     let enabled = enabled_plugins(plugins_root);
     let manifests = Manifests::load(marketplaces_root);
+    let marketplace_registry = read_marketplace_registry(marketplaces_root);
     let mut rows = BTreeMap::<String, PluginComponents>::new();
 
     // Registry installs are authoritative: the row scans the exact
@@ -188,11 +276,34 @@ pub fn scan_components(plugins_root: &Path, marketplaces_root: &Path) -> Vec<Plu
     for (id, entries) in &registry.plugins {
         let Some(entry) = entries.first() else { continue };
         let marketplace = id.split_once('@').map_or("", |(_, marketplace)| marketplace);
+        let manifest = manifests.plugin(marketplace, plugin_name(id));
         let components = entry
             .install_path
             .as_deref()
             .and_then(|path| scan_component_dir(Path::new(path), true));
-        let Some(components) = components else { continue };
+        let Some(components) = components else {
+            tracing::warn!(
+                target: "forge_agent::userdata::plugins",
+                plugin = %id,
+                install_path = entry.install_path.as_deref().unwrap_or(""),
+                "registered plugin install dir is missing or unreadable",
+            );
+            rows.insert(
+                id.clone(),
+                PluginComponents {
+                    plugin: id.clone(),
+                    marketplace: marketplace.to_owned(),
+                    version: entry.version.clone(),
+                    installed: true,
+                    enabled: enabled.is_enabled(id),
+                    auto: entries.iter().any(|entry| entry.auto == Some(true)),
+                    available_version: manifest.and_then(|plugin| plugin.version.clone()),
+                    load_error: Some("registered install dir is missing on disk".to_owned()),
+                    ..PluginComponents::default()
+                },
+            );
+            continue;
+        };
         rows.insert(
             id.clone(),
             PluginComponents {
@@ -202,15 +313,14 @@ pub fn scan_components(plugins_root: &Path, marketplaces_root: &Path) -> Vec<Plu
                 installed: true,
                 enabled: enabled.is_enabled(id),
                 auto: entries.iter().any(|entry| entry.auto == Some(true)),
-                available_version: manifests
-                    .plugin(marketplace, plugin_name(id))
-                    .and_then(|plugin| plugin.version.clone()),
+                available_version: manifest.and_then(|plugin| plugin.version.clone()),
                 skills: components.skills,
                 agents: components.agents,
                 commands: components.commands,
                 hooks: components.hooks,
                 mcp: components.mcp,
-                lsp_servers: manifest_lsp_servers(manifests.plugin(marketplace, plugin_name(id))),
+                lsp_servers: manifest_lsp_servers(manifest),
+                ..PluginComponents::default()
             },
         );
     }
@@ -258,11 +368,29 @@ pub fn scan_components(plugins_root: &Path, marketplaces_root: &Path) -> Vec<Plu
         );
     }
 
+    // A marketplace whose manifest does not parse would silently drop
+    // every uninstalled plugin it declares; one LoadFailed row per
+    // corrupt manifest keeps the gap visible on the page.
+    for (marketplace, error) in &manifests.errors {
+        rows.entry(marketplace.clone()).or_insert_with(|| PluginComponents {
+            plugin: marketplace.clone(),
+            marketplace: marketplace.clone(),
+            load_error: Some(error.clone()),
+            ..PluginComponents::default()
+        });
+    }
+
     // Cache leftovers the registry and manifests both miss: a real
     // plugin dir with no registry entry. The newest version dir wins.
     let cache = plugins_root.join("cache");
     let Ok(marketplace_dirs) = std::fs::read_dir(&cache) else {
-        return rows.into_values().collect();
+        return ExtensionScan {
+            installed: installed_entries(&registry, &enabled),
+            marketplace: manifest_marketplace_entries(&manifests),
+            marketplace_sources: marketplace_source_entries(&marketplace_registry),
+            components: rows.into_values().collect(),
+            marketplace_health: marketplace_health(&marketplace_registry, &manifests, config_dir),
+        };
     };
     for marketplace_dir in marketplace_dirs.flatten() {
         let marketplace = marketplace_dir.file_name().to_string_lossy().into_owned();
@@ -292,17 +420,116 @@ pub fn scan_components(plugins_root: &Path, marketplaces_root: &Path) -> Vec<Plu
         }
     }
 
-    rows.into_values().collect()
+    ExtensionScan {
+        installed: installed_entries(&registry, &enabled),
+        marketplace: manifest_marketplace_entries(&manifests),
+        marketplace_sources: marketplace_source_entries(&marketplace_registry),
+        components: rows.into_values().collect(),
+        marketplace_health: marketplace_health(&marketplace_registry, &manifests, config_dir),
+    }
+}
+
+/// The CLI's marketplace registry (`known_marketplaces.json` beside
+/// the clones), read once for both the source entries and the health.
+fn read_marketplace_registry(marketplaces_root: &Path) -> KnownMarketplaces {
+    let registry_path =
+        marketplaces_root.parent().map(|plugins_root| plugins_root.join("known_marketplaces.json"));
+    registry_path
+        .and_then(|path| read_json(&path))
+        .and_then(|doc| serde_json::from_value::<KnownMarketplaces>(doc).ok())
+        .unwrap_or(KnownMarketplaces { entries: BTreeMap::new() })
+}
+
+/// Installed entries derived from the registry and settings, the disk
+/// mirror of `claude plugin list --json`.
+fn installed_entries(
+    registry: &PluginRegistry,
+    enabled: &EnabledMap,
+) -> Vec<forge_primitives::plugins::InstalledPluginEntry> {
+    registry
+        .plugins
+        .iter()
+        .filter_map(|(id, entries)| {
+            let entry = entries.first()?;
+            Some(forge_primitives::plugins::InstalledPluginEntry {
+                id: id.clone(),
+                version: entry.version.clone(),
+                scope: entry.scope.clone().unwrap_or_else(|| "user".to_owned()),
+                enabled: enabled.is_enabled(id),
+                installed_at: entry.installed_at.clone(),
+                last_updated: entry.last_updated.clone(),
+                project_path: entry.project_path.clone(),
+                capability: forge_primitives::plugins::PluginCapability::Skill,
+            })
+        })
+        .collect()
+}
+
+/// Available entries derived from the manifests, the disk mirror of
+/// `claude plugin list --available --json`.
+fn manifest_marketplace_entries(
+    manifests: &Manifests,
+) -> Vec<forge_primitives::plugins::MarketplaceEntry> {
+    manifests
+        .entries
+        .iter()
+        .map(|((marketplace, name), plugin)| forge_primitives::plugins::MarketplaceEntry {
+            plugin_id: format!("{name}@{marketplace}"),
+            name: name.clone(),
+            description: None,
+            marketplace_name: Some(marketplace.clone()),
+            version: plugin.version.clone(),
+            install_count: None,
+            source: None,
+        })
+        .collect()
+}
+
+/// Configured marketplace sources derived from the registry, the disk
+/// mirror of `claude plugin marketplace list --json`.
+fn marketplace_source_entries(
+    registry: &KnownMarketplaces,
+) -> Vec<forge_primitives::plugins::MarketplaceSourceEntry> {
+    registry
+        .entries
+        .iter()
+        .map(|(name, entry)| forge_primitives::plugins::MarketplaceSourceEntry {
+            name: name.clone(),
+            source: entry
+                .source
+                .as_ref()
+                .and_then(|source| source.get("source"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            repo: entry
+                .source
+                .as_ref()
+                .and_then(|source| source.get("repo"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            install_location: entry.install_location.clone(),
+        })
+        .collect()
 }
 
 fn plugin_name(id: &str) -> &str {
     id.split_once('@').map_or(id, |(name, _)| name)
 }
 
-fn manifest_lsp_servers(plugin: Option<&ManifestPlugin>) -> Vec<String> {
+/// The manifest's LSP servers as server key -> binary command; the
+/// command is what the PATH check tests, the key the fallback.
+fn manifest_lsp_servers(plugin: Option<&ManifestPlugin>) -> BTreeMap<String, String> {
     plugin
         .and_then(|plugin| plugin.lsp_servers.as_ref())
-        .map(|servers| servers.keys().cloned().collect())
+        .map(|servers| {
+            servers
+                .iter()
+                .map(|(key, value)| {
+                    let command = value.get("command").and_then(serde_json::Value::as_str);
+                    (key.clone(), command.unwrap_or(key).to_owned())
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -338,50 +565,57 @@ fn newest_plugin_version(plugin_dir: &Path) -> Option<(PathBuf, DirComponents)> 
         .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
         .map(|entry| entry.path())
         .collect::<Vec<_>>();
-    versions.sort();
+    // Numeric-aware: "10.0.0" sorts after "9.9.9", which a plain
+    // string sort would not deliver.
+    versions.sort_by_key(|path| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        version_sort_key(&name)
+    });
     versions.reverse();
     versions.into_iter().find_map(|version| {
         scan_component_dir(&version, true).map(|components| (version, components))
     })
 }
 
-/// Scan the marketplace clones plus the CLI's registry
-/// (`known_marketplaces.json` beside the clones) into per-marketplace
-/// health. `drifted` flags a registry `installLocation` outside
-/// `config_dir`; `load_error` a manifest that cannot be read.
-pub fn scan_marketplaces(marketplaces_root: &Path, config_dir: &Path) -> Vec<MarketplaceHealth> {
-    let registry_path =
-        marketplaces_root.parent().map(|plugins_root| plugins_root.join("known_marketplaces.json"));
-    let registry = registry_path
-        .and_then(|path| read_json(&path))
-        .and_then(|doc| serde_json::from_value::<KnownMarketplaces>(doc).ok())
-        .unwrap_or(KnownMarketplaces { entries: BTreeMap::new() });
+/// A version directory name's numeric-aware sort key: numeric chunks
+/// order before and inside text chunks, so "10.0.0" outranks "9.9.9".
+fn version_sort_key(name: &str) -> Vec<(u8, u64, String)> {
+    name.split(['.', '-', '_'])
+        .map(|chunk| match chunk.parse::<u64>() {
+            Ok(number) => (0_u8, number, String::new()),
+            Err(_) => (1_u8, 0_u64, chunk.to_owned()),
+        })
+        .collect()
+}
 
+/// Per-marketplace health over the shared manifest load. A manifest
+/// the load could not parse surfaces its recorded error; one that
+/// parses but shows no plugins is healthy at zero.
+fn marketplace_health(
+    registry: &KnownMarketplaces,
+    manifests: &Manifests,
+    config_dir: &Path,
+) -> Vec<MarketplaceHealth> {
     registry
         .entries
-        .into_iter()
+        .iter()
         .map(|(name, entry)| {
-            let install_location = entry.install_location.map(PathBuf::from).unwrap_or_default();
+            let install_location =
+                entry.install_location.clone().map(PathBuf::from).unwrap_or_default();
             let drifted = !install_location.as_os_str().is_empty()
                 && !install_location.starts_with(config_dir);
-            let manifest = manifest_path(&marketplaces_root.join(&name));
-            let (available, load_error) = match manifest
-                .and_then(|path| std::fs::read_to_string(path).ok())
-                .map(|contents| serde_json::from_str::<MarketplaceManifest>(&contents))
-            {
-                Some(Ok(manifest)) => (manifest.plugins.len(), None),
-                Some(Err(error)) => (0, Some(format!("marketplace.json parse failed: {error}"))),
-                None => (
-                    0,
-                    Some(if install_location.as_os_str().is_empty() {
-                        "no marketplace clone on disk".to_owned()
-                    } else {
-                        "no marketplace.json found in the clone".to_owned()
-                    }),
-                ),
+            let load_error = manifests.errors.get(name).cloned();
+            let available = if load_error.is_some() {
+                0
+            } else {
+                manifests
+                    .entries
+                    .keys()
+                    .filter(|(manifest_marketplace, _)| manifest_marketplace == name)
+                    .count()
             };
             MarketplaceHealth {
-                name,
+                name: name.clone(),
                 source: entry
                     .source
                     .as_ref()
@@ -390,21 +624,20 @@ pub fn scan_marketplaces(marketplaces_root: &Path, config_dir: &Path) -> Vec<Mar
                     .unwrap_or_default()
                     .to_owned(),
                 available,
-                load_error,
+                load_error: load_error.or_else(|| {
+                    (!manifests.loaded.contains(name)).then(|| {
+                        if install_location.as_os_str().is_empty() {
+                            "no marketplace clone on disk".to_owned()
+                        } else {
+                            "no marketplace.json found in the clone".to_owned()
+                        }
+                    })
+                }),
                 install_location,
                 drifted,
             }
         })
         .collect()
-}
-
-fn manifest_path(marketplace_dir: &Path) -> Option<PathBuf> {
-    [
-        marketplace_dir.join("marketplace.json"),
-        marketplace_dir.join(".claude-plugin/marketplace.json"),
-    ]
-    .into_iter()
-    .find(|candidate| candidate.is_file())
 }
 
 #[cfg(test)]
@@ -536,7 +769,9 @@ mod tests {
     #[test]
     fn a_plugin_with_every_component_kind_scans_exact_lists() {
         let fixture = fixture();
-        let rows = scan_components(&fixture.plugins_root, &fixture.marketplaces_root);
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .components;
 
         let full = by_plugin(&rows, "full@probe-market");
         assert_eq!(full.skills, vec!["a", "b"]);
@@ -544,7 +779,10 @@ mod tests {
         assert_eq!(full.commands, vec!["c1", "c2"]);
         assert_eq!(full.hooks, vec!["SessionStart", "PreToolUse"]);
         assert!(full.mcp, ".mcp.json present");
-        assert_eq!(full.lsp_servers, vec!["rust-analyzer"]);
+        assert_eq!(
+            full.lsp_servers,
+            BTreeMap::from([("rust-analyzer".to_owned(), "rust-analyzer".to_owned())])
+        );
         assert!(full.installed);
         assert!(full.enabled);
         assert!(!full.auto);
@@ -556,7 +794,9 @@ mod tests {
     #[test]
     fn a_plugin_missing_plugin_json_is_excluded() {
         let fixture = fixture();
-        let rows = scan_components(&fixture.plugins_root, &fixture.marketplaces_root);
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .components;
         assert!(
             rows.iter().all(|row| !row.plugin.starts_with("broken")),
             "no row may exist for the plugin.json-less dir: {rows:?}"
@@ -566,7 +806,9 @@ mod tests {
     #[test]
     fn a_skill_file_is_not_a_skill() {
         let fixture = fixture();
-        let rows = scan_components(&fixture.plugins_root, &fixture.marketplaces_root);
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .components;
         let gone = by_plugin(&rows, "gone@probe-market");
         assert_eq!(gone.skills, vec!["writing-skills"], "file-not-dir excluded; clone scanned");
     }
@@ -574,7 +816,9 @@ mod tests {
     #[test]
     fn an_uninstalled_plugin_scans_from_its_marketplace_clone() {
         let fixture = fixture();
-        let rows = scan_components(&fixture.plugins_root, &fixture.marketplaces_root);
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .components;
         let gone = by_plugin(&rows, "gone@probe-market");
         assert!(!gone.installed);
         assert!(!gone.enabled);
@@ -587,7 +831,9 @@ mod tests {
     #[test]
     fn a_disabled_auto_installed_plugin_carries_both_markers() {
         let fixture = fixture();
-        let rows = scan_components(&fixture.plugins_root, &fixture.marketplaces_root);
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .components;
         let off = by_plugin(&rows, "off@probe-market");
         assert!(off.installed);
         assert!(!off.enabled, "disabled in enabledPlugins");
@@ -599,7 +845,9 @@ mod tests {
     #[test]
     fn components_come_from_the_installed_copy_not_the_clone() {
         let fixture = fixture();
-        let rows = scan_components(&fixture.plugins_root, &fixture.marketplaces_root);
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .components;
         let full = by_plugin(&rows, "full@probe-market");
         assert_eq!(
             full.skills,
@@ -613,7 +861,9 @@ mod tests {
     #[test]
     fn a_marketplace_inside_the_config_dir_is_healthy() {
         let fixture = fixture();
-        let rows = scan_marketplaces(&fixture.marketplaces_root, &fixture.config_dir);
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .marketplace_health;
         let probe = rows.iter().find(|row| row.name == "probe-market").expect("probe row");
         assert_eq!(probe.available, 2);
         assert_eq!(probe.source, "github");
@@ -627,7 +877,8 @@ mod tests {
         let fixture = fixture();
         // A foreign config dir: every registry location sits outside it.
         let foreign = fixture.root.path().join("elsewhere").join(".claude");
-        let rows = scan_marketplaces(&fixture.marketplaces_root, &foreign);
+        let rows = scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &foreign)
+            .marketplace_health;
         let probe = rows.iter().find(|row| row.name == "probe-market").expect("probe row");
         assert!(probe.drifted, "{probe:?}");
     }
@@ -635,7 +886,9 @@ mod tests {
     #[test]
     fn a_marketplace_missing_its_manifest_is_a_load_error() {
         let fixture = fixture();
-        let rows = scan_marketplaces(&fixture.marketplaces_root, &fixture.config_dir);
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .marketplace_health;
         let ghost = rows.iter().find(|row| row.name == "ghost").expect("ghost row");
         assert_eq!(ghost.available, 0);
         assert!(ghost.load_error.is_some(), "cache-miss reads as a load error: {ghost:?}");

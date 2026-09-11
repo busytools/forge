@@ -1,4 +1,4 @@
-use super::components::{scan_components, scan_marketplaces};
+use super::components::scan_extensions;
 use super::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
     PluginRunRowStatus, PluginUpdateRecord, PluginUpdateRun, PluginsInventorySnapshot,
@@ -95,21 +95,27 @@ fn refresh_inventory_blocking(
     claude_path: &Path,
     cwd_raw: &str,
 ) -> Result<PluginsInventorySnapshot, String> {
-    let installed = parse_json_command::<Vec<InstalledPluginJson>>(
+    let started = std::time::Instant::now();
+    let installed = timed_json_command::<Vec<InstalledPluginJson>>(
         claude_path,
         cwd_raw,
         &["plugin", "list", "--json"],
     )?;
-    let available = parse_json_command::<MarketplaceListJson>(
+    let available = timed_json_command::<MarketplaceListJson>(
         claude_path,
         cwd_raw,
         &["plugin", "list", "--available", "--json"],
     )?;
-    let marketplaces = parse_json_command::<Vec<MarketplaceSourceJson>>(
+    let marketplaces = timed_json_command::<Vec<MarketplaceSourceJson>>(
         claude_path,
         cwd_raw,
         &["plugin", "marketplace", "list", "--json"],
     )?;
+    tracing::info!(
+        target: "forge_agent::userdata::plugins",
+        duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "plugin CLI inventory spawns (list, list --available, marketplace list)",
+    );
 
     let mut installed_entries = installed
         .into_iter()
@@ -164,26 +170,7 @@ fn refresh_inventory_blocking(
     // The component scan reads the same config dir the CLI calls
     // above resolved against (process-level env), so both halves of
     // the snapshot describe one installation.
-    let (components, marketplace_health) = match super::components::plugins_root() {
-        Some(root) => {
-            let started = std::time::Instant::now();
-            let marketplaces_root = root.join("marketplaces");
-            let config_dir = root.parent().unwrap_or(root.as_path()).to_path_buf();
-            let components = scan_components(&root, &marketplaces_root);
-            let marketplace_health = scan_marketplaces(&marketplaces_root, &config_dir);
-            tracing::info!(
-                target: "forge_agent::userdata::plugins",
-                duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                installed = components.iter().filter(|row| row.installed).count(),
-                available = components.iter().filter(|row| !row.installed).count(),
-                skills = components.iter().map(|row| row.skills.len()).sum::<usize>(),
-                marketplaces = marketplace_health.len(),
-                "extension inventory scan"
-            );
-            (components, marketplace_health)
-        }
-        None => (Vec::new(), Vec::new()),
-    };
+    let (components, marketplace_health) = scan_components_dir(super::components::plugins_root());
 
     Ok(PluginsInventorySnapshot {
         installed: installed_entries,
@@ -193,6 +180,55 @@ fn refresh_inventory_blocking(
         marketplace_health,
         token_costs: std::collections::BTreeMap::new(),
     })
+}
+
+/// The disk scan over the resolved plugins root. A root that cannot
+/// resolve warns: an empty scan must never read as a clean install.
+fn scan_components_dir(
+    root: Option<std::path::PathBuf>,
+) -> (
+    Vec<forge_primitives::plugins::PluginComponents>,
+    Vec<forge_primitives::plugins::MarketplaceHealth>,
+) {
+    let Some(root) = root else {
+        tracing::warn!(
+            target: "forge_agent::userdata::plugins",
+            "no CLAUDE_CONFIG_DIR or HOME resolves; the extension disk scan is empty",
+        );
+        return (Vec::new(), Vec::new());
+    };
+    let started = std::time::Instant::now();
+    let marketplaces_root = root.join("marketplaces");
+    let config_dir = root.parent().unwrap_or(root.as_path()).to_path_buf();
+    let scan = scan_extensions(&root, &marketplaces_root, &config_dir);
+    tracing::info!(
+        target: "forge_agent::userdata::plugins",
+        duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        installed = scan.components.iter().filter(|row| row.installed).count(),
+        available = scan.components.iter().filter(|row| !row.installed).count(),
+        skills = scan.components.iter().map(|row| row.skills.len()).sum::<usize>(),
+        marketplaces = scan.marketplace_health.len(),
+        "extension inventory scan"
+    );
+    (scan.components, scan.marketplace_health)
+}
+
+/// `parse_json_command` with a per-call duration line, so the
+/// "why is the pane slow" question is answerable per spawn.
+fn timed_json_command<T>(claude_path: &Path, cwd_raw: &str, args: &[&str]) -> Result<T, String>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let started = std::time::Instant::now();
+    let result = parse_json_command(claude_path, cwd_raw, args);
+    tracing::debug!(
+        target: "forge_agent::userdata::plugins",
+        duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        args = %args.join(" "),
+        outcome = if result.is_ok() { "ok" } else { "error" },
+        "plugin CLI spawn",
+    );
+    result
 }
 
 fn parse_json_command<T>(claude_path: &Path, cwd_raw: &str, args: &[&str]) -> Result<T, String>
@@ -498,47 +534,32 @@ pub async fn fetch_plugin_details(
             return costs;
         };
         for (plugin_id, _version) in requests {
-            if let Ok(details) = plugin_details_blocking(&claude_path, &cwd_raw, &plugin_id) {
-                costs.insert(plugin_id, details);
+            match plugin_details_blocking(&claude_path, &cwd_raw, &plugin_id) {
+                Ok(details) => {
+                    costs.insert(plugin_id, details);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_agent::userdata::plugins",
+                        plugin = %plugin_id,
+                        error = %error,
+                        "plugin token-cost fetch failed; the row shows no cost",
+                    );
+                }
             }
         }
         costs
     })
     .await
+    .map_err(|error| {
+        tracing::warn!(
+            target: "forge_agent::userdata::plugins",
+            error = %error,
+            "plugin token-cost fetch task failed to join",
+        );
+        error
+    })
     .unwrap_or_default()
-}
-
-/// Token cost per plugin, keyed by the installed version it was
-/// fetched for: a plugin's cost changes only when its version does.
-#[derive(Default)]
-pub struct TokenCostCache {
-    entries: std::collections::HashMap<String, (String, PluginDetails)>,
-}
-
-impl TokenCostCache {
-    /// The plugin's always-on cost, fetched through `fetch` only when
-    /// no entry for the current version exists. A versionless plugin
-    /// (or a version whose details cannot be fetched) carries no cost.
-    pub async fn details_for<F, Fut>(
-        &mut self,
-        plugin_id: &str,
-        version: Option<&str>,
-        mut fetch: F,
-    ) -> Result<Option<PluginDetails>, String>
-    where
-        F: FnMut(String) -> Fut,
-        Fut: std::future::Future<Output = Result<PluginDetails, String>>,
-    {
-        let Some(version) = version else { return Ok(None) };
-        if let Some((cached_version, details)) = self.entries.get(plugin_id)
-            && cached_version == version
-        {
-            return Ok(Some(details.clone()));
-        }
-        let details = fetch(plugin_id.to_owned()).await?;
-        self.entries.insert(plugin_id.to_owned(), (version.to_owned(), details.clone()));
-        Ok(Some(details))
-    }
 }
 
 /// One future handed back by the [`UpdateRunner`] seams.
@@ -639,6 +660,12 @@ pub async fn execute_update_batch(
                 plan.run.rows[index].detail = Some(output);
             }
             Err(message) => {
+                tracing::warn!(
+                    target: "forge_agent::userdata::plugins",
+                    plugin = %plan.run.rows[index].plugin_id,
+                    error = %message,
+                    "plugin update call failed",
+                );
                 plan.run.rows[index].status = PluginRunRowStatus::Failed;
                 plan.run.rows[index].detail = Some(message);
             }
@@ -690,6 +717,11 @@ pub async fn execute_update_batch(
             // An entry that vanished from the inventory has no
             // observable outcome and must not yield a rollback record
             // naming a version nobody can see.
+            tracing::warn!(
+                target: "forge_agent::userdata::plugins",
+                plugin = %row.plugin_id,
+                "updated plugin missing from the post-update inventory; its row reads failed",
+            );
             row.status = PluginRunRowStatus::Failed;
             row.detail = Some("not found in post-update inventory".to_owned());
             continue;
@@ -958,43 +990,6 @@ mod tests {
             "Plugin \"hello\" updated from 0.2.0 to 0.3.0 for scope user. Restart required to apply."
         ));
         assert!(!output_states_restart_required("hello is already at the latest version (0.2.0)."));
-    }
-
-    #[tokio::test]
-    async fn the_token_cost_cache_refetches_only_on_a_version_change() {
-        let mut cache = TokenCostCache::default();
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0_u32));
-        let mut fetch = |plugin: String| {
-            calls.set(calls.get() + 1);
-            assert_eq!(plugin, "superpowers@probe-market");
-            let version = if calls.get() == 1 { "6.3.0" } else { "6.4.0" };
-            let version = version.to_owned();
-            async move {
-                Ok(PluginDetails {
-                    token_cost_always_on: if version == "6.3.0" { 450 } else { 460 },
-                })
-            }
-        };
-
-        let first = cache.details_for("superpowers@probe-market", Some("6.3.0"), &mut fetch).await;
-        assert_eq!(first.expect("first fetch").expect("some cost").token_cost_always_on, 450);
-        // Same version again: served from the cache, the fetcher never runs.
-        let second = cache.details_for("superpowers@probe-market", Some("6.3.0"), &mut fetch).await;
-        assert_eq!(second.expect("cached").expect("some cost").token_cost_always_on, 450);
-        assert_eq!(calls.get(), 1, "no refetch on an unchanged version");
-        // A moved version refetches.
-        let third = cache.details_for("superpowers@probe-market", Some("6.4.0"), &mut fetch).await;
-        assert_eq!(third.expect("refetched").expect("some cost").token_cost_always_on, 460);
-        assert_eq!(calls.get(), 2, "the version change drives exactly one refetch");
-    }
-
-    #[test]
-    fn a_versionless_plugin_never_fetches_token_cost() {
-        let mut cache = TokenCostCache::default();
-        let mut fetch = |_: String| async { Ok(PluginDetails { token_cost_always_on: 1 }) };
-        let result =
-            futures::executor::block_on(cache.details_for("x@probe-market", None, &mut fetch));
-        assert_eq!(result.expect("no version reads as no cost"), None);
     }
 
     #[test]
