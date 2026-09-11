@@ -14,7 +14,8 @@ fn states_restart(detail: Option<&str>) -> bool {
 
 /// One panel row: the item, its old -> new versions, and the state
 /// word the row renders. A failed row keeps its detail - the reason
-/// must reach the panel, never collapse to the word "failed".
+/// must reach the panel, never collapse to the word "failed". A
+/// restart contract shows once in the panel header, not per row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdatePanelRow {
     pub label: String,
@@ -44,7 +45,7 @@ pub fn panel_rows(run: &PluginUpdateRun) -> Vec<UpdatePanelRow> {
                 state_word: state_word(row.status),
                 failed,
                 restart_required: restart,
-                detail: (failed || restart)
+                detail: failed
                     .then(|| row.detail.as_deref().unwrap_or_default())
                     .map(truncate_detail),
             }
@@ -172,9 +173,18 @@ mod tests {
         plain.detail = None;
 
         assert_eq!(
-            restart_note(&run(vec![plain.clone(), restart])),
+            restart_note(&run(vec![plain.clone(), restart.clone()])),
             Some("restart required to apply")
         );
         assert_eq!(restart_note(&run(vec![plain])), None, "no contract, no aggregation");
+
+        // The contract shows ONCE, in the header: the row itself does
+        // not repeat it as detail.
+        let rows = panel_rows(&run(vec![restart]));
+        assert!(rows[0].restart_required);
+        assert_eq!(
+            rows[0].detail, None,
+            "the header aggregation replaces the per-row note: {rows:?}"
+        );
     }
 }

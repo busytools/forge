@@ -199,6 +199,9 @@ pub enum Command {
     },
     /// Answer a held Slack draft. The blocked `slack__post` handler is
     /// awaiting this decision; `approved: false` means nothing posts.
+    /// App-level command (`key()` returns `None`): the registry is
+    /// workspace state, and `key` names the owner the answer is
+    /// checked against, not a SessionTask route.
     RespondSlackPost {
         key: SessionKey,
         id: uuid::Uuid,
@@ -510,7 +513,6 @@ impl Command {
             | Self::NewSession { key, .. }
             | Self::ResumeSession { key, .. }
             | Self::RespondPermission { key, .. }
-            | Self::RespondSlackPost { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::ReconnectMcpServer { key, .. }
             | Self::ToggleMcpServer { key, .. }
@@ -537,6 +539,7 @@ impl Command {
             | Self::PersistSpinner { .. }
             | Self::CloseSession { .. }
             | Self::UpsertReviewThread { .. }
+            | Self::RespondSlackPost { .. }
             | Self::SubmitReview { .. } => None,
         }
     }

@@ -62,10 +62,12 @@ struct ManifestPlugin {
     name: String,
     #[serde(default)]
     version: Option<String>,
-    /// Relative sources (`./plugins/foo`) resolve inside the
-    /// marketplace clone; remote ones carry no local components.
+    /// A clone-relative string (`./plugins/foo`) or a remote
+    /// descriptor object (`url`, `git-subdir`); the official
+    /// marketplace ships both. Only the string form names local
+    /// components.
     #[serde(default)]
-    source: Option<String>,
+    source: Option<serde_json::Value>,
     #[serde(rename = "lspServers", default)]
     lsp_servers: Option<BTreeMap<String, serde_json::Value>>,
 }
@@ -382,7 +384,8 @@ pub fn scan_extensions(
         }
         let components = plugin
             .source
-            .as_deref()
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
             .filter(|source| source.starts_with("./"))
             .map(|source| marketplaces_root.join(marketplace).join(source))
             .and_then(|source| scan_component_dir(&source, false));
@@ -1114,6 +1117,106 @@ mod tests {
         assert!(
             !error.contains("no marketplace.json found"),
             "a present manifest must not read as a cache-miss: {error}"
+        );
+    }
+
+    /// The official marketplace's manifest declares per-plugin sources
+    /// as OBJECTS (`url`, `git-subdir` remotes), not just relative
+    /// strings. A string-typed source field fails the whole parse and
+    /// the largest marketplace's catalog disappears behind one error.
+    /// The fixture mirrors the real manifest's shapes.
+    #[test]
+    fn object_shaped_plugin_sources_parse_and_stay_available() {
+        let fixture = fixture();
+        write(
+            &fixture.marketplaces_root.join("official/.claude-plugin/marketplace.json"),
+            r#"{
+              "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+              "name": "official",
+              "owner": {"name": "Anthropic"},
+              "renames": {"old-name": "renamed-plugin"},
+              "plugins": [
+                {
+                  "name": "subdir-plugin",
+                  "source": {
+                    "source": "git-subdir",
+                    "url": "https://github.com/example/plugins",
+                    "path": "plugins/subdir-plugin",
+                    "ref": "v1.5.5"
+                  }
+                },
+                {
+                  "name": "url-plugin",
+                  "source": {
+                    "source": "url",
+                    "url": "https://github.com/example/single-plugin"
+                  }
+                },
+                {"name": "relative-plugin", "source": "./plugins/relative-plugin"},
+                {"name": "bare-string-plugin", "source": "plugins/bare-string"},
+                {"name": "renamed-plugin", "version": "2.0.0"}
+              ]
+            }"#,
+        );
+        skill(
+            &fixture.marketplaces_root.join("official/plugins/relative-plugin/skills/one/SKILL.md"),
+        );
+        // A string source WITHOUT the ./ prefix is not clone-relative:
+        // this dir exists, and the guard is what keeps it unscanned.
+        skill(&fixture.marketplaces_root.join("official/plugins/bare-string/skills/leak/SKILL.md"));
+        write(
+            &fixture.plugins_root.join("known_marketplaces.json"),
+            format!(
+                r#"{{"official":{{"source":{{"source":"github","repo":"anthropics/claude-plugins-official"}},
+                     "installLocation":{:?},"lastUpdated":""}}}}"#,
+                fixture.marketplaces_root.join("official").to_string_lossy()
+            )
+            .as_str(),
+        );
+
+        let scan =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir);
+
+        let health =
+            scan.marketplace_health.iter().find(|row| row.name == "official").expect("health row");
+        assert_eq!(health.available, 5, "every manifest plugin counts: {health:?}");
+        assert_eq!(
+            health.load_error, None,
+            "object sources must not fail the manifest parse: {health:?}"
+        );
+
+        let subdir = scan
+            .components
+            .iter()
+            .find(|row| row.plugin == "subdir-plugin@official")
+            .expect("the git-subdir plugin lists");
+        assert!(!subdir.installed);
+        assert_eq!(
+            subdir.skills,
+            Vec::<String>::new(),
+            "a remote source carries no local components: {subdir:?}"
+        );
+
+        let relative = scan
+            .components
+            .iter()
+            .find(|row| row.plugin == "relative-plugin@official")
+            .expect("the relative plugin lists");
+        assert_eq!(
+            relative.skills,
+            vec!["one"],
+            "a relative source still resolves inside the clone: {relative:?}"
+        );
+
+        let bare = scan
+            .components
+            .iter()
+            .find(|row| row.plugin == "bare-string-plugin@official")
+            .expect("the bare-string plugin lists");
+        assert_eq!(
+            bare.skills,
+            Vec::<String>::new(),
+            "a string source without ./ is not clone-relative - the guard keeps its dir unscanned: {bare:?}"
         );
     }
 

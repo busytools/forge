@@ -353,12 +353,12 @@ fn all_glyph_fgs(buffer: &ratatui::buffer::Buffer, glyph: char) -> Vec<ratatui::
 }
 
 #[test]
-fn spinner_glyph_identical_selected_and_unselected() {
+fn spinner_shape_identical_accent_on_selected_row() {
     let mut app = App::test_default();
 
     // Two projects, both leads Running, the first one selected. The
-    // spinner reads only the session's own state - selection styles
-    // the row label, never the glyph.
+    // spinner frame reads only the session's own state - selection
+    // recolours the glyph, never swaps it.
     let projects = vec![
         project_view("forge", vec![session_view("session-r", "lead-a")]),
         project_view("stargate", vec![session_view("session-s", "lead-b")]),
@@ -377,26 +377,32 @@ fn spinner_glyph_identical_selected_and_unselected() {
     let buffer = terminal.backend().buffer().clone();
 
     let fgs = all_glyph_fgs(&buffer, '\u{280b}');
-    assert_eq!(fgs.len(), 2, "both running rows render the spinner, got: {fgs:?}");
     assert_eq!(
-        fgs[0], fgs[1],
-        "the spinner must render identically on the selected and the background row, got: {fgs:?}",
+        fgs.len(),
+        2,
+        "both running rows render the same spinner frame regardless of selection, got: {fgs:?}"
     );
     assert_eq!(
         fgs[0],
-        ratatui::style::Color::Reset,
-        "the spinner is terminal-default regardless of selection, got: {:?}",
+        ratatui::style::Color::Rgb(244, 118, 0),
+        "the selected row's spinner takes the rust orange accent, got: {:?}",
         fgs[0],
+    );
+    assert_eq!(
+        fgs[1],
+        ratatui::style::Color::Reset,
+        "the background row's spinner stays terminal default, got: {:?}",
+        fgs[1],
     );
 }
 
 #[test]
-fn idle_glyph_identical_selected_and_unselected() {
+fn idle_shape_identical_accent_on_selected_row() {
     let mut app = App::test_default();
 
-    // Same property for the settled bullet: an Idle session renders
-    // the same `●` selected and unselected; selection styles only the
-    // label.
+    // Same split for the settled bullet: an Idle session renders the
+    // same `●` selected and unselected; the selected row's glyph picks
+    // up the rust orange accent, the background row stays dim.
     let projects = vec![
         project_view("forge", vec![session_view("session-i", "lead-a")]),
         project_view("stargate", vec![session_view("session-j", "lead-b")]),
@@ -415,45 +421,67 @@ fn idle_glyph_identical_selected_and_unselected() {
     let buffer = terminal.backend().buffer().clone();
 
     let fgs = all_glyph_fgs(&buffer, '\u{25cf}');
-    assert_eq!(fgs.len(), 2, "both settled rows render the bullet, got: {fgs:?}");
     assert_eq!(
-        fgs[0], fgs[1],
-        "the bullet must render identically on the selected and the background row, got: {fgs:?}",
+        fgs.len(),
+        2,
+        "both settled rows render the bullet regardless of selection, got: {fgs:?}"
     );
     assert_eq!(
         fgs[0],
-        ratatui::style::Color::DarkGray,
-        "the settled bullet is dim on every row, got: {:?}",
+        ratatui::style::Color::Rgb(244, 118, 0),
+        "the selected row's bullet takes the rust orange accent, got: {:?}",
         fgs[0],
+    );
+    assert_eq!(
+        fgs[1],
+        ratatui::style::Color::DarkGray,
+        "the settled bullet stays dim on the background row, got: {:?}",
+        fgs[1],
     );
 }
 
 #[test]
-fn wide_tier_attention_session_glyph_uses_warning_color() {
+fn attention_glyph_shape_stable_accent_on_selected_row() {
     let mut app = App::test_default();
 
-    // Lead session marked Attention (a paused background session
-    // awaiting permission input). The △ glyph must render in
-    // STATUS_WARNING per spec.
-    let projects = vec![project_view("forge", vec![session_view("session-a", "lead")])];
+    // Two Attention leads (paused sessions awaiting permission input),
+    // the first selected. The △ is the session's own state so both
+    // rows render it; the selected row's glyph takes the rust orange
+    // accent, the background row keeps STATUS_WARNING.
+    let projects = vec![
+        project_view("forge", vec![session_view("session-a", "lead-a")]),
+        project_view("stargate", vec![session_view("session-b", "lead-b")]),
+    ];
 
-    let lead_key = SessionKey::from_str_for_test("session-a");
-    let lead_session = UiSession::new(lead_key.clone());
-    app.sessions.insert(lead_key.clone(), lead_session);
-    app.active_session_key = Some(lead_key.clone());
-    register_lifecycle_for_test(&mut app, &lead_key, SessionLifecycleState::Attention);
+    let key_a = SessionKey::from_str_for_test("session-a");
+    let key_b = SessionKey::from_str_for_test("session-b");
+    app.active_session_key = Some(key_a.clone());
+    register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Attention);
+    register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Attention);
 
-    let backend = TestBackend::new(26, 10);
+    let backend = TestBackend::new(40, 14);
     let mut terminal = Terminal::new(backend).unwrap();
-    let area = Rect::new(0, 0, 26, 10);
+    let area = Rect::new(0, 0, 40, 14);
     terminal.draw(|frame| projects_pane::render(frame, area, &mut app, &projects)).unwrap();
     let buffer = terminal.backend().buffer().clone();
 
-    let fg = find_glyph_fg(&buffer, '△').expect("attention glyph rendered");
+    let fgs = all_glyph_fgs(&buffer, '\u{25b3}');
     assert_eq!(
-        fg,
+        fgs.len(),
+        2,
+        "both attention rows render \u{25b3} regardless of selection, got: {fgs:?}"
+    );
+    assert_eq!(
+        fgs[0],
+        ratatui::style::Color::Rgb(244, 118, 0),
+        "the selected row's \u{25b3} takes the rust orange accent, got: {:?}",
+        fgs[0],
+    );
+    assert_eq!(
+        fgs[1],
         ratatui::style::Color::Yellow,
-        "Attention glyph must use STATUS_WARNING (Yellow), got: {fg:?}"
+        "the background row's \u{25b3} keeps STATUS_WARNING, got: {:?}",
+        fgs[1],
     );
 }
 
@@ -598,13 +626,12 @@ fn build_question_request() -> forge_primitives::question::QuestionRequest {
 }
 
 #[test]
-fn focused_session_with_pending_prompt_renders_yellow_triangle() {
+fn focused_session_pending_prompt_keeps_triangle_takes_accent() {
     let mut app = App::test_default();
 
     // Single project, focused session mid-AskUserQuestion. The pending
-    // prompt is the session's own state, so the row surfaces the yellow
-    // △ whether or not it is the one the user is looking at; selection
-    // shows in the label highlight instead.
+    // prompt is the session's own state, so the row still surfaces the
+    // △; selection recolours the glyph to the accent, never swaps it.
     let projects = vec![project_view("forge", vec![session_view("session-a", "lead-a")])];
 
     let key_a = SessionKey::from_str_for_test("session-a");
@@ -627,11 +654,11 @@ fn focused_session_with_pending_prompt_renders_yellow_triangle() {
     let buffer = terminal.backend().buffer().clone();
 
     let fg = find_glyph_fg(&buffer, '\u{25b3}')
-        .expect("focused session with a pending prompt must surface the yellow \u{25b3}");
+        .expect("focused session with a pending prompt still surfaces \u{25b3}");
     assert_eq!(
         fg,
-        ratatui::style::Color::Yellow,
-        "pending-prompt \u{25b3} must use STATUS_WARNING (Yellow), got: {fg:?}",
+        ratatui::style::Color::Rgb(244, 118, 0),
+        "the selected row's prompt \u{25b3} takes the rust orange accent, got: {fg:?}",
     );
 }
 

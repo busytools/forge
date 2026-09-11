@@ -1107,6 +1107,28 @@ mod tests {
         );
     }
 
+    /// Through `Workspace::dispatch`, the route the TUI dock answer
+    /// takes - the direct `resolve_slack_draft` tests above never
+    /// exercise routing.
+    #[tokio::test]
+    async fn the_dock_answer_reaches_the_registry_through_dispatch() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let caller = SessionKey::from_session_id("caller-uuid");
+        let (id, decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+
+        ws.dispatch(crate::protocol::Command::RespondSlackPost {
+            key: caller.clone(),
+            id,
+            approved: true,
+        })
+        .expect("the dock answer routes to the workspace");
+
+        assert!(
+            decision.await.expect("the held draft answers"),
+            "the answer the dock gave reaches the awaiting caller",
+        );
+    }
+
     /// `tokio::test`: starting a subsystem spawns a pump, which needs a
     /// runtime.
     #[tokio::test]

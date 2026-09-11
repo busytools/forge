@@ -722,12 +722,25 @@ pub(crate) async fn sweep(
             // sweep continues with the conversations after it. The cursor
             // stays where it was, so nothing is skipped.
             Err(error) => {
+                let gone = matches!(&error, SlackError::Api { error: api_error, .. }
+                    if api_error == "channel_not_found" || api_error == "invalid_channel_id");
+                // A DM id a user token can never read - Slackbot's
+                // conversation answers channel_not_found forever - is a
+                // Slack quirk, not a dead channel, so it earns no glyph.
+                if gone && (conversation.is_im || conversation.is_mpim) {
+                    tracing::info!(
+                        target: "forge_connectors::slack",
+                        workspace,
+                        conversation = %conversation.id,
+                        %error,
+                        "slack withholds this DM's history from user tokens; skipping it every tick",
+                    );
+                    continue;
+                }
                 // A conversation deleted on Slack's side is permanent. The
                 // flag rides the outcome: the pump owns the glyph, and a
                 // write here would be clobbered by its Ok arm.
-                if matches!(&error, SlackError::Api { error: api_error, .. }
-                    if api_error == "channel_not_found" || api_error == "invalid_channel_id")
-                {
+                if gone {
                     conversation_gone = true;
                 }
                 tracing::warn!(
@@ -3493,6 +3506,110 @@ mod tests {
             .await
             .expect("the pump must not outlive its shutdown")
             .expect("no panic");
+    }
+
+    /// The Slackbot conversation answers channel_not_found to a user
+    /// token forever, a Slack quirk rather than a dead channel: a
+    /// workspace whose only sweep failure is that DM reads connected,
+    /// and its other DMs still deliver. Pinned through the PUMP, where
+    /// the glyph write happens.
+    #[tokio::test]
+    async fn a_slackbot_dm_channel_not_found_leaves_the_glyph_connected() {
+        let host = Arc::new(FakeHost::with_subscriptions(vec![sub_dm("acme")]));
+        FakeHost::set_api_self(&host);
+        // The Slackbot-shaped DM: listed, watermarked, never readable.
+        host.seed_history("D1", vec![]);
+        host.set_watermark("acme", "D1", "050.0");
+        host.fail_history_with(
+            "D1",
+            SlackError::Api {
+                method: "conversations.history".to_owned(),
+                error: "channel_not_found".to_owned(),
+                needed: None,
+            },
+        );
+        // A readable DM beside it, so the tick provably sweeps instead
+        // of passing on an unexercised outcome.
+        host.seed_history("D2", vec![history_message("200.0", "U9", "hello from a dm")]);
+        host.set_watermark("acme", "D2", "100.0");
+
+        let (tx, rx) = oneshot::channel();
+        let pump = tokio::spawn(run_workspace_pump(host.clone(), "acme".to_owned(), 1, rx));
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if host.connected().is_some() {
+                break;
+            }
+        }
+
+        assert!(
+            !host.delivered().is_empty(),
+            "the tick ran and delivered the readable DM: {:?}",
+            host.delivered(),
+        );
+        assert_eq!(
+            host.connected(),
+            Some(true),
+            "the unreadable DM is a known quirk, not a dead connector",
+        );
+
+        tx.send(()).expect("signal shutdown");
+        tokio::time::timeout(Duration::from_secs(2), pump)
+            .await
+            .expect("the pump must not outlive its shutdown")
+            .expect("no panic");
+    }
+
+    #[derive(Clone, Default)]
+    struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// The unreadable-DM skip is expected, not a failure: the log names
+    /// the conversation and states the reason, so the tick line is
+    /// never silent.
+    #[tokio::test]
+    async fn the_unreadable_dm_skip_logs_its_reason() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.seed_history("D1", vec![]);
+        host.set_watermark("acme", "D1", "050.0");
+        host.fail_history_with(
+            "D1",
+            SlackError::Api {
+                method: "conversations.history".to_owned(),
+                error: "channel_not_found".to_owned(),
+                needed: None,
+            },
+        );
+
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let outcome = sweep(&host, &host, "acme").await.expect("sweep");
+        assert!(!outcome.conversation_gone, "the quirk does not flip the glyph");
+
+        let log = String::from_utf8_lossy(&capture.0.lock().expect("lock")).into_owned();
+        assert!(log.contains("D1"), "the skip names the conversation: {log}");
+        assert!(log.contains("withholds this DM's history"), "the skip states its reason: {log}");
     }
 
     /// The headline mention case: a mention from a public channel the
