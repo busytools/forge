@@ -2862,17 +2862,18 @@ mod tests {
     #[test]
     fn a_refresh_splits_the_scan_into_two_streams() {
         let mut app = App::test_default();
-        let component = |plugin: &str, market: &str, name: &str, installed: bool| PluginComponents {
-            plugin: format!("{plugin}@{market}"),
-            marketplace: market.to_owned(),
-            version: Some("1.0.0".to_owned()),
-            installed,
-            enabled: installed,
-            auto: false,
-            available_version: None,
-            skills: vec![name.to_owned()],
-            ..PluginComponents::default()
-        };
+        let component =
+            |plugin: &str, market: &str, name: &str, installed: bool| PluginComponents {
+                plugin: format!("{plugin}@{market}"),
+                marketplace: market.to_owned(),
+                version: Some("1.0.0".to_owned()),
+                installed,
+                enabled: installed,
+                auto: false,
+                available_version: None,
+                skills: vec![name.to_owned()],
+                ..PluginComponents::default()
+            };
         apply_inventory_refresh_success(
             &mut app,
             PluginsInventorySnapshot {
