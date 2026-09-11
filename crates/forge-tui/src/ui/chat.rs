@@ -776,6 +776,7 @@ fn render_scrollbar_overlay(
     ) else {
         viewport.scrollbar_thumb_top = 0.0;
         viewport.scrollbar_thumb_size = 0.0;
+        repaint_rail_column(frame, area, None);
         return;
     };
     // Cap the thumb size and rebuild thumb_top against the
@@ -788,12 +789,41 @@ fn render_scrollbar_overlay(
     let rail_x = area.right().saturating_sub(1);
     let thumb_top = geometry.thumb_top.min(area.height.saturating_sub(1) as usize);
     let thumb_end = thumb_top.saturating_add(geometry.thumb_size).min(area.height as usize);
+    {
+        let buf = frame.buffer_mut();
+        for row in thumb_top..thumb_end {
+            let y = area.y.saturating_add(row as u16);
+            if let Some(cell) = buf.cell_mut((rail_x, y)) {
+                cell.set_symbol("\u{2590}");
+                cell.set_style(thumb_style);
+            }
+        }
+    }
+    repaint_rail_column(frame, area, Some(&(thumb_top..thumb_end)));
+}
+
+/// The rail column has no per-frame writer otherwise, and ratatui's flush
+/// emits only cells whose buffer value changed, so stale terminal content in
+/// it (left by an earlier process or an overlay) survives forever. Each cell
+/// is rewritten in one of two visually-identical states, flipping per frame,
+/// so the value differs from the previous frame's and the flush re-emits the
+/// column every frame.
+fn repaint_rail_column(frame: &mut Frame, area: Rect, thumb: Option<&std::ops::Range<usize>>) {
+    static RAIL_RESET_DIM: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    let dim = RAIL_RESET_DIM.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+    let reset_style =
+        if dim { Style::default().add_modifier(Modifier::DIM) } else { Style::default() };
+    let rail_x = area.right().saturating_sub(1);
     let buf = frame.buffer_mut();
-    for row in thumb_top..thumb_end {
-        let y = area.y.saturating_add(row as u16);
+    for row in 0..area.height {
+        if thumb.is_some_and(|range| range.contains(&usize::from(row))) {
+            continue;
+        }
+        let y = area.y.saturating_add(row);
         if let Some(cell) = buf.cell_mut((rail_x, y)) {
-            cell.set_symbol("\u{2590}");
-            cell.set_style(thumb_style);
+            cell.set_symbol(" ");
+            cell.set_style(reset_style);
         }
     }
 }
@@ -1307,8 +1337,9 @@ mod tests {
     use super::{
         RenderWindow, SCROLLBAR_MIN_THUMB_HEIGHT, ScrolledRenderData, build_scrolled_render_data,
         chat_content_area, clamp_scroll_to_content, paint_user_gutter, paragraph_scroll_offset,
-        render_culled_messages, render_lines_from_paragraph, render_message_range, render_scrolled,
-        render_tail_anchored, smooth_scrollbar_geometry, sync_chat_layout, update_visual_heights,
+        render, render_culled_messages, render_lines_from_paragraph, render_message_range,
+        render_scrolled, render_tail_anchored, smooth_scrollbar_geometry, sync_chat_layout,
+        update_visual_heights,
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
@@ -1316,7 +1347,7 @@ mod tests {
     };
     use crate::ui::message::{self, SpinnerState};
     use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::backend::{Backend, TestBackend};
     use ratatui::layout::Rect;
     use ratatui::text::Text;
     use ratatui::widgets::{Paragraph, Wrap};
@@ -2871,6 +2902,60 @@ mod tests {
     fn chat_content_area_reserves_one_column_for_scrollbar() {
         assert_eq!(chat_content_area(Rect::new(0, 0, 20, 10)), Rect::new(0, 0, 19, 10));
         assert_eq!(chat_content_area(Rect::new(3, 4, 1, 5)), Rect::new(3, 4, 0, 5));
+    }
+
+    /// The rail column has no other writer, and ratatui's flush emits only
+    /// cells whose buffer value changed, so a stale cell on the terminal in
+    /// that column (left by an earlier process or an overlay) would survive
+    /// forever. Frame 1 renders; a deletion-tinted cell is then written
+    /// straight into the backend, which is the screen state both ratatui
+    /// buffers believe is a blank rail; frame 2 must overwrite it.
+    #[test]
+    fn the_rail_repaint_clears_a_foreign_cell_within_two_frames() {
+        let long = "word ".repeat(60);
+        let mut app = App::test_default();
+        *app.active_messages_mut() = vec![
+            user_message(&format!("{long}\n\n```rust\nfn main() {{}}\n```\n")),
+            assistant_text_message("assistant prose after"),
+            user_message("one more turn so the content overflows the viewport"),
+        ];
+
+        let (width, height) = (40u16, 12u16);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        let area = Rect::new(0, 0, width, height);
+        terminal.draw(|frame| render(frame, area, &mut app)).expect("frame 1");
+
+        let rail_x = width - 1;
+        let ghost_y = 2;
+        let mut ghost = ratatui::buffer::Cell::EMPTY;
+        ghost
+            .set_symbol("\u{2592}")
+            .set_style(ratatui::style::Style::default().bg(crate::ui::theme::DIFF_DELETION_BG));
+        terminal
+            .backend_mut()
+            .draw(std::iter::once((rail_x, ghost_y, &ghost)))
+            .expect("seed the ghost into the simulated screen");
+
+        terminal.draw(|frame| render(frame, area, &mut app)).expect("frame 2");
+
+        let buffer = terminal.backend().buffer();
+        let cleared = buffer.cell((rail_x, ghost_y)).expect("rail cell present");
+        assert_eq!(cleared.symbol(), " ", "the foreign cell must be overwritten: {cleared:?}");
+        assert_eq!(cleared.fg, ratatui::style::Color::Reset, "reset stays default fg: {cleared:?}");
+        assert_eq!(
+            cleared.bg,
+            ratatui::style::Color::Reset,
+            "the deletion tint must be gone: {cleared:?}"
+        );
+
+        let above_thumb = buffer.cell((rail_x, height - 2)).expect("rail row above thumb");
+        assert_eq!(
+            above_thumb.bg,
+            ratatui::style::Color::Reset,
+            "the row above the thumb is reset too: {above_thumb:?}"
+        );
+        let thumb = buffer.cell((rail_x, height - 1)).expect("thumb row");
+        assert_eq!(thumb.symbol(), "\u{2590}", "the thumb is untouched: {thumb:?}");
     }
 
     #[test]
