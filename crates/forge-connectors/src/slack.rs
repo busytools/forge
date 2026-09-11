@@ -13,7 +13,8 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use forge_primitives::slack::{
-    SlackConversation, SlackMessage, SlackSubscription, SlackSubscriptionTarget, SlackWatchMode,
+    SlackConversation, SlackFile, SlackMessage, SlackSearchMatch, SlackSubscription,
+    SlackSubscriptionTarget, SlackUser, SlackWatchMode,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -98,6 +99,34 @@ pub trait SlackApi: Send + Sync {
     /// The author of one message, for the own-message check before an
     /// edit or a delete. `None` when the page did not carry it.
     async fn message_author(&self, channel: &str, ts: &str) -> Result<Option<String>, SlackError>;
+    /// GET an absolute URL with the bearer attached, for a private file.
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SlackError>;
+    /// POST raw bytes to an absolute pre-signed URL, with no bearer.
+    async fn post_bytes(&self, url: &str, body: Vec<u8>) -> Result<(), SlackError>;
+    /// `files.info` for one file id.
+    async fn file_info(&self, id: &str) -> Result<SlackFile, SlackError>;
+    /// `files.getUploadURLExternal`: the pre-signed URL to POST the bytes
+    /// to, plus the file id the completion call needs.
+    async fn get_upload_url(
+        &self,
+        name: &str,
+        length: usize,
+    ) -> Result<(String, String), SlackError>;
+    /// `files.completeUploadExternal`, which can be called once only.
+    async fn complete_upload(
+        &self,
+        file_id: &str,
+        channel: &str,
+        thread_ts: Option<&str>,
+    ) -> Result<(), SlackError>;
+    /// `search.messages`, always timestamp-ordered.
+    async fn search_messages(
+        &self,
+        query: &str,
+        count: u32,
+    ) -> Result<Vec<SlackSearchMatch>, SlackError>;
+    /// `users.info` for one user id.
+    async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError>;
 }
 
 #[async_trait::async_trait]
@@ -159,6 +188,47 @@ impl SlackApi for SlackClient {
 
     async fn message_author(&self, channel: &str, ts: &str) -> Result<Option<String>, SlackError> {
         SlackClient::message_author(self, channel, ts).await
+    }
+
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SlackError> {
+        SlackClient::get_bytes(self, url).await
+    }
+
+    async fn post_bytes(&self, url: &str, body: Vec<u8>) -> Result<(), SlackError> {
+        SlackClient::post_bytes(self, url, body).await
+    }
+
+    async fn file_info(&self, id: &str) -> Result<SlackFile, SlackError> {
+        SlackClient::file_info(self, id).await
+    }
+
+    async fn get_upload_url(
+        &self,
+        name: &str,
+        length: usize,
+    ) -> Result<(String, String), SlackError> {
+        SlackClient::get_upload_url(self, name, length).await
+    }
+
+    async fn complete_upload(
+        &self,
+        file_id: &str,
+        channel: &str,
+        thread_ts: Option<&str>,
+    ) -> Result<(), SlackError> {
+        SlackClient::complete_upload(self, file_id, channel, thread_ts).await
+    }
+
+    async fn search_messages(
+        &self,
+        query: &str,
+        count: u32,
+    ) -> Result<Vec<SlackSearchMatch>, SlackError> {
+        SlackClient::search_messages(self, query, count).await
+    }
+
+    async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
+        SlackClient::user_info(self, user).await
     }
 }
 
@@ -256,6 +326,15 @@ pub(crate) fn retry_delay(retry_after_secs: Option<u64>) -> Duration {
         None => RETRY_FALLBACK,
         Some(secs) => Duration::from_secs(secs).clamp(RETRY_FLOOR, RETRY_CAP),
     }
+}
+
+/// Slack's whole-second `Retry-After`, when the response carries one.
+fn retry_after_of(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
 }
 
 /// Bounded so a gateway's error page cannot flood the log or the tool output.
@@ -714,6 +793,83 @@ fn decode_message_page(method: &str, body: &str) -> Result<MessagePage, SlackErr
     Ok(MessagePage { messages, next_cursor: cursor })
 }
 
+/// The API's ceiling for one search page.
+const SEARCH_COUNT_CAP: u32 = 100;
+
+/// The params `search.messages` is always called with. `sort=timestamp`
+/// because the default is relevance, which during the probe ranked a
+/// 22-hour-old match above a 2.6-hour-old one.
+fn search_params(query: &str, count: u32) -> Vec<(&'static str, String)> {
+    vec![
+        ("query", query.to_owned()),
+        ("sort", "timestamp".to_owned()),
+        ("count", count.min(SEARCH_COUNT_CAP).to_string()),
+    ]
+}
+
+/// Split out of the async path so the decode is testable without HTTP.
+fn decode_search(body: &str) -> Result<Vec<SlackSearchMatch>, SlackError> {
+    #[derive(Default, Deserialize)]
+    struct SearchMessages {
+        #[serde(default)]
+        matches: Vec<RawMatch>,
+    }
+    #[derive(Default, Deserialize)]
+    struct SearchPayload {
+        #[serde(default)]
+        messages: SearchMessages,
+    }
+    #[derive(Deserialize)]
+    struct RawMatch {
+        ts: String,
+        #[serde(default)]
+        text: String,
+        channel: RawChannel,
+        #[serde(default)]
+        username: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct RawChannel {
+        id: String,
+        #[serde(default)]
+        name: Option<String>,
+    }
+
+    let payload: SearchPayload = decode_envelope("search.messages", body)?;
+    Ok(payload
+        .messages
+        .matches
+        .into_iter()
+        .map(|hit| SlackSearchMatch {
+            ts: hit.ts,
+            text: hit.text,
+            conversation_id: hit.channel.id,
+            conversation_name: hit.channel.name,
+            username: hit.username,
+        })
+        .collect())
+}
+
+/// Split out of the async path so the decode is testable without HTTP.
+fn decode_user(body: &str) -> Result<SlackUser, SlackError> {
+    #[derive(Deserialize)]
+    struct Wrapper {
+        user: SlackUser,
+    }
+    let wrapper: Wrapper = decode_envelope("users.info", body)?;
+    Ok(wrapper.user)
+}
+
+/// Split out of the async path so the decode is testable without HTTP.
+fn decode_file(body: &str) -> Result<SlackFile, SlackError> {
+    #[derive(Deserialize)]
+    struct Wrapper {
+        file: SlackFile,
+    }
+    let wrapper: Wrapper = decode_envelope("files.info", body)?;
+    Ok(wrapper.file)
+}
+
 impl SlackClient {
     pub fn new(http: reqwest::Client, token: String) -> Self {
         Self { http, token }
@@ -753,14 +909,9 @@ impl SlackClient {
 
         let status = response.status();
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let after = response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<u64>().ok());
             return Err(SlackError::RateLimited {
                 method: method.to_owned(),
-                retry_after: retry_delay(after),
+                retry_after: retry_delay(retry_after_of(&response)),
             });
         }
 
@@ -893,6 +1044,115 @@ impl SlackClient {
         let body = self.call_text("conversations.history", &params).await?;
         let page = decode_message_page("conversations.history", &body)?;
         Ok(page.messages.into_iter().find(|message| message.ts == ts).and_then(|m| m.user))
+    }
+
+    /// GET an absolute URL with the bearer attached. Slack's private file
+    /// URLs answer 403 without it, and byte-identically with it.
+    pub async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SlackError> {
+        let response = self.http.get(url).bearer_auth(&self.token).send().await.map_err(|err| {
+            SlackError::Transport { method: "download".to_owned(), detail: err.to_string() }
+        })?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(SlackError::RateLimited {
+                method: "download".to_owned(),
+                retry_after: retry_delay(retry_after_of(&response)),
+            });
+        }
+        let status = response.status();
+        let bytes = response.bytes().await.map_err(|err| SlackError::Transport {
+            method: "download".to_owned(),
+            detail: err.to_string(),
+        })?;
+        if !status.is_success() {
+            // A non-success body is an error page, never a file: treating
+            // it as bytes would write an HTML 403 to disk as the file.
+            return Err(SlackError::Transport {
+                method: "download".to_owned(),
+                detail: format!("HTTP {status}"),
+            });
+        }
+        Ok(bytes.to_vec())
+    }
+
+    /// POST raw bytes to an absolute URL. Deliberately no bearer: the
+    /// upload URL is pre-signed, and it is not the Web API host.
+    pub async fn post_bytes(&self, url: &str, body: Vec<u8>) -> Result<(), SlackError> {
+        let response = self.http.post(url).body(body).send().await.map_err(|err| {
+            SlackError::Transport { method: "upload".to_owned(), detail: err.to_string() }
+        })?;
+        let status = response.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(SlackError::RateLimited {
+                method: "upload".to_owned(),
+                retry_after: retry_delay(retry_after_of(&response)),
+            });
+        }
+        if !status.is_success() {
+            return Err(SlackError::Transport {
+                method: "upload".to_owned(),
+                detail: format!("HTTP {status}"),
+            });
+        }
+        Ok(())
+    }
+
+    /// `files.info` for one file id.
+    pub async fn file_info(&self, id: &str) -> Result<SlackFile, SlackError> {
+        let params = vec![("file", id.to_owned())];
+        let body = self.call_text("files.info", &params).await?;
+        decode_file(&body)
+    }
+
+    /// `files.getUploadURLExternal`: the pre-signed URL to POST the bytes
+    /// to, plus the file id the completion call needs.
+    pub async fn get_upload_url(
+        &self,
+        name: &str,
+        length: usize,
+    ) -> Result<(String, String), SlackError> {
+        #[derive(Deserialize)]
+        struct UploadTarget {
+            upload_url: String,
+            file_id: String,
+        }
+        let params = vec![("filename", name.to_owned()), ("length", length.to_string())];
+        let target: UploadTarget = self.call("files.getUploadURLExternal", &params).await?;
+        Ok((target.upload_url, target.file_id))
+    }
+
+    /// `files.completeUploadExternal`. It can be called once only, and the
+    /// file is discarded if it never is.
+    pub async fn complete_upload(
+        &self,
+        file_id: &str,
+        channel: &str,
+        thread_ts: Option<&str>,
+    ) -> Result<(), SlackError> {
+        let files = serde_json::json!([{ "id": file_id }]).to_string();
+        let mut params = vec![("files", files), ("channel_id", channel.to_owned())];
+        if let Some(thread_ts) = thread_ts {
+            params.push(("thread_ts", thread_ts.to_owned()));
+        }
+        let _: serde_json::Value = self.call("files.completeUploadExternal", &params).await?;
+        Ok(())
+    }
+
+    /// `search.messages`. Matches text; it cannot find every message that
+    /// mentions a user, which is what the mention subscription is for.
+    pub async fn search_messages(
+        &self,
+        query: &str,
+        count: u32,
+    ) -> Result<Vec<SlackSearchMatch>, SlackError> {
+        let body = self.call_text("search.messages", &search_params(query, count)).await?;
+        decode_search(&body)
+    }
+
+    /// `users.info` for one user id.
+    pub async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
+        let params = vec![("user", user.to_owned())];
+        let body = self.call_text("users.info", &params).await?;
+        decode_user(&body)
     }
 
     /// Every conversation the token's user is a member of, paging to the end.
@@ -1376,6 +1636,87 @@ mod tests {
         ) -> Result<Option<String>, SlackError> {
             Ok(None)
         }
+
+        async fn get_bytes(&self, _url: &str) -> Result<Vec<u8>, SlackError> {
+            Ok(Vec::new())
+        }
+
+        async fn post_bytes(&self, _url: &str, _body: Vec<u8>) -> Result<(), SlackError> {
+            Ok(())
+        }
+
+        async fn file_info(&self, _id: &str) -> Result<SlackFile, SlackError> {
+            Ok(SlackFile { id: String::new(), name: String::new(), url_private: String::new() })
+        }
+
+        async fn get_upload_url(
+            &self,
+            _name: &str,
+            _length: usize,
+        ) -> Result<(String, String), SlackError> {
+            Ok((String::new(), String::new()))
+        }
+
+        async fn complete_upload(
+            &self,
+            _file_id: &str,
+            _channel: &str,
+            _thread_ts: Option<&str>,
+        ) -> Result<(), SlackError> {
+            Ok(())
+        }
+
+        async fn search_messages(
+            &self,
+            _query: &str,
+            _count: u32,
+        ) -> Result<Vec<SlackSearchMatch>, SlackError> {
+            Ok(Vec::new())
+        }
+
+        async fn user_info(&self, _user: &str) -> Result<SlackUser, SlackError> {
+            Ok(SlackUser { id: String::new(), name: String::new(), real_name: None, tz: None })
+        }
+    }
+
+    #[test]
+    fn a_search_always_asks_for_timestamp_order() {
+        // The default is relevance, which ranked a 22-hour-old match above
+        // a 2.6-hour-old one during the probe.
+        let params = search_params("granite", 20);
+        assert_eq!(
+            params.iter().find(|(key, _)| *key == "sort").map(|(_, value)| value.as_str()),
+            Some("timestamp"),
+        );
+    }
+
+    #[test]
+    fn a_search_decodes_matches_and_their_channel_names() {
+        let body = r#"{"ok":true,"messages":{"total":2,"matches":[
+            {"ts":"100.1","text":"hello","channel":{"id":"C1","name":"general"},"username":"ved"},
+            {"ts":"200.2","text":"world","channel":{"id":"D1","is_im":true},"username":"other"}]}}"#;
+        let matches = decode_search(body).expect("decodes");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].conversation_id, "C1");
+        assert_eq!(matches[0].conversation_name.as_deref(), Some("general"));
+        assert_eq!(matches[0].username.as_deref(), Some("ved"));
+        assert_eq!(matches[1].conversation_name, None, "a DM has no name");
+    }
+
+    #[test]
+    fn a_user_lookup_decodes_the_display_name() {
+        let body = r#"{"ok":true,"user":{"id":"U1","name":"ved","real_name":"Vedhavyas S","tz":"Asia/Kolkata"}}"#;
+        let user = decode_user(body).expect("decodes");
+        assert_eq!(user.name, "ved");
+        assert_eq!(user.tz.as_deref(), Some("Asia/Kolkata"));
+    }
+
+    #[test]
+    fn a_file_lookup_decodes_its_private_url() {
+        let body = r#"{"ok":true,"file":{"id":"F1","name":"notes.txt","url_private":"https://files.slack.com/x"}}"#;
+        let file = decode_file(body).expect("decodes");
+        assert_eq!(file.name, "notes.txt");
+        assert_eq!(file.url_private, "https://files.slack.com/x");
     }
 
     #[test]
@@ -1394,6 +1735,122 @@ mod tests {
             parts.iter().map(|part| part.matches('a').count()).sum::<usize>(),
             POST_LIMIT + 1,
             "splitting must carry every character",
+        );
+    }
+
+    /// What the one-shot server saw. The URL is on 127.0.0.1 with an
+    /// ephemeral port, so the byte helpers need no Slack credential.
+    #[derive(Default, Debug)]
+    struct SeenRequest {
+        authorization: Option<String>,
+        body: Vec<u8>,
+    }
+
+    fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|window| window == needle)
+    }
+
+    /// Header NAMES are case-insensitive, values are not: lowercasing the
+    /// whole head would turn `Bearer xoxp-test` into `bearer xoxp-test`
+    /// and hide a real mismatch behind a scaffolding bug.
+    fn content_length(head: &str) -> Option<usize> {
+        head.lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, value)| value.trim().parse().ok())
+    }
+
+    fn header_value(head: &str, wanted: &str) -> Option<String> {
+        head.lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.trim().eq_ignore_ascii_case(wanted))
+            .map(|(_, value)| value.trim().to_owned())
+    }
+
+    /// Serve exactly one request and close, on a background thread, so a
+    /// test can assert on what actually went over the wire. `std::net`
+    /// rather than `tokio::net` because this workspace's tokio has no
+    /// `net` feature and a test is not a reason to add one.
+    fn spawn_one_shot_server(
+        status: &'static str,
+        response_body: &'static str,
+    ) -> (String, std::thread::JoinHandle<SeenRequest>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept one connection");
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = stream.read(&mut chunk).expect("read the request");
+                if read == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&chunk[..read]);
+                if let Some(end) = find_subslice(&raw, b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&raw[..end]).to_string();
+                    let declared = content_length(&head).unwrap_or(0);
+                    if raw.len() >= end + 4 + declared {
+                        break;
+                    }
+                }
+            }
+
+            let end = find_subslice(&raw, b"\r\n\r\n").expect("a complete request");
+            let head = String::from_utf8_lossy(&raw[..end]).to_string();
+            let authorization = header_value(&head, "authorization");
+            let body = raw[end + 4..].to_vec();
+
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            SeenRequest { authorization, body }
+        });
+        (format!("http://{addr}/file"), handle)
+    }
+
+    #[tokio::test]
+    async fn get_bytes_sends_the_bearer_header() {
+        let (url, seen) = spawn_one_shot_server("200 OK", "body-bytes");
+        let client = SlackClient::new(reqwest::Client::new(), "xoxp-test".to_owned());
+
+        let got = client.get_bytes(&url).await.expect("fetch");
+        assert_eq!(got, b"body-bytes");
+        assert_eq!(
+            seen.join().expect("server thread").authorization.as_deref(),
+            Some("Bearer xoxp-test"),
+            "a private file URL is a 403 without this header",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_success_download_is_an_error_not_an_empty_body() {
+        let (url, seen) = spawn_one_shot_server("403 Forbidden", "");
+        let client = SlackClient::new(reqwest::Client::new(), "xoxp-test".to_owned());
+
+        assert!(
+            client.get_bytes(&url).await.is_err(),
+            "a 403 must not be mistaken for a zero-byte file",
+        );
+        seen.join().expect("server thread");
+    }
+
+    #[tokio::test]
+    async fn post_bytes_sends_the_body_unchanged_and_no_bearer() {
+        let (url, seen) = spawn_one_shot_server("200 OK", "OK - 5");
+        let client = SlackClient::new(reqwest::Client::new(), "xoxp-test".to_owned());
+
+        client.post_bytes(&url, b"hello".to_vec()).await.expect("upload");
+        let seen = seen.join().expect("server thread");
+        assert_eq!(seen.body, b"hello");
+        assert_eq!(
+            seen.authorization, None,
+            "the upload URL is pre-signed and must not carry the bearer",
         );
     }
 

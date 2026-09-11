@@ -168,6 +168,9 @@ mod tests {
             "slack__post",
             "slack__edit",
             "slack__react",
+            "slack__attachment",
+            "slack__search",
+            "slack__user",
         ] {
             assert!(
                 debug.contains(expected),
@@ -227,6 +230,9 @@ mod tests {
             "slack__post",
             "slack__edit",
             "slack__react",
+            "slack__attachment",
+            "slack__search",
+            "slack__user",
         ] {
             assert!(
                 debug.contains(expected),

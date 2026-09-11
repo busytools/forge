@@ -94,6 +94,45 @@ pub struct SlackSubscription {
     pub created_at: SystemTime,
 }
 
+/// A file as `files.info` reports it. `url_private` is a bearer fetch, not
+/// a URL, and `name` is whatever the uploader chose to call it - untrusted
+/// input as far as this code is concerned.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SlackFile {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub url_private: String,
+}
+
+/// One hit from `search.messages`. `conversation_name` is absent on a DM,
+/// which has no name rather than an empty one.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SlackSearchMatch {
+    pub ts: String,
+    #[serde(default)]
+    pub text: String,
+    pub conversation_id: String,
+    #[serde(default)]
+    pub conversation_name: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+}
+
+/// One user as `users.info` reports it. Every optional field is optional
+/// because Slack omits fields per user type rather than sending nulls.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SlackUser {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub real_name: Option<String>,
+    #[serde(default)]
+    pub tz: Option<String>,
+}
+
 /// A composed but unsent Slack message. The workspace holds it until the
 /// user approves it in the dock prompt; nothing reaches Slack otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
