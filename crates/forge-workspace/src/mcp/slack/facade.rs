@@ -388,26 +388,23 @@ impl ProdSlackFacade {
         draft: SlackDraft,
     ) -> GateDecision {
         let (id, decision) = workspace.register_slack_draft(caller, draft);
-        let guard = ResolveOnDrop {
-            workspace: Arc::clone(workspace),
-            id: id.clone(),
-            caller: caller.clone(),
-        };
+        let guard =
+            ResolveOnDrop { workspace: Arc::clone(workspace), id, caller: caller.clone() };
         let answer = tokio::time::timeout(APPROVAL_TIMEOUT, decision).await;
         let resolved = match answer {
             Ok(Ok(true)) => GateDecision::Approved,
-            Ok(Ok(false)) | Ok(Err(_)) => GateDecision::Rejected,
+            Ok(Ok(false) | Err(_)) => GateDecision::Rejected,
             Err(_elapsed) => GateDecision::Expired,
         };
         if resolved == GateDecision::Expired {
             let _ =
                 workspace.update_sender().send(crate::protocol::SessionUpdate::SlackDraftExpired {
                     key: caller.clone(),
-                    id: id.clone(),
+                    id: guard.id,
                 });
         }
         if resolved != GateDecision::Approved {
-            workspace.resolve_slack_draft(id, caller, false);
+            workspace.resolve_slack_draft(guard.id, caller, false);
         }
         drop(guard);
         resolved
@@ -1444,7 +1441,7 @@ mod tests {
             "a timed-out draft is an expiry, never a rejection and never an approval",
         );
         assert!(api.posts().is_empty(), "an expired draft must not post");
-        assert!(ws.slack_drafts.lock().is_empty(), "the expiry also clears the registry entry",);
+        assert!(ws.slack_drafts.lock().is_empty(), "the expiry also clears the registry entry");
     }
 
     #[tokio::test]
