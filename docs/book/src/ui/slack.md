@@ -32,3 +32,9 @@ A `mentions` subscription is swept by one workspace-wide search per tick rather 
 - Results are explicitly timestamp-ordered. The API's default sort is by relevance, which surfaces stale hits first.
 
 A matched mention starts the conversation it came from being watched by the mention subscription's owner, so the agent can reply back and forth without anyone subscribing to the channel by hand. A message the user authored is never delivered, or an agent answering in Slack would answer itself.
+
+## Thread following
+
+Replies never appear in a conversation's history fetch, so a thread a session was pulled into is followed on its own. A delivered message that carries a `thread_ts`, or that starts a thread, is tracked per conversation and parent, and each sweep walks every tracked thread's replies on the thread's own cursor. A new reply is delivered to every session that owns the thread, wherever the parent has aged in the channel.
+
+Tracking stays bounded: it ends for a session whose subscription is removed, the thread stops being tracked when its last owner goes, and a thread that has seen no new reply for 14 days is dropped.

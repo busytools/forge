@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use forge_connectors::slack::{AuthTest, SlackApi, SlackClient, SlackHost};
-use forge_primitives::slack::{SlackConfig, SlackDraft, SlackMessage, SlackSubscription};
+use forge_primitives::slack::{
+    SlackConfig, SlackDraft, SlackFollowedThread, SlackMessage, SlackSubscription, SlackThreadOwner,
+};
 use uuid::Uuid;
 
 use crate::SessionKey;
@@ -22,6 +24,25 @@ use crate::workspace::Workspace;
 /// sweep that re-runs after a 429 or a restart, short enough that the map
 /// stays small.
 const DELIVERY_REMEMBER: Duration = Duration::from_secs(300);
+
+/// A followed thread that has seen no reply newer than its cursor for
+/// this many days is dropped, so the tracked set stays bounded.
+const THREAD_IDLE_DROP_DAYS: u64 = 14;
+
+const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+
+/// The age of a Slack `ts` in whole days, read from its seconds prefix.
+/// The fraction is cursor precision, not calendar precision; the coarse
+/// prefix is all the idle check needs. An unparseable cursor reads as
+/// ancient and drops the row.
+fn thread_idle_days(cursor: &str) -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|now| now.as_secs())
+        .unwrap_or_default();
+    let cursor_secs: u64 = cursor.split('.').next().and_then(|secs| secs.parse().ok()).unwrap_or(0);
+    now.saturating_sub(cursor_secs) / SECONDS_PER_DAY
+}
 
 /// One client per configured workspace, keyed by its label.
 ///
@@ -234,6 +255,156 @@ impl Workspace {
                 target: "forge_workspace::slack",
                 %error,
                 "writing a Slack watermark failed",
+            );
+        }
+    }
+
+    /// Track a thread because a delivered message anchors it, owned by the
+    /// matching subscription. A new row starts at the parent, so its first
+    /// replies walk reaches everything after the parent; a row that exists
+    /// keeps its cursor and gains the owner if it was not there.
+    pub(crate) fn follow_slack_thread(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        owner: forge_primitives::slack::SlackThreadOwner,
+    ) {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        let mut record = match crate::store::slack::thread(db, workspace, conversation, parent_ts) {
+            Ok(record) => record.unwrap_or_else(|| forge_primitives::slack::SlackThreadRecord {
+                cursor: parent_ts.to_owned(),
+                owners: Vec::new(),
+            }),
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "reading a Slack thread failed; the thread stays unfollowed",
+                );
+                return;
+            }
+        };
+        if !record.owners.contains(&owner) {
+            record.owners.push(owner);
+        }
+        if let Err(error) =
+            crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &record)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "writing a Slack thread failed",
+            );
+        }
+    }
+
+    /// The threads tracked for a conversation, pruned while listed: an
+    /// owner with no remaining subscription in the workspace is dropped
+    /// from the record, a row whose last owner goes is deleted, and a row
+    /// idle past [`THREAD_IDLE_DROP_DAYS`] is dropped with a debug log.
+    pub(crate) fn slack_followed_threads(
+        &self,
+        workspace: &str,
+        conversation: &str,
+    ) -> Vec<forge_primitives::slack::SlackFollowedThread> {
+        use forge_primitives::slack::SlackFollowedThread;
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return Vec::new() };
+        let rows = match crate::store::slack::threads_for(db, workspace, conversation) {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "reading Slack threads failed",
+                );
+                return Vec::new();
+            }
+        };
+        let alive_owners: std::collections::HashSet<(String, Option<String>)> = self
+            .slack_subs
+            .lock()
+            .iter()
+            .filter(|sub| sub.workspace == workspace)
+            .map(|sub| (sub.project.clone(), sub.team_role.clone()))
+            .collect();
+        let mut out = Vec::new();
+        for (parent_ts, mut record) in rows {
+            record.owners.retain(|owner| {
+                alive_owners.contains(&(owner.project.clone(), owner.team_role.clone()))
+            });
+            if record.owners.is_empty() {
+                let _ = crate::store::slack::remove_thread(db, workspace, conversation, &parent_ts);
+                continue;
+            }
+            if thread_idle_days(&record.cursor) >= THREAD_IDLE_DROP_DAYS {
+                let _ = crate::store::slack::remove_thread(db, workspace, conversation, &parent_ts);
+                tracing::debug!(
+                    target: "forge_workspace::slack",
+                    workspace,
+                    conversation,
+                    parent = %parent_ts,
+                    "dropping an idle Slack thread",
+                );
+                continue;
+            }
+            out.push(SlackFollowedThread { parent_ts, owners: record.owners });
+        }
+        out
+    }
+
+    /// A thread's reply cursor, or `None` when the thread has none yet.
+    pub(crate) fn slack_thread_watermark(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return Ok(None) };
+        crate::store::slack::thread(db, workspace, conversation, parent_ts)
+            .map(|record| record.map(|record| record.cursor))
+    }
+
+    /// Advance a thread's reply cursor, through the store so it survives a
+    /// restart.
+    pub(crate) fn set_slack_thread_watermark(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        ts: &str,
+    ) {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        let record = match crate::store::slack::thread(db, workspace, conversation, parent_ts) {
+            Ok(Some(record)) => record,
+            Ok(None) => forge_primitives::slack::SlackThreadRecord {
+                cursor: ts.to_owned(),
+                owners: Vec::new(),
+            },
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "reading a Slack thread failed; the cursor was not advanced",
+                );
+                return;
+            }
+        };
+        let advanced = forge_primitives::slack::SlackThreadRecord {
+            cursor: ts.to_owned(),
+            owners: record.owners,
+        };
+        if let Err(error) =
+            crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &advanced)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "writing a Slack thread cursor failed",
             );
         }
     }
@@ -502,6 +673,38 @@ impl SlackHost for SlackSubsystemHost {
         ws.set_slack_watermark(workspace, conversation, ts);
     }
 
+    fn followed_threads(&self, workspace: &str, conversation: &str) -> Vec<SlackFollowedThread> {
+        let Some(ws) = self.0.upgrade() else { return Vec::new() };
+        ws.slack_followed_threads(workspace, conversation)
+    }
+
+    fn thread_watermark(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+    ) -> Result<Option<String>, String> {
+        let ws = self.0.upgrade().ok_or("the workspace is gone")?;
+        ws.slack_thread_watermark(workspace, conversation, parent_ts)
+            .map_err(|error| error.to_string())
+    }
+
+    fn set_thread_watermark(&self, workspace: &str, conversation: &str, parent_ts: &str, ts: &str) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.set_slack_thread_watermark(workspace, conversation, parent_ts, ts);
+    }
+
+    fn follow_thread(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        owner: SlackThreadOwner,
+    ) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.follow_slack_thread(workspace, conversation, parent_ts, owner);
+    }
+
     fn set_connected(&self, workspace: &str, connected: bool) {
         let Some(ws) = self.0.upgrade() else { return };
         ws.slack_connected.lock().insert(workspace.to_owned(), connected);
@@ -697,6 +900,152 @@ mod tests {
         sub.target =
             SlackSubscriptionTarget::Conversation { id: id.to_owned(), mode: SlackWatchMode::All };
         sub
+    }
+
+    fn owner(project: &str, team_role: Option<&str>) -> SlackThreadOwner {
+        SlackThreadOwner { project: project.to_owned(), team_role: team_role.map(str::to_owned) }
+    }
+
+    /// A ts shaped like Slack's and set to now, because a followed thread
+    /// starts at a parent that was just delivered - an epoch-era fixture
+    /// would read as idle and be dropped.
+    fn recent_ts() -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the clock is past the epoch");
+        format!("{}.{:06}", now.as_secs(), now.subsec_micros())
+    }
+
+    /// A host over a real workspace and store, with one C1 subscription
+    /// owned by `project`/`team_role` already in place.
+    fn host_with_c1_subscriber(
+        project: &str,
+        team_role: Option<&str>,
+    ) -> (crate::slack::SlackSubsystemHost, Arc<Workspace>, tempfile::TempDir) {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation(project, team_role, "C1"), true);
+        (crate::slack::SlackSubsystemHost::new(&ws), ws, dir)
+    }
+
+    /// A thread a delivered message anchors is tracked from its parent,
+    /// owned once per session even when both followed it.
+    #[test]
+    fn a_followed_thread_starts_at_its_parent_and_gains_its_owner_once() {
+        let (host, ws, _dir) = host_with_c1_subscriber("forge", Some("tester"));
+        let parent = recent_ts();
+
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("tester")));
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("tester")));
+
+        let threads = host.followed_threads("acme", "C1");
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].parent_ts, parent);
+        assert_eq!(threads[0].owners, vec![owner("forge", Some("tester"))]);
+        assert_eq!(
+            host.thread_watermark("acme", "C1", &parent).expect("read"),
+            Some(parent.clone()),
+            "a new thread starts at its parent",
+        );
+
+        // A second session following the same thread joins the record
+        // rather than resetting it.
+        ws.add_slack_subscription(sub_for_conversation("other", None, "C1"), true);
+        host.follow_thread("acme", "C1", &parent, owner("other", None));
+        let threads = host.followed_threads("acme", "C1");
+        assert_eq!(threads[0].owners.len(), 2, "the second owner is added");
+        assert_eq!(
+            host.thread_watermark("acme", "C1", &parent).expect("read"),
+            Some(parent),
+            "joining a thread does not move its cursor",
+        );
+    }
+
+    /// The pinned split: two owners on one thread, one subscription
+    /// removed - the remaining owner still receives and the removed one
+    /// stops, and the row goes when the last owner does.
+    #[test]
+    fn a_removed_subscription_prunes_its_owner_and_the_last_one_deletes_the_row() {
+        let (host, ws, _dir) = host_with_c1_subscriber("forge", Some("a"));
+        ws.add_slack_subscription(sub_for_conversation("forge", Some("b"), "C1"), true);
+        let parent = recent_ts();
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("a")));
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("b")));
+
+        let b_id = ws
+            .slack_subscriptions_for_project("forge")
+            .into_iter()
+            .find(|sub| sub.team_role.as_deref() == Some("b"))
+            .expect("b's subscription")
+            .id;
+        assert!(ws.remove_slack_subscription_owned_by("forge", b_id, Some("b")));
+
+        let threads = host.followed_threads("acme", "C1");
+        assert_eq!(threads.len(), 1, "the thread keeps being swept");
+        assert_eq!(
+            threads[0].owners,
+            vec![owner("forge", Some("a"))],
+            "the removed owner is pruned, the remaining one keeps the thread",
+        );
+
+        let a_id = ws
+            .slack_subscriptions_for_project("forge")
+            .into_iter()
+            .find(|sub| sub.team_role.as_deref() == Some("a"))
+            .expect("a's subscription")
+            .id;
+        assert!(ws.remove_slack_subscription_owned_by("forge", a_id, Some("a")));
+        assert!(
+            host.followed_threads("acme", "C1").is_empty(),
+            "a thread whose last owner goes stops being tracked",
+        );
+        assert_eq!(
+            ws.slack_thread_watermark("acme", "C1", &parent).expect("read"),
+            None,
+            "the row is deleted, not just filtered from the listing",
+        );
+    }
+
+    /// A thread with no reply newer than its cursor for the drop age is
+    /// deleted; one inside the window survives. Both sides of the 14-day
+    /// boundary are exercised so the constant's value is pinned, not just
+    /// its existence.
+    #[test]
+    fn a_thread_idle_past_fourteen_days_is_dropped() {
+        let (host, _ws, _dir) = host_with_c1_subscriber("forge", None);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the clock is past the epoch")
+            .as_secs();
+        let days_ago = |days: u64| format!("{}.{:06}", now - days * 24 * 60 * 60, 0);
+
+        host.follow_thread("acme", "C1", &days_ago(15), owner("forge", None));
+        host.follow_thread("acme", "C1", &days_ago(13), owner("forge", None));
+
+        let threads = host.followed_threads("acme", "C1");
+        assert_eq!(threads.len(), 1, "the 15-day idle thread is dropped, the 13-day one kept");
+        assert_eq!(threads[0].parent_ts, days_ago(13), "and the survivor is the young one");
+    }
+
+    #[test]
+    fn advancing_a_thread_cursor_keeps_its_owners() {
+        let (host, _ws, _dir) = host_with_c1_subscriber("forge", Some("tester"));
+        let parent = recent_ts();
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("tester")));
+        let advanced = recent_ts();
+        host.set_thread_watermark("acme", "C1", &parent, &advanced);
+        assert_eq!(
+            host.thread_watermark("acme", "C1", &parent).expect("read"),
+            Some(advanced),
+            "the cursor advances to the newest delivered reply",
+        );
+        assert_eq!(
+            host.followed_threads("acme", "C1")[0].owners,
+            vec![owner("forge", Some("tester"))],
+            "and the owners ride along untouched",
+        );
     }
 
     #[test]

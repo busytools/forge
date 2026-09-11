@@ -13,8 +13,9 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use forge_primitives::slack::{
-    SlackBookmark, SlackConversation, SlackFile, SlackMessage, SlackPin, SlackSearchMatch,
-    SlackSubscription, SlackSubscriptionTarget, SlackUser, SlackWatchMode,
+    SlackBookmark, SlackConversation, SlackFile, SlackFollowedThread, SlackMessage, SlackPin,
+    SlackSearchMatch, SlackSubscription, SlackSubscriptionTarget, SlackThreadOwner, SlackUser,
+    SlackWatchMode,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -44,6 +45,37 @@ pub trait SlackHost: Send + Sync {
     /// Record the last timestamp delivered. A `ts` is a string with a
     /// microsecond fraction; never round-trip it through a number.
     fn set_watermark(&self, workspace: &str, conversation: &str, ts: &str);
+
+    /// The threads tracked for a conversation, each with the owners still
+    /// subscribed to it. The host prunes while listing: an owner whose
+    /// subscription is gone is dropped from the record, a row's last owner
+    /// deletion removes the row, and a row idle past the host's drop age
+    /// never comes back.
+    fn followed_threads(&self, workspace: &str, conversation: &str) -> Vec<SlackFollowedThread>;
+
+    /// The last reply `ts` seen in a thread, or `None` when it has none
+    /// yet. An error means the cursor could not be read: the caller skips
+    /// the thread this tick rather than walking it from the parent.
+    fn thread_watermark(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+    ) -> Result<Option<String>, String>;
+
+    /// Advance a thread's reply cursor, stored as the string Slack sent.
+    fn set_thread_watermark(&self, workspace: &str, conversation: &str, parent_ts: &str, ts: &str);
+
+    /// Track a thread from a delivered message, owned by the matching
+    /// subscription. Following again by another owner adds that owner; by
+    /// the same owner it adds nothing.
+    fn follow_thread(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        owner: SlackThreadOwner,
+    );
 
     /// Liveness for the Inspector's status line.
     fn set_connected(&self, workspace: &str, connected: bool);
@@ -85,6 +117,7 @@ pub trait SlackApi: Send + Sync {
         &self,
         channel: &str,
         ts: &str,
+        oldest: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError>;
@@ -170,10 +203,11 @@ impl SlackApi for SlackClient {
         &self,
         channel: &str,
         ts: &str,
+        oldest: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError> {
-        SlackClient::replies(self, channel, ts, limit, cursor).await
+        SlackClient::replies(self, channel, ts, oldest, limit, cursor).await
     }
 
     async fn post_message(
@@ -337,6 +371,14 @@ fn targets(subscriptions: &[SlackSubscription], conversation: &SlackConversation
         SlackSubscriptionTarget::Conversation { id, .. } => id == &conversation.id,
         SlackSubscriptionTarget::Mentions => false,
     })
+}
+
+/// The thread a delivered message anchors: its own thread when it is a
+/// reply, the thread it starts when it is a parent that already has
+/// replies, and nothing for a plain top-level message - or every message
+/// would grow the tracked set.
+fn followed_parent_of(message: &SlackHistoryMessage) -> Option<String> {
+    message.thread_ts.clone().or_else(|| (message.reply_count > 0).then(|| message.ts.clone()))
 }
 
 const API_ROOT: &str = "https://slack.com/api";
@@ -554,12 +596,13 @@ async fn fetch_replies(
     api: &dyn SlackApi,
     channel: &str,
     ts: &str,
+    oldest: Option<&str>,
 ) -> Result<Vec<SlackHistoryMessage>, SlackError> {
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     let mut pages = 0;
     loop {
-        let page = api.replies(channel, ts, SWEEP_LIMIT, cursor.as_deref()).await?;
+        let page = api.replies(channel, ts, oldest, SWEEP_LIMIT, cursor.as_deref()).await?;
         out.extend(page.messages);
         pages += 1;
         match page.next_cursor {
@@ -637,7 +680,7 @@ pub(crate) async fn sweep(
             .map(|message| message.ts.clone())
             .collect();
         for parent in parents {
-            let replies = match fetch_replies(api, &conversation.id, &parent).await {
+            let replies = match fetch_replies(api, &conversation.id, &parent, None).await {
                 Ok(replies) => replies,
                 Err(SlackError::RateLimited { retry_after, .. }) => {
                     return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
@@ -668,7 +711,7 @@ pub(crate) async fn sweep(
                     &user_id,
                 )
             }) {
-                handed_off = host.deliver(
+                if !host.deliver(
                     subscription,
                     &SlackMessage {
                         workspace: workspace.to_owned(),
@@ -680,7 +723,21 @@ pub(crate) async fn sweep(
                         text: message.text.clone(),
                         files: message.files.clone(),
                     },
-                );
+                ) {
+                    continue;
+                }
+                handed_off = true;
+                if let Some(parent_ts) = followed_parent_of(message) {
+                    host.follow_thread(
+                        workspace,
+                        &conversation.id,
+                        &parent_ts,
+                        SlackThreadOwner {
+                            project: subscription.project.clone(),
+                            team_role: subscription.team_role.clone(),
+                        },
+                    );
+                }
             }
             if !handed_off {
                 // Stop at the failure: continuing would advance past a
@@ -697,6 +754,84 @@ pub(crate) async fn sweep(
         // the re-delivery a no-op.
         if let Some(newest) = newest_delivered {
             host.set_watermark(workspace, &conversation.id, &newest);
+        }
+
+        // Threads followed from earlier deliveries. Replies never appear
+        // in history and the parent ages past the conversation watermark,
+        // so each tracked thread is walked on its own cursor.
+        for thread in host.followed_threads(workspace, &conversation.id) {
+            let cursor = match host.thread_watermark(workspace, &conversation.id, &thread.parent_ts)
+            {
+                Ok(cursor) => cursor,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_connectors::slack",
+                        workspace,
+                        conversation = %conversation.id,
+                        parent = %thread.parent_ts,
+                        %error,
+                        "reading a thread cursor failed; skipping the thread this tick",
+                    );
+                    continue;
+                }
+            };
+            let replies =
+                match fetch_replies(api, &conversation.id, &thread.parent_ts, cursor.as_deref())
+                    .await
+                {
+                    Ok(replies) => replies,
+                    Err(SlackError::RateLimited { retry_after, .. }) => {
+                        return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
+                    }
+                    Err(error) => return Err(error),
+                };
+            let mut newest_reply: Option<String> = None;
+            for reply in replies {
+                // Slack repeats the parent on every page of the walk.
+                if reply.ts == thread.parent_ts
+                    || !is_newer(&reply.ts, cursor.as_deref())
+                    || !seen.insert(reply.ts.clone())
+                {
+                    continue;
+                }
+                let mut all_handed = true;
+                for owner in &thread.owners {
+                    // Delivery routes by the owner fields alone, so any
+                    // subscription of the same owner carries the reply.
+                    let Some(subscription) = subscriptions.iter().find(|subscription| {
+                        subscription.project == owner.project
+                            && subscription.team_role == owner.team_role
+                    }) else {
+                        all_handed = false;
+                        continue;
+                    };
+                    if !host.deliver(
+                        subscription,
+                        &SlackMessage {
+                            workspace: workspace.to_owned(),
+                            conversation: conversation.id.clone(),
+                            conversation_label: label.clone(),
+                            ts: reply.ts.clone(),
+                            thread_ts: Some(thread.parent_ts.clone()),
+                            user: reply.user.clone(),
+                            text: reply.text.clone(),
+                            files: reply.files.clone(),
+                        },
+                    ) {
+                        all_handed = false;
+                    }
+                }
+                if !all_handed {
+                    // The cursor stays below a reply that did not reach
+                    // every owner, so the next sweep re-delivers it.
+                    break;
+                }
+                delivered += 1;
+                newest_reply = Some(reply.ts.clone());
+            }
+            if let Some(newest) = newest_reply {
+                host.set_thread_watermark(workspace, &conversation.id, &thread.parent_ts, &newest);
+            }
         }
     }
 
@@ -805,6 +940,20 @@ pub(crate) async fn sweep_mentions(
             // Ved's ask: a mention pulls the agent into the conversation, so
             // the reply back and forth does not need another subscription.
             host.auto_subscribe(workspace, &message);
+            // A mention inside a thread anchors that thread the same way:
+            // the back and forth continues under the parent, not the
+            // channel.
+            if let Some(parent_ts) = hit.thread_ts.clone() {
+                host.follow_thread(
+                    workspace,
+                    &hit.conversation_id,
+                    &parent_ts,
+                    SlackThreadOwner {
+                        project: subscription.project.clone(),
+                        team_role: subscription.team_role.clone(),
+                    },
+                );
+            }
             delivered += 1;
             if newest.as_deref().is_none_or(|current| hit.ts.as_str() > current) {
                 newest = Some(hit.ts.clone());
@@ -1229,6 +1378,7 @@ impl SlackClient {
         &self,
         channel: &str,
         ts: &str,
+        oldest: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError> {
@@ -1237,6 +1387,9 @@ impl SlackClient {
             ("ts", ts.to_owned()),
             ("limit", limit.to_string()),
         ];
+        if let Some(oldest) = oldest {
+            params.push(("oldest", oldest.to_owned()));
+        }
         if let Some(cursor) = cursor {
             params.push(("cursor", cursor.to_owned()));
         }
@@ -1482,6 +1635,7 @@ impl SlackClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_primitives::slack::SlackThreadRecord;
     use std::collections::HashMap;
 
     /// Pinned against literals, not against `RETRY_FALLBACK` / `RETRY_CAP`:
@@ -1802,11 +1956,16 @@ mod tests {
         watermarks: std::sync::Mutex<HashMap<String, String>>,
         connected: std::sync::Mutex<Option<bool>>,
         delivered: std::sync::Mutex<Vec<SlackMessage>>,
+        /// The owner of each successful delivery, index-aligned with
+        /// `delivered`.
+        delivered_owners: std::sync::Mutex<Vec<SlackThreadOwner>>,
         search: std::sync::Mutex<Vec<Vec<SlackSearchMatch>>>,
         search_calls: std::sync::Mutex<usize>,
         auto_subscribed: std::sync::Mutex<Vec<String>>,
         deliver_failures: std::sync::Mutex<std::collections::HashSet<usize>>,
         deliver_attempts: std::sync::Mutex<usize>,
+        /// Followed threads keyed `workspace/conversation/parent`.
+        threads: std::sync::Mutex<HashMap<String, SlackThreadRecord>>,
     }
 
     fn conversation_for(id: &str) -> SlackConversation {
@@ -1894,6 +2053,23 @@ mod tests {
         fn fail_delivery_at(&self, index: usize) {
             self.deliver_failures.lock().expect("lock").insert(index);
         }
+
+        fn delivered_owners(&self) -> Vec<SlackThreadOwner> {
+            self.delivered_owners.lock().expect("lock").clone()
+        }
+
+        fn thread_cursor(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            parent: &str,
+        ) -> Option<String> {
+            self.threads
+                .lock()
+                .expect("lock")
+                .get(&format!("{workspace}/{conversation}/{parent}"))
+                .map(|record| record.cursor.clone())
+        }
     }
 
     impl SlackHost for FakeHost {
@@ -1929,7 +2105,7 @@ mod tests {
             *self.connected.lock().expect("lock") = Some(connected);
         }
 
-        fn deliver(&self, _subscription: &SlackSubscription, message: &SlackMessage) -> bool {
+        fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool {
             let attempt = {
                 let mut attempts = self.deliver_attempts.lock().expect("lock");
                 *attempts += 1;
@@ -1939,7 +2115,81 @@ mod tests {
                 return false;
             }
             self.delivered.lock().expect("lock").push(message.clone());
+            self.delivered_owners.lock().expect("lock").push(SlackThreadOwner {
+                project: subscription.project.clone(),
+                team_role: subscription.team_role.clone(),
+            });
             true
+        }
+
+        fn followed_threads(
+            &self,
+            workspace: &str,
+            conversation: &str,
+        ) -> Vec<SlackFollowedThread> {
+            let prefix = format!("{workspace}/{conversation}/");
+            self.threads
+                .lock()
+                .expect("lock")
+                .iter()
+                .filter(|(key, _)| key.starts_with(&prefix))
+                .map(|(key, record)| SlackFollowedThread {
+                    parent_ts: key
+                        .rsplit('/')
+                        .next()
+                        .expect("the parent is the last part")
+                        .to_owned(),
+                    owners: record.owners.clone(),
+                })
+                .collect()
+        }
+
+        fn thread_watermark(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            parent_ts: &str,
+        ) -> Result<Option<String>, String> {
+            Ok(self
+                .threads
+                .lock()
+                .expect("lock")
+                .get(&format!("{workspace}/{conversation}/{parent_ts}"))
+                .map(|record| record.cursor.clone()))
+        }
+
+        fn set_thread_watermark(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            parent_ts: &str,
+            ts: &str,
+        ) {
+            let mut threads = self.threads.lock().expect("lock");
+            let record = threads
+                .entry(format!("{workspace}/{conversation}/{parent_ts}"))
+                .or_insert_with(|| SlackThreadRecord { cursor: String::new(), owners: Vec::new() });
+            record.cursor = ts.to_owned();
+        }
+
+        fn follow_thread(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            parent_ts: &str,
+            owner: SlackThreadOwner,
+        ) {
+            let mut threads = self.threads.lock().expect("lock");
+            let record = threads
+                .entry(format!("{workspace}/{conversation}/{parent_ts}"))
+                .or_insert_with(|| {
+                    // The real host starts a new thread at its parent, so
+                    // the first replies walk reaches everything after it.
+                    SlackThreadRecord { cursor: parent_ts.to_owned(), owners: Vec::new() }
+                });
+            if !record.owners.contains(&owner) {
+                record.owners.push(owner);
+            }
         }
 
         fn auto_subscribe(&self, workspace: &str, message: &SlackMessage) -> bool {
@@ -2025,6 +2275,7 @@ mod tests {
             &self,
             channel: &str,
             ts: &str,
+            _oldest: Option<&str>,
             _limit: u32,
             _cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
@@ -2339,6 +2590,26 @@ mod tests {
         sub
     }
 
+    fn sub_conversation_owned_by(
+        workspace: &str,
+        project: &str,
+        team_role: Option<&str>,
+        id: &str,
+    ) -> SlackSubscription {
+        let mut sub = sub_for(SlackSubscriptionTarget::Conversation {
+            id: id.to_owned(),
+            mode: SlackWatchMode::All,
+        });
+        sub.workspace = workspace.to_owned();
+        sub.project = project.to_owned();
+        sub.team_role = team_role.map(str::to_owned);
+        sub
+    }
+
+    fn thread_owner(project: &str, team_role: Option<&str>) -> SlackThreadOwner {
+        SlackThreadOwner { project: project.to_owned(), team_role: team_role.map(str::to_owned) }
+    }
+
     fn search_match(ts: &str, conversation: &str, text: &str) -> SlackSearchMatch {
         SlackSearchMatch {
             ts: ts.to_owned(),
@@ -2616,6 +2887,127 @@ mod tests {
             vec!["root".to_owned(), "reply one".to_owned(), "reply two".to_owned()],
             "the parent must not be delivered once per page",
         );
+    }
+
+    /// The pin that would have caught the original Critical: the trigger
+    /// sweep delivers a parent, and a reply that arrives on a LATER sweep
+    /// still reaches the owning session - the parent has aged past the
+    /// conversation watermark by then, so only the thread cursor reaches
+    /// it.
+    #[tokio::test]
+    async fn a_reply_arriving_on_the_sweep_after_the_trigger_delivers_to_the_owning_session() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        let mut parent = history_message("100.0", "U9", "trigger");
+        parent.reply_count = 2;
+        host.seed_history("C1", vec![parent.clone()]);
+
+        sweep(&host, &host, "acme").await.expect("trigger sweep");
+        assert_eq!(host.delivered()[0].ts, "100.0", "the trigger itself is delivered");
+        assert_eq!(host.thread_cursor("acme", "C1", "100.0"), Some("100.0".to_owned()));
+
+        // The reply arrives afterwards. History has nothing new; only the
+        // followed thread's own walk can reach it.
+        host.seed_replies("C1", "100.0", vec![parent, history_message("150.0", "U8", "the reply")]);
+        sweep(&host, &host, "acme").await.expect("follow-up sweep");
+
+        let delivered = host.delivered();
+        let replies: Vec<&SlackMessage> =
+            delivered.iter().filter(|message| message.ts == "150.0").collect();
+        assert_eq!(replies.len(), 1, "the reply is delivered once");
+        assert_eq!(replies[0].thread_ts.as_deref(), Some("100.0"), "as a reply of its thread");
+        assert_eq!(
+            host.delivered_owners().last().map(|owner| owner.team_role.clone()),
+            Some(Some("tester".to_owned())),
+            "the reply reaches the OWNING session",
+        );
+        assert_eq!(
+            delivered.iter().filter(|message| message.ts == "100.0").count(),
+            1,
+            "the repeated parent is deduped",
+        );
+        assert_eq!(
+            host.thread_cursor("acme", "C1", "100.0"),
+            Some("150.0".to_owned()),
+            "the thread cursor advances over the delivered reply",
+        );
+    }
+
+    /// Fan-out on threads matches wave-one's delivery rule: every owner in
+    /// the record gets the reply, and one owner's failed delivery holds
+    /// the cursor below the reply instead of losing it.
+    #[tokio::test]
+    async fn every_owner_gets_a_thread_reply_and_a_failure_holds_the_cursor() {
+        let host = FakeHost::with_subscriptions(vec![
+            sub_conversation_owned_by("acme", "forge", Some("a"), "C1"),
+            sub_conversation_owned_by("acme", "forge", Some("b"), "C1"),
+        ]);
+        let mut parent = history_message("100.0", "U9", "trigger");
+        parent.reply_count = 1;
+        host.seed_history("C1", vec![parent.clone()]);
+        sweep(&host, &host, "acme").await.expect("trigger sweep");
+        assert_eq!(
+            host.followed_threads("acme", "C1").first().map(|thread| thread.owners.len()),
+            Some(2),
+            "both sessions own the thread after both were delivered the trigger",
+        );
+
+        host.seed_replies("C1", "100.0", vec![parent, history_message("150.0", "U8", "the reply")]);
+        // Attempts so far: the parent went to a then b. The reply's FIRST
+        // owner delivery (a) fails, so the cursor must not advance even
+        // though b receives it.
+        host.fail_delivery_at(2);
+        sweep(&host, &host, "acme").await.expect("follow-up sweep");
+
+        assert_eq!(
+            host.delivered().iter().filter(|message| message.ts == "150.0").count(),
+            1,
+            "the owner whose delivery succeeded still received the reply",
+        );
+        assert_eq!(
+            host.thread_cursor("acme", "C1", "100.0"),
+            Some("100.0".to_owned()),
+            "the cursor stays below a reply that did not reach every owner",
+        );
+    }
+
+    /// A plain top-level message anchors nothing, or every message would
+    /// grow the tracked set.
+    #[tokio::test]
+    async fn a_plain_message_follows_no_thread() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme", "forge", None, "C1",
+        )]);
+        host.seed_history("C1", vec![history_message("100.0", "U9", "plain")]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(host.delivered().len(), 1, "the message itself is delivered");
+        assert!(
+            host.followed_threads("acme", "C1").is_empty(),
+            "a message with no thread and no replies anchors nothing",
+        );
+    }
+
+    /// A mention inside a thread anchors that thread for the mention
+    /// subscription's owner, so the back and forth continues under the
+    /// parent.
+    #[tokio::test]
+    async fn a_mention_in_a_thread_anchors_that_thread() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        host.set_watermark("acme", MENTION_CURSOR, "100.0");
+        let mut hit = search_match("150.0", "C1", "ping <@U1>");
+        hit.thread_ts = Some("99.0".to_owned());
+        host.seed_search(vec![hit]);
+
+        sweep_mentions(&host, &host, "acme").await.expect("mention sweep");
+        let threads = host.followed_threads("acme", "C1");
+        assert_eq!(threads.len(), 1, "the thread of the mention is tracked");
+        assert_eq!(threads[0].parent_ts, "99.0");
+        assert_eq!(threads[0].owners, vec![thread_owner("forge", None)]);
     }
 
     #[tokio::test]

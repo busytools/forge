@@ -6,7 +6,7 @@
 //! shapes, so one table would decode the other's rows as garbage.
 
 use anyhow::Context;
-use forge_primitives::slack::SlackSubscription;
+use forge_primitives::slack::{SlackSubscription, SlackThreadRecord};
 use redb::{ReadableTable, TableDefinition};
 use uuid::Uuid;
 
@@ -109,13 +109,109 @@ pub fn set_watermark(db: &Db, workspace: &str, conversation: &str, ts: &str) -> 
     Ok(())
 }
 
+/// One followed thread per (workspace, conversation, parent) triple. The
+/// value is JSON because the owner list rides beside the verbatim reply
+/// cursor; a bare string would lose the owners.
+const THREADS: TableDefinition<&str, &str> = TableDefinition::new("slack_threads");
+
+/// `\u{0}` joins the triple; none of its parts can carry one.
+fn thread_key(workspace: &str, conversation: &str, parent_ts: &str) -> String {
+    format!("{workspace}\u{0}{conversation}\u{0}{parent_ts}")
+}
+
+/// One thread's record, or `None` when that thread is not followed.
+pub fn thread(
+    db: &Db,
+    workspace: &str,
+    conversation: &str,
+    parent_ts: &str,
+) -> anyhow::Result<Option<SlackThreadRecord>> {
+    let key = thread_key(workspace, conversation, parent_ts);
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(THREADS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    match table.get(key.as_str())? {
+        Some(value) => Ok(Some(serde_json::from_str(value.value())?)),
+        None => Ok(None),
+    }
+}
+
+/// Store one thread's record, replacing any prior row for the triple.
+pub fn set_thread(
+    db: &Db,
+    workspace: &str,
+    conversation: &str,
+    parent_ts: &str,
+    record: &SlackThreadRecord,
+) -> anyhow::Result<()> {
+    let key = thread_key(workspace, conversation, parent_ts);
+    let value = serde_json::to_string(record)?;
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(THREADS)?;
+        table.insert(key.as_str(), value.as_str())?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
+/// Every followed thread of one conversation, as (parent ts, record).
+pub fn threads_for(
+    db: &Db,
+    workspace: &str,
+    conversation: &str,
+) -> anyhow::Result<Vec<(String, SlackThreadRecord)>> {
+    let prefix = format!("{workspace}\u{0}{conversation}\u{0}");
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(THREADS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = Vec::new();
+    for entry in table.iter()? {
+        let (key, value) = entry?;
+        let Some(parent_ts) = key.value().strip_prefix(&prefix) else { continue };
+        match serde_json::from_str::<SlackThreadRecord>(value.value()) {
+            Ok(record) => out.push((parent_ts.to_owned(), record)),
+            Err(err) => tracing::warn!(
+                target: "forge_workspace::store::slack",
+                error = %err,
+                "skipping Slack thread record that failed to decode",
+            ),
+        }
+    }
+    Ok(out)
+}
+
+/// Delete one thread row. Returns whether a row existed.
+pub fn remove_thread(
+    db: &Db,
+    workspace: &str,
+    conversation: &str,
+    parent_ts: &str,
+) -> anyhow::Result<bool> {
+    let key = thread_key(workspace, conversation, parent_ts);
+    let txn = db.database().begin_write()?;
+    let existed = {
+        let mut table = txn.open_table(THREADS)?;
+        table.remove(key.as_str())?.is_some()
+    };
+    txn.commit()?;
+    Ok(existed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::Db;
-    use forge_primitives::slack::{SlackSubscriptionTarget, SlackWatchMode};
+    use forge_primitives::slack::{
+        SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
+    };
     use tempfile::tempdir;
-
     fn sub(project: &str) -> SlackSubscription {
         SlackSubscription {
             id: Uuid::new_v4(),
@@ -222,5 +318,71 @@ mod tests {
         let back = list(&db).expect("list");
         assert_eq!(back[0].target, s.target);
         assert_eq!(back[0].team_role.as_deref(), Some("tester"));
+    }
+
+    fn thread_record(cursor: &str, owners: &[(&str, Option<&str>)]) -> SlackThreadRecord {
+        SlackThreadRecord {
+            cursor: cursor.to_owned(),
+            owners: owners
+                .iter()
+                .map(|(project, role)| SlackThreadOwner {
+                    project: project.to_string(),
+                    team_role: role.map(str::to_owned),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_thread_record_round_trips_with_its_owners_and_verbatim_cursor() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let record =
+            thread_record("1700000000.000100", &[("forge", Some("tester")), ("forge", None)]);
+        set_thread(&db, "acme", "C1", "100.000001", &record).expect("set");
+        let back = thread(&db, "acme", "C1", "100.000001").expect("get").expect("present");
+        assert_eq!(back.cursor, "1700000000.000100", "the cursor survives verbatim");
+        assert_eq!(back.owners.len(), 2, "both owners ride along");
+        assert_eq!(back.owners[0].team_role.as_deref(), Some("tester"));
+    }
+
+    #[test]
+    fn a_thread_row_is_scoped_to_workspace_conversation_and_parent() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let record = thread_record("100.1", &[("forge", None)]);
+        set_thread(&db, "acme", "C1", "100.000001", &record).expect("set acme/C1/100");
+        set_thread(&db, "acme", "C1", "200.000002", &record).expect("set acme/C1/200");
+        set_thread(&db, "beta", "C1", "100.000001", &record).expect("set beta/C1/100");
+        set_thread(&db, "acme", "C2", "100.000001", &record).expect("set acme/C2/100");
+
+        assert_eq!(
+            threads_for(&db, "acme", "C1").expect("list").len(),
+            2,
+            "only acme/C1 rows are that conversation's threads",
+        );
+        assert!(
+            thread(&db, "acme", "C1", "100.000001").expect("get").is_some(),
+            "the parent ts is part of the key, not an overwrite",
+        );
+        assert_eq!(thread(&db, "acme", "C1", "999.9").expect("get"), None);
+    }
+
+    #[test]
+    fn removing_a_thread_row_removes_only_that_row() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let record = thread_record("100.1", &[("forge", None)]);
+        set_thread(&db, "acme", "C1", "100.000001", &record).expect("set");
+        set_thread(&db, "acme", "C1", "200.000002", &record).expect("set");
+
+        assert!(remove_thread(&db, "acme", "C1", "100.000001").expect("remove"));
+        let left = threads_for(&db, "acme", "C1").expect("list");
+        assert_eq!(left.len(), 1, "one row left");
+        assert_eq!(left[0].0, "200.000002", "and it is not the removed one");
+        assert!(!remove_thread(&db, "acme", "C1", "100.000001").expect("remove again"));
     }
 }

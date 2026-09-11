@@ -192,6 +192,31 @@ pub struct SlackBookmark {
     pub link: Option<String>,
 }
 
+/// One session's ownership of a followed thread, named after the
+/// `SlackSubscription` fields it is taken from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlackThreadOwner {
+    pub project: String,
+    pub team_role: Option<String>,
+}
+
+/// What the store keeps about one followed thread: the last-seen reply
+/// `ts` as the verbatim string Slack sent, and the sessions whose
+/// subscriptions put the thread on their radar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlackThreadRecord {
+    pub cursor: String,
+    pub owners: Vec<SlackThreadOwner>,
+}
+
+/// One followed thread as the pump sees it, minus the cursor it reads
+/// through its own port method.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlackFollowedThread {
+    pub parent_ts: String,
+    pub owners: Vec<SlackThreadOwner>,
+}
+
 /// A composed but unsent Slack message. The workspace holds it until the
 /// user approves it in the dock prompt; nothing reaches Slack otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]

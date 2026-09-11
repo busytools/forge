@@ -1292,7 +1292,7 @@ mod tests {
 
         assert!(passes_filter(&ch, Some("rand"), None), "the name matches");
         assert!(passes_filter(&ch, Some("deploy"), None), "the purpose matches");
-        assert!(passes_filter(&ch, Some("RELEASE"), None), "the topic matches, case-insensitively",);
+        assert!(passes_filter(&ch, Some("RELEASE"), None), "the topic matches, case-insensitively");
         assert!(!passes_filter(&ch, Some("general"), None), "an unrelated needle matches nothing");
         assert!(
             passes_filter(&dm("D1", "U9"), Some("u9"), None),

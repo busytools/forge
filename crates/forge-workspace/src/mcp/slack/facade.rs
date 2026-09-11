@@ -957,6 +957,7 @@ mod tests {
             &self,
             _channel: &str,
             _ts: &str,
+            _oldest: Option<&str>,
             _limit: u32,
             _cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
