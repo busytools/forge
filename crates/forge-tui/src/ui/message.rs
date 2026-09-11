@@ -4,6 +4,7 @@ use crate::app::{
     StopHookEntry, SystemSeverity, TextBlock, TurnInfo, WelcomeBlock, hash_text_block_content,
     hash_welcome_block_content,
 };
+use crate::ui::fence;
 use crate::ui::peer_block;
 use crate::ui::theme;
 use crate::ui::tool_call;
@@ -2324,36 +2325,55 @@ fn tint_lines(lines: &mut [Line<'static>], color: Color) {
     }
 }
 
-/// Preprocess markdown that `tui_markdown` doesn't handle well.
-/// Headings (`# Title`) become `**Title**` (bold) with a blank line before.
-/// Handles variations: `#Title`, `#  Title`, `  ## Title  `, etc.
-/// Links are left as-is -- `tui_markdown` handles `[title](url)` natively.
+/// Render markdown: prose through `tui_markdown`, fenced code through its
+/// own panel. Splitting first is what keeps the code verbatim, since
+/// `tui_markdown` prints the fence delimiters itself, and it keeps code
+/// out of the prose rewriter, which would mistake Rust generics (`Vec<T>`)
+/// and JSX for HTML.
+fn render_markdown_segments(
+    text: &str,
+    width: u16,
+    bg: Option<Color>,
+    preserve_newlines: bool,
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for segment in fence::segments(text) {
+        match segment.kind {
+            fence::SegmentKind::Prose(prose) => {
+                let preprocessed = preprocess_prose(prose);
+                let body = if preserve_newlines {
+                    force_markdown_line_breaks(&preprocessed)
+                } else {
+                    preprocessed
+                };
+                out.extend(super::document_table::render_markdown_with_tables(&body, width, bg));
+            }
+            fence::SegmentKind::Code { language, body } => {
+                // `tui_markdown` separates a block from what precedes it.
+                if out.last().is_some_and(|line| !line_is_blank(line)) {
+                    out.push(Line::default());
+                }
+                out.extend(fence::render_code_panel(body, language, width));
+            }
+        }
+    }
+    out
+}
+
+/// Headings (`# Title`) become `**Title**` (bold) with a blank line
+/// before; `#Title`, `#  Title` and `  ## Title  ` all hit it. Links are
+/// left as-is -- `tui_markdown` handles `[title](url)` natively.
 ///
-/// HTML tags outside fenced code blocks are stripped because
-/// `tui_markdown::from_str` emits per-element WARN events for every
-/// HTML element it encounters (peaks at 50K+/sec on streaming chats
-/// with HTML content). `<br>` / `<br/>` / `<br />` become newlines
-/// to preserve the author's line-break intent; other tags
-/// (`<div>`, `<b>`, `<i>`, ...) drop the tag and keep the inner
-/// content. Inside fenced code blocks (triple-backtick), HTML-like
-/// text is preserved verbatim so Rust generics (`Vec<T>`), JSX, and
-/// other code that LOOKS like HTML survives untouched.
-fn preprocess_markdown(text: &str) -> String {
+/// HTML tags are stripped because `tui_markdown::from_str` emits
+/// per-element WARN events for every HTML element it encounters (peaks at
+/// 50K+/sec on streaming chats with HTML content). `<br>` / `<br/>` /
+/// `<br />` become newlines to preserve the author's line-break intent;
+/// other tags (`<div>`, `<b>`, `<i>`, ...) drop the tag and keep the inner
+/// content.
+fn preprocess_prose(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
-    let mut in_fence = false;
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-        if in_fence {
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
         if trimmed.starts_with('#') {
             // Strip all leading '#' characters
             let after_hashes = trimmed.trim_start_matches('#');
@@ -2466,11 +2486,7 @@ pub(super) fn render_text_cached(
 
     // Build a render function that handles preprocessing + tui_markdown
     let render_fn = |src: &str| -> Vec<Line<'static>> {
-        let mut preprocessed = preprocess_markdown(src);
-        if preserve_newlines {
-            preprocessed = force_markdown_line_breaks(&preprocessed);
-        }
-        super::document_table::render_markdown_with_tables(&preprocessed, width, bg)
+        render_markdown_segments(src, width, bg, preserve_newlines)
     };
     let render_key = MarkdownRenderKey { width, bg, preserve_newlines };
 
@@ -2530,32 +2546,32 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::widgets::{Paragraph, Wrap};
 
-    // preprocess_markdown
+    // preprocess_prose
 
     #[test]
     fn preprocess_h1_heading() {
-        let result = preprocess_markdown("# Hello");
+        let result = preprocess_prose("# Hello");
         assert!(result.contains("**Hello**"));
         assert!(!result.contains('#'));
     }
 
     #[test]
     fn preprocess_h3_heading() {
-        let result = preprocess_markdown("### Deeply Nested");
+        let result = preprocess_prose("### Deeply Nested");
         assert!(result.contains("**Deeply Nested**"));
     }
 
     #[test]
     fn preprocess_non_heading_passthrough() {
         let input = "Just normal text\nwith multiple lines";
-        let result = preprocess_markdown(input);
+        let result = preprocess_prose(input);
         assert_eq!(result, input);
     }
 
     #[test]
     fn preprocess_mixed_headings_and_text() {
         let input = "# Title\nSome text\n## Subtitle\nMore text";
-        let result = preprocess_markdown(input);
+        let result = preprocess_prose(input);
         assert!(result.contains("**Title**"));
         assert!(result.contains("Some text"));
         assert!(result.contains("**Subtitle**"));
@@ -2564,49 +2580,49 @@ mod tests {
 
     #[test]
     fn preprocess_heading_no_space() {
-        let result = preprocess_markdown("#Title");
+        let result = preprocess_prose("#Title");
         assert!(result.contains("**Title**"));
     }
 
     #[test]
     fn preprocess_heading_extra_spaces() {
-        let result = preprocess_markdown("#   Spaced Out   ");
+        let result = preprocess_prose("#   Spaced Out   ");
         assert!(result.contains("**Spaced Out**"));
     }
 
     #[test]
     fn preprocess_indented_heading() {
-        let result = preprocess_markdown("  ## Indented");
+        let result = preprocess_prose("  ## Indented");
         assert!(result.contains("**Indented**"));
     }
 
     #[test]
     fn preprocess_empty_heading() {
-        let result = preprocess_markdown("# ");
+        let result = preprocess_prose("# ");
         assert_eq!(result, "# ");
     }
 
     #[test]
     fn preprocess_empty_string() {
-        assert_eq!(preprocess_markdown(""), "");
+        assert_eq!(preprocess_prose(""), "");
     }
 
     #[test]
     fn preprocess_preserves_trailing_newline() {
-        let result = preprocess_markdown("hello\n");
+        let result = preprocess_prose("hello\n");
         assert!(result.ends_with('\n'));
     }
 
     #[test]
     fn preprocess_no_trailing_newline() {
-        let result = preprocess_markdown("hello");
+        let result = preprocess_prose("hello");
         assert!(!result.ends_with('\n'));
     }
 
     #[test]
     fn preprocess_blank_line_before_heading() {
         let input = "text\n\n# Heading";
-        let result = preprocess_markdown(input);
+        let result = preprocess_prose(input);
         assert!(!result.contains("\n\n\n"));
         assert!(result.contains("**Heading**"));
     }
@@ -2614,7 +2630,7 @@ mod tests {
     #[test]
     fn preprocess_consecutive_headings() {
         let input = "# First\n# Second";
-        let result = preprocess_markdown(input);
+        let result = preprocess_prose(input);
         assert!(result.contains("**First**"));
         assert!(result.contains("**Second**"));
     }
@@ -2624,11 +2640,11 @@ mod tests {
         // `<br>` (and `<br/>`, `<br />`) renders today as a silent
         // gap because tui_markdown drops the tag. Strip it to `\n`
         // so the line break still appears in the rendered output.
-        let result = preprocess_markdown("foo<br>bar");
+        let result = preprocess_prose("foo<br>bar");
         assert!(result.contains("foo\nbar"), "<br> must convert to newline, got: {result:?}");
-        let result2 = preprocess_markdown("foo<br/>bar");
+        let result2 = preprocess_prose("foo<br/>bar");
         assert!(result2.contains("foo\nbar"));
-        let result3 = preprocess_markdown("foo<br />bar");
+        let result3 = preprocess_prose("foo<br />bar");
         assert!(result3.contains("foo\nbar"));
     }
 
@@ -2636,7 +2652,7 @@ mod tests {
     fn preprocess_block_html_drops_tag_keeps_content() {
         // `<div>foo</div>` becomes `foo` - tag silenced (no WARN
         // spam) and content preserved.
-        let result = preprocess_markdown("<div>hello world</div>");
+        let result = preprocess_prose("<div>hello world</div>");
         assert!(result.contains("hello world"));
         assert!(!result.contains("<div>"));
         assert!(!result.contains("</div>"));
@@ -2647,24 +2663,8 @@ mod tests {
         // Inline `<b>...</b>` / `<i>...</i>` lose the tag but keep
         // the inner text. Markdown can re-bold via `**` if the
         // upstream prompt wants it; this layer doesn't translate.
-        let result = preprocess_markdown("This is <b>bold</b> text");
+        let result = preprocess_prose("This is <b>bold</b> text");
         assert!(result.contains("This is bold text"), "got: {result:?}");
-    }
-
-    #[test]
-    fn preprocess_preserves_html_inside_fenced_code() {
-        // Rust generics, JSX, and other code that LOOKS like HTML
-        // inside a triple-backtick block must survive untouched.
-        // Otherwise we'd mangle `Vec<T>` -> `Vec` etc.
-        let input = "```rust\nlet v: Vec<String> = vec![];\n```\n";
-        let result = preprocess_markdown(input);
-        assert!(
-            result.contains("Vec<String>"),
-            "code-fence content must preserve `<>`, got: {result:?}"
-        );
-        // And the fence markers themselves survive intact.
-        assert!(result.contains("```rust"));
-        assert!(result.contains("```\n"));
     }
 
     #[test]
@@ -2674,14 +2674,14 @@ mod tests {
         // `Map<K, V>`, `<App />`, `List<Integer>`, etc. Stripping
         // there mangles legitimate generics in chat output. Lock
         // the round-trip.
-        let result = preprocess_markdown("The type is `Vec<T>` here.");
+        let result = preprocess_prose("The type is `Vec<T>` here.");
         assert!(
             result.contains("`Vec<T>`"),
             "single-backtick code must preserve `<>`, got: {result:?}"
         );
-        let result2 = preprocess_markdown("JSX: `<App />` renders.");
+        let result2 = preprocess_prose("JSX: `<App />` renders.");
         assert!(result2.contains("`<App />`"), "got: {result2:?}");
-        let result3 = preprocess_markdown("Generic: `Map<K, V>` value.");
+        let result3 = preprocess_prose("Generic: `Map<K, V>` value.");
         assert!(result3.contains("`Map<K, V>`"), "got: {result3:?}");
     }
 
@@ -2690,22 +2690,22 @@ mod tests {
         // `<` not followed by a tag character (alphabetic / `/`) is
         // preserved verbatim so `1 < 2` and `<<EOF` style stay
         // unmangled.
-        let result = preprocess_markdown("if 1 < 2 then ok");
+        let result = preprocess_prose("if 1 < 2 then ok");
         assert!(result.contains("1 < 2"));
-        let result2 = preprocess_markdown("here doc <<EOF");
+        let result2 = preprocess_prose("here doc <<EOF");
         assert!(result2.contains("<<EOF"));
     }
 
     #[test]
     fn preprocess_hash_in_code_not_heading() {
-        let result = preprocess_markdown("# actual heading");
+        let result = preprocess_prose("# actual heading");
         assert!(result.contains("**actual heading**"));
     }
 
     /// H6 heading (6 `#` chars).
     #[test]
     fn preprocess_h6_heading() {
-        let result = preprocess_markdown("###### Deep H6");
+        let result = preprocess_prose("###### Deep H6");
         assert!(result.contains("**Deep H6**"));
         assert!(!result.contains('#'));
     }
@@ -2713,14 +2713,14 @@ mod tests {
     /// Heading with markdown formatting inside.
     #[test]
     fn preprocess_heading_with_bold_inside() {
-        let result = preprocess_markdown("# **bold** and *italic*");
+        let result = preprocess_prose("# **bold** and *italic*");
         assert!(result.contains("****bold** and *italic***"));
     }
 
     /// Heading at end of file with no trailing newline.
     #[test]
     fn preprocess_heading_at_eof_no_newline() {
-        let result = preprocess_markdown("text\n# Final");
+        let result = preprocess_prose("text\n# Final");
         assert!(result.contains("**Final**"));
         assert!(!result.ends_with('\n'));
     }
@@ -2728,7 +2728,7 @@ mod tests {
     /// Only hashes with no text: `###` - content after stripping is empty, passthrough.
     #[test]
     fn preprocess_only_hashes() {
-        let result = preprocess_markdown("###");
+        let result = preprocess_prose("###");
         assert_eq!(result, "###");
     }
 
@@ -2737,7 +2737,7 @@ mod tests {
     fn preprocess_very_long_heading() {
         let long_text = "A".repeat(1000);
         let input = format!("# {long_text}");
-        let result = preprocess_markdown(&input);
+        let result = preprocess_prose(&input);
         assert!(result.starts_with("**"));
         assert!(result.contains(&long_text));
     }
@@ -2745,14 +2745,14 @@ mod tests {
     /// Unicode emoji in heading.
     #[test]
     fn preprocess_unicode_heading() {
-        let result = preprocess_markdown("# \u{1F680} Launch \u{4F60}\u{597D}");
+        let result = preprocess_prose("# \u{1F680} Launch \u{4F60}\u{597D}");
         assert!(result.contains("**\u{1F680} Launch \u{4F60}\u{597D}**"));
     }
 
     /// Quoted heading: `> # Heading` - starts with `>` not `#`, so passthrough.
     #[test]
     fn preprocess_blockquote_heading_passthrough() {
-        let result = preprocess_markdown("> # Quoted heading");
+        let result = preprocess_prose("> # Quoted heading");
         // Line starts with `>`, not `#`, so trimmed starts with `>` not `#`
         assert!(!result.contains("**"));
         assert!(result.contains("> # Quoted heading"));
@@ -2762,7 +2762,7 @@ mod tests {
     #[test]
     fn preprocess_all_heading_levels() {
         let input = "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6";
-        let result = preprocess_markdown(input);
+        let result = preprocess_prose(input);
         for label in ["H1", "H2", "H3", "H4", "H5", "H6"] {
             assert!(result.contains(&format!("**{label}**")), "missing {label}");
         }
@@ -2887,6 +2887,96 @@ mod tests {
         let result = force_markdown_line_breaks("\n");
         // One empty line, should stay empty with trailing newline
         assert_eq!(result, "\n");
+    }
+
+    // Fenced code blocks
+
+    fn row_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    /// The rendered rows with the panel's right-edge fill trimmed, so a
+    /// row is compared by what it says rather than by how far it is
+    /// padded. A joined render would hide which row carries what.
+    fn rendered_rows(lines: &[Line<'static>]) -> Vec<String> {
+        lines.iter().map(|line| row_text(line).trim_end().to_owned()).collect()
+    }
+
+    fn assert_rows(lines: &[Line<'static>], expected: &[&str], role: &str) {
+        assert_eq!(rendered_rows(lines), expected, "{role} render");
+    }
+
+    fn assert_panel_painted(lines: &[Line<'static>], role: &str) {
+        let code_lines: Vec<&Line<'static>> = lines
+            .iter()
+            .filter(|line| {
+                line.spans.iter().any(|span| span.style.bg == Some(theme::CODE_PANEL_BG))
+            })
+            .collect();
+        assert_eq!(code_lines.len(), 2, "{role}: label row plus one code row");
+        assert!(
+            code_lines.iter().all(|line| line
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(theme::CODE_PANEL_BG))),
+            "{role}: a span escapes the panel background"
+        );
+    }
+
+    const FENCED_MESSAGE: &str = "Here is the guard:\n\n```rust\nfn main() {}\n```\n\n";
+
+    #[test]
+    fn a_user_fenced_block_renders_as_a_code_panel() {
+        let mut block = TextBlock::from_complete(FENCED_MESSAGE);
+        let rendered = text_block_layout(&mut block, 80, Some(theme::USER_MSG_BG), true);
+        assert_rows(&rendered.lines, &["Here is the guard:", "  rust", "  fn main() {}"], "user");
+        assert_panel_painted(&rendered.lines, "user");
+    }
+
+    #[test]
+    fn an_assistant_fenced_block_renders_as_a_code_panel() {
+        let mut block = TextBlock::from_complete(FENCED_MESSAGE);
+        let rendered = assistant_text_block_layout(&mut block, 80, false);
+        assert_rows(
+            &rendered.lines,
+            &["Here is the guard:", "  rust", "  fn main() {}"],
+            "assistant",
+        );
+        assert_panel_painted(&rendered.lines, "assistant");
+    }
+
+    #[test]
+    fn a_fenced_block_keeps_html_looking_code() {
+        let mut block = TextBlock::from_complete("```rust\nlet v: Vec<String> = vec![];\n```\n");
+        let rendered = assistant_text_block_layout(&mut block, 80, false);
+        assert_rows(&rendered.lines, &["  rust", "  let v: Vec<String> = vec![];"], "assistant");
+    }
+
+    #[test]
+    fn a_panel_is_separated_from_the_prose_above_it() {
+        let mut block = TextBlock::from_complete("intro\n```rust\nfn main() {}\n```");
+        let rendered = assistant_text_block_layout(&mut block, 80, false);
+        assert_rows(&rendered.lines, &["intro", "", "  rust", "  fn main() {}"], "assistant");
+    }
+
+    #[test]
+    fn a_user_line_break_survives_as_its_own_row() {
+        let mut messages = [make_text_message(MessageRole::User, "first line\nsecond line\n")];
+        assert_eq!(
+            render_one(&mut messages, 0),
+            ["User", "first line", "second line", ""],
+            "the user path forces the break, so each line keeps its own row"
+        );
+    }
+
+    #[test]
+    fn assistant_prose_reflows_a_line_break_into_one_paragraph() {
+        let mut messages = [make_text_message(MessageRole::Assistant, "first line\nsecond line\n")];
+        assert_eq!(
+            render_one(&mut messages, 0),
+            ["first line second line", ""],
+            "the assistant path reflows, so the break joins into one paragraph"
+        );
     }
 
     fn make_text_message(role: MessageRole, text: &str) -> ChatMessage {

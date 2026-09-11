@@ -10,6 +10,7 @@ pub(crate) mod dictate_picker;
 mod diff;
 mod diff_overlay;
 mod document_table;
+pub(crate) mod fence;
 pub(crate) mod format;
 pub(crate) mod help;
 pub(crate) mod highlight;

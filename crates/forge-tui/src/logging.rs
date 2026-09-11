@@ -96,7 +96,7 @@ impl LoggingRuntime {
 /// during streaming markdown rendering (peaks at 50K+/sec on chats
 /// with HTML content). Dropping to `error` rejects the events at the
 /// tracing filter before serialisation. The architectural fix
-/// (HTML-strip in `preprocess_markdown` at the call site) lands as
+/// (HTML-strip in `preprocess_prose` at the call site) lands as
 /// a separate PR; this filter bump is defence-in-depth.
 const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.session=debug,\

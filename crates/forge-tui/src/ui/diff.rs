@@ -2,7 +2,8 @@ use crate::agent::model;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
 use crate::ui::wrap::{
-    StyledChunk, display_width, expand_tabs, replace_control_chars, wrap_styled_chunks,
+    StyledChunk, display_width, expand_tabs, replace_control_chars, split_leading_whitespace,
+    wrap_styled_chunks,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -379,14 +380,6 @@ fn render_wrapped_diff_row(
             line
         })
         .collect()
-}
-
-fn split_leading_whitespace(text: &str) -> (&str, &str) {
-    let split_at = text
-        .char_indices()
-        .find_map(|(idx, ch)| (!ch.is_whitespace()).then_some(idx))
-        .unwrap_or(text.len());
-    text.split_at(split_at)
 }
 
 /// Check if a tool call title references a markdown file.

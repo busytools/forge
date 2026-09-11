@@ -572,18 +572,21 @@ impl IncrementalMarkdown {
 }
 
 fn find_first_stable_split(text: &str) -> Option<usize> {
-    let mut in_fenced_code = false;
+    let code = crate::ui::fence::code_ranges(text);
     let mut saw_nonblank = false;
     let mut blank_run_end = None;
     let mut offset = 0usize;
+    // The ranges are in source order, so one cursor walks them with the
+    // line offsets instead of re-checking every range per line.
+    let mut next_range = 0usize;
 
     for line in text.split_inclusive('\n') {
+        while code.get(next_range).is_some_and(|range| range.end <= offset) {
+            next_range += 1;
+        }
+        let in_fenced_code = code.get(next_range).is_some_and(|range| range.contains(&offset));
         offset += line.len();
         let trimmed = line.trim_end_matches('\n').trim();
-        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
-        if is_fence {
-            in_fenced_code = !in_fenced_code;
-        }
 
         let is_blank = trimmed.is_empty();
         if !in_fenced_code && is_blank {
@@ -882,9 +885,9 @@ mod tests {
 
     #[test]
     fn incr_does_not_split_inside_fenced_code_blocks() {
-        let calls = std::cell::Cell::new(0usize);
+        let sources = std::cell::RefCell::new(Vec::new());
         let render = |src: &str| -> Vec<Line<'static>> {
-            calls.set(calls.get() + 1);
+            sources.borrow_mut().push(src.to_owned());
             test_render(src)
         };
 
@@ -892,7 +895,30 @@ mod tests {
         incr.append("```rust\nfn main() {\n\nprintln!(\"hi\");\n}\n```\n\nafter");
         let _ = incr.lines(test_render_key(), &render);
 
-        assert_eq!(calls.get(), 2);
+        assert_eq!(
+            sources.borrow().as_slice(),
+            ["```rust\nfn main() {\n\nprintln!(\"hi\");\n}\n```\n\n", "after"],
+            "the split lands on the blank line after the fence, not the one inside it"
+        );
+    }
+
+    #[test]
+    fn incr_does_not_split_inside_a_four_backtick_fence() {
+        let sources = std::cell::RefCell::new(Vec::new());
+        let render = |src: &str| -> Vec<Line<'static>> {
+            sources.borrow_mut().push(src.to_owned());
+            test_render(src)
+        };
+
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("````\n```\nfirst\n\nsecond\n```\n````\n\nafter");
+        let _ = incr.lines(test_render_key(), &render);
+
+        assert_eq!(
+            sources.borrow().as_slice(),
+            ["````\n```\nfirst\n\nsecond\n```\n````\n\n", "after"],
+            "the inner fence is content, so the blank line inside stays with it"
+        );
     }
 
     #[test]

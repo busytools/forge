@@ -13,6 +13,11 @@ pub const ROLE_ASSISTANT: Color = RUST_ORANGE;
 // User message background
 pub const USER_MSG_BG: Color = Color::Rgb(40, 44, 52);
 
+// Fenced code block surface: a quiet panel lifted above the terminal
+// canvas, with the fence's info string dimmed inside it.
+pub const CODE_PANEL_BG: Color = Color::Rgb(23, 27, 35);
+pub const CODE_PANEL_LABEL: Color = Color::Rgb(85, 92, 104);
+
 // Tool status icons
 pub const ICON_COMPLETED: &str = "\u{2713}";
 pub const ICON_FAILED: &str = "\u{2717}";
