@@ -663,8 +663,6 @@ fn newest_plugin_version(plugin_dir: &Path) -> Option<(PathBuf, DirComponents)> 
         .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
         .map(|entry| entry.path())
         .collect::<Vec<_>>();
-    // Numeric-aware: "10.0.0" sorts after "9.9.9", which a plain
-    // string sort would not deliver.
     versions.sort_by_key(|path| {
         let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
         version_sort_key(&name)
@@ -698,18 +696,17 @@ fn marketplace_health(
     // A corrupt known_marketplaces.json leaves the registry empty; the
     // clone dirs still exist, so each carries the parse error rather
     // than the tab reading as an absence.
-    if !registry_error.is_none() && registry.entries.is_empty() {
+    if let (Some(error), true) = (registry_error, registry.entries.is_empty()) {
         let names = manifests
             .loaded
             .iter()
             .chain(manifests.errors.keys())
             .collect::<std::collections::BTreeSet<_>>();
-        let error = registry_error.expect("guarded above");
         return names
             .into_iter()
             .map(|name| MarketplaceHealth {
                 name: name.clone(),
-                load_error: Some(error.to_owned()),
+                load_error: Some((*error).to_owned()),
                 ..MarketplaceHealth::default()
             })
             .collect();
@@ -830,6 +827,10 @@ mod tests {
         let broken = cache.join("probe-market").join("broken").join("9.9.9");
         skill(&broken.join("skills/a/SKILL.md"));
 
+        // ghosted: registered but its install dir does not exist -
+        // the honest-scan LoadFailed row.
+        let ghosted = cache.join("probe-market").join("ghosted").join("1.0.0");
+
         write(
             &config_dir.join("settings.json"),
             r#"{"enabledPlugins":{"off@probe-market":false}}"#,
@@ -838,10 +839,12 @@ mod tests {
             &plugins_root.join("installed_plugins.json"),
             r#"{"version":2,"plugins":{
                 "full@probe-market":[{"scope":"user","installPath":"CACHE_FULL","version":"1.2.3","installedAt":"","lastUpdated":""}],
-                "off@probe-market":[{"scope":"user","installPath":"CACHE_OFF","version":"3.0.0","installedAt":"","lastUpdated":"","auto":true}]
+                "off@probe-market":[{"scope":"user","installPath":"CACHE_OFF","version":"3.0.0","installedAt":"","lastUpdated":"","auto":true}],
+                "ghosted@probe-market":[{"scope":"user","installPath":"CACHE_GHOSTED","version":"1.0.0","installedAt":"","lastUpdated":""}]
             }}"#
             .replace("CACHE_FULL", &full.to_string_lossy())
             .replace("CACHE_OFF", &off.to_string_lossy())
+            .replace("CACHE_GHOSTED", &ghosted.join("missing-dir").to_string_lossy())
             .as_str(),
         );
 
@@ -851,7 +854,7 @@ mod tests {
             &mkt.join(".claude-plugin/marketplace.json"),
             r#"{"name":"probe-market","plugins":[
                 {"name":"full","version":"2.0.0","source":"./full-src",
-                 "lspServers":{"rust-analyzer":{"command":"rust-analyzer"}}},
+                 "lspServers":{"rust-analyzer":{"command":"/opt/ra/current/bin/rust-analyzer"}}},
                 {"name":"gone","version":"6.4.0","source":"./gone-src"}
             ]}"#,
         );
@@ -899,7 +902,10 @@ mod tests {
         assert!(full.mcp, ".mcp.json present");
         assert_eq!(
             full.lsp_servers,
-            BTreeMap::from([("rust-analyzer".to_owned(), "rust-analyzer".to_owned())])
+            BTreeMap::from([(
+                "rust-analyzer".to_owned(),
+                "/opt/ra/current/bin/rust-analyzer".to_owned(),
+            )])
         );
         assert!(full.installed);
         assert!(full.enabled);
@@ -918,6 +924,54 @@ mod tests {
         assert!(
             rows.iter().all(|row| !row.plugin.starts_with("broken")),
             "no row may exist for the plugin.json-less dir: {rows:?}"
+        );
+    }
+
+    /// A registry entry whose install dir is gone must surface as a
+    /// LoadFailed row, not vanish - the honest-scan contract.
+    #[test]
+    fn a_vanished_install_path_surfaces_as_a_load_failed_row() {
+        let fixture = fixture();
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .components;
+        let ghosted = rows
+            .iter()
+            .find(|row| row.plugin == "ghosted@probe-market")
+            .expect("the registered-but-vanished plugin must still have a row: {rows:?}");
+        assert!(ghosted.installed);
+        assert!(
+            ghosted.load_error.is_some(),
+            "the missing dir is the row's stated reason: {ghosted:?}"
+        );
+        assert!(ghosted.skills.is_empty());
+    }
+
+    /// Numeric-aware version ordering: "10.0.0" outranks "9.9.9" when
+    /// a cache plugin has both dirs; a plain string sort would pick
+    /// "9.9.9".
+    #[test]
+    fn a_two_digit_version_dir_outranks_a_nine() {
+        let fixture = fixture();
+        // An unregistered cache plugin (no registry entry, no manifest
+        // entry) so the cache-leftover branch resolves it.
+        let orphan_cache = fixture.plugins_root.join("cache/probe-market/orphan");
+        let old_dir = orphan_cache.join("9.9.9");
+        let new_dir = orphan_cache.join("10.0.0");
+        skill(&old_dir.join("skills/nine/SKILL.md"));
+        write(&old_dir.join("plugin.json"), r#"{"name":"orphan","version":"9.9.9"}"#);
+        skill(&new_dir.join("skills/ten/SKILL.md"));
+        write(&new_dir.join("plugin.json"), r#"{"name":"orphan","version":"10.0.0"}"#);
+
+        let rows =
+            scan_extensions(&fixture.plugins_root, &fixture.marketplaces_root, &fixture.config_dir)
+                .components;
+        let orphan =
+            rows.iter().find(|row| row.plugin == "orphan@probe-market").expect("orphan row");
+        assert_eq!(
+            orphan.skills,
+            vec!["ten"],
+            "the newest (10.0.0) dir's components win over 9.9.9: {orphan:?}"
         );
     }
 

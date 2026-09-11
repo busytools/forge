@@ -298,7 +298,20 @@ pub(crate) fn request_inventory_refresh_manual(app: &mut App) {
 /// no `claude` spawn. First paint and every five-second refresh stay
 /// off the CLI; the manual `r` keeps the full CLI refresh.
 fn request_disk_refresh(app: &mut App) {
+    request_disk_refresh_with(app, cli::inventory_from_disk_blocking);
+}
+
+/// The TTL path's scan is injectable so the failure arm is testable.
+/// An unresolvable root or a failed join is a refresh FAILURE naming
+/// why - never an all-empty snapshot applied as truth (hard rule 14:
+/// fail rather than substitute).
+fn request_disk_refresh_with(
+    app: &mut App,
+    scan: impl FnOnce() -> Option<PluginsInventorySnapshot> + Send + 'static,
+) {
     if tokio::runtime::Handle::try_current().is_err() {
+        app.config.status_message = None;
+        app.config.last_error = Some("No runtime available for plugin action".to_owned());
         return;
     }
     app.plugins.loading = true;
@@ -306,27 +319,44 @@ fn request_disk_refresh(app: &mut App) {
     let event_tx = app.update_tx.clone();
     let cwd_context = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    let span = info_span!(
+    let disk_span = info_span!(
         target: crate::logging::targets::APP_CONFIG,
         "plugin_disk_refresh",
     );
     tokio::task::spawn_local(
         async move {
-            let snapshot = tokio::task::spawn_blocking(cli::inventory_from_disk_blocking)
-                .await
-                .unwrap_or_default()
-                .unwrap_or_default();
-            let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
-                cwd_raw: cwd_context,
-                snapshot,
-                claude_path: cached_claude_path.unwrap_or_default(),
-            });
+            let scan_result = tokio::task::spawn_blocking(scan).await;
+            match scan_result {
+                Ok(Some(snapshot)) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
+                        cwd_raw: cwd_context,
+                        snapshot,
+                        claude_path: cached_claude_path.unwrap_or_default(),
+                    });
+                }
+                Ok(None) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
+                        cwd_raw: cwd_context,
+                        message: "the plugin root could not be resolved (no CLAUDE_CONFIG_DIR \
+                                  or HOME); the previous inventory is kept"
+                            .to_owned(),
+                        trigger: PluginUpdateTrigger::Manual,
+                    });
+                }
+                Err(join) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
+                        cwd_raw: cwd_context,
+                        message: format!("the extension disk scan failed to join: {join}"),
+                        trigger: PluginUpdateTrigger::Manual,
+                    });
+                }
+            }
         }
-        .instrument(span),
+        .instrument(disk_span),
     );
 }
 
-/// The CLI refresh for the manual `r` and post-action paths. The
+/// The CLI refresh for the manual `r` and post-action paths. The `r` and post-action paths. The
 /// token-cost fetch is deliberately NOT awaited here: the inventory
 /// event goes out first so paint never waits on a `claude` spawn, and
 /// a follow-up task lands the costs through a costs-only event.
@@ -364,9 +394,10 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
         "plugin_inventory_refresh",
         cwd = %cwd_raw,
     );
+    let cli = app.plugins.update_cli.clone().unwrap_or_else(UpdateCli::real);
     tokio::task::spawn_local(
         async move {
-            match cli::refresh_inventory(cwd_raw.clone(), cached_claude_path.clone()).await {
+            match (cli.refresh)(cached_claude_path.clone(), cwd_raw.clone()).await {
                 Ok((snapshot, claude_path)) => {
                     let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
                         cwd_raw: cwd_context.clone(),
@@ -375,8 +406,7 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
                     });
                     // Lazy costs: after paint, so the fetch spawns never
                     // gate the rows on screen.
-                    let costs =
-                        cli::fetch_plugin_details(cwd_raw, cached_claude_path, cost_requests).await;
+                    let costs = (cli.details)(cached_claude_path, cwd_raw, cost_requests).await;
                     if !costs.is_empty() {
                         let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
                             cwd_raw: cwd_context,
@@ -457,17 +487,10 @@ fn merge_token_costs(
     costs: std::collections::BTreeMap<String, (String, forge_primitives::plugins::PluginDetails)>,
 ) {
     for (id, (version, details)) in costs {
-        let _ = version;
-        // MUTANT: stamp the installed entry's version instead of the
-        // fetched one - the committed PR's behaviour.
-        let installed = app
-            .plugins
-            .installed
-            .iter()
-            .find(|entry| entry.id == id)
-            .and_then(|entry| entry.version.clone())
-            .unwrap_or_default();
-        app.plugins.token_costs.insert(id, (installed, details.token_cost_always_on));
+        // The requested version travels with the cost: stamping the
+        // installed version instead would pin an old cost under a new
+        // version's key after an update lands mid-fetch.
+        app.plugins.token_costs.insert(id, (version, details.token_cost_always_on));
     }
 }
 
@@ -475,7 +498,14 @@ fn merge_token_costs(
 /// binary check (against the manifest's declared command) and the
 /// plugin rows' token cost.
 fn annotate_rows(app: &mut App) {
-    let path = std::env::var_os("PATH").map(|path| path.to_string_lossy().into_owned());
+    annotate_rows_on_path(
+        app,
+        std::env::var_os("PATH").as_deref().map(|p| p.to_string_lossy()).as_deref(),
+    );
+}
+
+/// The annotation with an injectable PATH so tests are hermetic.
+fn annotate_rows_on_path(app: &mut App, path: Option<&str>) {
     let lsp: Vec<(String, String, Option<String>)> = app
         .plugins
         .rows
@@ -489,8 +519,7 @@ fn annotate_rows(app: &mut App) {
     for (id, name, command) in lsp {
         let checked = command.unwrap_or_else(|| name.clone());
         let Some(row) = app.plugins.rows.iter_mut().find(|row| row.id == id) else { continue };
-        let on_path =
-            path.as_deref().is_some_and(|path| skills::lsp_binary_on_path(&checked, Some(path)));
+        let on_path = path.is_some_and(|path| skills::lsp_binary_on_path(&checked, Some(path)));
         row.detail =
             Some(if on_path { format!("{name}: on PATH") } else { format!("{name}: missing") });
     }
@@ -766,6 +795,15 @@ fn open_installed_actions_overlay(app: &mut App) -> bool {
         // On this tab the row IS the plugin: its id, not the source
         // (which carries the marketplace here).
         return open_plugin_install_overlay(app, &row.id);
+    }
+    if let RowState::LoadFailed(reason) = &row.state {
+        // No overlay can act on a broken install; say why instead of
+        // silently swallowing the keypress.
+        app.config.last_error = Some(format!(
+            "{name} failed to load ({reason}); fix the disk state first",
+            name = row.name
+        ));
+        return true;
     }
     let Some(entry) = app.plugins.installed.iter().find(|entry| entry.id == row.id).cloned() else {
         return false;
@@ -1090,6 +1128,9 @@ fn execute_selected_marketplace_action(app: &mut App) {
         let cwd_context = app.cwd_raw();
         let cached_claude_path = app.plugins.claude_path.clone();
         let title = overlay.title.clone();
+        // The repair steps run through the same injectable seam the
+        // update runs use, so both failure paths stay testable.
+        let repair_cli = app.plugins.update_cli.clone().unwrap_or_else(UpdateCli::real);
         let span = info_span!(
             target: crate::logging::targets::APP_CONFIG,
             "plugin_marketplace_repair",
@@ -1097,45 +1138,54 @@ fn execute_selected_marketplace_action(app: &mut App) {
         );
         tokio::task::spawn_local(
             async move {
-                let outcome = async {
-                    let (path, _) = cli::run_cli_command(
-                        cwd_raw.clone(),
-                        cached_claude_path.clone(),
-                        remove_args,
-                    )
-                    .await?;
-                    match cli::run_cli_command_and_refresh(cwd_raw.clone(), Some(path), add_args)
-                        .await
-                    {
-                        Ok((snapshot, claude_path)) => Ok((snapshot, claude_path)),
-                        Err(message) => Err(message),
+                let cli = repair_cli;
+                // Remove first: a failure here changed nothing, so the
+                // raw error is the whole story.
+                let (path, _) = match (cli.run_update)(
+                    cached_claude_path.clone(),
+                    cwd_raw.clone(),
+                    remove_args,
+                )
+                .await
+                {
+                    Ok(ok) => ok,
+                    Err(message) => {
+                        let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                            cwd_raw: cwd_context,
+                            message: format!("The remove failed, nothing changed: {message}"),
+                        });
+                        return;
                     }
                 };
-                match outcome.await {
-                    Ok((snapshot, claude_path)) => {
-                        let message = marketplace_action_success_message(&title, action);
-                        let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
-                            cwd_raw: cwd_context,
-                            result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                        });
-                    }
+                // The re-add is the step that can leave the
+                // marketplace unregistered. Its failure refreshes the
+                // pane FIRST, and the honest failure event lands last
+                // so the follow-up refresh cannot erase it.
+                match (cli.run_update)(Some(path.clone()), cwd_raw.clone(), add_args).await {
+                    Ok((path, _)) => match (cli.refresh)(Some(path), cwd_raw).await {
+                        Ok((snapshot, claude_path)) => {
+                            let message = marketplace_action_success_message(&title, action);
+                            let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
+                                cwd_raw: cwd_context,
+                                result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                            });
+                        }
+                        Err(message) => {
+                            let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                                cwd_raw: cwd_context,
+                                message,
+                            });
+                        }
+                    },
                     Err(message) => {
-                        // A remove that succeeded before the failed
-                        // re-add leaves the marketplace UNREGISTERED -
-                        // say so, and refresh so the pane drops it
-                        // instead of listing a ghost.
                         let honest = format!(
                             "Removed {title} but the re-add failed; it is now unregistered - \
                              re-add with `claude plugin marketplace add {readd_source}`: {message}"
                         );
-                        let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
-                            cwd_raw: cwd_context.clone(),
-                            message: honest,
-                        });
-                        match cli::refresh_inventory(cwd_raw.clone(), cached_claude_path).await {
+                        match (cli.refresh)(Some(path), cwd_raw).await {
                             Ok((snapshot, claude_path)) => {
                                 let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
-                                    cwd_raw,
+                                    cwd_raw: cwd_context.clone(),
                                     snapshot,
                                     claude_path,
                                 });
@@ -1143,12 +1193,16 @@ fn execute_selected_marketplace_action(app: &mut App) {
                             Err(refresh_message) => {
                                 let _ =
                                     event_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
-                                        cwd_raw,
+                                        cwd_raw: cwd_context.clone(),
                                         message: refresh_message,
                                         trigger: PluginUpdateTrigger::Manual,
                                     });
                             }
                         }
+                        let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                            cwd_raw: cwd_context,
+                            message: honest,
+                        });
                     }
                 }
             }
@@ -1413,6 +1467,11 @@ type SharedUpdateFn =
     std::sync::Arc<dyn Fn(Option<PathBuf>, String, Vec<String>) -> UpdateCliFut<UpdateResult>>;
 type SharedRefreshFn =
     std::sync::Arc<dyn Fn(Option<PathBuf>, String) -> UpdateCliFut<RefreshResult>>;
+type DetailsResult =
+    std::collections::BTreeMap<String, (String, forge_primitives::plugins::PluginDetails)>;
+type SharedDetailsFn = std::sync::Arc<
+    dyn Fn(Option<PathBuf>, String, Vec<(String, String)>) -> UpdateCliFut<DetailsResult>,
+>;
 type RollbackResult = Result<PluginRollbackOutcome, String>;
 type SharedRollbackFn = std::sync::Arc<
     dyn Fn(Option<PathBuf>, String, PluginUpdateRecord, String) -> UpdateCliFut<RollbackResult>,
@@ -1420,11 +1479,14 @@ type SharedRollbackFn = std::sync::Arc<
 
 /// Per-run CLI surface, injectable so tests drive a whole run without
 /// shelling out. The production instance wraps the `claude` subprocess
-/// calls.
+/// calls; the refresh and details arms route through it too, so the
+/// paint-ordering property (inventory event first, costs after) is
+/// testable.
 #[derive(Clone)]
 pub(crate) struct UpdateCli {
     run_update: SharedUpdateFn,
     refresh: SharedRefreshFn,
+    details: SharedDetailsFn,
     rollback: SharedRollbackFn,
 }
 
@@ -1436,6 +1498,9 @@ impl UpdateCli {
             }),
             refresh: std::sync::Arc::new(|cached, cwd| {
                 Box::pin(cli::refresh_inventory(cwd, cached))
+            }),
+            details: std::sync::Arc::new(|cached, cwd, requests| {
+                Box::pin(cli::fetch_plugin_details(cwd, cached, requests))
             }),
             rollback: std::sync::Arc::new(|cached, cwd, record, install_location| {
                 Box::pin(cli::run_plugin_rollback(cached, cwd, record, install_location))
@@ -1472,6 +1537,8 @@ const UPDATE_CALL_TIMEOUT: Duration = Duration::from_secs(180);
 /// reporting per-plugin outcomes in the pane.
 pub(crate) fn start_update_run(app: &mut App, trigger: PluginUpdateTrigger) {
     if tokio::runtime::Handle::try_current().is_err() {
+        app.config.status_message = None;
+        app.config.last_error = Some("No runtime available for plugin action".to_owned());
         return;
     }
     if app.plugins.loading || app.plugins.update_run.as_ref().is_some_and(|run| !run.finished) {
@@ -1511,6 +1578,8 @@ pub(crate) fn start_update_run(app: &mut App, trigger: PluginUpdateTrigger) {
 /// plugins have a newer marketplace version, without applying anything.
 pub(crate) fn start_check_run(app: &mut App) {
     if tokio::runtime::Handle::try_current().is_err() {
+        app.config.status_message = None;
+        app.config.last_error = Some("No runtime available for plugin action".to_owned());
         return;
     }
     if app.plugins.loading || app.plugins.update_run.as_ref().is_some_and(|run| !run.finished) {
@@ -1750,6 +1819,8 @@ pub(crate) fn start_rollback(app: &mut App, plugin_id: String, scope: String) {
         return;
     };
     if tokio::runtime::Handle::try_current().is_err() {
+        app.config.status_message = None;
+        app.config.last_error = Some("No runtime available for plugin action".to_owned());
         return;
     }
     if app.plugins.loading {
@@ -1917,7 +1988,9 @@ fn apply_check_markers(
         app.plugins.update_availability =
             update_availability(&snapshot.installed, &snapshot.marketplace);
     } else {
-        app.plugins.update_availability.clear();
+        // A failed post-run refresh leaves the PRE-run rows on screen;
+        // the markers describe that same data, so keep them rather than
+        // dropping the pane into a markerless gap until reopen.
     }
 }
 
@@ -1939,11 +2012,15 @@ pub(crate) fn apply_update_run_finished(
         clamp_selection(app);
     }
     // The restart contract rides the row's captured output; the state
-    // overrides re-stamp it on the pane after every rows rebuild.
+    // overrides re-stamp it on the pane after every rows rebuild. Only
+    // an APPLIED update states the contract - a failed row whose prose
+    // happens to contain the phrase must not stamp.
     for row in &run.rows {
-        if row.detail.as_deref().is_some_and(|detail| {
-            forge_workspace::userdata::plugins::cli::output_states_restart_required(detail)
-        }) {
+        if row.status == PluginRunRowStatus::Updated
+            && row.detail.as_deref().is_some_and(|detail| {
+                forge_workspace::userdata::plugins::cli::output_states_restart_required(detail)
+            })
+        {
             app.plugins.restart_pending.insert(row.plugin_id.clone());
         }
     }
@@ -2765,6 +2842,108 @@ mod tests {
         assert_eq!(app.plugins.rows[0].state, RowState::Current);
     }
 
+    /// A FAILED row whose prose happens to contain the restart phrase
+    /// must not stamp the contract - only an applied update states it.
+    #[test]
+    fn a_failed_row_never_stamps_the_restart_contract() {
+        let mut app = App::test_default();
+        app.plugins.installed = vec![InstalledPluginEntry {
+            id: "supabase@probe".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        }];
+        app.plugins.rows = vec![plugin_row("supabase@probe", RowState::Current)];
+        let mut row = PluginUpdateRunRow::queued(
+            "supabase@probe".to_owned(),
+            "user".to_owned(),
+            String::new(),
+            Some("1.0.0".to_owned()),
+        );
+        row.status = PluginRunRowStatus::Failed;
+        row.detail = Some("update aborted: restart required by the harness".to_owned());
+        let run =
+            PluginUpdateRun { trigger: PluginUpdateTrigger::Auto, finished: true, rows: vec![row] };
+
+        apply_update_run_finished(&mut app, &run, None, None);
+
+        assert!(
+            !app.plugins.restart_pending.contains("supabase@probe"),
+            "a failed row's prose is not the contract: {:?}",
+            app.plugins.restart_pending
+        );
+        assert_eq!(app.plugins.rows[0].state, RowState::Current);
+    }
+
+    /// The stamp survives a rows REBUILD: an action between the stamped
+    /// restart and its reload re-derives rows from a Current scan, and
+    /// the pending set re-stamps them. The live-session stub keeps the
+    /// reload REQUESTED (not instantly consumed) for the window.
+    #[test]
+    fn a_restart_stamp_survives_a_rows_rebuild() {
+        let (mut app, mut rx) = app_with_connection();
+        app.plugins.installed = vec![InstalledPluginEntry {
+            id: "supabase@probe".to_owned(),
+            version: Some("2.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        }];
+        app.plugins.rows = vec![plugin_row("supabase@probe", RowState::Current)];
+        let mut row = PluginUpdateRunRow::queued(
+            "supabase@probe".to_owned(),
+            "user".to_owned(),
+            String::new(),
+            Some("1.0.0".to_owned()),
+        );
+        row.status = PluginRunRowStatus::Updated;
+        row.installed_version = Some("2.0.0".to_owned());
+        row.detail = Some("restart required to apply".to_owned());
+        let run =
+            PluginUpdateRun { trigger: PluginUpdateTrigger::Auto, finished: true, rows: vec![row] };
+        apply_update_run_finished(&mut app, &run, None, None);
+        assert_eq!(app.plugins.rows[0].state, RowState::RestartRequired);
+
+        // Drain the run's reload request so the window is clean.
+        while rx.try_recv().is_ok() {}
+
+        // A successful action between the stamp and the reload applies
+        // a fresh snapshot whose scan reads Current.
+        let installed = app.plugins.installed.clone();
+        apply_cli_action_success(
+            &mut app,
+            PluginsCliActionSuccess {
+                snapshot: PluginsInventorySnapshot {
+                    installed,
+                    components: vec![forge_primitives::plugins::PluginComponents {
+                        plugin: "supabase@probe".to_owned(),
+                        installed: true,
+                        enabled: true,
+                        ..forge_primitives::plugins::PluginComponents::default()
+                    }],
+                    ..PluginsInventorySnapshot::default()
+                },
+                message: "Enabled".to_owned(),
+                claude_path: PathBuf::new(),
+            },
+        );
+
+        assert_eq!(
+            app.plugins.rows[0].state,
+            RowState::RestartRequired,
+            "the stamp re-derives across the rebuild: {:?}",
+            app.plugins.rows[0].state
+        );
+        assert!(app.plugins.restart_pending.contains("supabase@probe"));
+    }
+
     /// The manual `r` carries the same in-flight guard the `u` key
     /// has: it must not stack behind an unfinished run.
     #[test]
@@ -2804,9 +2983,17 @@ mod tests {
 
     /// The LSP check tests the manifest's declared COMMAND, not the
     /// server key; the key is the fallback when no command is known.
+    /// The PATH is injected, so the test is hermetic.
     #[test]
     fn the_lsp_check_tests_the_declared_command() {
+        use std::os::unix::fs::PermissionsExt;
         let mut app = App::test_default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let binary = dir.path().join("probe-ls");
+        std::fs::write(&binary, b"#!/bin/sh").expect("write binary");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let injected = dir.path().to_string_lossy().into_owned();
+
         let lsp_row = |id: &str, name: &str| ExtensionRow {
             id: id.to_owned(),
             kind: ExtensionKind::Lsp,
@@ -2817,29 +3004,30 @@ mod tests {
             state: RowState::Current,
             detail: None,
         };
-        app.plugins.rows = vec![lsp_row("lsp:lsp-plugin:gopls", "gopls")];
-        app.plugins.lsp_commands.insert(
-            ("lsp-plugin@probe".to_owned(), "gopls".to_owned()),
-            "definitely-not-a-real-binary-xyz".to_owned(),
-        );
+        app.plugins.rows = vec![lsp_row("lsp:lsp-plugin:probe-ls", "probe-ls")];
+        // A RELATIVE command: only the injected PATH can find it.
+        app.plugins
+            .lsp_commands
+            .insert(("lsp-plugin@probe".to_owned(), "probe-ls".to_owned()), "probe-ls".to_owned());
 
-        annotate_rows(&mut app);
+        annotate_rows_on_path(&mut app, Some(injected.as_str()));
 
         assert_eq!(
             app.plugins.rows[0].detail.as_deref(),
-            Some("gopls: missing"),
-            "the declared command is what was probed: {:?}",
+            Some("probe-ls: on PATH"),
+            "the declared command is what was probed against the injected PATH: {:?}",
             app.plugins.rows[0].detail
         );
 
-        // No declared command: the key is the fallback.
+        // No declared command: the key is the fallback - and this key
+        // is NOT in the injected PATH, so it reads missing.
         app.plugins.lsp_commands.clear();
-        app.plugins.rows[0].name = "rust-analyzer".to_owned();
-        app.plugins.rows[0].id = "lsp:lsp-plugin:rust-analyzer".to_owned();
-        annotate_rows(&mut app);
+        app.plugins.rows[0].name = "uninjected-server".to_owned();
+        app.plugins.rows[0].id = "lsp:lsp-plugin:uninjected-server".to_owned();
+        annotate_rows_on_path(&mut app, Some(injected.as_str()));
         assert_eq!(
             app.plugins.rows[0].detail.as_deref(),
-            Some("rust-analyzer: on PATH"),
+            Some("uninjected-server: missing"),
             "the key falls back when no command is declared: {:?}",
             app.plugins.rows[0].detail
         );
@@ -2885,6 +3073,355 @@ mod tests {
             Some("1.0.0"),
             "the cached version is the FETCHED one, so the next refresh refetches: {:?}",
             app.plugins.token_costs
+        );
+    }
+
+    /// A repair fake: the remove step fails when `fail_remove` is
+    /// set, the add step when `fail_add` is; both record their calls.
+    fn repair_cli(
+        fail_remove: bool,
+        fail_add: bool,
+        calls: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> UpdateCli {
+        let remove_calls = std::sync::Arc::clone(calls);
+        let add_calls = std::sync::Arc::clone(calls);
+        let refresh_calls = std::sync::Arc::clone(calls);
+        UpdateCli {
+            run_update: std::sync::Arc::new(move |_cached, _cwd, args| {
+                let failing = if args.contains(&"remove".to_owned()) {
+                    let calls = std::sync::Arc::clone(&remove_calls);
+                    calls.lock().expect("calls").push("remove".to_owned());
+                    fail_remove
+                } else {
+                    let calls = std::sync::Arc::clone(&add_calls);
+                    calls.lock().expect("calls").push("add".to_owned());
+                    fail_add
+                };
+                let output = if failing {
+                    Err("claude exited 1:boom".to_owned())
+                } else {
+                    Ok((std::path::PathBuf::from("claude"), "ok".to_owned()))
+                };
+                Box::pin(async move { output })
+            }),
+            refresh: std::sync::Arc::new(move |_cached, _cwd| {
+                let calls = std::sync::Arc::clone(&refresh_calls);
+                Box::pin(async move {
+                    calls.lock().expect("calls").push("refresh".to_owned());
+                    Ok((PluginsInventorySnapshot::default(), std::path::PathBuf::from("claude")))
+                })
+            }),
+            details: std::sync::Arc::new(|_, _, _| {
+                Box::pin(async { std::collections::BTreeMap::new() })
+            }),
+            rollback: std::sync::Arc::new(|_, _, _, _| {
+                Box::pin(async { Ok(PluginRollbackOutcome::RolledBack) })
+            }),
+        }
+    }
+
+    /// A remove-step failure surfaces the raw error, claims nothing
+    /// about the re-add, and leaves the marketplace registered.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_remove_reports_nothing_changed() {
+        let mut app = App::test_default();
+        app.plugins.marketplaces = vec![MarketplaceSourceEntry {
+            name: "probe".to_owned(),
+            source: Some("github".to_owned()),
+            repo: Some("a/probe".to_owned()),
+            install_location: None,
+        }];
+        let calls = call_log();
+        app.plugins.update_cli = Some(repair_cli(true, false, &calls));
+        app.config.overlay = Some(ConfigOverlayState::MarketplaceActions(
+            crate::app::config::MarketplaceActionsOverlayState {
+                name: "probe".to_owned(),
+                title: "Probe".to_owned(),
+                description: String::new(),
+                selected_index: 0,
+                actions: vec![MarketplaceActionKind::Repair],
+            },
+        ));
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                execute_selected_marketplace_action(&mut app);
+                for _ in 0..50 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+
+        let events = drain_plugin_events(&mut app);
+        assert_eq!(events.len(), 1, "no refresh follows a remove failure: {events:?}");
+        assert!(
+            matches!(&events[0], SessionUpdate::PluginsCliActionFailed { message, .. }
+                if message.contains("The remove failed, nothing changed")
+                    && message.contains("boom")
+                    && !message.contains("unregistered")),
+            "the raw error is the whole story: {events:?}"
+        );
+        assert_eq!(*calls.lock().expect("calls"), vec!["remove".to_owned()]);
+    }
+
+    /// A re-add failure after a successful remove refreshes the pane
+    /// and lands the honest "unregistered" message LAST, so the
+    /// follow-up refresh cannot erase it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_readd_reports_unregistered_after_the_refresh() {
+        let mut app = App::test_default();
+        app.plugins.marketplaces = vec![MarketplaceSourceEntry {
+            name: "probe".to_owned(),
+            source: Some("github".to_owned()),
+            repo: Some("a/probe".to_owned()),
+            install_location: None,
+        }];
+        let calls = call_log();
+        app.plugins.update_cli = Some(repair_cli(false, true, &calls));
+        app.config.overlay = Some(ConfigOverlayState::MarketplaceActions(
+            crate::app::config::MarketplaceActionsOverlayState {
+                name: "probe".to_owned(),
+                title: "Probe".to_owned(),
+                description: String::new(),
+                selected_index: 0,
+                actions: vec![MarketplaceActionKind::Repair],
+            },
+        ));
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                execute_selected_marketplace_action(&mut app);
+                for _ in 0..50 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+
+        let events = drain_plugin_events(&mut app);
+        assert_eq!(events.len(), 2, "refresh then failure: {events:?}");
+        assert!(
+            matches!(&events[0], SessionUpdate::PluginsInventoryUpdated { .. }),
+            "the refresh lands first: {events:?}"
+        );
+        assert!(
+            matches!(&events[1], SessionUpdate::PluginsCliActionFailed { message, .. }
+                if message.contains("unregistered")
+                    && message.contains("claude plugin marketplace add a/probe")),
+            "the honest message lands last: {events:?}"
+        );
+        assert_eq!(
+            *calls.lock().expect("calls"),
+            vec!["remove".to_owned(), "add".to_owned(), "refresh".to_owned()]
+        );
+    }
+
+    /// Drain the pane's plugin events in arrival order, applying none.
+    fn drain_plugin_events(app: &mut App) -> Vec<SessionUpdate> {
+        let mut events = Vec::new();
+        while let Ok(update) = app.update_rx.try_recv() {
+            events.push(update);
+        }
+        events
+    }
+
+    /// The paint-ordering contract: the inventory event is OUT before
+    /// the token-cost fetch completes - first paint never waits on a
+    /// `claude` spawn. The details fake blocks until released.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_inventory_event_lands_before_the_costs_fetch_completes() {
+        let (mut app, _agent_rx) = app_with_connection();
+        app.plugins.installed = vec![InstalledPluginEntry {
+            id: "supabase@probe".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        }];
+        let proceed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let details_flag = std::sync::Arc::clone(&proceed);
+        let calls = call_log();
+        let details_calls = std::sync::Arc::clone(&calls);
+        app.plugins.update_cli = Some(UpdateCli {
+            run_update: std::sync::Arc::new(|_, _, _| {
+                Box::pin(async { Err("the refresh path never updates".to_owned()) })
+            }),
+            refresh: {
+                let calls = std::sync::Arc::clone(&calls);
+                std::sync::Arc::new(move |_cached, _cwd| {
+                    let calls = std::sync::Arc::clone(&calls);
+                    Box::pin(async move {
+                        calls.lock().expect("calls").push("refresh".to_owned());
+                        Ok((
+                            PluginsInventorySnapshot {
+                                installed: vec![InstalledPluginEntry {
+                                    id: "supabase@probe".to_owned(),
+                                    version: Some("1.0.0".to_owned()),
+                                    scope: "user".to_owned(),
+                                    enabled: true,
+                                    installed_at: None,
+                                    last_updated: None,
+                                    project_path: None,
+                                    capability: PluginCapability::Skill,
+                                }],
+                                ..PluginsInventorySnapshot::default()
+                            },
+                            std::path::PathBuf::from("claude"),
+                        ))
+                    })
+                })
+            },
+            details: std::sync::Arc::new(move |_, _, requests| {
+                let calls = std::sync::Arc::clone(&details_calls);
+                let flag = std::sync::Arc::clone(&details_flag);
+                Box::pin(async move {
+                    calls.lock().expect("calls").push(format!("details:{}", requests.len()));
+                    while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                        tokio::task::yield_now().await;
+                    }
+                    std::collections::BTreeMap::from([(
+                        "supabase@probe".to_owned(),
+                        (
+                            "1.0.0".to_owned(),
+                            forge_primitives::plugins::PluginDetails { token_cost_always_on: 450 },
+                        ),
+                    )])
+                })
+            }),
+            rollback: std::sync::Arc::new(|_, _, _, _| {
+                Box::pin(async { Ok(PluginRollbackOutcome::RolledBack) })
+            }),
+        });
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                request_inventory_refresh(&mut app);
+                // Yields enough for the refresh to complete and the
+                // details fetch to enter its blocked spin.
+                for _ in 0..20 {
+                    tokio::task::yield_now().await;
+                }
+
+                // THE PIN: the inventory event is out while the details
+                // fetch is still incomplete.
+                let mut events = Vec::new();
+                while let Ok(update) = app.update_rx.try_recv() {
+                    events.push(update);
+                }
+                assert!(
+                    matches!(&events[..], [SessionUpdate::PluginsInventoryUpdated { .. }]),
+                    "exactly the inventory event, before the costs fetch finishes: {events:?}"
+                );
+                assert_eq!(
+                    *calls.lock().expect("calls"),
+                    vec!["refresh".to_owned(), "details:1".to_owned()],
+                    "the costs fetch has entered but not completed"
+                );
+
+                // Release the fetch; the costs event follows.
+                proceed.store(true, std::sync::atomic::Ordering::SeqCst);
+                for _ in 0..20 {
+                    tokio::task::yield_now().await;
+                }
+                let mut events = Vec::new();
+                while let Ok(update) = app.update_rx.try_recv() {
+                    events.push(update);
+                }
+                assert!(
+                    matches!(&events[..], [SessionUpdate::PluginsInventoryUpdated { snapshot, .. }]
+                        if !snapshot.token_costs.is_empty()),
+                    "the costs event follows the release: {events:?}"
+                );
+            })
+            .await;
+    }
+
+    /// The five-second TTL path invokes NEITHER the CLI refresh nor
+    /// the details fetch - the disk scan alone. A regression folding
+    /// the CLI back into the TTL path dies here.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_ttl_refresh_invokes_no_cli_call() {
+        let (mut app, _agent_rx) = app_with_connection();
+        let calls = call_log();
+        app.plugins.update_cli = Some(repair_cli(false, false, &calls));
+        // A stale TTL: the refresh is due.
+        app.plugins.last_inventory_refresh_at = Some(
+            Instant::now()
+                .checked_sub(std::time::Duration::from_secs(6))
+                .expect("a six-second offset is far inside Instant's range"),
+        );
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                request_inventory_refresh_if_needed(&mut app);
+                let mut spins = 0;
+                while app.plugins.loading && spins < 10_000 {
+                    tokio::task::yield_now().await;
+                    spins += 1;
+                }
+            })
+            .await;
+
+        assert!(
+            calls.lock().expect("calls").is_empty(),
+            "the TTL path runs the disk scan, never the CLI seam: {:?}",
+            calls.lock().expect("calls")
+        );
+        let mut saw_updated = false;
+        while let Ok(update) = app.update_rx.try_recv() {
+            saw_updated |= matches!(update, SessionUpdate::PluginsInventoryUpdated { .. });
+        }
+        assert!(saw_updated, "the disk scan lands as an inventory event");
+    }
+
+    /// An unresolvable plugins root is a refresh FAILURE naming why -
+    /// the previous snapshot stays on screen, never an all-empty
+    /// snapshot applied as truth.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unresolvable_disk_scan_fails_instead_of_emptying() {
+        let (mut app, _agent_rx) = app_with_connection();
+        app.plugins.installed = vec![InstalledPluginEntry {
+            id: "supabase@probe".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        }];
+        app.plugins.rows = vec![plugin_row("supabase@probe", RowState::Current)];
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                request_disk_refresh_with(&mut app, || None);
+                let mut spins = 0;
+                while app.plugins.loading && spins < 10_000 {
+                    tokio::task::yield_now().await;
+                    spins += 1;
+                }
+            })
+            .await;
+
+        // Drain and APPLY the failure event like the event loop would.
+        let mut failure = None;
+        while let Ok(update) = app.update_rx.try_recv() {
+            if let SessionUpdate::PluginsInventoryRefreshFailed { message, .. } = &update {
+                failure = Some(message.clone());
+            }
+            crate::app::events::apply_session_update(&mut app, update);
+        }
+        assert!(!app.plugins.loading, "the failure settles the flag");
+        assert_eq!(
+            app.plugins.installed.len(),
+            1,
+            "the previous snapshot is kept, not replaced by an empty one"
+        );
+        assert!(
+            failure.as_ref().is_some_and(|message| message.contains("could not be resolved")),
+            "the unresolvable root is named: {failure:?}"
         );
     }
 
@@ -3969,9 +4506,15 @@ mod tests {
         );
 
         apply_update_run_finished(&mut app, &update, None, None);
-        assert!(
-            app.plugins.update_availability.is_empty(),
-            "no post-run snapshot means no truthful markers"
+        assert_eq!(
+            app.plugins
+                .update_availability
+                .iter()
+                .map(|availability| (availability.plugin_id.as_str(), availability.scope.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("supabase@claude-plugins-official", "user")],
+            "a failed post-run refresh KEEPS the markers - they describe the same pre-run \
+             rows on screen, and dropping them leaves a markerless gap until reopen"
         );
     }
 
@@ -4262,6 +4805,16 @@ mod tests {
                     Box::pin(async move {
                         calls.lock().expect("call log").push("refresh".to_owned());
                         Ok((snapshot, std::path::PathBuf::from("claude")))
+                    })
+                })
+            },
+            details: {
+                let calls = calls.clone();
+                std::sync::Arc::new(move |_, _, requests| {
+                    let calls = calls.clone();
+                    Box::pin(async move {
+                        calls.lock().expect("call log").push(format!("details:{}", requests.len()));
+                        std::collections::BTreeMap::new()
                     })
                 })
             },
@@ -4706,6 +5259,9 @@ mod tests {
                     Box::pin(async move { Ok((snapshot, std::path::PathBuf::from("claude"))) })
                 })
             },
+            details: std::sync::Arc::new(|_, _, _| {
+                Box::pin(async { std::collections::BTreeMap::new() })
+            }),
             rollback: std::sync::Arc::new(|_, _, _, _| {
                 Box::pin(std::future::pending::<RollbackResult>())
             }),
@@ -4763,6 +5319,9 @@ mod tests {
             refresh: std::sync::Arc::new(|_cached, _cwd| {
                 Box::pin(std::future::pending::<RefreshResult>())
             }),
+            details: std::sync::Arc::new(|_, _, _| {
+                Box::pin(async { std::collections::BTreeMap::new() })
+            }),
             rollback: std::sync::Arc::new(|_, _, _, _| {
                 Box::pin(std::future::pending::<RollbackResult>())
             }),
@@ -4810,6 +5369,9 @@ mod tests {
             }),
             refresh: std::sync::Arc::new(|_cached, _cwd| {
                 Box::pin(async move { Err("claude CLI not found".to_owned()) })
+            }),
+            details: std::sync::Arc::new(|_, _, _| {
+                Box::pin(async { std::collections::BTreeMap::new() })
             }),
             rollback: std::sync::Arc::new(|_, _, _, _| {
                 Box::pin(std::future::pending::<RollbackResult>())
@@ -4938,6 +5500,9 @@ mod tests {
                     Box::pin(async move { Ok((snapshot, std::path::PathBuf::from("claude"))) })
                 })
             },
+            details: std::sync::Arc::new(|_, _, _| {
+                Box::pin(async { std::collections::BTreeMap::new() })
+            }),
             rollback: std::sync::Arc::new(|_, _, _, _| {
                 Box::pin(async move { Ok(PluginRollbackOutcome::RolledBack) })
             }),

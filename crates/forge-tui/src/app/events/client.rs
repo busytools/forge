@@ -1500,6 +1500,11 @@ fn apply_runtime_reload_completed_presentation(app: &mut App, session_id: &str) 
     if is_active {
         crate::app::extensions::apply_runtime_reload_success(app);
     } else if app.sessions.contains_key(&session_key) {
+        // A background reload cannot apply, but the pane's loading flag
+        // is App-global: if the reload armed it (a guarded entry point
+        // started while this session was focused), leaving it set
+        // wedges every later guarded action until a session reset.
+        crate::app::extensions::settle_dropped_refresh_failure(app);
         tracing::debug!(
             target: crate::logging::targets::APP_CONFIG,
             event_name = "runtime_reload_completed_background",
@@ -1536,6 +1541,9 @@ fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, mes
     if is_active {
         crate::app::extensions::apply_runtime_reload_failure(app, message);
     } else if app.sessions.contains_key(&session_key) {
+        // Same wedge as the completed arm: an App-global armed flag
+        // must not survive a background reload it can never see.
+        crate::app::extensions::settle_dropped_refresh_failure(app);
         tracing::warn!(
             target: crate::logging::targets::APP_CONFIG,
             event_name = "runtime_reload_failed_background",
