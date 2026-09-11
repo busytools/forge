@@ -467,6 +467,11 @@ impl super::App {
                         AttentionKind::Permission { tool: tool_name.clone() }
                     }
                     crate::app::prompt::PromptSource::Question { .. } => AttentionKind::Question,
+                    crate::app::prompt::PromptSource::SlackDraft { draft, .. } => {
+                        // The tool that composed the draft: a held edit,
+                        // reaction or upload must not read as slack__post.
+                        AttentionKind::Permission { tool: draft.tool.clone() }
+                    }
                 };
                 (kind, prompt.enqueued_at)
             } else if let Some(replies) = session.review_replies_waiting.as_ref() {

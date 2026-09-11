@@ -138,6 +138,45 @@ pub(crate) mod test_capture {
     }
 }
 
+/// Answer a held Slack draft. This is the only release for the blocked
+/// `slack__post` handler, and `approved` is what it awaits - anything
+/// other than an explicit yes leaves the message unsent.
+///
+/// `session_key` is the session that asked, and the workspace checks it
+/// against the draft's owner: an answer for someone else's draft is
+/// refused rather than applied. Under the `testing` Cargo feature, see
+/// [`dispatch_permission_outcome`] - same test-capture rule applies.
+pub(crate) fn dispatch_slack_post_outcome(
+    app: &App,
+    session_key: &SessionKey,
+    id: uuid::Uuid,
+    approved: bool,
+) {
+    #[cfg(feature = "testing")]
+    app.test_dispatched_slack_posts.borrow_mut().push((id, approved));
+    let Some(workspace) = app.workspace.as_ref() else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "slack_post_dispatch_no_workspace",
+            session_key = %session_key.as_str(),
+            draft_id = %id,
+            "slack post answer dropped: app.workspace is None - this should never happen in production",
+        );
+        return;
+    };
+    let cmd = forge_workspace::Command::RespondSlackPost { key: session_key.clone(), id, approved };
+    if let Err(err) = workspace.dispatch(cmd) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "slack_post_dispatch_failed",
+            session_key = %session_key.as_str(),
+            draft_id = %id,
+            error = %err,
+            "failed to dispatch the slack post answer",
+        );
+    }
+}
+
 /// Dispatch a [`forge_primitives::QuestionOutcome`] for `tool_id`
 /// via the workspace. Used by `app::questions` when the user picks
 /// an option. Under the `testing` Cargo feature, see

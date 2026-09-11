@@ -240,6 +240,39 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::RuntimeReloadFailed { session_id, message } => {
             apply_session_update_runtime_reload_failed(app, &session_id, &message);
         }
+        SessionUpdate::SlackPostPending { key, draft } => {
+            // Queued on the ASKING session, so the approval is answered by
+            // whoever will read the reply rather than by whichever session
+            // happens to be focused.
+            let asking = key.clone();
+            let mut queued = false;
+            if let Some(session) = app.session_mut(&key) {
+                let prompt = crate::app::prompt::PromptState::from_slack_draft(asking, draft);
+                crate::app::prompt::enqueue_prompt(session, prompt);
+                queued = true;
+            }
+            // The asking session's `slack__post` is blocked on this answer,
+            // so a prompt that was silently dropped would hold it forever.
+            if !queued {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    session = %key.as_str(),
+                    "slack approval prompt dropped: no session bucket for the asking session",
+                );
+                return;
+            }
+            // A parked draft on an unfocused session is invisible unless
+            // the user is pointed at it.
+            app.notify(crate::app::notify::NotifyEvent::PermissionRequired, &key);
+        }
+        SessionUpdate::SlackDraftExpired { key, id } => {
+            // The gate expired the draft unanswered, so nothing was sent:
+            // retire the dock prompt instead of leaving a decision the
+            // user's answer can no longer reach.
+            if let Some(session) = app.session_mut(&key) {
+                crate::app::prompt::retire_slack_draft(session, id);
+            }
+        }
         SessionUpdate::PermissionRequest { key, tool_id, request } => {
             let mut queued = false;
             if let Some(session) = app.session_mut(&key) {

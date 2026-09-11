@@ -119,6 +119,16 @@ fn run() -> anyhow::Result<()> {
         // durable subscription loaded at boot; no-op otherwise.
         workspace.start_gotify_subsystem();
 
+        // Prove each configured `[[slack]]` token with `auth.test`. A
+        // failure is logged and that workspace stays dormant; it never
+        // stops the boot. No-op with no `[[slack]]` entry.
+        workspace.start_slack_verification();
+
+        // Start one Slack pump per workspace with a durable subscription
+        // loaded at boot; no-op otherwise. The subscribe tool starts one
+        // for a workspace that gains its first.
+        workspace.start_slack_subsystem();
+
         // Drop review state left behind by branches deleted since the
         // last run. Worker teardown only catches a branch already gone at
         // that moment, and a branch usually outlives its worker.

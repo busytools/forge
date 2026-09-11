@@ -74,6 +74,7 @@ mod provider_probe;
 mod review;
 mod session_task;
 mod single_instance;
+mod slack;
 mod spawn;
 pub mod store;
 mod target;

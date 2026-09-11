@@ -7,7 +7,8 @@
 //!
 //! This wrapper is deliberately general - open plus the raw handle.
 //! Table logic lives per-tenant in the submodules: Gotify subscriptions
-//! ([`gotify`]), durable crons ([`cron`]), dynamic workers
+//! ([`gotify`]), Slack subscriptions ([`slack`]), durable crons
+//! ([`cron`]), dynamic workers
 //! ([`dynamic_workers`]), review threads ([`review`]), forge state
 //! ([`state`], the spinner override + account-usage cache), the
 //! `/usage` view's per-file token summaries ([`token_usage`]), cached
@@ -27,6 +28,7 @@ pub mod plugins;
 pub mod pricing;
 pub mod review;
 pub mod session_tags;
+pub mod slack;
 pub mod state;
 pub mod token_usage;
 

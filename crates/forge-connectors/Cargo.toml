@@ -15,6 +15,8 @@ workspace = true
 [dependencies]
 forge-primitives = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
+form_urlencoded = "1.2"
 futures = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

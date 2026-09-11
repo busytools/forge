@@ -319,6 +319,30 @@ Optional. Absent means the Gotify integration stays dormant.
 
 Both are mandatory once the section is present; neither has a default.
 
+## `[[slack]]`
+
+Optional, and repeatable: one entry per Slack workspace. Absent or empty
+means the Slack connector stays dormant.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `workspace` | string | none | Label for this workspace, distinct per entry. It addresses the workspace in `slack__list`. |
+| `token` | string | none | User token, `xoxp-...`. |
+| `poll_seconds` | integer | `30` | Sweep interval for this workspace, in seconds. |
+
+`workspace` and `token` are mandatory once an entry is present. Three
+mistakes fail the load rather than booting a connector that cannot work:
+an empty `workspace`, an empty `token`, and two entries sharing a
+`workspace` label. An unknown key inside an entry is rejected, so a
+near-miss fails loudly.
+
+The token is a credential, so it lives here rather than in the state
+store beside the subscriptions. forge proves it with `auth.test` at boot
+and logs the team and user it resolves to, or the failure; a workspace
+whose token fails keeps its conversation sweeps running but its mention
+stream stays down - the sweeps cannot recognise `<@U...>` without it -
+and forge retries the proof in the background until it succeeds.
+
 ## `[plugins]`
 
 Optional. Absent means plugin auto-update is off, which is also what an
@@ -346,7 +370,7 @@ being ignored. Keys an older forge read here (`trusted_marketplaces`,
 
 The top-level document does not reject unknown tables, so a section
 forge no longer reads is ignored rather than failing the load. The
-places that do reject unknown fields are `[[accounts]]`,
+places that do reject unknown fields are `[[accounts]]`, `[[slack]]`,
 `[projects.<name>]`, `[dictate]` and `[plugins]`.
 
 ## A complete example
@@ -421,6 +445,11 @@ max_capture_minutes = 30
 url = "https://gotify.example"
 client_token = "CxxxxxxxxxxxxxxxA"
 
+[[slack]]
+workspace = "acme"
+token = "xoxp-xxxxxxxxxxxx"
+poll_seconds = 30
+
 [plugins]
 auto_update = true
 ```
@@ -457,10 +486,11 @@ you land on.
 view, which makes it safe to sync between machines.
 
 Everything mutable lives in a single embedded redb database at
-`<app-support>/db.redb`: durable crons, Gotify subscriptions, dynamic
-workers spawned at runtime, review threads, the `/spinner` override,
-the per-account usage cache, cached model pricing, cached OpenRouter
-model catalogs, and the `/usage` view's per-file token summaries.
+`<app-support>/db.redb`: durable crons, Gotify subscriptions, Slack
+subscriptions and the sweep watermarks beside them, dynamic workers
+spawned at runtime, review threads, the `/spinner` override, the
+per-account usage cache, cached model pricing, cached OpenRouter model
+catalogs, and the `/usage` view's per-file token summaries.
 
 The one counterexample is dictation diagnostics: with dictation
 enabled, each take's audio and transcripts are kept as plain files

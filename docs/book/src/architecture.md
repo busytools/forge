@@ -19,7 +19,7 @@ forge-test-harness->  primitives + sdk
 | `forge-primitives` | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side view structs. No logic, no I/O, no async. |
 | `forge-dictate` | The dictation primitive: audio in, text out. Owns its model files, speech recognition and transcript normalization. Depends on no forge-* crate and knows nothing about the program embedding it. |
 | `forge-providers` | One backend per provider token: credential resolution, the usage probe's HTTP and payload mapping, billing shape, the OpenRouter model catalog. Depends on forge-primitives only; the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements. |
-| `forge-connectors` | One module per inbound connector: the stream client, REST lookups, subscription matching and subsystem pump for one external integration (Gotify today). Depends on forge-primitives only; workspace state and message dispatch arrive through the host port forge-workspace implements. |
+| `forge-connectors` | One module per inbound connector: the stream client, REST lookups, subscription matching and subsystem pump for one external integration (Gotify and Slack today). Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements. |
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
@@ -49,8 +49,9 @@ Work top-down; the first match wins.
 4. **Inbound connector work for an external integration** (its stream
    client, REST lookups, subscription matching) goes in
    `forge-connectors`, one module per connector. The connector holds no
-   workspace state; what it needs from the workspace arrives through
-   the `GotifyHost` port that forge-workspace implements.
+   workspace state; Gotify reaches the workspace through the
+   `GotifyHost` port that forge-workspace implements, and Slack holds
+   only its Web API client.
 5. **Anything that speaks stream-json to the subprocess** (a decoder, a
    new control-request subtype, transport, the MCP host, the options
    builder) goes in `forge-sdk`, and ships with a wire-conformance
@@ -132,10 +133,10 @@ read "the TUI cannot touch the agent" into it.
 forge exposes one MCP server, named `forge`, to every spawned session.
 It is not a subprocess: it is hosted inside forge and reached over the
 CLI's own MCP transport. Its tools are grouped by submodule and render
-to the model as `mcp__forge__<group>__<tool>`, with five groups today:
-`peers`, `workers`, `review`, `cron` and `gotify`.
+to the model as `mcp__forge__<group>__<tool>`, with six groups today:
+`peers`, `workers`, `review`, `cron`, `gotify` and `slack`.
 
-`review`, `cron` and `gotify` are registered for every session. The
+`review`, `cron`, `gotify` and `slack` are registered for every session. The
 peers-versus-workers split is the part that varies by session kind:
 lead sessions get both `peers__*` and `workers__*`, workers get
 `workers__*` but not `peers__*`, so cross-project traffic stays the

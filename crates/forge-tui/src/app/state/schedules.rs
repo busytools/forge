@@ -200,6 +200,26 @@ impl super::App {
         self.gotify_subs.retain(|s| s.team_role == own_role);
     }
 
+    /// Refresh the Slack snapshot the Inspector SLACK section reads: the
+    /// active session's own subscriptions, scoped the same way
+    /// [`Self::refresh_gotify`] scopes its set, plus per-workspace pump
+    /// liveness. Called on the same ticker.
+    pub fn refresh_slack(&mut self) {
+        let own_role = self.active_session_team_role();
+        let project = self.active_project_name();
+        let Some(ws) = self.workspace.as_ref() else {
+            self.slack_subs = Vec::new();
+            self.slack_connected = std::collections::BTreeMap::new();
+            self.slack_load_failed = false;
+            return;
+        };
+        self.slack_connected = ws.slack_connected_workspaces();
+        self.slack_load_failed = ws.slack_subscription_load_failed();
+        self.slack_subs =
+            project.map(|name| ws.slack_subscriptions_for_project(&name)).unwrap_or_default();
+        self.slack_subs.retain(|s| s.team_role == own_role);
+    }
+
     /// The team role that owns the active session: `None` for a project
     /// lead, `Some(label)` for a worker. Scopes the SCHEDULES + GOTIFY
     /// snapshots to what this session created, matching what

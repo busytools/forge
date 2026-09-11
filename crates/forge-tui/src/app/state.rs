@@ -349,6 +349,8 @@ pub struct App {
     /// tests enable the feature via this crate's
     /// `[dev-dependencies]` self-ref in `Cargo.toml`.
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_permission_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::PermissionOutcome)>>,
+    /// Slack draft answers the prompt dispatched: `(draft id, approved)`.
+    #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_slack_posts: std::cell::RefCell<Vec<(uuid::Uuid, bool)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_question_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::QuestionOutcome)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_notifications: std::cell::RefCell<Vec<(super::notify::NotifyEvent, super::notify::NotifyContext)>>,
     /// Per-session state buckets, keyed by claude session UUID.
@@ -394,6 +396,17 @@ pub struct App {
     /// least one owned subscription (see `gotify_section_visible`).
     pub gotify_subs: Vec<forge_primitives::GotifySubscription>,
     pub gotify_connected: bool,
+    /// The Slack subscriptions the active session itself created, plus
+    /// per-workspace pump liveness. Refreshed alongside
+    /// [`App::refresh_gotify`] and scoped by own `team_role`; the
+    /// Inspector SLACK section reads these each render. Liveness is keyed
+    /// by workspace label because Slack runs one pump per `[[slack]]`
+    /// entry, where Gotify has one server and a single bool.
+    pub slack_subs: Vec<forge_primitives::slack::SlackSubscription>,
+    pub slack_connected: std::collections::BTreeMap<String, bool>,
+    /// Boot could not read the durable Slack subscriptions, so there are
+    /// none to list and the section would otherwise hide the failure.
+    pub slack_load_failed: bool,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
     /// Whether the help overlay is explicitly open.
@@ -934,6 +947,7 @@ impl App {
             start_new_run: false,
             workspace: Some(workspace),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
+            #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_slack_posts: std::cell::RefCell::new(Vec::new()),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_notifications: std::cell::RefCell::new(Vec::new()),
             sessions,
@@ -944,6 +958,9 @@ impl App {
             forge_schedule_rows: Vec::new(),
             gotify_subs: Vec::new(),
             gotify_connected: false,
+            slack_subs: Vec::new(),
+            slack_connected: std::collections::BTreeMap::new(),
+            slack_load_failed: false,
             help_view: HelpView::Keys,
             help_open: false,
             help_dialog: dialog::DialogState::default(),

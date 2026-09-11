@@ -162,6 +162,11 @@ pub enum SessionChipState {
     Degraded,
 }
 
+/// The dedupe key for a delivered Slack message: one destination is
+/// (project, owner, conversation, ts), so a lead and a worker in one
+/// project never starve each other as "already delivered".
+pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String);
+
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// spawned [`forge_agent::Agent`] handles, one per active session.
@@ -357,6 +362,49 @@ pub struct Workspace {
     /// (no subscriptions) or unconfigured. Guards against double-starting.
     /// `pub(crate)` so the impl block in [`crate::gotify`] can reach it.
     pub(crate) gotify_subsystem: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// One Slack client per `[[slack]]` entry, resolved at boot. Empty
+    /// keeps the Slack connector dormant. `pub(crate)` so the impl
+    /// blocks in [`crate::slack`] and `crate::mcp::slack` can reach it.
+    pub(crate) slack: Arc<crate::slack::SlackWorkspaces>,
+    /// Active Slack subscriptions (`mcp__forge__slack`). The set each
+    /// workspace's pump sweeps. Durable ones are also persisted to `db`
+    /// and reloaded here at boot. `pub(crate)` so the impl block in
+    /// [`crate::slack`] can reach it.
+    pub(crate) slack_subs: Mutex<Vec<forge_primitives::slack::SlackSubscription>>,
+    /// Shutdown handles for the running Slack pumps, one per workspace
+    /// label. Slack has a pump per `[[slack]]` entry where Gotify has a
+    /// single server and a single handle.
+    pub(crate) slack_subsystem:
+        Mutex<std::collections::BTreeMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// Per-workspace pump liveness for the Inspector's SLACK section.
+    /// Keyed by label for the same reason.
+    pub(crate) slack_connected: Mutex<std::collections::BTreeMap<String, bool>>,
+    /// The authenticated user's id per workspace, resolved once by the
+    /// boot `auth.test` and needed to recognise `<@U...>` mentions.
+    pub(crate) slack_user_ids: Mutex<std::collections::BTreeMap<String, String>>,
+    /// Composed Slack messages held for the user's decision, keyed by
+    /// draft id and carrying the session that asked. The sender is what
+    /// the blocked `slack__post` handler awaits; removing the entry is
+    /// what answers it. The owner is stored beside it so an answer is
+    /// only ever applied by the session it was addressed to.
+    pub(crate) slack_drafts:
+        Mutex<HashMap<uuid::Uuid, (SessionKey, tokio::sync::oneshot::Sender<bool>)>>,
+    /// Slack messages handed to a session recently, keyed by
+    /// `(project, owner, conversation, ts)`. A sweep re-runs a batch
+    /// whenever a 429 lands mid-sweep, a watermark write fails, or the
+    /// process dies between the two - this is what makes that re-run
+    /// idempotent rather than a re-delivery.
+    pub(crate) slack_recently_delivered: Mutex<HashMap<SlackDeliveryKey, std::time::Instant>>,
+    /// Set at boot when the durable Slack subscriptions could not be
+    /// read. The Inspector SLACK section reads it: without it the empty
+    /// subscription set would hide the failure.
+    pub(crate) slack_load_failed: std::sync::atomic::AtomicBool,
+    /// The last time each workspace's user-id retry ran, so a failing
+    /// `auth.test` is retried at most once a minute rather than per sweep.
+    pub(crate) slack_user_id_retries: Mutex<std::collections::BTreeMap<String, SystemTime>>,
+    /// Set the first time [`Workspace::start_slack_verification`] runs.
+    /// Subsequent calls early-return to avoid spawning duplicate probes.
+    pub(crate) slack_verification_started: std::sync::atomic::AtomicBool,
     /// Per-project in-flight guard for the lead Connected
     /// hook's catalog scan. Inserted synchronously when
     /// `respawn_workers_for_lead` starts; removed when
@@ -932,6 +980,38 @@ impl Workspace {
             }),
             None => Vec::new(),
         };
+        let mut slack_load_failed = false;
+        let slack_subs = match &db {
+            Some(db) => crate::store::slack::list(db).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "loading durable Slack subscriptions failed; starting with none",
+                );
+                slack_load_failed = true;
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
+
+        // Resolved here rather than lazily so a malformed `[[slack]]`
+        // entry refuses the boot, the way the rest of forge.toml does.
+        // The client goes through the same TLS-trust helper the Gotify
+        // seam uses, so NODE_EXTRA_CA_CERTS behaves identically.
+        let slack_http = forge_agent::http_trust::with_extra_roots(reqwest::Client::builder())
+            .build()
+            .map_err(|error| WorkspaceError::ConfigInvalid {
+                path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                message: format!("slack http client: {error}"),
+            })?;
+        let slack = Arc::new(
+            crate::slack::SlackWorkspaces::from_config(&config.slack, &slack_http).map_err(
+                |message| WorkspaceError::ConfigInvalid {
+                    path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                    message,
+                },
+            )?,
+        );
 
         // Catalog scan reads against the workspace's canonical
         // `config_dir` (where forge.toml lives). Each spawn binds to
@@ -1017,6 +1097,16 @@ impl Workspace {
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
+            slack,
+            slack_subs: Mutex::new(slack_subs),
+            slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
+            slack_connected: Mutex::new(std::collections::BTreeMap::new()),
+            slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
+            slack_drafts: Mutex::new(HashMap::new()),
+            slack_recently_delivered: Mutex::new(HashMap::new()),
+            slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),
+            slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
+            slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
@@ -1435,6 +1525,7 @@ impl Workspace {
             let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
+            let slack_facade = crate::mcp::slack::facade::ProdSlackFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
             crate::mcp::build_forge_server(
                 workspace_facade,
@@ -1442,6 +1533,7 @@ impl Workspace {
                 review_facade,
                 cron_facade,
                 gotify_facade,
+                slack_facade,
                 resolver,
                 session_kind,
             )
@@ -3424,6 +3516,9 @@ impl Workspace {
                         team_role.as_deref(),
                         notification,
                     );
+                }
+                Command::RespondSlackPost { key, id, approved } => {
+                    self.resolve_slack_draft(id, &key, approved);
                 }
                 Command::SwitchAccount { key, account_display_name, launch_settings } => {
                     let span = tracing::info_span!(
@@ -6003,6 +6098,25 @@ impl Workspace {
         config_dir: PathBuf,
         config: LoadedConfig,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
+        // Built from the injected config the way `new` builds it, so a
+        // test that supplies a `[[slack]]` entry gets a workspace whose
+        // clients exist. `new` cannot fail here on a stub config.
+        let slack = Arc::new(
+            crate::slack::SlackWorkspaces::from_config(&config.slack, &reqwest::Client::new())
+                .unwrap_or_default(),
+        );
+        Self::testing_stub_with_slack(config_dir, config, slack)
+    }
+
+    /// [`Self::testing_stub_with_config`] with the Slack clients supplied
+    /// by the caller, so a test can drive a real facade against a double
+    /// rather than a live workspace.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn testing_stub_with_slack(
+        config_dir: PathBuf,
+        config: LoadedConfig,
+        slack: Arc<crate::slack::SlackWorkspaces>,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
         // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
         // that exercise the cron / state stores expect `forge/` present.
         let _ = crate::config::ensure_forge_data_dir(&config_dir);
@@ -6043,6 +6157,16 @@ impl Workspace {
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
+            slack,
+            slack_subs: Mutex::new(Vec::new()),
+            slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
+            slack_connected: Mutex::new(std::collections::BTreeMap::new()),
+            slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
+            slack_drafts: Mutex::new(HashMap::new()),
+            slack_recently_delivered: Mutex::new(HashMap::new()),
+            slack_load_failed: std::sync::atomic::AtomicBool::new(false),
+            slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
+            slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
@@ -8109,6 +8233,126 @@ SOLO_TOKEN = "solo-secret"
             .into_iter()
             .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { key: k } if k == lead_key));
         assert!(signalled, "a gotify delivered mid-turn signals PromptQueuedWhileBusy");
+    }
+
+    fn slack_message_for(text: &str) -> forge_primitives::slack::SlackMessage {
+        forge_primitives::slack::SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: "D1".to_owned(),
+            conversation_label: "U9".to_owned(),
+            ts: "100.000001".to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            text: text.to_owned(),
+            files: Vec::new(),
+        }
+    }
+
+    /// The lead-owned subscription's running lead receives the message as
+    /// a prompt, and the asleep path never fires.
+    #[test]
+    fn slack_delivery_to_a_running_lead_dispatches_a_prompt() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("glead", "/tmp/slack-lead-running");
+        let cwd = project_expanded_path(&ws, "glead");
+        ws.record_connected_session(&cwd, "lead-uuid", None);
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
+        ws.enable_test_dispatch_intercept();
+
+        crate::spawn::deliver_slack_message(&ws, "glead", None, slack_message_for("ping"));
+
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|cmd| matches!(
+                cmd,
+                crate::protocol::Command::Prompt { key, .. } if *key == lead_key
+            )),
+            "the running lead receives the message as a prompt: {dispatched:?}",
+        );
+        assert!(
+            dispatched
+                .iter()
+                .all(|cmd| !matches!(cmd, crate::protocol::Command::SpawnProject { .. })),
+            "a running lead must not fire the asleep spawn path",
+        );
+        assert!(
+            ws.domain_session_for(&SessionKey::from_session_id("__spawn_glead__")).is_none(),
+            "nothing buffers on the synthetic spawn key",
+        );
+    }
+
+    /// With no running session, the message buffers on the synthetic spawn
+    /// key and the project's spawn is fired to pick it up.
+    #[test]
+    fn slack_delivery_to_an_asleep_lead_buffers_and_spawns_the_project() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("glead", "/tmp/slack-lead-asleep");
+        ws.enable_test_dispatch_intercept();
+
+        crate::spawn::deliver_slack_message(&ws, "glead", None, slack_message_for("wake up"));
+
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|cmd| matches!(
+                cmd,
+                crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "glead"
+            )),
+            "the asleep project is spawned: {dispatched:?}",
+        );
+        assert!(
+            dispatched.iter().all(|cmd| !matches!(cmd, crate::protocol::Command::Prompt { .. })),
+            "no session is prompted directly",
+        );
+        let buffered = ws
+            .domain_session_for(&SessionKey::from_session_id("__spawn_glead__"))
+            .expect("the synthetic spawn key holds the buffer")
+            .lock()
+            .pending_slack_prompts
+            .len();
+        assert_eq!(buffered, 1, "the message waits for the spawned session to drain");
+    }
+
+    /// A sweep re-run of the same message must not double-prompt: the
+    /// dedupe drops the second hand-off to the same destination, which is
+    /// what makes a post-failure re-sweep idempotent.
+    #[test]
+    fn a_second_delivery_of_the_same_message_to_the_same_owner_is_dropped() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("glead", "/tmp/slack-double");
+        ws.enable_test_dispatch_intercept();
+
+        let message = slack_message_for("hello");
+        assert!(
+            crate::spawn::deliver_slack_message(&ws, "glead", None, message.clone()),
+            "the first delivery lands",
+        );
+        assert!(
+            crate::spawn::deliver_slack_message(&ws, "glead", None, message),
+            "the re-run reads as already delivered, not as a failure",
+        );
+
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().all(|cmd| !matches!(cmd, crate::protocol::Command::Prompt { .. })),
+            "the asleep path buffers; the second delivery added no prompt",
+        );
+        let buffered = ws
+            .domain_session_for(&SessionKey::from_session_id("__spawn_glead__"))
+            .expect("the synthetic spawn key holds the buffer")
+            .lock()
+            .pending_slack_prompts
+            .len();
+        assert_eq!(buffered, 1, "one buffered message, not two");
     }
 
     fn make_workspace_dir() -> tempfile::TempDir {
@@ -10733,6 +10977,7 @@ mod worker_respawn_tests {
             crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
             crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
             crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
+            crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
             crate::mcp::peers::facade::CallerKeyResolver::from_fixed(SessionKey::from_session_id(
                 "caller",
             )),
