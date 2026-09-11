@@ -337,7 +337,7 @@ fn matches(
     }
     match &subscription.target {
         SlackSubscriptionTarget::DirectMessages => conversation.is_im || conversation.is_mpim,
-        SlackSubscriptionTarget::Conversation { id, mode } => {
+        SlackSubscriptionTarget::Conversation { id, mode, .. } => {
             id == &conversation.id
                 && match mode {
                     SlackWatchMode::All => true,
@@ -2039,6 +2039,7 @@ mod tests {
     fn a_mentions_only_channel_filters_on_the_token() {
         let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
             id: "C1".to_owned(),
+            name: None,
             mode: SlackWatchMode::MentionsOnly,
         })];
         let channel = conversation_channel("C1", "general");
@@ -2052,6 +2053,7 @@ mod tests {
         // agent answering in Slack would answer itself.
         let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
             id: "C1".to_owned(),
+            name: None,
             mode: SlackWatchMode::All,
         })];
         let channel = conversation_channel("C1", "general");
@@ -2073,6 +2075,7 @@ mod tests {
     fn an_unsubscribed_conversation_is_never_wanted() {
         let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
             id: "C1".to_owned(),
+            name: None,
             mode: SlackWatchMode::All,
         })];
         assert!(!wants(&subs, &conversation_channel("C2", "other"), Some("U9"), "hi", "U1"));
@@ -2449,6 +2452,7 @@ mod tests {
                 team_role: None,
                 target: SlackSubscriptionTarget::Conversation {
                     id: message.conversation.clone(),
+                    name: None,
                     mode: SlackWatchMode::All,
                 },
                 created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -2839,6 +2843,7 @@ mod tests {
     ) -> SlackSubscription {
         let mut sub = sub_for(SlackSubscriptionTarget::Conversation {
             id: id.to_owned(),
+            name: None,
             mode: SlackWatchMode::All,
         });
         sub.workspace = workspace.to_owned();
@@ -3039,7 +3044,8 @@ mod tests {
     }
 
     fn sub_channel(workspace: &str, id: &str, mode: SlackWatchMode) -> SlackSubscription {
-        let mut sub = sub_for(SlackSubscriptionTarget::Conversation { id: id.to_owned(), mode });
+        let mut sub =
+            sub_for(SlackSubscriptionTarget::Conversation { id: id.to_owned(), name: None, mode });
         sub.workspace = workspace.to_owned();
         sub
     }

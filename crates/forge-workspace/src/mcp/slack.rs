@@ -408,10 +408,21 @@ impl Tool for Subscribe {
             requests.push(SlackSubscribeRequest::Mentions);
         }
         if let Some(watches) = args.conversations.filter(|watches| !watches.is_empty()) {
+            // Names ride the same users.conversations walk the sweep runs;
+            // a failed walk still subscribes, just without display names.
+            let directory =
+                self.facade.conversations(args.workspace.as_deref()).await.unwrap_or_default();
             requests.push(SlackSubscribeRequest::Conversations(
                 watches
                     .into_iter()
-                    .map(|watch| SlackChannelWatch { id: watch.id, mode: watch.mode.into() })
+                    .map(|watch| SlackChannelWatch {
+                        name: directory
+                            .iter()
+                            .find(|conversation| conversation.id == watch.id)
+                            .and_then(|conversation| conversation.name.clone()),
+                        id: watch.id,
+                        mode: watch.mode.into(),
+                    })
                     .collect(),
             ));
         }
@@ -1278,7 +1289,11 @@ mod tests {
     }
 
     fn watching(id: &str) -> SlackSubscriptionTarget {
-        SlackSubscriptionTarget::Conversation { id: id.to_owned(), mode: SlackWatchMode::All }
+        SlackSubscriptionTarget::Conversation {
+            id: id.to_owned(),
+            name: None,
+            mode: SlackWatchMode::All,
+        }
     }
 
     fn owned_sub(
@@ -1451,9 +1466,46 @@ mod tests {
             calls[0].1,
             SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
                 id: "C1".to_owned(),
+                name: None,
                 mode: SlackWatchMode::MentionsOnly,
             }]),
             "the channel and its mode survive the argument decode",
+        );
+    }
+
+    /// The record's display name is resolved here, against the same
+    /// directory walk `slack__list` reads, so the Inspector can render
+    /// `#name` instead of the raw conversation id.
+    #[tokio::test]
+    async fn slack_subscribe_resolves_conversation_names_from_the_directory() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.conversations_result.lock() =
+            Some(Ok(vec![channel("C1", "ved-test"), channel("C2", "other")]));
+        let tool = Subscribe { facade: mock.clone(), caller_key: resolver() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "conversations": [{ "id": "C1" }, { "id": "C9" }],
+            })))
+            .await;
+        assert!(!out.is_error, "a valid subscribe succeeds: {}", out.blocks[0].text);
+
+        let calls = mock.subscribe_calls.lock();
+        assert_eq!(
+            calls[0].1,
+            SlackSubscribeRequest::Conversations(vec![
+                SlackChannelWatch {
+                    id: "C1".to_owned(),
+                    name: Some("ved-test".to_owned()),
+                    mode: SlackWatchMode::All,
+                },
+                SlackChannelWatch {
+                    id: "C9".to_owned(),
+                    name: None,
+                    mode: SlackWatchMode::All,
+                },
+            ]),
+            "a known conversation gets its name; one the walk never saw stays unnamed",
         );
     }
 

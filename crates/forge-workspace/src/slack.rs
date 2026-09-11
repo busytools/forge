@@ -473,12 +473,14 @@ impl Workspace {
     /// should see what is said next rather than only the next mention.
     /// The cursor starts at `since` (the mention that pulled us in), so
     /// the channel's history is not swept. Returns whether a record was
-    /// added.
+    /// added. A label that is empty or the conversation id itself (the
+    /// search path's fallback) stores as no name.
     pub(crate) fn auto_subscribe_slack_conversation(
         &self,
         workspace: &str,
         conversation: &str,
         since: &str,
+        name: Option<&str>,
     ) -> bool {
         let owner = {
             let subs = self.slack_subs.lock();
@@ -523,6 +525,9 @@ impl Workspace {
                 team_role: owner.1,
                 target: forge_primitives::slack::SlackSubscriptionTarget::Conversation {
                     id: conversation.to_owned(),
+                    name: name
+                        .filter(|label| !label.is_empty() && *label != conversation)
+                        .map(str::to_owned),
                     mode: forge_primitives::slack::SlackWatchMode::All,
                 },
                 created_at: std::time::SystemTime::now(),
@@ -957,7 +962,12 @@ impl SlackHost for SlackSubsystemHost {
 
     fn auto_subscribe(&self, workspace: &str, message: &SlackMessage) -> bool {
         let Some(ws) = self.0.upgrade() else { return false };
-        ws.auto_subscribe_slack_conversation(workspace, &message.conversation, &message.ts)
+        ws.auto_subscribe_slack_conversation(
+            workspace,
+            &message.conversation,
+            &message.ts,
+            Some(&message.conversation_label),
+        )
     }
 
     fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool {
@@ -1136,7 +1146,7 @@ mod tests {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
         ws.add_slack_subscription(sub_mentions_for("forge", Some("tester")), true);
 
-        ws.auto_subscribe_slack_conversation("acme", "C1", "200.1");
+        ws.auto_subscribe_slack_conversation("acme", "C1", "200.1", Some("general"));
 
         let added = ws.slack_subscriptions_for_project("forge");
         assert!(
@@ -1144,9 +1154,36 @@ mod tests {
                 && sub.target
                     == SlackSubscriptionTarget::Conversation {
                         id: "C1".to_owned(),
+                        name: Some("general".to_owned()),
                         mode: SlackWatchMode::All,
                     }),
             "the conversation lands on the mention subscription's owner: {added:?}",
+        );
+    }
+
+    /// The mention sweep's label falls back to the conversation id when
+    /// Slack omits the name; storing it would render `#C1` and read as
+    /// a channel that does not exist.
+    #[test]
+    fn an_auto_subscription_stores_no_name_when_the_label_is_not_one() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.add_slack_subscription(sub_mentions_for("forge", Some("tester")), true);
+
+        assert!(ws.auto_subscribe_slack_conversation("acme", "C1", "200.1", Some("C1")));
+        assert!(ws.auto_subscribe_slack_conversation("acme", "C2", "200.1", Some("")));
+        assert!(ws.auto_subscribe_slack_conversation("acme", "C3", "200.1", None));
+
+        let named = ws
+            .slack_subscriptions_for_project("forge")
+            .into_iter()
+            .filter_map(|sub| match sub.target {
+                SlackSubscriptionTarget::Conversation { name, .. } => Some(name),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            named.iter().all(|name| name.is_none()),
+            "no record invents a name from the id or an empty label: {named:?}",
         );
     }
 
@@ -1163,7 +1200,7 @@ mod tests {
         ws.set_slack_watermark("acme", "C1", "100.0");
 
         assert!(
-            ws.auto_subscribe_slack_conversation("acme", "C1", "200.1"),
+            ws.auto_subscribe_slack_conversation("acme", "C1", "200.1", None),
             "the conversation is watched by nobody yet, so a record is added",
         );
         let db = ws.db.lock();
@@ -1179,8 +1216,11 @@ mod tests {
 
     fn sub_for_conversation(project: &str, team_role: Option<&str>, id: &str) -> SlackSubscription {
         let mut sub = sub_for(project, team_role);
-        sub.target =
-            SlackSubscriptionTarget::Conversation { id: id.to_owned(), mode: SlackWatchMode::All };
+        sub.target = SlackSubscriptionTarget::Conversation {
+            id: id.to_owned(),
+            name: None,
+            mode: SlackWatchMode::All,
+        };
         sub
     }
 
@@ -1391,6 +1431,7 @@ mod tests {
                 sub.target
                     == SlackSubscriptionTarget::Conversation {
                         id: "C1".to_owned(),
+                        name: None,
                         mode: SlackWatchMode::All,
                     }
             })
@@ -1457,7 +1498,7 @@ mod tests {
         ws.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
 
         assert!(
-            !ws.auto_subscribe_slack_conversation("acme", "C1", "200.1"),
+            !ws.auto_subscribe_slack_conversation("acme", "C1", "200.1", None),
             "a conversation that owner already watches adds nothing",
         );
         assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2, "and no third record");

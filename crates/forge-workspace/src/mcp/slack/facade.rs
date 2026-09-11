@@ -208,6 +208,10 @@ pub(crate) enum SlackSubscribeRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SlackChannelWatch {
     pub id: String,
+    /// The conversation's display name, resolved against the same
+    /// directory `slack__list` reads. `None` when the walk did not
+    /// cover the conversation.
+    pub name: Option<String>,
     pub mode: SlackWatchMode,
 }
 
@@ -722,6 +726,7 @@ impl SlackFacade for ProdSlackFacade {
                 .into_iter()
                 .map(|watch| SlackSubscriptionTarget::Conversation {
                     id: watch.id,
+                    name: watch.name,
                     mode: watch.mode,
                 })
                 .collect(),
@@ -1697,12 +1702,41 @@ mod tests {
                 Some("acme"),
                 SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
                     id: "C1".to_owned(),
+                    name: None,
                     mode: SlackWatchMode::All,
                 }]),
             )
             .expect("channels");
         assert_eq!(first.len() + second.len(), 2);
         assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn subscribing_stores_the_conversation_name_on_the_record() {
+        let (ws, facade) = workspace_with_one_slack_workspace("acme");
+        facade
+            .subscribe(
+                &caller(),
+                Some("acme"),
+                SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
+                    id: "C1".to_owned(),
+                    name: Some("ved-test".to_owned()),
+                    mode: SlackWatchMode::All,
+                }]),
+            )
+            .expect("the subscribe lands");
+
+        let targets: Vec<SlackSubscriptionTarget> =
+            ws.slack_subscriptions_for_project("forge").into_iter().map(|sub| sub.target).collect();
+        assert_eq!(
+            targets,
+            vec![SlackSubscriptionTarget::Conversation {
+                id: "C1".to_owned(),
+                name: Some("ved-test".to_owned()),
+                mode: SlackWatchMode::All,
+            }],
+            "the display name rides onto the record",
+        );
     }
 
     /// A re-subscribe after the cursor cleared seeds fresh: the sweep
@@ -1716,6 +1750,7 @@ mod tests {
                 Some("acme"),
                 SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
                     id: "C1".to_owned(),
+                    name: None,
                     mode: SlackWatchMode::All,
                 }]),
             )
@@ -1730,6 +1765,7 @@ mod tests {
                 Some("acme"),
                 SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
                     id: "C1".to_owned(),
+                    name: None,
                     mode: SlackWatchMode::All,
                 }]),
             )
@@ -1762,6 +1798,7 @@ mod tests {
                 Some("acme"),
                 SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
                     id: "C1".to_owned(),
+                    name: None,
                     mode: SlackWatchMode::All,
                 }]),
             )
@@ -1872,6 +1909,7 @@ mod tests {
                 Some("acme"),
                 SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
                     id: "C1".to_owned(),
+                    name: None,
                     mode: SlackWatchMode::All,
                 }]),
             )
@@ -1909,6 +1947,7 @@ mod tests {
             lead_targets,
             vec![SlackSubscriptionTarget::Conversation {
                 id: "C1".to_owned(),
+                name: None,
                 mode: SlackWatchMode::All,
             }],
             "the lead sees only its own record",
