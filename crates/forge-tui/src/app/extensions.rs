@@ -454,17 +454,20 @@ pub(crate) fn apply_inventory_refresh_success(
 /// Fold a details batch into the version-keyed cost cache.
 fn merge_token_costs(
     app: &mut App,
-    costs: std::collections::BTreeMap<String, forge_primitives::plugins::PluginDetails>,
+    costs: std::collections::BTreeMap<String, (String, forge_primitives::plugins::PluginDetails)>,
 ) {
-    for (id, details) in costs {
-        let version = app
+    for (id, (version, details)) in costs {
+        let _ = version;
+        // MUTANT: stamp the installed entry's version instead of the
+        // fetched one - the committed PR's behaviour.
+        let installed = app
             .plugins
             .installed
             .iter()
             .find(|entry| entry.id == id)
             .and_then(|entry| entry.version.clone())
             .unwrap_or_default();
-        app.plugins.token_costs.insert(id, (version, details.token_cost_always_on));
+        app.plugins.token_costs.insert(id, (installed, details.token_cost_always_on));
     }
 }
 
@@ -2694,7 +2697,10 @@ mod tests {
             PluginsInventorySnapshot {
                 token_costs: std::collections::BTreeMap::from([(
                     "superpowers@probe".to_owned(),
-                    forge_primitives::plugins::PluginDetails { token_cost_always_on: 450 },
+                    (
+                        "6.3.0".to_owned(),
+                        forge_primitives::plugins::PluginDetails { token_cost_always_on: 450 },
+                    ),
                 )]),
                 ..PluginsInventorySnapshot::default()
             },
@@ -2836,6 +2842,49 @@ mod tests {
             Some("rust-analyzer: on PATH"),
             "the key falls back when no command is declared: {:?}",
             app.plugins.rows[0].detail
+        );
+    }
+
+    /// The cost cache stamps the version the cost was fetched FOR:
+    /// an update landing between the request and the merge must not
+    /// pin the old cost under the new version's key, or the stale cost
+    /// reads fresh forever.
+    #[test]
+    fn a_cost_stamps_the_version_it_was_fetched_for() {
+        let mut app = App::test_default();
+        // The update already landed: the pane's install reads 2.0.0.
+        app.plugins.installed = vec![InstalledPluginEntry {
+            id: "superpowers@probe".to_owned(),
+            version: Some("2.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        }];
+        app.plugins.rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+
+        apply_inventory_refresh_success(
+            &mut app,
+            PluginsInventorySnapshot {
+                token_costs: std::collections::BTreeMap::from([(
+                    "superpowers@probe".to_owned(),
+                    (
+                        "1.0.0".to_owned(),
+                        forge_primitives::plugins::PluginDetails { token_cost_always_on: 450 },
+                    ),
+                )]),
+                ..PluginsInventorySnapshot::default()
+            },
+            PathBuf::new(),
+        );
+
+        assert_eq!(
+            app.plugins.token_costs.get("superpowers@probe").map(|(version, _)| version.as_str()),
+            Some("1.0.0"),
+            "the cached version is the FETCHED one, so the next refresh refetches: {:?}",
+            app.plugins.token_costs
         );
     }
 

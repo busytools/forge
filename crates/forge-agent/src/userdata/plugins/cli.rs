@@ -248,7 +248,7 @@ where
 {
     let started = std::time::Instant::now();
     let result = parse_json_command(claude_path, cwd_raw, args);
-    tracing::debug!(
+    tracing::info!(
         target: "forge_agent::userdata::plugins",
         duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         args = %args.join(" "),
@@ -551,7 +551,26 @@ pub async fn fetch_plugin_details(
     cwd_raw: String,
     cached_claude_path: Option<PathBuf>,
     requests: Vec<(String, String)>,
-) -> std::collections::BTreeMap<String, PluginDetails> {
+) -> std::collections::BTreeMap<String, (String, PluginDetails)> {
+    let started = std::time::Instant::now();
+    let result = fetch_plugin_details_inner(cwd_raw, cached_claude_path, requests).await;
+    tracing::info!(
+        target: "forge_agent::userdata::plugins",
+        duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        costs = result.len(),
+        "plugin token-cost fetch",
+    );
+    result
+}
+
+/// The requested version travels with the cost: an update landing
+/// between the request and the merge must not pin the old cost under
+/// the new version's key.
+async fn fetch_plugin_details_inner(
+    cwd_raw: String,
+    cached_claude_path: Option<PathBuf>,
+    requests: Vec<(String, String)>,
+) -> std::collections::BTreeMap<String, (String, PluginDetails)> {
     if requests.is_empty() {
         return std::collections::BTreeMap::new();
     }
@@ -560,10 +579,10 @@ pub async fn fetch_plugin_details(
         let Ok(claude_path) = resolve_claude_path(cached_claude_path) else {
             return costs;
         };
-        for (plugin_id, _version) in requests {
+        for (plugin_id, version) in requests {
             match plugin_details_blocking(&claude_path, &cwd_raw, &plugin_id) {
                 Ok(details) => {
-                    costs.insert(plugin_id, details);
+                    costs.insert(plugin_id, (version, details));
                 }
                 Err(error) => {
                     tracing::warn!(

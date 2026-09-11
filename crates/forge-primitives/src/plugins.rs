@@ -76,9 +76,11 @@ pub struct PluginsInventorySnapshot {
     /// Marketplace load health for the Extensions page; empty when the
     /// producer does not scan.
     pub marketplace_health: Vec<MarketplaceHealth>,
-    /// Token cost for the plugins the producer fetched details for;
-    /// the producer decides the fetch set (version-keyed caching).
-    pub token_costs: BTreeMap<String, PluginDetails>,
+    /// Token cost for the plugins the producer fetched details for,
+    /// stamped with the version the cost was fetched FOR - an update
+    /// landing mid-fetch must not pin the old cost under the new
+    /// version's key. The producer decides the fetch set.
+    pub token_costs: BTreeMap<String, (String, PluginDetails)>,
 }
 
 /// Per-plugin component inventory read straight off disk (the plugin
