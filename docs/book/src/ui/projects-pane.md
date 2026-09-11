@@ -109,7 +109,7 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 | `·` | Sleeping / Failed / LoggedOut | dim |
 | `○` + age | No live session: age instead of a glyph and close button | dim |
 
-Selection highlights exactly one row: the selected session's own row, and nothing else - selecting a worker leaves its lead row plain. A row's glyph reads only that session's own state, so the same state shows the same glyph whether the row is selected or not; the selected row shows itself through the rust orange bold label.
+Selection highlights the selected session's own row when the pane draws one for it, and nothing else - selecting a worker leaves its lead row plain, and a selection with no drawn row (the `__resume_...__` waking window, a resumed worker JSONL) highlights nothing. A row's glyph reads only that session's own state, so the same state shows the same glyph whether the row is selected or not; the selected row shows itself through the rust orange bold label.
 
 <details>
 <summary>Chrome colors, the versions row, spend fine print, panel layout</summary>
@@ -177,7 +177,7 @@ The overlay's body is the same tree full-width (banner and rule span the overlay
  <span class="dim">├─ ○ dotfiles</span>                               <span class="dim"> 4h</span> 
  <span class="dim">└─ </span><span class="success">◆</span> <span class="bold">playground</span>                             <span class="user-band"> x </span>
     <span class="dim">│</span>
- <span class="dim">   └─ </span>⠋ <span class="accent-bold">gpt-tutor</span>                           <span class="user-band"> x </span> 
+ <span class="dim">   └─ </span>⠋ gpt-tutor                           <span class="user-band"> x </span> 
 
 
 <span class="dim">─────────────────────────────────────────────────</span>
@@ -221,7 +221,7 @@ Rendered at every tier (Wide / Medium / the Narrow overlay). A project's spawned
   <span class="dim">│  │</span>
   <span class="dim">│  ├─ </span><span class="dim">●</span> reviewer           <span class="user-band"> x </span> 
   <span class="dim">│  │</span>
-  <span class="dim">│  └─ </span><span class="dim">⠋</span> migrator           <span class="user-band"> x </span> 
+  <span class="dim">│  └─ </span>⠋ <span class="dim">migrator</span>           <span class="user-band"> x </span> 
   <span class="dim">│  </span>
   <span class="dim">└─ ○ data-modules</span>          <span class="dim"> 2h</span> 
 
@@ -231,7 +231,7 @@ Rendered at every tier (Wide / Medium / the Narrow overlay). A project's spawned
   <span class="dim">├─ ○ dotfiles</span>              <span class="dim"> 4h</span> 
   <span class="dim">└─ </span><span class="success">◆</span> <span class="bold">playground</span>            <span class="user-band"> x </span>
      <span class="dim">│</span>
-  <span class="dim">   └─ </span>⠋ <span class="accent-bold">gpt-tutor</span>          <span class="user-band"> x </span> 
+  <span class="dim">   └─ </span>⠋ gpt-tutor          <span class="user-band"> x </span> 
 </pre>
 
 </div>

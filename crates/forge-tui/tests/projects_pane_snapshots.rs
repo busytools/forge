@@ -420,6 +420,12 @@ fn idle_glyph_identical_selected_and_unselected() {
         fgs[0], fgs[1],
         "the bullet must render identically on the selected and the background row, got: {fgs:?}",
     );
+    assert_eq!(
+        fgs[0],
+        ratatui::style::Color::DarkGray,
+        "the settled bullet is dim on every row, got: {:?}",
+        fgs[0],
+    );
 }
 
 #[test]
