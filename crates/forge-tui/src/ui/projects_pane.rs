@@ -270,9 +270,9 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
 /// Org-grouped project list. Projects render as tree-leaf rows
 /// under their org's header (DIM bold). Within each org, projects
 /// sort alphabetically; orgs themselves sort alphabetically. The
-/// per-row glyph reads only that session's own state (spinner, `○`
-/// DIM for idle catalog entries); selection styles the label
-/// highlight, never the glyph. Live rows carry an `x` close
+/// per-row glyph and its state colour read only that session's own
+/// state (spinner, `○` DIM for idle catalog entries); the caller
+/// applies the selection accent on top. Live rows carry an `x` close
 /// affordance at the right edge; idle rows show last-activity
 /// timestamp instead.
 ///
