@@ -348,7 +348,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn extensions_extra_args_returns_usage_from_the_page_open_gate() {
         let mut app = App::test_default();
         let dir = tempfile::tempdir().expect("tempdir");

@@ -21,6 +21,7 @@ const INVENTORY_REFRESH_TTL: Duration = Duration::from_secs(5);
 pub mod installed;
 pub mod skills;
 pub mod state;
+pub mod updates;
 
 pub use state::{
     ExtensionsTab, TabState, count_for_tab, row_matches, rows_for_tab, update_all_count,
@@ -2409,6 +2410,51 @@ mod tests {
                 .contains(&"/Users/vedhavyas/.claude/plugins/marketplaces/stx-clarity".to_owned()),
             "the directory path is the re-add source: {directory_add:?}"
         );
+    }
+
+    /// The update path drives the page's own panel, never the global
+    /// top spinner: `app.status` sits untouched through progress and
+    /// finish events.
+    #[test]
+    fn an_update_run_never_writes_the_global_spinner_state() {
+        let mut app = App::test_default();
+        let before = app.status.clone();
+
+        apply_update_run_progress(
+            &mut app,
+            PluginUpdateRun {
+                trigger: PluginUpdateTrigger::Manual,
+                finished: false,
+                rows: vec![PluginUpdateRunRow::queued(
+                    "pensive@claude-night-market".to_owned(),
+                    "user".to_owned(),
+                    String::new(),
+                    Some("1.7.2".to_owned()),
+                )],
+            },
+        );
+        assert_eq!(app.status, before, "progress never touches the spinner");
+
+        let run = PluginUpdateRun {
+            trigger: PluginUpdateTrigger::Manual,
+            finished: true,
+            rows: vec![finished_update_row("pensive@claude-night-market")],
+        };
+        apply_update_run_finished(&mut app, &run, None, None);
+        assert_eq!(app.status, before, "the finished run never touches the spinner");
+        assert!(app.plugins.update_run.is_some(), "the page's own panel holds the run");
+    }
+
+    fn finished_update_row(plugin_id: &str) -> PluginUpdateRunRow {
+        let mut row = PluginUpdateRunRow::queued(
+            plugin_id.to_owned(),
+            "user".to_owned(),
+            String::new(),
+            Some("1.7.2".to_owned()),
+        );
+        row.status = PluginRunRowStatus::Updated;
+        row.installed_version = Some("2.0.0".to_owned());
+        row
     }
 
     fn app_with_connection()

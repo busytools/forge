@@ -706,6 +706,12 @@ pub async fn execute_update_batch(
         row.status = outcome.status;
         row.installed_version.clone_from(&outcome.installed_version);
         row.detail = outcome.detail;
+        // The classifier drops the output on an applied update; state
+        // the restart contract back on the row so the pane can show it
+        // where the action was.
+        if restart_required.contains(&row.plugin_id) && row.detail.is_none() {
+            row.detail = Some("restart required to apply".to_owned());
+        }
         if outcome.status == PluginRunRowStatus::Updated {
             records.push(PluginUpdateRecord {
                 plugin_id: row.plugin_id.clone(),

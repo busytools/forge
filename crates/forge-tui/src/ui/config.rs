@@ -973,6 +973,62 @@ mod tests {
         );
     }
 
+    /// The docked Updates panel renders each action row with its own
+    /// state and the batch counter in the header.
+    #[test]
+    fn the_updates_panel_renders_rows_and_the_batch_counter() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+
+        app.active_view = crate::app::ActiveView::Extensions;
+        let row = |id: &str, status, to: Option<&str>| {
+            let mut r = forge_primitives::plugins::PluginUpdateRunRow::queued(
+                id.to_owned(),
+                "user".to_owned(),
+                String::new(),
+                Some("1.0.0".to_owned()),
+            );
+            r.status = status;
+            r.installed_version = Some(to.unwrap_or("1.0.0").to_owned());
+            r
+        };
+        app.plugins.update_run = Some(crate::app::extensions::PluginUpdateRun {
+            trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
+            finished: false,
+            rows: vec![
+                row(
+                    "supabase@claude-plugins-official",
+                    forge_primitives::plugins::PluginRunRowStatus::Updated,
+                    Some("2.0.0"),
+                ),
+                row(
+                    "pensive@claude-night-market",
+                    forge_primitives::plugins::PluginRunRowStatus::Failed,
+                    None,
+                ),
+                row(
+                    "leyline@claude-night-market",
+                    forge_primitives::plugins::PluginRunRowStatus::Updating,
+                    None,
+                ),
+            ],
+        });
+
+        terminal
+            .draw(|frame| {
+                super::render_extensions(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Updates - 1 of 3 done"), "the counter: {rendered}");
+        assert!(rendered.contains("supabase@claude-plugins-official"));
+        assert!(rendered.contains("pensive@claude-night-market"));
+        assert!(rendered.contains("failed"), "the failed row: {rendered}");
+        assert!(rendered.contains("updating..."), "the live row: {rendered}");
+    }
+
     #[test]
     fn config_footer_renders_status_message_when_present() {
         let backend = TestBackend::new(100, 24);
