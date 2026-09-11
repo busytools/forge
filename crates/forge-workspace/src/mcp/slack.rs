@@ -1499,11 +1499,7 @@ mod tests {
                     name: Some("ved-test".to_owned()),
                     mode: SlackWatchMode::All,
                 },
-                SlackChannelWatch {
-                    id: "C9".to_owned(),
-                    name: None,
-                    mode: SlackWatchMode::All,
-                },
+                SlackChannelWatch { id: "C9".to_owned(), name: None, mode: SlackWatchMode::All },
             ]),
             "a known conversation gets its name; one the walk never saw stays unnamed",
         );

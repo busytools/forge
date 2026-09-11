@@ -1182,7 +1182,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(
-            named.iter().all(|name| name.is_none()),
+            named.iter().all(Option::is_none),
             "no record invents a name from the id or an empty label: {named:?}",
         );
     }

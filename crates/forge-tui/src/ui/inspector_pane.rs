@@ -1819,7 +1819,7 @@ fn append_slack_subscription(
         forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, name, mode } => {
             // Records written before names were captured, and conversations
             // the directory walk never saw, render the raw id.
-            let label = name.clone().map(|name| format!("#{name}")).unwrap_or_else(|| id.clone());
+            let label = name.clone().map_or_else(|| id.clone(), |name| format!("#{name}"));
             match mode {
                 forge_primitives::slack::SlackWatchMode::All => format!("{label} · every message"),
                 forge_primitives::slack::SlackWatchMode::MentionsOnly => {
