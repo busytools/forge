@@ -384,6 +384,13 @@ pub struct Workspace {
     /// only ever applied by the session it was addressed to.
     pub(crate) slack_drafts:
         Mutex<HashMap<uuid::Uuid, (SessionKey, tokio::sync::oneshot::Sender<bool>)>>,
+    /// Slack messages handed to a session recently, keyed by
+    /// `(project, conversation, ts)`. A sweep re-runs a batch whenever a
+    /// 429 lands mid-sweep, a watermark write fails, or the process dies
+    /// between the two - this is what makes that re-run idempotent rather
+    /// than a re-delivery.
+    pub(crate) slack_recently_delivered:
+        Mutex<HashMap<(String, String, String), std::time::Instant>>,
     /// Set the first time [`Workspace::start_slack_verification`] runs.
     /// Subsequent calls early-return to avoid spawning duplicate probes.
     pub(crate) slack_verification_started: std::sync::atomic::AtomicBool,
@@ -1083,6 +1090,7 @@ impl Workspace {
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_drafts: Mutex::new(HashMap::new()),
+            slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
@@ -6149,6 +6157,7 @@ impl Workspace {
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_drafts: Mutex::new(HashMap::new()),
+            slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),

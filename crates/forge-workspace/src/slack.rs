@@ -18,6 +18,11 @@ use uuid::Uuid;
 use crate::SessionKey;
 use crate::workspace::Workspace;
 
+/// How long a delivered message stays remembered. Long enough to cover a
+/// sweep that re-runs after a 429 or a restart, short enough that the map
+/// stays small.
+const DELIVERY_REMEMBER: Duration = Duration::from_secs(300);
+
 /// One client per configured workspace, keyed by its label.
 ///
 /// Held as [`SlackApi`] rather than the concrete client so a test can
@@ -111,6 +116,17 @@ impl Workspace {
         self.slack_subs.lock().push(sub);
     }
 
+    /// Whether this exact message has not been handed to a session yet,
+    /// recording it when so. A sweep re-runs a batch on a mid-sweep 429, a
+    /// failed watermark write or a crash; without this the re-run would
+    /// deliver the whole batch again.
+    pub(crate) fn slack_delivery_is_new(&self, project: &str, message: &SlackMessage) -> bool {
+        let key = (project.to_owned(), message.conversation.clone(), message.ts.clone());
+        let mut seen = self.slack_recently_delivered.lock();
+        seen.retain(|_, seen_at| seen_at.elapsed() < DELIVERY_REMEMBER);
+        seen.insert(key, std::time::Instant::now()).is_none()
+    }
+
     /// Hold a composed draft and hand back its id plus the receiver the
     /// caller awaits. The draft is addressed to `caller`, so its prompt
     /// surfaces in the session that will read the reply rather than in
@@ -123,10 +139,69 @@ impl Workspace {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let id = draft.id;
         self.slack_drafts.lock().insert(id, (caller.clone(), sender));
-        let _ = self
+        if self
             .update_sender()
-            .send(crate::protocol::SessionUpdate::SlackPostPending { key: caller.clone(), draft });
+            .send(crate::protocol::SessionUpdate::SlackPostPending { key: caller.clone(), draft })
+            .is_err()
+        {
+            // No UI can answer this draft, so holding the caller would
+            // park it forever. Drop the draft; the awaiting caller sees
+            // the dropped receiver and fails closed.
+            self.slack_drafts.lock().remove(&id);
+            let (_ignored_sender, dead_receiver) = tokio::sync::oneshot::channel();
+            return (id, dead_receiver);
+        }
         (id, receiver)
+    }
+
+    /// Remove every Slack subscription the worker `label` owns in
+    /// `project_key`, from the active set and the store. Worker teardown
+    /// calls this so a despawned worker cannot strand records - and so a
+    /// delivery for it does not fall through to the lead.
+    pub(crate) fn remove_slack_subscriptions_for_worker(
+        &self,
+        project_key: &crate::target::ProjectKey,
+        label: &str,
+    ) {
+        let Some(project_name) = self
+            .list_projects()
+            .into_iter()
+            .find(|view| view.key == *project_key)
+            .map(|view| view.name)
+        else {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                project = %project_key.as_str(),
+                label,
+                "could not resolve a project name at worker teardown; its Slack subscriptions may be stranded",
+            );
+            return;
+        };
+
+        let removed_ids: Vec<Uuid> = {
+            let mut subs = self.slack_subs.lock();
+            let mut removed = Vec::new();
+            subs.retain(|sub| {
+                let owned = sub.project == project_name && sub.team_role.as_deref() == Some(label);
+                if owned {
+                    removed.push(sub.id);
+                }
+                !owned
+            });
+            removed
+        };
+
+        for id in removed_ids {
+            if let Some(db) = self.db.lock().as_ref()
+                && let Err(error) = crate::store::slack::remove(db, id)
+            {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "removing a persisted Slack subscription failed",
+                );
+            }
+        }
     }
 
     /// Answer a held draft, returning whether one was waiting for THIS
@@ -149,16 +224,33 @@ impl Workspace {
         true
     }
 
+    /// Record the last `ts` delivered for a conversation in a workspace,
+    /// through the store so it survives a restart.
+    pub(crate) fn set_slack_watermark(&self, workspace: &str, conversation: &str, ts: &str) {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        if let Err(error) = crate::store::slack::set_watermark(db, workspace, conversation, ts) {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "writing a Slack watermark failed",
+            );
+        }
+    }
+
     /// Watch `conversation` because a mention arrived in it, owned by
     /// whoever subscribes to mentions in that workspace - not the lead,
     /// and not whichever session happens to be active. `All` mode is
     /// deliberate: pulled into a conversation by a mention, the agent
     /// should see what is said next rather than only the next mention.
-    /// Returns whether a record was added.
+    /// The cursor starts at `since` (the mention that pulled us in), so
+    /// the channel's history is not swept. Returns whether a record was
+    /// added.
     pub(crate) fn auto_subscribe_slack_conversation(
         &self,
         workspace: &str,
         conversation: &str,
+        since: &str,
     ) -> bool {
         let owner = {
             let subs = self.slack_subs.lock();
@@ -185,6 +277,11 @@ impl Workspace {
             }
             (owner.project.clone(), owner.team_role.clone())
         };
+
+        // The cursor starts at the mention that pulled us in. Without it
+        // the first sweep would deliver the newest page of the channel's
+        // history as if it were all new.
+        self.set_slack_watermark(workspace, conversation, since);
 
         self.add_slack_subscription(
             forge_primitives::slack::SlackSubscription {
@@ -323,19 +420,35 @@ impl Workspace {
         }
     }
 
-    /// Stop every Slack pump once no subscription remains, and mark each
-    /// workspace disconnected. No-op while any subscription is active.
+    /// Stop the Slack pump for any workspace that no longer has a
+    /// subscription, and mark it disconnected. Pumps are per workspace, so
+    /// one workspace losing its subscriptions must not keep another's
+    /// pump alive - nor leave its own running with nothing to watch.
     pub fn stop_slack_subsystem_if_idle(&self) {
-        if !self.slack_subs.lock().is_empty() {
+        let idle_labels: Vec<String> = {
+            let subs = self.slack_subs.lock();
+            let watched: std::collections::HashSet<&str> =
+                subs.iter().map(|sub| sub.workspace.as_str()).collect();
+            self.slack_subsystem
+                .lock()
+                .keys()
+                .filter(|label| !watched.contains(label.as_str()))
+                .cloned()
+                .collect()
+        };
+        if idle_labels.is_empty() {
             return;
         }
-        let handles: Vec<_> =
-            std::mem::take(&mut *self.slack_subsystem.lock()).into_values().collect();
+        let handles: Vec<_> = {
+            let mut handles = self.slack_subsystem.lock();
+            idle_labels.iter().filter_map(|label| handles.remove(label)).collect()
+        };
         for handle in handles {
             let _ = handle.send(());
         }
-        for connected in self.slack_connected.lock().values_mut() {
-            *connected = false;
+        let mut connected = self.slack_connected.lock();
+        for label in &idle_labels {
+            connected.insert(label.clone(), false);
         }
     }
 }
@@ -376,31 +489,17 @@ impl SlackHost for SlackSubsystemHost {
         ws.slack_subs.lock().iter().filter(|sub| sub.workspace == workspace).cloned().collect()
     }
 
-    fn watermark(&self, workspace: &str, conversation: &str) -> Option<String> {
-        let ws = self.0.upgrade()?;
+    fn watermark(&self, workspace: &str, conversation: &str) -> Result<Option<String>, String> {
+        let ws = self.0.upgrade().ok_or("the workspace is gone")?;
         let db = ws.db.lock();
-        let db = db.as_ref()?;
-        crate::store::slack::watermark(db, workspace, conversation).unwrap_or_else(|error| {
-            tracing::warn!(
-                target: "forge_workspace::slack",
-                %error,
-                "reading a Slack watermark failed; treating it as unset",
-            );
-            None
-        })
+        let Some(db) = db.as_ref() else { return Ok(None) };
+        crate::store::slack::watermark(db, workspace, conversation)
+            .map_err(|error| error.to_string())
     }
 
     fn set_watermark(&self, workspace: &str, conversation: &str, ts: &str) {
         let Some(ws) = self.0.upgrade() else { return };
-        let db = ws.db.lock();
-        let Some(db) = db.as_ref() else { return };
-        if let Err(error) = crate::store::slack::set_watermark(db, workspace, conversation, ts) {
-            tracing::warn!(
-                target: "forge_workspace::slack",
-                %error,
-                "writing a Slack watermark failed",
-            );
-        }
+        ws.set_slack_watermark(workspace, conversation, ts);
     }
 
     fn set_connected(&self, workspace: &str, connected: bool) {
@@ -410,22 +509,26 @@ impl SlackHost for SlackSubsystemHost {
 
     fn auto_subscribe(&self, workspace: &str, message: &SlackMessage) -> bool {
         let Some(ws) = self.0.upgrade() else { return false };
-        ws.auto_subscribe_slack_conversation(workspace, &message.conversation)
+        ws.auto_subscribe_slack_conversation(workspace, &message.conversation, &message.ts)
     }
 
-    fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) {
-        let Some(ws) = self.0.upgrade() else { return };
-        if let Err(err) = ws.dispatch(crate::protocol::Command::DeliverSlackMessage {
+    fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool {
+        let Some(ws) = self.0.upgrade() else { return false };
+        match ws.dispatch(crate::protocol::Command::DeliverSlackMessage {
             project: subscription.project.clone(),
             team_role: subscription.team_role.clone(),
             message: message.clone(),
         }) {
-            tracing::warn!(
-                target: "forge_workspace::slack",
-                project = %subscription.project,
-                error = ?err,
-                "slack DeliverSlackMessage dispatch failed",
-            );
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    project = %subscription.project,
+                    error = ?err,
+                    "slack DeliverSlackMessage dispatch failed",
+                );
+                false
+            }
         }
     }
 }
@@ -575,7 +678,7 @@ mod tests {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
         ws.add_slack_subscription(sub_mentions_for("forge", Some("tester")), true);
 
-        ws.auto_subscribe_slack_conversation("acme", "C1");
+        ws.auto_subscribe_slack_conversation("acme", "C1", "200.1");
 
         let added = ws.slack_subscriptions_for_project("forge");
         assert!(
@@ -603,10 +706,31 @@ mod tests {
         ws.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
 
         assert!(
-            !ws.auto_subscribe_slack_conversation("acme", "C1"),
+            !ws.auto_subscribe_slack_conversation("acme", "C1", "200.1"),
             "a conversation that owner already watches adds nothing",
         );
         assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2, "and no third record");
+    }
+
+    #[test]
+    fn a_redelivered_message_is_dropped_once() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let message = SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: "C1".to_owned(),
+            conversation_label: "C1".to_owned(),
+            ts: "200.1".to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            text: "hello".to_owned(),
+            files: Vec::new(),
+        };
+
+        assert!(ws.slack_delivery_is_new("forge", &message), "the first delivery is new");
+        assert!(
+            !ws.slack_delivery_is_new("forge", &message),
+            "the same ts in the same conversation is a re-run, not a second message",
+        );
     }
 
     #[test]

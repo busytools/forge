@@ -36,8 +36,10 @@ pub trait SlackHost: Send + Sync {
     fn subscriptions(&self, workspace: &str) -> Vec<SlackSubscription>;
 
     /// The last timestamp delivered for a conversation, or `None` when it
-    /// has never been swept.
-    fn watermark(&self, workspace: &str, conversation: &str) -> Option<String>;
+    /// has never been swept. An error means the cursor could not be read:
+    /// the caller skips the conversation rather than sweeping it from the
+    /// beginning, which would deliver its whole history as new.
+    fn watermark(&self, workspace: &str, conversation: &str) -> Result<Option<String>, String>;
 
     /// Record the last timestamp delivered. A `ts` is a string with a
     /// microsecond fraction; never round-trip it through a number.
@@ -46,8 +48,11 @@ pub trait SlackHost: Send + Sync {
     /// Liveness for the Inspector's status line.
     fn set_connected(&self, workspace: &str, connected: bool);
 
-    /// Hand one matched message to its subscriber's session.
-    fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage);
+    /// Hand one matched message to its subscriber's session. Returns
+    /// whether it was handed off: a `false` means the caller did not
+    /// advance the conversation cursor past this message, so the next
+    /// sweep re-delivers it instead of losing it.
+    fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool;
 
     /// Called after a mention is delivered, so the conversation it came
     /// from is watched too and the agent can reply into it rather than
@@ -125,12 +130,14 @@ pub trait SlackApi: Send + Sync {
         channel: &str,
         thread_ts: Option<&str>,
     ) -> Result<(), SlackError>;
-    /// `search.messages`, always timestamp-ordered.
+    /// `search.messages`, always timestamp-ordered. The cursor follows a
+    /// previous page when one sweep has more hits than one page holds.
     async fn search_messages(
         &self,
         query: &str,
         count: u32,
-    ) -> Result<Vec<SlackSearchMatch>, SlackError>;
+        cursor: Option<&str>,
+    ) -> Result<SearchPage, SlackError>;
     /// `users.info` for one user id.
     async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError>;
 }
@@ -229,8 +236,9 @@ impl SlackApi for SlackClient {
         &self,
         query: &str,
         count: u32,
-    ) -> Result<Vec<SlackSearchMatch>, SlackError> {
-        SlackClient::search_messages(self, query, count).await
+        cursor: Option<&str>,
+    ) -> Result<SearchPage, SlackError> {
+        SlackClient::search_messages(self, query, count, cursor).await
     }
 
     async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
@@ -477,6 +485,25 @@ fn is_newer(ts: &str, watermark: Option<&str>) -> bool {
     }
 }
 
+#[cfg(test)]
+mod is_newer_tests {
+    use super::is_newer;
+
+    /// Slack ts strings share the fixed-width seconds prefix, so string
+    /// order matches time order only while that holds. The disagreeing
+    /// pair pins the comparison as string order: numerically 1700000000.1
+    /// equals 1700000000.10, and a numeric compare would call the newer
+    /// cursor "not newer" and silently skip real messages.
+    #[test]
+    fn string_order_survives_trailing_zeros_a_numeric_compare_does_not() {
+        assert!(
+            is_newer("1700000000.000100", Some("1700000000.0001")),
+            "string order, not numeric - these are equal as f64",
+        );
+        assert!(!is_newer("1700000000.0001", Some("1700000000.000100")));
+    }
+}
+
 /// Every history message after each page boundary, following the cursor.
 /// One page is `SWEEP_LIMIT` messages, and a sweep that read only the first
 /// would advance the watermark past everything it never fetched, losing
@@ -539,6 +566,9 @@ pub(crate) async fn sweep(
     workspace: &str,
 ) -> Result<SweepOutcome, SlackError> {
     let subscriptions = host.subscriptions(workspace);
+    if subscriptions.is_empty() {
+        return Ok(SweepOutcome { delivered: 0, rate_limited: None });
+    }
     let user_id = host.user_id(workspace).unwrap_or_default();
 
     let conversations = match api.list_conversations().await {
@@ -554,7 +584,22 @@ pub(crate) async fn sweep(
         if !targets(&subscriptions, conversation) {
             continue;
         }
-        let watermark = host.watermark(workspace, &conversation.id);
+        let watermark = match host.watermark(workspace, &conversation.id) {
+            Ok(watermark) => watermark,
+            Err(error) => {
+                // "Could not read the cursor" is not "never swept": sweeping
+                // from the beginning would deliver the channel's whole
+                // history as new. Skip it for this tick.
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    workspace,
+                    conversation = %conversation.id,
+                    %error,
+                    "reading the slack watermark failed; skipping the conversation this tick",
+                );
+                continue;
+            }
+        };
 
         let history = match fetch_history(api, &conversation.id, watermark.as_deref()).await {
             Ok(history) => history,
@@ -596,8 +641,13 @@ pub(crate) async fn sweep(
 
         let label =
             conversation.name.clone().or_else(|| conversation.user.clone()).unwrap_or_default();
+        let mut newest_delivered: Option<String> = None;
         for message in &batch {
-            let Some(subscription) = subscriptions.iter().find(|subscription| {
+            // Every subscription that wants this message gets it: a lead
+            // and a worker watching the same conversation are two owners,
+            // and find-first would starve whichever sorted second.
+            let mut handed_off = false;
+            for subscription in subscriptions.iter().filter(|subscription| {
                 matches(
                     subscription,
                     conversation,
@@ -605,28 +655,36 @@ pub(crate) async fn sweep(
                     &message.text,
                     &user_id,
                 )
-            }) else {
-                continue;
-            };
-            host.deliver(
-                subscription,
-                &SlackMessage {
-                    workspace: workspace.to_owned(),
-                    conversation: conversation.id.clone(),
-                    conversation_label: label.clone(),
-                    ts: message.ts.clone(),
-                    thread_ts: message.thread_ts.clone(),
-                    user: message.user.clone(),
-                    text: message.text.clone(),
-                },
-            );
+            }) {
+                handed_off = host.deliver(
+                    subscription,
+                    &SlackMessage {
+                        workspace: workspace.to_owned(),
+                        conversation: conversation.id.clone(),
+                        conversation_label: label.clone(),
+                        ts: message.ts.clone(),
+                        thread_ts: message.thread_ts.clone(),
+                        user: message.user.clone(),
+                        text: message.text.clone(),
+                        files: message.files.clone(),
+                    },
+                );
+            }
+            if !handed_off {
+                // Stop at the failure: continuing would advance past a
+                // message that never reached a session. The cursor stays
+                // below it and the next sweep re-delivers from there.
+                break;
+            }
             delivered += 1;
+            newest_delivered = Some(message.ts.clone());
         }
 
-        // Advanced last, so a crash before this point re-delivers rather
-        // than skips; delivery is idempotent on the timestamp.
-        if let Some(newest) = batch.iter().map(|message| message.ts.as_str()).max() {
-            host.set_watermark(workspace, &conversation.id, newest);
+        // Advanced last, and only over what was handed off: the cursor
+        // sits below a failed message, and the delivery-side dedupe makes
+        // the re-delivery a no-op.
+        if let Some(newest) = newest_delivered {
+            host.set_watermark(workspace, &conversation.id, &newest);
         }
     }
 
@@ -642,6 +700,10 @@ pub const MENTION_CURSOR: &str = "__mentions__";
 /// timestamp-sorted.
 const MENTION_SEARCH_COUNT: u32 = 20;
 
+/// A cursor Slack hands back unchanged must not spin the mention walk
+/// forever, the same guard the other walks carry.
+const MAX_SEARCH_PAGES: usize = 200;
+
 /// Sweep the workspace's mention stream. Returns at once when no
 /// `Mentions` target exists, so a workspace with only conversation
 /// subscriptions never spends a search call on every tick.
@@ -656,48 +718,102 @@ pub(crate) async fn sweep_mentions(
     else {
         return Ok(SweepOutcome { delivered: 0, rate_limited: None });
     };
-    // Without the authenticated user's id there is no token to search for.
+    // Without the authenticated user's id there is no token to search
+    // for, and no way to tell the user's own messages from anyone else's.
+    // Fail quiet-but-visible rather than sweeping half-blind.
     let Some(user_id) = host.user_id(workspace).filter(|id| !id.is_empty()) else {
+        tracing::warn!(
+            target: "forge_connectors::slack",
+            workspace,
+            "slack user id unresolved; the mention sweep is skipped this tick",
+        );
         return Ok(SweepOutcome { delivered: 0, rate_limited: None });
     };
 
-    let watermark = host.watermark(workspace, MENTION_CURSOR);
-    let query = format!("<@{user_id}>");
-    let found = match api.search_messages(&query, MENTION_SEARCH_COUNT).await {
-        Ok(found) => found,
-        Err(SlackError::RateLimited { retry_after, .. }) => {
-            return Ok(SweepOutcome { delivered: 0, rate_limited: Some(retry_after) });
+    let watermark = match host.watermark(workspace, MENTION_CURSOR) {
+        Ok(watermark) => watermark,
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_connectors::slack",
+                workspace,
+                %error,
+                "reading the mention cursor failed; skipping the mention sweep this tick",
+            );
+            return Ok(SweepOutcome { delivered: 0, rate_limited: None });
         }
-        Err(error) => return Err(error),
     };
+    let query = format!("<@{user_id}>");
 
+    // Follow the search cursor while the page comes back full: a page
+    // holds the NEWEST hits, so advancing the cursor past a full page
+    // would silently discard everything older on it. Catch-up costs extra
+    // calls only while a backlog exists, which is exactly when it matters.
     let mut delivered = 0;
     let mut newest: Option<String> = None;
-    for hit in &found {
-        if !is_newer(&hit.ts, watermark.as_deref()) {
-            continue;
-        }
-        let message = SlackMessage {
-            workspace: workspace.to_owned(),
-            conversation: hit.conversation_id.clone(),
-            conversation_label: hit
-                .conversation_name
-                .clone()
-                .unwrap_or_else(|| hit.conversation_id.clone()),
-            ts: hit.ts.clone(),
-            thread_ts: None,
-            user: hit.username.clone(),
-            text: hit.text.clone(),
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = match api.search_messages(&query, MENTION_SEARCH_COUNT, cursor.as_deref()).await
+        {
+            Ok(page) => page,
+            Err(SlackError::RateLimited { retry_after, .. }) => {
+                // The cursor stays where it was: advancing it here would
+                // drop the older undelivered pages behind it. Re-delivery
+                // is the cheap failure.
+                return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
+            }
+            Err(error) => return Err(error),
         };
-        host.deliver(subscription, &message);
-        // Ved's ask: a mention pulls the agent into the conversation, so
-        // the reply back and forth does not need another subscription.
-        host.auto_subscribe(workspace, &message);
-        delivered += 1;
-        if newest.as_deref().is_none_or(|current| hit.ts.as_str() > current) {
-            newest = Some(hit.ts.clone());
+        pages += 1;
+
+        for hit in &page.matches {
+            // The query is the literal mention token, so it matches the
+            // user's own outgoing messages too - and every reply the agent
+            // posts that quotes one. Without this the sweep self-echoes.
+            if hit.user.as_deref() == Some(user_id.as_str()) {
+                continue;
+            }
+            if !is_newer(&hit.ts, watermark.as_deref()) {
+                continue;
+            }
+            let message = SlackMessage {
+                workspace: workspace.to_owned(),
+                conversation: hit.conversation_id.clone(),
+                conversation_label: hit
+                    .conversation_name
+                    .clone()
+                    .unwrap_or_else(|| hit.conversation_id.clone()),
+                ts: hit.ts.clone(),
+                thread_ts: hit.thread_ts.clone(),
+                user: hit.user.clone(),
+                text: hit.text.clone(),
+                files: Vec::new(),
+            };
+            host.deliver(subscription, &message);
+            // Ved's ask: a mention pulls the agent into the conversation, so
+            // the reply back and forth does not need another subscription.
+            host.auto_subscribe(workspace, &message);
+            delivered += 1;
+            if newest.as_deref().is_none_or(|current| hit.ts.as_str() > current) {
+                newest = Some(hit.ts.clone());
+            }
+        }
+
+        match page.next_cursor {
+            Some(next) if pages < MAX_SEARCH_PAGES => cursor = Some(next),
+            Some(_) => {
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    workspace,
+                    pages,
+                    "search.messages kept handing back a cursor; stopping the mention walk",
+                );
+                break;
+            }
+            None => break,
         }
     }
+
     if let Some(newest) = newest {
         host.set_watermark(workspace, MENTION_CURSOR, &newest);
     }
@@ -840,6 +956,8 @@ pub struct SlackHistoryMessage {
     pub thread_ts: Option<String>,
     /// Non-zero on a parent whose thread has replies.
     pub reply_count: u32,
+    /// Files shared on the message, ids and all.
+    pub files: Vec<SlackFile>,
 }
 
 /// One page of a conversation's messages. Both `conversations.history` and
@@ -869,6 +987,8 @@ struct RawWireMessage {
     thread_ts: Option<String>,
     #[serde(default)]
     reply_count: u32,
+    #[serde(default)]
+    files: Vec<SlackFile>,
 }
 
 /// Split out of the async path so the decode is testable without HTTP.
@@ -885,6 +1005,7 @@ fn decode_message_page(method: &str, body: &str) -> Result<MessagePage, SlackErr
             text: message.text,
             thread_ts: message.thread_ts,
             reply_count: message.reply_count,
+            files: message.files,
         })
         .collect();
     Ok(MessagePage { messages, next_cursor: cursor })
@@ -904,12 +1025,21 @@ fn search_params(query: &str, count: u32) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// One page of `search.messages`, newest first.
+#[derive(Debug, Default)]
+pub struct SearchPage {
+    pub matches: Vec<SlackSearchMatch>,
+    pub next_cursor: Option<String>,
+}
+
 /// Split out of the async path so the decode is testable without HTTP.
-fn decode_search(body: &str) -> Result<Vec<SlackSearchMatch>, SlackError> {
+fn decode_search(body: &str) -> Result<SearchPage, SlackError> {
     #[derive(Default, Deserialize)]
     struct SearchMessages {
         #[serde(default)]
         matches: Vec<RawMatch>,
+        #[serde(default)]
+        next_cursor: String,
     }
     #[derive(Default, Deserialize)]
     struct SearchPayload {
@@ -924,6 +1054,12 @@ fn decode_search(body: &str) -> Result<Vec<SlackSearchMatch>, SlackError> {
         channel: RawChannel,
         #[serde(default)]
         username: Option<String>,
+        /// The author's id, which the mention sweep's own-message filter
+        /// needs - `username` is only a handle.
+        #[serde(default)]
+        user: Option<String>,
+        #[serde(default)]
+        thread_ts: Option<String>,
     }
     #[derive(Deserialize)]
     struct RawChannel {
@@ -933,7 +1069,9 @@ fn decode_search(body: &str) -> Result<Vec<SlackSearchMatch>, SlackError> {
     }
 
     let payload: SearchPayload = decode_envelope("search.messages", body)?;
-    Ok(payload
+    let next_cursor =
+        (!payload.messages.next_cursor.is_empty()).then_some(payload.messages.next_cursor);
+    let matches = payload
         .messages
         .matches
         .into_iter()
@@ -943,8 +1081,11 @@ fn decode_search(body: &str) -> Result<Vec<SlackSearchMatch>, SlackError> {
             conversation_id: hit.channel.id,
             conversation_name: hit.channel.name,
             username: hit.username,
+            user: hit.user,
+            thread_ts: hit.thread_ts,
         })
-        .collect())
+        .collect();
+    Ok(SearchPage { matches, next_cursor })
 }
 
 /// Split out of the async path so the decode is testable without HTTP.
@@ -1240,8 +1381,13 @@ impl SlackClient {
         &self,
         query: &str,
         count: u32,
-    ) -> Result<Vec<SlackSearchMatch>, SlackError> {
-        let body = self.call_text("search.messages", &search_params(query, count)).await?;
+        cursor: Option<&str>,
+    ) -> Result<SearchPage, SlackError> {
+        let mut params = search_params(query, count);
+        if let Some(cursor) = cursor {
+            params.push(("cursor", cursor.to_owned()));
+        }
+        let body = self.call_text("search.messages", &params).await?;
         decode_search(&body)
     }
 
@@ -1540,7 +1686,7 @@ mod tests {
     /// the sweep's two arguments are the same double in every test.
     #[derive(Default)]
     struct FakeHost {
-        subscriptions: Vec<SlackSubscription>,
+        subscriptions: std::sync::Mutex<Vec<SlackSubscription>>,
         user_id: Option<String>,
         rate_limited: Option<Duration>,
         conversations: std::sync::Mutex<Vec<SlackConversation>>,
@@ -1549,9 +1695,11 @@ mod tests {
         watermarks: std::sync::Mutex<HashMap<String, String>>,
         connected: std::sync::Mutex<Option<bool>>,
         delivered: std::sync::Mutex<Vec<SlackMessage>>,
-        search: std::sync::Mutex<Vec<SlackSearchMatch>>,
-        search_calls: std::sync::Mutex<Vec<String>>,
+        search: std::sync::Mutex<Vec<Vec<SlackSearchMatch>>>,
+        search_calls: std::sync::Mutex<usize>,
         auto_subscribed: std::sync::Mutex<Vec<String>>,
+        deliver_failures: std::sync::Mutex<std::collections::HashSet<usize>>,
+        deliver_attempts: std::sync::Mutex<usize>,
     }
 
     fn conversation_for(id: &str) -> SlackConversation {
@@ -1570,7 +1718,11 @@ mod tests {
 
     impl FakeHost {
         fn with_subscriptions(subscriptions: Vec<SlackSubscription>) -> Self {
-            Self { subscriptions, user_id: Some("U1".to_owned()), ..Self::default() }
+            Self {
+                subscriptions: std::sync::Mutex::new(subscriptions),
+                user_id: Some("U1".to_owned()),
+                ..Self::default()
+            }
         }
 
         fn seed_history(&self, channel: &str, messages: Vec<SlackHistoryMessage>) {
@@ -1606,20 +1758,32 @@ mod tests {
         }
 
         fn seed_search(&self, matches: Vec<SlackSearchMatch>) {
-            *self.search.lock().expect("lock") = matches;
+            self.seed_search_pages(vec![matches]);
+        }
+
+        /// Seed several pages. The fake serves them in order, handing back
+        /// the next index as the cursor, so a paging walk is exercised.
+        fn seed_search_pages(&self, pages: Vec<Vec<SlackSearchMatch>>) {
+            *self.search.lock().expect("lock") = pages;
         }
 
         /// How many times `method` was called, for the tests that assert a
         /// sweep did or did not spend a call.
         fn count_for(&self, method: &str) -> usize {
             match method {
-                "search.messages" => self.search_calls.lock().expect("lock").len(),
+                "search.messages" => *self.search_calls.lock().expect("lock"),
                 other => panic!("the fake does not count {other}"),
             }
         }
 
         fn auto_subscribed(&self) -> Vec<String> {
             self.auto_subscribed.lock().expect("lock").clone()
+        }
+
+        /// Make the Nth delivery attempt fail, so a test can assert how
+        /// the sweep treats a partial failure.
+        fn fail_delivery_at(&self, index: usize) {
+            self.deliver_failures.lock().expect("lock").insert(index);
         }
     }
 
@@ -1633,15 +1797,16 @@ mod tests {
         }
 
         fn subscriptions(&self, _workspace: &str) -> Vec<SlackSubscription> {
-            self.subscriptions.clone()
+            self.subscriptions.lock().expect("lock").clone()
         }
 
-        fn watermark(&self, workspace: &str, conversation: &str) -> Option<String> {
-            self.watermarks
+        fn watermark(&self, workspace: &str, conversation: &str) -> Result<Option<String>, String> {
+            Ok(self
+                .watermarks
                 .lock()
                 .expect("lock")
                 .get(&format!("{workspace}/{conversation}"))
-                .cloned()
+                .cloned())
         }
 
         fn set_watermark(&self, workspace: &str, conversation: &str, ts: &str) {
@@ -1655,20 +1820,47 @@ mod tests {
             *self.connected.lock().expect("lock") = Some(connected);
         }
 
-        fn deliver(&self, _subscription: &SlackSubscription, message: &SlackMessage) {
+        fn deliver(&self, _subscription: &SlackSubscription, message: &SlackMessage) -> bool {
+            let attempt = {
+                let mut attempts = self.deliver_attempts.lock().expect("lock");
+                *attempts += 1;
+                *attempts - 1
+            };
+            if self.deliver_failures.lock().expect("lock").contains(&attempt) {
+                return false;
+            }
             self.delivered.lock().expect("lock").push(message.clone());
+            true
         }
 
-        fn auto_subscribe(&self, _workspace: &str, message: &SlackMessage) -> bool {
-            let already = self.subscriptions.iter().any(|sub| match &sub.target {
-                SlackSubscriptionTarget::Conversation { id, .. } => id == &message.conversation,
-                SlackSubscriptionTarget::DirectMessages | SlackSubscriptionTarget::Mentions => {
-                    false
-                }
-            });
+        fn auto_subscribe(&self, workspace: &str, message: &SlackMessage) -> bool {
+            let already =
+                self.subscriptions.lock().expect("lock").iter().any(|sub| match &sub.target {
+                    SlackSubscriptionTarget::Conversation { id, .. } => id == &message.conversation,
+                    SlackSubscriptionTarget::DirectMessages | SlackSubscriptionTarget::Mentions => {
+                        false
+                    }
+                });
             if already {
                 return false;
             }
+            // Mirrors the real host: the new subscription's cursor starts
+            // at the mention, so the channel's past is not swept.
+            self.watermarks
+                .lock()
+                .expect("lock")
+                .insert(format!("{}/{}", workspace, message.conversation), message.ts.clone());
+            self.subscriptions.lock().expect("lock").push(SlackSubscription {
+                id: uuid::Uuid::new_v4(),
+                workspace: workspace.to_owned(),
+                project: "forge".to_owned(),
+                team_role: None,
+                target: SlackSubscriptionTarget::Conversation {
+                    id: message.conversation.clone(),
+                    mode: SlackWatchMode::All,
+                },
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+            });
             self.auto_subscribed.lock().expect("lock").push(message.conversation.clone());
             true
         }
@@ -1812,9 +2004,17 @@ mod tests {
             &self,
             query: &str,
             _count: u32,
-        ) -> Result<Vec<SlackSearchMatch>, SlackError> {
-            self.search_calls.lock().expect("lock").push(query.to_owned());
-            Ok(self.search.lock().expect("lock").clone())
+            cursor: Option<&str>,
+        ) -> Result<SearchPage, SlackError> {
+            *self.search_calls.lock().expect("lock") += 1;
+            let seeded = self.search.lock().expect("lock");
+            let index = cursor.and_then(|cursor| cursor.parse::<usize>().ok()).unwrap_or(0);
+            let _ = query;
+            let page = seeded.get(index).cloned().unwrap_or_default();
+            Ok(SearchPage {
+                matches: page,
+                next_cursor: (index + 1 < seeded.len()).then(|| (index + 1).to_string()),
+            })
         }
 
         async fn user_info(&self, _user: &str) -> Result<SlackUser, SlackError> {
@@ -1838,12 +2038,14 @@ mod tests {
         let body = r#"{"ok":true,"messages":{"total":2,"matches":[
             {"ts":"100.1","text":"hello","channel":{"id":"C1","name":"general"},"username":"ved"},
             {"ts":"200.2","text":"world","channel":{"id":"D1","is_im":true},"username":"other"}]}}"#;
-        let matches = decode_search(body).expect("decodes");
+        let page = decode_search(body).expect("decodes");
+        let matches = &page.matches;
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].conversation_id, "C1");
         assert_eq!(matches[0].conversation_name.as_deref(), Some("general"));
         assert_eq!(matches[0].username.as_deref(), Some("ved"));
         assert_eq!(matches[1].conversation_name, None, "a DM has no name");
+        assert_eq!(page.next_cursor, None);
     }
 
     #[test]
@@ -2004,6 +2206,7 @@ mod tests {
             text: text.to_owned(),
             thread_ts: None,
             reply_count: 0,
+            files: Vec::new(),
         }
     }
 
@@ -2026,6 +2229,8 @@ mod tests {
             conversation_id: conversation.to_owned(),
             conversation_name: None,
             username: Some("U9".to_owned()),
+            user: Some("U9".to_owned()),
+            thread_ts: None,
         }
     }
 
@@ -2064,7 +2269,10 @@ mod tests {
         ]);
 
         sweep_mentions(&host, &host, "acme").await.expect("sweep");
-        assert_eq!(host.watermark("acme", MENTION_CURSOR), Some("300.2".to_owned()));
+        assert_eq!(
+            host.watermark("acme", MENTION_CURSOR).expect("watermark"),
+            Some("300.2".to_owned())
+        );
     }
 
     /// If this ever runs for a workspace with no mention target, it spends
@@ -2079,6 +2287,100 @@ mod tests {
             host.count_for("search.messages"),
             0,
             "an unsubscribed workspace must not spend a call",
+        );
+    }
+
+    /// Without a cursor seeded at the mention, the first sweep of the new
+    /// subscription delivers the newest page of the channel's history as
+    /// if it were all new.
+    #[tokio::test]
+    async fn a_freshly_auto_subscribed_conversation_starts_from_the_mention() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        host.seed_search(vec![search_match("200.1", "C1", "ping <@U1>")]);
+        sweep_mentions(&host, &host, "acme").await.expect("sweep");
+
+        // The channel's own past still exists; none of it may arrive.
+        host.seed_history(
+            "C1",
+            vec![
+                history_message("250.1", "U9", "after the mention"),
+                history_message("150.1", "U9", "before the mention"),
+            ],
+        );
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
+        assert_eq!(
+            texts,
+            vec!["ping <@U1>".to_owned(), "after the mention".to_owned()],
+            "the subscription starts at the mention, not at the channel's history",
+        );
+    }
+
+    /// A page holds the newest hits, so a backlog wider than one page is
+    /// lost if the cursor advances past the page. The walk follows the
+    /// cursor and delivers all of them.
+    #[tokio::test]
+    async fn a_mention_backlog_wider_than_one_page_is_delivered_without_loss() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        let all: Vec<SlackSearchMatch> = (0..25)
+            .rev()
+            .map(|n| search_match(&format!("1{n:02}.1"), "C1", "ping <@U1>"))
+            .collect();
+        let newest = all[0].ts.clone();
+        let oldest = all[24].ts.clone();
+        let (page_one, page_two) = all.split_at(20);
+        host.seed_search_pages(vec![page_one.to_vec(), page_two.to_vec()]);
+
+        let outcome = sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(outcome.delivered, 25, "every mention in the backlog arrives");
+        assert_eq!(host.watermark("acme", MENTION_CURSOR).expect("watermark"), Some(newest));
+        assert_ne!(
+            host.watermark("acme", MENTION_CURSOR).expect("watermark"),
+            Some(oldest),
+            "nothing is skipped"
+        );
+    }
+
+    /// The search query is the literal mention token, so it matches the
+    /// user's own outgoing messages as well - and every reply the agent
+    /// posts that quotes one. With the measured indexing lag that is a
+    /// self-echo loop.
+    #[tokio::test]
+    async fn the_mentions_own_author_is_never_delivered() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        let mut own = search_match("300.2", "C1", "mine <@U1>");
+        own.user = Some("U1".to_owned());
+        host.seed_search(vec![search_match("200.1", "C1", "theirs <@U1>"), own]);
+
+        let outcome = sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(outcome.delivered, 1, "only the other author's mention arrives");
+        let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
+        assert!(!texts.iter().any(|t| t == "mine <@U1>"), "no self-echo: {texts:?}");
+    }
+
+    /// A dispatch failure must leave the cursor below the failed message,
+    /// so the next sweep re-delivers it rather than skipping it.
+    #[tokio::test]
+    async fn a_failed_delivery_stops_the_cursor_below_the_failure() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.seed_history(
+            "D1",
+            vec![
+                history_message("100.1", "U9", "first"),
+                history_message("200.1", "U9", "fails"),
+                history_message("300.1", "U9", "after the failure"),
+            ],
+        );
+        host.fail_delivery_at(1);
+
+        let outcome = sweep(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(outcome.delivered, 1, "the sweep stops at the failed message");
+        assert_eq!(host.delivered()[0].text, "first");
+        assert_eq!(
+            host.watermark("acme", "D1"),
+            Ok(Some("100.1".to_owned())),
+            "the cursor sits below the failure, so the next sweep re-delivers it",
         );
     }
 
@@ -2132,7 +2434,7 @@ mod tests {
         );
 
         sweep(&host, &host, "acme").await.expect("sweep");
-        assert_eq!(host.watermark("acme", "D1"), Some("300.2".to_owned()));
+        assert_eq!(host.watermark("acme", "D1").expect("watermark"), Some("300.2".to_owned()));
     }
 
     /// Without paging, a conversation that exceeds one page inside a poll
@@ -2154,7 +2456,7 @@ mod tests {
         let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
         assert_eq!(texts, vec!["one".to_owned(), "two".to_owned(), "three".to_owned()]);
         assert_eq!(
-            host.watermark("acme", "D1"),
+            host.watermark("acme", "D1").expect("watermark"),
             Some("300.3".to_owned()),
             "the cursor clears every page that was read",
         );

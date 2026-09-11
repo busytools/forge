@@ -27,6 +27,8 @@ use crate::target::ProjectKey;
 use crate::workspace::LiveWorkerRefusal;
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
+use std::fmt::Write as _;
+
 use forge_primitives::slack::SlackMessage;
 
 /// A failed prompt dispatch to a running target unwinds the echo's
@@ -614,14 +616,31 @@ pub(crate) fn deliver_gotify_message(
     }
 }
 
-/// The user-turn prose for a delivered Slack message. Rendering it as a
-/// chat block of its own is a later concern; this lands as a plain turn.
+/// The user-turn prose for a delivered Slack message. It carries the ids a
+/// reply needs - conversation, ts, thread - because the only way an agent
+/// can answer in place is to feed those back to `slack__post` or
+/// `slack__edit`. Rendering it as a chat block of its own is a later
+/// concern; this lands as a plain turn.
 pub(crate) fn slack_message_to_prose(message: &SlackMessage) -> String {
     let author = message.user.as_deref().unwrap_or("unknown");
-    format!(
-        "[Slack - workspace '{}', {}]\n{}: {}",
-        message.workspace, message.conversation_label, author, message.text,
-    )
+    let mut out = format!(
+        "[Slack - workspace '{}', {}] id {} ts {}{}\n{}: {}",
+        message.workspace,
+        message.conversation_label,
+        message.conversation,
+        message.ts,
+        message
+            .thread_ts
+            .as_deref()
+            .map(|thread| format!(" in thread {thread}"))
+            .unwrap_or_default(),
+        author,
+        message.text,
+    );
+    for file in &message.files {
+        let _ = writeln!(out, "\n[file {} {}]", file.id, file.name);
+    }
+    out
 }
 
 /// Deliver one matched Slack message to its subscriber's session: dispatch
@@ -636,6 +655,18 @@ pub(crate) fn deliver_slack_message(
     message: SlackMessage,
 ) {
     let prose = slack_message_to_prose(&message);
+    // A sweep re-runs a batch after a 429, a failed watermark write or a
+    // crash; the re-run must drop what was already handed over.
+    if !workspace.slack_delivery_is_new(project, &message) {
+        tracing::debug!(
+            target: "forge_workspace::spawn",
+            project = %project,
+            conversation = %message.conversation,
+            ts = %message.ts,
+            "slack message already delivered; dropping the re-run",
+        );
+        return;
+    }
 
     if let Some(role) = team_role
         && let Some(worker_key) = team_worker_key(workspace, project, role)
@@ -1317,6 +1348,11 @@ fn teardown_worker(
     // The row is gone, so nothing re-spawns this label: its durable state
     // has no owner left to wake and goes with it.
     workspace.remove_gotify_subscriptions_for_worker(project_key, label);
+    // Same for its Slack subscriptions: a despawned worker cannot strand
+    // records that would reload at boot, and a delivery for it must not
+    // fall through to the lead.
+    workspace.remove_slack_subscriptions_for_worker(project_key, label);
+    workspace.stop_slack_subsystem_if_idle();
     workspace.delete_crons_for_worker(project_key, label);
     // MUST call the non-cascading `release_session` primitive (NOT
     // `release_session_with_cascade`). By the time we get here the
@@ -2157,6 +2193,8 @@ provider = "anthropic"
         }
     }
 
+    use forge_primitives::slack::SlackFile;
+
     fn slack_msg(text: &str) -> SlackMessage {
         SlackMessage {
             workspace: "acme".to_owned(),
@@ -2166,6 +2204,7 @@ provider = "anthropic"
             thread_ts: None,
             user: Some("U9".to_owned()),
             text: text.to_owned(),
+            files: Vec::new(),
         }
     }
 
@@ -2190,6 +2229,25 @@ provider = "anthropic"
             ws.domain_session_for(&SessionKey::from_session_id("__spawn_forge__")).is_none(),
             "a worker-owned subscription never falls through to the lead",
         );
+    }
+
+    /// The ids in the prose are the arguments a reply takes: without them
+    /// the agent cannot answer in the place the message came from.
+    #[test]
+    fn slack_prose_carries_the_ids_a_reply_needs() {
+        let mut message = slack_msg("please look");
+        message.thread_ts = Some("100.0".to_owned());
+        message.files = vec![SlackFile {
+            id: "F1".to_owned(),
+            name: "notes.txt".to_owned(),
+            url_private: "https://files.slack.com/x".to_owned(),
+        }];
+
+        let prose = slack_message_to_prose(&message);
+        assert!(prose.contains("D1"), "the conversation id is present: {prose}");
+        assert!(prose.contains("100.000001"), "the ts is present: {prose}");
+        assert!(prose.contains("in thread 100.0"), "the thread is present: {prose}");
+        assert!(prose.contains("F1"), "the file id is present: {prose}");
     }
 
     #[test]

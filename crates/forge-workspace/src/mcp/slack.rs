@@ -40,7 +40,7 @@ pub(crate) fn add_tools(
     let unsubscribe = Unsubscribe { facade: facade.clone(), caller_key: caller_key.clone() };
     let post = Post { facade: facade.clone(), caller_key: caller_key.clone() };
     let edit = Edit { facade: facade.clone(), caller_key: caller_key.clone() };
-    let react = React { facade: facade.clone() };
+    let react = React { facade: facade.clone(), caller_key: caller_key.clone() };
     let attachment = Attachment { facade: facade.clone(), caller_key };
     let search = Search { facade: facade.clone() };
     let user = User { facade };
@@ -414,6 +414,9 @@ fn format_post_error(err: &SlackPostError) -> String {
         SlackPostError::UnknownWorkspace => {
             "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
         }
+        SlackPostError::Partial { posted, total, source } => {
+            format!("posted part {posted} of {total}; the rest were NOT sent ({source})")
+        }
         SlackPostError::Fetch(message) => format!("Slack request failed: {message}"),
     }
 }
@@ -435,6 +438,9 @@ fn format_edit_error(err: &SlackEditError) -> String {
 
 fn format_react_error(err: &SlackReactError) -> String {
     match err {
+        SlackReactError::Rejected => {
+            "the reaction was not approved, so nothing was added or removed".to_owned()
+        }
         SlackReactError::UnknownWorkspace => {
             "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
         }
@@ -609,6 +615,7 @@ impl Tool for Edit {
 
 struct React {
     facade: Arc<dyn SlackFacade>,
+    caller_key: CallerKeyResolver,
 }
 
 #[derive(serde::Deserialize)]
@@ -665,6 +672,10 @@ impl Tool for React {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
+        let caller = match self.caller_key.current() {
+            Ok(key) => key,
+            Err(err) => return tool_error(err.to_string()),
+        };
         let request = SlackReactRequest {
             workspace: args.workspace,
             conversation: args.conversation,
@@ -672,7 +683,7 @@ impl Tool for React {
             name: args.name,
             add: !args.remove.unwrap_or(false),
         };
-        match self.facade.react(request).await {
+        match self.facade.react(&caller, request).await {
             Ok(()) => ToolOutput::text("reaction applied".to_owned()),
             Err(err) => tool_error(format_react_error(&err)),
         }
@@ -1235,6 +1246,8 @@ mod tests {
             conversation_id: "C1".to_owned(),
             conversation_name: Some("general".to_owned()),
             username: Some("ved".to_owned()),
+            user: Some("U9".to_owned()),
+            thread_ts: None,
         }]));
         let tool = Search { facade: mock.clone() };
 
