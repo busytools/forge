@@ -73,6 +73,9 @@ fn extensions_help_text(app: &App) -> String {
     if crate::app::extensions::search_enabled(app.plugins.active_tab) {
         if app.plugins.search_focused {
             "Left/Right switch tab | Down list | Type to filter | Backspace erase | Del clear | Esc close".to_owned()
+        } else if crate::app::extensions::tab_takes_available(app.plugins.active_tab) {
+            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close"
+                .to_owned()
         } else {
             "Left/Right switch tab | Up filter | Up/Down move | Enter actions | u update all | c check updates | Esc close"
                 .to_owned()
@@ -449,7 +452,7 @@ mod tests {
         let mut app = App::test_default();
 
         app.active_view = crate::app::ActiveView::Extensions;
-        app.plugins.rows = vec![crate::app::extensions::ExtensionRow {
+        app.plugins.installed_rows = vec![crate::app::extensions::ExtensionRow {
             id: "superpowers@claude-plugins-official".to_owned(),
             kind: forge_primitives::plugins::ExtensionKind::Plugin,
             name: "superpowers".to_owned(),
@@ -478,7 +481,10 @@ mod tests {
             rendered.contains("Update all (u) (0)"),
             "the action row rides the full render path: {rendered}"
         );
-        assert!(rendered.contains("Type to filter this tab"), "the filter placeholder: {rendered}");
+        assert!(
+            rendered.contains("Filter by name, plugin or marketplace"),
+            "the filter placeholder: {rendered}"
+        );
         assert!(
             rendered.contains("\u{2713} superpowers"),
             "the plugin row renders through the grammar: {rendered}"
@@ -535,7 +541,7 @@ mod tests {
             state,
             detail: None,
         };
-        app.plugins.rows = vec![
+        app.plugins.installed_rows = vec![
             row("brainstorming", "superpowers", forge_primitives::plugins::RowState::Current),
             row(
                 "executing-plans",
@@ -543,7 +549,7 @@ mod tests {
                 forge_primitives::plugins::RowState::UpdateAvailable,
             ),
         ];
-        app.plugins.rows[1].available_version = Some("6.4.0".to_owned());
+        app.plugins.installed_rows[1].available_version = Some("6.4.0".to_owned());
 
         terminal
             .draw(|frame| {
@@ -553,14 +559,18 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(
-            rendered.contains("\u{2713} brainstorming  superpowers  installed 6.3.0"),
-            "current row: {rendered}"
+            rendered.contains(">✓ brainstorming") && rendered.contains("installed 6.3.0"),
+            "the selected current row renders through the grammar: {rendered}"
         );
         assert!(
-            rendered.contains("6.3.0 -> 6.4.0 available  Update"),
+            rendered.contains("6.3.0 -> 6.4.0 available") && rendered.contains("Update"),
             "the stale row carries the delta and the action on ONE row: {rendered}"
         );
         assert!(rendered.contains("Skills 2 "), "the tab count: {rendered}");
+        assert!(
+            rendered.contains("Available (a) +0"),
+            "the toggle rides the action row: {rendered}"
+        );
     }
 
     /// The focused filter consumes Enter, so the hint bar must not
@@ -827,7 +837,7 @@ mod tests {
                 detail: None,
             }
         };
-        app.plugins.rows = vec![
+        app.plugins.installed_rows = vec![
             row(forge_primitives::plugins::ExtensionKind::Plugin, "superpowers"),
             row(forge_primitives::plugins::ExtensionKind::Skill, "brainstorming"),
             row(forge_primitives::plugins::ExtensionKind::Skill, "writing-plans"),

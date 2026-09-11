@@ -411,7 +411,9 @@ pub enum RowState {
 
 /// Flatten component scans into Extension page rows: one row per
 /// plugin followed by its component rows, in scan order.
-pub fn extension_rows(components: &[PluginComponents]) -> Vec<ExtensionRow> {
+pub fn extension_rows<'a>(
+    components: impl IntoIterator<Item = &'a PluginComponents>,
+) -> Vec<ExtensionRow> {
     let mut rows = Vec::new();
     for components in components {
         let plugin_name =
@@ -426,7 +428,9 @@ pub fn extension_rows(components: &[PluginComponents]) -> Vec<ExtensionRow> {
             available_version: components.available_version.clone(),
             state: state.clone(),
             detail: match &state {
-                RowState::AutoDependency(reason) => Some(reason.clone()),
+                // The auto-dependency reason renders from the state
+                // payload; stuffing it here would double the label.
+                RowState::AutoDependency(_) => None,
                 // The auto marker would otherwise vanish whenever an
                 // update is available; the update badge outranks, the
                 // marker rides the detail.

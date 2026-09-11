@@ -37,7 +37,7 @@ pub(crate) fn open_uninstall_confirm(app: &mut App, overlay: &InstalledPluginAct
     use forge_primitives::plugins::ExtensionKind;
     let count = |kind: ExtensionKind| {
         app.plugins
-            .rows
+            .installed_rows
             .iter()
             .filter(|row| row.kind == kind && row.source == overlay.plugin_id)
             .count()
