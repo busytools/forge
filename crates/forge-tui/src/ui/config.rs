@@ -481,7 +481,10 @@ mod tests {
             rendered.contains("Update all (u) (0)"),
             "the action row rides the full render path: {rendered}"
         );
-        assert!(rendered.contains("Type to filter this tab"), "the filter placeholder: {rendered}");
+        assert!(
+            rendered.contains("Filter by name, plugin or marketplace"),
+            "the filter placeholder: {rendered}"
+        );
         assert!(
             rendered.contains("\u{2713} superpowers"),
             "the plugin row renders through the grammar: {rendered}"

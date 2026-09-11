@@ -78,11 +78,12 @@ fn column_widths(rows: &[&ExtensionRow], width: usize) -> ColumnWidths {
         source: clamp(source, MIN_SOURCE_COLUMN, MAX_SOURCE_COLUMN),
         status: clamp(status, MIN_STATUS_COLUMN, MAX_STATUS_COLUMN),
     };
-    // A narrow pane shrinks the elastic columns before it drops any.
+    // A narrow pane shrinks the elastic columns before it drops any;
+    // neither column may cross its floor.
     let fixed = SELECTION_GUTTER + ACTION_COLUMN;
     let mut overflow = fixed + widths.name + 2 + widths.source + 2 + widths.status > width;
     while overflow && (widths.name > MIN_NAME_COLUMN || widths.source > MIN_SOURCE_COLUMN) {
-        if widths.name > widths.source.min(MAX_SOURCE_COLUMN) {
+        if widths.name > widths.source && widths.name > MIN_NAME_COLUMN {
             widths.name -= 1;
         } else if widths.source > MIN_SOURCE_COLUMN {
             widths.source -= 1;
@@ -383,6 +384,24 @@ mod tests {
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert!(text[0].contains("rust-analyzer: on PATH"), "present binary: {text:?}");
         assert!(text[1].contains("gopls: missing"), "missing binary: {text:?}");
+    }
+
+    /// The name column never crosses its floor when the shrink loop
+    /// evens out a narrow pane: with source at its floor, the source
+    /// column absorbs the overflow, not the name.
+    #[test]
+    fn the_name_column_holds_its_floor_on_a_narrow_pane() {
+        let rows = [row("twelve-chara", "probe-mkt-1", RowState::Current, Some("1.0.0"))];
+        let refs: Vec<&ExtensionRow> = rows.iter().collect();
+
+        // Content widths 12/11/24 leave exactly one overflowing cell
+        // at width 64: the shrink loop must take it from source.
+        let lines = render_extension_rows(&refs, 64);
+        let text = line_text(&lines[0]);
+        assert!(
+            text.contains("twelve-chara  "),
+            "the name column keeps its floor; the source column shrinks first: {text:?}"
+        );
     }
 
     /// The PATH check walks `:`-separated dirs and requires an

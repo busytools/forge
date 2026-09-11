@@ -7,7 +7,7 @@ pub(crate) const INSTALLED: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
-│  Update all (u) (1)   Type to filter this tab
+│  Update all (u) (1)   Filter by name, plugin or marketplace
 │  >✓ superpowers   superpowers-market   installed 6.3.0                                    ~450 tok always-on
 │   ⚠ rust-review   code-review-market   1.1.0 -> 1.2.0 available                           ~120 tok always-on                                         Update
 │   ✓ leyline       claude-night-market  installed 0.1.0                                    [auto-installed]
@@ -49,7 +49,7 @@ pub(crate) const SKILLS: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
-│  Update all (u) (1)  Available (a) +3   Type to filter this tab
+│  Update all (u) (1)  Available (a) +3   Filter by name, plugin or marketplace
 │  >✓ brainstorming                 superpowers  installed 6.3.0
 │   ✓ executing-plans               superpowers  installed 6.3.0
 │   ✓ systematic-debugging          superpowers  installed 6.3.0
@@ -91,7 +91,7 @@ pub(crate) const SKILLS_AVAILABLE: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
-│  Update all (u) (1)  Available (a) +3   Type to filter this tab
+│  Update all (u) (1)  Available (a) +3   Filter by name, plugin or marketplace
 │  >✓ brainstorming                 superpowers   installed 6.3.0
 │   ✓ executing-plans               superpowers   installed 6.3.0
 │   ✓ systematic-debugging          superpowers   installed 6.3.0
@@ -133,7 +133,7 @@ pub(crate) const AGENTS: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
-│  Update all (u) (1)  Available (a) +0   Type to filter this tab
+│  Update all (u) (1)  Available (a) +0   Filter by name, plugin or marketplace
 │  >✓ brainstormer  superpowers  installed 6.3.0
 │   ✓ plan-writer   superpowers  installed 6.3.0
 │
@@ -175,7 +175,7 @@ pub(crate) const COMMANDS: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
-│  Update all (u) (1)  Available (a) +0   Type to filter this tab
+│  Update all (u) (1)  Available (a) +0   Filter by name, plugin or marketplace
 │  >✓ brainstorm    superpowers  installed 6.3.0
 │   ✓ write-plan    superpowers  installed 6.3.0
 │   ⚠ review        rust-review  1.1.0 -> 1.2.0 available                                                                                              Update
@@ -217,7 +217,7 @@ pub(crate) const HOOKS: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
-│  Update all (u) (1)  Available (a) +0   Type to filter this tab
+│  Update all (u) (1)  Available (a) +0   Filter by name, plugin or marketplace
 │  >✓ superpowers   superpowers  installed 6.3.0           SessionStart, PreToolUse
 │
 │
@@ -259,7 +259,7 @@ pub(crate) const LSP: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
-│  Update all (u) (1)  Available (a) +0   Type to filter this tab
+│  Update all (u) (1)  Available (a) +0   Filter by name, plugin or marketplace
 │  >✓ rust-analyzer  lsp-support  installed 1.0.0           rust-analyzer: on PATH
 │
 │
@@ -385,7 +385,7 @@ pub(crate) const UPDATES: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
-│  Update all (u) (1)   Type to filter this tab
+│  Update all (u) (1)   Filter by name, plugin or marketplace
 │  >✓ superpowers   superpowers-market   installed 6.3.0                                    ~450 tok always-on
 │   ⚠ rust-review   code-review-market   1.1.0 -> 1.2.0 available                           ~120 tok always-on                                         Update
 │   ✓ leyline       claude-night-market  installed 0.1.0                                    [auto-installed]
@@ -416,7 +416,7 @@ pub(crate) const UPDATES: &str = r"
 │
 │
 │  Updates - 1 of 1 done · restart required to apply
-│    rust-review@code-review-market  done  (Restart required to apply.)
+│    rust-review@code-review-market  done
 │
 │
 │

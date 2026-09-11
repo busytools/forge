@@ -1377,11 +1377,12 @@ fn rebuild_rows(app: &mut App, components: &[PluginComponents], health: Vec<Mark
         })
         .collect();
     // The scan carries installed and available plugins in one list;
-    // the pane state must not. Registry-backed installs (including
-    // their load failures) form the installed stream; the marketplace
-    // catalog's remaining entries form the available one.
+    // the pane state must not. Registry-backed installs and
+    // health-failure rows (a corrupt manifest must stay visible on the
+    // page) form the installed stream; the marketplace catalog's
+    // remaining entries form the available one.
     let (installed, available): (Vec<&PluginComponents>, Vec<&PluginComponents>) =
-        components.iter().partition(|entry| entry.installed);
+        components.iter().partition(|entry| entry.installed || entry.load_error.is_some());
     app.plugins.installed_rows = extension_rows(installed);
     app.plugins.available_rows = extension_rows(available);
     app.plugins.health = health;
@@ -2880,6 +2881,16 @@ mod tests {
                 components: vec![
                     component("superpowers", "probe", "brainstorming", true),
                     component("blabbermouth", "claude-night-market", "announce", false),
+                    // The corrupt-manifest marker: not installed, but a
+                    // health failure the page must surface.
+                    PluginComponents {
+                        plugin: "torn-market".to_owned(),
+                        marketplace: "torn-market".to_owned(),
+                        load_error: Some(
+                            "marketplace.json failed to parse: invalid type".to_owned(),
+                        ),
+                        ..PluginComponents::default()
+                    },
                 ],
                 ..PluginsInventorySnapshot::default()
             },
@@ -2888,14 +2899,61 @@ mod tests {
 
         assert_eq!(
             app.plugins.installed_rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
-            vec!["superpowers@probe", "skill:superpowers:brainstorming"],
-            "the installed plugin and its skill land in the installed stream"
+            vec!["superpowers@probe", "skill:superpowers:brainstorming", "torn-market",],
+            "the installed plugin, its skill AND the health-failure row land in the installed stream"
         );
         assert_eq!(
             app.plugins.available_rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
             vec!["blabbermouth@claude-night-market", "skill:blabbermouth:announce"],
             "the catalog entry lands in the available stream: {:?}",
             app.plugins.available_rows
+        );
+        assert!(
+            visible_rows(&app, ExtensionsTab::Installed).iter().any(|row| row.id == "torn-market"),
+            "the health-failure row renders on the Installed tab"
+        );
+    }
+
+    /// A session change clears BOTH row streams and the Available
+    /// toggle: one session's catalog and toggle state must not leak
+    /// into the next session's page.
+    #[test]
+    fn a_session_change_resets_the_streams_and_the_toggle() {
+        let mut app = App::test_default();
+        app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+        app.plugins.available_rows =
+            vec![plugin_row("gone@claude-night-market", RowState::AvailableNotInstalled)];
+        app.plugins.show_available = true;
+
+        reset_for_session_change(&mut app);
+
+        assert!(app.plugins.installed_rows.is_empty(), "installed rows cleared");
+        assert!(app.plugins.available_rows.is_empty(), "available rows cleared");
+        assert!(!app.plugins.show_available, "the toggle resets");
+    }
+
+    /// Enter on a load-failed plugin states the failure instead of
+    /// opening an overlay nothing can act on - no overlay may open.
+    #[test]
+    fn enter_on_a_load_failed_row_names_the_reason_and_opens_nothing() {
+        let mut app = App::test_default();
+        app.plugins.installed_rows = vec![plugin_row(
+            "ghosted@probe",
+            RowState::LoadFailed("registered install dir is missing on disk".to_owned()),
+        )];
+        app.plugins.set_selected_index_for(ExtensionsTab::Installed, 0);
+
+        assert!(open_installed_actions_overlay(&mut app));
+        let error = app.config.last_error.as_deref().expect("the failure surfaces");
+        assert!(
+            error.contains("ghosted")
+                && error.contains("registered install dir is missing on disk"),
+            "the error names the plugin and the reason: {error}"
+        );
+        assert!(
+            app.config.overlay.is_none(),
+            "no overlay opens for a broken install: {:?}",
+            app.config.overlay
         );
     }
 

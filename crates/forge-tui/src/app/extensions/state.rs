@@ -218,11 +218,11 @@ mod tests {
         assert_eq!(count_for_tab(&rows, ExtensionsTab::Installed), 1);
     }
 
-    /// The number beside a tab counts the installed stream alone; the
-    /// `+N` reads the available stream; the Installed tab never
-    /// reveals the available stream at all.
+    /// The count helpers each read their OWN stream argument - what
+    /// joins them per tab is decided by `tab_rows` and covered in the
+    /// pane-level tests.
     #[test]
-    fn the_tab_count_reads_the_installed_stream_only() {
+    fn the_count_helpers_read_one_stream_each() {
         let installed = vec![row(ExtensionKind::Skill, "s1", RowState::Current)];
         let available = (0..10)
             .map(|n| row(ExtensionKind::Skill, &format!("a{n}"), RowState::AvailableNotInstalled))

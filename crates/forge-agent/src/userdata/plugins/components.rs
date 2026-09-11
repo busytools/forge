@@ -1153,6 +1153,7 @@ mod tests {
                   }
                 },
                 {"name": "relative-plugin", "source": "./plugins/relative-plugin"},
+                {"name": "bare-string-plugin", "source": "plugins/bare-string"},
                 {"name": "renamed-plugin", "version": "2.0.0"}
               ]
             }"#,
@@ -1160,6 +1161,9 @@ mod tests {
         skill(
             &fixture.marketplaces_root.join("official/plugins/relative-plugin/skills/one/SKILL.md"),
         );
+        // A string source WITHOUT the ./ prefix is not clone-relative:
+        // this dir exists, and the guard is what keeps it unscanned.
+        skill(&fixture.marketplaces_root.join("official/plugins/bare-string/skills/leak/SKILL.md"));
         write(
             &fixture.plugins_root.join("known_marketplaces.json"),
             format!(
@@ -1175,7 +1179,7 @@ mod tests {
 
         let health =
             scan.marketplace_health.iter().find(|row| row.name == "official").expect("health row");
-        assert_eq!(health.available, 4, "every manifest plugin counts: {health:?}");
+        assert_eq!(health.available, 5, "every manifest plugin counts: {health:?}");
         assert_eq!(
             health.load_error, None,
             "object sources must not fail the manifest parse: {health:?}"
@@ -1202,6 +1206,17 @@ mod tests {
             relative.skills,
             vec!["one"],
             "a relative source still resolves inside the clone: {relative:?}"
+        );
+
+        let bare = scan
+            .components
+            .iter()
+            .find(|row| row.plugin == "bare-string-plugin@official")
+            .expect("the bare-string plugin lists");
+        assert_eq!(
+            bare.skills,
+            Vec::<String>::new(),
+            "a string source without ./ is not clone-relative - the guard keeps its dir unscanned: {bare:?}"
         );
     }
 

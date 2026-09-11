@@ -112,7 +112,10 @@ fn action_row_line(app: &App) -> Line<'static> {
     };
     spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
     if query.is_empty() && !app.plugins.search_focused {
-        spans.push(Span::styled("Type to filter this tab", Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(
+            "Filter by name, plugin or marketplace",
+            Style::default().fg(theme::DIM),
+        ));
     } else {
         spans.push(Span::styled(query, Style::default().fg(Color::White)));
         if app.plugins.search_focused {
