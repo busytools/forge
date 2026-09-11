@@ -115,6 +115,9 @@ impl OutputStyle {
 pub enum MarketplaceActionKind {
     Update,
     Remove,
+    /// The CLI's remove-and-re-add repair, for a marketplace whose
+    /// clone drifted or whose manifest cannot load.
+    Repair,
 }
 
 impl MarketplaceActionKind {
@@ -122,6 +125,7 @@ impl MarketplaceActionKind {
         match self {
             Self::Update => "Update",
             Self::Remove => "Remove",
+            Self::Repair => "Repair (remove and re-add)",
         }
     }
 }
@@ -394,10 +398,10 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the standalone Plugins view. Loads settings docs (the
-/// plugins state still reads from `~/.claude/settings.json`), sets the
-/// active view, and triggers the inventory refresh.
-pub fn open_plugins(app: &mut App) -> Result<(), String> {
+/// Open the Extensions page. Loads settings docs (the pane still
+/// reads `~/.claude/settings.json`), sets the active view, and
+/// triggers the inventory refresh.
+pub fn open_extensions(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
@@ -412,23 +416,6 @@ pub fn open_plugins(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the standalone MCP view. Same shape as `open_plugins` but
-/// triggers the MCP snapshot refresh instead.
-pub fn open_mcp(app: &mut App) -> Result<(), String> {
-    let pr = project_root(app);
-    let loaded = store::load(
-        app.settings_home_override.as_deref(),
-        pr.as_path(),
-        store_workspace_bridge(app).as_ref().copied(),
-    )?;
-    app.config.apply_loaded(loaded, false);
-    app.config.status_message = None;
-    app.config.last_error = None;
-    view::set_active_view(app, ActiveView::Mcp);
-    mcp::refresh_mcp_snapshot_if_needed(app);
-    Ok(())
-}
-
 pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
     if app.active_view == ActiveView::Extensions {
         crate::app::extensions::request_inventory_refresh_if_needed(app);
@@ -439,7 +426,7 @@ pub fn close(app: &mut App) {
     view::set_active_view(app, ActiveView::Chat);
 }
 
-pub fn handle_plugins_key(app: &mut App, key: KeyEvent) {
+pub fn handle_extensions_key(app: &mut App, key: KeyEvent) {
     if is_ctrl_shortcut(key, 'q') || is_ctrl_shortcut(key, 'c') {
         app.should_quit = true;
         return;
@@ -459,38 +446,11 @@ pub fn handle_plugins_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-pub fn handle_mcp_key(app: &mut App, key: KeyEvent) {
-    if is_ctrl_shortcut(key, 'q') || is_ctrl_shortcut(key, 'c') {
-        app.should_quit = true;
-        return;
-    }
-
-    if app.config.overlay.is_some() {
-        overlay_input::handle_overlay_key(app, key);
-        return;
-    }
-
-    if mcp::handle_mcp_key(app, key) {
-        return;
-    }
-
-    if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.modifiers == KeyModifiers::NONE {
-        close(app);
-    }
-}
-
-pub fn handle_plugins_paste(app: &mut App, text: &str) -> bool {
+pub fn handle_extensions_paste(app: &mut App, text: &str) -> bool {
     if app.config.overlay.is_some() {
         return overlay_input::handle_overlay_paste(app, text);
     }
     crate::app::extensions::handle_paste(app, text)
-}
-
-pub fn handle_mcp_paste(app: &mut App, text: &str) -> bool {
-    if app.config.overlay.is_some() {
-        return overlay_input::handle_overlay_paste(app, text);
-    }
-    false
 }
 
 fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {

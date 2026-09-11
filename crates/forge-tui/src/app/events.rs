@@ -205,11 +205,7 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             super::keys::dispatch_key_by_focus(app, key)
         }
         ActiveView::Extensions => {
-            super::config::handle_plugins_key(app, key);
-            true
-        }
-        ActiveView::Mcp => {
-            super::config::handle_mcp_key(app, key);
+            super::config::handle_extensions_key(app, key);
             true
         }
         ActiveView::Launchpad => super::keys::dispatch_key_by_focus(app, key),
@@ -236,7 +232,7 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
         }
         // Plugins / MCP / Launchpad / Usage are keyboard-only - mouse
         // events are intentionally dropped.
-        ActiveView::Extensions | ActiveView::Mcp | ActiveView::Launchpad | ActiveView::Usage => {}
+        ActiveView::Extensions | ActiveView::Launchpad | ActiveView::Usage => {}
     }
 }
 
@@ -253,8 +249,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             }
             false
         }
-        ActiveView::Extensions => super::config::handle_plugins_paste(app, text),
-        ActiveView::Mcp => super::config::handle_mcp_paste(app, text),
+        ActiveView::Extensions => super::config::handle_extensions_paste(app, text),
         ActiveView::Diff => super::diff_overlay::handle_paste(app, text),
         ActiveView::Launchpad | ActiveView::Usage => false,
     }
@@ -2778,7 +2773,8 @@ mod tests {
     #[test]
     fn mcp_operation_error_stays_in_mcp_feedback_and_out_of_chat() {
         let mut app = make_test_app();
-        app.active_view = crate::app::ActiveView::Mcp;
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Mcps;
         app.config.status_message =
             Some("Starting MCP auth for claude.ai Google Calendar...".into());
         app.mcp_mut().in_flight = true;
@@ -5017,7 +5013,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
-        crate::app::config::open_plugins(&mut app).expect("open plugins");
+        crate::app::config::open_extensions(&mut app).expect("open extensions");
         app.input_mut().set_text("seed");
 
         handle_terminal_event(

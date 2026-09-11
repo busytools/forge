@@ -19,7 +19,7 @@
 - [Peers](./ui/peers.md)
 - [Input](./ui/input.md)
 - [Help and welcome](./ui/help.md)
-- [Plugins and MCP views](./ui/standalone-views.md)
+- [Extensions](./ui/extensions.md)
 - [Diff viewer](./ui/diff.md)
 - [Pickers and overlays](./ui/pickers.md)
 - [Usage](./ui/usage.md)

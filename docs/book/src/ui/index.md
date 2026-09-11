@@ -24,7 +24,7 @@ Every surface forge-tui renders, one page each. Scope is current state only: a p
 
 <div class="surface-card"><a href="./help.md"><span class="name">Help and welcome</span><span class="blurb">The <code>?</code> help overlay and the welcome message that opens a fresh chat.</span></a></div>
 
-<div class="surface-card"><a href="./standalone-views.md"><span class="name">Plugins and MCP views</span><span class="blurb">The <code>/plugins</code> and <code>/mcp</code> full-frame views: status badges, update runs, config overlays.</span></a></div>
+<div class="surface-card"><a href="./extensions.md"><span class="name">Extensions</span><span class="blurb">The <code>/extensions</code> full-frame page: plugins, their components, MCP servers, marketplaces - with per-row update state and update-all.</span></a></div>
 
 <div class="surface-card"><a href="./diff.md"><span class="name">Diff viewer</span><span class="blurb">Inline diffs on tool calls, and the <code>/diff</code> review overlay with comments, commit mode and the review loop.</span></a></div>
 

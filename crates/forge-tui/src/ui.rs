@@ -50,7 +50,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.active_view {
         ActiveView::Chat => chat_view::render(frame, app),
         ActiveView::Extensions => config::render_extensions(frame, app),
-        ActiveView::Mcp => config::render_mcp(frame, app),
         ActiveView::Launchpad => {
             if app.preflight_done {
                 launchpad::render(frame, app);

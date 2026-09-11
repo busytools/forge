@@ -20,9 +20,6 @@ pub enum ActiveView {
     /// servers, marketplaces). Opened by `/extensions`. `Esc` closes
     /// back to chat.
     Extensions,
-    /// Full-screen MCP server view. Opened by `/mcp`. `Esc` closes
-    /// back to chat.
-    Mcp,
     /// Full-screen token/cost overlay. Opened by `/usage`. `g` toggles
     /// grouping, `w` cycles the window, `↑↓` scroll, `Esc` closes.
     Usage,
@@ -56,7 +53,7 @@ fn clear_transient_view_state(app: &mut App) {
     *app.slash_mut() = None;
     *app.subagent_mut() = None;
     app.emoji = None;
-    if matches!(app.active_view, ActiveView::Extensions | ActiveView::Mcp) {
+    if app.active_view == ActiveView::Extensions {
         app.config.overlay = None;
     }
     if app.active_view == ActiveView::Diff {

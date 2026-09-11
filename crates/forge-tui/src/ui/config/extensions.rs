@@ -163,8 +163,9 @@ fn empty_tab_lines(app: &App, tab: ExtensionsTab) -> Vec<Line<'static>> {
 }
 
 /// The Marketplaces tab: one row per configured marketplace with its
-/// source and repo, plus the add row.
-fn marketplace_lines(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
+/// health from the scan - `healthy`, the drift notice, or the load
+/// error - plus the add row.
+fn marketplace_lines(app: &App, _viewport_width: u16) -> Vec<Line<'static>> {
     let selected = app.plugins.selected_index_for(ExtensionsTab::Marketplaces);
     let mut lines = Vec::new();
     for (index, marketplace) in app.plugins.marketplaces.iter().enumerate() {
@@ -172,7 +173,7 @@ fn marketplace_lines(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
         let mut line = Line::from(vec![
             Span::raw(" "),
             Span::styled(
-                display_row_name(&marketplace.name),
+                marketplace.name.clone(),
                 if selected {
                     Style::default()
                         .fg(Color::Black)
@@ -183,6 +184,31 @@ fn marketplace_lines(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
                 },
             ),
         ]);
+        let health = app.plugins.health.iter().find(|health| health.name == marketplace.name);
+        match health {
+            Some(health) if health.drifted => {
+                line.spans.push(Span::styled(
+                    "  registry drift - installLocation outside the config dir",
+                    Style::default().fg(theme::STATUS_WARNING),
+                ));
+                line.spans.push(Span::styled("  Repair", Style::default().fg(theme::RUST_ORANGE)));
+            }
+            Some(health) if health.load_error.is_some() => {
+                let reason = health.load_error.clone().unwrap_or_default();
+                line.spans.push(Span::styled(
+                    format!("  load failed: {reason}"),
+                    Style::default().fg(theme::STATUS_ERROR),
+                ));
+                line.spans.push(Span::styled("  Repair", Style::default().fg(theme::RUST_ORANGE)));
+            }
+            Some(health) => {
+                line.spans.push(Span::styled(
+                    format!("  healthy \u{b7} {} plugins", health.available),
+                    Style::default().fg(theme::REVIEW_RESOLVED),
+                ));
+            }
+            None => {}
+        }
         if let Some(source) = marketplace.source.as_deref() {
             line.spans.push(Span::styled(format!("  {source}"), Style::default().fg(theme::DIM)));
         }
@@ -193,19 +219,14 @@ fn marketplace_lines(app: &App, viewport_width: u16) -> Vec<Line<'static>> {
     }
     let add_selected = selected == app.plugins.marketplaces.len() && !app.plugins.search_focused;
     lines.push(Line::from(Span::styled(
-        display_row_name("Add marketplace"),
+        "Add marketplace",
         if add_selected {
             Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme::DIM)
         },
     )));
-    let _ = viewport_width;
     lines
-}
-
-fn display_row_name(text: &str) -> String {
-    text.to_owned()
 }
 
 #[cfg(test)]

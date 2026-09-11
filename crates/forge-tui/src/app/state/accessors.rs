@@ -62,7 +62,6 @@ impl super::App {
             }
             crate::app::view::ActiveView::Launchpad
             | crate::app::view::ActiveView::Extensions
-            | crate::app::view::ActiveView::Mcp
             | crate::app::view::ActiveView::Usage => InputFocus::None,
         }
     }

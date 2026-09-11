@@ -24,11 +24,6 @@ pub fn render_extensions(frame: &mut Frame, app: &mut App) {
     render_view(frame, app, "Extensions", extensions_help_text, extensions::render);
 }
 
-/// Standalone MCP view. Same chrome pattern as `render_plugins`.
-pub fn render_mcp(frame: &mut Frame, app: &mut App) {
-    render_view(frame, app, "MCP", |_| mcp_help_text(), mcp::render);
-}
-
 fn render_view(
     frame: &mut Frame,
     app: &mut App,
@@ -85,10 +80,6 @@ fn extensions_help_text(app: &App) -> String {
     } else {
         "Left/Right switch tab | Up/Down move | Enter actions | Esc close".to_owned()
     }
-}
-
-fn mcp_help_text() -> String {
-    "Up/Down select | Enter actions | r refresh | Esc close".to_owned()
 }
 
 /// The uninstall confirm: Enter removes the whole bundle, Esc backs
@@ -761,7 +752,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
 
-        app.active_view = crate::app::ActiveView::Mcp;
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Mcps;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::McpDetails(
             crate::app::config::McpDetailsOverlayState {
                 server_name: "filesystem".to_owned(),
@@ -801,7 +793,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render_mcp(frame, &mut app);
+                super::render_extensions(frame, &mut app);
             })
             .expect("draw");
 
@@ -918,6 +910,67 @@ mod tests {
         assert!(rendered.contains("context7"), "the server row: {rendered}");
         assert!(rendered.contains("1 tool"), "the tool count detail: {rendered}");
         assert!(rendered.contains("total 1"), "the summary line: {rendered}");
+    }
+
+    /// A drifted marketplace names its problem on the tab and offers
+    /// the Repair action; a healthy one shows its plugin count.
+    #[test]
+    fn the_marketplaces_tab_renders_drift_and_the_repair_action() {
+        let backend = TestBackend::new(110, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Marketplaces;
+        app.plugins.marketplaces = vec![
+            crate::app::extensions::MarketplaceSourceEntry {
+                name: "claude-night-market".to_owned(),
+                source: Some("github".to_owned()),
+                repo: Some("athola/claude-night-market".to_owned()),
+                install_location: None,
+            },
+            crate::app::extensions::MarketplaceSourceEntry {
+                name: "claude-plugins-official".to_owned(),
+                source: Some("github".to_owned()),
+                repo: Some("anthropics/claude-plugins-official".to_owned()),
+                install_location: None,
+            },
+        ];
+        app.plugins.health = vec![
+            crate::app::extensions::MarketplaceHealth {
+                name: "claude-night-market".to_owned(),
+                source: "github".to_owned(),
+                available: 0,
+                load_error: Some("no marketplace.json found in the clone".to_owned()),
+                install_location: std::path::PathBuf::default(),
+                drifted: false,
+            },
+            crate::app::extensions::MarketplaceHealth {
+                name: "claude-plugins-official".to_owned(),
+                source: "github".to_owned(),
+                available: 294,
+                load_error: None,
+                install_location: std::path::PathBuf::default(),
+                drifted: false,
+            },
+        ];
+
+        terminal
+            .draw(|frame| {
+                super::render_extensions(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(
+            rendered.contains("load failed: no marketplace.json found in the clone"),
+            "the failure reason renders: {rendered}"
+        );
+        assert!(rendered.contains("Repair"), "the repair action: {rendered}");
+        assert!(
+            rendered.contains("healthy \u{b7} 294 plugins"),
+            "the healthy marketplace's count: {rendered}"
+        );
     }
 
     #[test]

@@ -188,7 +188,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     if app.active_view == crate::app::ActiveView::Launchpad {
         let entries: [(&str, &str); 3] = [
             ("/help", "Toggle help overlay"),
-            ("/plugins", "Open plugins"),
+            ("/extensions", "Open extensions"),
             ("/quit", "Quit forge"),
         ];
         return entries
@@ -209,13 +209,12 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     forge.insert("/dictate".into(), "Set how dictation is cleaned up, for this session".into());
     forge.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
     forge.insert("/effort".into(), "Show / set thinking effort".into());
+    forge.insert("/extensions".into(), "Open extensions".into());
     forge.insert("/launchpad".into(), "Return to project picker".into());
-    forge.insert("/mcp".into(), "Open MCP".into());
     forge.insert("/mode".into(), "Show / set session mode".into());
     forge.insert("/model".into(), "Show / set session model".into());
     forge.insert("/new".into(), "Start a fresh session".into());
     forge.insert("/resume".into(), "Resume a session by ID".into());
-    forge.insert("/plugins".into(), "Open plugins".into());
     forge.insert("/spinner".into(), "Show / set the spinner style".into());
     forge.insert("/usage".into(), "Token/cost usage by project or model".into());
 
@@ -498,10 +497,10 @@ mod launchpad_filter_tests {
         let candidates = supported_command_candidates(&app);
         let names: Vec<&str> = candidates.iter().map(|c| c.primary.as_str()).collect();
         assert!(names.contains(&"/help"), "launchpad surfaces /help: {names:?}");
-        assert!(names.contains(&"/plugins"), "launchpad surfaces /plugins: {names:?}");
+        assert!(names.contains(&"/extensions"), "launchpad surfaces /extensions: {names:?}");
         assert!(names.contains(&"/quit"), "launchpad surfaces /quit: {names:?}");
         // Session-dependent commands are filtered out.
-        for hidden in ["/mode", "/model", "/compact", "/mcp", "/new", "/resume", "/launchpad"] {
+        for hidden in ["/mode", "/model", "/compact", "/new", "/resume", "/launchpad"] {
             assert!(!names.contains(&hidden), "launchpad hides {hidden}: {names:?}");
         }
     }
@@ -514,7 +513,7 @@ mod launchpad_filter_tests {
         let names: Vec<&str> = candidates.iter().map(|c| c.primary.as_str()).collect();
         assert!(names.contains(&"/launchpad"), "chat surfaces /launchpad: {names:?}");
         assert!(names.contains(&"/mode"), "chat surfaces /mode: {names:?}");
-        assert!(names.contains(&"/mcp"), "chat surfaces /mcp: {names:?}");
+        assert!(names.contains(&"/extensions"), "chat surfaces /extensions: {names:?}");
     }
 
     /// Not a show-and-set: the dialog never reads state back, so the

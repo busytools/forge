@@ -144,12 +144,14 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.plugins.active_tab = app.plugins.active_tab.prev();
             app.plugins.search_focused = false;
             clamp_selection(app);
+            request_mcp_snapshot_if_newly_active(app);
             true
         }
         (KeyCode::Right, KeyModifiers::NONE) => {
             app.plugins.active_tab = app.plugins.active_tab.next();
             app.plugins.search_focused = false;
             clamp_selection(app);
+            request_mcp_snapshot_if_newly_active(app);
             true
         }
         (KeyCode::Up, KeyModifiers::NONE) => {
@@ -249,6 +251,14 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+/// Landing on the Mcps tab asks for a snapshot if the held one has
+/// aged past the MCP cadence, so the tab does not open stale.
+fn request_mcp_snapshot_if_newly_active(app: &mut App) {
+    if app.plugins.active_tab == ExtensionsTab::Mcps {
+        crate::app::config::mcp::request_mcp_snapshot_if_needed(app, Instant::now());
     }
 }
 
@@ -657,13 +667,27 @@ fn open_marketplace_actions_overlay(app: &mut App) -> bool {
         return false;
     };
 
+    // An unhealthy marketplace offers Repair ahead of the rest: drift
+    // or a failed manifest load is exactly what remove-and-re-add
+    // fixes.
+    let unhealthy =
+        app.plugins.health.iter().any(|health| {
+            health.name == entry.name && (health.drifted || health.load_error.is_some())
+        });
+    let mut actions = Vec::new();
+    if unhealthy {
+        actions.push(MarketplaceActionKind::Repair);
+    }
+    actions.push(MarketplaceActionKind::Update);
+    actions.push(MarketplaceActionKind::Remove);
+
     app.config.overlay =
         Some(ConfigOverlayState::MarketplaceActions(MarketplaceActionsOverlayState {
             name: entry.name.clone(),
             title: display_label(&entry.name),
             description: marketplace_overlay_description(&entry),
             selected_index: 0,
-            actions: vec![MarketplaceActionKind::Update, MarketplaceActionKind::Remove],
+            actions,
         }));
     true
 }
@@ -876,6 +900,79 @@ fn execute_selected_marketplace_action(app: &mut App) {
         app.config.overlay = None;
         app.config.status_message = None;
         app.config.last_error = Some("No runtime available for marketplace action".to_owned());
+        return;
+    }
+
+    // Repair is a pair: remove the drifted registry entry, then re-add
+    // it from its source; only the trailing add carries the refresh.
+    if action == MarketplaceActionKind::Repair {
+        let entry = app
+            .plugins
+            .marketplaces
+            .iter()
+            .find(|marketplace| marketplace.name == overlay.name)
+            .cloned();
+        let Some(entry) = entry else {
+            app.config.overlay = None;
+            app.config.last_error =
+                Some("No configured marketplace matches this repair".to_owned());
+            return;
+        };
+        let (remove_args, add_args) = marketplace_repair_args(
+            &entry.name,
+            entry.source.as_deref(),
+            entry.repo.as_deref(),
+            entry.install_location.as_deref(),
+        );
+
+        app.config.overlay = None;
+        app.config.last_error = None;
+        app.config.status_message = Some(marketplace_action_status_message(&overlay.title, action));
+        app.plugins.loading = true;
+        app.plugins.last_inventory_refresh_at = None;
+        app.needs_redraw = true;
+        let event_tx = app.update_tx.clone();
+        let cwd_raw = app.cwd_raw();
+        let cwd_context = app.cwd_raw();
+        let cached_claude_path = app.plugins.claude_path.clone();
+        let title = overlay.title.clone();
+        let span = info_span!(
+            target: crate::logging::targets::APP_CONFIG,
+            "plugin_marketplace_repair",
+            cwd = %cwd_raw,
+        );
+        tokio::task::spawn_local(
+            async move {
+                let outcome = async {
+                    let (path, _) = cli::run_cli_command(
+                        cwd_raw.clone(),
+                        cached_claude_path.clone(),
+                        remove_args,
+                    )
+                    .await?;
+                    match cli::run_cli_command_and_refresh(cwd_raw, Some(path), add_args).await {
+                        Ok((snapshot, claude_path)) => Ok((snapshot, claude_path)),
+                        Err(message) => Err(message),
+                    }
+                };
+                match outcome.await {
+                    Ok((snapshot, claude_path)) => {
+                        let message = marketplace_action_success_message(&title, action);
+                        let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
+                            cwd_raw: cwd_context,
+                            result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                        });
+                    }
+                    Err(message) => {
+                        let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                            cwd_raw: cwd_context,
+                            message,
+                        });
+                    }
+                }
+            }
+            .instrument(span),
+        );
         return;
     }
 
@@ -1850,13 +1947,45 @@ fn marketplace_action_command(
             "remove".to_owned(),
             overlay.name.clone(),
         ],
+        // Repair dispatches through marketplace_repair_args before
+        // this builder runs; the empty plan is unreachable.
+        MarketplaceActionKind::Repair => Vec::new(),
     }
+}
+
+/// The remove-and-re-add pair for a marketplace repair, in order. The
+/// re-add source is the repo for a git marketplace and the clone
+/// location for a directory one.
+fn marketplace_repair_args(
+    name: &str,
+    source: Option<&str>,
+    repo: Option<&str>,
+    install_location: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
+    let remove =
+        vec!["plugin".to_owned(), "marketplace".to_owned(), "remove".to_owned(), name.to_owned()];
+    let readd_source = match source {
+        Some("directory") => install_location.or(repo).unwrap_or(name),
+        _ => repo.unwrap_or(name),
+    };
+    let add = vec![
+        "plugin".to_owned(),
+        "marketplace".to_owned(),
+        "add".to_owned(),
+        readd_source.to_owned(),
+        "--scope".to_owned(),
+        "user".to_owned(),
+    ];
+    (remove, add)
 }
 
 fn marketplace_action_status_message(title: &str, action: MarketplaceActionKind) -> String {
     match action {
         MarketplaceActionKind::Update => format!("Updating {title} marketplace..."),
         MarketplaceActionKind::Remove => format!("Removing {title} marketplace..."),
+        MarketplaceActionKind::Repair => {
+            format!("Repairing {title} marketplace (remove and re-add)...")
+        }
     }
 }
 
@@ -1864,6 +1993,7 @@ fn marketplace_action_success_message(title: &str, action: MarketplaceActionKind
     match action {
         MarketplaceActionKind::Update => format!("Updated {title} marketplace"),
         MarketplaceActionKind::Remove => format!("Removed {title} marketplace"),
+        MarketplaceActionKind::Repair => format!("Repaired {title} marketplace"),
     }
 }
 
@@ -2235,6 +2365,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn repair_builds_a_remove_then_readd_pair_from_the_registry_entry() {
+        let (remove, add) = marketplace_repair_args(
+            "claude-night-market",
+            Some("github"),
+            Some("athola/claude-night-market"),
+            Some("/clone/path"),
+        );
+        assert_eq!(
+            remove,
+            vec![
+                "plugin".to_owned(),
+                "marketplace".to_owned(),
+                "remove".to_owned(),
+                "claude-night-market".to_owned()
+            ],
+            "the remove step names the marketplace"
+        );
+        assert_eq!(
+            add,
+            vec![
+                "plugin".to_owned(),
+                "marketplace".to_owned(),
+                "add".to_owned(),
+                "athola/claude-night-market".to_owned(),
+                "--scope".to_owned(),
+                "user".to_owned(),
+            ],
+            "a git marketplace re-adds from its repo"
+        );
+
+        // A directory marketplace re-adds from its clone location.
+        let (directory_remove, directory_add) = marketplace_repair_args(
+            "stx-clarity",
+            Some("directory"),
+            None,
+            Some("/Users/vedhavyas/.claude/plugins/marketplaces/stx-clarity"),
+        );
+        assert_eq!(directory_remove.len(), 4);
+        assert!(
+            directory_add
+                .contains(&"/Users/vedhavyas/.claude/plugins/marketplaces/stx-clarity".to_owned()),
+            "the directory path is the re-add source: {directory_add:?}"
+        );
+    }
+
     fn app_with_connection()
     -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = crate::app::App::test_default();
@@ -2318,7 +2494,7 @@ mod tests {
         press_add_marketplace(&mut app, KeyCode::Left);
 
         assert!(
-            crate::app::config::handle_plugins_paste(&mut app, "b\nc"),
+            crate::app::config::handle_extensions_paste(&mut app, "b\nc"),
             "the open overlay takes the paste"
         );
         assert_eq!(
@@ -2524,7 +2700,7 @@ mod tests {
         app.active_view = crate::app::ActiveView::Extensions;
         let _ = press(&mut app, KeyCode::Char('a'));
 
-        crate::app::config::handle_plugins_key(
+        crate::app::config::handle_extensions_key(
             &mut app,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         );
@@ -2540,7 +2716,7 @@ mod tests {
         );
 
         for modifiers in [KeyModifiers::CONTROL, KeyModifiers::SHIFT] {
-            crate::app::config::handle_plugins_key(
+            crate::app::config::handle_extensions_key(
                 &mut app,
                 KeyEvent::new(KeyCode::Enter, modifiers),
             );
@@ -2556,7 +2732,7 @@ mod tests {
             );
         }
 
-        crate::app::config::handle_plugins_key(
+        crate::app::config::handle_extensions_key(
             &mut app,
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         );

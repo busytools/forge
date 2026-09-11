@@ -50,7 +50,7 @@ The identity block (wordmark + version + optional chip row) and the picker ride 
 
 Enter follows the selected row's lifecycle, the footer hint labeling it: Idle / Running / Attention / AuthRequired / LoggedOut → `enter  open`, switching to the session; Sleeping → `enter  start`, spawning and staying here until the row reaches Idle (avoiding the chat's Connecting stub); Spawning → `enter  ⏳ spawning…`, a no-op; Failed → Enter is a no-op, <kbd>r</kbd> retries (drops the failed bucket and dispatches a fresh spawn).
 
-No input area, so slash commands are keys: `/help` ≡ <kbd>?</kbd>, `/quit` ≡ <kbd>Ctrl+Q</kbd>; `/config` and `/plugins` need a picked project first.
+No input area, so slash commands are keys: `/help` ≡ <kbd>?</kbd>, `/quit` ≡ <kbd>Ctrl+Q</kbd>; `/config` and `/extensions` need a picked project first.
 
 <details>
 <summary>Wordmark, colors, spinner, tab title</summary>

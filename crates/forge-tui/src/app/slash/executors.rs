@@ -38,8 +38,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/diff" => handle_diff_submit(app, &parsed.args),
         "/effort" => handle_effort_submit(app, &parsed.args),
         "/launchpad" => handle_launchpad_submit(app, &parsed.args),
-        "/mcp" => handle_mcp_submit(app, &parsed.args),
-        "/plugins" => handle_plugins_submit(app, &parsed.args),
+        "/extensions" => handle_extensions_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
         "/model" => handle_model_submit(app, &parsed.args),
         "/new" => handle_new_session_submit(app, &parsed.args),
@@ -211,26 +210,14 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
     false
 }
 
-fn handle_plugins_submit(app: &mut App, args: &[&str]) -> bool {
+fn handle_extensions_submit(app: &mut App, args: &[&str]) -> bool {
     if !args.is_empty() {
-        push_system_message(app, "Usage: /plugins");
+        push_system_message(app, "Usage: /extensions");
         return true;
     }
 
-    if let Err(err) = crate::app::config::open_plugins(app) {
-        push_system_message(app, format!("Failed to open plugins: {err}"));
-    }
-    true
-}
-
-fn handle_mcp_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, "Usage: /mcp");
-        return true;
-    }
-
-    if let Err(err) = crate::app::config::open_mcp(app) {
-        push_system_message(app, format!("Failed to open MCP: {err}"));
+    if let Err(err) = crate::app::config::open_extensions(app) {
+        push_system_message(app, format!("Failed to open extensions: {err}"));
     }
     true
 }

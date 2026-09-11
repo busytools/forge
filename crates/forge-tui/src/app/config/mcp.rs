@@ -47,12 +47,10 @@ impl ConfigState {
     }
 }
 
-/// The MCP surface is active: the standalone `/mcp` view or the Mcps
-/// tab of the Extensions page.
+/// The MCP surface is active: the Mcps tab of the Extensions page.
 fn mcp_surface_active(app: &App) -> bool {
-    app.active_view == ActiveView::Mcp
-        || (app.active_view == ActiveView::Extensions
-            && app.plugins.active_tab == crate::app::extensions::ExtensionsTab::Mcps)
+    app.active_view == ActiveView::Extensions
+        && app.plugins.active_tab == crate::app::extensions::ExtensionsTab::Mcps
 }
 
 pub(crate) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
@@ -85,12 +83,6 @@ pub(crate) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         _ => false,
-    }
-}
-
-pub(crate) fn refresh_mcp_snapshot_if_needed(app: &mut App) {
-    if mcp_surface_active(app) {
-        refresh_mcp_snapshot(app);
     }
 }
 
