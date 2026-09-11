@@ -223,13 +223,7 @@ fn render_updates_panel(frame: &mut Frame, area: Rect, app: &App) {
             ));
         }
         spans.push(Span::styled(format!("  {}", row.state_word), state_style));
-        if let Some(detail) = run
-            .rows
-            .iter()
-            .find(|candidate| candidate.plugin_id == row.label)
-            .and_then(|candidate| candidate.detail.as_deref())
-            .filter(|detail| detail.starts_with("restart required"))
-        {
+        if let Some(detail) = row.detail.as_deref() {
             spans.push(Span::styled(format!("  ({detail})"), Style::default().fg(theme::DIM)));
         }
         lines.push(Line::from(spans));
@@ -301,7 +295,11 @@ fn marketplace_lines(app: &App, _viewport_width: u16) -> Vec<Line<'static>> {
                     Style::default().fg(theme::REVIEW_RESOLVED),
                 ));
             }
-            None => {}
+            // No health entry yet: the pane's first disk scan has not
+            // landed. Name it rather than rendering a bare name.
+            None => {
+                line.spans.push(Span::styled("  scan pending", Style::default().fg(theme::DIM)));
+            }
         }
         if let Some(source) = marketplace.source.as_deref() {
             line.spans.push(Span::styled(format!("  {source}"), Style::default().fg(theme::DIM)));

@@ -157,7 +157,7 @@ renders lives on `UiSession`.
 
 - The `SessionUpdate` channel doubles as an event bus for TUI-internal
   async work. `App` caches the sender from `Workspace::update_sender()`
-  at construction, and four modules (`app/plugins.rs`,
+  at construction, and four modules (`app/extensions.rs`,
   `app/slash/executors.rs`, `app/service_status_check.rs`,
   `app/input_submit.rs`) emit their own updates through it instead of a
   Command round-trip. That is an implicit second contract a non-TUI

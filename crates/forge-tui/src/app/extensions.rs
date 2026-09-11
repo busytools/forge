@@ -31,9 +31,10 @@ pub use state::{
 // re-exported here so the existing forge-tui import paths resolve.
 pub use forge_primitives::plugins::{
     ExtensionKind, ExtensionRow, InstalledPluginEntry, MarketplaceEntry, MarketplaceHealth,
-    MarketplaceSourceEntry, PluginRunRowStatus, PluginUpdateAvailability, PluginUpdateRecord,
-    PluginUpdateRun, PluginUpdateRunRow, PluginUpdateTrigger, PluginsCliActionSuccess,
-    PluginsInventorySnapshot, extension_rows, update_availability,
+    MarketplaceSourceEntry, PluginComponents, PluginRunRowStatus, PluginUpdateAvailability,
+    PluginUpdateRecord, PluginUpdateRun, PluginUpdateRunRow, PluginUpdateTrigger,
+    PluginsCliActionSuccess, PluginsInventorySnapshot, RowState, extension_rows,
+    update_availability,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -66,6 +67,12 @@ pub struct PluginsState {
     /// Always-on token cost per installed plugin id, version-keyed:
     /// id -> (installed version, cost). A version change refetches.
     pub token_costs: std::collections::BTreeMap<String, (String, u64)>,
+    /// Declared LSP launch command per (plugin id, server key), from
+    /// the manifests; the PATH check tests this, not the key.
+    pub lsp_commands: std::collections::BTreeMap<(String, String), String>,
+    /// Plugins whose applied update stated the restart contract; a
+    /// successful runtime reload consumes it.
+    pub restart_pending: std::collections::BTreeSet<String>,
     /// Test seam: the per-run CLI surface a run uses. `None` means
     /// the real `claude` subprocess calls.
     pub(crate) update_cli: Option<UpdateCli>,
@@ -114,7 +121,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     if matches!(key.code, KeyCode::Esc)
-        && search_enabled(app.plugins.active_tab)
         && app.plugins.update_run.as_ref().is_some_and(|run| run.finished)
     {
         app.plugins.update_run = None;
@@ -275,16 +281,59 @@ pub(crate) fn request_inventory_refresh_if_needed(app: &mut App) {
         clamp_selection(app);
         return;
     }
-    request_inventory_refresh(app);
+    request_disk_refresh(app);
 }
 
 pub(crate) fn request_inventory_refresh_manual(app: &mut App) {
+    // Same guard the `u` key carries: a manual refresh must not stack
+    // behind an in-flight one or an unfinished run.
+    if app.plugins.loading || app.plugins.update_run.as_ref().is_some_and(|run| !run.finished) {
+        return;
+    }
     app.plugins.runtime_reload_after_refresh = true;
     request_inventory_refresh(app);
 }
 
+/// The TTL path: the disk scan alone - registry, settings, manifests -
+/// no `claude` spawn. First paint and every five-second refresh stay
+/// off the CLI; the manual `r` keeps the full CLI refresh.
+fn request_disk_refresh(app: &mut App) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    app.plugins.loading = true;
+    app.needs_redraw = true;
+    let event_tx = app.update_tx.clone();
+    let cwd_context = app.cwd_raw();
+    let cached_claude_path = app.plugins.claude_path.clone();
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_disk_refresh",
+    );
+    tokio::task::spawn_local(
+        async move {
+            let snapshot = tokio::task::spawn_blocking(cli::inventory_from_disk_blocking)
+                .await
+                .unwrap_or_default()
+                .unwrap_or_default();
+            let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
+                cwd_raw: cwd_context,
+                snapshot,
+                claude_path: cached_claude_path.unwrap_or_default(),
+            });
+        }
+        .instrument(span),
+    );
+}
+
+/// The CLI refresh for the manual `r` and post-action paths. The
+/// token-cost fetch is deliberately NOT awaited here: the inventory
+/// event goes out first so paint never waits on a `claude` spawn, and
+/// a follow-up task lands the costs through a costs-only event.
 pub(crate) fn request_inventory_refresh(app: &mut App) {
     if tokio::runtime::Handle::try_current().is_err() {
+        app.config.status_message = None;
+        app.config.last_error = Some("No runtime available for plugin action".to_owned());
         return;
     }
     app.plugins.loading = true;
@@ -318,14 +367,26 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
     tokio::task::spawn_local(
         async move {
             match cli::refresh_inventory(cwd_raw.clone(), cached_claude_path.clone()).await {
-                Ok((mut snapshot, claude_path)) => {
-                    snapshot.token_costs =
-                        cli::fetch_plugin_details(cwd_raw, cached_claude_path, cost_requests).await;
+                Ok((snapshot, claude_path)) => {
                     let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
-                        cwd_raw: cwd_context,
+                        cwd_raw: cwd_context.clone(),
                         snapshot,
                         claude_path,
                     });
+                    // Lazy costs: after paint, so the fetch spawns never
+                    // gate the rows on screen.
+                    let costs =
+                        cli::fetch_plugin_details(cwd_raw, cached_claude_path, cost_requests).await;
+                    if !costs.is_empty() {
+                        let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
+                            cwd_raw: cwd_context,
+                            snapshot: PluginsInventorySnapshot {
+                                token_costs: costs,
+                                ..PluginsInventorySnapshot::default()
+                            },
+                            claude_path: PathBuf::new(),
+                        });
+                    }
                 }
                 Err(message) => {
                     let _ = event_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
@@ -345,16 +406,57 @@ pub(crate) fn apply_inventory_refresh_success(
     snapshot: PluginsInventorySnapshot,
     claude_path: PathBuf,
 ) {
+    // A costs-only snapshot (all lists empty, costs populated) is the
+    // lazy token-cost fetch landing after paint: merge the cache, keep
+    // every list. A real refresh with nothing installed carries empty
+    // costs too, so this arm cannot swallow one.
+    if snapshot.installed.is_empty()
+        && snapshot.marketplace.is_empty()
+        && snapshot.marketplaces.is_empty()
+        && snapshot.components.is_empty()
+        && snapshot.marketplace_health.is_empty()
+        && !snapshot.token_costs.is_empty()
+    {
+        merge_token_costs(app, snapshot.token_costs);
+        annotate_rows(app);
+        app.needs_redraw = true;
+        return;
+    }
+
     let should_reload_runtime = std::mem::take(&mut app.plugins.runtime_reload_after_refresh);
     app.plugins.installed = snapshot.installed;
     app.plugins.marketplace = snapshot.marketplace;
     app.plugins.marketplaces = snapshot.marketplaces;
-    app.plugins.rows = extension_rows(&snapshot.components);
-    annotate_lsp_rows(&mut app.plugins.rows);
-    app.plugins.health = snapshot.marketplace_health;
     // Merge, not replace: the costs map is a version-keyed cache, so a
     // refresh that fetched nothing keeps every badge on screen.
-    for (id, details) in snapshot.token_costs {
+    merge_token_costs(app, snapshot.token_costs);
+    rebuild_rows(app, &snapshot.components, snapshot.marketplace_health);
+    app.plugins.loading = false;
+    app.plugins.last_inventory_refresh_at = Some(Instant::now());
+    // The disk-spine path has no claude resolution; an empty path must
+    // not clobber the cached one the CLI actions reuse.
+    if !claude_path.as_os_str().is_empty() {
+        app.plugins.claude_path = Some(claude_path);
+    }
+    refresh_update_records(app);
+    app.plugins.update_availability =
+        update_availability(&app.plugins.installed, &app.plugins.marketplace);
+    apply_restart_overrides(app);
+    clamp_selection(app);
+    if should_reload_runtime {
+        start_runtime_reload(app, "Plugin inventory refreshed".to_owned());
+    } else {
+        app.config.last_error = None;
+        app.config.status_message = Some("Plugin inventory refreshed".to_owned());
+    }
+}
+
+/// Fold a details batch into the version-keyed cost cache.
+fn merge_token_costs(
+    app: &mut App,
+    costs: std::collections::BTreeMap<String, forge_primitives::plugins::PluginDetails>,
+) {
+    for (id, details) in costs {
         let version = app
             .plugins
             .installed
@@ -364,18 +466,78 @@ pub(crate) fn apply_inventory_refresh_success(
             .unwrap_or_default();
         app.plugins.token_costs.insert(id, (version, details.token_cost_always_on));
     }
-    app.plugins.loading = false;
-    app.plugins.last_inventory_refresh_at = Some(Instant::now());
-    app.plugins.claude_path = Some(claude_path);
-    refresh_update_records(app);
-    app.plugins.update_availability =
-        update_availability(&app.plugins.installed, &app.plugins.marketplace);
-    clamp_selection(app);
-    if should_reload_runtime {
-        start_runtime_reload(app, "Plugin inventory refreshed".to_owned());
-    } else {
-        app.config.last_error = None;
-        app.config.status_message = Some("Plugin inventory refreshed".to_owned());
+}
+
+/// Recompute the row decorations the snapshot does not carry: the LSP
+/// binary check (against the manifest's declared command) and the
+/// plugin rows' token cost.
+fn annotate_rows(app: &mut App) {
+    let path = std::env::var_os("PATH").map(|path| path.to_string_lossy().into_owned());
+    let lsp: Vec<(String, String, Option<String>)> = app
+        .plugins
+        .rows
+        .iter()
+        .filter(|row| row.kind == ExtensionKind::Lsp)
+        .map(|row| {
+            let command = app.plugins.lsp_commands.get(&(row.source.clone(), row.name.clone()));
+            (row.id.clone(), row.name.clone(), command.cloned())
+        })
+        .collect();
+    for (id, name, command) in lsp {
+        let checked = command.unwrap_or_else(|| name.clone());
+        let Some(row) = app.plugins.rows.iter_mut().find(|row| row.id == id) else { continue };
+        let on_path =
+            path.as_deref().is_some_and(|path| skills::lsp_binary_on_path(&checked, Some(path)));
+        row.detail =
+            Some(if on_path { format!("{name}: on PATH") } else { format!("{name}: missing") });
+    }
+    let costs: Vec<(String, Option<u64>, bool)> = app
+        .plugins
+        .rows
+        .iter()
+        .filter(|row| row.kind == ExtensionKind::Plugin)
+        .map(|row| {
+            (
+                row.id.clone(),
+                app.plugins.token_costs.get(&row.id).map(|(_, cost)| *cost),
+                row.state == RowState::UpdateAvailable,
+            )
+        })
+        .collect();
+    for (id, cost, update_available) in costs {
+        let Some(row) = app.plugins.rows.iter_mut().find(|row| row.id == id) else { continue };
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(cost) = cost {
+            parts.push(format!("~{cost} tok always-on"));
+        }
+        if update_available && row.detail.as_deref() == Some("auto-installed") {
+            parts.push("auto-installed".to_owned());
+        }
+        match parts.as_slice() {
+            [] => {}
+            [only] => row.detail = Some(only.clone()),
+            [..] => row.detail = Some(parts.join(" \u{b7} ")),
+        }
+    }
+}
+
+/// Re-stamp the RestartRequired state on plugin rows whose applied
+/// update awaits a restart; the underlying scan reads Current until a
+/// reload consumes the change. The stamp is derived, so it resets
+/// before re-applying - a cleared pending set must un-stamp too.
+fn apply_restart_overrides(app: &mut App) {
+    for row in &mut app.plugins.rows {
+        if row.kind == ExtensionKind::Plugin && row.state == RowState::RestartRequired {
+            row.state = RowState::Current;
+        }
+    }
+    for row in &mut app.plugins.rows {
+        if row.kind == ExtensionKind::Plugin
+            && row.state == RowState::Current
+            && app.plugins.restart_pending.contains(&row.id)
+        {
+            row.state = RowState::RestartRequired;
+        }
     }
 }
 
@@ -435,6 +597,8 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     app.plugins.rows.clear();
     app.plugins.health.clear();
     app.plugins.token_costs.clear();
+    app.plugins.lsp_commands.clear();
+    app.plugins.restart_pending.clear();
     clamp_selection(app);
 }
 
@@ -466,48 +630,8 @@ pub(crate) fn visible_rows(app: &App, tab: ExtensionsTab) -> Vec<&ExtensionRow> 
         .collect()
 }
 
-pub(crate) fn filtered_installed(state: &PluginsState) -> Vec<&InstalledPluginEntry> {
-    let query = state.search_query_for(ExtensionsTab::Installed);
-    state.installed.iter().filter(|entry| installed_entry_matches(entry, &query)).collect()
-}
-
-pub(crate) fn ordered_installed<'a>(
-    state: &'a PluginsState,
-    current_project_raw: &str,
-) -> Vec<&'a InstalledPluginEntry> {
-    let current_project = normalize_project_path(current_project_raw);
-    let mut relevant = Vec::new();
-    let mut other = Vec::new();
-
-    for entry in filtered_installed(state) {
-        if is_relevant_installed_entry(entry, &current_project) {
-            relevant.push(entry);
-        } else {
-            other.push(entry);
-        }
-    }
-
-    relevant.extend(other);
-    relevant
-}
-
 pub(crate) fn visible_marketplaces(state: &PluginsState) -> Vec<&MarketplaceSourceEntry> {
     state.marketplaces.iter().collect()
-}
-
-/// LSP rows state whether the server binary is on PATH; the check
-/// runs once per refresh, not per frame.
-fn annotate_lsp_rows(rows: &mut [ExtensionRow]) {
-    let path = std::env::var_os("PATH").map(|path| path.to_string_lossy().into_owned());
-    for row in rows.iter_mut().filter(|row| row.kind == ExtensionKind::Lsp) {
-        let on_path =
-            path.as_deref().is_some_and(|path| skills::lsp_binary_on_path(&row.name, Some(path)));
-        row.detail = Some(if on_path {
-            format!("{}: on PATH", row.name)
-        } else {
-            format!("{}: missing", row.name)
-        });
-    }
 }
 
 pub(crate) fn display_label(raw: &str) -> String {
@@ -618,9 +742,29 @@ fn open_marketplace_overlay(app: &mut App) -> bool {
     }
 }
 
+/// Enter on the Installed tab resolves the row the pane RENDERS -
+/// `visible_rows` positionally, matched back to its plugin by id - so
+/// the overlay can never open a different plugin than the one
+/// highlighted. An available-not-installed row opens the install
+/// overlay for its source plugin.
 fn open_installed_actions_overlay(app: &mut App) -> bool {
-    let selected = selected_installed_entry(app).cloned();
-    let Some(entry) = selected else {
+    let tab = ExtensionsTab::Installed;
+    let query = app.plugins.search_query_for(tab);
+    let selected = app.plugins.selected_index_for(tab);
+    let Some(row) = rows_for_tab(&app.plugins.rows, tab)
+        .into_iter()
+        .filter(|row| row_matches(row, &query))
+        .nth(selected)
+        .cloned()
+    else {
+        return false;
+    };
+    if row.state == RowState::AvailableNotInstalled {
+        // On this tab the row IS the plugin: its id, not the source
+        // (which carries the marketplace here).
+        return open_plugin_install_overlay(app, &row.id);
+    }
+    let Some(entry) = app.plugins.installed.iter().find(|entry| entry.id == row.id).cloned() else {
         return false;
     };
     open_installed_actions_for(app, entry)
@@ -925,6 +1069,12 @@ fn execute_selected_marketplace_action(app: &mut App) {
             entry.repo.as_deref(),
             entry.install_location.as_deref(),
         );
+        let readd_source = match entry.source.as_deref() {
+            Some("directory") => {
+                entry.install_location.or(entry.repo).unwrap_or_else(|| entry.name.clone())
+            }
+            _ => entry.repo.clone().unwrap_or_else(|| entry.name.clone()),
+        };
 
         app.config.overlay = None;
         app.config.last_error = None;
@@ -951,7 +1101,9 @@ fn execute_selected_marketplace_action(app: &mut App) {
                         remove_args,
                     )
                     .await?;
-                    match cli::run_cli_command_and_refresh(cwd_raw, Some(path), add_args).await {
+                    match cli::run_cli_command_and_refresh(cwd_raw.clone(), Some(path), add_args)
+                        .await
+                    {
                         Ok((snapshot, claude_path)) => Ok((snapshot, claude_path)),
                         Err(message) => Err(message),
                     }
@@ -965,10 +1117,35 @@ fn execute_selected_marketplace_action(app: &mut App) {
                         });
                     }
                     Err(message) => {
+                        // A remove that succeeded before the failed
+                        // re-add leaves the marketplace UNREGISTERED -
+                        // say so, and refresh so the pane drops it
+                        // instead of listing a ghost.
+                        let honest = format!(
+                            "Removed {title} but the re-add failed; it is now unregistered - \
+                             re-add with `claude plugin marketplace add {readd_source}`: {message}"
+                        );
                         let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
-                            cwd_raw: cwd_context,
-                            message,
+                            cwd_raw: cwd_context.clone(),
+                            message: honest,
                         });
+                        match cli::refresh_inventory(cwd_raw.clone(), cached_claude_path).await {
+                            Ok((snapshot, claude_path)) => {
+                                let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
+                                    cwd_raw,
+                                    snapshot,
+                                    claude_path,
+                                });
+                            }
+                            Err(refresh_message) => {
+                                let _ =
+                                    event_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
+                                        cwd_raw,
+                                        message: refresh_message,
+                                        trigger: PluginUpdateTrigger::Manual,
+                                    });
+                            }
+                        }
                     }
                 }
             }
@@ -1090,11 +1267,31 @@ pub(crate) fn apply_cli_action_success(app: &mut App, result: PluginsCliActionSu
     app.plugins.marketplaces = result.snapshot.marketplaces;
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(result.claude_path);
+    merge_token_costs(app, result.snapshot.token_costs);
+    rebuild_rows(app, &result.snapshot.components, result.snapshot.marketplace_health);
     refresh_update_records(app);
     app.plugins.update_availability =
         update_availability(&app.plugins.installed, &app.plugins.marketplace);
     clamp_selection(app);
     start_runtime_reload(app, result.message);
+}
+
+/// Rebuild the render-side rows from a scan result: the rows and
+/// health, the LSP command map for the annotation, then the
+/// annotations themselves and the restart overrides.
+fn rebuild_rows(app: &mut App, components: &[PluginComponents], health: Vec<MarketplaceHealth>) {
+    app.plugins.lsp_commands = components
+        .iter()
+        .flat_map(|component| {
+            component.lsp_servers.iter().map(move |(key, command)| {
+                ((component.plugin.clone(), key.clone()), command.clone())
+            })
+        })
+        .collect();
+    app.plugins.rows = extension_rows(components);
+    app.plugins.health = health;
+    annotate_rows(app);
+    apply_restart_overrides(app);
 }
 
 pub(crate) fn apply_cli_action_failure(app: &mut App, message: String) {
@@ -1106,6 +1303,9 @@ pub(crate) fn apply_cli_action_failure(app: &mut App, message: String) {
 
 pub(crate) fn apply_runtime_reload_success(app: &mut App) {
     app.plugins.loading = false;
+    // A reload is what consumes a pending restart contract.
+    app.plugins.restart_pending.clear();
+    apply_restart_overrides(app);
     if let Some(message) = app.plugins.pending_runtime_reload_success_message.take() {
         app.config.last_error = None;
         app.config.status_message = Some(message);
@@ -1730,9 +1930,21 @@ pub(crate) fn apply_update_run_finished(
         app.plugins.installed = snapshot.installed;
         app.plugins.marketplace = snapshot.marketplace;
         app.plugins.marketplaces = snapshot.marketplaces;
+        merge_token_costs(app, snapshot.token_costs);
+        rebuild_rows(app, &snapshot.components, snapshot.marketplace_health);
         app.plugins.last_inventory_refresh_at = Some(Instant::now());
         clamp_selection(app);
     }
+    // The restart contract rides the row's captured output; the state
+    // overrides re-stamp it on the pane after every rows rebuild.
+    for row in &run.rows {
+        if row.detail.as_deref().is_some_and(|detail| {
+            forge_workspace::userdata::plugins::cli::output_states_restart_required(detail)
+        }) {
+            app.plugins.restart_pending.insert(row.plugin_id.clone());
+        }
+    }
+    apply_restart_overrides(app);
     if let Some(claude_path) = claude_path {
         app.plugins.claude_path = Some(claude_path);
     }
@@ -1783,6 +1995,8 @@ pub(crate) fn apply_rollback_success(
     app.plugins.installed = snapshot.installed;
     app.plugins.marketplace = snapshot.marketplace;
     app.plugins.marketplaces = snapshot.marketplaces;
+    merge_token_costs(app, snapshot.token_costs);
+    rebuild_rows(app, &snapshot.components, snapshot.marketplace_health);
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(claude_path);
     if let Some(workspace) = app.workspace.clone() {
@@ -1805,6 +2019,8 @@ pub(crate) fn apply_rollback_failure(
         app.plugins.installed = snapshot.installed;
         app.plugins.marketplace = snapshot.marketplace;
         app.plugins.marketplaces = snapshot.marketplaces;
+        merge_token_costs(app, snapshot.token_costs);
+        rebuild_rows(app, &snapshot.components, snapshot.marketplace_health);
         app.plugins.last_inventory_refresh_at = Some(Instant::now());
         app.plugins.update_availability =
             update_availability(&app.plugins.installed, &app.plugins.marketplace);
@@ -2065,11 +2281,6 @@ fn can_install_in_current_project(app: &App, entry: &InstalledPluginEntry) -> bo
     })
 }
 
-fn selected_installed_entry(app: &App) -> Option<&InstalledPluginEntry> {
-    let index = app.plugins.selected_index_for(ExtensionsTab::Installed);
-    ordered_installed(&app.plugins, &app.cwd_raw()).get(index).copied()
-}
-
 /// The component row the active component tab has selected, when it is
 /// an extension row at all (MCPs and marketplaces select elsewhere).
 pub(crate) fn selected_extension_row(app: &App) -> Option<&ExtensionRow> {
@@ -2137,31 +2348,6 @@ fn move_selection(app: &mut App, delta: isize) {
 
 fn clamp_index(current: usize, len: usize) -> usize {
     if len == 0 { 0 } else { current.min(len.saturating_sub(1)) }
-}
-
-fn installed_entry_matches(entry: &InstalledPluginEntry, query: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-    let query = query.to_ascii_lowercase();
-    entry.id.to_ascii_lowercase().contains(&query)
-        || entry.scope.to_ascii_lowercase().contains(&query)
-        || entry
-            .version
-            .as_deref()
-            .is_some_and(|version| version.to_ascii_lowercase().contains(&query))
-}
-
-fn is_relevant_installed_entry(entry: &InstalledPluginEntry, current_project: &str) -> bool {
-    match entry.scope.as_str() {
-        "user" => true,
-        "local" | "project" => entry
-            .project_path
-            .as_deref()
-            .map(normalize_project_path)
-            .is_some_and(|project| project == current_project),
-        _ => false,
-    }
 }
 
 pub(crate) const fn search_enabled(tab: ExtensionsTab) -> bool {
@@ -2409,6 +2595,247 @@ mod tests {
             directory_add
                 .contains(&"/Users/vedhavyas/.claude/plugins/marketplaces/stx-clarity".to_owned()),
             "the directory path is the re-add source: {directory_add:?}"
+        );
+    }
+
+    fn plugin_row(id: &str, state: RowState) -> ExtensionRow {
+        ExtensionRow {
+            id: id.to_owned(),
+            kind: ExtensionKind::Plugin,
+            name: id.split('@').next().unwrap_or(id).to_owned(),
+            source: id.split('@').nth(1).unwrap_or_default().to_owned(),
+            version: Some("1.0.0".to_owned()),
+            available_version: None,
+            state,
+            detail: None,
+        }
+    }
+
+    /// Enter on the Installed tab opens the plugin the RENDERED row
+    /// carries, not a positional lookup into a differently-ordered
+    /// list; past-the-end stays a no-op instead of closing the page.
+    #[test]
+    fn installed_tab_enter_opens_the_rendered_rows_plugin() {
+        let mut app = App::test_default();
+        app.plugins.installed = vec![
+            InstalledPluginEntry {
+                id: "alpha@probe".to_owned(),
+                version: Some("1.0.0".to_owned()),
+                scope: "user".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: None,
+                capability: PluginCapability::Skill,
+            },
+            InstalledPluginEntry {
+                id: "beta@probe".to_owned(),
+                version: Some("1.0.0".to_owned()),
+                scope: "user".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: None,
+                capability: PluginCapability::Skill,
+            },
+        ];
+        app.plugins.rows = vec![
+            plugin_row("beta@probe", RowState::Current),
+            plugin_row("alpha@probe", RowState::Current),
+        ];
+        app.plugins.set_selected_index_for(ExtensionsTab::Installed, 0);
+
+        assert!(open_installed_actions_overlay(&mut app));
+        let overlay = app.config.installed_plugin_actions_overlay().expect("the overlay opens");
+        assert_eq!(
+            overlay.plugin_id, "beta@probe",
+            "the first rendered row IS beta; a CLI-order lookup would open alpha"
+        );
+
+        // Past the end: a no-op, the view stays open.
+        app.config.overlay = None;
+        app.plugins.set_selected_index_for(ExtensionsTab::Installed, 5);
+        assert!(!open_installed_actions_overlay(&mut app));
+        assert!(app.config.overlay.is_none());
+    }
+
+    /// An available-not-installed row on the Installed tab offers the
+    /// install overlay - Enter must never silently close the page.
+    #[test]
+    fn installed_tab_enter_on_an_available_row_opens_the_install_overlay() {
+        let mut app = App::test_default();
+        app.plugins.rows = vec![plugin_row("gone@probe", RowState::AvailableNotInstalled)];
+        app.plugins.set_selected_index_for(ExtensionsTab::Installed, 0);
+
+        assert!(open_installed_actions_overlay(&mut app));
+        let overlay = app.config.plugin_install_overlay().expect("install overlay");
+        assert_eq!(overlay.plugin_id, "gone@probe");
+    }
+
+    /// The token cost rides the plugin row's detail; the cost-only
+    /// event merges into the cache without touching any list.
+    #[test]
+    fn a_costs_only_event_merges_costs_and_annotates_the_rows() {
+        let mut app = App::test_default();
+        app.plugins.installed = vec![InstalledPluginEntry {
+            id: "superpowers@probe".to_owned(),
+            version: Some("6.3.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        }];
+        app.plugins.rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+
+        apply_inventory_refresh_success(
+            &mut app,
+            PluginsInventorySnapshot {
+                token_costs: std::collections::BTreeMap::from([(
+                    "superpowers@probe".to_owned(),
+                    forge_primitives::plugins::PluginDetails { token_cost_always_on: 450 },
+                )]),
+                ..PluginsInventorySnapshot::default()
+            },
+            PathBuf::new(),
+        );
+
+        assert_eq!(app.plugins.installed.len(), 1, "the lists survive a costs-only event");
+        assert!(!app.plugins.loading, "the costs-only landing does not touch the pane");
+        assert_eq!(
+            app.plugins.rows[0].detail.as_deref(),
+            Some("~450 tok always-on"),
+            "the cost renders on the plugin row: {:?}",
+            app.plugins.rows[0].detail
+        );
+    }
+
+    /// An applied update that stated the restart contract holds the
+    /// RestartRequired state on the pane until a reload consumes it.
+    #[test]
+    fn a_restart_contract_holds_until_a_reload_consumes_it() {
+        let mut app = App::test_default();
+        app.plugins.installed = vec![InstalledPluginEntry {
+            id: "supabase@probe".to_owned(),
+            version: Some("2.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        }];
+        app.plugins.rows = vec![plugin_row("supabase@probe", RowState::Current)];
+        let mut row = PluginUpdateRunRow::queued(
+            "supabase@probe".to_owned(),
+            "user".to_owned(),
+            String::new(),
+            Some("1.0.0".to_owned()),
+        );
+        row.status = PluginRunRowStatus::Updated;
+        row.installed_version = Some("2.0.0".to_owned());
+        row.detail = Some("restart required to apply".to_owned());
+        let run = PluginUpdateRun {
+            // Auto: the boot arm skips the runtime reload, so the
+            // contract holds on the pane - a live session's reload is
+            // what consumes it.
+            trigger: PluginUpdateTrigger::Auto,
+            finished: true,
+            rows: vec![row],
+        };
+
+        apply_update_run_finished(&mut app, &run, None, None);
+        assert_eq!(
+            app.plugins.rows[0].state,
+            RowState::RestartRequired,
+            "the pane states the contract where the action was"
+        );
+
+        // A successful runtime reload consumes it.
+        app.plugins.pending_runtime_reload_success_message = Some("done".to_owned());
+        apply_runtime_reload_success(&mut app);
+        assert!(app.plugins.restart_pending.is_empty());
+        assert_eq!(app.plugins.rows[0].state, RowState::Current);
+    }
+
+    /// The manual `r` carries the same in-flight guard the `u` key
+    /// has: it must not stack behind an unfinished run.
+    #[test]
+    fn a_manual_refresh_refuses_while_a_run_is_in_flight() {
+        let mut app = App::test_default();
+        app.plugins.update_run = Some(PluginUpdateRun {
+            trigger: PluginUpdateTrigger::Manual,
+            finished: false,
+            rows: vec![],
+        });
+
+        request_inventory_refresh_manual(&mut app);
+
+        assert!(!app.plugins.loading, "the guard refuses, nothing starts");
+        assert!(app.plugins.update_run.is_some(), "the running run stands");
+        assert!(
+            app.config.last_error.is_none() && app.config.status_message.is_none(),
+            "the refusal is silent, like the u guard: {:?}",
+            app.config.last_error
+        );
+    }
+
+    /// Outside a tokio runtime the manual refresh names why it did
+    /// nothing, on the footer pair the pane renders.
+    #[test]
+    fn a_manual_refresh_outside_a_runtime_surfaces_the_error() {
+        let mut app = App::test_default();
+
+        request_inventory_refresh(&mut app);
+
+        assert!(!app.plugins.loading);
+        assert_eq!(
+            app.config.last_error.as_deref(),
+            Some("No runtime available for plugin action")
+        );
+    }
+
+    /// The LSP check tests the manifest's declared COMMAND, not the
+    /// server key; the key is the fallback when no command is known.
+    #[test]
+    fn the_lsp_check_tests_the_declared_command() {
+        let mut app = App::test_default();
+        let lsp_row = |id: &str, name: &str| ExtensionRow {
+            id: id.to_owned(),
+            kind: ExtensionKind::Lsp,
+            name: name.to_owned(),
+            source: "lsp-plugin@probe".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            available_version: None,
+            state: RowState::Current,
+            detail: None,
+        };
+        app.plugins.rows = vec![lsp_row("lsp:lsp-plugin:gopls", "gopls")];
+        app.plugins.lsp_commands.insert(
+            ("lsp-plugin@probe".to_owned(), "gopls".to_owned()),
+            "definitely-not-a-real-binary-xyz".to_owned(),
+        );
+
+        annotate_rows(&mut app);
+
+        assert_eq!(
+            app.plugins.rows[0].detail.as_deref(),
+            Some("gopls: missing"),
+            "the declared command is what was probed: {:?}",
+            app.plugins.rows[0].detail
+        );
+
+        // No declared command: the key is the fallback.
+        app.plugins.lsp_commands.clear();
+        app.plugins.rows[0].name = "rust-analyzer".to_owned();
+        app.plugins.rows[0].id = "lsp:lsp-plugin:rust-analyzer".to_owned();
+        annotate_rows(&mut app);
+        assert_eq!(
+            app.plugins.rows[0].detail.as_deref(),
+            Some("rust-analyzer: on PATH"),
+            "the key falls back when no command is declared: {:?}",
+            app.plugins.rows[0].detail
         );
     }
 
@@ -2845,57 +3272,6 @@ mod tests {
         };
 
         assert!(!can_install_in_current_project(&app, &entry));
-    }
-
-    #[test]
-    fn ordered_installed_puts_current_project_and_user_entries_first() {
-        let state = PluginsState {
-            installed: vec![
-                InstalledPluginEntry {
-                    id: "other-local@claude-plugins-official".to_owned(),
-                    version: None,
-                    scope: "local".to_owned(),
-                    enabled: true,
-                    installed_at: None,
-                    last_updated: None,
-                    project_path: Some("C:\\work\\project-a".to_owned()),
-                    capability: PluginCapability::Skill,
-                },
-                InstalledPluginEntry {
-                    id: "user-plugin@claude-plugins-official".to_owned(),
-                    version: None,
-                    scope: "user".to_owned(),
-                    enabled: true,
-                    installed_at: None,
-                    last_updated: None,
-                    project_path: None,
-                    capability: PluginCapability::Skill,
-                },
-                InstalledPluginEntry {
-                    id: "current-local@claude-plugins-official".to_owned(),
-                    version: None,
-                    scope: "local".to_owned(),
-                    enabled: true,
-                    installed_at: None,
-                    last_updated: None,
-                    project_path: Some("C:\\work\\project-b".to_owned()),
-                    capability: PluginCapability::Skill,
-                },
-            ],
-            ..PluginsState::default()
-        };
-
-        let ordered = ordered_installed(&state, "C:\\work\\project-b");
-        let ordered_ids = ordered.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>();
-
-        assert_eq!(
-            ordered_ids,
-            vec![
-                "user-plugin@claude-plugins-official",
-                "current-local@claude-plugins-official",
-                "other-local@claude-plugins-official",
-            ]
-        );
     }
 
     #[test]

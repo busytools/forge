@@ -13,7 +13,8 @@ fn states_restart(detail: Option<&str>) -> bool {
 }
 
 /// One panel row: the item, its old -> new versions, and the state
-/// word the row renders.
+/// word the row renders. A failed row keeps its detail - the reason
+/// must reach the panel, never collapse to the word "failed".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdatePanelRow {
     pub label: String,
@@ -21,6 +22,7 @@ pub struct UpdatePanelRow {
     pub state_word: &'static str,
     pub failed: bool,
     pub restart_required: bool,
+    pub detail: Option<String>,
 }
 
 /// The panel's rows, in plan order.
@@ -34,15 +36,30 @@ pub fn panel_rows(run: &PluginUpdateRun) -> Vec<UpdatePanelRow> {
                 }
                 _ => None,
             };
+            let restart = states_restart(row.detail.as_deref());
+            let failed = row.status == PluginRunRowStatus::Failed;
             UpdatePanelRow {
                 label: row.plugin_id.clone(),
                 delta,
                 state_word: state_word(row.status),
-                failed: row.status == PluginRunRowStatus::Failed,
-                restart_required: states_restart(row.detail.as_deref()),
+                failed,
+                restart_required: restart,
+                detail: (failed || restart)
+                    .then(|| row.detail.as_deref().unwrap_or_default())
+                    .map(truncate_detail),
             }
         })
         .collect()
+}
+
+/// Long failure prose clips so a panel row stays one line.
+fn truncate_detail(detail: &str) -> String {
+    let trimmed = detail.trim();
+    if trimmed.chars().count() <= 96 {
+        return trimmed.to_owned();
+    }
+    let cut: String = trimmed.chars().take(93).collect();
+    format!("{cut}...")
 }
 
 fn state_word(status: PluginRunRowStatus) -> &'static str {
@@ -102,12 +119,14 @@ mod tests {
     }
 
     /// A three-item batch renders three rows with independent states
-    /// and the batch counter.
+    /// and the batch counter, and the failed row keeps its reason.
     #[test]
     fn a_three_item_batch_renders_independent_states_and_the_counter() {
+        let mut second = finished_row("second", PluginRunRowStatus::Failed, "1.0.0", "1.0.0");
+        second.detail = Some("claude plugin update failed: network unreachable".to_owned());
         let batch = run(vec![
             finished_row("first", PluginRunRowStatus::Updated, "1.0.0", "2.0.0"),
-            finished_row("second", PluginRunRowStatus::Failed, "1.0.0", "1.0.0"),
+            second,
             finished_row("third", PluginRunRowStatus::Updated, "1.0.0", "2.0.0"),
         ]);
 
@@ -116,6 +135,11 @@ mod tests {
         assert_eq!(rows[0].state_word, "done");
         assert_eq!(rows[1].state_word, "failed", "the failed row keeps its own state");
         assert!(rows[1].failed);
+        assert_eq!(
+            rows[1].detail.as_deref(),
+            Some("claude plugin update failed: network unreachable"),
+            "a failed row shows why: {rows:?}"
+        );
         assert_eq!(rows[2].state_word, "done");
         assert_eq!(panel_counter(&batch), "2 of 3 done");
     }

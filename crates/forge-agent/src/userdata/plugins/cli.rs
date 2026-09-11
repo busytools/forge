@@ -182,6 +182,33 @@ fn refresh_inventory_blocking(
     })
 }
 
+/// The disk-only inventory: registry, settings and manifests, no
+/// `claude` spawn. The TTL refresh path runs this; `None` when no
+/// plugins root resolves.
+pub fn inventory_from_disk_blocking() -> Option<PluginsInventorySnapshot> {
+    let root = super::components::plugins_root()?;
+    let started = std::time::Instant::now();
+    let marketplaces_root = root.join("marketplaces");
+    let config_dir = root.parent().unwrap_or(root.as_path()).to_path_buf();
+    let scan = scan_extensions(&root, &marketplaces_root, &config_dir);
+    tracing::info!(
+        target: "forge_agent::userdata::plugins",
+        duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        installed = scan.installed.len(),
+        components = scan.components.len(),
+        marketplaces = scan.marketplace_health.len(),
+        "extension disk inventory scan",
+    );
+    Some(PluginsInventorySnapshot {
+        installed: scan.installed,
+        marketplace: scan.marketplace,
+        marketplaces: scan.marketplace_sources,
+        components: scan.components,
+        marketplace_health: scan.marketplace_health,
+        token_costs: std::collections::BTreeMap::new(),
+    })
+}
+
 /// The disk scan over the resolved plugins root. A root that cannot
 /// resolve warns: an empty scan must never read as a clean install.
 fn scan_components_dir(

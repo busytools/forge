@@ -99,7 +99,11 @@ impl ExtensionsTab {
 pub fn rows_for_tab(rows: &[ExtensionRow], tab: ExtensionsTab) -> Vec<&ExtensionRow> {
     use forge_primitives::plugins::ExtensionKind;
     match tab {
-        ExtensionsTab::Installed => rows.iter().collect(),
+        // Plugin rows only: the Installed tab is the plugin tier - one
+        // row per plugin, matching the book and the mock.
+        ExtensionsTab::Installed => {
+            rows.iter().filter(|row| row.kind == ExtensionKind::Plugin).collect()
+        }
         ExtensionsTab::Skills => {
             rows.iter().filter(|row| row.kind == ExtensionKind::Skill).collect()
         }
@@ -160,9 +164,61 @@ impl TabState {
     }
 }
 
-/// The Installed tab's update-all count: the rows offering Update
-/// right now, which is exactly what `Update all (N)` queues.
+/// The Installed tab's update-all count: the PLUGIN rows offering
+/// Update right now, which is exactly what `Update all (N)` queues -
+/// a stale component row queues its owning plugin, never itself.
 pub fn update_all_count(rows: &[ExtensionRow]) -> usize {
-    use forge_primitives::plugins::RowState;
-    rows.iter().filter(|row| row.state == RowState::UpdateAvailable).count()
+    use forge_primitives::plugins::{ExtensionKind, RowState};
+    rows.iter()
+        .filter(|row| row.kind == ExtensionKind::Plugin && row.state == RowState::UpdateAvailable)
+        .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_primitives::plugins::{ExtensionKind, RowState};
+
+    fn row(kind: ExtensionKind, id: &str, state: RowState) -> ExtensionRow {
+        ExtensionRow {
+            id: id.to_owned(),
+            kind,
+            name: id.to_owned(),
+            source: "probe".to_owned(),
+            version: None,
+            available_version: None,
+            state,
+            detail: None,
+        }
+    }
+
+    /// The Installed tab is the plugin tier: component rows never
+    /// appear on it, whatever the flatten order carries.
+    #[test]
+    fn the_installed_tab_renders_plugin_rows_only() {
+        let rows = vec![
+            row(ExtensionKind::Plugin, "superpowers@probe", RowState::Current),
+            row(ExtensionKind::Skill, "brainstorming", RowState::Current),
+            row(ExtensionKind::Hook, "superpowers", RowState::Current),
+        ];
+        let installed = rows_for_tab(&rows, ExtensionsTab::Installed);
+        assert_eq!(
+            installed.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            vec!["superpowers@probe"],
+            "component rows stay on their own tabs: {installed:?}"
+        );
+        assert_eq!(count_for_tab(&rows, ExtensionsTab::Installed), 1);
+    }
+
+    /// The update-all count is the stale PLUGIN rows - a stale skill
+    /// queues its owning plugin, never itself.
+    #[test]
+    fn the_update_all_count_stays_on_plugin_rows() {
+        let rows = vec![
+            row(ExtensionKind::Plugin, "stale@probe", RowState::UpdateAvailable),
+            row(ExtensionKind::Skill, "stale-skill", RowState::UpdateAvailable),
+            row(ExtensionKind::Plugin, "current@probe", RowState::Current),
+        ];
+        assert_eq!(update_all_count(&rows), 1, "the component row queues nothing itself");
+    }
 }
