@@ -6,6 +6,7 @@ mod chat_view;
 pub(crate) mod collapse;
 mod composer;
 mod config;
+pub(crate) mod copy;
 pub(crate) mod dictate_picker;
 mod diff;
 mod diff_overlay;

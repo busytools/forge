@@ -19,13 +19,13 @@ pub mod workflows;
 // Re-export all public types so external `use crate::app::state::X` paths still work.
 pub use block_cache::BlockCache;
 pub use cache_metrics::CacheMetrics;
-pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
     CachedMessageSegment, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRenderCache,
     MessageRenderCacheKey, MessageRenderSignature, MessageRole, NoticeBlock, NoticeDedupKey,
     RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, TurnInfo, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content,
 };
+pub(crate) use messages::{MarkdownRenderKey, RenderedChunk};
 pub use tool_call_info::{
     AnsweredQuestion, ToolCallInfo, is_execute_tool_name, is_monitor_tool_name,
 };

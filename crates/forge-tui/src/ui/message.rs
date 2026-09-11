@@ -99,15 +99,24 @@ struct MessageLayout {
     /// Wrapped-row ranges, counted from the message's first row, that the
     /// user-turn gutter covers. The chat paints the rule over them.
     gutter_rows: Vec<std::ops::Range<usize>>,
+    /// Copy provenance, one entry per pushed row, in push order.
+    copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
 }
 
 impl MessageLayout {
     fn new() -> Self {
-        Self { segments: Vec::new(), height: 0, wrapped_lines: 0, gutter_rows: Vec::new() }
+        Self {
+            segments: Vec::new(),
+            height: 0,
+            wrapped_lines: 0,
+            gutter_rows: Vec::new(),
+            copy_rows: Vec::new(),
+        }
     }
 
     fn push_blank(&mut self) {
         self.segments.push(MessageLayoutSegment::Blank);
+        self.copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line());
         self.height += 1;
     }
 
@@ -120,11 +129,41 @@ impl MessageLayout {
         self.push_lines(lines, height, height);
     }
 
+    /// As [`Self::push_wrapped_line`], for a row that is render chrome.
+    fn push_chrome_wrapped_line(&mut self, line: Line<'static>, width: u16) {
+        let height = rendered_lines_height(std::slice::from_ref(&line), width);
+        self.push_chrome_lines(vec![line], height);
+    }
+
+    fn push_chrome_lines(&mut self, lines: Vec<Line<'static>>, height: usize) {
+        let chrome = crate::ui::copy::CopyRowMeta::chrome(0);
+        let start = self.copy_rows.len();
+        self.push_lines_with_meta(lines, Vec::new(), height, height);
+        self.copy_rows[start..].fill(chrome);
+    }
+
     fn push_lines(&mut self, lines: Vec<Line<'static>>, height: usize, wrapped_lines: usize) {
+        self.push_lines_with_meta(lines, Vec::new(), height, wrapped_lines);
+    }
+
+    fn push_lines_with_meta(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
+        height: usize,
+        wrapped_lines: usize,
+    ) {
         if height == 0 {
             return;
         }
+        let row_count = lines.len();
         self.segments.push(MessageLayoutSegment::Lines { lines, height });
+        if copy_rows.len() == row_count {
+            self.copy_rows.extend(copy_rows);
+        } else {
+            self.copy_rows
+                .extend(std::iter::repeat_n(crate::ui::copy::CopyRowMeta::hard_line(), row_count));
+        }
         self.height += height;
         self.wrapped_lines += wrapped_lines;
     }
@@ -133,11 +172,12 @@ impl MessageLayout {
     fn push_gutter_lines(
         &mut self,
         lines: Vec<Line<'static>>,
+        copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
         height: usize,
         wrapped_lines: usize,
     ) {
         let start = self.height;
-        self.push_lines(lines, height, wrapped_lines);
+        self.push_lines_with_meta(lines, copy_rows, height, wrapped_lines);
         if self.height > start {
             self.gutter_rows.push(start..self.height);
         }
@@ -163,6 +203,7 @@ struct RenderedBlockLayout {
     lines: Vec<Line<'static>>,
     height: usize,
     wrapped_lines: usize,
+    copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
 }
 
 #[derive(Clone, Copy)]
@@ -296,14 +337,16 @@ pub fn format_turn_duration(ms: u64) -> String {
     format!("{hours}h {minutes:02}m {seconds:02}s")
 }
 
+/// Test entry over [`Self::render_message_with_copy_rows`] for callers
+/// that only want the rows.
+#[cfg(test)]
 pub(crate) fn render_message(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     render_context: MessageRenderContext<'_>,
     out: &mut Vec<Line<'static>>,
 ) {
-    let cache = get_or_build_message_render_cache(msg, spinner, render_context);
-    render_cached_message(cache.segments(), out);
+    render_message_with_copy_rows(msg, spinner, render_context, out, &mut Vec::new());
 }
 
 /// True when an empty-blocks Assistant/System message would render only
@@ -338,7 +381,7 @@ fn build_message_layout(
         return layout;
     }
     if let Some(label) = role_label_line(msg) {
-        layout.push_wrapped_line(label, render_context.width);
+        layout.push_chrome_wrapped_line(label, render_context.width);
     }
 
     match msg.role {
@@ -800,7 +843,12 @@ fn append_user_block(
             }
             let trailing_gap = block.trailing_blank_lines();
             let rendered = text_block_layout(block, width, true, USER_GUTTER);
-            layout.push_gutter_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+            layout.push_gutter_lines(
+                rendered.lines,
+                rendered.copy_rows,
+                rendered.height,
+                rendered.wrapped_lines,
+            );
             for _ in 0..trailing_gap {
                 layout.push_blank();
             }
@@ -1166,7 +1214,7 @@ fn append_assistant_tool_block(
         layout.push_blank();
     }
     let mut lines = Vec::new();
-    tool_call::render_tool_call_cached_with_tools_collapsed(
+    let tool_copy_rows = tool_call::render_tool_call_cached_with_tools_collapsed(
         tc,
         render_context.tool_render_context,
         render_context.width,
@@ -1188,7 +1236,7 @@ fn append_assistant_tool_block(
     // from the tool's own state - no need to walk text-block heights
     // (which can return None when their cache version is stale).
     let y_in_msg = layout.height;
-    layout.push_lines(lines, height, wrapped_lines);
+    layout.push_lines_with_meta(lines, tool_copy_rows, height, wrapped_lines);
     tc.last_measured_y_in_msg = y_in_msg;
     if height > 0 {
         state.has_body_content = true;
@@ -1641,6 +1689,7 @@ pub(crate) fn render_message_from_offset_internal(
     render_message_from_offset_internal_with_mode(msg, spinner, render_context, skip_rows, out)
 }
 
+#[cfg(test)]
 pub(crate) fn render_message_from_offset_internal_with_mode(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
@@ -1648,13 +1697,50 @@ pub(crate) fn render_message_from_offset_internal_with_mode(
     skip_rows: usize,
     out: &mut Vec<Line<'static>>,
 ) -> usize {
+    let mut copy_rows = Vec::new();
+    render_message_from_offset_with_copy_rows(
+        msg,
+        spinner,
+        render_context,
+        skip_rows,
+        out,
+        &mut copy_rows,
+    )
+}
+
+/// As [`Self::render_message`], also emitting each row's copy provenance.
+pub(crate) fn render_message_with_copy_rows(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    render_context: MessageRenderContext<'_>,
+    out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) {
+    let cache = get_or_build_message_render_cache(msg, spinner, render_context);
+    render_cached_message_with_copy(cache.segments(), cache.copy_rows(), out, copy_rows);
+}
+
+/// As [`Self::render_message_from_offset_internal_with_mode`], also
+/// emitting each emitted row's copy provenance, aligned one-to-one with
+/// `out`.
+pub(crate) fn render_message_from_offset_with_copy_rows(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    render_context: MessageRenderContext<'_>,
+    skip_rows: usize,
+    out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) -> usize {
     let mut remaining_skip = skip_rows;
     let cache = get_or_build_message_render_cache(msg, spinner, render_context);
+    let cached_copy = cache.copy_rows().to_vec();
     let mut can_consume_skip = true;
     render_cached_message_from_offset(
         cache.segments(),
+        &cached_copy,
         render_context.width,
         out,
+        copy_rows,
         &mut remaining_skip,
         &mut can_consume_skip,
     );
@@ -1663,28 +1749,39 @@ pub(crate) fn render_message_from_offset_internal_with_mode(
 
 fn render_cached_message_from_offset(
     segments: &[CachedMessageSegment],
+    cached_copy: &[crate::ui::copy::CopyRowMeta],
     width: u16,
     out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
 ) {
+    let mut cached = cached_copy.iter();
     for segment in segments {
         match segment {
             CachedMessageSegment::Blank => {
+                let meta = cached.next();
                 if *can_consume_skip && *remaining_skip > 0 {
                     *remaining_skip -= 1;
                 } else {
                     out.push(Line::default());
+                    copy_rows.push(
+                        meta.cloned().unwrap_or_else(crate::ui::copy::CopyRowMeta::hard_line),
+                    );
                 }
             }
             CachedMessageSegment::Lines { lines, height } => {
+                let metas: Vec<_> =
+                    (0..lines.len()).filter_map(|_| cached.next().cloned()).collect();
                 if should_skip_whole_block(*height, remaining_skip, can_consume_skip) {
                     continue;
                 }
                 render_cached_lines_from_offset(
                     lines,
+                    &metas,
                     width,
                     out,
+                    copy_rows,
                     remaining_skip,
                     can_consume_skip,
                 );
@@ -1695,21 +1792,35 @@ fn render_cached_message_from_offset(
 
 fn render_cached_lines_from_offset(
     lines: &[Line<'static>],
+    metas: &[crate::ui::copy::CopyRowMeta],
     width: u16,
     out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
 ) {
     if !*can_consume_skip || *remaining_skip == 0 {
         out.extend(lines.iter().cloned());
+        copy_rows.extend(metas.iter().cloned());
+        copy_rows.extend(std::iter::repeat_n(
+            crate::ui::copy::CopyRowMeta::hard_line(),
+            lines.len().saturating_sub(metas.len()),
+        ));
         return;
     }
 
-    for line in lines {
+    for (i, line) in lines.iter().enumerate() {
         let logical_lines = split_line_on_newlines(line);
-        for logical_line in logical_lines {
+        let line_meta = metas.get(i).cloned();
+        for (part, logical_line) in logical_lines.into_iter().enumerate() {
             if !*can_consume_skip {
                 out.push(logical_line);
+                copy_rows.push(match part {
+                    // An embedded-newline split is a real break between the
+                    // parts; only the first part keeps the row's own meta.
+                    0 => line_meta.clone().unwrap_or_else(crate::ui::copy::CopyRowMeta::hard_line),
+                    _ => crate::ui::copy::CopyRowMeta::hard_line(),
+                });
                 continue;
             }
             let line_height = rendered_line_height(&logical_line, width);
@@ -1719,15 +1830,38 @@ fn render_cached_lines_from_offset(
             }
             *can_consume_skip = false;
             out.push(logical_line);
+            copy_rows
+                .push(line_meta.clone().unwrap_or_else(crate::ui::copy::CopyRowMeta::hard_line));
         }
     }
 }
 
-fn render_cached_message(segments: &[CachedMessageSegment], out: &mut Vec<Line<'static>>) {
+fn render_cached_message_with_copy(
+    segments: &[CachedMessageSegment],
+    cached_copy: &[crate::ui::copy::CopyRowMeta],
+    out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) {
+    let mut cached = cached_copy.iter();
     for segment in segments {
         match segment {
-            CachedMessageSegment::Blank => out.push(Line::default()),
-            CachedMessageSegment::Lines { lines, .. } => out.extend(lines.iter().cloned()),
+            CachedMessageSegment::Blank => {
+                out.push(Line::default());
+                copy_rows.push(
+                    cached.next().cloned().unwrap_or_else(crate::ui::copy::CopyRowMeta::hard_line),
+                );
+            }
+            CachedMessageSegment::Lines { lines, .. } => {
+                out.extend(lines.iter().cloned());
+                for _ in lines {
+                    copy_rows.push(
+                        cached
+                            .next()
+                            .cloned()
+                            .unwrap_or_else(crate::ui::copy::CopyRowMeta::hard_line),
+                    );
+                }
+            }
         }
     }
 }
@@ -1764,7 +1898,8 @@ fn get_or_build_message_render_cache<'a>(
         let segments =
             layout.segments.iter().cloned().map(MessageLayoutSegment::into_cached).collect();
         let gutter_rows = layout.gutter_rows;
-        msg.render_cache.store(key, segments, height, wrapped_lines, gutter_rows);
+        let copy_rows = layout.copy_rows;
+        msg.render_cache.store(key, segments, height, wrapped_lines, gutter_rows, copy_rows);
     }
     &msg.render_cache
 }
@@ -1983,7 +2118,9 @@ fn welcome_block_layout(block: &mut WelcomeBlock, width: u16) -> RenderedBlockLa
         height
     });
     let wrapped_lines = if had_height { 0 } else { lines.len() };
-    RenderedBlockLayout { lines, height, wrapped_lines }
+    let copy_rows =
+        std::iter::repeat_n(crate::ui::copy::CopyRowMeta::hard_line(), lines.len()).collect();
+    RenderedBlockLayout { lines, height, wrapped_lines, copy_rows }
 }
 
 fn text_block_layout(
@@ -1994,14 +2131,15 @@ fn text_block_layout(
 ) -> RenderedBlockLayout {
     let had_height = block.cache.height_at(width).is_some();
     let mut lines = Vec::new();
-    render_text_block_cached(block, width, preserve_newlines, gutter, &mut lines);
+    let mut copy_rows = Vec::new();
+    render_text_block_cached(block, width, preserve_newlines, gutter, &mut lines, &mut copy_rows);
     let height = block.cache.height_at(width).unwrap_or_else(|| {
         let height = rendered_lines_height(&lines, width);
         block.cache.set_height(height, width);
         height
     });
     let wrapped_lines = if had_height { 0 } else { lines.len() };
-    RenderedBlockLayout { lines, height, wrapped_lines }
+    RenderedBlockLayout { lines, height, wrapped_lines, copy_rows }
 }
 
 fn assistant_text_block_layout(
@@ -2015,6 +2153,7 @@ fn assistant_text_block_layout(
         let leading_blank_lines = count_leading_blank_lines(&rendered.lines);
         if leading_blank_lines > 0 {
             rendered.lines.drain(..leading_blank_lines);
+            rendered.copy_rows.drain(..leading_blank_lines);
             rendered.height = rendered.height.saturating_sub(leading_blank_lines);
             rendered.wrapped_lines = rendered.wrapped_lines.saturating_sub(leading_blank_lines);
         }
@@ -2358,10 +2497,11 @@ fn render_markdown_segments(
     width: u16,
     preserve_newlines: bool,
     gutter: u16,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Vec<crate::ui::copy::CopyRowMeta>) {
     let gutter = gutter.min(width.saturating_sub(1));
     let content_width = width.saturating_sub(gutter).max(1);
     let mut out = Vec::new();
+    let mut copy_rows = Vec::new();
     for segment in fence::segments(text) {
         match segment.kind {
             fence::SegmentKind::Prose(prose) => {
@@ -2373,22 +2513,23 @@ fn render_markdown_segments(
                 };
                 let lines =
                     super::document_table::render_markdown_with_tables(&body, content_width, None);
-                out.extend(indent_rows(lines, content_width, gutter));
+                let (rows, metas) = indent_rows(lines, content_width, gutter);
+                out.extend(rows);
+                copy_rows.extend(metas);
             }
             fence::SegmentKind::Code { language, body } => {
                 // `tui_markdown` separates a block from what precedes it.
                 if out.last().is_some_and(|line| !line_is_blank(line)) {
                     out.push(gutter_row(Line::default(), gutter));
+                    copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(gutter));
                 }
-                out.extend(
-                    fence::render_code_panel(body, language, content_width)
-                        .into_iter()
-                        .map(|line| gutter_row(line, gutter)),
-                );
+                let (rows, metas) = fence::render_code_panel(body, language, content_width);
+                out.extend(rows.into_iter().map(|line| gutter_row(line, gutter)));
+                copy_rows.extend(metas.into_iter().map(|meta| meta.offset_chrome(gutter)));
             }
         }
     }
-    out
+    (out, copy_rows)
 }
 
 /// Push `gutter` blank columns in front of a row, so the paint step finds
@@ -2415,17 +2556,39 @@ fn gutter_row(mut line: Line<'static>, gutter: u16) -> Line<'static> {
 ///
 /// A row already inside the budget passes through untouched, which is what
 /// keeps a markdown table's grid, laid out for exactly this width, intact.
-fn indent_rows(lines: Vec<Line<'static>>, content_width: u16, gutter: u16) -> Vec<Line<'static>> {
+fn indent_rows(
+    lines: Vec<Line<'static>>,
+    content_width: u16,
+    gutter: u16,
+) -> (Vec<Line<'static>>, Vec<crate::ui::copy::CopyRowMeta>) {
     if gutter == 0 {
-        return lines;
+        let count = lines.len();
+        return (
+            lines,
+            std::iter::repeat_n(crate::ui::copy::CopyRowMeta::hard_line(), count).collect(),
+        );
     }
     let width = usize::from(content_width);
-    lines.into_iter().flat_map(|line| indent_row(line, width, gutter)).collect()
+    let mut out = Vec::new();
+    let mut copy_rows = Vec::new();
+    for line in lines {
+        let (rows, metas) = indent_row(line, width, gutter);
+        out.extend(rows);
+        copy_rows.extend(metas);
+    }
+    (out, copy_rows)
 }
 
-fn indent_row(line: Line<'static>, width: usize, gutter: u16) -> Vec<Line<'static>> {
+fn indent_row(
+    line: Line<'static>,
+    width: usize,
+    gutter: u16,
+) -> (Vec<Line<'static>>, Vec<crate::ui::copy::CopyRowMeta>) {
     if wrap::line_display_width(&line) <= width && !row_has_newline(&line) {
-        return vec![gutter_row(line, gutter)];
+        return (
+            vec![gutter_row(line, gutter)],
+            vec![crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(gutter)],
+        );
     }
     let (indent, content) = fence::split_line_indent(line.spans);
     // An indent deeper than the content has columns for is clipped, the
@@ -2438,17 +2601,46 @@ fn indent_row(line: Line<'static>, width: usize, gutter: u16) -> Vec<Line<'stati
         .into_iter()
         .map(|span| wrap::StyledChunk { text: span.content.into_owned(), style: span.style })
         .collect();
-    wrap::wrap_styled_chunks(&chunks, budget)
+    let logical = chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>();
+    let wrapped = wrap::wrap_styled_chunks(&chunks, budget);
+    let separators = crate::ui::copy::wrap_join_separators(
+        &logical,
+        &wrapped.iter().map(|row| row_text(row)).collect::<Vec<_>>(),
+    );
+    let indent_width = u16::try_from(wrap::display_width(&indent)).unwrap_or(u16::MAX);
+    let rows: Vec<Line<'static>> = wrapped
         .into_iter()
-        .map(|wrapped| {
-            let mut spans = Vec::with_capacity(wrapped.spans.len() + 1);
+        .map(|piece| {
+            let mut spans = Vec::with_capacity(piece.spans.len() + 1);
             if !indent.is_empty() {
                 spans.push(Span::raw(indent.clone()));
             }
-            spans.extend(wrapped.spans);
+            spans.extend(piece.spans);
             gutter_row(Line::from(spans), gutter)
         })
-        .collect()
+        .collect();
+    let copy_rows = rows
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            if i == 0 {
+                crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(gutter)
+            } else {
+                // A continuation row re-emits the visual indent, which is
+                // alignment rather than text, so it copies as chrome.
+                crate::ui::copy::CopyRowMeta::soft(
+                    separators.get(i - 1).cloned().unwrap_or_default(),
+                    gutter.saturating_add(indent_width),
+                )
+            }
+        })
+        .collect();
+    (rows, copy_rows)
+}
+
+/// The text of a row: its spans concatenated.
+fn row_text(line: &Line<'_>) -> String {
+    line.spans.iter().map(|span| span.content.as_ref()).collect()
 }
 
 /// A newline inside a span is not measured by `line_display_width`, so a
@@ -2566,15 +2758,19 @@ pub(super) fn render_text_cached(
     preserve_newlines: bool,
     gutter: u16,
     out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) {
     // Fast path only when the cached lines were measured at this width.
     // Markdown tables produce width-dependent logical lines before paragraph
     // wrapping, so a fresh cache from another width is not safe to reuse.
     if cache.height_at(width).is_some()
         && let Some(cached_lines) = cache.get()
+        && let Some(cached_copy) = cache.copy_rows().map(<[crate::ui::copy::CopyRowMeta]>::to_vec)
+        && cached_copy.len() == cached_lines.len()
     {
         crate::perf::mark_with("msg::cache_hit", "lines", cached_lines.len());
         out.extend_from_slice(cached_lines);
+        *copy_rows = cached_copy;
         return;
     }
     crate::perf::mark("msg::cache_miss");
@@ -2582,8 +2778,9 @@ pub(super) fn render_text_cached(
     let _t = crate::perf::start("msg::render_text");
 
     // Build a render function that handles preprocessing + tui_markdown
-    let render_fn = |src: &str| -> Vec<Line<'static>> {
-        render_markdown_segments(src, width, preserve_newlines, gutter)
+    let render_fn = |src: &str| -> crate::app::RenderedChunk {
+        let (lines, metas) = render_markdown_segments(src, width, preserve_newlines, gutter);
+        crate::app::RenderedChunk { lines, copy_rows: metas }
     };
     let render_key = MarkdownRenderKey { width, gutter, preserve_newlines };
 
@@ -2597,14 +2794,16 @@ pub(super) fn render_text_cached(
     // For streaming messages this will be invalidated on the next chunk,
     // but for completed messages it persists.
     let h = {
-        let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.len());
-        Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
+        let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.lines.len());
+        Paragraph::new(Text::from(fresh.lines.clone())).wrap(Wrap { trim: false }).line_count(width)
     };
-    cache.store(fresh);
+    cache.store(fresh.lines.clone());
+    cache.set_copy_rows(fresh.copy_rows.clone());
     cache.set_height(h, width);
     if let Some(stored) = cache.get() {
         out.extend_from_slice(stored);
     }
+    copy_rows.extend(fresh.copy_rows.iter().cloned());
 }
 
 fn render_text_block_cached(
@@ -2613,6 +2812,7 @@ fn render_text_block_cached(
     preserve_newlines: bool,
     gutter: u16,
     out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) {
     render_text_cached(
         &mut block.cache,
@@ -2621,6 +2821,7 @@ fn render_text_block_cached(
         preserve_newlines,
         gutter,
         out,
+        copy_rows,
     );
 }
 
@@ -4193,8 +4394,10 @@ mod tests {
 
         render_cached_lines_from_offset(
             &lines,
+            &[],
             40,
             &mut out,
+            &mut Vec::new(),
             &mut remaining,
             &mut can_consume_skip,
         );
@@ -4449,7 +4652,7 @@ mod tests {
             MessageRenderContext::new(None, 80, 1, options),
         );
         let mut idle_out = Vec::new();
-        render_cached_message(base_cache.segments(), &mut idle_out);
+        render_cached_message_with_copy(base_cache.segments(), &[], &mut idle_out, &mut Vec::new());
         let idle_rows = render_lines_to_strings(&idle_out);
 
         let thinking_cache = get_or_build_message_render_cache(
@@ -4458,7 +4661,12 @@ mod tests {
             MessageRenderContext::new(None, 80, 1, options),
         );
         let mut running_out = Vec::new();
-        render_cached_message(thinking_cache.segments(), &mut running_out);
+        render_cached_message_with_copy(
+            thinking_cache.segments(),
+            &[],
+            &mut running_out,
+            &mut Vec::new(),
+        );
         let running_rows = render_lines_to_strings(&running_out);
 
         // The row is the same height either way now, so a stale cache
