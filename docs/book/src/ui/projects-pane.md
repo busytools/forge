@@ -12,7 +12,7 @@ Wide (160 cols up): 32ch inline pane. Medium (120-159): 24ch, truncated. Narrow 
 
   <span class="dim bold">Gateway</span>
   <span class="dim">│  </span>
-  <span class="dim">├─ </span>⠋ <span class="accent-bold">gateway-backend</span>       <span class="user-band"> x </span> 
+  <span class="dim">├─ </span><span class="accent">⠋</span> <span class="accent-bold">gateway-backend</span>       <span class="user-band"> x </span>&#32;
   <span class="dim">│  </span>
   <span class="dim">└─ ○ data-modules</span>          <span class="dim"> 2h</span> 
 
@@ -100,7 +100,7 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 
 | Glyph | Meaning | Color |
 |---|---|---|
-| `⠋` | A turn in progress - or a settled session with live background work, so the row keeps spinning | terminal default on every row; the attention / died / auth glyphs keep their own even with live background work - the promotion is over the idle bullet only |
+| `⠋` | A turn in progress - or a settled session with live background work, so the row keeps spinning | terminal default; the attention / died / auth glyphs keep their own even with live background work - the promotion is over the idle bullet only |
 | `△` | Attention: a pending permission prompt | yellow |
 | `✕` | A turn on this session died; outranks `△` | red |
 | `⚠` | Auth required | |
@@ -109,7 +109,7 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 | `·` | Sleeping / Failed / LoggedOut | dim |
 | `○` + age | No live session: age instead of a glyph and close button | dim |
 
-Selection highlights the selected session's own row when the pane draws one for it, and nothing else - selecting a worker leaves its lead row plain, and a selection with no drawn row (the `__resume_...__` waking window, a resumed worker JSONL) highlights nothing. A row's glyph reads only that session's own state, so the same state shows the same glyph whether the row is selected or not; the selected row shows itself through the rust orange bold label.
+Selection highlights the selected session's own row when the pane draws one for it, and nothing else - selecting a worker leaves its lead row plain, and a selection with no drawn row (the `__resume_...__` waking window, a resumed worker JSONL) highlights nothing. A row's glyph shape reads only that session's own state, so the same state shows the same glyph whether the row is selected or not. Selection is colour only: the selected row's glyph renders rust orange in place of its state colour, and its label rust orange bold.
 
 <details>
 <summary>Chrome colors, the versions row, spend fine print, panel layout</summary>
@@ -165,7 +165,7 @@ The overlay's body is the same tree full-width (banner and rule span the overlay
 
  <span class="dim bold">Gateway</span>
  <span class="dim">│  </span>
- <span class="dim">├─ </span>⠋ <span class="accent-bold">gateway-backend</span>                        <span class="user-band"> x </span> 
+ <span class="dim">├─ </span><span class="accent">⠋</span> <span class="accent-bold">gateway-backend</span>                        <span class="user-band"> x </span> 
  <span class="dim">│  │</span>
  <span class="dim">│  └─ </span><span class="dim">●</span> reviewer                            <span class="user-band"> x </span> 
  <span class="dim">│  </span>
@@ -217,7 +217,7 @@ Rendered at every tier (Wide / Medium / the Narrow overlay). A project's spawned
 
   <span class="dim bold">Gateway</span>
   <span class="dim">│  </span>
-  <span class="dim">├─ </span>⠋ <span class="accent-bold">gateway-backend</span>       <span class="user-band"> x </span> 
+  <span class="dim">├─ </span><span class="accent">⠋</span> <span class="accent-bold">gateway-backend</span>       <span class="user-band"> x </span>&#32;
   <span class="dim">│  │</span>
   <span class="dim">│  ├─ </span><span class="dim">●</span> reviewer           <span class="user-band"> x </span> 
   <span class="dim">│  │</span>
