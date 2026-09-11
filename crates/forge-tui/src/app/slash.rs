@@ -289,45 +289,41 @@ mod tests {
         let app = App::test_default();
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-        for expected in
-            ["/compact", "/effort", "/mcp", "/mode", "/model", "/new", "/plugins", "/resume"]
+        for expected in ["/compact", "/effort", "/extensions", "/mode", "/model", "/new", "/resume"]
         {
             assert!(names.iter().any(|n| n == expected), "missing {expected}");
         }
-        for removed in ["/1m-context", "/cancel", "/docs", "/login", "/logout", "/opus-version"] {
+        for removed in [
+            "/1m-context",
+            "/cancel",
+            "/docs",
+            "/login",
+            "/logout",
+            "/mcp",
+            "/opus-version",
+            "/plugins",
+        ] {
             assert!(!names.iter().any(|n| n == removed), "{removed} should be removed");
         }
     }
 
     #[test]
-    fn plugins_without_args_opens_plugins_view() {
+    fn extensions_opens_the_extensions_page() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = App::test_default();
         app.settings_home_override = Some(dir.path().to_path_buf());
 
-        let consumed = try_handle_submit(&mut app, "/plugins");
+        let consumed = try_handle_submit(&mut app, "/extensions");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Plugins);
+        assert_eq!(app.active_view, super::super::ActiveView::Extensions);
     }
 
     #[test]
-    fn mcp_opens_mcp_screen() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-
-        let consumed = try_handle_submit(&mut app, "/mcp");
-
-        assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Mcp);
-    }
-
-    #[test]
-    fn mcp_with_extra_args_returns_usage() {
+    fn extensions_with_extra_args_returns_usage() {
         let mut app = App::test_default();
 
-        let consumed = try_handle_submit(&mut app, "/mcp extra");
+        let consumed = try_handle_submit(&mut app, "/extensions extra");
 
         assert!(consumed);
         let Some(last) = app.messages().last() else {
@@ -336,25 +332,30 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /mcp");
+        assert_eq!(block.text, "Usage: /extensions");
+    }
+
+    /// The retired commands are gone, not aliased.
+    #[test]
+    fn the_retired_plugins_and_mcp_commands_no_longer_route() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+
+        assert!(!try_handle_submit(&mut app, "/plugins"), "/plugins is retired");
+        assert!(!try_handle_submit(&mut app, "/mcp"), "/mcp is retired");
+        assert_eq!(app.active_view, crate::app::ActiveView::Chat);
     }
 
     #[test]
-    fn plugins_with_extra_args_returns_usage() {
+    fn extensions_extra_args_returns_usage_from_the_page_open_gate() {
         let mut app = App::test_default();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
 
-        let consumed = try_handle_submit(&mut app, "/plugins extra");
-
-        assert!(consumed);
-        let Some(last) = app.messages().last() else {
-            panic!("expected usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /plugins");
+        // The retired /plugins no longer routes; submitting it falls
+        // through as an unknown command.
+        assert!(!try_handle_submit(&mut app, "/plugins extra"));
     }
 
     #[test]
@@ -1069,10 +1070,10 @@ mod tests {
     }
 
     #[test]
-    fn mcp_appears_in_candidates() {
+    fn extensions_appears_in_candidates() {
         let app = App::test_default();
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-        assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
+        assert!(names.iter().any(|n| n == "/extensions"), "missing /extensions");
     }
 }

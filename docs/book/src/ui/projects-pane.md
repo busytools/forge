@@ -12,7 +12,7 @@ Wide (160 cols up): 32ch inline pane. Medium (120-159): 24ch, truncated. Narrow 
 
   <span class="dim bold">Gateway</span>
   <span class="dim">│  </span>
-  <span class="dim">├─ </span><span class="accent">⠋</span> <span class="accent-bold">gateway-backend</span>       <span class="user-band"> x </span> 
+  <span class="dim">├─ </span>⠋ <span class="accent-bold">gateway-backend</span>       <span class="user-band"> x </span> 
   <span class="dim">│  </span>
   <span class="dim">└─ ○ data-modules</span>          <span class="dim"> 2h</span> 
 
@@ -100,20 +100,22 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 
 | Glyph | Meaning | Color |
 |---|---|---|
-| `⠋` | A turn in progress - or a settled session with live background work, so the row keeps spinning | rust orange on the focused row, default on background rows; the attention / died / auth glyphs keep their own even with live background work - the promotion is over the idle bullet only |
+| `⠋` | A turn in progress - or a settled session with live background work, so the row keeps spinning | terminal default on every row; the attention / died / auth glyphs keep their own even with live background work - the promotion is over the idle bullet only |
 | `△` | Attention: a pending permission prompt | yellow |
-| `✕` | A turn on this background session died; outranks `△` | red |
+| `✕` | A turn on this session died; outranks `△` | red |
 | `⚠` | Auth required | |
 | `●` | Alive, settled, no background work | |
 | `◆` | Last turn completed while not the active tab; clears when opened; informational - needs-attention glyphs outrank it | completion green |
 | `·` | Sleeping / Failed / LoggedOut | dim |
 | `○` + age | No live session: age instead of a glyph and close button | dim |
 
+Selection highlights the selected session's own row when the pane draws one for it, and nothing else - selecting a worker leaves its lead row plain, and a selection with no drawn row (the `__resume_...__` waking window, a resumed worker JSONL) highlights nothing. A row's glyph reads only that session's own state, so the same state shows the same glyph whether the row is selected or not; the selected row shows itself through the rust orange bold label.
+
 <details>
 <summary>Chrome colors, the versions row, spend fine print, panel layout</summary>
 
 - The running forge version with its build sha renders last (shortened to fit at Medium); the local CLI's version carries a yellow `↑ vX.Y.Z` when npm lists a strictly-newer release; missing values render `-`.
-- Org headers, tree connectors `├─` / `└─` / `│`, rules and panel labels render dim; the top-bar `▤` is dim when the overlay is closed and rust orange bold when open; the overlay `✕` is dim; the close button ` x ` is gray bold on the slate background; the active project name and `PROJECTS` banner are rust orange bold; other live project names default bold; the sleeping project row is dim throughout.
+- Org headers, tree connectors `├─` / `└─` / `│`, rules and panel labels render dim; the top-bar `▤` is dim when the overlay is closed and rust orange bold when open; the overlay `✕` is dim; the close button ` x ` is gray bold on the slate background; the selected row's name and the `PROJECTS` banner are rust orange bold - the project name only when its lead is the active session; other live project names default bold; the sleeping project row is dim throughout.
 - Spend amounts are green bold and flat - money, not a fraction of a cap. `not set` and the spend secondary row are dim. Duration lines are dim, warning-colored on the two auth-repair states `⚠ expired` / `unauthorized`. Bar fill and the `cap` bar use the position gradient, sized from the bar's cell count - the rightmost filled cell names the zone.
 - Money with no reading renders `$-`, never `$0.00`; the cap row shows <code>&mdash;</code> and the last line names why (`no probe yet`, or the failure). Cap changes land on the next poll, without a restart. The gradient's remainder cells go to the leftmost zones; empty cells stay `░` dim. The compaction count is singular at 1 (`1 compaction`).
 - The panel's shape, position and labelling stay put across session switches - Mode / Model / Ctx flip with the session, the panel does not move. The panel skips entirely below 24 pane rows; a short project list leaves its unused rows blank rather than letting the panel slide up, and the list region scrolls within itself on overflow.
@@ -163,7 +165,7 @@ The overlay's body is the same tree full-width (banner and rule span the overlay
 
  <span class="dim bold">Gateway</span>
  <span class="dim">│  </span>
- <span class="dim">├─ </span><span class="accent">⠋</span> <span class="accent-bold">gateway-backend</span>                        <span class="user-band"> x </span> 
+ <span class="dim">├─ </span>⠋ <span class="accent-bold">gateway-backend</span>                        <span class="user-band"> x </span> 
  <span class="dim">│  │</span>
  <span class="dim">│  └─ </span><span class="dim">●</span> reviewer                            <span class="user-band"> x </span> 
  <span class="dim">│  </span>
@@ -175,7 +177,7 @@ The overlay's body is the same tree full-width (banner and rule span the overlay
  <span class="dim">├─ ○ dotfiles</span>                               <span class="dim"> 4h</span> 
  <span class="dim">└─ </span><span class="success">◆</span> <span class="bold">playground</span>                             <span class="user-band"> x </span>
     <span class="dim">│</span>
- <span class="dim">   └─ </span><span class="accent">⠋</span> <span class="accent-bold">gpt-tutor</span>                           <span class="user-band"> x </span> 
+ <span class="dim">   └─ </span>⠋ gpt-tutor                           <span class="user-band"> x </span> 
 
 
 <span class="dim">─────────────────────────────────────────────────</span>
@@ -215,11 +217,11 @@ Rendered at every tier (Wide / Medium / the Narrow overlay). A project's spawned
 
   <span class="dim bold">Gateway</span>
   <span class="dim">│  </span>
-  <span class="dim">├─ </span><span class="accent">⠋</span> <span class="accent-bold">gateway-backend</span>       <span class="user-band"> x </span> 
+  <span class="dim">├─ </span>⠋ <span class="accent-bold">gateway-backend</span>       <span class="user-band"> x </span> 
   <span class="dim">│  │</span>
   <span class="dim">│  ├─ </span><span class="dim">●</span> reviewer           <span class="user-band"> x </span> 
   <span class="dim">│  │</span>
-  <span class="dim">│  └─ </span><span class="dim">⠋</span> migrator           <span class="user-band"> x </span> 
+  <span class="dim">│  └─ </span>⠋ <span class="dim">migrator</span>           <span class="user-band"> x </span> 
   <span class="dim">│  </span>
   <span class="dim">└─ ○ data-modules</span>          <span class="dim"> 2h</span> 
 
@@ -229,14 +231,14 @@ Rendered at every tier (Wide / Medium / the Narrow overlay). A project's spawned
   <span class="dim">├─ ○ dotfiles</span>              <span class="dim"> 4h</span> 
   <span class="dim">└─ </span><span class="success">◆</span> <span class="bold">playground</span>            <span class="user-band"> x </span>
      <span class="dim">│</span>
-  <span class="dim">   └─ </span><span class="accent">⠋</span> <span class="accent-bold">gpt-tutor</span>          <span class="user-band"> x </span> 
+  <span class="dim">   └─ </span>⠋ gpt-tutor          <span class="user-band"> x </span> 
 </pre>
 
 </div>
 
 - Tree glyphs `├─` (every entry but the last) and `└─` (the last), at column 4, dim; a gap row sits above the first worker and between adjacent workers - never after the last one. The org trunk repaints between worker rows only while the parent project is not last in its org; three blank cells when it is.
 - Worker label: default fg while running, dim while spawning, error color when failed, rust orange bold when it is the focused session; head-truncated with a trailing `...` on overflow.
-- Glyphs: the same column as the project row - `⠋` while a turn runs or background work is live, `●` settled, `◆` completion green when the last turn completed while not the active tab, `·` sleeping, `△` yellow when a non-focused worker has a prompt waiting, `✕` red when the spawn failed or a turn on this worker died (that outranks `△`). The column never blanks while spawning. A failed worker adds one dim diagnostic sub-row beneath its row, indented to the label column and truncated to the pane width, carrying the failure (or `spawn failed` when none was recorded).
+- Glyphs: the same column as the project row - `⠋` while a turn runs or background work is live, `●` settled, `◆` completion green when the last turn completed while not the active tab, `·` sleeping, `△` yellow when the worker has a prompt waiting, `✕` red when the spawn failed or a turn on this worker died (that outranks `△`). The column never blanks while spawning. A failed worker adds one dim diagnostic sub-row beneath its row, indented to the label column and truncated to the pane width, carrying the failure (or `spawn failed` when none was recorded).
 - Click a worker row to switch to its chat. Its ` x ` button closes the worker instead - the JSONL on disk is not deleted.
 - Closing the worker you are looking at hands focus back to its spawning lead (the row its subtree hangs off), falling through to the same adjacent-row rule as a lead close when that lead is not live. The lead's session receives a toast: `Worker <label> closed. Worktree preserved at .claude/worktrees/<label>/` (or the bare `Worker <label> closed.` for a non-git worker); dropped when that lead is not live in this process. Every worker released by the lead-row cascade gets the same toast.
 - Workers are process-lifetime: a forge restart drops them all and the pane launches with no tree-children. Their JSONLs survive but are excluded from `/resume` by default unless workers are explicitly included.

@@ -60,6 +60,8 @@ Hardcoded in the theme module - no light mode, no custom themes. Anything not li
 | RUST_ORANGE | `--rust-orange` | `Rgb(244, 118, 0)` |
 | DIM | `--dim` | dark gray |
 | USER_MSG_BG | `--user-msg-bg` | `Rgb(40, 44, 52)` |
+| CODE_PANEL_BG | `--code-bg` | `Rgb(23, 27, 35)` |
+| CODE_PANEL_LABEL | `--code-label` | `Rgb(85, 92, 104)` |
 | STATUS_ERROR | `--status-error` | red |
 | STATUS_WARNING | `--status-warn` | yellow |
 | SLASH_COMMAND | `--slash` | light magenta |
@@ -96,6 +98,7 @@ Every character used as chrome - borders, icons, status, separators. Scope is cu
 | `▤` | narrow-tier Projects top-bar icon | toggles the Projects overlay |
 | `💬` `✎` `↳` | diff comment cards; the [Inspector GIT header](./inspector.md) and [NEEDS ATTENTION](./inspector.md) band | the card and rail badge, your editable turns, the reply line; outside the overlay the balloon counts worker answers nobody has come back to |
 | `?` `[ ]` | question header and help toggle; mode badge and checkbox | rust orange in the question header; ASCII brackets |
+| `▏` | user turn gutter | rust-orange rule down the left of the rows a user turn's body occupies, excluding its banner and the separator below ([chat](./chat.md#user-message)) |
 | `▓ ░` | projects-pane usage bars | filled cells color by position (four zones); empty cells dim |
 | `⎇` | Inspector GIT branch marker | dim on default, rust orange on a feature branch, yellow `HEAD` when detached |
 | `⠋ ⠙ ⠹ ...` | spinner frames; running project rows | braille spinner |

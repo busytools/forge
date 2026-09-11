@@ -1059,6 +1059,9 @@ mod tests {
     fn mid_turn_submit_then_turn_complete_settles_idle_and_notifies() {
         let mut app = app_with_connection();
         let key = active_session_key(&app);
+        if let Some(bucket) = app.sessions.get_mut(&key) {
+            bucket.project = Some("companies".to_owned());
+        }
 
         app.status = AppStatus::Ready;
         app.input_mut().set_text("first");
@@ -1085,9 +1088,12 @@ mod tests {
             crate::app::notify::test_capture::take_notifications(&app),
             vec![(
                 crate::app::notify::NotifyEvent::TurnComplete,
-                crate::app::notify::NotifyContext::default(),
+                crate::app::notify::NotifyContext {
+                    project: Some("companies".to_owned()),
+                    worker_label: None,
+                },
             )],
-            "the completion notification fires even with a queued send",
+            "the completion notification names the session's project even with a queued send",
         );
         let last = app.messages().last().expect("messages present");
         assert!(
@@ -1109,6 +1115,7 @@ mod tests {
         let bg_key = SessionKey::from_str_for_test("background-session");
         let mut bg = UiSession::new(bg_key.clone());
         bg.lifecycle_state = crate::app::session::SessionLifecycleState::Running;
+        bg.project = Some("beta".to_owned());
         app.sessions.insert(bg_key.clone(), bg);
 
         // The workspace's mid-turn dispatch signal precedes the Result
@@ -1131,9 +1138,12 @@ mod tests {
             crate::app::notify::test_capture::take_notifications(&app),
             vec![(
                 crate::app::notify::NotifyEvent::TurnComplete,
-                crate::app::notify::NotifyContext::default(),
+                crate::app::notify::NotifyContext {
+                    project: Some("beta".to_owned()),
+                    worker_label: None,
+                },
             )],
-            "the completion notification fires even with a queued send pending",
+            "the completion notification names the background session's project",
         );
     }
 

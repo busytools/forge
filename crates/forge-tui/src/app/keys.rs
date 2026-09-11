@@ -187,13 +187,15 @@ pub(crate) fn write_text_to_clipboard(selected_text: String) -> ClipboardCopyRes
 
 fn selection_text_for_copy(app: &mut App) -> Option<String> {
     let selection = app.selection().copied()?;
-    crate::ui::refresh_selection_snapshot(app);
-    let lines = match selection.kind {
-        super::SelectionKind::Chat => &app.rendered_chat_lines,
-        super::SelectionKind::Input => &app.rendered_input_lines,
+    let selected_text = match selection.kind {
+        super::SelectionKind::Chat => crate::ui::copy::chat_selection_text(app, selection),
+        super::SelectionKind::Input => {
+            crate::ui::refresh_selection_snapshot(app);
+            let text = selection_text_from_rendered_lines(&app.rendered_input_lines, selection);
+            (!text.is_empty()).then_some(text)
+        }
     };
-    let selected_text = selection_text_from_rendered_lines(lines, selection);
-    (!selected_text.is_empty()).then_some(selected_text)
+    selected_text.filter(|text| !text.is_empty())
 }
 
 #[cfg(test)]
@@ -1518,7 +1520,6 @@ mod tests {
         ));
         app.bind_active_turn_assistant(0);
         app.rendered_chat_area = Rect::new(0, 0, 20, 6);
-        app.rendered_chat_lines = vec!["hello".to_owned()];
         *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },
@@ -1535,8 +1536,7 @@ mod tests {
         }
         app.invalidate_layout(InvalidationLevel::MessageChanged(0));
 
-        assert!(selection_text_for_copy(&mut app).is_some());
-        assert!(app.rendered_chat_lines.iter().any(|line| line.contains("world")));
+        assert_eq!(selection_text_for_copy(&mut app), Some("hello world".to_owned()));
     }
 
     #[test]

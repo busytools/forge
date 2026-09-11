@@ -2,7 +2,8 @@ use crate::agent::model;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
 use crate::ui::wrap::{
-    StyledChunk, display_width, expand_tabs, replace_control_chars, wrap_styled_chunks,
+    StyledChunk, display_width, expand_tabs, replace_control_chars, split_leading_whitespace,
+    wrap_styled_chunks,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -140,6 +141,7 @@ pub fn render_diff(
                 leading_indent,
                 &content_chunks,
                 content_width,
+                usize::from(width),
                 row_bg,
             ));
         }
@@ -303,6 +305,7 @@ fn render_wrapped_diff_row(
     leading_indent: &str,
     content_chunks: &[StyledChunk],
     content_width: usize,
+    max_row_width: usize,
     row_bg: Option<Color>,
 ) -> Vec<Line<'static>> {
     let number_style = Style::default().fg(theme::DIM);
@@ -331,7 +334,10 @@ fn render_wrapped_diff_row(
     // a bg, and (b) push a trailing bg-styled space-pad span sized
     // to the remaining width. Equal/context rows (`row_bg = None`)
     // skip both steps and render exactly as before.
-    let total_row_width = line_number_width + 5 + content_width;
+    // Capped at the caller's width: below the gutter width `content_width`
+    // floors to 1, and an uncapped pad would push the tint past the row the
+    // caller asked for.
+    let total_row_width = (line_number_width + 5 + content_width).min(max_row_width);
 
     content_lines
         .into_iter()
@@ -379,14 +385,6 @@ fn render_wrapped_diff_row(
             line
         })
         .collect()
-}
-
-fn split_leading_whitespace(text: &str) -> (&str, &str) {
-    let split_at = text
-        .char_indices()
-        .find_map(|(idx, ch)| (!ch.is_whitespace()).then_some(idx))
-        .unwrap_or(text.len());
-    text.split_at(split_at)
 }
 
 /// Check if a tool call title references a markdown file.
@@ -901,6 +899,28 @@ mod tests {
                 trailing.style.bg.is_some(),
                 "trailing pad span must carry the row bg so the tint extends to the right edge"
             );
+        }
+    }
+
+    /// Below the gutter width `content_width` floors to 1, so the pad
+    /// arithmetic can total past the width the caller asked for. The pad
+    /// may never cross the caller's width: the tint would spill past the
+    /// paragraph area.
+    #[test]
+    fn tinted_rows_never_pad_past_the_caller_width() {
+        // 100 blank lines -> line_number_width 3, so width 8 == 3 + 5 puts
+        // the uncapped arithmetic total at 9. Every row here is blank-line
+        // content, so its spans end exactly at the gutter and any pad is
+        // the only thing that could cross 8.
+        let old = "\n".repeat(100);
+        let new = "\n".repeat(99);
+        let lines = render_diff(&model::Diff::new("tmp.rs", new).old_text(Some(old)), 8, None);
+        for (index, row) in lines.iter().enumerate() {
+            if row.style.bg.is_none() {
+                continue;
+            }
+            let measured: usize = row.spans.iter().map(Span::width).sum();
+            assert!(measured <= 8, "row {index} pads past the caller width: {row:?}");
         }
     }
 

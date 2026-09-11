@@ -19,13 +19,13 @@ pub mod workflows;
 // Re-export all public types so external `use crate::app::state::X` paths still work.
 pub use block_cache::BlockCache;
 pub use cache_metrics::CacheMetrics;
-pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
     CachedMessageSegment, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRenderCache,
     MessageRenderCacheKey, MessageRenderSignature, MessageRole, NoticeBlock, NoticeDedupKey,
     RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, TurnInfo, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content,
 };
+pub(crate) use messages::{MarkdownRenderKey, RenderedChunk};
 pub use tool_call_info::{
     AnsweredQuestion, ToolCallInfo, is_execute_tool_name, is_monitor_tool_name,
 };
@@ -55,9 +55,9 @@ use tokio::sync::mpsc;
 
 use super::config::ConfigState;
 use super::dialog;
+use super::extensions::PluginsState;
 use super::file_index;
 use super::focus::FocusManager;
-use super::plugins::PluginsState;
 use super::view::ActiveView;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -608,8 +608,6 @@ pub struct App {
     pub cached_frame_area: ratatui::layout::Rect,
     /// Active scrollbar drag state while left mouse button is held on the rail.
     pub scrollbar_drag: Option<ScrollbarDragState>,
-    /// Cached rendered chat lines for selection/copy.
-    pub rendered_chat_lines: Vec<String>,
     /// Area where chat content was rendered (for selection mapping).
     pub rendered_chat_area: ratatui::layout::Rect,
     /// Cached rendered input lines for selection/copy.
@@ -1021,7 +1019,6 @@ impl App {
             usage_overlay: None,
             cached_frame_area: ratatui::layout::Rect::default(),
             scrollbar_drag: None,
-            rendered_chat_lines: Vec::new(),
             rendered_chat_area: ratatui::layout::Rect::default(),
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),

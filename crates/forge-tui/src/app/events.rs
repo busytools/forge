@@ -175,7 +175,6 @@ fn handle_resize(app: &mut App, width: u16, height: u16) {
     app.cached_frame_area = ratatui::layout::Rect::new(0, 0, width, height);
     app.rendered_chat_area = ratatui::layout::Rect::default();
     app.rendered_input_area = ratatui::layout::Rect::default();
-    app.rendered_chat_lines.clear();
     app.rendered_input_lines.clear();
     *app.selection_mut() = None;
     app.scrollbar_drag = None;
@@ -204,12 +203,8 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             *app.active_paste_session_mut() = None;
             super::keys::dispatch_key_by_focus(app, key)
         }
-        ActiveView::Plugins => {
-            super::config::handle_plugins_key(app, key);
-            true
-        }
-        ActiveView::Mcp => {
-            super::config::handle_mcp_key(app, key);
+        ActiveView::Extensions => {
+            super::config::handle_extensions_key(app, key);
             true
         }
         ActiveView::Launchpad => super::keys::dispatch_key_by_focus(app, key),
@@ -236,7 +231,7 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
         }
         // Plugins / MCP / Launchpad / Usage are keyboard-only - mouse
         // events are intentionally dropped.
-        ActiveView::Plugins | ActiveView::Mcp | ActiveView::Launchpad | ActiveView::Usage => {}
+        ActiveView::Extensions | ActiveView::Launchpad | ActiveView::Usage => {}
     }
 }
 
@@ -253,8 +248,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             }
             false
         }
-        ActiveView::Plugins => super::config::handle_plugins_paste(app, text),
-        ActiveView::Mcp => super::config::handle_mcp_paste(app, text),
+        ActiveView::Extensions => super::config::handle_extensions_paste(app, text),
         ActiveView::Diff => super::diff_overlay::handle_paste(app, text),
         ActiveView::Launchpad | ActiveView::Usage => false,
     }
@@ -269,7 +263,7 @@ pub(super) fn apply_available_commands_update(app: &mut App, cmds: model::Availa
         command_count = cmds.available_commands.len(),
     );
     *app.available_commands_mut() = cmds.available_commands;
-    crate::app::plugins::clamp_selection(app);
+    crate::app::extensions::clamp_selection(app);
     if app.slash().is_some() {
         super::slash::update_query(app);
     }
@@ -1538,7 +1532,6 @@ mod tests {
         assert!(app.selection().is_none());
         assert!(app.mention().is_none());
         assert!(!app.cancelled_turn_pending_hint());
-        assert!(app.rendered_chat_lines.is_empty());
         assert!(app.rendered_input_lines.is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
     }
@@ -1655,7 +1648,7 @@ mod tests {
     #[test]
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.active_view = crate::app::ActiveView::Plugins;
+        app.active_view = crate::app::ActiveView::Extensions;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -1974,7 +1967,7 @@ mod tests {
             api_key_source: None,
             api_provider: None,
         }));
-        app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
+        app.plugins.installed.push(crate::app::extensions::InstalledPluginEntry {
             id: "old-plugin".into(),
             version: None,
             scope: "user".into(),
@@ -1982,7 +1975,7 @@ mod tests {
             installed_at: None,
             last_updated: None,
             project_path: None,
-            capability: crate::app::plugins::PluginCapability::Skill,
+            capability: forge_primitives::plugins::PluginCapability::Skill,
         });
         app.plugins.last_inventory_refresh_at = Some(Instant::now());
 
@@ -2173,7 +2166,7 @@ mod tests {
     #[test]
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.active_view = crate::app::ActiveView::Plugins;
+        app.active_view = crate::app::ActiveView::Extensions;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -2462,8 +2455,8 @@ mod tests {
             &mut app,
             SessionUpdate::PluginsInventoryUpdated {
                 cwd_raw: "/old".into(),
-                snapshot: crate::app::plugins::PluginsInventorySnapshot {
-                    installed: vec![crate::app::plugins::InstalledPluginEntry {
+                snapshot: crate::app::extensions::PluginsInventorySnapshot {
+                    installed: vec![crate::app::extensions::InstalledPluginEntry {
                         id: "stale-plugin".into(),
                         version: None,
                         scope: "user".into(),
@@ -2471,10 +2464,13 @@ mod tests {
                         installed_at: None,
                         last_updated: None,
                         project_path: None,
-                        capability: crate::app::plugins::PluginCapability::Skill,
+                        capability: forge_primitives::plugins::PluginCapability::Skill,
                     }],
                     marketplace: Vec::new(),
                     marketplaces: Vec::new(),
+                    components: Vec::new(),
+                    marketplace_health: Vec::new(),
+                    token_costs: std::collections::BTreeMap::default(),
                 },
                 claude_path: std::path::PathBuf::from("claude"),
             },
@@ -2483,13 +2479,13 @@ mod tests {
         assert!(app.plugins.installed.is_empty());
     }
 
-    fn stale_cwd_check_row() -> crate::app::plugins::PluginUpdateRunRow {
-        crate::app::plugins::PluginUpdateRunRow {
+    fn stale_cwd_check_row() -> crate::app::extensions::PluginUpdateRunRow {
+        crate::app::extensions::PluginUpdateRunRow {
             plugin_id: "checked-plugin".into(),
             scope: "user".into(),
             cwd_raw: String::new(),
             marketplace: "claude-plugins-official".into(),
-            status: crate::app::plugins::PluginRunRowStatus::UpdateAvailable,
+            status: crate::app::extensions::PluginRunRowStatus::UpdateAvailable,
             installed_version: Some("1.0.0".into()),
             available_version: Some("2.0.0".into()),
             detail: None,
@@ -2507,12 +2503,12 @@ mod tests {
         app.set_cwd_raw("/current");
         app.plugins.loading = true;
         app.config.status_message = Some("Checking for plugin updates...".into());
-        app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
-            trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+        app.plugins.update_run = Some(crate::app::extensions::PluginUpdateRun {
+            trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
             finished: false,
             rows: Vec::new(),
         });
-        app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
+        app.plugins.installed.push(crate::app::extensions::InstalledPluginEntry {
             id: "seeded-plugin".into(),
             version: None,
             scope: "user".into(),
@@ -2520,22 +2516,25 @@ mod tests {
             installed_at: None,
             last_updated: None,
             project_path: None,
-            capability: crate::app::plugins::PluginCapability::Skill,
+            capability: forge_primitives::plugins::PluginCapability::Skill,
         });
 
         apply_session_update(
             &mut app,
             SessionUpdate::PluginsUpdateRunFinished {
                 cwd_raw: "/old".into(),
-                run: crate::app::plugins::PluginUpdateRun {
-                    trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                run: crate::app::extensions::PluginUpdateRun {
+                    trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
                     finished: true,
                     rows: vec![stale_cwd_check_row()],
                 },
-                snapshot: Some(crate::app::plugins::PluginsInventorySnapshot {
+                snapshot: Some(crate::app::extensions::PluginsInventorySnapshot {
                     installed: Vec::new(),
                     marketplace: Vec::new(),
                     marketplaces: Vec::new(),
+                    components: Vec::new(),
+                    marketplace_health: Vec::new(),
+                    token_costs: std::collections::BTreeMap::default(),
                 }),
                 claude_path: None,
             },
@@ -2552,15 +2551,18 @@ mod tests {
             &mut app,
             SessionUpdate::PluginsUpdateRunFinished {
                 cwd_raw: "/current".into(),
-                run: crate::app::plugins::PluginUpdateRun {
-                    trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                run: crate::app::extensions::PluginUpdateRun {
+                    trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
                     finished: true,
                     rows: vec![stale_cwd_check_row()],
                 },
-                snapshot: Some(crate::app::plugins::PluginsInventorySnapshot {
+                snapshot: Some(crate::app::extensions::PluginsInventorySnapshot {
                     installed: Vec::new(),
                     marketplace: Vec::new(),
                     marketplaces: Vec::new(),
+                    components: Vec::new(),
+                    marketplace_health: Vec::new(),
+                    token_costs: std::collections::BTreeMap::default(),
                 }),
                 claude_path: None,
             },
@@ -2583,11 +2585,11 @@ mod tests {
         app.plugins.loading = true;
         app.config.status_message = Some("Checking for plugin updates...".into());
         app.plugins.runtime_reload_after_refresh = true;
-        app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
-            trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+        app.plugins.update_run = Some(crate::app::extensions::PluginUpdateRun {
+            trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
             finished: true,
-            rows: vec![crate::app::plugins::PluginUpdateRunRow {
-                status: crate::app::plugins::PluginRunRowStatus::AlreadyCurrent,
+            rows: vec![crate::app::extensions::PluginUpdateRunRow {
+                status: crate::app::extensions::PluginRunRowStatus::AlreadyCurrent,
                 ..stale_cwd_check_row()
             }],
         });
@@ -2597,7 +2599,7 @@ mod tests {
             SessionUpdate::PluginsInventoryRefreshFailed {
                 cwd_raw: "/old".into(),
                 message: "refresh blew up".into(),
-                trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
             },
         );
 
@@ -2625,7 +2627,7 @@ mod tests {
         app.set_cwd_raw("/current");
         app.plugins.loading = true;
         app.config.status_message = Some("Refreshing plugin inventory...".into());
-        app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
+        app.plugins.installed.push(crate::app::extensions::InstalledPluginEntry {
             id: "seeded-plugin".into(),
             version: None,
             scope: "user".into(),
@@ -2633,17 +2635,20 @@ mod tests {
             installed_at: None,
             last_updated: None,
             project_path: None,
-            capability: crate::app::plugins::PluginCapability::Skill,
+            capability: forge_primitives::plugins::PluginCapability::Skill,
         });
 
         apply_session_update(
             &mut app,
             SessionUpdate::PluginsInventoryUpdated {
                 cwd_raw: "/old".into(),
-                snapshot: crate::app::plugins::PluginsInventorySnapshot {
+                snapshot: crate::app::extensions::PluginsInventorySnapshot {
                     installed: Vec::new(),
                     marketplace: Vec::new(),
                     marketplaces: Vec::new(),
+                    components: Vec::new(),
+                    marketplace_health: Vec::new(),
+                    token_costs: std::collections::BTreeMap::default(),
                 },
                 claude_path: std::path::PathBuf::from("claude"),
             },
@@ -2665,8 +2670,8 @@ mod tests {
         let mut app = make_test_app();
         app.set_cwd_raw("/current");
         app.plugins.loading = true;
-        app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
-            trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+        app.plugins.update_run = Some(crate::app::extensions::PluginUpdateRun {
+            trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
             finished: false,
             rows: vec![stale_cwd_check_row()],
         });
@@ -2675,8 +2680,8 @@ mod tests {
             &mut app,
             SessionUpdate::PluginsUpdateRunProgress {
                 cwd_raw: "/old".into(),
-                run: crate::app::plugins::PluginUpdateRun {
-                    trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                run: crate::app::extensions::PluginUpdateRun {
+                    trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
                     finished: false,
                     rows: vec![stale_cwd_check_row()],
                 },
@@ -2701,8 +2706,8 @@ mod tests {
         let mut app = make_test_app();
         app.set_cwd_raw("/current");
         app.config.status_message = Some("Update check: 1 updated, 0 failed, 0 current".into());
-        app.plugins.update_run = Some(crate::app::plugins::PluginUpdateRun {
-            trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+        app.plugins.update_run = Some(crate::app::extensions::PluginUpdateRun {
+            trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
             finished: true,
             rows: vec![stale_cwd_check_row()],
         });
@@ -2711,8 +2716,8 @@ mod tests {
             &mut app,
             SessionUpdate::PluginsUpdateRunFinished {
                 cwd_raw: "/old".into(),
-                run: crate::app::plugins::PluginUpdateRun {
-                    trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                run: crate::app::extensions::PluginUpdateRun {
+                    trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
                     finished: true,
                     rows: vec![stale_cwd_check_row()],
                 },
@@ -2736,7 +2741,7 @@ mod tests {
             SessionUpdate::PluginsInventoryRefreshFailed {
                 cwd_raw: "/old".into(),
                 message: "refresh blew up".into(),
-                trigger: crate::app::plugins::PluginUpdateTrigger::Manual,
+                trigger: crate::app::extensions::PluginUpdateTrigger::Manual,
             },
         );
 
@@ -2766,7 +2771,8 @@ mod tests {
     #[test]
     fn mcp_operation_error_stays_in_mcp_feedback_and_out_of_chat() {
         let mut app = make_test_app();
-        app.active_view = crate::app::ActiveView::Mcp;
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Mcps;
         app.config.status_message =
             Some("Starting MCP auth for claude.ai Google Calendar...".into());
         app.mcp_mut().in_flight = true;
@@ -5005,7 +5011,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
-        crate::app::config::open_plugins(&mut app).expect("open plugins");
+        crate::app::config::open_extensions(&mut app).expect("open extensions");
         app.input_mut().set_text("seed");
 
         handle_terminal_event(
@@ -5021,7 +5027,7 @@ mod tests {
     #[test]
     fn settings_view_ignores_paste_events() {
         let mut app = make_test_app();
-        app.active_view = ActiveView::Plugins;
+        app.active_view = ActiveView::Extensions;
 
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
@@ -5087,7 +5093,7 @@ mod tests {
     #[test]
     fn settings_view_ignores_mouse_events() {
         let mut app = make_test_app();
-        app.active_view = ActiveView::Plugins;
+        app.active_view = ActiveView::Extensions;
         app.active_viewport_mut().scroll_target = 4;
         *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Chat,

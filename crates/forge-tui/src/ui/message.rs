@@ -4,14 +4,20 @@ use crate::app::{
     StopHookEntry, SystemSeverity, TextBlock, TurnInfo, WelcomeBlock, hash_text_block_content,
     hash_welcome_block_content,
 };
+use crate::ui::fence;
 use crate::ui::peer_block;
 use crate::ui::theme;
 use crate::ui::tool_call;
+use crate::ui::wrap;
 
 pub mod grouping;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
+
+/// Blank columns at the left of every row a user turn's text body
+/// occupies. The rust-orange rule is painted into them after render.
+const USER_GUTTER: u16 = 2;
 
 const FERRIS_SAYS: &[&str] = &[
     r" ------------------------ ",
@@ -90,15 +96,27 @@ struct MessageLayout {
     segments: Vec<MessageLayoutSegment>,
     height: usize,
     wrapped_lines: usize,
+    /// Wrapped-row ranges, counted from the message's first row, that the
+    /// user-turn gutter covers. The chat paints the rule over them.
+    gutter_rows: Vec<std::ops::Range<usize>>,
+    /// Copy provenance, one entry per pushed row, in push order.
+    copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
 }
 
 impl MessageLayout {
     fn new() -> Self {
-        Self { segments: Vec::new(), height: 0, wrapped_lines: 0 }
+        Self {
+            segments: Vec::new(),
+            height: 0,
+            wrapped_lines: 0,
+            gutter_rows: Vec::new(),
+            copy_rows: Vec::new(),
+        }
     }
 
     fn push_blank(&mut self) {
         self.segments.push(MessageLayoutSegment::Blank);
+        self.copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line());
         self.height += 1;
     }
 
@@ -111,13 +129,58 @@ impl MessageLayout {
         self.push_lines(lines, height, height);
     }
 
+    /// As [`Self::push_wrapped_line`], for a row that is render chrome.
+    fn push_chrome_wrapped_line(&mut self, line: Line<'static>, width: u16) {
+        let height = rendered_lines_height(std::slice::from_ref(&line), width);
+        self.push_chrome_lines(vec![line], height);
+    }
+
+    fn push_chrome_lines(&mut self, lines: Vec<Line<'static>>, height: usize) {
+        let chrome = crate::ui::copy::CopyRowMeta::chrome(0);
+        let start = self.copy_rows.len();
+        self.push_lines_with_meta(lines, Vec::new(), height, height);
+        self.copy_rows[start..].fill(chrome);
+    }
+
     fn push_lines(&mut self, lines: Vec<Line<'static>>, height: usize, wrapped_lines: usize) {
+        self.push_lines_with_meta(lines, Vec::new(), height, wrapped_lines);
+    }
+
+    fn push_lines_with_meta(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
+        height: usize,
+        wrapped_lines: usize,
+    ) {
         if height == 0 {
             return;
         }
+        let row_count = lines.len();
         self.segments.push(MessageLayoutSegment::Lines { lines, height });
+        if copy_rows.len() == row_count {
+            self.copy_rows.extend(copy_rows);
+        } else {
+            self.copy_rows
+                .extend(std::iter::repeat_n(crate::ui::copy::CopyRowMeta::hard_line(), row_count));
+        }
         self.height += height;
         self.wrapped_lines += wrapped_lines;
+    }
+
+    /// As [`Self::push_lines`], recording the pushed rows as gutter rows.
+    fn push_gutter_lines(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
+        height: usize,
+        wrapped_lines: usize,
+    ) {
+        let start = self.height;
+        self.push_lines_with_meta(lines, copy_rows, height, wrapped_lines);
+        if self.height > start {
+            self.gutter_rows.push(start..self.height);
+        }
     }
 }
 
@@ -140,6 +203,7 @@ struct RenderedBlockLayout {
     lines: Vec<Line<'static>>,
     height: usize,
     wrapped_lines: usize,
+    copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
 }
 
 #[derive(Clone, Copy)]
@@ -273,14 +337,16 @@ pub fn format_turn_duration(ms: u64) -> String {
     format!("{hours}h {minutes:02}m {seconds:02}s")
 }
 
+/// Test entry over [`Self::render_message_with_copy_rows`] for callers
+/// that only want the rows.
+#[cfg(test)]
 pub(crate) fn render_message(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     render_context: MessageRenderContext<'_>,
     out: &mut Vec<Line<'static>>,
 ) {
-    let cache = get_or_build_message_render_cache(msg, spinner, render_context);
-    render_cached_message(cache.segments(), out);
+    render_message_with_copy_rows(msg, spinner, render_context, out, &mut Vec::new());
 }
 
 /// True when an empty-blocks Assistant/System message would render only
@@ -315,7 +381,7 @@ fn build_message_layout(
         return layout;
     }
     if let Some(label) = role_label_line(msg) {
-        layout.push_wrapped_line(label, render_context.width);
+        layout.push_chrome_wrapped_line(label, render_context.width);
     }
 
     match msg.role {
@@ -757,10 +823,16 @@ fn append_user_block(
                             | EnvelopeStreakPosition::FollowerSameWorker
                     )
                 );
-                let lines = peer_block::render_inbound(&kind, suppress_header, collapsed);
+                let mut copy_rows = Vec::new();
+                let lines = peer_block::render_inbound_with_metas(
+                    &kind,
+                    suppress_header,
+                    collapsed,
+                    &mut copy_rows,
+                );
                 let y_in_msg = layout.height;
                 let height = rendered_lines_height(&lines, width);
-                layout.push_wrapped_lines(lines, width);
+                layout.push_lines_with_meta(lines, copy_rows, height, height);
                 // Stamp hit-target fields so `mouse::locate_
                 // peer_user_block_at_click` can route clicks on
                 // this inbound peer row back to this TextBlock
@@ -776,8 +848,13 @@ fn append_user_block(
                 return;
             }
             let trailing_gap = block.trailing_blank_lines();
-            let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
-            layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+            let rendered = text_block_layout(block, width, true, USER_GUTTER);
+            layout.push_gutter_lines(
+                rendered.lines,
+                rendered.copy_rows,
+                rendered.height,
+                rendered.wrapped_lines,
+            );
             for _ in 0..trailing_gap {
                 layout.push_blank();
             }
@@ -860,7 +937,7 @@ fn append_assistant_blocks(
                         );
                         let y_in_msg = layout.height;
                         let height = rendered_lines_height(&summary_lines, render_context.width);
-                        layout.push_wrapped_lines(summary_lines, render_context.width);
+                        layout.push_chrome_lines(summary_lines, height);
                         if let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(range.start) {
                             tc.last_measured_y_in_msg = y_in_msg;
                             tc.last_measured_height = height;
@@ -948,7 +1025,7 @@ fn append_messaging_group_summary(
         peer_block::render_messaging_group_summary_line(segment, spinner.glyph, width as usize);
     let y_in_msg = layout.height;
     let height = rendered_lines_height(&summary_lines, width);
-    layout.push_wrapped_lines(summary_lines, width);
+    layout.push_chrome_lines(summary_lines, height);
     match blocks.get_mut(segment.block_range.start) {
         Some(MessageBlock::ToolCall(tc)) => {
             tc.last_measured_y_in_msg = y_in_msg;
@@ -1065,13 +1142,14 @@ fn append_assistant_tool_block(
     // is gone and the tool renders as a compact question -> answer card.
     // While unanswered it stays hidden (returns above), so this only
     // fires post-answer.
-    if let Some(lines) = render_question_answered_card(tc) {
+    let mut card_copy_rows = Vec::new();
+    if let Some(lines) = render_question_answered_card_with_metas(tc, &mut card_copy_rows) {
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
         let y_in_msg = layout.height;
         let height = rendered_lines_height(&lines, render_context.width);
-        layout.push_wrapped_lines(lines, render_context.width);
+        layout.push_lines_with_meta(lines, card_copy_rows, height, height);
         tc.last_measured_y_in_msg = y_in_msg;
         tc.last_measured_height = height;
         tc.last_measured_width = render_context.width;
@@ -1091,13 +1169,16 @@ fn append_assistant_tool_block(
     // Monitor renders as a lifecycle block rather than a tool card.
     // Falls through to the standard card when the raw_input is missing
     // or malformed.
-    if let Some(lines) = render_lifecycle_one_liner(tc, render_context.width) {
+    let mut monitor_copy_rows = Vec::new();
+    if let Some(lines) =
+        render_lifecycle_one_liner_with_metas(tc, render_context.width, &mut monitor_copy_rows)
+    {
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
         let y_in_msg = layout.height;
         let height = rendered_lines_height(&lines, render_context.width);
-        layout.push_wrapped_lines(lines, render_context.width);
+        layout.push_lines_with_meta(lines, monitor_copy_rows, height, height);
         tc.last_measured_y_in_msg = y_in_msg;
         tc.last_measured_height = height;
         tc.last_measured_width = render_context.width;
@@ -1121,7 +1202,8 @@ fn append_assistant_tool_block(
             tc.collapsed_override,
             render_context.options.tools_collapsed,
         );
-        let lines = peer_block::render_outbound(&kind, collapsed);
+        let mut copy_rows = Vec::new();
+        let lines = peer_block::render_outbound_with_metas(&kind, collapsed, &mut copy_rows);
         // Same hit-target stamping the standard tool-call branch
         // below does so `mouse::locate_tool_call_block_at_click` can
         // map a click on a peer row back to this ToolCallInfo and
@@ -1130,7 +1212,7 @@ fn append_assistant_tool_block(
         // == 0` and the click falls through to text selection.
         let y_in_msg = layout.height;
         let height = rendered_lines_height(&lines, render_context.width);
-        layout.push_wrapped_lines(lines, render_context.width);
+        layout.push_lines_with_meta(lines, copy_rows, height, height);
         tc.last_measured_y_in_msg = y_in_msg;
         tc.last_measured_height = height;
         tc.last_measured_width = render_context.width;
@@ -1143,7 +1225,7 @@ fn append_assistant_tool_block(
         layout.push_blank();
     }
     let mut lines = Vec::new();
-    tool_call::render_tool_call_cached_with_tools_collapsed(
+    let tool_copy_rows = tool_call::render_tool_call_cached_with_tools_collapsed(
         tc,
         render_context.tool_render_context,
         render_context.width,
@@ -1165,7 +1247,7 @@ fn append_assistant_tool_block(
     // from the tool's own state - no need to walk text-block heights
     // (which can return None when their cache version is stale).
     let y_in_msg = layout.height;
-    layout.push_lines(lines, height, wrapped_lines);
+    layout.push_lines_with_meta(lines, tool_copy_rows, height, wrapped_lines);
     tc.last_measured_y_in_msg = y_in_msg;
     if height > 0 {
         state.has_body_content = true;
@@ -1187,7 +1269,16 @@ fn trailing_gap_for_text_like_block(
 /// surface) or for any non-question tool. Each answered pair renders as
 /// a `? <question>` line then an indented answer line; a typed "Other"
 /// answer surfaces the literal text the user entered.
+#[cfg(test)]
 fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<'static>>> {
+    let mut copy_rows = Vec::new();
+    render_question_answered_card_with_metas(tc, &mut copy_rows)
+}
+
+fn render_question_answered_card_with_metas(
+    tc: &crate::app::ToolCallInfo,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) -> Option<Vec<Line<'static>>> {
     if !tc.is_ask_question_tool() || tc.answered_questions.is_empty() {
         return None;
     }
@@ -1205,11 +1296,13 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
             ),
             Span::styled(qa.question.clone(), Style::default().fg(theme::DIM)),
         ]));
+        copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(4));
         if !qa.picked_labels.is_empty() {
             lines.push(Line::from(vec![
                 Span::styled("    \u{2192} ".to_owned(), Style::default().fg(theme::DIM)),
                 Span::styled(qa.picked_labels.join(", "), Style::default().fg(Color::Green)),
             ]));
+            copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(6));
         }
         if let Some(typed) = qa.typed_note.as_ref().filter(|s| !s.is_empty()) {
             lines.push(Line::from(vec![
@@ -1217,6 +1310,7 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
                 Span::styled("you typed: ".to_owned(), Style::default().fg(theme::DIM)),
                 Span::styled(format!("\"{typed}\""), Style::default().add_modifier(Modifier::BOLD)),
             ]));
+            copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(6));
         }
     }
     Some(lines)
@@ -1263,9 +1357,19 @@ const MONITOR_HEADER_PREFIX_CELLS: usize = MONITOR_HEADER_GLYPH_CELLS + 7 + 3;
 /// Terminal-ness comes from the monitor's OWN liveness
 /// (`monitor_status`), never from `tc.status` - the launch ack drives
 /// the tool call terminal while the monitor runs on.
+#[cfg(test)]
 fn render_lifecycle_one_liner(
     tc: &crate::app::ToolCallInfo,
     width: u16,
+) -> Option<Vec<Line<'static>>> {
+    let mut copy_rows = Vec::new();
+    render_lifecycle_one_liner_with_metas(tc, width, &mut copy_rows)
+}
+
+fn render_lifecycle_one_liner_with_metas(
+    tc: &crate::app::ToolCallInfo,
+    width: u16,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) -> Option<Vec<Line<'static>>> {
     use crate::app::MonitorStatus;
     match tc.sdk_tool_name.as_str() {
@@ -1308,6 +1412,14 @@ fn render_lifecycle_one_liner(
                     width
                         .saturating_sub(MONITOR_HEADER_GLYPH_CELLS)
                         .saturating_sub(crate::ui::wrap::display_width(&label)),
+                );
+                // The glyph column, the `Monitor` label and the ` · `
+                // separator are decoration; the description and status
+                // after them are the row's text.
+                copy_rows.push(
+                    crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(
+                        u16::try_from(MONITOR_HEADER_PREFIX_CELLS).unwrap_or(u16::MAX),
+                    ),
                 );
                 return Some(vec![Line::from(vec![
                     Span::styled(format!("  {glyph} "), Style::default().fg(colour)),
@@ -1359,6 +1471,10 @@ fn render_lifecycle_one_liner(
                     Style::default().fg(theme::DIM),
                 ),
             ]));
+            copy_rows.push(
+                crate::ui::copy::CopyRowMeta::hard_line()
+                    .offset_chrome(u16::try_from(MONITOR_HEADER_PREFIX_CELLS).unwrap_or(u16::MAX)),
+            );
             // Child rows carry the connectors and the outer layout
             // char-wraps without the gutter, so an overflowing one
             // shears the tree. Budgets subtract that gutter and, for
@@ -1376,6 +1492,10 @@ fn render_lifecycle_one_liner(
                 ),
                 Style::default().fg(theme::DIM),
             )));
+            copy_rows.push(
+                crate::ui::copy::CopyRowMeta::hard_line()
+                    .offset_chrome(u16::try_from(MONITOR_GUTTER_CELLS + 2).unwrap_or(u16::MAX)),
+            );
             // Tail lines: │ <line> ... └ <last line>
             let last_idx = tc.monitor_output_tail.len().saturating_sub(1);
             for (idx, line) in tc.monitor_output_tail.iter().enumerate() {
@@ -1390,6 +1510,10 @@ fn render_lifecycle_one_liner(
                     ),
                     Style::default().fg(theme::DIM),
                 )));
+                copy_rows.push(
+                    crate::ui::copy::CopyRowMeta::hard_line()
+                        .offset_chrome(u16::try_from(MONITOR_GUTTER_CELLS).unwrap_or(u16::MAX)),
+                );
             }
             Some(lines)
         }
@@ -1460,7 +1584,7 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageL
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                let mut rendered = text_block_layout(block, width, None, false);
+                let mut rendered = text_block_layout(block, width, false, 0);
                 tint_lines(&mut rendered.lines, color);
                 layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
                 for _ in 0..trailing_gap {
@@ -1618,6 +1742,7 @@ pub(crate) fn render_message_from_offset_internal(
     render_message_from_offset_internal_with_mode(msg, spinner, render_context, skip_rows, out)
 }
 
+#[cfg(test)]
 pub(crate) fn render_message_from_offset_internal_with_mode(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
@@ -1625,13 +1750,50 @@ pub(crate) fn render_message_from_offset_internal_with_mode(
     skip_rows: usize,
     out: &mut Vec<Line<'static>>,
 ) -> usize {
+    let mut copy_rows = Vec::new();
+    render_message_from_offset_with_copy_rows(
+        msg,
+        spinner,
+        render_context,
+        skip_rows,
+        out,
+        &mut copy_rows,
+    )
+}
+
+/// As [`Self::render_message`], also emitting each row's copy provenance.
+pub(crate) fn render_message_with_copy_rows(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    render_context: MessageRenderContext<'_>,
+    out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) {
+    let cache = get_or_build_message_render_cache(msg, spinner, render_context);
+    render_cached_message_with_copy(cache.segments(), cache.copy_rows(), out, copy_rows);
+}
+
+/// As [`Self::render_message_from_offset_internal_with_mode`], also
+/// emitting each emitted row's copy provenance, aligned one-to-one with
+/// `out`.
+pub(crate) fn render_message_from_offset_with_copy_rows(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    render_context: MessageRenderContext<'_>,
+    skip_rows: usize,
+    out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) -> usize {
     let mut remaining_skip = skip_rows;
     let cache = get_or_build_message_render_cache(msg, spinner, render_context);
+    let cached_copy = cache.copy_rows().to_vec();
     let mut can_consume_skip = true;
     render_cached_message_from_offset(
         cache.segments(),
+        &cached_copy,
         render_context.width,
         out,
+        copy_rows,
         &mut remaining_skip,
         &mut can_consume_skip,
     );
@@ -1640,28 +1802,39 @@ pub(crate) fn render_message_from_offset_internal_with_mode(
 
 fn render_cached_message_from_offset(
     segments: &[CachedMessageSegment],
+    cached_copy: &[crate::ui::copy::CopyRowMeta],
     width: u16,
     out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
 ) {
+    let mut cached = cached_copy.iter();
     for segment in segments {
         match segment {
             CachedMessageSegment::Blank => {
+                let meta = cached.next();
                 if *can_consume_skip && *remaining_skip > 0 {
                     *remaining_skip -= 1;
                 } else {
                     out.push(Line::default());
+                    copy_rows.push(
+                        meta.cloned().unwrap_or_else(crate::ui::copy::CopyRowMeta::hard_line),
+                    );
                 }
             }
             CachedMessageSegment::Lines { lines, height } => {
+                let metas: Vec<_> =
+                    (0..lines.len()).filter_map(|_| cached.next().cloned()).collect();
                 if should_skip_whole_block(*height, remaining_skip, can_consume_skip) {
                     continue;
                 }
                 render_cached_lines_from_offset(
                     lines,
+                    &metas,
                     width,
                     out,
+                    copy_rows,
                     remaining_skip,
                     can_consume_skip,
                 );
@@ -1672,21 +1845,35 @@ fn render_cached_message_from_offset(
 
 fn render_cached_lines_from_offset(
     lines: &[Line<'static>],
+    metas: &[crate::ui::copy::CopyRowMeta],
     width: u16,
     out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
 ) {
     if !*can_consume_skip || *remaining_skip == 0 {
         out.extend(lines.iter().cloned());
+        copy_rows.extend(metas.iter().cloned());
+        copy_rows.extend(std::iter::repeat_n(
+            crate::ui::copy::CopyRowMeta::hard_line(),
+            lines.len().saturating_sub(metas.len()),
+        ));
         return;
     }
 
-    for line in lines {
+    for (i, line) in lines.iter().enumerate() {
         let logical_lines = split_line_on_newlines(line);
-        for logical_line in logical_lines {
+        let line_meta = metas.get(i).cloned();
+        for (part, logical_line) in logical_lines.into_iter().enumerate() {
             if !*can_consume_skip {
                 out.push(logical_line);
+                copy_rows.push(match part {
+                    // An embedded-newline split is a real break between the
+                    // parts; only the first part keeps the row's own meta.
+                    0 => line_meta.clone().unwrap_or_else(crate::ui::copy::CopyRowMeta::hard_line),
+                    _ => crate::ui::copy::CopyRowMeta::hard_line(),
+                });
                 continue;
             }
             let line_height = rendered_line_height(&logical_line, width);
@@ -1696,15 +1883,38 @@ fn render_cached_lines_from_offset(
             }
             *can_consume_skip = false;
             out.push(logical_line);
+            copy_rows
+                .push(line_meta.clone().unwrap_or_else(crate::ui::copy::CopyRowMeta::hard_line));
         }
     }
 }
 
-fn render_cached_message(segments: &[CachedMessageSegment], out: &mut Vec<Line<'static>>) {
+fn render_cached_message_with_copy(
+    segments: &[CachedMessageSegment],
+    cached_copy: &[crate::ui::copy::CopyRowMeta],
+    out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) {
+    let mut cached = cached_copy.iter();
     for segment in segments {
         match segment {
-            CachedMessageSegment::Blank => out.push(Line::default()),
-            CachedMessageSegment::Lines { lines, .. } => out.extend(lines.iter().cloned()),
+            CachedMessageSegment::Blank => {
+                out.push(Line::default());
+                copy_rows.push(
+                    cached.next().cloned().unwrap_or_else(crate::ui::copy::CopyRowMeta::hard_line),
+                );
+            }
+            CachedMessageSegment::Lines { lines, .. } => {
+                out.extend(lines.iter().cloned());
+                for _ in lines {
+                    copy_rows.push(
+                        cached
+                            .next()
+                            .cloned()
+                            .unwrap_or_else(crate::ui::copy::CopyRowMeta::hard_line),
+                    );
+                }
+            }
         }
     }
 }
@@ -1740,7 +1950,9 @@ fn get_or_build_message_render_cache<'a>(
         let wrapped_lines = layout.wrapped_lines;
         let segments =
             layout.segments.iter().cloned().map(MessageLayoutSegment::into_cached).collect();
-        msg.render_cache.store(key, segments, height, wrapped_lines);
+        let gutter_rows = layout.gutter_rows;
+        let copy_rows = layout.copy_rows;
+        msg.render_cache.store(key, segments, height, wrapped_lines, gutter_rows, copy_rows);
     }
     &msg.render_cache
 }
@@ -1959,25 +2171,28 @@ fn welcome_block_layout(block: &mut WelcomeBlock, width: u16) -> RenderedBlockLa
         height
     });
     let wrapped_lines = if had_height { 0 } else { lines.len() };
-    RenderedBlockLayout { lines, height, wrapped_lines }
+    let copy_rows =
+        std::iter::repeat_n(crate::ui::copy::CopyRowMeta::hard_line(), lines.len()).collect();
+    RenderedBlockLayout { lines, height, wrapped_lines, copy_rows }
 }
 
 fn text_block_layout(
     block: &mut TextBlock,
     width: u16,
-    bg: Option<Color>,
     preserve_newlines: bool,
+    gutter: u16,
 ) -> RenderedBlockLayout {
     let had_height = block.cache.height_at(width).is_some();
     let mut lines = Vec::new();
-    render_text_block_cached(block, width, bg, preserve_newlines, &mut lines);
+    let mut copy_rows = Vec::new();
+    render_text_block_cached(block, width, preserve_newlines, gutter, &mut lines, &mut copy_rows);
     let height = block.cache.height_at(width).unwrap_or_else(|| {
         let height = rendered_lines_height(&lines, width);
         block.cache.set_height(height, width);
         height
     });
     let wrapped_lines = if had_height { 0 } else { lines.len() };
-    RenderedBlockLayout { lines, height, wrapped_lines }
+    RenderedBlockLayout { lines, height, wrapped_lines, copy_rows }
 }
 
 fn assistant_text_block_layout(
@@ -1985,12 +2200,13 @@ fn assistant_text_block_layout(
     width: u16,
     trim_leading_blank_lines: bool,
 ) -> RenderedBlockLayout {
-    let mut rendered = text_block_layout(block, width, None, false);
+    let mut rendered = text_block_layout(block, width, false, 0);
 
     if trim_leading_blank_lines {
         let leading_blank_lines = count_leading_blank_lines(&rendered.lines);
         if leading_blank_lines > 0 {
             rendered.lines.drain(..leading_blank_lines);
+            rendered.copy_rows.drain(..leading_blank_lines);
             rendered.height = rendered.height.saturating_sub(leading_blank_lines);
             rendered.wrapped_lines = rendered.wrapped_lines.saturating_sub(leading_blank_lines);
         }
@@ -2324,36 +2540,182 @@ fn tint_lines(lines: &mut [Line<'static>], color: Color) {
     }
 }
 
-/// Preprocess markdown that `tui_markdown` doesn't handle well.
-/// Headings (`# Title`) become `**Title**` (bold) with a blank line before.
-/// Handles variations: `#Title`, `#  Title`, `  ## Title  `, etc.
-/// Links are left as-is -- `tui_markdown` handles `[title](url)` natively.
+/// Render markdown: prose through `tui_markdown`, fenced code through its
+/// own panel. Splitting first is what keeps the code verbatim, since
+/// `tui_markdown` prints the fence delimiters itself, and it keeps code
+/// out of the prose rewriter, which would mistake Rust generics (`Vec<T>`)
+/// and JSX for HTML.
+fn render_markdown_segments(
+    text: &str,
+    width: u16,
+    preserve_newlines: bool,
+    gutter: u16,
+) -> (Vec<Line<'static>>, Vec<crate::ui::copy::CopyRowMeta>) {
+    let gutter = gutter.min(width.saturating_sub(1));
+    let content_width = width.saturating_sub(gutter).max(1);
+    let mut out = Vec::new();
+    let mut copy_rows = Vec::new();
+    for segment in fence::segments(text) {
+        match segment.kind {
+            fence::SegmentKind::Prose(prose) => {
+                let preprocessed = preprocess_prose(prose);
+                let body = if preserve_newlines {
+                    force_markdown_line_breaks(&preprocessed)
+                } else {
+                    preprocessed
+                };
+                let lines =
+                    super::document_table::render_markdown_with_tables(&body, content_width, None);
+                let (rows, metas) = indent_rows(lines, content_width, gutter);
+                out.extend(rows);
+                copy_rows.extend(metas);
+            }
+            fence::SegmentKind::Code { language, body } => {
+                // `tui_markdown` separates a block from what precedes it.
+                if out.last().is_some_and(|line| !line_is_blank(line)) {
+                    out.push(gutter_row(Line::default(), gutter));
+                    copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(gutter));
+                }
+                let (rows, metas) = fence::render_code_panel(body, language, content_width);
+                out.extend(rows.into_iter().map(|line| gutter_row(line, gutter)));
+                copy_rows.extend(metas.into_iter().map(|meta| meta.offset_chrome(gutter)));
+            }
+        }
+    }
+    (out, copy_rows)
+}
+
+/// Push `gutter` blank columns in front of a row, so the paint step finds
+/// empty cells at columns 0..gutter on every row the turn occupies. Any
+/// row-level background is shed with them: the gutter is the rule's
+/// ground, not a code panel's.
+fn gutter_row(mut line: Line<'static>, gutter: u16) -> Line<'static> {
+    if gutter == 0 {
+        return line;
+    }
+    let mut spans = Vec::with_capacity(line.spans.len() + 1);
+    spans.push(Span::raw(" ".repeat(usize::from(gutter))));
+    spans.append(&mut line.spans);
+    let mut style = line.style;
+    style.bg = None;
+    Line::from(spans).style(style)
+}
+
+/// Wrap the prose rows to the gutter-narrowed width and re-emit the gutter
+/// on each one. The paragraph would otherwise leave a wrapped continuation
+/// at column 0, straight under the rule. Every emitted row fits the chat
+/// width, so the paragraph wraps none of them and the measured height
+/// stays what is drawn - the invariant that makes this wrap safe.
 ///
-/// HTML tags outside fenced code blocks are stripped because
-/// `tui_markdown::from_str` emits per-element WARN events for every
-/// HTML element it encounters (peaks at 50K+/sec on streaming chats
-/// with HTML content). `<br>` / `<br/>` / `<br />` become newlines
-/// to preserve the author's line-break intent; other tags
-/// (`<div>`, `<b>`, `<i>`, ...) drop the tag and keep the inner
-/// content. Inside fenced code blocks (triple-backtick), HTML-like
-/// text is preserved verbatim so Rust generics (`Vec<T>`), JSX, and
-/// other code that LOOKS like HTML survives untouched.
-fn preprocess_markdown(text: &str) -> String {
+/// A row already inside the budget passes through untouched, which is what
+/// keeps a markdown table's grid, laid out for exactly this width, intact.
+fn indent_rows(
+    lines: Vec<Line<'static>>,
+    content_width: u16,
+    gutter: u16,
+) -> (Vec<Line<'static>>, Vec<crate::ui::copy::CopyRowMeta>) {
+    if gutter == 0 {
+        let count = lines.len();
+        return (
+            lines,
+            std::iter::repeat_n(crate::ui::copy::CopyRowMeta::hard_line(), count).collect(),
+        );
+    }
+    let width = usize::from(content_width);
+    let mut out = Vec::new();
+    let mut copy_rows = Vec::new();
+    for line in lines {
+        let (rows, metas) = indent_row(line, width, gutter);
+        out.extend(rows);
+        copy_rows.extend(metas);
+    }
+    (out, copy_rows)
+}
+
+fn indent_row(
+    line: Line<'static>,
+    width: usize,
+    gutter: u16,
+) -> (Vec<Line<'static>>, Vec<crate::ui::copy::CopyRowMeta>) {
+    if wrap::line_display_width(&line) <= width && !row_has_newline(&line) {
+        return (
+            vec![gutter_row(line, gutter)],
+            vec![crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(gutter)],
+        );
+    }
+    let (indent, content) = fence::split_line_indent(line.spans);
+    // An indent deeper than the content has columns for is clipped, the
+    // way the code panel clips: indent + wrap budget always fits the row,
+    // so no emitted row exceeds the chat width and the measured height
+    // stays what is drawn.
+    let indent = wrap::truncate_to_width(&indent, width.saturating_sub(1));
+    let budget = width.saturating_sub(wrap::display_width(&indent));
+    let chunks: Vec<wrap::StyledChunk> = content
+        .into_iter()
+        .map(|span| wrap::StyledChunk { text: span.content.into_owned(), style: span.style })
+        .collect();
+    let logical = chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>();
+    let wrapped = wrap::wrap_styled_chunks(&chunks, budget);
+    let separators = crate::ui::copy::wrap_join_separators(
+        &logical,
+        &wrapped.iter().map(|row| row_text(row)).collect::<Vec<_>>(),
+    );
+    let indent_width = u16::try_from(wrap::display_width(&indent)).unwrap_or(u16::MAX);
+    let rows: Vec<Line<'static>> = wrapped
+        .into_iter()
+        .map(|piece| {
+            let mut spans = Vec::with_capacity(piece.spans.len() + 1);
+            if !indent.is_empty() {
+                spans.push(Span::raw(indent.clone()));
+            }
+            spans.extend(piece.spans);
+            gutter_row(Line::from(spans), gutter)
+        })
+        .collect();
+    let copy_rows = rows
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            if i == 0 {
+                crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(gutter)
+            } else {
+                // A continuation row re-emits the visual indent, which is
+                // alignment rather than text, so it copies as chrome.
+                crate::ui::copy::CopyRowMeta::soft(
+                    separators.get(i - 1).cloned().unwrap_or_default(),
+                    gutter.saturating_add(indent_width),
+                )
+            }
+        })
+        .collect();
+    (rows, copy_rows)
+}
+
+/// The text of a row: its spans concatenated.
+fn row_text(line: &Line<'_>) -> String {
+    line.spans.iter().map(|span| span.content.as_ref()).collect()
+}
+
+/// A newline inside a span is not measured by `line_display_width`, so a
+/// row carrying one has to go through the wrapper whatever its width.
+fn row_has_newline(line: &Line<'_>) -> bool {
+    line.spans.iter().any(|span| span.content.contains('\n'))
+}
+
+/// Headings (`# Title`) become `**Title**` (bold) with a blank line
+/// before; `#Title`, `#  Title` and `  ## Title  ` all hit it. Links are
+/// left as-is -- `tui_markdown` handles `[title](url)` natively.
+///
+/// HTML tags are stripped because `tui_markdown::from_str` emits
+/// per-element WARN events for every HTML element it encounters (peaks at
+/// 50K+/sec on streaming chats with HTML content). `<br>` / `<br/>` /
+/// `<br />` become newlines to preserve the author's line-break intent;
+/// other tags (`<div>`, `<b>`, `<i>`, ...) drop the tag and keep the inner
+/// content.
+fn preprocess_prose(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
-    let mut in_fence = false;
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-        if in_fence {
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
         if trimmed.starts_with('#') {
             // Strip all leading '#' characters
             let after_hashes = trimmed.trim_start_matches('#');
@@ -2446,18 +2808,22 @@ pub(super) fn render_text_cached(
     cache: &mut BlockCache,
     incr: &mut IncrementalMarkdown,
     width: u16,
-    bg: Option<Color>,
     preserve_newlines: bool,
+    gutter: u16,
     out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) {
     // Fast path only when the cached lines were measured at this width.
     // Markdown tables produce width-dependent logical lines before paragraph
     // wrapping, so a fresh cache from another width is not safe to reuse.
     if cache.height_at(width).is_some()
         && let Some(cached_lines) = cache.get()
+        && let Some(cached_copy) = cache.copy_rows().map(<[crate::ui::copy::CopyRowMeta]>::to_vec)
+        && cached_copy.len() == cached_lines.len()
     {
         crate::perf::mark_with("msg::cache_hit", "lines", cached_lines.len());
         out.extend_from_slice(cached_lines);
+        copy_rows.extend(cached_copy);
         return;
     }
     crate::perf::mark("msg::cache_miss");
@@ -2465,14 +2831,11 @@ pub(super) fn render_text_cached(
     let _t = crate::perf::start("msg::render_text");
 
     // Build a render function that handles preprocessing + tui_markdown
-    let render_fn = |src: &str| -> Vec<Line<'static>> {
-        let mut preprocessed = preprocess_markdown(src);
-        if preserve_newlines {
-            preprocessed = force_markdown_line_breaks(&preprocessed);
-        }
-        super::document_table::render_markdown_with_tables(&preprocessed, width, bg)
+    let render_fn = |src: &str| -> crate::app::RenderedChunk {
+        let (lines, metas) = render_markdown_segments(src, width, preserve_newlines, gutter);
+        crate::app::RenderedChunk { lines, copy_rows: metas }
     };
-    let render_key = MarkdownRenderKey { width, bg, preserve_newlines };
+    let render_key = MarkdownRenderKey { width, gutter, preserve_newlines };
 
     // Ensure any previously invalidated paragraph caches are re-rendered
     incr.ensure_rendered(render_key, &render_fn);
@@ -2484,24 +2847,35 @@ pub(super) fn render_text_cached(
     // For streaming messages this will be invalidated on the next chunk,
     // but for completed messages it persists.
     let h = {
-        let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.len());
-        Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
+        let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.lines.len());
+        Paragraph::new(Text::from(fresh.lines.clone())).wrap(Wrap { trim: false }).line_count(width)
     };
-    cache.store(fresh);
+    cache.store(fresh.lines.clone());
+    cache.set_copy_rows(fresh.copy_rows.clone());
     cache.set_height(h, width);
     if let Some(stored) = cache.get() {
         out.extend_from_slice(stored);
     }
+    copy_rows.extend(fresh.copy_rows.iter().cloned());
 }
 
 fn render_text_block_cached(
     block: &mut TextBlock,
     width: u16,
-    bg: Option<Color>,
     preserve_newlines: bool,
+    gutter: u16,
     out: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) {
-    render_text_cached(&mut block.cache, &mut block.markdown, width, bg, preserve_newlines, out);
+    render_text_cached(
+        &mut block.cache,
+        &mut block.markdown,
+        width,
+        preserve_newlines,
+        gutter,
+        out,
+        copy_rows,
+    );
 }
 
 /// Convert single line breaks into hard breaks so user-entered newlines persist.
@@ -2529,33 +2903,34 @@ mod tests {
     use crate::app::{ChatMessage, MessageBlock, NoticeBlock, TextBlock, TextBlockSpacing};
     use pretty_assertions::assert_eq;
     use ratatui::widgets::{Paragraph, Wrap};
+    use unicode_width::UnicodeWidthStr;
 
-    // preprocess_markdown
+    // preprocess_prose
 
     #[test]
     fn preprocess_h1_heading() {
-        let result = preprocess_markdown("# Hello");
+        let result = preprocess_prose("# Hello");
         assert!(result.contains("**Hello**"));
         assert!(!result.contains('#'));
     }
 
     #[test]
     fn preprocess_h3_heading() {
-        let result = preprocess_markdown("### Deeply Nested");
+        let result = preprocess_prose("### Deeply Nested");
         assert!(result.contains("**Deeply Nested**"));
     }
 
     #[test]
     fn preprocess_non_heading_passthrough() {
         let input = "Just normal text\nwith multiple lines";
-        let result = preprocess_markdown(input);
+        let result = preprocess_prose(input);
         assert_eq!(result, input);
     }
 
     #[test]
     fn preprocess_mixed_headings_and_text() {
         let input = "# Title\nSome text\n## Subtitle\nMore text";
-        let result = preprocess_markdown(input);
+        let result = preprocess_prose(input);
         assert!(result.contains("**Title**"));
         assert!(result.contains("Some text"));
         assert!(result.contains("**Subtitle**"));
@@ -2564,49 +2939,49 @@ mod tests {
 
     #[test]
     fn preprocess_heading_no_space() {
-        let result = preprocess_markdown("#Title");
+        let result = preprocess_prose("#Title");
         assert!(result.contains("**Title**"));
     }
 
     #[test]
     fn preprocess_heading_extra_spaces() {
-        let result = preprocess_markdown("#   Spaced Out   ");
+        let result = preprocess_prose("#   Spaced Out   ");
         assert!(result.contains("**Spaced Out**"));
     }
 
     #[test]
     fn preprocess_indented_heading() {
-        let result = preprocess_markdown("  ## Indented");
+        let result = preprocess_prose("  ## Indented");
         assert!(result.contains("**Indented**"));
     }
 
     #[test]
     fn preprocess_empty_heading() {
-        let result = preprocess_markdown("# ");
+        let result = preprocess_prose("# ");
         assert_eq!(result, "# ");
     }
 
     #[test]
     fn preprocess_empty_string() {
-        assert_eq!(preprocess_markdown(""), "");
+        assert_eq!(preprocess_prose(""), "");
     }
 
     #[test]
     fn preprocess_preserves_trailing_newline() {
-        let result = preprocess_markdown("hello\n");
+        let result = preprocess_prose("hello\n");
         assert!(result.ends_with('\n'));
     }
 
     #[test]
     fn preprocess_no_trailing_newline() {
-        let result = preprocess_markdown("hello");
+        let result = preprocess_prose("hello");
         assert!(!result.ends_with('\n'));
     }
 
     #[test]
     fn preprocess_blank_line_before_heading() {
         let input = "text\n\n# Heading";
-        let result = preprocess_markdown(input);
+        let result = preprocess_prose(input);
         assert!(!result.contains("\n\n\n"));
         assert!(result.contains("**Heading**"));
     }
@@ -2614,7 +2989,7 @@ mod tests {
     #[test]
     fn preprocess_consecutive_headings() {
         let input = "# First\n# Second";
-        let result = preprocess_markdown(input);
+        let result = preprocess_prose(input);
         assert!(result.contains("**First**"));
         assert!(result.contains("**Second**"));
     }
@@ -2624,11 +2999,11 @@ mod tests {
         // `<br>` (and `<br/>`, `<br />`) renders today as a silent
         // gap because tui_markdown drops the tag. Strip it to `\n`
         // so the line break still appears in the rendered output.
-        let result = preprocess_markdown("foo<br>bar");
+        let result = preprocess_prose("foo<br>bar");
         assert!(result.contains("foo\nbar"), "<br> must convert to newline, got: {result:?}");
-        let result2 = preprocess_markdown("foo<br/>bar");
+        let result2 = preprocess_prose("foo<br/>bar");
         assert!(result2.contains("foo\nbar"));
-        let result3 = preprocess_markdown("foo<br />bar");
+        let result3 = preprocess_prose("foo<br />bar");
         assert!(result3.contains("foo\nbar"));
     }
 
@@ -2636,7 +3011,7 @@ mod tests {
     fn preprocess_block_html_drops_tag_keeps_content() {
         // `<div>foo</div>` becomes `foo` - tag silenced (no WARN
         // spam) and content preserved.
-        let result = preprocess_markdown("<div>hello world</div>");
+        let result = preprocess_prose("<div>hello world</div>");
         assert!(result.contains("hello world"));
         assert!(!result.contains("<div>"));
         assert!(!result.contains("</div>"));
@@ -2647,24 +3022,8 @@ mod tests {
         // Inline `<b>...</b>` / `<i>...</i>` lose the tag but keep
         // the inner text. Markdown can re-bold via `**` if the
         // upstream prompt wants it; this layer doesn't translate.
-        let result = preprocess_markdown("This is <b>bold</b> text");
+        let result = preprocess_prose("This is <b>bold</b> text");
         assert!(result.contains("This is bold text"), "got: {result:?}");
-    }
-
-    #[test]
-    fn preprocess_preserves_html_inside_fenced_code() {
-        // Rust generics, JSX, and other code that LOOKS like HTML
-        // inside a triple-backtick block must survive untouched.
-        // Otherwise we'd mangle `Vec<T>` -> `Vec` etc.
-        let input = "```rust\nlet v: Vec<String> = vec![];\n```\n";
-        let result = preprocess_markdown(input);
-        assert!(
-            result.contains("Vec<String>"),
-            "code-fence content must preserve `<>`, got: {result:?}"
-        );
-        // And the fence markers themselves survive intact.
-        assert!(result.contains("```rust"));
-        assert!(result.contains("```\n"));
     }
 
     #[test]
@@ -2674,14 +3033,14 @@ mod tests {
         // `Map<K, V>`, `<App />`, `List<Integer>`, etc. Stripping
         // there mangles legitimate generics in chat output. Lock
         // the round-trip.
-        let result = preprocess_markdown("The type is `Vec<T>` here.");
+        let result = preprocess_prose("The type is `Vec<T>` here.");
         assert!(
             result.contains("`Vec<T>`"),
             "single-backtick code must preserve `<>`, got: {result:?}"
         );
-        let result2 = preprocess_markdown("JSX: `<App />` renders.");
+        let result2 = preprocess_prose("JSX: `<App />` renders.");
         assert!(result2.contains("`<App />`"), "got: {result2:?}");
-        let result3 = preprocess_markdown("Generic: `Map<K, V>` value.");
+        let result3 = preprocess_prose("Generic: `Map<K, V>` value.");
         assert!(result3.contains("`Map<K, V>`"), "got: {result3:?}");
     }
 
@@ -2690,22 +3049,22 @@ mod tests {
         // `<` not followed by a tag character (alphabetic / `/`) is
         // preserved verbatim so `1 < 2` and `<<EOF` style stay
         // unmangled.
-        let result = preprocess_markdown("if 1 < 2 then ok");
+        let result = preprocess_prose("if 1 < 2 then ok");
         assert!(result.contains("1 < 2"));
-        let result2 = preprocess_markdown("here doc <<EOF");
+        let result2 = preprocess_prose("here doc <<EOF");
         assert!(result2.contains("<<EOF"));
     }
 
     #[test]
     fn preprocess_hash_in_code_not_heading() {
-        let result = preprocess_markdown("# actual heading");
+        let result = preprocess_prose("# actual heading");
         assert!(result.contains("**actual heading**"));
     }
 
     /// H6 heading (6 `#` chars).
     #[test]
     fn preprocess_h6_heading() {
-        let result = preprocess_markdown("###### Deep H6");
+        let result = preprocess_prose("###### Deep H6");
         assert!(result.contains("**Deep H6**"));
         assert!(!result.contains('#'));
     }
@@ -2713,14 +3072,14 @@ mod tests {
     /// Heading with markdown formatting inside.
     #[test]
     fn preprocess_heading_with_bold_inside() {
-        let result = preprocess_markdown("# **bold** and *italic*");
+        let result = preprocess_prose("# **bold** and *italic*");
         assert!(result.contains("****bold** and *italic***"));
     }
 
     /// Heading at end of file with no trailing newline.
     #[test]
     fn preprocess_heading_at_eof_no_newline() {
-        let result = preprocess_markdown("text\n# Final");
+        let result = preprocess_prose("text\n# Final");
         assert!(result.contains("**Final**"));
         assert!(!result.ends_with('\n'));
     }
@@ -2728,7 +3087,7 @@ mod tests {
     /// Only hashes with no text: `###` - content after stripping is empty, passthrough.
     #[test]
     fn preprocess_only_hashes() {
-        let result = preprocess_markdown("###");
+        let result = preprocess_prose("###");
         assert_eq!(result, "###");
     }
 
@@ -2737,7 +3096,7 @@ mod tests {
     fn preprocess_very_long_heading() {
         let long_text = "A".repeat(1000);
         let input = format!("# {long_text}");
-        let result = preprocess_markdown(&input);
+        let result = preprocess_prose(&input);
         assert!(result.starts_with("**"));
         assert!(result.contains(&long_text));
     }
@@ -2745,14 +3104,14 @@ mod tests {
     /// Unicode emoji in heading.
     #[test]
     fn preprocess_unicode_heading() {
-        let result = preprocess_markdown("# \u{1F680} Launch \u{4F60}\u{597D}");
+        let result = preprocess_prose("# \u{1F680} Launch \u{4F60}\u{597D}");
         assert!(result.contains("**\u{1F680} Launch \u{4F60}\u{597D}**"));
     }
 
     /// Quoted heading: `> # Heading` - starts with `>` not `#`, so passthrough.
     #[test]
     fn preprocess_blockquote_heading_passthrough() {
-        let result = preprocess_markdown("> # Quoted heading");
+        let result = preprocess_prose("> # Quoted heading");
         // Line starts with `>`, not `#`, so trimmed starts with `>` not `#`
         assert!(!result.contains("**"));
         assert!(result.contains("> # Quoted heading"));
@@ -2762,7 +3121,7 @@ mod tests {
     #[test]
     fn preprocess_all_heading_levels() {
         let input = "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6";
-        let result = preprocess_markdown(input);
+        let result = preprocess_prose(input);
         for label in ["H1", "H2", "H3", "H4", "H5", "H6"] {
             assert!(result.contains(&format!("**{label}**")), "missing {label}");
         }
@@ -2889,6 +3248,161 @@ mod tests {
         assert_eq!(result, "\n");
     }
 
+    // Fenced code blocks
+
+    fn row_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    /// The rendered rows with the panel's right-edge fill trimmed, so a
+    /// row is compared by what it says rather than by how far it is
+    /// padded. A joined render would hide which row carries what.
+    fn rendered_rows(lines: &[Line<'static>]) -> Vec<String> {
+        lines.iter().map(|line| row_text(line).trim_end().to_owned()).collect()
+    }
+
+    fn assert_rows(lines: &[Line<'static>], expected: &[&str], role: &str) {
+        assert_eq!(rendered_rows(lines), expected, "{role} render");
+    }
+
+    fn assert_panel_painted(lines: &[Line<'static>], role: &str) {
+        let code_lines: Vec<&Line<'static>> = lines
+            .iter()
+            .filter(|line| {
+                line.spans.iter().any(|span| span.style.bg == Some(theme::CODE_PANEL_BG))
+            })
+            .collect();
+        assert_eq!(code_lines.len(), 2, "{role}: label row plus one code row");
+        for line in code_lines {
+            // The leading blank gutter columns are the rule's, outside the
+            // panel; everything the panel paints must carry its background.
+            let painted: Vec<_> = line
+                .spans
+                .iter()
+                .skip_while(|span| span.style.bg.is_none() && span.content.trim().is_empty())
+                .collect();
+            assert!(
+                painted.iter().all(|span| span.style.bg == Some(theme::CODE_PANEL_BG)),
+                "{role}: a span escapes the panel background"
+            );
+        }
+    }
+
+    const FENCED_MESSAGE: &str = "Here is the guard:\n\n```rust\nfn main() {}\n```\n\n";
+
+    /// Both roles reach the panel through `render_message`, so this pairs
+    /// with the assistant test below to pin that one renderer serves both.
+    /// The two differ only in the user turn's gutter: prose two columns in
+    /// and the panel rendered two columns narrower, so the panel's own pad
+    /// lands its content one nesting level deeper than the prose.
+    #[test]
+    fn a_user_fenced_block_renders_as_a_code_panel() {
+        let mut messages = [make_text_message(MessageRole::User, FENCED_MESSAGE.trim_end())];
+        let lines = render_one_lines_with(&mut messages, 0, 80, options_without_separator());
+        assert_rows(
+            &lines,
+            &["User", "  Here is the guard:", "    rust", "    fn main() {}"],
+            "user",
+        );
+        assert_panel_painted(&lines, "user");
+    }
+
+    #[test]
+    fn an_assistant_fenced_block_renders_as_a_code_panel() {
+        let mut messages = [make_text_message(MessageRole::Assistant, FENCED_MESSAGE.trim_end())];
+        let lines = render_one_lines_with(&mut messages, 0, 80, options_without_separator());
+        assert_rows(&lines, &["Here is the guard:", "  rust", "  fn main() {}"], "assistant");
+        assert_panel_painted(&lines, "assistant");
+    }
+
+    /// The rule is painted, not prefixed, so the indent has to be real on
+    /// every row the turn occupies - a wrapped row that started at column
+    /// zero would put text under the rule.
+    #[test]
+    fn every_user_row_is_indented_past_the_gutter() {
+        // A wrapped paragraph pins the continuation rows; a deeply nested
+        // list pins that a leading indent wider than the content has left
+        // never pushes a row past the chat width - the measured height is
+        // only honest while every emitted row fits.
+        let cases = ["word ".repeat(20), format!("{}- item\n", "    ".repeat(20))];
+        for text in &cases {
+            let mut messages = [make_text_message(MessageRole::User, &format!("{text}\n"))];
+            let rows = rendered_rows(&render_one_lines_with(
+                &mut messages,
+                0,
+                40,
+                options_without_separator(),
+            ));
+            let body: Vec<&String> = rows.iter().skip(1).collect();
+            for row in &body {
+                assert!(row.starts_with("  "), "every user row starts past the gutter: {row:?}");
+                assert!(
+                    UnicodeWidthStr::width(row.as_str()) <= 40,
+                    "row {row:?} exceeds the chat width"
+                );
+            }
+        }
+        let long = "word ".repeat(20);
+        let mut messages = [make_text_message(MessageRole::User, &format!("{long}\n"))];
+        let rows = rendered_rows(&render_one_lines_with(
+            &mut messages,
+            0,
+            40,
+            options_without_separator(),
+        ));
+        assert!(rows.len() > 3, "the line must wrap to pin the continuation rows: {rows:?}");
+    }
+
+    #[test]
+    fn a_fenced_block_keeps_html_looking_code() {
+        let mut block = TextBlock::from_complete("```rust\nlet v: Vec<String> = vec![];\n```\n");
+        let rendered = assistant_text_block_layout(&mut block, 80, false);
+        assert_rows(&rendered.lines, &["  rust", "  let v: Vec<String> = vec![];"], "assistant");
+    }
+
+    #[test]
+    fn a_panel_is_separated_from_the_prose_above_it() {
+        let mut block = TextBlock::from_complete("intro\n```rust\nfn main() {}\n```");
+        let rendered = assistant_text_block_layout(&mut block, 80, false);
+        assert_rows(&rendered.lines, &["intro", "", "  rust", "  fn main() {}"], "assistant");
+    }
+
+    /// The slate band is gone. A user prose row renders on the terminal's
+    /// own background, so the gutter is the only thing marking the turn.
+    #[test]
+    fn a_user_prose_row_carries_no_background_band() {
+        let mut messages = [make_text_message(MessageRole::User, "Read the rate-limit code.\n")];
+        let lines = render_one_lines(&mut messages, 0);
+        let banded: Vec<String> = lines
+            .iter()
+            .filter(|line| {
+                line.style.bg.is_some() || line.spans.iter().any(|span| span.style.bg.is_some())
+            })
+            .map(row_text)
+            .collect();
+        assert!(banded.is_empty(), "user prose rows must carry no background, got: {banded:?}");
+    }
+
+    #[test]
+    fn a_user_line_break_survives_as_its_own_row() {
+        let mut messages = [make_text_message(MessageRole::User, "first line\nsecond line\n")];
+        assert_eq!(
+            render_one(&mut messages, 0),
+            ["User", "  first line", "  second line", ""],
+            "the user path forces the break, so each line keeps its own row past the gutter"
+        );
+    }
+
+    #[test]
+    fn assistant_prose_reflows_a_line_break_into_one_paragraph() {
+        let mut messages = [make_text_message(MessageRole::Assistant, "first line\nsecond line\n")];
+        assert_eq!(
+            render_one(&mut messages, 0),
+            ["first line second line", ""],
+            "the assistant path reflows, so the break joins into one paragraph"
+        );
+    }
+
     fn make_text_message(role: MessageRole, text: &str) -> ChatMessage {
         ChatMessage::new(role, vec![MessageBlock::Text(TextBlock::from_complete(text))])
     }
@@ -2994,15 +3508,32 @@ mod tests {
     }
 
     fn render_one(messages: &mut [ChatMessage], idx: usize) -> Vec<String> {
+        render_lines_to_strings(&render_one_lines(messages, idx))
+    }
+
+    /// Render one message through the production entry point, keeping the
+    /// styled lines. Role dispatch lives in `render_message`, so a test
+    /// that calls a layout helper directly cannot see the flags each role
+    /// actually passes.
+    fn render_one_lines(messages: &mut [ChatMessage], idx: usize) -> Vec<Line<'static>> {
+        render_one_lines_with(messages, idx, 80, default_options())
+    }
+
+    fn render_one_lines_with(
+        messages: &mut [ChatMessage],
+        idx: usize,
+        width: u16,
+        options: MessageRenderOptions,
+    ) -> Vec<Line<'static>> {
         let spinner = idle_spinner();
         let mut lines = Vec::new();
         render_message(
             &mut messages[idx],
             &spinner,
-            MessageRenderContext::new(None, 80, 0, default_options()),
+            MessageRenderContext::new(None, width, 0, options),
             &mut lines,
         );
-        render_lines_to_strings(&lines)
+        lines
     }
 
     /// The signature must see the segment's tally: two groups identical
@@ -3433,6 +3964,33 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             live_turn_running: false,
+        }
+    }
+
+    /// The invariant the copy path leans on: every row the user builders
+    /// emit fits the chat width, even one unbreakable token wider than the
+    /// pane, so the paragraph never re-wraps a builder row.
+    #[test]
+    fn user_rows_stay_inside_the_chat_width_with_an_unbreakable_token() {
+        let text = format!("see https://example.com/{}x/end for details", "a".repeat(120));
+        let mut messages = vec![ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(&text))],
+        )];
+        let options = MessageRenderOptions {
+            tools_collapsed: false,
+            include_trailing_separator: false,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
+        };
+        let lines = render_one_lines_with(&mut messages, 0, 31, options);
+        assert!(!lines.is_empty());
+        for line in &lines {
+            assert!(
+                wrap::line_display_width(line) <= 31,
+                "row exceeds the chat width: {:?}",
+                render_lines_to_strings(std::slice::from_ref(line))[0]
+            );
         }
     }
 
@@ -3916,8 +4474,10 @@ mod tests {
 
         render_cached_lines_from_offset(
             &lines,
+            &[],
             40,
             &mut out,
+            &mut Vec::new(),
             &mut remaining,
             &mut can_consume_skip,
         );
@@ -4172,7 +4732,7 @@ mod tests {
             MessageRenderContext::new(None, 80, 1, options),
         );
         let mut idle_out = Vec::new();
-        render_cached_message(base_cache.segments(), &mut idle_out);
+        render_cached_message_with_copy(base_cache.segments(), &[], &mut idle_out, &mut Vec::new());
         let idle_rows = render_lines_to_strings(&idle_out);
 
         let thinking_cache = get_or_build_message_render_cache(
@@ -4181,7 +4741,12 @@ mod tests {
             MessageRenderContext::new(None, 80, 1, options),
         );
         let mut running_out = Vec::new();
-        render_cached_message(thinking_cache.segments(), &mut running_out);
+        render_cached_message_with_copy(
+            thinking_cache.segments(),
+            &[],
+            &mut running_out,
+            &mut Vec::new(),
+        );
         let running_rows = render_lines_to_strings(&running_out);
 
         // The row is the same height either way now, so a stale cache

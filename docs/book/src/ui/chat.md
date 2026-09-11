@@ -1,6 +1,6 @@
 # Chat - message types
 
-Every message in the scrollback belongs to one role. Hovering shows an I-beam over selectable text, a hand over clickable blocks - the OS pointer via `OSC 22`, the default arrow at startup.
+Every message in the scrollback belongs to one role. Hovering shows an I-beam over selectable text, a hand over clickable blocks - the OS pointer via `OSC 22`, the default arrow at startup. Copying a selection returns the text behind the render: soft-wrapped rows rejoin into one line with the break space restored, real newlines and blank lines survive, render chrome (the role banner, the gutter rule, the code-panel pad and language label, tool titles and body prefixes) is dropped, and code blocks copy verbatim.
 
 <details>
 <summary>Pointer mechanics</summary>
@@ -11,12 +11,12 @@ The clickable set: tool calls, group headers, the scrollbar, pane rows. forge en
 
 ## User message
 
-The banner is the literal text "User" in dim bold; the body is a markdown block on a slate background.
+The banner is the literal text "User" in dim bold; the body is full markdown with a rust-orange rule painted down the left of every row the turn occupies - prose rows, rows a paragraph wrap adds, and code-panel rows alike. There is no background fill.
 
 <details>
-<summary>User banner</summary>
+<summary>The gutter rule</summary>
 
-The banner is not the user's name. The background is the theme's user-message color (see [Reference](./reference.md)) applied per cell, extending to roughly the right edge, with the text in the terminal's default foreground.
+The rule is `▏` in [rust orange](./reference.md) on column 0, drawn after the turn renders rather than prefixed onto the text: a prefix span would survive only the first row of each wrapped line. Column 1 stays blank and the body starts at column 2. The rule covers the rows the turn's text body occupies and nothing else - not the "User" banner, not the blank separator below the turn, not the neighbouring messages - so it clips correctly when the turn is scrolled off the top of the viewport.
 
 </details>
 
@@ -24,7 +24,8 @@ The banner is not the user's name. The background is the theme's user-message co
 
   <pre class="indent">
   <span class="dim bold">User</span>
-  <span class="user-band">  Read the rate-limit code and add a softer wording branch.                </span></pre>
+  <span class="rust-orange">&#x258f;</span>  Read the rate-limit code and add a
+  <span class="rust-orange">&#x258f;</span>  softer wording branch.</pre>
 
 </div>
 
@@ -125,13 +126,14 @@ Settled, the spinner becomes `↳`, the output half of the token pair arrives, a
 
   Here's the function:
 
-      <span class="dim">fn is_near_threshold_without_overage(</span>
-      <span class="dim">    update: &amp;model::RateLimitUpdate,</span>
-      <span class="dim">) -&gt; bool {</span>
-      <span class="dim">    matches!(update.status, RateLimitStatus::AllowedWarning)</span>
-      <span class="dim">        &amp;&amp; update.is_using_overage == Some(false)</span>
-      <span class="dim">        &amp;&amp; update.surpassed_threshold.is_some_and(|t| t &gt; 0.0)</span>
-      <span class="dim">}</span>
+  <span class="code-panel">  <span class="code-label">rust</span>                                                                     </span>
+  <span class="code-panel">  fn is_near_threshold_without_overage(                                    </span>
+  <span class="code-panel">      update: &amp;model::RateLimitUpdate,                                     </span>
+  <span class="code-panel">  ) -&gt; bool {                                                              </span>
+  <span class="code-panel">      matches!(update.status, RateLimitStatus::AllowedWarning)             </span>
+  <span class="code-panel">          &amp;&amp; update.is_using_overage == Some(false)                        </span>
+  <span class="code-panel">          &amp;&amp; update.surpassed_threshold.is_some_and(|t| t &gt; 0.0)           </span>
+  <span class="code-panel">  }                                                                        </span>
 
   Tests pass. Want me to push?
   <span class="dim">&#x21b3; 1m 19s &#xb7; 4.2k&#x2191; 1.1k&#x2193; &#xb7; 93% cached &#xb7; 3.1k written [&#x25b6; expand]</span></pre>
@@ -165,6 +167,31 @@ Settled, the spinner becomes `↳`, the output half of the token pair arrives, a
 <summary>Expanding the row</summary>
 
 Click the row to toggle it - the same affordance and hand pointer as the stop-hook summary chip. **Cmd+X** (Ctrl+X off macOS) toggle-all clears every per-row override in the active session, so anything clicked open or shut returns to what the flipped flag dictates; the symmetry is one-way - expand-all opens the tool calls and still shuts the row, which has no global state of its own.
+
+</details>
+
+## Code block
+
+A fenced code block is a quiet panel: a lifted background, no box-drawing glyphs and no fence delimiters, on both roles. The fence's info string is a dim label on the panel's first row; the code under it is syntax highlighted through the same lookup tool-call bodies use. Backtick and tilde fences both work, a closing fence must be at least as long as its opener, and either fence line may be indented up to three spaces.
+
+<div class="term">
+
+  <pre class="indent">
+  <span class="code-panel">  <span class="code-label">toml</span>                                                                     </span>
+  <span class="code-panel">  [accounts.env]                                                           </span>
+  <span class="code-panel">  CLAUDE_CODE_OAUTH_TOKEN = "..."                                          </span></pre>
+
+</div>
+
+<details>
+<summary>Code block rules</summary>
+
+- The panel owns its wrapping. A long line wraps inside the panel instead of running past its right edge, and every row carries the background to the panel's full width, so the block reads as one surface rather than a patch per span.
+- Inside a user turn the panel renders two columns narrower, so the gutter rule keeps its own two columns and the panel's pad lands its code one nesting level deeper than the turn's prose. An assistant turn's panel keeps the full width.
+- The info string labels the panel whenever the fence carries one, and goes to the syntax lookup whole and trimmed. A language syntect cannot resolve still labels the block; its code renders plain.
+- An unterminated fence stays a panel to the end of the message, so a code block still streaming never flickers between panel and prose.
+- Blank prose around the fence collapses to a single separator row above the panel.
+- The panel is a plain body block: no collapse state and no click target.
 
 </details>
 

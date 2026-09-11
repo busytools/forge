@@ -90,7 +90,6 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
 fn reset_render_state_for_new_session(app: &mut App) {
     *app.selection_mut() = None;
     app.scrollbar_drag = None;
-    app.rendered_chat_lines.clear();
     app.rendered_chat_area = ratatui::layout::Rect::default();
     app.rendered_input_lines.clear();
     app.rendered_input_area = ratatui::layout::Rect::default();
@@ -106,7 +105,7 @@ fn reset_render_state_for_new_session(app: &mut App) {
 fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
     *app.mcp_mut() = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
-    crate::app::plugins::reset_for_session_change(app);
+    crate::app::extensions::reset_for_session_change(app);
     app.force_redraw = true;
     app.needs_redraw = true;
 }
@@ -204,8 +203,8 @@ fn is_queued_only_user_envelope(msg: &forge_primitives::Message) -> bool {
 /// timestamp as a single user bubble. The first text block is a DIM
 /// header (`Queued during the previous turn · N messages`), followed
 /// by one `▸ <prompt>` text block per message. All blocks live
-/// inside one [`MessageRole::User`] [`ChatMessage`] so the existing
-/// `USER_MSG_BG` background stretches over the whole group - visually
+/// inside one [`MessageRole::User`] [`ChatMessage`] so the turn's
+/// gutter rule runs unbroken over the whole group - visually
 /// a single bordered area, which is what option B's mockup showed.
 fn push_queued_group(app: &mut App, prompts: &[String]) {
     app.clear_active_turn_assistant();

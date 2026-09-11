@@ -6,10 +6,12 @@ mod chat_view;
 pub(crate) mod collapse;
 mod composer;
 mod config;
+pub(crate) mod copy;
 pub(crate) mod dictate_picker;
 mod diff;
 mod diff_overlay;
 mod document_table;
+pub(crate) mod fence;
 pub(crate) mod format;
 pub(crate) mod help;
 pub(crate) mod highlight;
@@ -48,8 +50,7 @@ use ratatui::Frame;
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.active_view {
         ActiveView::Chat => chat_view::render(frame, app),
-        ActiveView::Plugins => config::render_plugins(frame, app),
-        ActiveView::Mcp => config::render_mcp(frame, app),
+        ActiveView::Extensions => config::render_extensions(frame, app),
         ActiveView::Launchpad => {
             if app.preflight_done {
                 launchpad::render(frame, app);
@@ -84,13 +85,8 @@ pub(crate) fn refresh_selection_snapshot(app: &mut App) {
         return;
     };
 
-    match (app.active_view, selection.kind) {
-        (ActiveView::Chat, crate::app::SelectionKind::Chat) => {
-            chat::refresh_selection_snapshot(app);
-        }
-        (ActiveView::Chat, crate::app::SelectionKind::Input) => {
-            input::refresh_selection_snapshot(app);
-        }
-        _ => {}
+    if let (ActiveView::Chat, crate::app::SelectionKind::Input) = (app.active_view, selection.kind)
+    {
+        input::refresh_selection_snapshot(app);
     }
 }

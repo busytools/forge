@@ -1,6 +1,5 @@
 use super::block_cache::BlockCache;
 use super::tool_call_info::ToolCallInfo;
-use ratatui::style::Color;
 use ratatui::text::Line;
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
@@ -328,6 +327,12 @@ pub struct MessageRenderCache {
     cached_bytes: usize,
     height: usize,
     wrapped_lines: usize,
+    /// Wrapped-row ranges, from the message's first row, that the
+    /// user-turn gutter covers. Empty for every other role.
+    gutter_rows: Vec<Range<usize>>,
+    /// Copy provenance, one entry per rendered row, from the message's
+    /// first row. Parallel to the flattened segment rows.
+    copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
     last_access_tick: Cell<u64>,
 }
 
@@ -361,6 +366,16 @@ impl MessageRenderCache {
         self.wrapped_lines
     }
 
+    pub fn gutter_rows(&self) -> &[Range<usize>] {
+        self.touch();
+        &self.gutter_rows
+    }
+
+    pub(crate) fn copy_rows(&self) -> &[crate::ui::copy::CopyRowMeta] {
+        self.touch();
+        &self.copy_rows
+    }
+
     pub fn cached_bytes(&self) -> usize {
         self.cached_bytes
     }
@@ -369,12 +384,14 @@ impl MessageRenderCache {
         self.last_access_tick.get()
     }
 
-    pub fn store(
+    pub(crate) fn store(
         &mut self,
         key: MessageRenderCacheKey,
         segments: Vec<CachedMessageSegment>,
         height: usize,
         wrapped_lines: usize,
+        gutter_rows: Vec<Range<usize>>,
+        copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
     ) {
         let cached_bytes = segments.iter().map(CachedMessageSegment::cached_bytes).sum();
         self.key = Some(key);
@@ -382,6 +399,8 @@ impl MessageRenderCache {
         self.cached_bytes = cached_bytes;
         self.height = height;
         self.wrapped_lines = wrapped_lines;
+        self.gutter_rows = gutter_rows;
+        self.copy_rows = copy_rows;
         self.touch();
     }
 
@@ -391,6 +410,8 @@ impl MessageRenderCache {
         self.cached_bytes = 0;
         self.height = 0;
         self.wrapped_lines = 0;
+        self.gutter_rows.clear();
+        self.copy_rows.clear();
     }
 
     pub fn evict_cached_render(&mut self) -> usize {
@@ -450,15 +471,24 @@ fn line_utf8_bytes(line: &Line<'static>) -> usize {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MarkdownRenderKey {
     pub width: u16,
-    pub bg: Option<Color>,
+    /// Blank columns the caller reserves at the left of every emitted row
+    /// for the user turn's gutter. Zero for every other role.
+    pub gutter: u16,
     pub preserve_newlines: bool,
 }
 
 struct MarkdownChunk {
     range: Range<usize>,
-    rendered: Option<Vec<Line<'static>>>,
+    rendered: Option<RenderedChunk>,
     render_key: Option<MarkdownRenderKey>,
     dirty: bool,
+}
+
+/// One chunk's render: the lines plus the copy provenance the row builders
+/// produced alongside them.
+pub(crate) struct RenderedChunk {
+    pub(crate) lines: Vec<Line<'static>>,
+    pub(crate) copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
 }
 
 impl MarkdownChunk {
@@ -514,14 +544,15 @@ impl IncrementalMarkdown {
     pub(crate) fn lines(
         &mut self,
         render_key: MarkdownRenderKey,
-        render_fn: &impl Fn(&str) -> Vec<Line<'static>>,
-    ) -> Vec<Line<'static>> {
+        render_fn: &impl Fn(&str) -> RenderedChunk,
+    ) -> RenderedChunk {
         self.ensure_rendered(render_key, render_fn);
 
-        let mut rendered = Vec::new();
+        let mut rendered = RenderedChunk { lines: Vec::new(), copy_rows: Vec::new() };
         for chunk in &self.chunks {
-            if let Some(lines) = &chunk.rendered {
-                rendered.extend(lines.iter().cloned());
+            if let Some(chunk_rendered) = &chunk.rendered {
+                rendered.lines.extend(chunk_rendered.lines.iter().cloned());
+                rendered.copy_rows.extend(chunk_rendered.copy_rows.iter().cloned());
             }
         }
         rendered
@@ -530,7 +561,7 @@ impl IncrementalMarkdown {
     pub(crate) fn ensure_rendered(
         &mut self,
         render_key: MarkdownRenderKey,
-        render_fn: &impl Fn(&str) -> Vec<Line<'static>>,
+        render_fn: &impl Fn(&str) -> RenderedChunk,
     ) {
         for idx in 0..self.chunks.len() {
             let needs_render = {
@@ -572,18 +603,21 @@ impl IncrementalMarkdown {
 }
 
 fn find_first_stable_split(text: &str) -> Option<usize> {
-    let mut in_fenced_code = false;
+    let code = crate::ui::fence::code_ranges(text);
     let mut saw_nonblank = false;
     let mut blank_run_end = None;
     let mut offset = 0usize;
+    // The ranges are in source order, so one cursor walks them with the
+    // line offsets instead of re-checking every range per line.
+    let mut next_range = 0usize;
 
     for line in text.split_inclusive('\n') {
+        while code.get(next_range).is_some_and(|range| range.end <= offset) {
+            next_range += 1;
+        }
+        let in_fenced_code = code.get(next_range).is_some_and(|range| range.contains(&offset));
         offset += line.len();
         let trimmed = line.trim_end_matches('\n').trim();
-        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
-        if is_fence {
-            in_fenced_code = !in_fenced_code;
-        }
 
         let is_blank = trimmed.is_empty();
         if !in_fenced_code && is_blank {
@@ -789,16 +823,19 @@ pub struct WelcomeBlock {
 mod tests {
     use ratatui::text::Line;
 
-    use super::{IncrementalMarkdown, MarkdownRenderKey};
+    use super::{IncrementalMarkdown, MarkdownRenderKey, RenderedChunk};
     use pretty_assertions::assert_eq;
 
     /// Simple render function for tests: wraps each line in a `Line`.
-    fn test_render(src: &str) -> Vec<Line<'static>> {
-        src.lines().map(|l| Line::from(l.to_owned())).collect()
+    fn test_render(src: &str) -> RenderedChunk {
+        RenderedChunk {
+            lines: src.lines().map(|l| Line::from(l.to_owned())).collect(),
+            copy_rows: Vec::new(),
+        }
     }
 
     fn test_render_key() -> MarkdownRenderKey {
-        MarkdownRenderKey { width: 80, bg: None, preserve_newlines: false }
+        MarkdownRenderKey { width: 80, gutter: 0, preserve_newlines: false }
     }
 
     #[test]
@@ -849,7 +886,7 @@ mod tests {
         incr.append("line1\n\nline2\n\nline3");
         let lines = incr.lines(test_render_key(), &test_render);
         // test_render maps each source line to one output line
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.lines.len(), 5);
     }
 
     #[test]
@@ -865,7 +902,7 @@ mod tests {
         use std::cell::Cell;
 
         let calls = Cell::new(0usize);
-        let render = |src: &str| -> Vec<Line<'static>> {
+        let render = |src: &str| -> RenderedChunk {
             calls.set(calls.get() + 1);
             test_render(src)
         };
@@ -882,9 +919,9 @@ mod tests {
 
     #[test]
     fn incr_does_not_split_inside_fenced_code_blocks() {
-        let calls = std::cell::Cell::new(0usize);
-        let render = |src: &str| -> Vec<Line<'static>> {
-            calls.set(calls.get() + 1);
+        let sources = std::cell::RefCell::new(Vec::new());
+        let render = |src: &str| -> RenderedChunk {
+            sources.borrow_mut().push(src.to_owned());
             test_render(src)
         };
 
@@ -892,7 +929,30 @@ mod tests {
         incr.append("```rust\nfn main() {\n\nprintln!(\"hi\");\n}\n```\n\nafter");
         let _ = incr.lines(test_render_key(), &render);
 
-        assert_eq!(calls.get(), 2);
+        assert_eq!(
+            sources.borrow().as_slice(),
+            ["```rust\nfn main() {\n\nprintln!(\"hi\");\n}\n```\n\n", "after"],
+            "the split lands on the blank line after the fence, not the one inside it"
+        );
+    }
+
+    #[test]
+    fn incr_does_not_split_inside_a_four_backtick_fence() {
+        let sources = std::cell::RefCell::new(Vec::new());
+        let render = |src: &str| -> RenderedChunk {
+            sources.borrow_mut().push(src.to_owned());
+            test_render(src)
+        };
+
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("````\n```\nfirst\n\nsecond\n```\n````\n\nafter");
+        let _ = incr.lines(test_render_key(), &render);
+
+        assert_eq!(
+            sources.borrow().as_slice(),
+            ["````\n```\nfirst\n\nsecond\n```\n````\n\n", "after"],
+            "the inner fence is content, so the blank line inside stays with it"
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@
 Toggled with <kbd>?</kbd>: a rounded panel above the input area, fixed 14 rows with up to 10 content rows. The title is a rust-orange bold `Help` followed by bracketed tabs `[Keys | Slash | Subagents]` - the active tab rust orange bold, the rest dim - plus a dim hint suffix (`(< > switch tabs)` on Keys; `(< > tabs  ▲▼ scroll)` on Slash and Subagents). Three views:
 
 - **Keys** - items in two half-columns, each cell `label : description` with a bold label and a dim separator.
-- **Slash commands** - a two-column list of built-ins (`/config`, `/effort`, `/mcp`, `/plugins`) plus user-installed commands.
+- **Slash commands** - a two-column list of built-ins (`/config`, `/effort`, `/extensions`) plus user-installed commands.
 - **Subagents** - the same two-column shape, listing user-defined subagents.
 
 <div class="term">

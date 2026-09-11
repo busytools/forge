@@ -1028,9 +1028,13 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 return true;
             }
             PaneHitTarget::InspectorMcpOpenStatus { .. } => {
-                if let Err(err) = crate::app::config::open_mcp(app) {
-                    push_system_message(app, format!("Failed to open MCP: {err}"));
+                // The MCP page moved under the Extensions page's Mcps
+                // tab; open that instead.
+                if let Err(err) = crate::app::config::open_extensions(app) {
+                    push_system_message(app, format!("Failed to open extensions: {err}"));
                 }
+                app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Mcps;
+                crate::app::config::mcp::refresh_mcp_snapshot(app);
                 app.needs_redraw = true;
                 return true;
             }
@@ -2072,7 +2076,12 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::empty(),
         };
         assert!(handle_pane_click(&mut app, mouse), "the section consumes the click");
-        assert_eq!(app.active_view, ActiveView::Mcp, "the click mounts the /mcp view");
+        assert_eq!(app.active_view, ActiveView::Extensions, "the click mounts /extensions");
+        assert_eq!(
+            app.plugins.active_tab,
+            crate::app::extensions::ExtensionsTab::Mcps,
+            "the click lands on the Mcps tab"
+        );
     }
 
     #[test]

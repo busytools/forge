@@ -6,6 +6,7 @@
 //! PluginsState stays in forge-tui::app::plugins.
 
 pub mod cli;
+pub mod components;
 
 pub use forge_primitives::plugins::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
