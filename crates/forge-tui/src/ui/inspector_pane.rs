@@ -4853,6 +4853,42 @@ mod tests {
         );
     }
 
+    /// Group order follows the workspace's first appearance, not the
+    /// label: a map keyed by workspace would sort or scatter the
+    /// headings while every per-group property still passed.
+    #[test]
+    fn group_order_follows_first_appearance_of_the_workspace() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![
+            slack_sub(
+                6,
+                "zeta",
+                forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                    id: "C1".to_owned(),
+                    name: Some("zeta-ch".to_owned()),
+                    mode: forge_primitives::slack::SlackWatchMode::All,
+                },
+            ),
+            slack_sub(7, "acme", forge_primitives::slack::SlackSubscriptionTarget::DirectMessages),
+            slack_sub(8, "zeta", forge_primitives::slack::SlackSubscriptionTarget::Mentions),
+        ];
+        app.slack_connected = std::collections::BTreeMap::from([
+            ("zeta".to_owned(), true),
+            ("acme".to_owned(), true),
+        ]);
+
+        let joined = render_slack_section(&app);
+        let zeta_at = joined.find("zeta").expect("the zeta heading renders");
+        let acme_at = joined.find("acme").expect("the acme heading renders");
+        assert!(zeta_at < acme_at, "first-seen workspace must head the section:\n{joined}");
+        let headings =
+            joined.lines().filter(|line| line.trim_start().starts_with("zeta \u{25c8}")).count();
+        assert_eq!(
+            headings, 1,
+            "subscriptions split by another workspace share one heading; got:\n{joined}",
+        );
+    }
+
     #[test]
     fn a_downtime_pump_renders_the_warning_glyph() {
         let mut app = App::test_default();
