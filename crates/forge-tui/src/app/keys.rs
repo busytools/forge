@@ -1536,7 +1536,7 @@ mod tests {
         }
         app.invalidate_layout(InvalidationLevel::MessageChanged(0));
 
-        assert!(selection_text_for_copy(&mut app).is_some_and(|text| text.contains("hello world")));
+        assert_eq!(selection_text_for_copy(&mut app), Some("hello world".to_owned()));
     }
 
     #[test]

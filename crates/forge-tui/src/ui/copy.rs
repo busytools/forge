@@ -6,8 +6,8 @@
 //! columns are render chrome.
 
 use super::chat::{
-    ScrolledRenderData, build_base_spinner, build_scrolled_render_data,
-    chat_selection_snapshot_needed, render_lines_from_paragraph, sync_chat_layout,
+    ScrolledWindow, assemble_scrolled_window, build_base_spinner, chat_selection_snapshot_needed,
+    render_lines_from_paragraph, sync_chat_layout,
 };
 use crate::app::selection::{normalize_selection, slice_by_display_cols};
 use crate::app::{App, SelectionState};
@@ -61,6 +61,7 @@ impl CopyRowMeta {
 /// row after the first.
 pub(crate) fn wrap_join_separators(logical: &str, rows: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(rows.len().saturating_sub(1));
+    // Display column of the current row's start in `logical`.
     let mut cursor = 0usize;
     for (i, row) in rows.iter().enumerate() {
         if i > 0 {
@@ -72,16 +73,13 @@ pub(crate) fn wrap_join_separators(logical: &str, rows: &[String]) -> Vec<String
                 String::new()
             };
             if separator == " " {
-                let run: usize = logical[cursor.min(logical.len())..]
-                    .chars()
-                    .take_while(|ch| ch.is_whitespace())
-                    .map(char::len_utf8)
-                    .sum();
-                cursor += run;
+                while char_at_display_col(logical, cursor).is_some_and(char::is_whitespace) {
+                    cursor += 1;
+                }
             }
             out.push(separator);
         }
-        cursor = advance_display_cols(logical, cursor, super::wrap::display_width(row));
+        cursor += super::wrap::display_width(row);
     }
     out
 }
@@ -96,20 +94,6 @@ fn char_at_display_col(text: &str, col: usize) -> Option<char> {
         width += char_width(ch);
     }
     None
-}
-
-/// Advance a byte cursor into `text` by `cols` display columns.
-fn advance_display_cols(text: &str, byte: usize, cols: usize) -> usize {
-    let mut width = 0usize;
-    let mut end = byte.min(text.len());
-    for ch in text[end..].chars() {
-        if width >= cols {
-            break;
-        }
-        width += char_width(ch);
-        end += ch.len_utf8();
-    }
-    end
 }
 
 fn char_width(ch: char) -> usize {
@@ -128,7 +112,7 @@ pub(crate) fn chat_selection_text(app: &mut App, selection: SelectionState) -> O
 
     let base_spinner = build_base_spinner(app);
     let content_height = sync_chat_layout(app, area, &base_spinner);
-    let render_data = build_scrolled_render_data(
+    let window = assemble_scrolled_window(
         app,
         &base_spinner,
         area.width,
@@ -137,7 +121,7 @@ pub(crate) fn chat_selection_text(app: &mut App, selection: SelectionState) -> O
     );
     app.rendered_chat_area = area;
 
-    let rows = viewport_copy_rows(&render_data, area);
+    let rows = viewport_copy_rows(&window, area);
     let text = join_selection(&rows, selection);
     (!text.is_empty()).then_some(text)
 }
@@ -151,37 +135,36 @@ struct ViewportRow {
 /// Pair every viewport row with its copy provenance: builder metas for the
 /// first visual row of each logical row, derived soft-join metas for rows
 /// the paragraph wrapped at render time.
-fn viewport_copy_rows(render_data: &ScrolledRenderData, area: Rect) -> Vec<ViewportRow> {
-    let texts =
-        render_lines_from_paragraph(&render_data.paragraph, area, render_data.stats.local_scroll);
+fn viewport_copy_rows(window: &ScrolledWindow, area: Rect) -> Vec<ViewportRow> {
+    let paragraph = Paragraph::new(Text::from(window.all_lines.clone())).wrap(Wrap { trim: false });
+    let texts = render_lines_from_paragraph(&paragraph, area, window.stats.local_scroll);
     let mut metas: Vec<Option<CopyRowMeta>> = vec![None; area.height as usize];
 
     let width = area.width;
     let mut paragraph_row = 0usize;
-    for (line, meta) in render_data.all_lines.iter().zip(render_data.stats.copy_rows.iter()) {
+    for (line, meta) in window.all_lines.iter().zip(window.stats.copy_rows.iter()) {
         let count = line_visual_row_count(line, width);
         let subrows = if count > 1 { wrapped_row_texts(line, width, count) } else { Vec::new() };
         let separators = wrap_join_separators(&line_text(line), &subrows);
         for s in 0..count {
             let global = paragraph_row + s;
-            if global < render_data.stats.local_scroll {
+            if global < window.stats.local_scroll {
                 continue;
             }
-            let viewport_row = global - render_data.stats.local_scroll;
+            let viewport_row = global - window.stats.local_scroll;
             if viewport_row >= metas.len() {
                 break;
             }
             metas[viewport_row] = Some(if s > 0 && !matches!(meta.join, CopyJoin::Chrome) {
-                CopyRowMeta::soft(
-                    separators.get(s - 1).cloned().unwrap_or_default(),
-                    meta.chrome_cols,
-                )
+                // A paragraph split never re-emits the row's chrome prefix,
+                // so the continuation carries none of it.
+                CopyRowMeta::soft(separators.get(s - 1).cloned().unwrap_or_default(), 0)
             } else {
                 meta.clone()
             });
         }
         paragraph_row += count;
-        if paragraph_row.saturating_sub(render_data.stats.local_scroll) >= metas.len() {
+        if paragraph_row.saturating_sub(window.stats.local_scroll) >= metas.len() {
             break;
         }
     }
@@ -275,10 +258,6 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
-
-    // =====
-    // TESTS: 12
-    // =====
 
     fn chat_message(role: MessageRole, text: &str) -> crate::app::ChatMessage {
         crate::app::ChatMessage::new(role, vec![MessageBlock::Text(TextBlock::from_complete(text))])
@@ -560,6 +539,107 @@ mod tests {
             dragging: false,
         };
         assert_eq!(chat_selection_text(&mut app, selection), Some("over the lazy dog".to_owned()));
+    }
+
+    /// Copy in a scrolled viewport: the scroll lands mid-message, the
+    /// structural-skip path drops the first turn's label, and the payload
+    /// must still come out exact - the corner where provenance could
+    /// silently misalign.
+    #[test]
+    fn a_scrolled_selection_copies_the_rows_it_covers() {
+        let mut app = App::test_default();
+        *app.active_messages_mut() =
+            (0..20).map(|i| chat_message(MessageRole::User, &format!("body{i:02}"))).collect();
+        draw_chat(&mut app, 31, 7);
+
+        let selection = SelectionState {
+            kind: SelectionKind::Chat,
+            start: SelectionPoint { row: 0, col: 0 },
+            end: SelectionPoint { row: 6, col: 400 },
+            dragging: false,
+        };
+        assert_eq!(
+            chat_selection_text(&mut app, selection),
+            Some("body17\n\nbody18\n\nbody19".to_owned()),
+        );
+    }
+
+    /// Cross-message copy: the turns keep their real newlines and the
+    /// "User" banners between them do not copy.
+    #[test]
+    fn two_turns_copy_as_their_bodies() {
+        let mut app = App::test_default();
+        *app.active_messages_mut() = vec![
+            chat_message(MessageRole::User, "first"),
+            chat_message(MessageRole::User, "second"),
+        ];
+        draw_chat(&mut app, 31, 12);
+
+        assert_eq!(copy_all(&mut app, 12), Some("first\n\nsecond".to_owned()));
+    }
+
+    /// One unbreakable token wider than the pane hard-splits at the wrap;
+    /// the copy must reassemble it without losing or duplicating a
+    /// character at any break.
+    #[test]
+    fn an_over_wide_token_copies_back_intact() {
+        let text = format!("see https://example.com/{}x/end for details", "a".repeat(120));
+        let mut app = App::test_default();
+        *app.active_messages_mut() = vec![chat_message(MessageRole::User, &text)];
+        draw_chat(&mut app, 31, 24);
+
+        assert_eq!(copy_all(&mut app, 24), Some(text));
+    }
+
+    /// Non-ASCII text shifts where the bytes sit relative to the display
+    /// columns; the rejoining must keep restoring the break space past it.
+    #[test]
+    fn a_wrapped_accented_paragraph_copies_as_one_line() {
+        let text = "héllo wörld foo bar and several more words to force a wrap somewhere";
+        let mut app = App::test_default();
+        *app.active_messages_mut() = vec![chat_message(MessageRole::User, text)];
+        draw_chat(&mut app, 31, 12);
+
+        assert_eq!(copy_all(&mut app, 12), Some(text.to_owned()));
+    }
+
+    /// A tool body line wider than the pane is wrapped by the paragraph,
+    /// and the `  │  ` prefix must not be subtracted from the wrapped
+    /// continuation's content.
+    #[test]
+    fn a_wrapped_tool_body_line_copies_back_intact() {
+        let body = "let value = some_function(argument_one, argument_two);";
+        let mut app = App::test_default();
+        app.tools_collapsed = false;
+        *app.active_messages_mut() = vec![tool_call_message(body)];
+        draw_chat(&mut app, 41, 12);
+
+        assert_eq!(copy_all(&mut app, 12), Some(body.to_owned()));
+    }
+
+    /// A collapsed selection (start == end) and a selection past the last
+    /// row both copy nothing.
+    #[test]
+    fn degenerate_selections_copy_nothing() {
+        let mut app = App::test_default();
+        *app.active_messages_mut() = vec![chat_message(MessageRole::User, "hello")];
+        draw_chat(&mut app, 31, 12);
+
+        let collapsed = SelectionState {
+            kind: SelectionKind::Chat,
+            start: SelectionPoint { row: 1, col: 3 },
+            end: SelectionPoint { row: 1, col: 3 },
+            dragging: false,
+        };
+        assert_eq!(chat_selection_text(&mut app, collapsed), None);
+
+        let past_end = SelectionState {
+            kind: SelectionKind::Chat,
+            start: SelectionPoint { row: 99, col: 0 },
+            end: SelectionPoint { row: 120, col: 400 },
+            dragging: false,
+        };
+        assert_eq!(chat_selection_text(&mut app, past_end), None);
     }
 
     #[test]

@@ -823,10 +823,16 @@ fn append_user_block(
                             | EnvelopeStreakPosition::FollowerSameWorker
                     )
                 );
-                let lines = peer_block::render_inbound(&kind, suppress_header, collapsed);
+                let mut copy_rows = Vec::new();
+                let lines = peer_block::render_inbound_with_metas(
+                    &kind,
+                    suppress_header,
+                    collapsed,
+                    &mut copy_rows,
+                );
                 let y_in_msg = layout.height;
                 let height = rendered_lines_height(&lines, width);
-                layout.push_wrapped_lines(lines, width);
+                layout.push_lines_with_meta(lines, copy_rows, height, height);
                 // Stamp hit-target fields so `mouse::locate_
                 // peer_user_block_at_click` can route clicks on
                 // this inbound peer row back to this TextBlock
@@ -931,7 +937,7 @@ fn append_assistant_blocks(
                         );
                         let y_in_msg = layout.height;
                         let height = rendered_lines_height(&summary_lines, render_context.width);
-                        layout.push_wrapped_lines(summary_lines, render_context.width);
+                        layout.push_chrome_lines(summary_lines, height);
                         if let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(range.start) {
                             tc.last_measured_y_in_msg = y_in_msg;
                             tc.last_measured_height = height;
@@ -1019,7 +1025,7 @@ fn append_messaging_group_summary(
         peer_block::render_messaging_group_summary_line(segment, spinner.glyph, width as usize);
     let y_in_msg = layout.height;
     let height = rendered_lines_height(&summary_lines, width);
-    layout.push_wrapped_lines(summary_lines, width);
+    layout.push_chrome_lines(summary_lines, height);
     match blocks.get_mut(segment.block_range.start) {
         Some(MessageBlock::ToolCall(tc)) => {
             tc.last_measured_y_in_msg = y_in_msg;
@@ -1136,13 +1142,14 @@ fn append_assistant_tool_block(
     // is gone and the tool renders as a compact question -> answer card.
     // While unanswered it stays hidden (returns above), so this only
     // fires post-answer.
-    if let Some(lines) = render_question_answered_card(tc) {
+    let mut card_copy_rows = Vec::new();
+    if let Some(lines) = render_question_answered_card_with_metas(tc, &mut card_copy_rows) {
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
         let y_in_msg = layout.height;
         let height = rendered_lines_height(&lines, render_context.width);
-        layout.push_wrapped_lines(lines, render_context.width);
+        layout.push_lines_with_meta(lines, card_copy_rows, height, height);
         tc.last_measured_y_in_msg = y_in_msg;
         tc.last_measured_height = height;
         tc.last_measured_width = render_context.width;
@@ -1162,13 +1169,16 @@ fn append_assistant_tool_block(
     // Monitor renders as a lifecycle block rather than a tool card.
     // Falls through to the standard card when the raw_input is missing
     // or malformed.
-    if let Some(lines) = render_lifecycle_one_liner(tc, render_context.width) {
+    let mut monitor_copy_rows = Vec::new();
+    if let Some(lines) =
+        render_lifecycle_one_liner_with_metas(tc, render_context.width, &mut monitor_copy_rows)
+    {
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
         let y_in_msg = layout.height;
         let height = rendered_lines_height(&lines, render_context.width);
-        layout.push_wrapped_lines(lines, render_context.width);
+        layout.push_lines_with_meta(lines, monitor_copy_rows, height, height);
         tc.last_measured_y_in_msg = y_in_msg;
         tc.last_measured_height = height;
         tc.last_measured_width = render_context.width;
@@ -1192,7 +1202,8 @@ fn append_assistant_tool_block(
             tc.collapsed_override,
             render_context.options.tools_collapsed,
         );
-        let lines = peer_block::render_outbound(&kind, collapsed);
+        let mut copy_rows = Vec::new();
+        let lines = peer_block::render_outbound_with_metas(&kind, collapsed, &mut copy_rows);
         // Same hit-target stamping the standard tool-call branch
         // below does so `mouse::locate_tool_call_block_at_click` can
         // map a click on a peer row back to this ToolCallInfo and
@@ -1201,7 +1212,7 @@ fn append_assistant_tool_block(
         // == 0` and the click falls through to text selection.
         let y_in_msg = layout.height;
         let height = rendered_lines_height(&lines, render_context.width);
-        layout.push_wrapped_lines(lines, render_context.width);
+        layout.push_lines_with_meta(lines, copy_rows, height, height);
         tc.last_measured_y_in_msg = y_in_msg;
         tc.last_measured_height = height;
         tc.last_measured_width = render_context.width;
@@ -1258,7 +1269,16 @@ fn trailing_gap_for_text_like_block(
 /// surface) or for any non-question tool. Each answered pair renders as
 /// a `? <question>` line then an indented answer line; a typed "Other"
 /// answer surfaces the literal text the user entered.
+#[cfg(test)]
 fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<'static>>> {
+    let mut copy_rows = Vec::new();
+    render_question_answered_card_with_metas(tc, &mut copy_rows)
+}
+
+fn render_question_answered_card_with_metas(
+    tc: &crate::app::ToolCallInfo,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) -> Option<Vec<Line<'static>>> {
     if !tc.is_ask_question_tool() || tc.answered_questions.is_empty() {
         return None;
     }
@@ -1276,11 +1296,13 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
             ),
             Span::styled(qa.question.clone(), Style::default().fg(theme::DIM)),
         ]));
+        copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(4));
         if !qa.picked_labels.is_empty() {
             lines.push(Line::from(vec![
                 Span::styled("    \u{2192} ".to_owned(), Style::default().fg(theme::DIM)),
                 Span::styled(qa.picked_labels.join(", "), Style::default().fg(Color::Green)),
             ]));
+            copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(6));
         }
         if let Some(typed) = qa.typed_note.as_ref().filter(|s| !s.is_empty()) {
             lines.push(Line::from(vec![
@@ -1288,6 +1310,7 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
                 Span::styled("you typed: ".to_owned(), Style::default().fg(theme::DIM)),
                 Span::styled(format!("\"{typed}\""), Style::default().add_modifier(Modifier::BOLD)),
             ]));
+            copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(6));
         }
     }
     Some(lines)
@@ -1334,9 +1357,19 @@ const MONITOR_HEADER_PREFIX_CELLS: usize = MONITOR_HEADER_GLYPH_CELLS + 7 + 3;
 /// Terminal-ness comes from the monitor's OWN liveness
 /// (`monitor_status`), never from `tc.status` - the launch ack drives
 /// the tool call terminal while the monitor runs on.
+#[cfg(test)]
 fn render_lifecycle_one_liner(
     tc: &crate::app::ToolCallInfo,
     width: u16,
+) -> Option<Vec<Line<'static>>> {
+    let mut copy_rows = Vec::new();
+    render_lifecycle_one_liner_with_metas(tc, width, &mut copy_rows)
+}
+
+fn render_lifecycle_one_liner_with_metas(
+    tc: &crate::app::ToolCallInfo,
+    width: u16,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) -> Option<Vec<Line<'static>>> {
     use crate::app::MonitorStatus;
     match tc.sdk_tool_name.as_str() {
@@ -1379,6 +1412,14 @@ fn render_lifecycle_one_liner(
                     width
                         .saturating_sub(MONITOR_HEADER_GLYPH_CELLS)
                         .saturating_sub(crate::ui::wrap::display_width(&label)),
+                );
+                // The glyph column, the `Monitor` label and the ` · `
+                // separator are decoration; the description and status
+                // after them are the row's text.
+                copy_rows.push(
+                    crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(
+                        u16::try_from(MONITOR_HEADER_PREFIX_CELLS).unwrap_or(u16::MAX),
+                    ),
                 );
                 return Some(vec![Line::from(vec![
                     Span::styled(format!("  {glyph} "), Style::default().fg(colour)),
@@ -1430,6 +1471,10 @@ fn render_lifecycle_one_liner(
                     Style::default().fg(theme::DIM),
                 ),
             ]));
+            copy_rows.push(
+                crate::ui::copy::CopyRowMeta::hard_line()
+                    .offset_chrome(u16::try_from(MONITOR_HEADER_PREFIX_CELLS).unwrap_or(u16::MAX)),
+            );
             // Child rows carry the connectors and the outer layout
             // char-wraps without the gutter, so an overflowing one
             // shears the tree. Budgets subtract that gutter and, for
@@ -1447,6 +1492,10 @@ fn render_lifecycle_one_liner(
                 ),
                 Style::default().fg(theme::DIM),
             )));
+            copy_rows.push(
+                crate::ui::copy::CopyRowMeta::hard_line()
+                    .offset_chrome(u16::try_from(MONITOR_GUTTER_CELLS + 2).unwrap_or(u16::MAX)),
+            );
             // Tail lines: │ <line> ... └ <last line>
             let last_idx = tc.monitor_output_tail.len().saturating_sub(1);
             for (idx, line) in tc.monitor_output_tail.iter().enumerate() {
@@ -1461,6 +1510,10 @@ fn render_lifecycle_one_liner(
                     ),
                     Style::default().fg(theme::DIM),
                 )));
+                copy_rows.push(
+                    crate::ui::copy::CopyRowMeta::hard_line()
+                        .offset_chrome(u16::try_from(MONITOR_GUTTER_CELLS).unwrap_or(u16::MAX)),
+                );
             }
             Some(lines)
         }
@@ -2770,7 +2823,7 @@ pub(super) fn render_text_cached(
     {
         crate::perf::mark_with("msg::cache_hit", "lines", cached_lines.len());
         out.extend_from_slice(cached_lines);
-        *copy_rows = cached_copy;
+        copy_rows.extend(cached_copy);
         return;
     }
     crate::perf::mark("msg::cache_miss");
@@ -3911,6 +3964,33 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             live_turn_running: false,
+        }
+    }
+
+    /// The invariant the copy path leans on: every row the user builders
+    /// emit fits the chat width, even one unbreakable token wider than the
+    /// pane, so the paragraph never re-wraps a builder row.
+    #[test]
+    fn user_rows_stay_inside_the_chat_width_with_an_unbreakable_token() {
+        let text = format!("see https://example.com/{}x/end for details", "a".repeat(120));
+        let mut messages = vec![ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(&text))],
+        )];
+        let options = MessageRenderOptions {
+            tools_collapsed: false,
+            include_trailing_separator: false,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
+        };
+        let lines = render_one_lines_with(&mut messages, 0, 31, options);
+        assert!(!lines.is_empty());
+        for line in &lines {
+            assert!(
+                wrap::line_display_width(line) <= 31,
+                "row exceeds the chat width: {:?}",
+                render_lines_to_strings(std::slice::from_ref(line))[0]
+            );
         }
     }
 

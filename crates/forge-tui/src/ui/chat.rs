@@ -80,10 +80,8 @@ pub(super) struct CulledRenderStats {
 }
 
 pub(super) struct ScrolledRenderData {
-    pub(super) paragraph: Paragraph<'static>,
-    pub(super) stats: CulledRenderStats,
-    /// The paragraph's logical rows, aligned with `stats.copy_rows`.
-    pub(super) all_lines: Vec<Line<'static>>,
+    paragraph: Paragraph<'static>,
+    stats: CulledRenderStats,
     max_scroll: usize,
     scroll_offset: usize,
 }
@@ -519,13 +517,23 @@ pub(super) fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &Spinner
     content_height
 }
 
-pub(super) fn build_scrolled_render_data(
+/// The rendered paragraph window: the rows and the scroll bookkeeping the
+/// frame and the copy path both need.
+pub(super) struct ScrolledWindow {
+    pub(super) all_lines: Vec<Line<'static>>,
+    pub(super) stats: CulledRenderStats,
+    pub(super) max_scroll: usize,
+    pub(super) scroll_offset: usize,
+}
+
+/// Settle the scroll position and render the visible window's rows.
+pub(super) fn assemble_scrolled_window(
     app: &mut App,
     base: &SpinnerState,
     width: u16,
     content_height: usize,
     viewport_height: usize,
-) -> ScrolledRenderData {
+) -> ScrolledWindow {
     let reduced_motion = app.config.prefers_reduced_motion_effective();
     let vp = app.active_viewport_mut();
     let max_scroll = content_height.saturating_sub(viewport_height);
@@ -569,15 +577,33 @@ pub(super) fn build_scrolled_render_data(
     crate::perf::mark_with("chat::render_scrolled_msgs", "msgs", stats.rendered_msgs);
     crate::perf::mark_with("chat::render_scrolled_start", "idx", stats.render_start);
 
+    ScrolledWindow { all_lines, stats, max_scroll, scroll_offset }
+}
+
+fn build_scrolled_render_data(
+    app: &mut App,
+    base: &SpinnerState,
+    width: u16,
+    content_height: usize,
+    viewport_height: usize,
+) -> ScrolledRenderData {
+    let window = assemble_scrolled_window(app, base, width, content_height, viewport_height);
     let paragraph = {
         let _t = app
             .perf
             .as_ref()
-            .map(|p| p.start_with("chat::paragraph_build", "lines", all_lines.len()));
-        Paragraph::new(Text::from(all_lines.clone())).wrap(Wrap { trim: false })
+            .map(|p| p.start_with("chat::paragraph_build", "lines", window.all_lines.len()));
+        // Moves the rows in; the copy path keeps its own window instead, so
+        // the frame never clones them.
+        Paragraph::new(Text::from(window.all_lines)).wrap(Wrap { trim: false })
     };
 
-    ScrolledRenderData { paragraph, stats, all_lines, max_scroll, scroll_offset }
+    ScrolledRenderData {
+        paragraph,
+        stats: window.stats,
+        max_scroll: window.max_scroll,
+        scroll_offset: window.scroll_offset,
+    }
 }
 
 /// Long content: smooth scroll + viewport culling.
