@@ -1752,11 +1752,12 @@ fn slack_section_visible(app: &App) -> bool {
     !app.slack_subs.is_empty() || app.slack_load_failed
 }
 
-/// Render the Inspector SLACK section: a labelled header then one row per
-/// subscription. The snapshot is already scoped by owner in
-/// [`App::refresh_slack`], so every row belongs to this session. Liveness
-/// is keyed by workspace label, so it rides each row rather than a
-/// single-status header the way GOTIFY's does.
+/// Render the Inspector SLACK section: a labelled header, then one
+/// workspace heading per workspace with its subscription rows beneath.
+/// The snapshot is already scoped by owner in [`App::refresh_slack`], so
+/// every row belongs to this session. Liveness is keyed by workspace
+/// label, so it rides the heading rather than a single-status header the
+/// way GOTIFY's does.
 fn append_slack_section(lines: &mut Vec<Line<'static>>, app: &App) {
     lines.push(slack_header_line());
     lines.push(Line::default());
@@ -1773,9 +1774,19 @@ fn append_slack_section(lines: &mut Vec<Line<'static>>, app: &App) {
         ]));
         return;
     }
+    let mut groups: Vec<(&str, Vec<&forge_primitives::slack::SlackSubscription>)> = Vec::new();
     for sub in &app.slack_subs {
-        let connected = app.slack_connected.get(&sub.workspace).copied().unwrap_or(false);
-        append_slack_subscription(lines, sub, connected);
+        match groups.iter_mut().find(|(workspace, _)| *workspace == sub.workspace) {
+            Some((_, subs)) => subs.push(sub),
+            None => groups.push((&sub.workspace, vec![sub])),
+        }
+    }
+    for (workspace, subs) in groups {
+        let connected = app.slack_connected.get(workspace).copied().unwrap_or(false);
+        append_slack_workspace_heading(lines, workspace, connected);
+        for sub in subs {
+            append_slack_watch_row(lines, sub);
+        }
     }
 }
 
@@ -1788,12 +1799,12 @@ fn slack_header_line() -> Line<'static> {
     )])
 }
 
-/// Render one SLACK subscription: the workspace label in bold with its
-/// pump's status glyph beside it, then a DIM line naming what it watches.
-/// The `◈` / `⚠` pairing is the one [`gotify_header_line`] uses.
-fn append_slack_subscription(
+/// One workspace's heading: the label in bold with its pump's status
+/// glyph beside it. The `◈` / `⚠` pairing is the one
+/// [`gotify_header_line`] uses.
+fn append_slack_workspace_heading(
     lines: &mut Vec<Line<'static>>,
-    sub: &forge_primitives::slack::SlackSubscription,
+    workspace: &str,
     connected: bool,
 ) {
     let indent = usize::from(PANE_PAD) + 2;
@@ -1804,11 +1815,19 @@ fn append_slack_subscription(
     };
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(indent)),
-        Span::styled(sub.workspace.clone(), Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(workspace.to_owned(), Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" ".to_owned()),
         Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
     ]));
+}
 
+/// One subscription row beneath its workspace heading: a DIM line naming
+/// what it watches.
+fn append_slack_watch_row(
+    lines: &mut Vec<Line<'static>>,
+    sub: &forge_primitives::slack::SlackSubscription,
+) {
+    let indent = usize::from(PANE_PAD) + 4;
     let watching = match &sub.target {
         forge_primitives::slack::SlackSubscriptionTarget::DirectMessages => {
             "direct messages".to_owned()
@@ -1829,7 +1848,7 @@ fn append_slack_subscription(
         }
     };
     lines.push(Line::from(vec![
-        Span::raw(" ".repeat(indent + 2)),
+        Span::raw(" ".repeat(indent)),
         Span::styled(watching, Style::default().fg(theme::DIM)),
     ]));
 }
@@ -4803,6 +4822,34 @@ mod tests {
         assert!(
             !joined.contains("C0C0T5E6RM1"),
             "the raw id drops off the row once a name exists; got:\n{joined}",
+        );
+    }
+
+    #[test]
+    fn one_workspace_with_two_subscriptions_renders_one_heading() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![
+            slack_sub(
+                4,
+                "acme",
+                forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                    id: "C1".to_owned(),
+                    name: Some("ved-test".to_owned()),
+                    mode: forge_primitives::slack::SlackWatchMode::All,
+                },
+            ),
+            slack_sub(5, "acme", forge_primitives::slack::SlackSubscriptionTarget::DirectMessages),
+        ];
+        app.slack_connected = std::collections::BTreeMap::from([("acme".to_owned(), true)]);
+
+        let joined = render_slack_section(&app);
+        assert!(
+            joined.matches("acme").count() == 1,
+            "one workspace renders one heading, not one per subscription; got:\n{joined}",
+        );
+        assert!(
+            joined.contains("#ved-test") && joined.contains("direct messages"),
+            "both subscription rows render under the heading; got:\n{joined}",
         );
     }
 
