@@ -1030,7 +1030,7 @@ fn record_copy_rows(
 }
 
 /// The rule glyph a user turn's gutter is painted with.
-const GUTTER_GLYPH: &str = "\u{258c}";
+const GUTTER_GLYPH: &str = "\u{258f}";
 
 /// Paint the rust-orange rule down the left of every row a user turn
 /// covers. Runs after the paragraph render, so the rule lands on the rows
@@ -1417,7 +1417,7 @@ mod tests {
     }
 
     fn rule_row(row: &(String, ratatui::style::Style, ratatui::style::Style)) -> bool {
-        row.0.starts_with('\u{258c}')
+        row.0.starts_with('\u{258f}')
     }
 
     /// The rule is painted over the rows the turn occupies, so it runs
@@ -1523,7 +1523,7 @@ mod tests {
         let ranges: Vec<std::ops::Range<usize>> = std::iter::once(2..6).collect();
         terminal.draw(|frame| paint_user_gutter(frame, area, &ranges, 3)).expect("draw");
         let ruled = |buffer: &ratatui::buffer::Buffer, y: u16| {
-            buffer.cell((0, y)).is_some_and(|cell| cell.symbol() == "\u{258c}")
+            buffer.cell((0, y)).is_some_and(|cell| cell.symbol() == "\u{258f}")
         };
         let buffer = terminal.backend().buffer();
         // Visible extent: paragraph rows 3..6 land on viewport rows 0..2.
@@ -1552,7 +1552,7 @@ mod tests {
             let symbol = buffer.cell((0, y)).map(|cell| cell.symbol().to_owned());
             assert_ne!(
                 symbol.as_deref(),
-                Some("\u{258c}"),
+                Some("\u{258f}"),
                 "row {y} is ruled by a scrolled-off range"
             );
         }
