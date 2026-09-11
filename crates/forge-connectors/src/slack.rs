@@ -67,14 +67,18 @@ pub trait SlackHost: Send + Sync {
     fn set_thread_watermark(&self, workspace: &str, conversation: &str, parent_ts: &str, ts: &str);
 
     /// Track a thread from a delivered message, owned by the matching
-    /// subscription. Following again by another owner adds that owner; by
-    /// the same owner it adds nothing.
+    /// subscription. A new row's cursor starts at `since` - the delivered
+    /// message's own ts, not the parent's: the parent of a mention can be
+    /// weeks old, and a cursor seeded from it would idle-drop the thread
+    /// before its first reply walk. Following again by another owner adds
+    /// that owner and keeps the cursor.
     fn follow_thread(
         &self,
         workspace: &str,
         conversation: &str,
         parent_ts: &str,
         owner: SlackThreadOwner,
+        since: &str,
     );
 
     /// Liveness for the Inspector's status line.
@@ -626,13 +630,35 @@ pub(crate) async fn sweep(
     }
     let user_id = host.user_id(workspace).unwrap_or_default();
 
-    let conversations = match api.list_conversations().await {
+    let mut conversations = match api.list_conversations().await {
         Ok(conversations) => conversations,
         Err(SlackError::RateLimited { retry_after, .. }) => {
             return Ok(SweepOutcome { delivered: 0, rate_limited: Some(retry_after) });
         }
         Err(error) => return Err(error),
     };
+    // A subscription can name a conversation the token's user never joined:
+    // a mention pulled us into a public channel, and users.conversations is
+    // membership-scoped. Those arrive from the subscription set itself, or
+    // the headline mention case dies after its first delivery.
+    for subscription in &subscriptions {
+        if let SlackSubscriptionTarget::Conversation { id, .. } = &subscription.target
+            && !conversations.iter().any(|conversation| &conversation.id == id)
+        {
+            conversations.push(SlackConversation {
+                id: id.clone(),
+                name: None,
+                is_channel: false,
+                is_private: false,
+                is_im: false,
+                is_mpim: false,
+                is_archived: false,
+                user: None,
+                purpose: None,
+                topic: None,
+            });
+        }
+    }
 
     let mut delivered = 0;
     for conversation in &conversations {
@@ -663,6 +689,16 @@ pub(crate) async fn sweep(
             }
             Err(error) => return Err(error),
         };
+
+        // The DM class covers conversations that cannot be pre-seeded per
+        // id, so first sight baselines instead of replaying: the newest
+        // fetched ts becomes the cursor and the back catalogue is not new.
+        if watermark.is_none() {
+            if let Some(newest) = history.iter().map(|message| message.ts.as_str()).max() {
+                host.set_watermark(workspace, &conversation.id, newest);
+            }
+            continue;
+        }
 
         let mut seen: HashSet<String> = HashSet::new();
         let mut batch: Vec<SlackHistoryMessage> = history
@@ -697,11 +733,12 @@ pub(crate) async fn sweep(
         let label =
             conversation.name.clone().or_else(|| conversation.user.clone()).unwrap_or_default();
         let mut newest_delivered: Option<String> = None;
+        let mut batch_failed = false;
         for message in &batch {
             // Every subscription that wants this message gets it: a lead
             // and a worker watching the same conversation are two owners,
             // and find-first would starve whichever sorted second.
-            let mut handed_off = false;
+            let mut all_handed = true;
             for subscription in subscriptions.iter().filter(|subscription| {
                 matches(
                     subscription,
@@ -711,7 +748,7 @@ pub(crate) async fn sweep(
                     &user_id,
                 )
             }) {
-                if !host.deliver(
+                if host.deliver(
                     subscription,
                     &SlackMessage {
                         workspace: workspace.to_owned(),
@@ -724,35 +761,42 @@ pub(crate) async fn sweep(
                         files: message.files.clone(),
                     },
                 ) {
-                    continue;
-                }
-                handed_off = true;
-                if let Some(parent_ts) = followed_parent_of(message) {
-                    host.follow_thread(
-                        workspace,
-                        &conversation.id,
-                        &parent_ts,
-                        SlackThreadOwner {
-                            project: subscription.project.clone(),
-                            team_role: subscription.team_role.clone(),
-                        },
-                    );
+                    if let Some(parent_ts) = followed_parent_of(message) {
+                        host.follow_thread(
+                            workspace,
+                            &conversation.id,
+                            &parent_ts,
+                            SlackThreadOwner {
+                                project: subscription.project.clone(),
+                                team_role: subscription.team_role.clone(),
+                            },
+                            &message.ts,
+                        );
+                    }
+                } else {
+                    all_handed = false;
                 }
             }
-            if !handed_off {
-                // Stop at the failure: continuing would advance past a
-                // message that never reached a session. The cursor stays
-                // below it and the next sweep re-delivers from there.
+            if !all_handed {
+                // Stop at the failure: the cursor holds at its previous
+                // value rather than advancing past the message that did
+                // not reach every matching subscription - under the wire's
+                // newest-first pages, any advance here would jump ABOVE
+                // the failure and lose everything at and below it. Dedupe
+                // absorbs the re-delivery on the next sweep.
+                batch_failed = true;
                 break;
             }
             delivered += 1;
-            newest_delivered = Some(message.ts.clone());
+            // Pages arrive newest-first, so the watermark is the newest
+            // delivered message, not the last one processed.
+            if newest_delivered.as_deref().is_none_or(|current| message.ts.as_str() > current) {
+                newest_delivered = Some(message.ts.clone());
+            }
         }
 
-        // Advanced last, and only over what was handed off: the cursor
-        // sits below a failed message, and the delivery-side dedupe makes
-        // the re-delivery a no-op.
-        if let Some(newest) = newest_delivered {
+        // Advanced last, and only over a batch that was handed off whole.
+        if !batch_failed && let Some(newest) = newest_delivered {
             host.set_watermark(workspace, &conversation.id, &newest);
         }
 
@@ -940,7 +984,13 @@ pub(crate) async fn sweep_mentions(
                 text: hit.text.clone(),
                 files: Vec::new(),
             };
-            host.deliver(subscription, &message);
+            if !host.deliver(subscription, &message) {
+                // Hits arrive newest-first, so a failed delivery means
+                // everything behind it is undelivered too: hold the
+                // cursor where it was, skip the auto-subscribe, and let
+                // the next tick retry the whole window.
+                return Ok(SweepOutcome { delivered, rate_limited: None });
+            }
             // Ved's ask: a mention pulls the agent into the conversation, so
             // the reply back and forth does not need another subscription.
             host.auto_subscribe(workspace, &message);
@@ -956,6 +1006,7 @@ pub(crate) async fn sweep_mentions(
                         project: subscription.project.clone(),
                         team_role: subscription.team_role.clone(),
                     },
+                    &hit.ts,
                 );
             }
             delivered += 1;
@@ -2001,6 +2052,13 @@ mod tests {
             self.seed_history_pages(channel, vec![messages]);
         }
 
+        /// Seed history WITHOUT registering the conversation in the
+        /// membership list, the shape of a channel the token's user is
+        /// not a member of.
+        fn seed_history_unlisted(&self, channel: &str, messages: Vec<SlackHistoryMessage>) {
+            self.history.lock().expect("lock").insert(channel.to_owned(), vec![messages]);
+        }
+
         /// Seed several pages. The fake serves them in order, handing back
         /// the next index as the cursor, so a paging walk is exercised.
         fn seed_history_pages(&self, channel: &str, pages: Vec<Vec<SlackHistoryMessage>>) {
@@ -2194,14 +2252,16 @@ mod tests {
             conversation: &str,
             parent_ts: &str,
             owner: SlackThreadOwner,
+            since: &str,
         ) {
             let mut threads = self.threads.lock().expect("lock");
             let record = threads
                 .entry(format!("{workspace}/{conversation}/{parent_ts}"))
                 .or_insert_with(|| {
-                    // The real host starts a new thread at its parent, so
-                    // the first replies walk reaches everything after it.
-                    SlackThreadRecord { cursor: parent_ts.to_owned(), owners: Vec::new() }
+                    // The real host starts a new thread at the caller's
+                    // since, so the first replies walk reaches everything
+                    // after the message that anchored it.
+                    SlackThreadRecord { cursor: since.to_owned(), owners: Vec::new() }
                 });
             if !record.owners.contains(&owner) {
                 record.owners.push(owner);
@@ -2762,28 +2822,31 @@ mod tests {
         assert!(!texts.iter().any(|t| t == "mine <@U1>"), "no self-echo: {texts:?}");
     }
 
-    /// A dispatch failure must leave the cursor below the failed message,
-    /// so the next sweep re-delivers it rather than skipping it.
+    /// A dispatch failure must leave the cursor where it was, so the next
+    /// sweep re-fetches the whole window; dedupe absorbs what already
+    /// reached a session.
     #[tokio::test]
-    async fn a_failed_delivery_stops_the_cursor_below_the_failure() {
+    async fn a_failed_delivery_holds_the_cursor_at_its_previous_value() {
         let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.set_watermark("acme", "D1", "050.0");
         host.seed_history(
             "D1",
+            // The wire's order: newest first.
             vec![
-                history_message("100.1", "U9", "first"),
+                history_message("300.1", "U9", "newest"),
                 history_message("200.1", "U9", "fails"),
-                history_message("300.1", "U9", "after the failure"),
+                history_message("100.1", "U9", "oldest"),
             ],
         );
         host.fail_delivery_at(1);
 
         let outcome = sweep(&host, &host, "acme").await.expect("sweep");
         assert_eq!(outcome.delivered, 1, "the sweep stops at the failed message");
-        assert_eq!(host.delivered()[0].text, "first");
+        assert_eq!(host.delivered()[0].text, "newest");
         assert_eq!(
             host.watermark("acme", "D1"),
-            Ok(Some("100.1".to_owned())),
-            "the cursor sits below the failure, so the next sweep re-delivers it",
+            Ok(Some("050.0".to_owned())),
+            "the cursor holds below the failure instead of jumping past it",
         );
     }
 
@@ -2831,9 +2894,11 @@ mod tests {
     #[tokio::test]
     async fn a_sweep_advances_the_watermark_to_the_newest_seen() {
         let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.set_watermark("acme", "D1", "050.0");
         host.seed_history(
             "D1",
-            vec![history_message("200.1", "U9", "a"), history_message("300.2", "U9", "b")],
+            // The wire's order: newest first.
+            vec![history_message("300.2", "U9", "newest"), history_message("200.1", "U9", "older")],
         );
 
         sweep(&host, &host, "acme").await.expect("sweep");
@@ -2846,18 +2911,20 @@ mod tests {
     #[tokio::test]
     async fn a_sweep_reads_every_history_page_before_advancing() {
         let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.set_watermark("acme", "D1", "050.0");
         host.seed_history_pages(
             "D1",
+            // The wire's order: newest page first.
             vec![
-                vec![history_message("100.1", "U9", "one")],
-                vec![history_message("200.2", "U9", "two")],
                 vec![history_message("300.3", "U9", "three")],
+                vec![history_message("200.2", "U9", "two")],
+                vec![history_message("100.1", "U9", "one")],
             ],
         );
 
         sweep(&host, &host, "acme").await.expect("sweep");
         let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
-        assert_eq!(texts, vec!["one".to_owned(), "two".to_owned(), "three".to_owned()]);
+        assert_eq!(texts, vec!["three".to_owned(), "two".to_owned(), "one".to_owned()]);
         assert_eq!(
             host.watermark("acme", "D1").expect("watermark"),
             Some("300.3".to_owned()),
@@ -2881,6 +2948,7 @@ mod tests {
         // dedupe.
         let host =
             FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
         let mut root = history_message("100.0", "U9", "root");
         root.reply_count = 2;
         host.seed_history("C1", vec![root]);
@@ -2919,6 +2987,7 @@ mod tests {
         )]);
         let mut parent = history_message("100.0", "U9", "trigger");
         parent.reply_count = 2;
+        host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
 
         sweep(&host, &host, "acme").await.expect("trigger sweep");
@@ -2963,6 +3032,7 @@ mod tests {
         ]);
         let mut parent = history_message("100.0", "U9", "trigger");
         parent.reply_count = 1;
+        host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
         sweep(&host, &host, "acme").await.expect("trigger sweep");
         assert_eq!(
@@ -2997,6 +3067,7 @@ mod tests {
         let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
             "acme", "forge", None, "C1",
         )]);
+        host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![history_message("100.0", "U9", "plain")]);
 
         sweep(&host, &host, "acme").await.expect("sweep");
@@ -3023,6 +3094,11 @@ mod tests {
         assert_eq!(threads.len(), 1, "the thread of the mention is tracked");
         assert_eq!(threads[0].parent_ts, "99.0");
         assert_eq!(threads[0].owners, vec![thread_owner("forge", None)]);
+        assert_eq!(
+            host.thread_cursor("acme", "C1", "99.0"),
+            Some("150.0".to_owned()),
+            "the cursor starts at the mention's ts, never the weeks-old parent",
+        );
     }
 
     /// Slack pages a thread newest-first and repeats the parent on every
@@ -3038,6 +3114,7 @@ mod tests {
         )]);
         let mut parent = history_message("100.0", "U9", "trigger");
         parent.reply_count = 3;
+        host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![parent.clone()]);
         sweep(&host, &host, "acme").await.expect("trigger sweep");
 
@@ -3065,6 +3142,122 @@ mod tests {
             host.thread_cursor("acme", "C1", "100.0"),
             Some("300.0".to_owned()),
             "the cursor lands on the newest reply",
+        );
+    }
+
+    /// The headline mention case: a mention from a public channel the
+    /// user has not joined auto-subscribes it, and users.conversations
+    /// (membership-scoped) never lists it - the sweep must still fetch
+    /// its messages and thread replies.
+    #[tokio::test]
+    async fn an_auto_subscribed_channel_the_user_never_joined_is_swept() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        host.set_watermark("acme", MENTION_CURSOR, "100.0");
+        host.seed_search(vec![search_match("150.0", "C9", "ping <@U1>")]);
+        sweep_mentions(&host, &host, "acme").await.expect("mention sweep");
+        assert_eq!(host.auto_subscribed(), vec!["C9".to_owned()], "the mention subscribes C9");
+
+        // C9 is absent from the membership list; only the subscription
+        // set names it.
+        host.seed_history_unlisted("C9", vec![history_message("200.0", "U8", "the follow-up")]);
+        sweep(&host, &host, "acme").await.expect("conversation sweep");
+
+        let delivered = host.delivered();
+        assert!(
+            delivered.iter().any(|message| message.text == "the follow-up"),
+            "the non-member channel's messages still arrive: {delivered:?}",
+        );
+    }
+
+    /// A DM-class subscription cannot be pre-seeded per conversation, so
+    /// first sight baselines: the newest fetched ts becomes the cursor
+    /// and the existing DM history is not delivered as new.
+    #[tokio::test]
+    async fn a_dm_class_subscription_baselines_on_first_sight_instead_of_replaying() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        // The class covers D1, which the fake registers when history is
+        // seeded; its cursor is unset, the shape a fresh DM arrives in.
+        host.seed_history(
+            "D1",
+            // The wire's order: newest first.
+            vec![
+                history_message("300.1", "U9", "old one"),
+                history_message("200.1", "U9", "older two"),
+            ],
+        );
+
+        sweep(&host, &host, "acme").await.expect("first sweep");
+        assert!(
+            host.delivered().is_empty(),
+            "the DM's existing history is baselined, not replayed: {:?}",
+            host.delivered(),
+        );
+        assert_eq!(
+            host.watermark("acme", "D1").expect("watermark"),
+            Some("300.1".to_owned()),
+            "the cursor starts at the newest message seen",
+        );
+
+        host.seed_history(
+            "D1",
+            vec![
+                history_message("400.1", "U9", "new one"),
+                history_message("300.1", "U9", "old one"),
+            ],
+        );
+        sweep(&host, &host, "acme").await.expect("second sweep");
+        let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
+        assert_eq!(texts, vec!["new one".to_owned()], "only what follows the baseline arrives");
+    }
+
+    /// A failed mention delivery holds the mention cursor and skips the
+    /// auto-subscribe, so the next tick retries the whole window instead
+    /// of losing the trigger message.
+    #[tokio::test]
+    async fn a_failed_mention_delivery_holds_the_cursor_and_the_follow() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        host.set_watermark("acme", MENTION_CURSOR, "100.0");
+        host.seed_search(vec![search_match("150.0", "C9", "ping <@U1>")]);
+        host.fail_delivery_at(0);
+
+        let outcome = sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(outcome.delivered, 0, "the failed mention is not counted");
+        assert_eq!(
+            host.watermark("acme", MENTION_CURSOR).expect("watermark"),
+            Some("100.0".to_owned()),
+            "the cursor holds at its previous value",
+        );
+        assert!(
+            host.auto_subscribed().is_empty(),
+            "a mention that did not reach a session subscribes nothing",
+        );
+    }
+
+    /// Two owners on one conversation: a partial fan-out failure holds
+    /// the cursor at its previous value, the same semantics the thread
+    /// walk enforces.
+    #[tokio::test]
+    async fn a_conversation_fanout_failure_holds_the_cursor_for_every_owner() {
+        let host = FakeHost::with_subscriptions(vec![
+            sub_conversation_owned_by("acme", "forge", Some("a"), "C1"),
+            sub_conversation_owned_by("acme", "forge", Some("b"), "C1"),
+        ]);
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_history("C1", vec![history_message("300.0", "U9", "the message")]);
+        // Attempts: a's delivery (0) succeeds, b's (1) fails.
+        host.fail_delivery_at(1);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+        let delivered = host.delivered();
+        assert_eq!(
+            delivered.len(),
+            1,
+            "the owner whose delivery succeeded still received it: {delivered:?}",
+        );
+        assert_eq!(
+            host.watermark("acme", "C1").expect("watermark"),
+            Some("050.0".to_owned()),
+            "the cursor holds below a message that did not reach every owner",
         );
     }
 

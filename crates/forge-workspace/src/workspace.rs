@@ -162,6 +162,11 @@ pub enum SessionChipState {
     Degraded,
 }
 
+/// The dedupe key for a delivered Slack message: one destination is
+/// (project, owner, conversation, ts), so a lead and a worker in one
+/// project never starve each other as "already delivered".
+pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String);
+
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// spawned [`forge_agent::Agent`] handles, one per active session.
@@ -390,7 +395,7 @@ pub struct Workspace {
     /// between the two - this is what makes that re-run idempotent rather
     /// than a re-delivery.
     pub(crate) slack_recently_delivered:
-        Mutex<HashMap<(String, String, String), std::time::Instant>>,
+        Mutex<HashMap<SlackDeliveryKey, std::time::Instant>>,
     /// Set the first time [`Workspace::start_slack_verification`] runs.
     /// Subsequent calls early-return to avoid spawning duplicate probes.
     pub(crate) slack_verification_started: std::sync::atomic::AtomicBool,
@@ -3504,15 +3509,6 @@ impl Workspace {
                 }
                 Command::RespondSlackPost { key, id, approved } => {
                     self.resolve_slack_draft(id, &key, approved);
-                }
-                Command::DeliverSlackMessage { project, team_role, message } => {
-                    let span = tracing::info_span!(
-                        "deliver_slack_message",
-                        project = %project,
-                        conversation = %message.conversation,
-                    );
-                    let _enter = span.enter();
-                    spawn::deliver_slack_message(self, &project, team_role.as_deref(), message);
                 }
                 Command::SwitchAccount { key, account_display_name, launch_settings } => {
                     let span = tracing::info_span!(

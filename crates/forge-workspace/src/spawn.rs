@@ -648,16 +648,22 @@ pub(crate) fn slack_message_to_prose(message: &SlackMessage) -> String {
 /// domain when it is still spawning. Mirrors [`deliver_gotify_message`],
 /// including its rule that a worker-owned subscription never falls through
 /// to the lead.
+///
+/// Returns whether the message reached a destination it can be read from:
+/// dispatched, or buffered for one that will. `false` tells the pump the
+/// cursor must not advance past this message, so a sweep re-runs it -
+/// which is why the dedupe entry commits only after a successful hand-off.
 pub(crate) fn deliver_slack_message(
     workspace: &Arc<Workspace>,
     project: &str,
     team_role: Option<&str>,
     message: SlackMessage,
-) {
+) -> bool {
     let prose = slack_message_to_prose(&message);
     // A sweep re-runs a batch after a 429, a failed watermark write or a
-    // crash; the re-run must drop what was already handed over.
-    if !workspace.slack_delivery_is_new(project, &message) {
+    // crash; the re-run must drop what was already handed over. "Already
+    // delivered" is success for the caller: the cursor may advance.
+    if workspace.slack_delivery_seen(project, team_role, &message) {
         tracing::debug!(
             target: "forge_workspace::spawn",
             project = %project,
@@ -665,7 +671,7 @@ pub(crate) fn deliver_slack_message(
             ts = %message.ts,
             "slack message already delivered; dropping the re-run",
         );
-        return;
+        return true;
     }
 
     if let Some(role) = team_role
@@ -684,8 +690,11 @@ pub(crate) fn deliver_slack_message(
                     "slack deliver to running team worker failed",
                 );
                 send_dispatch_turn_error(workspace, worker_key, &err);
+                return false;
             }
+            workspace.slack_delivery_commit(project, team_role, &message);
         } else if let Some(domain) = workspace.domain_session_for(&worker_key) {
+            workspace.slack_delivery_commit(project, team_role, &message);
             domain.lock().pending_slack_prompts.push(message);
         } else {
             // Live entry exists but its DomainSession isn't registered yet
@@ -700,9 +709,10 @@ pub(crate) fn deliver_slack_message(
                 })
                 .clone();
             drop(handles);
+            workspace.slack_delivery_commit(project, team_role, &message);
             domain.lock().pending_slack_prompts.push(message);
         }
-        return;
+        return true;
     }
 
     let running_lead =
@@ -724,19 +734,24 @@ pub(crate) fn deliver_slack_message(
                 "slack deliver to running project failed",
             );
             send_dispatch_turn_error(workspace, target_key, &err);
+            return false;
         }
-        return;
+        workspace.slack_delivery_commit(project, team_role, &message);
+        return true;
     }
 
     // Asleep: buffer on the synthetic spawn key and spawn the project
-    // (only if it's a real forge.toml project).
+    // (only if it's a real forge.toml project). A target missing from
+    // forge.toml returns false uncommitted: the sweep re-runs it, and
+    // delivery resumes if the project returns or the subscription is
+    // removed - the pump sees a decision, not a silent drop.
     if workspace.find_project_view_by_name(project).is_none() {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project,
-            "slack delivery target gone from forge.toml; skipping",
+            "slack delivery target gone from forge.toml; leaving it for the next sweep",
         );
-        return;
+        return false;
     }
 
     let synth_key = SessionKey::from_session_id(format!("__spawn_{project}__"));
@@ -747,6 +762,7 @@ pub(crate) fn deliver_slack_message(
             .or_insert_with(|| Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None))))
             .clone();
         drop(handles);
+        workspace.slack_delivery_commit(project, team_role, &message);
         domain.lock().pending_slack_prompts.push(message);
     }
 
@@ -761,6 +777,7 @@ pub(crate) fn deliver_slack_message(
             "slack fire SpawnProject dispatch failed",
         );
     }
+    true
 }
 
 /// The team worker labelled `label` in `project`, if a live entry

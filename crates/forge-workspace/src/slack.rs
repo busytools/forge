@@ -137,15 +137,46 @@ impl Workspace {
         self.slack_subs.lock().push(sub);
     }
 
-    /// Whether this exact message has not been handed to a session yet,
-    /// recording it when so. A sweep re-runs a batch on a mid-sweep 429, a
-    /// failed watermark write or a crash; without this the re-run would
-    /// deliver the whole batch again.
-    pub(crate) fn slack_delivery_is_new(&self, project: &str, message: &SlackMessage) -> bool {
-        let key = (project.to_owned(), message.conversation.clone(), message.ts.clone());
+    /// Whether this exact message has already been handed to its
+    /// destination. The owner is part of the key: a lead and a worker in
+    /// one project are two destinations, and one key would starve the
+    /// second as "already delivered".
+    pub(crate) fn slack_delivery_seen(
+        &self,
+        project: &str,
+        team_role: Option<&str>,
+        message: &SlackMessage,
+    ) -> bool {
+        let key = (
+            project.to_owned(),
+            team_role.map(str::to_owned),
+            message.conversation.clone(),
+            message.ts.clone(),
+        );
         let mut seen = self.slack_recently_delivered.lock();
         seen.retain(|_, seen_at| seen_at.elapsed() < DELIVERY_REMEMBER);
-        seen.insert(key, std::time::Instant::now()).is_none()
+        seen.contains_key(&key)
+    }
+
+    /// Record a hand-off so a sweep re-run drops it. Committed only after
+    /// a successful hand-off: a failed dispatch leaves the key
+    /// unrecorded, so the next sweep re-delivers instead of losing the
+    /// message behind a cursor that moved on.
+    pub(crate) fn slack_delivery_commit(
+        &self,
+        project: &str,
+        team_role: Option<&str>,
+        message: &SlackMessage,
+    ) {
+        let key = (
+            project.to_owned(),
+            team_role.map(str::to_owned),
+            message.conversation.clone(),
+            message.ts.clone(),
+        );
+        let mut seen = self.slack_recently_delivered.lock();
+        seen.retain(|_, seen_at| seen_at.elapsed() < DELIVERY_REMEMBER);
+        seen.insert(key, std::time::Instant::now());
     }
 
     /// Hold a composed draft and hand back its id plus the receiver the
@@ -260,21 +291,24 @@ impl Workspace {
     }
 
     /// Track a thread because a delivered message anchors it, owned by the
-    /// matching subscription. A new row starts at the parent, so its first
-    /// replies walk reaches everything after the parent; a row that exists
-    /// keeps its cursor and gains the owner if it was not there.
+    /// matching subscription. A new row's cursor starts at `since` - the
+    /// delivered message's own ts, not the parent's: the parent of a
+    /// mention can be weeks old, and a cursor seeded from it would
+    /// idle-drop the thread before its first reply walk. A row that
+    /// exists keeps its cursor and gains the owner if it was not there.
     pub(crate) fn follow_slack_thread(
         &self,
         workspace: &str,
         conversation: &str,
         parent_ts: &str,
         owner: forge_primitives::slack::SlackThreadOwner,
+        since: &str,
     ) {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
         let mut record = match crate::store::slack::thread(db, workspace, conversation, parent_ts) {
             Ok(record) => record.unwrap_or_else(|| forge_primitives::slack::SlackThreadRecord {
-                cursor: parent_ts.to_owned(),
+                cursor: since.to_owned(),
                 owners: Vec::new(),
             }),
             Err(error) => {
@@ -700,9 +734,10 @@ impl SlackHost for SlackSubsystemHost {
         conversation: &str,
         parent_ts: &str,
         owner: SlackThreadOwner,
+        since: &str,
     ) {
         let Some(ws) = self.0.upgrade() else { return };
-        ws.follow_slack_thread(workspace, conversation, parent_ts, owner);
+        ws.follow_slack_thread(workspace, conversation, parent_ts, owner, since);
     }
 
     fn set_connected(&self, workspace: &str, connected: bool) {
@@ -717,22 +752,16 @@ impl SlackHost for SlackSubsystemHost {
 
     fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool {
         let Some(ws) = self.0.upgrade() else { return false };
-        match ws.dispatch(crate::protocol::Command::DeliverSlackMessage {
-            project: subscription.project.clone(),
-            team_role: subscription.team_role.clone(),
-            message: message.clone(),
-        }) {
-            Ok(()) => true,
-            Err(err) => {
-                tracing::warn!(
-                    target: "forge_workspace::slack",
-                    project = %subscription.project,
-                    error = ?err,
-                    "slack DeliverSlackMessage dispatch failed",
-                );
-                false
-            }
-        }
+        // Direct, not via the command bus: the pump needs the delivery's
+        // own outcome, and a bus round-trip reports only that the command
+        // was accepted - a mid-delivery failure would read as success and
+        // advance the cursor past an undelivered message.
+        crate::spawn::deliver_slack_message(
+            &ws,
+            &subscription.project,
+            subscription.team_role.as_deref(),
+            message.clone(),
+        )
     }
 }
 
@@ -930,15 +959,15 @@ mod tests {
         (crate::slack::SlackSubsystemHost::new(&ws), ws, dir)
     }
 
-    /// A thread a delivered message anchors is tracked from its parent,
-    /// owned once per session even when both followed it.
+    /// A thread a delivered message anchors is tracked from the caller's
+    /// `since`, owned once per session even when both followed it.
     #[test]
-    fn a_followed_thread_starts_at_its_parent_and_gains_its_owner_once() {
+    fn a_followed_thread_starts_at_the_callers_since_and_gains_its_owner_once() {
         let (host, ws, _dir) = host_with_c1_subscriber("forge", Some("tester"));
         let parent = recent_ts();
 
-        host.follow_thread("acme", "C1", &parent, owner("forge", Some("tester")));
-        host.follow_thread("acme", "C1", &parent, owner("forge", Some("tester")));
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("tester")), &parent);
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("tester")), &parent);
 
         let threads = host.followed_threads("acme", "C1");
         assert_eq!(threads.len(), 1);
@@ -947,13 +976,13 @@ mod tests {
         assert_eq!(
             host.thread_watermark("acme", "C1", &parent).expect("read"),
             Some(parent.clone()),
-            "a new thread starts at its parent",
+            "a new thread starts at the caller's since",
         );
 
         // A second session following the same thread joins the record
         // rather than resetting it.
         ws.add_slack_subscription(sub_for_conversation("other", None, "C1"), true);
-        host.follow_thread("acme", "C1", &parent, owner("other", None));
+        host.follow_thread("acme", "C1", &parent, owner("other", None), &recent_ts());
         let threads = host.followed_threads("acme", "C1");
         assert_eq!(threads[0].owners.len(), 2, "the second owner is added");
         assert_eq!(
@@ -971,8 +1000,8 @@ mod tests {
         let (host, ws, _dir) = host_with_c1_subscriber("forge", Some("a"));
         ws.add_slack_subscription(sub_for_conversation("forge", Some("b"), "C1"), true);
         let parent = recent_ts();
-        host.follow_thread("acme", "C1", &parent, owner("forge", Some("a")));
-        host.follow_thread("acme", "C1", &parent, owner("forge", Some("b")));
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("a")), &parent);
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("b")), &parent);
 
         let b_id = ws
             .slack_subscriptions_for_project("forge")
@@ -1021,19 +1050,41 @@ mod tests {
             .as_secs();
         let days_ago = |days: u64| format!("{}.{:06}", now - days * 24 * 60 * 60, 0);
 
-        host.follow_thread("acme", "C1", &days_ago(15), owner("forge", None));
-        host.follow_thread("acme", "C1", &days_ago(13), owner("forge", None));
+        host.follow_thread("acme", "C1", &days_ago(15), owner("forge", None), &days_ago(15));
+        host.follow_thread("acme", "C1", &days_ago(13), owner("forge", None), &days_ago(13));
 
         let threads = host.followed_threads("acme", "C1");
         assert_eq!(threads.len(), 1, "the 15-day idle thread is dropped, the 13-day one kept");
         assert_eq!(threads[0].parent_ts, days_ago(13), "and the survivor is the young one");
     }
 
+    /// A mention dug up a weeks-old thread: the row's idle clock runs
+    /// from the follow (the mention's ts), never from the parent, or the
+    /// thread would be dropped before its first reply walk.
+    #[test]
+    fn a_mention_in_an_old_thread_is_not_idle_dropped_by_its_parents_age() {
+        let (host, _ws, _dir) = host_with_c1_subscriber("forge", None);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the clock is past the epoch")
+            .as_secs();
+        let twenty_days_ago = format!("{}.{:06}", now - 20 * 24 * 60 * 60, 0);
+
+        host.follow_thread("acme", "C1", &twenty_days_ago, owner("forge", None), &recent_ts());
+
+        let threads = host.followed_threads("acme", "C1");
+        assert_eq!(
+            threads.len(),
+            1,
+            "a thread followed now must survive a weeks-old parent: {threads:?}",
+        );
+    }
+
     #[test]
     fn advancing_a_thread_cursor_keeps_its_owners() {
         let (host, _ws, _dir) = host_with_c1_subscriber("forge", Some("tester"));
         let parent = recent_ts();
-        host.follow_thread("acme", "C1", &parent, owner("forge", Some("tester")));
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("tester")), &parent);
         let advanced = recent_ts();
         host.set_thread_watermark("acme", "C1", &parent, &advanced);
         assert_eq!(
@@ -1075,10 +1126,34 @@ mod tests {
             files: Vec::new(),
         };
 
-        assert!(ws.slack_delivery_is_new("forge", &message), "the first delivery is new");
+        assert!(!ws.slack_delivery_seen("forge", None, &message), "the first delivery is unseen");
+        ws.slack_delivery_commit("forge", None, &message);
         assert!(
-            !ws.slack_delivery_is_new("forge", &message),
-            "the same ts in the same conversation is a re-run, not a second message",
+            ws.slack_delivery_seen("forge", None, &message),
+            "the same ts in the same conversation to the same owner is a re-run",
+        );
+    }
+
+    /// A lead and a worker in one project are two destinations: one
+    /// delivery must never mark the other as already done.
+    #[test]
+    fn a_delivery_to_one_owner_never_dedupes_another_owners() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let message = SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: "C1".to_owned(),
+            conversation_label: "C1".to_owned(),
+            ts: "200.1".to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            text: "hello".to_owned(),
+            files: Vec::new(),
+        };
+
+        ws.slack_delivery_commit("forge", None, &message);
+        assert!(
+            !ws.slack_delivery_seen("forge", Some("tester"), &message),
+            "the worker's delivery is its own, never the lead's duplicate",
         );
     }
 
