@@ -38,6 +38,14 @@ impl std::fmt::Debug for SlackConfig {
     }
 }
 
+/// Slack sends `purpose` and `topic` as objects carrying their text in
+/// `value`, and omits both on a DM.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct SlackConversationText {
+    #[serde(default)]
+    pub value: String,
+}
+
 /// A conversation as `users.conversations` reports it. Fields Slack omits
 /// per conversation type default rather than failing the whole decode.
 #[derive(Debug, Clone, Deserialize)]
@@ -58,6 +66,10 @@ pub struct SlackConversation {
     /// The other member's user id, present on a DM.
     #[serde(default)]
     pub user: Option<String>,
+    #[serde(default)]
+    pub purpose: Option<SlackConversationText>,
+    #[serde(default)]
+    pub topic: Option<SlackConversationText>,
 }
 
 /// What one subscription watches inside a workspace.

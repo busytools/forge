@@ -108,6 +108,24 @@ fn list_rows(
         .collect()
 }
 
+/// Whether one conversation passes `slack__list`'s optional filters: a
+/// case-insensitive substring over the display name, purpose and topic,
+/// and an exact kind match.
+fn passes_filter(conversation: &SlackConversation, name: Option<&str>, kind: Option<&str>) -> bool {
+    if let Some(kind) = kind
+        && conversation_kind(conversation) != kind
+    {
+        return false;
+    }
+    let Some(needle) = name else { return true };
+    let needle = needle.to_lowercase();
+    [conversation_name(conversation).to_lowercase()]
+        .into_iter()
+        .chain(conversation.purpose.iter().map(|p| p.value.to_lowercase()))
+        .chain(conversation.topic.iter().map(|t| t.value.to_lowercase()))
+        .any(|haystack| haystack.contains(&needle))
+}
+
 fn format_list_error(err: &SlackListError) -> String {
     match err {
         SlackListError::NotConfigured => {
@@ -135,7 +153,14 @@ struct List {
 struct ListArgs {
     #[serde(default)]
     workspace: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
 }
+
+/// The kinds `kind` accepts, matching what each row reports.
+const LIST_KINDS: &str = "public, private, im, mpim";
 
 #[async_trait::async_trait]
 impl Tool for List {
@@ -147,8 +172,10 @@ impl Tool for List {
         "List every conversation in a Slack workspace - public and private channels, DMs and \
          group DMs the token's user is a member of - each row marked with whether YOU are \
          subscribed, counting only your own subscriptions rather than another session's. Pass \
-         `workspace` to choose one; omit it when only one is configured. Returns a JSON array \
-         of {id, name, kind, subscribed}. Any session in the project may call this."
+         `workspace` to choose one; omit it when only one is configured. Pass `name` for only \
+         conversations whose name, purpose or topic contains that text (case-insensitive), or \
+         `kind` for only one conversation type. Returns a JSON array of \
+         {id, name, kind, subscribed}. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -160,6 +187,17 @@ impl Tool for List {
                     "description": "The `[[slack]]` workspace label to list. Omit it when only \
                                     one workspace is configured.",
                 },
+                "name": {
+                    "type": "string",
+                    "description": "Only conversations whose name, purpose or topic contains \
+                                    this text (case-insensitive).",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["public", "private", "im", "mpim"],
+                    "description": "Only conversations of this kind, matching the `kind` field \
+                                    in each row.",
+                },
             },
             "additionalProperties": false,
         })
@@ -170,6 +208,11 @@ impl Tool for List {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
+        if let Some(kind) = args.kind.as_deref()
+            && !matches!(kind, "public" | "private" | "im" | "mpim")
+        {
+            return tool_error(format!("unknown kind '{kind}'; the kinds are {LIST_KINDS}"));
+        }
         let caller = match self.caller_key.current() {
             Ok(key) => key,
             Err(err) => return tool_error(err.to_string()),
@@ -177,7 +220,14 @@ impl Tool for List {
         match self.facade.conversations(args.workspace.as_deref()).await {
             Ok(conversations) => {
                 let subscribed = self.facade.subscribed_targets(&caller, args.workspace.as_deref());
-                let rows = list_rows(&conversations, &subscribed);
+                let kept: Vec<SlackConversation> = conversations
+                    .iter()
+                    .filter(|conversation| {
+                        passes_filter(conversation, args.name.as_deref(), args.kind.as_deref())
+                    })
+                    .cloned()
+                    .collect();
+                let rows = list_rows(&kept, &subscribed);
                 match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => {
@@ -987,7 +1037,7 @@ impl Tool for User {
 mod tests {
     use super::*;
     use crate::mcp::slack::facade::MockSlackFacade;
-    use forge_primitives::slack::SlackConversation;
+    use forge_primitives::slack::{SlackConversation, SlackConversationText};
     use std::sync::Arc;
 
     fn channel(id: &str, name: &str) -> SlackConversation {
@@ -1000,6 +1050,8 @@ mod tests {
             is_mpim: false,
             is_archived: false,
             user: None,
+            purpose: None,
+            topic: None,
         }
     }
 
@@ -1013,6 +1065,8 @@ mod tests {
             is_mpim: false,
             is_archived: false,
             user: Some(user.to_owned()),
+            purpose: None,
+            topic: None,
         }
     }
 
@@ -1081,6 +1135,34 @@ mod tests {
         let kinds: Vec<&str> =
             rows.iter().map(|row| row["kind"].as_str().unwrap_or_default()).collect();
         assert_eq!(kinds, vec!["public", "im", "private", "mpim"]);
+    }
+
+    #[test]
+    fn the_name_filter_matches_the_name_purpose_and_topic_case_insensitively() {
+        let mut ch = channel("C1", "random");
+        ch.purpose = Some(SlackConversationText { value: "Deploy chatter".to_owned() });
+        ch.topic = Some(SlackConversationText { value: "release coordination".to_owned() });
+
+        assert!(passes_filter(&ch, Some("rand"), None), "the name matches");
+        assert!(passes_filter(&ch, Some("deploy"), None), "the purpose matches");
+        assert!(
+            passes_filter(&ch, Some("RELEASE"), None),
+            "the topic matches, case-insensitively",
+        );
+        assert!(!passes_filter(&ch, Some("general"), None), "an unrelated needle matches nothing");
+        assert!(
+            passes_filter(&dm("D1", "U9"), Some("u9"), None),
+            "a DM's display name is its partner id",
+        );
+    }
+
+    #[test]
+    fn the_kind_filter_keeps_only_that_kind() {
+        let conversations = vec![channel("C1", "general"), dm("D1", "U9")];
+        let kept: Vec<&SlackConversation> =
+            conversations.iter().filter(|c| passes_filter(c, None, Some("im"))).collect();
+        assert_eq!(kept.len(), 1, "one conversation survives the kind filter");
+        assert_eq!(kept[0].id, "D1", "and it is the one of that kind");
     }
 
     #[test]
@@ -1235,6 +1317,48 @@ mod tests {
         };
         assert_eq!(by_id("C1")["subscribed"], true, "the caller's target reaches its row");
         assert_eq!(by_id("C2")["subscribed"], false, "an unwatched row stays unmarked");
+    }
+
+    #[tokio::test]
+    async fn slack_list_filters_apply_before_the_rows_are_built() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.conversations_result.lock() = Some(Ok(vec![channel("C1", "general"), dm("D1", "U9")]));
+        let tool = List { facade: mock.clone(), caller_key: resolver() };
+
+        let out = tool.call(input(serde_json::json!({ "kind": "im" }))).await;
+        assert!(!out.is_error, "a known kind succeeds: {}", out.blocks[0].text);
+        let rows: serde_json::Value =
+            serde_json::from_str(&out.blocks[0].text).expect("the output is JSON");
+        let ids: Vec<&str> = rows
+            .as_array()
+            .expect("an array of rows")
+            .iter()
+            .map(|row| row["id"].as_str().expect("an id"))
+            .collect();
+        assert_eq!(ids, vec!["D1"], "the kind filter keeps only that kind");
+        assert_eq!(
+            mock.conversations_calls.lock().len(),
+            1,
+            "filtering is local; the workspace is queried once",
+        );
+    }
+
+    #[tokio::test]
+    async fn slack_list_refuses_an_unknown_kind() {
+        let mock = Arc::new(MockSlackFacade::new());
+        let tool = List { facade: mock.clone(), caller_key: resolver() };
+
+        let out = tool.call(input(serde_json::json!({ "kind": "chanels" }))).await;
+        assert!(out.is_error, "a typo must not read as an empty workspace");
+        assert!(
+            out.blocks[0].text.contains("chanels"),
+            "the error names what was rejected: {}",
+            out.blocks[0].text,
+        );
+        assert!(
+            mock.conversations_calls.lock().is_empty(),
+            "an invalid filter never reaches Slack",
+        );
     }
 
     #[tokio::test]

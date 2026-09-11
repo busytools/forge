@@ -1515,6 +1515,34 @@ mod tests {
         assert_eq!(empty.next_cursor, None, "an empty cursor ends the walk");
     }
 
+    #[test]
+    fn purpose_and_topic_decode_and_a_dm_omits_them() {
+        let page = decode_conversations_page(
+            r#"{"ok":true,"channels":[{"id":"C1","name":"general","is_channel":true,
+                "purpose":{"value":"Deploy chatter","creator":"U1","last_set":1700000000},
+                "topic":{"value":"release coordination"}}]}"#,
+        )
+        .expect("decodes");
+        let channel = &page.conversations[0];
+        assert_eq!(
+            channel.purpose.as_ref().expect("a channel carries its purpose").value,
+            "Deploy chatter",
+        );
+        assert_eq!(
+            channel.topic.as_ref().expect("a channel carries its topic").value,
+            "release coordination",
+            "only the value is read; the metadata stays behind",
+        );
+
+        let dm =
+            decode_conversations_page(r#"{"ok":true,"channels":[{"id":"D1","is_im":true}]}"#)
+                .expect("decodes");
+        assert!(
+            dm.conversations[0].purpose.is_none() && dm.conversations[0].topic.is_none(),
+            "a DM carries neither object",
+        );
+    }
+
     /// The input class a message body actually contains, and the class a
     /// hand-rolled encoder silently splits a parameter on.
     #[test]
@@ -1559,6 +1587,8 @@ mod tests {
             is_mpim: false,
             is_archived: false,
             user: None,
+            purpose: None,
+            topic: None,
         }
     }
 
@@ -1572,6 +1602,8 @@ mod tests {
             is_mpim: false,
             is_archived: false,
             user: Some(user.to_owned()),
+            purpose: None,
+            topic: None,
         }
     }
 
@@ -1713,6 +1745,8 @@ mod tests {
             is_mpim: false,
             is_archived: false,
             user: is_im.then(|| "U9".to_owned()),
+            purpose: None,
+            topic: None,
         }
     }
 
