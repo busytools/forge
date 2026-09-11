@@ -84,6 +84,9 @@ fn is_subscribed(conversation: &SlackConversation, subscribed: &[SlackSubscripti
     subscribed.iter().any(|target| match target {
         SlackSubscriptionTarget::DirectMessages => conversation.is_im || conversation.is_mpim,
         SlackSubscriptionTarget::Conversation { id, .. } => id == &conversation.id,
+        // A mention target is not a conversation subscription, so it
+        // marks no row.
+        SlackSubscriptionTarget::Mentions => false,
     })
 }
 
@@ -241,6 +244,8 @@ struct SubscribeArgs {
     #[serde(default)]
     direct_messages: Option<bool>,
     #[serde(default)]
+    mentions: Option<bool>,
+    #[serde(default)]
     conversations: Option<Vec<ChannelWatchArg>>,
 }
 
@@ -251,12 +256,14 @@ impl Tool for Subscribe {
     }
 
     fn description(&self) -> &'static str {
-        "Subscribe YOUR session to a Slack workspace: either the whole DM class, or named \
-         conversations with a mode. A conversation in `mentions` mode delivers only messages \
-         that mention the user; `all` delivers every message. Pass `workspace` to choose one, \
-         or omit it when only one is configured. Records are inert until the poll pump lands; \
-         nothing is delivered yet. Returns the new subscription ids. Any session in the project \
-         may call this."
+        "Subscribe YOUR session to a Slack workspace: the whole DM class, being mentioned \
+         anywhere in the workspace, or named conversations with a mode. A mention subscription \
+         sees mentions in public channels you are not in as well as in every conversation you \
+         are, but not in private channels you are not in - those you could not read anyway, and \
+         search lag means a mention is not instantaneous. A conversation in `mentions` mode \
+         delivers only messages that mention the user; `all` delivers every message. Pass \
+         `workspace` to choose one, or omit it when only one is configured. Returns the new \
+         subscription ids. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -271,6 +278,12 @@ impl Tool for Subscribe {
                 "direct_messages": {
                     "type": "boolean",
                     "description": "Watch every DM in the workspace, group DMs included.",
+                },
+                "mentions": {
+                    "type": "boolean",
+                    "description": "Watch for being mentioned anywhere in the workspace, including \
+                                    public channels you are not in. Not private channels you are \
+                                    not in.",
                 },
                 "conversations": {
                     "type": "array",
@@ -307,6 +320,9 @@ impl Tool for Subscribe {
         if args.direct_messages.unwrap_or(false) {
             requests.push(SlackSubscribeRequest::DirectMessages);
         }
+        if args.mentions.unwrap_or(false) {
+            requests.push(SlackSubscribeRequest::Mentions);
+        }
         if let Some(watches) = args.conversations.filter(|watches| !watches.is_empty()) {
             requests.push(SlackSubscribeRequest::Conversations(
                 watches
@@ -317,7 +333,9 @@ impl Tool for Subscribe {
         }
         if requests.is_empty() {
             return tool_error(
-                "pass `direct_messages: true`, or a non-empty `conversations` array".to_owned(),
+                "pass `direct_messages: true`, `mentions: true`, or a non-empty `conversations` \
+                 array"
+                    .to_owned(),
             );
         }
         let caller = match self.caller_key.current() {

@@ -149,6 +149,60 @@ impl Workspace {
         true
     }
 
+    /// Watch `conversation` because a mention arrived in it, owned by
+    /// whoever subscribes to mentions in that workspace - not the lead,
+    /// and not whichever session happens to be active. `All` mode is
+    /// deliberate: pulled into a conversation by a mention, the agent
+    /// should see what is said next rather than only the next mention.
+    /// Returns whether a record was added.
+    pub(crate) fn auto_subscribe_slack_conversation(
+        &self,
+        workspace: &str,
+        conversation: &str,
+    ) -> bool {
+        let owner = {
+            let subs = self.slack_subs.lock();
+            let owner = subs.iter().find(|sub| {
+                sub.workspace == workspace
+                    && matches!(
+                        sub.target,
+                        forge_primitives::slack::SlackSubscriptionTarget::Mentions
+                    )
+            });
+            let Some(owner) = owner else { return false };
+            let covered = subs.iter().any(|sub| {
+                sub.workspace == workspace
+                    && sub.project == owner.project
+                    && sub.team_role == owner.team_role
+                    && matches!(
+                        &sub.target,
+                        forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, .. }
+                            if id == conversation
+                    )
+            });
+            if covered {
+                return false;
+            }
+            (owner.project.clone(), owner.team_role.clone())
+        };
+
+        self.add_slack_subscription(
+            forge_primitives::slack::SlackSubscription {
+                id: Uuid::new_v4(),
+                workspace: workspace.to_owned(),
+                project: owner.0,
+                team_role: owner.1,
+                target: forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                    id: conversation.to_owned(),
+                    mode: forge_primitives::slack::SlackWatchMode::All,
+                },
+                created_at: std::time::SystemTime::now(),
+            },
+            true,
+        );
+        true
+    }
+
     /// Per-workspace pump liveness, for the Inspector's SLACK section.
     /// One entry per workspace a pump has reported on.
     pub fn slack_connected_workspaces(&self) -> std::collections::BTreeMap<String, bool> {
@@ -354,6 +408,11 @@ impl SlackHost for SlackSubsystemHost {
         ws.slack_connected.lock().insert(workspace.to_owned(), connected);
     }
 
+    fn auto_subscribe(&self, workspace: &str, message: &SlackMessage) -> bool {
+        let Some(ws) = self.0.upgrade() else { return false };
+        ws.auto_subscribe_slack_conversation(workspace, &message.conversation)
+    }
+
     fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) {
         let Some(ws) = self.0.upgrade() else { return };
         if let Err(err) = ws.dispatch(crate::protocol::Command::DeliverSlackMessage {
@@ -374,7 +433,7 @@ impl SlackHost for SlackSubsystemHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_primitives::slack::{SlackSubscription, SlackSubscriptionTarget};
+    use forge_primitives::slack::{SlackSubscription, SlackSubscriptionTarget, SlackWatchMode};
     use uuid::Uuid;
 
     fn cfg(workspace: &str, token: &str) -> SlackConfig {
@@ -501,6 +560,53 @@ mod tests {
         ws.remove_slack_subscription_owned_by("acme", id, None);
         ws.stop_slack_subsystem_if_idle();
         assert!(ws.slack_subsystem.lock().is_empty(), "the pump stops with its last subscription");
+    }
+
+    fn sub_mentions_for(project: &str, team_role: Option<&str>) -> SlackSubscription {
+        let mut sub = sub_for(project, team_role);
+        sub.target = SlackSubscriptionTarget::Mentions;
+        sub
+    }
+
+    #[test]
+    fn the_auto_subscription_lands_on_the_mention_subscriptions_owner() {
+        // Not on the lead, and not on whichever session happens to be
+        // active: the conversation belongs to whoever asked to be told.
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.add_slack_subscription(sub_mentions_for("forge", Some("tester")), true);
+
+        ws.auto_subscribe_slack_conversation("acme", "C1");
+
+        let added = ws.slack_subscriptions_for_project("forge");
+        assert!(
+            added.iter().any(|sub| sub.team_role.as_deref() == Some("tester")
+                && sub.target
+                    == SlackSubscriptionTarget::Conversation {
+                        id: "C1".to_owned(),
+                        mode: SlackWatchMode::All,
+                    }),
+            "the conversation lands on the mention subscription's owner: {added:?}",
+        );
+    }
+
+    fn sub_for_conversation(project: &str, team_role: Option<&str>, id: &str) -> SlackSubscription {
+        let mut sub = sub_for(project, team_role);
+        sub.target =
+            SlackSubscriptionTarget::Conversation { id: id.to_owned(), mode: SlackWatchMode::All };
+        sub
+    }
+
+    #[test]
+    fn a_conversation_already_watched_is_not_auto_subscribed_again() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.add_slack_subscription(sub_mentions_for("forge", None), true);
+        ws.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
+
+        assert!(
+            !ws.auto_subscribe_slack_conversation("acme", "C1"),
+            "a conversation that owner already watches adds nothing",
+        );
+        assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2, "and no third record");
     }
 
     #[test]

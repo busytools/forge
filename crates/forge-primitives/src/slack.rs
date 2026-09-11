@@ -68,6 +68,14 @@ pub enum SlackSubscriptionTarget {
     DirectMessages,
     /// One conversation, with the mode that decides what reaches the session.
     Conversation { id: String, mode: SlackWatchMode },
+    /// Every message in this workspace that mentions the user, including
+    /// public channels they are not in. Not private channels they are not
+    /// in, which they could not read anyway.
+    ///
+    /// Swept by one search per workspace rather than by conversation, so
+    /// the per-conversation matching path never claims it - letting both
+    /// claim a mention would deliver it twice.
+    Mentions,
 }
 
 /// What a conversation subscription lets through.

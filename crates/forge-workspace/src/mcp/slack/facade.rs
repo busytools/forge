@@ -180,6 +180,8 @@ pub(crate) enum SlackSubscribeRequest {
     DirectMessages,
     /// Named conversations, each with its own mode.
     Conversations(Vec<SlackChannelWatch>),
+    /// Being mentioned anywhere in the workspace.
+    Mentions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -558,6 +560,7 @@ impl SlackFacade for ProdSlackFacade {
                     mode: watch.mode,
                 })
                 .collect(),
+            SlackSubscribeRequest::Mentions => vec![SlackSubscriptionTarget::Mentions],
         };
         let mut ids = Vec::with_capacity(targets.len());
         for target in targets {
@@ -1338,6 +1341,18 @@ mod tests {
 
     /// `tokio::test`: a successful subscribe starts the workspace's pump,
     /// which needs a runtime.
+    /// Deduplication is deliberately not done: two sessions may each want
+    /// their own mention feed, and merging them would silently starve one.
+    #[tokio::test]
+    async fn subscribing_twice_to_mentions_yields_two_records() {
+        let (facade, ws, _api, _rx) = facade_with_recording_slack();
+
+        facade.subscribe(&caller(), Some("acme"), SlackSubscribeRequest::Mentions).expect("first");
+        facade.subscribe(&caller(), Some("acme"), SlackSubscribeRequest::Mentions).expect("second");
+
+        assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2);
+    }
+
     #[tokio::test]
     async fn subscribing_to_an_unknown_workspace_is_refused() {
         // Bound, not inline: the facade holds a Weak, so a temporary Arc

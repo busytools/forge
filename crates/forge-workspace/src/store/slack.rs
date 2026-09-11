@@ -152,6 +152,16 @@ mod tests {
     }
 
     #[test]
+    fn a_record_round_trips_with_the_mention_target() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let mut s = sub("p1");
+        s.target = SlackSubscriptionTarget::Mentions;
+        insert(&db, &s).expect("insert");
+        assert_eq!(list(&db).expect("list")[0].target, SlackSubscriptionTarget::Mentions);
+    }
+
+    #[test]
     fn a_watermark_round_trips_as_the_string_slack_sent() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");

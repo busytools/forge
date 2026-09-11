@@ -1801,6 +1801,9 @@ fn append_slack_subscription(
         forge_primitives::slack::SlackSubscriptionTarget::DirectMessages => {
             "direct messages".to_owned()
         }
+        forge_primitives::slack::SlackSubscriptionTarget::Mentions => {
+            "mentions anywhere".to_owned()
+        }
         forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, mode } => match mode {
             forge_primitives::slack::SlackWatchMode::All => format!("{id} · every message"),
             forge_primitives::slack::SlackWatchMode::MentionsOnly => {

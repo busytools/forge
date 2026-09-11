@@ -48,6 +48,12 @@ pub trait SlackHost: Send + Sync {
 
     /// Hand one matched message to its subscriber's session.
     fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage);
+
+    /// Called after a mention is delivered, so the conversation it came
+    /// from is watched too and the agent can reply into it rather than
+    /// only seeing the ping. Returns whether a record was added: the host
+    /// does nothing when that owner already covers the conversation.
+    fn auto_subscribe(&self, workspace: &str, message: &SlackMessage) -> bool;
 }
 
 /// The Web API calls this connector makes, behind a trait so a sweep or
@@ -285,6 +291,8 @@ fn matches(
                     SlackWatchMode::MentionsOnly => mentions(text, user_id),
                 }
         }
+        // Swept by search, never by conversation.
+        SlackSubscriptionTarget::Mentions => false,
     }
 }
 
@@ -307,6 +315,7 @@ fn targets(subscriptions: &[SlackSubscription], conversation: &SlackConversation
     subscriptions.iter().any(|s| match &s.target {
         SlackSubscriptionTarget::DirectMessages => conversation.is_im || conversation.is_mpim,
         SlackSubscriptionTarget::Conversation { id, .. } => id == &conversation.id,
+        SlackSubscriptionTarget::Mentions => false,
     })
 }
 
@@ -624,6 +633,78 @@ pub(crate) async fn sweep(
     Ok(SweepOutcome { delivered, rate_limited: None })
 }
 
+/// The watermark key for a workspace's whole mention stream. One cursor,
+/// not one per conversation: both sides share this constant so a typo
+/// cannot silently reset it and re-deliver everything.
+pub const MENTION_CURSOR: &str = "__mentions__";
+
+/// Mentions fetched per search. The workspace's newest, since the query is
+/// timestamp-sorted.
+const MENTION_SEARCH_COUNT: u32 = 20;
+
+/// Sweep the workspace's mention stream. Returns at once when no
+/// `Mentions` target exists, so a workspace with only conversation
+/// subscriptions never spends a search call on every tick.
+pub(crate) async fn sweep_mentions(
+    host: &dyn SlackHost,
+    api: &dyn SlackApi,
+    workspace: &str,
+) -> Result<SweepOutcome, SlackError> {
+    let subscriptions = host.subscriptions(workspace);
+    let Some(subscription) =
+        subscriptions.iter().find(|s| matches!(s.target, SlackSubscriptionTarget::Mentions))
+    else {
+        return Ok(SweepOutcome { delivered: 0, rate_limited: None });
+    };
+    // Without the authenticated user's id there is no token to search for.
+    let Some(user_id) = host.user_id(workspace).filter(|id| !id.is_empty()) else {
+        return Ok(SweepOutcome { delivered: 0, rate_limited: None });
+    };
+
+    let watermark = host.watermark(workspace, MENTION_CURSOR);
+    let query = format!("<@{user_id}>");
+    let found = match api.search_messages(&query, MENTION_SEARCH_COUNT).await {
+        Ok(found) => found,
+        Err(SlackError::RateLimited { retry_after, .. }) => {
+            return Ok(SweepOutcome { delivered: 0, rate_limited: Some(retry_after) });
+        }
+        Err(error) => return Err(error),
+    };
+
+    let mut delivered = 0;
+    let mut newest: Option<String> = None;
+    for hit in &found {
+        if !is_newer(&hit.ts, watermark.as_deref()) {
+            continue;
+        }
+        let message = SlackMessage {
+            workspace: workspace.to_owned(),
+            conversation: hit.conversation_id.clone(),
+            conversation_label: hit
+                .conversation_name
+                .clone()
+                .unwrap_or_else(|| hit.conversation_id.clone()),
+            ts: hit.ts.clone(),
+            thread_ts: None,
+            user: hit.username.clone(),
+            text: hit.text.clone(),
+        };
+        host.deliver(subscription, &message);
+        // Ved's ask: a mention pulls the agent into the conversation, so
+        // the reply back and forth does not need another subscription.
+        host.auto_subscribe(workspace, &message);
+        delivered += 1;
+        if newest.as_deref().is_none_or(|current| hit.ts.as_str() > current) {
+            newest = Some(hit.ts.clone());
+        }
+    }
+    if let Some(newest) = newest {
+        host.set_watermark(workspace, MENTION_CURSOR, &newest);
+    }
+
+    Ok(SweepOutcome { delivered, rate_limited: None })
+}
+
 /// The wait before the next sweep: the configured interval, or a rate
 /// limit's delay when one was reported.
 pub(crate) fn next_interval(configured: Duration, rate_limited: Option<Duration>) -> Duration {
@@ -675,6 +756,22 @@ pub async fn run_workspace_pump(
                     "slack sweep failed",
                 );
             }
+        }
+        // The mention stream is one search per workspace, not one call per
+        // conversation, so it costs the same whether one channel is watched
+        // or fifty. It returns at once when nothing subscribes to mentions.
+        match sweep_mentions(host.as_ref(), &client, &workspace).await {
+            Ok(outcome) => {
+                if let Some(delay) = outcome.rate_limited {
+                    wait = next_interval(interval, Some(delay));
+                }
+            }
+            Err(error) => tracing::warn!(
+                target: "forge_connectors::slack",
+                workspace = %workspace,
+                %error,
+                "slack mention sweep failed",
+            ),
         }
     }
     host.set_connected(&workspace, false);
@@ -1370,6 +1467,17 @@ mod tests {
         assert!(!wants(&subs, &channel, Some("U1"), "my own words", "U1"));
     }
 
+    /// A mention target sweeps by search rather than by conversation, so
+    /// the per-conversation path must never claim it - claiming it would
+    /// deliver the same mention twice.
+    #[test]
+    fn a_mention_target_is_not_a_conversation_target() {
+        let subs = vec![sub_for(SlackSubscriptionTarget::Mentions)];
+        let channel = conversation_channel("C1", "general");
+        assert!(!wants(&subs, &channel, Some("U9"), "no mention here", "U1"));
+        assert!(!wants(&subs, &channel, Some("U9"), "a mention <@U1>", "U1"));
+    }
+
     #[test]
     fn an_unsubscribed_conversation_is_never_wanted() {
         let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
@@ -1441,6 +1549,9 @@ mod tests {
         watermarks: std::sync::Mutex<HashMap<String, String>>,
         connected: std::sync::Mutex<Option<bool>>,
         delivered: std::sync::Mutex<Vec<SlackMessage>>,
+        search: std::sync::Mutex<Vec<SlackSearchMatch>>,
+        search_calls: std::sync::Mutex<Vec<String>>,
+        auto_subscribed: std::sync::Mutex<Vec<String>>,
     }
 
     fn conversation_for(id: &str) -> SlackConversation {
@@ -1493,6 +1604,23 @@ mod tests {
         fn connected(&self) -> Option<bool> {
             *self.connected.lock().expect("lock")
         }
+
+        fn seed_search(&self, matches: Vec<SlackSearchMatch>) {
+            *self.search.lock().expect("lock") = matches;
+        }
+
+        /// How many times `method` was called, for the tests that assert a
+        /// sweep did or did not spend a call.
+        fn count_for(&self, method: &str) -> usize {
+            match method {
+                "search.messages" => self.search_calls.lock().expect("lock").len(),
+                other => panic!("the fake does not count {other}"),
+            }
+        }
+
+        fn auto_subscribed(&self) -> Vec<String> {
+            self.auto_subscribed.lock().expect("lock").clone()
+        }
     }
 
     impl SlackHost for FakeHost {
@@ -1529,6 +1657,20 @@ mod tests {
 
         fn deliver(&self, _subscription: &SlackSubscription, message: &SlackMessage) {
             self.delivered.lock().expect("lock").push(message.clone());
+        }
+
+        fn auto_subscribe(&self, _workspace: &str, message: &SlackMessage) -> bool {
+            let already = self.subscriptions.iter().any(|sub| match &sub.target {
+                SlackSubscriptionTarget::Conversation { id, .. } => id == &message.conversation,
+                SlackSubscriptionTarget::DirectMessages | SlackSubscriptionTarget::Mentions => {
+                    false
+                }
+            });
+            if already {
+                return false;
+            }
+            self.auto_subscribed.lock().expect("lock").push(message.conversation.clone());
+            true
         }
     }
 
@@ -1668,10 +1810,11 @@ mod tests {
 
         async fn search_messages(
             &self,
-            _query: &str,
+            query: &str,
             _count: u32,
         ) -> Result<Vec<SlackSearchMatch>, SlackError> {
-            Ok(Vec::new())
+            self.search_calls.lock().expect("lock").push(query.to_owned());
+            Ok(self.search.lock().expect("lock").clone())
         }
 
         async fn user_info(&self, _user: &str) -> Result<SlackUser, SlackError> {
@@ -1868,6 +2011,96 @@ mod tests {
         let mut sub = sub_for(SlackSubscriptionTarget::DirectMessages);
         sub.workspace = workspace.to_owned();
         sub
+    }
+
+    fn sub_mentions(workspace: &str) -> SlackSubscription {
+        let mut sub = sub_for(SlackSubscriptionTarget::Mentions);
+        sub.workspace = workspace.to_owned();
+        sub
+    }
+
+    fn search_match(ts: &str, conversation: &str, text: &str) -> SlackSearchMatch {
+        SlackSearchMatch {
+            ts: ts.to_owned(),
+            text: text.to_owned(),
+            conversation_id: conversation.to_owned(),
+            conversation_name: None,
+            username: Some("U9".to_owned()),
+        }
+    }
+
+    /// The whole reason this target is affordable: one search covers the
+    /// workspace, where a per-conversation mention poll would blow the
+    /// budget.
+    #[tokio::test]
+    async fn a_mention_sweep_makes_exactly_one_search_call_for_the_workspace() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        host.seed_search(vec![search_match("200.1", "C1", "ping <@U1>")]);
+
+        sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(host.count_for("search.messages"), 1);
+    }
+
+    #[tokio::test]
+    async fn only_mention_matches_newer_than_the_cursor_are_delivered() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        host.set_watermark("acme", MENTION_CURSOR, "150.0");
+        host.seed_search(vec![
+            search_match("200.1", "C1", "newer <@U1>"),
+            search_match("100.1", "C1", "older <@U1>"),
+        ]);
+
+        let outcome = sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(outcome.delivered, 1);
+        assert_eq!(host.delivered()[0].text, "newer <@U1>");
+    }
+
+    #[tokio::test]
+    async fn the_mention_cursor_advances_to_the_newest_ts() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        host.seed_search(vec![
+            search_match("200.1", "C1", "a <@U1>"),
+            search_match("300.2", "C2", "b <@U1>"),
+        ]);
+
+        sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(host.watermark("acme", MENTION_CURSOR), Some("300.2".to_owned()));
+    }
+
+    /// If this ever runs for a workspace with no mention target, it spends
+    /// a search call for nothing on every tick and the cost of the feature
+    /// silently becomes per-workspace-per-poll.
+    #[tokio::test]
+    async fn a_mention_sweep_with_no_targets_does_not_search_at_all() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+
+        sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(
+            host.count_for("search.messages"),
+            0,
+            "an unsubscribed workspace must not spend a call",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mention_creates_a_conversation_subscription() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        host.seed_search(vec![search_match("200.1", "C1", "ping <@U1>")]);
+
+        sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        assert_eq!(host.auto_subscribed(), vec!["C1".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn an_already_watched_conversation_is_not_subscribed_twice() {
+        let host = FakeHost::with_subscriptions(vec![
+            sub_mentions("acme"),
+            sub_channel("acme", "C1", SlackWatchMode::All),
+        ]);
+        host.seed_search(vec![search_match("200.1", "C1", "ping <@U1>")]);
+
+        sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        assert!(host.auto_subscribed().is_empty(), "C1 is already watched");
     }
 
     fn sub_channel(workspace: &str, id: &str, mode: SlackWatchMode) -> SlackSubscription {
