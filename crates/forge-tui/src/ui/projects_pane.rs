@@ -519,8 +519,8 @@ fn append_org_project_row(
 
     if let Some((session_key, lifecycle, is_focused, badge_input)) = live {
         // A pending permission/question prompt surfaces yellow △
-        // regardless of lifecycle or selection - the prompt is the
-        // session's own state, and selection styles the label instead.
+        // regardless of lifecycle - the prompt is the session's own
+        // state. Selection recolours the glyph below, never swaps it.
         let needs_attention =
             app.sessions.get(session_key).is_some_and(|b| !b.prompt_queue.is_empty());
         // A turn that died surfaces red `✕` - an error is not a request
@@ -533,7 +533,7 @@ fn append_org_project_row(
             .sessions
             .get(session_key)
             .map_or((false, false), |b| (b.has_live_background_work(), b.unseen_turn_completion));
-        let (glyph, glyph_color) = if failed_turn {
+        let (glyph, mut glyph_color) = if failed_turn {
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
@@ -545,6 +545,11 @@ fn append_org_project_row(
                 has_unseen_completion,
             )
         };
+        // Selection accents the glyph's colour; the glyph itself stays
+        // the session's state.
+        if *is_focused {
+            glyph_color = theme::RUST_ORANGE;
+        }
         let name_style = if *is_focused {
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
         } else {
@@ -752,8 +757,8 @@ fn append_worker_tree_children(
         //
         // A pending permission/question prompt surfaces yellow △
         // regardless of selection - the prompt is the worker's own
-        // state, and selection styles the label instead (#153 parity
-        // with the project-lead row).
+        // state (#153 parity with the project-lead row). Selection
+        // recolours the glyph below, never swaps it.
         let lifecycle = app
             .sessions
             .get(&worker.session_key)
@@ -771,7 +776,7 @@ fn append_worker_tree_children(
             .sessions
             .get(&worker.session_key)
             .map_or((false, false), |b| (b.has_live_background_work(), b.unseen_turn_completion));
-        let (glyph, glyph_color) = if failed_turn {
+        let (glyph, mut glyph_color) = if failed_turn {
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
@@ -788,6 +793,11 @@ fn append_worker_tree_children(
                 has_unseen_completion,
             )
         };
+        // Selection accents the glyph's colour; the glyph itself stays
+        // the worker's state.
+        if is_focused {
+            glyph_color = theme::RUST_ORANGE;
+        }
 
         // Left-indent (1) + org trunk column (3) so the worker's tree
         // connector hangs off the active project's column rather than
@@ -964,9 +974,8 @@ pub(crate) fn resolve_active_project_view<'p>(
     projects.iter().copied().find(|p| p.sessions.iter().any(|sess| &sess.session == active_key))
 }
 
-/// Glyph + foreground color for a session row based on its lifecycle
-/// state alone - never on selection; the selected row shows itself
-/// through the label highlight instead.
+/// Glyph + state colour for a session row - both read the session's
+/// own state alone; the caller applies the selection accent on top.
 /// `has_background_work` promotes an otherwise-settled session to the
 /// spinner while a backgrounded task is live (see
 /// [`crate::app::session::UiSession::has_live_background_work`]).
@@ -2982,10 +2991,11 @@ mod tests {
     }
 
     /// An ACTIVE worker (matches `active_session_key`) with a pending
-    /// prompt still surfaces the yellow △: the pending prompt is the
-    /// session's own state, and the glyph never reads selection.
+    /// prompt still surfaces the △: the pending prompt is the worker's
+    /// own state, and selection recolours the glyph to the accent
+    /// without swapping it.
     #[test]
-    fn active_worker_with_pending_prompt_renders_yellow_triangle() {
+    fn active_worker_pending_prompt_keeps_triangle_takes_accent() {
         use forge_workspace::ProjectKey;
         use forge_workspace::SessionKey;
         use forge_workspace::WorkerEntry;
@@ -3025,8 +3035,8 @@ mod tests {
             lines[1].spans.iter().find(|s| s.content.contains('\u{25b3}')).expect("△ present");
         assert_eq!(
             glyph_span.style.fg,
-            Some(theme::STATUS_WARNING),
-            "△ on the selected worker must still use STATUS_WARNING",
+            Some(theme::RUST_ORANGE),
+            "the selected worker's △ takes the rust orange accent",
         );
     }
 
