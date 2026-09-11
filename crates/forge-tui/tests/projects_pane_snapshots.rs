@@ -331,45 +331,94 @@ fn narrow_overlay_keeps_full_unmodified_project_key_in_targets() {
 /// directly from the rendered buffer rather than just asserting the
 /// symbol is present.
 fn find_glyph_fg(buffer: &ratatui::buffer::Buffer, glyph: char) -> Option<ratatui::style::Color> {
+    all_glyph_fgs(buffer, glyph).into_iter().next()
+}
+
+/// Foreground colors of every cell whose symbol starts with `glyph`,
+/// in paint order. Lets a test compare the same glyph across two rows
+/// (selected vs background) instead of only naming the first hit.
+fn all_glyph_fgs(buffer: &ratatui::buffer::Buffer, glyph: char) -> Vec<ratatui::style::Color> {
     let area = buffer.area();
+    let mut fgs = Vec::new();
     for y in 0..area.height {
         for x in 0..area.width {
             if let Some(cell) = buffer.cell((x, y))
                 && cell.symbol().starts_with(glyph)
             {
-                return Some(cell.fg);
+                fgs.push(cell.fg);
             }
         }
     }
-    None
+    fgs
 }
 
 #[test]
-fn wide_tier_running_session_glyph_uses_accent_color() {
+fn spinner_glyph_identical_selected_and_unselected() {
     let mut app = App::test_default();
 
-    // Single project, lead session marked Running and active. The
-    // spinner glyph (⠋) for an active+Running session must render in
-    // RUST_ORANGE per the Projects-pane spec.
-    let projects = vec![project_view("forge", vec![session_view("session-r", "lead")])];
+    // Two projects, both leads Running, the first one selected. The
+    // spinner reads only the session's own state - selection styles
+    // the row label, never the glyph.
+    let projects = vec![
+        project_view("forge", vec![session_view("session-r", "lead-a")]),
+        project_view("stargate", vec![session_view("session-s", "lead-b")]),
+    ];
 
-    let lead_key = SessionKey::from_str_for_test("session-r");
-    let lead_session = UiSession::new(lead_key.clone());
-    app.sessions.insert(lead_key.clone(), lead_session);
-    app.active_session_key = Some(lead_key.clone());
-    register_lifecycle_for_test(&mut app, &lead_key, SessionLifecycleState::Running);
+    let key_a = SessionKey::from_str_for_test("session-r");
+    let key_b = SessionKey::from_str_for_test("session-s");
+    app.active_session_key = Some(key_a.clone());
+    register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Running);
+    register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Running);
 
-    let backend = TestBackend::new(26, 10);
+    let backend = TestBackend::new(40, 14);
     let mut terminal = Terminal::new(backend).unwrap();
-    let area = Rect::new(0, 0, 26, 10);
+    let area = Rect::new(0, 0, 40, 14);
     terminal.draw(|frame| projects_pane::render(frame, area, &mut app, &projects)).unwrap();
     let buffer = terminal.backend().buffer().clone();
 
-    let fg = find_glyph_fg(&buffer, '⠋').expect("spinner glyph rendered");
+    let fgs = all_glyph_fgs(&buffer, '\u{280b}');
+    assert_eq!(fgs.len(), 2, "both running rows render the spinner, got: {fgs:?}");
     assert_eq!(
-        fg,
-        ratatui::style::Color::Rgb(244, 118, 0),
-        "active+Running spinner must use RUST_ORANGE, got: {fg:?}"
+        fgs[0], fgs[1],
+        "the spinner must render identically on the selected and the background row, got: {fgs:?}",
+    );
+    assert_eq!(
+        fgs[0],
+        ratatui::style::Color::Reset,
+        "the spinner is terminal-default regardless of selection, got: {:?}",
+        fgs[0],
+    );
+}
+
+#[test]
+fn idle_glyph_identical_selected_and_unselected() {
+    let mut app = App::test_default();
+
+    // Same property for the settled bullet: an Idle session renders
+    // the same `●` selected and unselected; selection styles only the
+    // label.
+    let projects = vec![
+        project_view("forge", vec![session_view("session-i", "lead-a")]),
+        project_view("stargate", vec![session_view("session-j", "lead-b")]),
+    ];
+
+    let key_a = SessionKey::from_str_for_test("session-i");
+    let key_b = SessionKey::from_str_for_test("session-j");
+    app.active_session_key = Some(key_a.clone());
+    register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
+    register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Idle);
+
+    let backend = TestBackend::new(40, 14);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let area = Rect::new(0, 0, 40, 14);
+    terminal.draw(|frame| projects_pane::render(frame, area, &mut app, &projects)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    let fgs = all_glyph_fgs(&buffer, '\u{25cf}');
+    assert_eq!(fgs.len(), 2, "both settled rows render the bullet, got: {fgs:?}");
+    assert_eq!(
+        fgs[0], fgs[1],
+        "the bullet must render identically on the selected and the background row, got: {fgs:?}",
     );
 }
 
@@ -510,26 +559,58 @@ fn wide_tier_background_session_with_failed_turn_renders_red_cross() {
     );
 }
 
+fn build_question_request() -> forge_primitives::question::QuestionRequest {
+    forge_primitives::question::QuestionRequest {
+        tool_call: ToolCall {
+            tool_call_id: "tc-test".into(),
+            title: "AskUserQuestion".into(),
+            kind: forge_primitives::ToolKind::Execute,
+            status: forge_primitives::ToolCallStatus::Pending,
+            content: vec![],
+            raw_input: None,
+            raw_output: None,
+            output_metadata: None,
+            task_metadata: None,
+            locations: vec![],
+            meta: None,
+        },
+        prompt: forge_primitives::question::QuestionPrompt {
+            question: "Pick a colour".into(),
+            header: "Colour".into(),
+            multi_select: false,
+            options: vec![forge_primitives::question::QuestionOption {
+                option_id: "q0".into(),
+                label: "Red".into(),
+                description: None,
+                preview: None,
+                recommended: false,
+            }],
+        },
+        question_index: 0,
+        total_questions: 1,
+    }
+}
+
 #[test]
-fn wide_tier_focused_session_with_pending_prompt_keeps_normal_glyph() {
+fn focused_session_with_pending_prompt_renders_yellow_triangle() {
     let mut app = App::test_default();
 
-    // Single project, focused session has a pending PermissionRequest.
-    // The yellow signal is "background session needs you"; the focused
-    // row is already in the user's view, so it keeps its normal Idle
-    // glyph (no over-trigger).
+    // Single project, focused session mid-AskUserQuestion. The pending
+    // prompt is the session's own state, so the row surfaces the yellow
+    // △ whether or not it is the one the user is looking at; selection
+    // shows in the label highlight instead.
     let projects = vec![project_view("forge", vec![session_view("session-a", "lead-a")])];
 
     let key_a = SessionKey::from_str_for_test("session-a");
     app.active_session_key = Some(key_a.clone());
-    register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
+    register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Running);
 
     apply_session_update(
         &mut app,
-        SessionUpdate::PermissionRequest {
+        SessionUpdate::QuestionRequest {
             key: key_a.clone(),
             tool_id: "tc-test".into(),
-            request: build_permission_request(),
+            request: build_question_request(),
         },
     );
 
@@ -539,8 +620,129 @@ fn wide_tier_focused_session_with_pending_prompt_keeps_normal_glyph() {
     terminal.draw(|frame| projects_pane::render(frame, area, &mut app, &projects)).unwrap();
     let buffer = terminal.backend().buffer().clone();
 
+    let fg = find_glyph_fg(&buffer, '\u{25b3}')
+        .expect("focused session with a pending prompt must surface the yellow \u{25b3}");
+    assert_eq!(
+        fg,
+        ratatui::style::Color::Yellow,
+        "pending-prompt \u{25b3} must use STATUS_WARNING (Yellow), got: {fg:?}",
+    );
+}
+
+/// The worker is selected while its lead sits mid-AskUserQuestion.
+/// Exactly one row highlights - the selected worker's - and the lead
+/// row keeps its own state glyph (yellow △ for the pending question)
+/// with no highlight. The worker is seeded in the fresh-spawned shape
+/// (its bucket's cwd_raw is the project root and the catalog lists
+/// it), so every signal that once dragged the highlight onto the lead
+/// row would fail this test.
+#[test]
+fn worker_selection_highlights_only_the_worker_row() {
+    let mut app = App::test_default();
+    let workspace = app.workspace.clone().expect("workspace stub");
+
+    let projects = vec![project_view(
+        "forge",
+        vec![session_view("lead-a", "lead-a"), session_view("worker-1", "reviewer")],
+    )];
+
+    let lead_key = SessionKey::from_str_for_test("lead-a");
+    let worker_key = SessionKey::from_str_for_test("worker-1");
+
+    // Lead mid-AskUserQuestion: turn in flight, question pending.
+    register_lifecycle_for_test(&mut app, &lead_key, SessionLifecycleState::Running);
+    app.sessions.get_mut(&lead_key).expect("lead bucket").cwd_raw = "~/Projects/forge".to_owned();
+    apply_session_update(
+        &mut app,
+        SessionUpdate::QuestionRequest {
+            key: lead_key.clone(),
+            tool_id: "tc-test".into(),
+            request: build_question_request(),
+        },
+    );
+
+    // Fresh-spawned worker shape: bucket cwd_raw on the project root.
+    let worker_bucket = app
+        .sessions
+        .entry(worker_key.clone())
+        .or_insert_with(|| UiSession::new(worker_key.clone()));
+    worker_bucket.cwd_raw = "~/Projects/forge".to_owned();
+    app.active_session_key = Some(worker_key.clone());
+
+    workspace.insert_live_worker(
+        &ProjectKey::new_for_test("forge"),
+        forge_workspace::WorkerEntry {
+            label: "reviewer".into(),
+            charter: "be sharp".into(),
+            session_key: worker_key.clone(),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-a".into(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        },
+    );
+
+    let backend = TestBackend::new(40, 14);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let area = Rect::new(0, 0, 40, 14);
+    terminal.draw(|frame| projects_pane::render(frame, area, &mut app, &projects)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    // (a) The lead row shows the yellow △ for its own pending question...
+    let fg = find_glyph_fg(&buffer, '\u{25b3}').expect("lead row surfaces the yellow \u{25b3}");
+    assert_eq!(fg, ratatui::style::Color::Yellow, "lead \u{25b3} must be STATUS_WARNING");
+    // ...and is not highlighted.
+    let rust_orange = ratatui::style::Color::Rgb(244, 118, 0);
+    let row_texts: Vec<(u16, String)> = (0..buffer.area().height)
+        .map(|y| {
+            let text: String = (0..buffer.area().width)
+                .map(|x| {
+                    buffer.cell((x, y)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                })
+                .collect();
+            (y, text)
+        })
+        .collect();
+    let lead_row = row_texts
+        .iter()
+        .find(|(_, t)| t.contains("forge"))
+        .map(|(y, _)| *y)
+        .expect("lead row renders");
+    let lead_row_orange = (0..buffer.area().width)
+        .any(|x| buffer.cell((x, lead_row)).is_some_and(|c| c.fg == rust_orange));
+    assert!(!lead_row_orange, "the lead row must not highlight while its worker is selected");
+
+    // (b) ...and only the worker row carries the highlight.
+    let worker_row = row_texts
+        .iter()
+        .find(|(_, text)| text.contains("reviewer"))
+        .map(|(y, _)| *y)
+        .expect("worker row renders");
+    for (y, _) in &row_texts {
+        // Row 0 is the `PROJECTS` banner - rust orange chrome, not a
+        // row highlight.
+        if *y == 0 {
+            continue;
+        }
+        let row_has_orange = (0..buffer.area().width)
+            .any(|x| buffer.cell((x, *y)).is_some_and(|c| c.fg == rust_orange));
+        if row_has_orange {
+            assert_eq!(
+                *y, worker_row,
+                "only the selected worker row may carry the highlight, row {y} also does",
+            );
+        }
+    }
+    let worker_label_orange_bold = (0..buffer.area().width).any(|x| {
+        buffer.cell((x, worker_row)).is_some_and(|c| {
+            c.fg == rust_orange && c.modifier.contains(ratatui::style::Modifier::BOLD)
+        })
+    });
     assert!(
-        find_glyph_fg(&buffer, '△').is_none(),
-        "focused session with pending prompt must not flip its row to yellow △",
+        worker_label_orange_bold,
+        "the selected worker row must be highlighted (rust orange bold label)",
     );
 }

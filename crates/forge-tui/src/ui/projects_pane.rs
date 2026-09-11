@@ -270,10 +270,11 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
 /// Org-grouped project list. Projects render as tree-leaf rows
 /// under their org's header (DIM bold). Within each org, projects
 /// sort alphabetically; orgs themselves sort alphabetically. The
-/// per-row glyph distinguishes live sessions (spinner - RUST_ORANGE
-/// when focused, terminal-default otherwise) from idle catalog
-/// entries (`○` DIM). Live rows carry an `x` close affordance at
-/// the right edge; idle rows show last-activity timestamp instead.
+/// per-row glyph reads only that session's own state (spinner, `○`
+/// DIM for idle catalog entries); selection styles the label
+/// highlight, never the glyph. Live rows carry an `x` close
+/// affordance at the right edge; idle rows show last-activity
+/// timestamp instead.
 ///
 /// Tree connectors mirror the GIT / PROCESSES sections (`├─` /
 /// `└─`) so the inspector + projects pane read as one consistent
@@ -417,38 +418,13 @@ fn append_project_rows(
                 .sessions
                 .get(&spawn_synthetic)
                 .map(|_| (spawn_synthetic.clone(), lifecycle_for(&spawn_synthetic)));
-            // Project row is focused when the active session belongs to
-            // this project - either as the lead OR as one of its
-            // workers. The lead's bucket has cwd_raw matching the
-            // project path; a worker's bucket likewise sits under the
-            // project (via `live_workers[project.key]`); and the
-            // catalog tracks the session_key explicitly. Match any of
-            // the three signals so snapshot tests (which don't seed
-            // cwd_raw on test UiSessions) and the production hot path
-            // both highlight correctly.
-            //
-            // The third signal (`worker_match`) matters for **resumed
-            // workers** specifically: their `cwd_raw` carries the
-            // worktree path (claude chdir'd before writing the catalog
-            // row that the resume path reads) rather than the project
-            // root, and their JSONL is tagged under a per-worker project
-            // key in the catalog rather than the parent. Fresh-spawned
-            // workers accidentally pass `cwd_match` because their
-            // pre-Connect bucket still has `cwd_raw == project.path`.
-            let is_active_project = active_session_key.as_ref().is_some_and(|k| {
-                let cwd_match = app
-                    .sessions
-                    .get(k)
-                    .is_some_and(|s| s.cwd_raw.as_str() == project_path_str.as_str());
-                let catalog_match = project.sessions.iter().any(|s| s.session == *k);
-                let worker_match = app.workspace.as_ref().is_some_and(|ws| {
-                    ws.list_live_workers(&project.key).iter().any(|w| w.session_key == *k)
-                });
-                cwd_match || catalog_match || worker_match
-            });
+            // The row highlights only when the selected session is the
+            // session this row represents - a worker selection highlights
+            // the worker row and leaves the lead plain.
             let live = live_session.or(synthetic).map(|(key, lifecycle)| {
                 let badges = badges_for(&key);
-                (key, lifecycle, is_active_project, badges)
+                let is_focused = active_session_key.as_ref() == Some(&key);
+                (key, lifecycle, is_focused, badges)
             });
             rows.push((project, live));
         }
@@ -535,18 +511,15 @@ fn append_org_project_row(
     spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
 
     if let Some((session_key, lifecycle, is_focused, badge_input)) = live {
-        // Background-row override: a non-active session with a pending
-        // permission/question prompt surfaces yellow △ regardless of
-        // lifecycle, so the user notices it without switching focus.
-        // Focused rows keep their normal glyph - the yellow signal is
-        // "background session needs you", not "the one you're looking at".
-        let needs_attention = !*is_focused
-            && app.sessions.get(session_key).is_some_and(|b| !b.prompt_queue.is_empty());
-        // A background session whose turn died surfaces red `✕` - an
-        // error is not a request for input, so it gets its own glyph and
-        // outranks a prompt that can no longer be answered.
-        let failed_turn =
-            !*is_focused && app.sessions.get(session_key).is_some_and(|b| b.failed_turn.is_some());
+        // A pending permission/question prompt surfaces yellow △
+        // regardless of lifecycle or selection - the prompt is the
+        // session's own state, and selection styles the label instead.
+        let needs_attention =
+            app.sessions.get(session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        // A turn that died surfaces red `✕` - an error is not a request
+        // for input, so it gets its own glyph and outranks a prompt that
+        // can no longer be answered.
+        let failed_turn = app.sessions.get(session_key).is_some_and(|b| b.failed_turn.is_some());
         // A live backgrounded task keeps the row spinning even after its
         // turn settles to Idle - pending input still wins over both.
         let (has_background_work, has_unseen_completion) = app
@@ -560,7 +533,6 @@ fn append_org_project_row(
         } else {
             glyph_for_lifecycle(
                 *lifecycle,
-                *is_focused,
                 has_background_work,
                 spinner_glyph,
                 has_unseen_completion,
@@ -771,24 +743,21 @@ fn append_worker_tree_children(
         // worker's Connected hasn't landed yet so the column never
         // collapses to a blank cell.
         //
-        // Background-row override (#153, parity with the project-lead
-        // row's #152/#137 fix): a non-active worker with a pending
-        // permission/question prompt surfaces yellow △ regardless of
-        // lifecycle, so the user notices the worker needs attention
-        // without switching focus. Focused worker rows keep their
-        // normal glyph - the yellow signal is "background worker
-        // needs you", not "the one you're looking at."
+        // A pending permission/question prompt surfaces yellow △
+        // regardless of selection - the prompt is the worker's own
+        // state, and selection styles the label instead (#153 parity
+        // with the project-lead row).
         let lifecycle = app
             .sessions
             .get(&worker.session_key)
             .map_or(SessionLifecycleState::Spawning, |s| s.lifecycle_state);
-        let needs_attention = !is_focused
-            && app.sessions.get(&worker.session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        let needs_attention =
+            app.sessions.get(&worker.session_key).is_some_and(|b| !b.prompt_queue.is_empty());
         // Same red `✕` the lead row uses for a dead turn - distinct from
         // the yellow `△`, and ahead of it because a prompt whose turn
         // died can no longer be answered.
-        let failed_turn = !is_focused
-            && app.sessions.get(&worker.session_key).is_some_and(|b| b.failed_turn.is_some());
+        let failed_turn =
+            app.sessions.get(&worker.session_key).is_some_and(|b| b.failed_turn.is_some());
         // A worker running its own backgrounded task (e.g. a `gh run watch`)
         // spins its row like a lead does - same Idle-only promotion.
         let (has_background_work, has_unseen_completion) = app
@@ -807,7 +776,6 @@ fn append_worker_tree_children(
         } else {
             glyph_for_lifecycle(
                 lifecycle,
-                is_focused,
                 has_background_work,
                 spinner_glyph,
                 has_unseen_completion,
@@ -990,9 +958,8 @@ pub(crate) fn resolve_active_project_view<'p>(
 }
 
 /// Glyph + foreground color for a session row based on its lifecycle
-/// state. The session-is-active flag drives whether the
-/// Running/Spawning spinner picks up the accent color (active +
-/// running = `RUST_ORANGE`, background + running = terminal default).
+/// state alone - never on selection; the selected row shows itself
+/// through the label highlight instead.
 /// `has_background_work` promotes an otherwise-settled session to the
 /// spinner while a backgrounded task is live (see
 /// [`crate::app::session::UiSession::has_live_background_work`]).
@@ -1000,7 +967,6 @@ pub(crate) fn resolve_active_project_view<'p>(
 /// the caller via `App::active_spinner_glyph`.
 fn glyph_for_lifecycle(
     lifecycle: SessionLifecycleState,
-    session_is_active: bool,
     has_background_work: bool,
     spinner_glyph: char,
     has_unseen_completion: bool,
@@ -1010,22 +976,19 @@ fn glyph_for_lifecycle(
     // predicate. The frame-tick gate keys off the same function, so the row
     // glyph and the animation gate never disagree about what animates.
     if crate::app::session::session_shows_spinner(lifecycle, has_background_work) {
-        let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
-        return (spinner_glyph.to_string(), color);
+        return (spinner_glyph.to_string(), Color::Reset);
     }
     match lifecycle {
         SessionLifecycleState::Attention => ("△".to_owned(), theme::STATUS_WARNING),
         // Idle = "alive, no turn in progress". Use a filled bullet so
         // the row reads as occupied (the design spec calls for blank
         // here, but in practice an empty glyph column makes Active /
-        // Inactive rows look interchangeable). Active-session bullet
-        // picks up the accent colour to match its bold label.
+        // Inactive rows look interchangeable).
         SessionLifecycleState::Idle => {
             if has_unseen_completion {
                 return ("\u{25c6}".to_owned(), theme::COMPLETION);
             }
-            let color = if session_is_active { theme::RUST_ORANGE } else { theme::DIM };
-            ("●".to_owned(), color)
+            ("●".to_owned(), theme::DIM)
         }
         // #143 item 3: AuthRequired needs distinct visual from
         // Sleeping so the user can tell at a glance which sessions
@@ -1040,8 +1003,7 @@ fn glyph_for_lifecycle(
         // arm is unreachable in practice; kept so the match stays exhaustive
         // over the lifecycle enum, and renders the spinner if ever reached.
         SessionLifecycleState::Running | SessionLifecycleState::Spawning => {
-            let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
-            (spinner_glyph.to_string(), color)
+            (spinner_glyph.to_string(), Color::Reset)
         }
     }
 }
@@ -3012,13 +2974,11 @@ mod tests {
         );
     }
 
-    /// Mirror of `wide_tier_focused_session_with_pending_prompt_keeps_normal_glyph`
-    /// for worker rows: an ACTIVE worker (matches `active_session_key`)
-    /// with a pending prompt keeps its normal lifecycle glyph - the
-    /// yellow signal is "background worker needs you", not "the one
-    /// you're already looking at."
+    /// An ACTIVE worker (matches `active_session_key`) with a pending
+    /// prompt still surfaces the yellow △: the pending prompt is the
+    /// session's own state, and the glyph never reads selection.
     #[test]
-    fn active_worker_with_pending_prompt_keeps_normal_glyph() {
+    fn active_worker_with_pending_prompt_renders_yellow_triangle() {
         use forge_workspace::ProjectKey;
         use forge_workspace::SessionKey;
         use forge_workspace::WorkerEntry;
@@ -3043,7 +3003,7 @@ mod tests {
                 kick: None,
             },
         );
-        // Active session IS the worker - override must NOT fire.
+        // Active session IS the worker - the △ still fires.
         app.active_session_key = Some(worker_key.clone());
         seed_worker_prompt_queue(&mut app, &worker_key);
 
@@ -3054,24 +3014,26 @@ mod tests {
         append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
 
         assert_eq!(lines.len(), 2);
-        let any_triangle =
-            lines.iter().any(|line| line.spans.iter().any(|s| s.content.contains('\u{25b3}')));
-        assert!(!any_triangle, "focused worker with pending prompt must NOT flip to yellow △");
+        let glyph_span =
+            lines[1].spans.iter().find(|s| s.content.contains('\u{25b3}')).expect("△ present");
+        assert_eq!(
+            glyph_span.style.fg,
+            Some(theme::STATUS_WARNING),
+            "△ on the selected worker must still use STATUS_WARNING",
+        );
     }
 
     // ----------------------------------------------------------------
-    // #241: resumed-worker project-row highlight. Same family as #232.
+    // Worker selection pins the highlight to the worker row alone.
     // For resumed workers, cwd_raw carries the worktree path (not the
     // project root) and the catalog tags the JSONL under a per-worker
-    // project key (not the parent). Both legacy is_active_project
-    // signals (cwd_match, catalog_match) miss this shape, so the
-    // project row would never highlight while focus is on a resumed
-    // worker. The third signal `worker_match` covers this case via
-    // workspace.list_live_workers(project_key).
+    // project key (not the parent), so only the worker row's own
+    // exact-key match can find the selection - the lead row must stay
+    // plain regardless of which signal might see the worker.
     // ----------------------------------------------------------------
 
     #[test]
-    fn project_row_highlights_when_active_session_is_a_resumed_worker() {
+    fn worker_selection_leaves_the_lead_row_plain() {
         use crate::app::session::UiSession;
         use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
         use std::time::SystemTime;
@@ -3099,12 +3061,8 @@ mod tests {
             },
         );
 
-        // Plant the lead's bucket so the project row has a live lead
-        // to render (production state when the user has a project
-        // open with at least one running session). Lead's cwd_raw
-        // matches the project path so live_session resolution picks
-        // it up - that's the LIVE branch (not the IDLE one) where
-        // is_active_project drives the row's highlight style.
+        // Plant the lead's bucket so the project row renders through
+        // the live branch - the branch that carries the highlight.
         let lead_bucket = app
             .sessions
             .entry(lead_session_key.clone())
@@ -3114,7 +3072,8 @@ mod tests {
         // Active session IS the worker, NOT the lead; mirrors the
         // user pane-switching to a resumed worker. Worker's bucket
         // has cwd_raw pointing at the worktree path (NOT the project
-        // root) so the cwd_match signal would miss.
+        // root) so only the worker row's exact-key match can see the
+        // selection.
         let worker_bucket = app
             .sessions
             .entry(worker_session_key.clone())
@@ -3122,30 +3081,34 @@ mod tests {
         worker_bucket.cwd_raw = "/Users/test/Projects/forge/.claude/worktrees/reviewer".to_owned();
         app.active_session_key = Some(worker_session_key.clone());
 
-        // ProjectView with NO catalog session matching the worker's
-        // session_key (mirrors the resumed-worker case: JSONL tagged
-        // under a per-worker project key, not the parent). This rules
-        // out the legacy catalog_match signal too.
         let project =
             ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
 
         let area = Rect { x: 0, y: 0, width: 32, height: 30 };
         let mut lines: Vec<Line<'static>> = Vec::new();
         append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+        append_worker_tree_children(&mut lines, area, &mut app, &project, true, '\u{280B}');
 
-        // Focused project rows style the project name in RUST_ORANGE
-        // (see append_org_project_row's name_style branch). If the
-        // worker_match signal is missing, the row would render in the
-        // default-bold style and the project name span would not
-        // carry the accent foreground.
-        let highlighted = lines.iter().any(|line| {
+        // Exactly one row highlights: the worker's label in
+        // RUST_ORANGE + bold. The project (lead) name must render in
+        // the plain bold style, no accent foreground.
+        let lead_highlighted = lines.iter().any(|line| {
             line.spans
                 .iter()
                 .any(|s| s.content.contains("forge") && s.style.fg == Some(theme::RUST_ORANGE))
         });
         assert!(
-            highlighted,
-            "project row must highlight when active session is a resumed worker (cwd_raw + catalog both miss); got lines: {lines:?}",
+            !lead_highlighted,
+            "the lead row must not highlight while its worker is selected; got lines: {lines:?}",
+        );
+        let worker_row = lines
+            .iter()
+            .find(|line| line.spans.iter().any(|s| s.content.contains("reviewer")))
+            .expect("worker row renders");
+        assert!(
+            worker_row.spans.iter().any(|s| s.style.fg == Some(theme::RUST_ORANGE)
+                && s.style.add_modifier.contains(Modifier::BOLD)),
+            "the selected worker row must highlight; got: {worker_row:?}",
         );
     }
 
@@ -3467,8 +3430,7 @@ mod tests {
         let project_path = "/tmp/bg-activity-project";
         let (mut app, project, lead_key) =
             app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
-        // Not the focused row - the △ override only fires on background
-        // sessions.
+        // No session selected - the △ fires on the prompt alone.
         app.active_session_key = None;
         {
             let lead = app.sessions.get_mut(&lead_key).expect("lead bucket");
@@ -3555,19 +3517,19 @@ mod tests {
     fn glyph_promotes_to_spinner_only_over_idle() {
         use crate::app::session::SessionLifecycleState;
 
-        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, true, 'X', true);
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, true, 'X', true);
         assert_eq!(glyph, "X", "Idle + background work shows the spinner even with the flag armed");
 
-        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, false, 'X', false);
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, 'X', false);
         assert_eq!(glyph, "\u{25cf}", "Idle + no background work keeps the bullet");
 
         let (glyph, color) =
-            glyph_for_lifecycle(SessionLifecycleState::Attention, false, true, 'X', false);
+            glyph_for_lifecycle(SessionLifecycleState::Attention, true, 'X', false);
         assert_eq!(glyph, "\u{25b3}", "Attention keeps its triangle even with background work");
         assert_eq!(color, theme::STATUS_WARNING);
 
         let (glyph, color) =
-            glyph_for_lifecycle(SessionLifecycleState::AuthRequired, false, true, 'X', false);
+            glyph_for_lifecycle(SessionLifecycleState::AuthRequired, true, 'X', false);
         assert_eq!(glyph, "\u{26a0}", "AuthRequired keeps its warning even with background work");
         assert_eq!(color, theme::STATUS_WARNING);
     }
@@ -3578,8 +3540,7 @@ mod tests {
     fn unseen_completion_renders_diamond_over_the_idle_bullet() {
         use crate::app::session::SessionLifecycleState;
 
-        let (glyph, color) =
-            glyph_for_lifecycle(SessionLifecycleState::Idle, false, false, 'X', true);
+        let (glyph, color) = glyph_for_lifecycle(SessionLifecycleState::Idle, false, 'X', true);
         assert_eq!(glyph, "\u{25c6}", "unseen completion shows the diamond");
         assert_eq!(color, theme::COMPLETION, "the diamond carries the completion color");
     }
@@ -3590,12 +3551,10 @@ mod tests {
     fn spinner_and_attention_outrank_unseen_completion() {
         use crate::app::session::SessionLifecycleState;
 
-        let (glyph, _) =
-            glyph_for_lifecycle(SessionLifecycleState::Running, false, false, 'X', true);
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Running, false, 'X', true);
         assert_eq!(glyph, "X", "a running session keeps its spinner");
 
-        let (glyph, _) =
-            glyph_for_lifecycle(SessionLifecycleState::Attention, false, false, 'X', true);
+        let (glyph, _) = glyph_for_lifecycle(SessionLifecycleState::Attention, false, 'X', true);
         assert_eq!(glyph, "\u{25b3}", "attention keeps its triangle");
     }
 
