@@ -580,6 +580,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                         forge_primitives::QuestionOutcome::Cancelled,
                     );
                 }
+                crate::app::prompt::PromptSource::SlackDraft { key: asking, draft } => {
+                    // Shutting down with a draft unanswered rejects it, so
+                    // the blocked `slack__post` is released rather than
+                    // left holding a session on the way out.
+                    crate::app::events::turn::dispatch_slack_post_outcome(
+                        app, &asking, draft.id, false,
+                    );
+                }
             }
         }
     }

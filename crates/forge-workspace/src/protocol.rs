@@ -196,6 +196,13 @@ pub enum Command {
         tool_id: String,
         outcome: PermissionOutcome,
     },
+    /// Answer a held Slack draft. The blocked `slack__post` handler is
+    /// awaiting this decision; `approved: false` means nothing posts.
+    RespondSlackPost {
+        key: SessionKey,
+        id: uuid::Uuid,
+        approved: bool,
+    },
     RespondQuestion {
         key: SessionKey,
         tool_id: String,
@@ -510,6 +517,7 @@ impl Command {
             | Self::NewSession { key, .. }
             | Self::ResumeSession { key, .. }
             | Self::RespondPermission { key, .. }
+            | Self::RespondSlackPost { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::ReconnectMcpServer { key, .. }
             | Self::ToggleMcpServer { key, .. }
@@ -579,6 +587,12 @@ impl std::fmt::Debug for Command {
                 .debug_struct("RespondQuestion")
                 .field("key", key)
                 .field("tool_id", tool_id)
+                .finish_non_exhaustive(),
+            Self::RespondSlackPost { key, id, approved } => f
+                .debug_struct("RespondSlackPost")
+                .field("key", key)
+                .field("id", id)
+                .field("approved", approved)
                 .finish_non_exhaustive(),
             Self::SetDictateOverride { key, .. } => {
                 f.debug_struct("SetDictateOverride").field("key", key).finish_non_exhaustive()
@@ -1052,6 +1066,14 @@ pub enum SessionUpdate {
     /// GotifyNotificationAppended). The session's LLM receives the same
     /// text via a separate `Command::Prompt` - this update only drives
     /// the visible echo.
+    /// A composed Slack message is waiting for the user's decision in the
+    /// dock prompt. The `slack__post` handler is blocked on a oneshot
+    /// until `Command::RespondSlackPost` answers it, so nothing posts
+    /// while this is outstanding.
+    SlackPostPending {
+        key: SessionKey,
+        draft: forge_primitives::slack::SlackDraft,
+    },
     CronPromptAppended {
         session_id: String,
         text: String,
@@ -1160,7 +1182,8 @@ impl SessionUpdate {
             | Self::DictateTranscribing { key }
             | Self::DictateProgress { key, .. }
             | Self::PromptQueuedWhileBusy { key }
-            | Self::DictateEnded { key, .. } => Some(key.clone()),
+            | Self::DictateEnded { key, .. }
+            | Self::SlackPostPending { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::ChatAppended { session_id, .. }
@@ -1366,6 +1389,12 @@ impl std::fmt::Debug for SessionUpdate {
             Self::CronPromptAppended { session_id, .. } => f
                 .debug_struct("CronPromptAppended")
                 .field("session_id", session_id)
+                .finish_non_exhaustive(),
+            Self::SlackPostPending { key, draft } => f
+                .debug_struct("SlackPostPending")
+                .field("key", key)
+                .field("workspace", &draft.workspace)
+                .field("conversation", &draft.conversation)
                 .finish_non_exhaustive(),
             Self::PromptQueuedWhileBusy { key } => {
                 f.debug_struct("PromptQueuedWhileBusy").field("key", key).finish()

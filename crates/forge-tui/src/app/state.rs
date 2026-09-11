@@ -349,6 +349,8 @@ pub struct App {
     /// tests enable the feature via this crate's
     /// `[dev-dependencies]` self-ref in `Cargo.toml`.
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_permission_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::PermissionOutcome)>>,
+    /// Slack draft answers the prompt dispatched: `(draft id, approved)`.
+    #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_slack_posts: std::cell::RefCell<Vec<(uuid::Uuid, bool)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_question_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::QuestionOutcome)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_notifications: std::cell::RefCell<Vec<(super::notify::NotifyEvent, super::notify::NotifyContext)>>,
     /// Per-session state buckets, keyed by claude session UUID.
@@ -944,6 +946,7 @@ impl App {
             start_new_run: false,
             workspace: Some(workspace),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
+            #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_slack_posts: std::cell::RefCell::new(Vec::new()),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_notifications: std::cell::RefCell::new(Vec::new()),
             sessions,

@@ -20,7 +20,9 @@ use uuid::Uuid;
 
 use crate::mcp::peers::facade::CallerKeyResolver;
 use crate::mcp::slack::facade::{
-    SlackChannelWatch, SlackFacade, SlackListError, SlackSubscribeError, SlackSubscribeRequest,
+    SlackChannelWatch, SlackEditError, SlackEditRequest, SlackFacade, SlackListError,
+    SlackPostError, SlackPostRequest, SlackReactError, SlackReactRequest, SlackSubscribeError,
+    SlackSubscribeRequest,
 };
 
 /// Attach the Slack tools to an existing [`McpServerBuilder`]. Called for
@@ -34,8 +36,11 @@ pub(crate) fn add_tools(
 ) -> McpServerBuilder {
     let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
     let subscribe = Subscribe { facade: facade.clone(), caller_key: caller_key.clone() };
-    let unsubscribe = Unsubscribe { facade, caller_key };
-    builder.tool(list).tool(subscribe).tool(unsubscribe)
+    let unsubscribe = Unsubscribe { facade: facade.clone(), caller_key: caller_key.clone() };
+    let post = Post { facade: facade.clone(), caller_key };
+    let edit = Edit { facade: facade.clone() };
+    let react = React { facade };
+    builder.tool(list).tool(subscribe).tool(unsubscribe).tool(post).tool(edit).tool(react)
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -368,6 +373,267 @@ impl Tool for Unsubscribe {
             ToolOutput::text(format!("unsubscribed {id}"))
         } else {
             tool_error(format!("no subscription with id {id} in your project"))
+        }
+    }
+}
+
+fn format_post_error(err: &SlackPostError) -> String {
+    match err {
+        SlackPostError::Rejected => "the post was not approved, so nothing was sent".to_owned(),
+        SlackPostError::UnknownWorkspace => {
+            "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
+        }
+        SlackPostError::Fetch(message) => format!("Slack request failed: {message}"),
+    }
+}
+
+fn format_edit_error(err: &SlackEditError) -> String {
+    match err {
+        SlackEditError::NotOwnMessage => {
+            "that message was not posted by you, so Slack will not let you change it".to_owned()
+        }
+        SlackEditError::UnknownWorkspace => {
+            "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
+        }
+        SlackEditError::Fetch(message) => format!("Slack request failed: {message}"),
+    }
+}
+
+fn format_react_error(err: &SlackReactError) -> String {
+    match err {
+        SlackReactError::UnknownWorkspace => {
+            "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
+        }
+        SlackReactError::Fetch(message) => format!("Slack request failed: {message}"),
+    }
+}
+
+struct Post {
+    facade: Arc<dyn SlackFacade>,
+    caller_key: CallerKeyResolver,
+}
+
+#[derive(serde::Deserialize)]
+struct PostArgs {
+    #[serde(default)]
+    workspace: Option<String>,
+    conversation: String,
+    #[serde(default)]
+    thread_ts: Option<String>,
+    text: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Post {
+    fn name(&self) -> &'static str {
+        "slack__post"
+    }
+
+    fn description(&self) -> &'static str {
+        "Post a message to Slack as the user - a root message, or a reply into an existing \
+         thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call does not return \
+         until the user decides in the dock prompt, and a rejected or unanswered draft posts \
+         nothing. Text past 4000 characters is split into numbered parts automatically. Returns \
+         how many messages were posted. Any session in the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "The `[[slack]]` workspace label to post in. Omit it when \
+                                    only one workspace is configured.",
+                },
+                "conversation": {
+                    "type": "string",
+                    "description": "The conversation id from slack__list, or a user id to open \
+                                    a DM with.",
+                },
+                "thread_ts": {
+                    "type": "string",
+                    "description": "The parent message's ts to reply into that thread. Omit to \
+                                    post a root message.",
+                },
+                "text": { "type": "string", "description": "The message body." },
+            },
+            "required": ["conversation", "text"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: PostArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let caller = match self.caller_key.current() {
+            Ok(key) => key,
+            Err(err) => return tool_error(err.to_string()),
+        };
+        let request = SlackPostRequest {
+            workspace: args.workspace,
+            conversation: args.conversation,
+            thread_ts: args.thread_ts,
+            text: args.text,
+        };
+        match self.facade.post(&caller, request).await {
+            Ok(outcome) => {
+                ToolOutput::text(format!("posted to Slack ({} message(s))", outcome.posted))
+            }
+            Err(err) => tool_error(format_post_error(&err)),
+        }
+    }
+}
+
+struct Edit {
+    facade: Arc<dyn SlackFacade>,
+}
+
+#[derive(serde::Deserialize)]
+struct EditArgs {
+    #[serde(default)]
+    workspace: Option<String>,
+    conversation: String,
+    ts: String,
+    #[serde(default)]
+    delete: Option<bool>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Edit {
+    fn name(&self) -> &'static str {
+        "slack__edit"
+    }
+
+    fn description(&self) -> &'static str {
+        "Update or delete one of YOUR OWN Slack messages: pass `text` to replace its body, or \
+         `delete: true` to remove it. NOT HELD FOR APPROVAL - correcting your own message is the \
+         correction path, and asking permission to fix one would defeat it. Slack refuses a \
+         message you did not post, and this refuses it locally so the reason is clear. Any \
+         session in the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "The `[[slack]]` workspace label. Omit it when only one \
+                                    workspace is configured.",
+                },
+                "conversation": { "type": "string", "description": "The conversation id." },
+                "ts": { "type": "string", "description": "The message's ts." },
+                "text": {
+                    "type": "string",
+                    "description": "The replacement body. Omit when deleting.",
+                },
+                "delete": {
+                    "type": "boolean",
+                    "description": "Set true to delete the message instead of updating it.",
+                },
+            },
+            "required": ["conversation", "ts"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: EditArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let delete = args.delete.unwrap_or(false);
+        if !delete && args.text.is_none() {
+            return tool_error("pass `text` to update the message, or `delete: true`".to_owned());
+        }
+        let request = SlackEditRequest {
+            workspace: args.workspace,
+            conversation: args.conversation,
+            ts: args.ts,
+            text: if delete { None } else { args.text },
+        };
+        match self.facade.edit(request).await {
+            Ok(()) => {
+                ToolOutput::text(if delete { "deleted".to_owned() } else { "updated".to_owned() })
+            }
+            Err(err) => tool_error(format_edit_error(&err)),
+        }
+    }
+}
+
+struct React {
+    facade: Arc<dyn SlackFacade>,
+}
+
+#[derive(serde::Deserialize)]
+struct ReactArgs {
+    #[serde(default)]
+    workspace: Option<String>,
+    conversation: String,
+    ts: String,
+    name: String,
+    #[serde(default)]
+    remove: Option<bool>,
+}
+
+#[async_trait::async_trait]
+impl Tool for React {
+    fn name(&self) -> &'static str {
+        "slack__react"
+    }
+
+    fn description(&self) -> &'static str {
+        "Add a reaction to a Slack message, or remove one with `remove: true`. `name` is Slack's \
+         shortcode without colons, e.g. `white_check_mark`. Removing requires being the original \
+         reaction's author. NOT HELD FOR APPROVAL. Any session in the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "The `[[slack]]` workspace label. Omit it when only one \
+                                    workspace is configured.",
+                },
+                "conversation": { "type": "string", "description": "The conversation id." },
+                "ts": { "type": "string", "description": "The message's ts." },
+                "name": {
+                    "type": "string",
+                    "description": "Slack reaction shortcode without colons, e.g. \
+                                    `white_check_mark`.",
+                },
+                "remove": {
+                    "type": "boolean",
+                    "description": "Set true to remove the reaction instead of adding it.",
+                },
+            },
+            "required": ["conversation", "ts", "name"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: ReactArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let request = SlackReactRequest {
+            workspace: args.workspace,
+            conversation: args.conversation,
+            ts: args.ts,
+            name: args.name,
+            add: !args.remove.unwrap_or(false),
+        };
+        match self.facade.react(request).await {
+            Ok(()) => ToolOutput::text("reaction applied".to_owned()),
+            Err(err) => tool_error(format_react_error(&err)),
         }
     }
 }

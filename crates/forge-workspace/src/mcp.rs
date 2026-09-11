@@ -165,6 +165,9 @@ mod tests {
             "slack__list",
             "slack__subscribe",
             "slack__unsubscribe",
+            "slack__post",
+            "slack__edit",
+            "slack__react",
         ] {
             assert!(
                 debug.contains(expected),
@@ -221,6 +224,9 @@ mod tests {
             "slack__list",
             "slack__subscribe",
             "slack__unsubscribe",
+            "slack__post",
+            "slack__edit",
+            "slack__react",
         ] {
             assert!(
                 debug.contains(expected),

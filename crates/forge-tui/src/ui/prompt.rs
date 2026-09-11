@@ -181,6 +181,23 @@ fn build_header_lines(prompt: &PromptState, content_width: usize) -> Vec<Line<'s
             }
             out
         }
+        PromptSource::SlackDraft { draft, .. } => {
+            let mut out = Vec::new();
+            let where_to = match &draft.thread_ts {
+                Some(ts) => format!("Reply in Slack · {} · thread {ts}", draft.workspace),
+                None => format!("Post to Slack · {} · {}", draft.workspace, draft.conversation),
+            };
+            out.push(Line::from(Span::styled(
+                where_to,
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+            // The body verbatim: this is what would go out, so the user
+            // approves the text itself rather than a summary of it.
+            for row in wrap_plain(&draft.text, content_width) {
+                out.push(Line::from(Span::styled(row, Style::default().fg(Color::White))));
+            }
+            out
+        }
     }
 }
 
@@ -196,7 +213,7 @@ fn build_option_lines(
     let question_options: Option<&[forge_primitives::question::QuestionOption]> =
         match &prompt.source {
             PromptSource::Question { prompt: q, .. } => Some(&q.options),
-            PromptSource::Permission { .. } => None,
+            PromptSource::Permission { .. } | PromptSource::SlackDraft { .. } => None,
         };
 
     // Display-only: in multi-select, the Notes/"Other" row reads as
@@ -880,5 +897,46 @@ mod tests {
         render(area, &mut buf, &prompt, 1, Some(""), None);
         let row = footer_row(&buf).expect("the footer hint renders");
         assert!(!row.contains("\u{25cf}"), "without a take no circle draws, got: {row}");
+    }
+
+    /// Every glyph in the buffer, row by row, so a test can assert what
+    /// the user actually reads.
+    fn buffer_text(buf: &Buffer) -> String {
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// A Slack draft renders the text verbatim, because that text is
+    /// exactly what the approval is for.
+    #[test]
+    fn a_slack_draft_shows_the_exact_text_that_would_go_out() {
+        let prompt = crate::app::prompt::PromptState::from_slack_draft(
+            forge_primitives::SessionKey::from_session_id("caller"),
+            forge_primitives::slack::SlackDraft {
+                id: uuid::Uuid::new_v4(),
+                workspace: "acme".to_owned(),
+                conversation: "C1".to_owned(),
+                thread_ts: None,
+                text: "please review this text".to_owned(),
+            },
+        );
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some(""), None);
+
+        let rendered = buffer_text(&buf);
+        assert!(
+            rendered.contains("please review this text"),
+            "the body verbatim is what the user approves: {rendered}",
+        );
+        assert!(rendered.contains("acme"), "the target workspace renders: {rendered}");
+        assert!(rendered.contains("Post"), "the approve option renders: {rendered}");
+        assert!(rendered.contains("Do not post"), "the reject option renders: {rendered}");
     }
 }

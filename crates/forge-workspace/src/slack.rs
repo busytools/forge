@@ -11,24 +11,35 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use forge_connectors::slack::{AuthTest, SlackClient, SlackHost};
-use forge_primitives::slack::{SlackConfig, SlackMessage, SlackSubscription};
+use forge_connectors::slack::{AuthTest, SlackApi, SlackClient, SlackHost};
+use forge_primitives::slack::{SlackConfig, SlackDraft, SlackMessage, SlackSubscription};
 use uuid::Uuid;
 
+use crate::SessionKey;
 use crate::workspace::Workspace;
 
-/// One client per configured workspace, keyed by its label. `Debug` is
-/// safe to derive: [`SlackClient`]'s own `Debug` prints no token.
-#[derive(Debug, Default)]
+/// One client per configured workspace, keyed by its label.
+///
+/// Held as [`SlackApi`] rather than the concrete client so a test can
+/// substitute a double and drive a real facade against it. `Debug` is
+/// hand-written because a trait object is not, and it prints only the
+/// labels: a client is not a thing worth printing.
+#[derive(Default)]
 pub struct SlackWorkspaces {
-    clients: BTreeMap<String, SlackClient>,
+    clients: BTreeMap<String, Arc<dyn SlackApi>>,
+}
+
+impl std::fmt::Debug for SlackWorkspaces {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SlackWorkspaces").field("labels", &self.labels()).finish()
+    }
 }
 
 impl SlackWorkspaces {
     /// Labels address workspaces in the MCP tools and the Inspector, so
     /// they must be distinct and the token must be present.
     pub fn from_config(configs: &[SlackConfig], http: &reqwest::Client) -> Result<Self, String> {
-        let mut clients = BTreeMap::new();
+        let mut clients: BTreeMap<String, Arc<dyn SlackApi>> = BTreeMap::new();
         for config in configs {
             let label = config.workspace.trim();
             if label.is_empty() {
@@ -40,9 +51,17 @@ impl SlackWorkspaces {
             if clients.contains_key(label) {
                 return Err(format!("two [[slack]] entries share the label '{label}'"));
             }
-            clients.insert(label.to_owned(), SlackClient::new(http.clone(), config.token.clone()));
+            let client = Arc::new(SlackClient::new(http.clone(), config.token.clone()));
+            clients.insert(label.to_owned(), client);
         }
         Ok(Self { clients })
+    }
+
+    /// A set built from caller-supplied APIs, so a test can drive a real
+    /// facade against a double instead of a live workspace.
+    #[cfg(test)]
+    pub(crate) fn from_apis(apis: BTreeMap<String, Arc<dyn SlackApi>>) -> Self {
+        Self { clients: apis }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -54,8 +73,8 @@ impl SlackWorkspaces {
         self.clients.keys().cloned().collect()
     }
 
-    pub fn client(&self, label: &str) -> Option<&SlackClient> {
-        self.clients.get(label)
+    pub fn client(&self, label: &str) -> Option<Arc<dyn SlackApi>> {
+        self.clients.get(label).cloned()
     }
 
     /// Prove every token at boot. A failure is reported, never fatal:
@@ -90,6 +109,44 @@ impl Workspace {
             );
         }
         self.slack_subs.lock().push(sub);
+    }
+
+    /// Hold a composed draft and hand back its id plus the receiver the
+    /// caller awaits. The draft is addressed to `caller`, so its prompt
+    /// surfaces in the session that will read the reply rather than in
+    /// whichever session happens to be focused.
+    pub(crate) fn register_slack_draft(
+        &self,
+        caller: &SessionKey,
+        draft: SlackDraft,
+    ) -> (Uuid, tokio::sync::oneshot::Receiver<bool>) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let id = draft.id;
+        self.slack_drafts.lock().insert(id, (caller.clone(), sender));
+        let _ = self
+            .update_sender()
+            .send(crate::protocol::SessionUpdate::SlackPostPending { key: caller.clone(), draft });
+        (id, receiver)
+    }
+
+    /// Answer a held draft, returning whether one was waiting for THIS
+    /// caller. That return is also how a caller asks whether a draft is
+    /// still outstanding: it is true exactly once, for the entry that was
+    /// there. A draft held for another session is refused rather than
+    /// answered, and a caller that has gone away is not an error.
+    pub(crate) fn resolve_slack_draft(
+        &self,
+        id: Uuid,
+        caller: &SessionKey,
+        approved: bool,
+    ) -> bool {
+        let mut drafts = self.slack_drafts.lock();
+        if !drafts.get(&id).is_some_and(|(owner, _)| owner == caller) {
+            return false;
+        }
+        let Some((_, sender)) = drafts.remove(&id) else { return false };
+        let _ = sender.send(approved);
+        true
     }
 
     /// Per-workspace pump liveness, for the Inspector's SLACK section.
@@ -337,19 +394,94 @@ mod tests {
 
     /// A workspace whose `[[slack]]` holds exactly `label`. The tempdir
     /// is returned so it outlives the workspace it names.
-    fn workspace_with_one_slack_workspace(label: &str) -> (Arc<Workspace>, tempfile::TempDir) {
+    fn workspace_with_one_slack_workspace(
+        label: &str,
+    ) -> (
+        Arc<Workspace>,
+        tempfile::TempDir,
+        tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+    ) {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut config = crate::config::LoadedConfig::empty_for_test();
         config.slack = vec![cfg(label, "xoxp-test")];
-        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config);
-        (ws, dir)
+        let (ws, rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config);
+        (ws, dir, rx)
+    }
+
+    fn draft(workspace: &str, conversation: &str) -> SlackDraft {
+        SlackDraft {
+            id: Uuid::new_v4(),
+            workspace: workspace.to_owned(),
+            conversation: conversation.to_owned(),
+            thread_ts: None,
+            text: "hello".to_owned(),
+        }
+    }
+
+    /// A worker's draft must not surface in the lead's dock prompt: the
+    /// approval is answered by whoever will read the reply, and the agent
+    /// waiting on the oneshot is the one that asked.
+    #[test]
+    fn a_draft_is_addressed_to_the_session_that_asked() {
+        let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
+        let caller = SessionKey::from_session_id("worker-uuid");
+        let (_id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+
+        let mut addressed = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackPostPending { key, .. } = update {
+                addressed.push(key);
+            }
+        }
+        assert_eq!(
+            addressed,
+            vec![caller],
+            "the draft is addressed to the worker that asked, never the lead",
+        );
+    }
+
+    #[test]
+    fn answering_a_draft_that_is_not_pending_is_refused() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let caller = SessionKey::from_session_id("caller-uuid");
+        assert!(!ws.resolve_slack_draft(Uuid::new_v4(), &caller, true));
+    }
+
+    #[test]
+    fn answering_a_draft_removes_it() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let caller = SessionKey::from_session_id("caller-uuid");
+        let (id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+
+        assert!(ws.resolve_slack_draft(id, &caller, true), "the draft was waiting");
+        assert!(!ws.resolve_slack_draft(id, &caller, true), "and is gone once answered");
+    }
+
+    /// An answer is only applied by the session the draft was addressed
+    /// to; another session naming the id is refused, and the draft stays
+    /// waiting for its owner.
+    #[test]
+    fn another_session_cannot_answer_a_draft_it_was_not_addressed() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let asker = SessionKey::from_session_id("worker-uuid");
+        let other = SessionKey::from_session_id("lead-uuid");
+        let (id, _decision) = ws.register_slack_draft(&asker, draft("acme", "C1"));
+
+        assert!(
+            !ws.resolve_slack_draft(id, &other, true),
+            "an answer from another session must be refused",
+        );
+        assert!(
+            ws.resolve_slack_draft(id, &asker, true),
+            "and the draft is still waiting for the session that asked",
+        );
     }
 
     /// `tokio::test`: starting a subsystem spawns a pump, which needs a
     /// runtime.
     #[tokio::test]
     async fn the_subsystem_does_not_start_without_subscriptions() {
-        let (ws, _dir) = workspace_with_one_slack_workspace("acme");
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
         ws.start_slack_subsystem();
         assert!(
             ws.slack_subsystem.lock().is_empty(),
@@ -359,7 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_subsystem_starts_once_a_subscription_exists() {
-        let (ws, _dir) = workspace_with_one_slack_workspace("acme");
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
         ws.add_slack_subscription(sub_for("acme", None), true);
 
         ws.start_slack_subsystem();

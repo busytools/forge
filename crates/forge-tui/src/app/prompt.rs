@@ -46,6 +46,17 @@ pub enum PromptSource {
     },
     /// AskUserQuestion request.
     Question { prompt: QuestionPrompt, question_index: u64, total_questions: u64 },
+    /// A Slack message waiting for the user's decision before it is
+    /// posted. Rendered through the same option picker as the other two
+    /// kinds - Post and Do not post are its two options - so the queue,
+    /// the keys, the render and the selection are all the existing
+    /// machinery, and only the submit path differs.
+    SlackDraft {
+        /// The session that asked. The answer goes back addressed to it,
+        /// never to whichever session happens to be focused.
+        key: forge_primitives::SessionKey,
+        draft: forge_primitives::slack::SlackDraft,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +161,44 @@ impl PromptState {
             tool_id,
             options,
             focused_option_index,
+            selected_option_indices: BTreeSet::new(),
+            mode: PromptMode::OptionPicker,
+            edited_input: None,
+            enqueued_at: std::time::SystemTime::now(),
+        }
+    }
+
+    /// Construct the approval prompt for a held Slack draft. Two
+    /// options, Post focused by default: the draft is only sent when the
+    /// user picks it, and every other exit rejects.
+    pub fn from_slack_draft(
+        key: forge_primitives::SessionKey,
+        draft: forge_primitives::slack::SlackDraft,
+    ) -> Self {
+        use forge_primitives::permission_ui::{
+            PermissionAction, PermissionOption, PermissionOptionKind,
+        };
+        let options = vec![
+            PermissionOption {
+                option_id: "post".into(),
+                name: "Post".into(),
+                kind: PermissionOptionKind::Allow,
+                action: PermissionAction::Allow,
+                recommended: true,
+            },
+            PermissionOption {
+                option_id: "do_not_post".into(),
+                name: "Do not post".into(),
+                kind: PermissionOptionKind::Deny,
+                action: PermissionAction::Deny,
+                recommended: false,
+            },
+        ];
+        Self {
+            source: PromptSource::SlackDraft { key, draft },
+            tool_id: String::new(),
+            options,
+            focused_option_index: 0,
             selected_option_indices: BTreeSet::new(),
             mode: PromptMode::OptionPicker,
             edited_input: None,
@@ -473,6 +522,16 @@ pub fn submit_prompt(app: &mut crate::app::App) {
                 outcome,
             );
         }
+        PromptSource::SlackDraft { key: asking, draft } => {
+            // Approve is the focused option's action. Anything else the
+            // picker can do - moving off it, cancelling - is not an
+            // approval, and the handler fails closed on anything that is
+            // not an explicit yes.
+            let approved = prompt.options.get(prompt.focused_option_index).is_some_and(|option| {
+                option.action == forge_primitives::permission_ui::PermissionAction::Allow
+            });
+            crate::app::events::turn::dispatch_slack_post_outcome(app, asking, draft.id, approved);
+        }
     }
 
     restore_draft_if_empty_queue(app);
@@ -515,6 +574,12 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
                 &prompt.tool_id,
                 QuestionOutcome::Cancelled,
             );
+        }
+        PromptSource::SlackDraft { key: asking, draft } => {
+            // Cancelling a draft rejects it, releasing the blocked
+            // `slack__post` rather than leaving it waiting on a prompt
+            // that is no longer on screen.
+            crate::app::events::turn::dispatch_slack_post_outcome(app, &asking, draft.id, false);
         }
     }
 
@@ -582,6 +647,79 @@ pub(crate) mod tests {
             enqueue_prompt(session, prompt);
         }
         app
+    }
+
+    /// A session whose queue head is a held Slack draft, with Post
+    /// focused - the state the dock is in while `slack__post` waits.
+    pub(crate) fn app_with_pending_slack_draft(
+        workspace: &str,
+        conversation: &str,
+        text: &str,
+    ) -> (crate::app::App, uuid::Uuid) {
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("active session");
+        let draft = forge_primitives::slack::SlackDraft {
+            id: uuid::Uuid::new_v4(),
+            workspace: workspace.to_owned(),
+            conversation: conversation.to_owned(),
+            thread_ts: None,
+            text: text.to_owned(),
+        };
+        let id = draft.id;
+        let prompt = PromptState::from_slack_draft(key.clone(), draft);
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(session, prompt);
+        }
+        (app, id)
+    }
+
+    fn focus_second_option(app: &mut crate::app::App) {
+        let key = app.active_session_key.clone().expect("active session");
+        if let Some(session) = app.session_mut(&key)
+            && let Some(prompt) = session.prompt_queue.front_mut()
+        {
+            prompt.focused_option_index = 1;
+        }
+    }
+
+    #[test]
+    fn a_slack_draft_prompt_offers_post_and_do_not_post() {
+        let (mut app, _id) = app_with_pending_slack_draft("acme", "C1", "hello");
+        let key = app.active_session_key.clone().expect("active session");
+        let Some(session) = app.session_mut(&key) else { panic!("active session bucket") };
+        let Some(prompt) = session.prompt_queue.front() else { panic!("a queued prompt") };
+
+        assert_eq!(prompt.options.len(), 2, "exactly the two decisions");
+        assert_eq!(prompt.options[0].name, "Post");
+        assert_eq!(prompt.options[0].action, PermissionAction::Allow);
+        assert_eq!(prompt.options[1].name, "Do not post");
+        assert_eq!(prompt.options[1].action, PermissionAction::Deny);
+        assert_eq!(prompt.focused_option_index, 0, "Post is focused, so Enter posts");
+    }
+
+    #[test]
+    fn approving_a_slack_draft_dispatches_an_approval() {
+        let (mut app, id) = app_with_pending_slack_draft("acme", "C1", "hello");
+        submit_prompt(&mut app);
+
+        assert_eq!(
+            *app.test_dispatched_slack_posts.borrow(),
+            vec![(id, true)],
+            "the focused Post option answers with an approval",
+        );
+    }
+
+    #[test]
+    fn rejecting_a_slack_draft_dispatches_a_rejection() {
+        let (mut app, id) = app_with_pending_slack_draft("acme", "C1", "hello");
+        focus_second_option(&mut app);
+        submit_prompt(&mut app);
+
+        assert_eq!(
+            *app.test_dispatched_slack_posts.borrow(),
+            vec![(id, false)],
+            "Do not post answers with a rejection",
+        );
     }
 
     pub(crate) fn make_question_request(multi_select: bool) -> QuestionRequest {

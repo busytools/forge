@@ -240,6 +240,16 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::RuntimeReloadFailed { session_id, message } => {
             apply_session_update_runtime_reload_failed(app, &session_id, &message);
         }
+        SessionUpdate::SlackPostPending { key, draft } => {
+            // Queued on the ASKING session, so the approval is answered by
+            // whoever will read the reply rather than by whichever session
+            // happens to be focused.
+            let asking = key.clone();
+            if let Some(session) = app.session_mut(&key) {
+                let prompt = crate::app::prompt::PromptState::from_slack_draft(asking, draft);
+                crate::app::prompt::enqueue_prompt(session, prompt);
+            }
+        }
         SessionUpdate::PermissionRequest { key, tool_id, request } => {
             let mut queued = false;
             if let Some(session) = app.session_mut(&key) {

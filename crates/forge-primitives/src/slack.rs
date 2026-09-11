@@ -94,6 +94,18 @@ pub struct SlackSubscription {
     pub created_at: SystemTime,
 }
 
+/// A composed but unsent Slack message. The workspace holds it until the
+/// user approves it in the dock prompt; nothing reaches Slack otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlackDraft {
+    pub id: Uuid,
+    pub workspace: String,
+    pub conversation: String,
+    /// `None` posts a root message; `Some(ts)` replies into that thread.
+    pub thread_ts: Option<String>,
+    pub text: String,
+}
+
 /// One message as the pump sees it, after matching. Carries what delivery
 /// needs and nothing the wire happened to include.
 #[derive(Debug, Clone, PartialEq, Eq)]

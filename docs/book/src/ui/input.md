@@ -165,11 +165,13 @@ The `:` counts only at the start of a line or directly after whitespace, and the
 
 </details>
 
-# Unified prompt (permission · plan · question)
+# Unified prompt (permission · plan · question · slack post)
 
 ## Dock-morph widget
 
-Permission requests, plan approval and AskUserQuestion route through one widget with three modes (single-select, multi-select, selection+text). When a prompt arrives the input box morphs: the text slot disappears, the orange chrome stays, options appear inside with a `▸` pointer - arrows move, <kbd>Enter</kbd> confirms, <kbd>Esc</kbd> cancels. The tool block above keeps its in-progress render. Prompts queue FIFO per session; with more than one pending a dim "`▼ N more pending after this`" line tops the dock body.
+Permission requests, plan approval, AskUserQuestion and a held Slack post route through one widget with three modes (single-select, multi-select, selection+text). When a prompt arrives the input box morphs: the text slot disappears, the orange chrome stays, options appear inside with a `▸` pointer - arrows move, <kbd>Enter</kbd> confirms, <kbd>Esc</kbd> cancels. The tool block above keeps its in-progress render. Prompts queue FIFO per session; with more than one pending a dim "`▼ N more pending after this`" line tops the dock body.
+
+**Slack post approval** uses the same picker with two options, `Post` and `Do not post`, `Post` focused. The header names the workspace and conversation (or the thread for a reply) and the body prints the message text verbatim, because that text is what the approval is for. `slack__post` does not return until this prompt is answered, and only `Post` sends anything: <kbd>Esc</kbd>, quitting, an unanswered draft, or the asking session going away all reject. The prompt is queued on the session that asked, not the focused one. `slack__edit` and `slack__react` are not prompted - correcting your own message is the path the gate exists to leave open.
 
 **Common-case permission** (most Bash / Edit / Read calls):
 

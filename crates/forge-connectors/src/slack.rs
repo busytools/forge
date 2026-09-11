@@ -49,12 +49,18 @@ pub trait SlackHost: Send + Sync {
     fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage);
 }
 
-/// The Web API calls the pump makes, behind a trait so a sweep can be
-/// driven from seeded responses instead of a live workspace. It abstracts
-/// this one connector's surface; it is not a trait shared between
+/// The Web API calls this connector makes, behind a trait so a sweep or
+/// an outbound call can be driven from a test double instead of a live
+/// workspace.
+///
+/// Public because forge-workspace holds one and cannot store a trait it
+/// cannot name, the same reason [`SlackHost`] is public. It abstracts
+/// this one connector's own surface; it is not a trait shared between
 /// connectors.
 #[async_trait::async_trait]
-pub(crate) trait SlackApi: Send + Sync {
+pub trait SlackApi: Send + Sync {
+    /// Who the token belongs to; the boot probe's only call.
+    async fn auth_test(&self) -> Result<AuthTest, SlackError>;
     async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError>;
     async fn history(
         &self,
@@ -70,10 +76,36 @@ pub(crate) trait SlackApi: Send + Sync {
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError>;
+    /// Post one message, as a root or into an existing thread.
+    async fn post_message(
+        &self,
+        channel: &str,
+        text: &str,
+        thread_ts: Option<&str>,
+    ) -> Result<(), SlackError>;
+    /// Replace the text of one of the authenticated user's own messages.
+    async fn update_message(&self, channel: &str, ts: &str, text: &str) -> Result<(), SlackError>;
+    /// Delete one of the authenticated user's own messages.
+    async fn delete_message(&self, channel: &str, ts: &str) -> Result<(), SlackError>;
+    /// Add or remove one reaction on a message.
+    async fn set_reaction(
+        &self,
+        channel: &str,
+        ts: &str,
+        name: &str,
+        add: bool,
+    ) -> Result<(), SlackError>;
+    /// The author of one message, for the own-message check before an
+    /// edit or a delete. `None` when the page did not carry it.
+    async fn message_author(&self, channel: &str, ts: &str) -> Result<Option<String>, SlackError>;
 }
 
 #[async_trait::async_trait]
 impl SlackApi for SlackClient {
+    async fn auth_test(&self) -> Result<AuthTest, SlackError> {
+        SlackClient::auth_test(self).await
+    }
+
     async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
         SlackClient::list_conversations(self).await
     }
@@ -97,6 +129,63 @@ impl SlackApi for SlackClient {
     ) -> Result<MessagePage, SlackError> {
         SlackClient::replies(self, channel, ts, limit, cursor).await
     }
+
+    async fn post_message(
+        &self,
+        channel: &str,
+        text: &str,
+        thread_ts: Option<&str>,
+    ) -> Result<(), SlackError> {
+        SlackClient::post_message(self, channel, text, thread_ts).await
+    }
+
+    async fn update_message(&self, channel: &str, ts: &str, text: &str) -> Result<(), SlackError> {
+        SlackClient::update_message(self, channel, ts, text).await
+    }
+
+    async fn delete_message(&self, channel: &str, ts: &str) -> Result<(), SlackError> {
+        SlackClient::delete_message(self, channel, ts).await
+    }
+
+    async fn set_reaction(
+        &self,
+        channel: &str,
+        ts: &str,
+        name: &str,
+        add: bool,
+    ) -> Result<(), SlackError> {
+        SlackClient::set_reaction(self, channel, ts, name, add).await
+    }
+
+    async fn message_author(&self, channel: &str, ts: &str) -> Result<Option<String>, SlackError> {
+        SlackClient::message_author(self, channel, ts).await
+    }
+}
+
+/// The largest text `chat.postMessage` carries without truncating. The
+/// probe measured a silent cut at 4000 with `ok: true`, so a longer draft
+/// is split and posted in sequence rather than quietly halved.
+pub const POST_LIMIT: usize = 4000;
+
+/// Budget per part once a draft is split, leaving room for the `[i/n] `
+/// prefix each part carries.
+const POST_PART_BUDGET: usize = 3800;
+
+/// Split `text` into parts each under [`POST_LIMIT`], numbered so a
+/// reader can see the order. Text at or under the limit is one part.
+pub fn split_for_post(text: &str) -> Vec<String> {
+    if text.chars().count() <= POST_LIMIT {
+        return vec![text.to_owned()];
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let total = chars.len().div_ceil(POST_PART_BUDGET);
+    chars
+        .chunks(POST_PART_BUDGET)
+        .enumerate()
+        .map(|(index, chunk)| {
+            format!("[{}/{}] {}", index + 1, total, chunk.iter().collect::<String>())
+        })
+        .collect()
 }
 
 /// Whether `text` carries a mention of `user_id`.
@@ -732,6 +821,80 @@ impl SlackClient {
         decode_message_page("conversations.replies", &body)
     }
 
+    /// Post one message, as a root or into an existing thread.
+    pub async fn post_message(
+        &self,
+        channel: &str,
+        text: &str,
+        thread_ts: Option<&str>,
+    ) -> Result<(), SlackError> {
+        let mut params = vec![("channel", channel.to_owned()), ("text", text.to_owned())];
+        if let Some(thread_ts) = thread_ts {
+            params.push(("thread_ts", thread_ts.to_owned()));
+        }
+        let _: serde_json::Value = self.call("chat.postMessage", &params).await?;
+        Ok(())
+    }
+
+    /// Replace the text of one of the user's own messages. Slack drops
+    /// existing blocks when `text` is sent without them, which is what
+    /// this connector wants: one text body, no stale block.
+    pub async fn update_message(
+        &self,
+        channel: &str,
+        ts: &str,
+        text: &str,
+    ) -> Result<(), SlackError> {
+        let params =
+            vec![("channel", channel.to_owned()), ("ts", ts.to_owned()), ("text", text.to_owned())];
+        let _: serde_json::Value = self.call("chat.update", &params).await?;
+        Ok(())
+    }
+
+    /// Delete one of the user's own messages.
+    pub async fn delete_message(&self, channel: &str, ts: &str) -> Result<(), SlackError> {
+        let params = vec![("channel", channel.to_owned()), ("ts", ts.to_owned())];
+        let _: serde_json::Value = self.call("chat.delete", &params).await?;
+        Ok(())
+    }
+
+    /// Add or remove one reaction. `reactions.remove` requires being the
+    /// original reaction's author.
+    pub async fn set_reaction(
+        &self,
+        channel: &str,
+        ts: &str,
+        name: &str,
+        add: bool,
+    ) -> Result<(), SlackError> {
+        let method = if add { "reactions.add" } else { "reactions.remove" };
+        let params = vec![
+            ("channel", channel.to_owned()),
+            ("timestamp", ts.to_owned()),
+            ("name", name.to_owned()),
+        ];
+        let _: serde_json::Value = self.call(method, &params).await?;
+        Ok(())
+    }
+
+    /// The author of the message at `ts`, or `None` when the page did not
+    /// carry it. Backs the own-message check an edit needs.
+    pub async fn message_author(
+        &self,
+        channel: &str,
+        ts: &str,
+    ) -> Result<Option<String>, SlackError> {
+        let params = vec![
+            ("channel", channel.to_owned()),
+            ("latest", ts.to_owned()),
+            ("inclusive", "true".to_owned()),
+            ("limit", "1".to_owned()),
+        ];
+        let body = self.call_text("conversations.history", &params).await?;
+        let page = decode_message_page("conversations.history", &body)?;
+        Ok(page.messages.into_iter().find(|message| message.ts == ts).and_then(|m| m.user))
+    }
+
     /// Every conversation the token's user is a member of, paging to the end.
     pub async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
         let mut out = Vec::new();
@@ -1111,6 +1274,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SlackApi for FakeHost {
+        async fn auth_test(&self) -> Result<AuthTest, SlackError> {
+            Ok(AuthTest {
+                team: "Test".to_owned(),
+                user: "tester".to_owned(),
+                team_id: "T1".to_owned(),
+                user_id: self.user_id.clone().unwrap_or_default(),
+                url: "https://test.slack.com/".to_owned(),
+            })
+        }
+
         async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
             if let Some(retry_after) = self.rate_limited {
                 return Err(SlackError::RateLimited {
@@ -1163,6 +1336,65 @@ mod tests {
                 next_cursor: None,
             })
         }
+
+        async fn post_message(
+            &self,
+            _channel: &str,
+            _text: &str,
+            _thread_ts: Option<&str>,
+        ) -> Result<(), SlackError> {
+            Ok(())
+        }
+
+        async fn update_message(
+            &self,
+            _channel: &str,
+            _ts: &str,
+            _text: &str,
+        ) -> Result<(), SlackError> {
+            Ok(())
+        }
+
+        async fn delete_message(&self, _channel: &str, _ts: &str) -> Result<(), SlackError> {
+            Ok(())
+        }
+
+        async fn set_reaction(
+            &self,
+            _channel: &str,
+            _ts: &str,
+            _name: &str,
+            _add: bool,
+        ) -> Result<(), SlackError> {
+            Ok(())
+        }
+
+        async fn message_author(
+            &self,
+            _channel: &str,
+            _ts: &str,
+        ) -> Result<Option<String>, SlackError> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn a_draft_at_the_limit_is_one_post_and_a_longer_one_is_split() {
+        let exact = "a".repeat(POST_LIMIT);
+        assert_eq!(split_for_post(&exact).len(), 1, "a draft that fits posts as one message");
+
+        let over = "a".repeat(POST_LIMIT + 1);
+        let parts = split_for_post(&over);
+        assert!(parts.len() > 1, "one character over must be split, not truncated: {parts:?}");
+        assert!(
+            parts.iter().all(|part| part.chars().count() <= POST_LIMIT),
+            "no part may reach the point Slack truncates at",
+        );
+        assert_eq!(
+            parts.iter().map(|part| part.matches('a').count()).sum::<usize>(),
+            POST_LIMIT + 1,
+            "splitting must carry every character",
+        );
     }
 
     fn history_message(ts: &str, user: &str, text: &str) -> SlackHistoryMessage {

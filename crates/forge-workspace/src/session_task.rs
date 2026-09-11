@@ -1313,6 +1313,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverWorkerPromptToLead { .. }
         | Command::DeliverGotifyMessage { .. }
         | Command::DeliverSlackMessage { .. }
+        | Command::RespondSlackPost { .. }
         | Command::SwitchAccount { .. }
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }

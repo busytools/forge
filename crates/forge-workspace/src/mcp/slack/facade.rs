@@ -8,7 +8,7 @@ use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use forge_primitives::slack::{
-    SlackConversation, SlackSubscription, SlackSubscriptionTarget, SlackWatchMode,
+    SlackConversation, SlackDraft, SlackSubscription, SlackSubscriptionTarget, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -40,6 +40,76 @@ pub(crate) enum SlackSubscribeError {
     UnknownWorkspace,
     /// The caller couldn't be mapped to a project.
     UnknownCallerProject,
+}
+
+/// What a caller asked to post. Composed here, not in the connector, so
+/// the draft can be held for the user's decision before anything is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SlackPostRequest {
+    /// Omitted when only one workspace is configured.
+    pub workspace: Option<String>,
+    pub conversation: String,
+    /// `None` posts a root message; `Some(ts)` replies into that thread.
+    pub thread_ts: Option<String>,
+    pub text: String,
+}
+
+/// Why a post did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SlackPostError {
+    /// The user rejected the draft. Nothing was posted.
+    Rejected,
+    /// The named workspace is not configured.
+    UnknownWorkspace,
+    /// The Web API call failed. Carries the formatted error for the LLM.
+    Fetch(String),
+}
+
+/// What a post did. A draft past the truncation point is split and
+/// posted in sequence, so this is usually one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SlackPostOutcome {
+    pub posted: usize,
+}
+
+/// One message to edit or delete. Not gated: what posting was gated for
+/// does not apply to correcting your own message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SlackEditRequest {
+    /// Omitted when only one workspace is configured.
+    pub workspace: Option<String>,
+    pub conversation: String,
+    pub ts: String,
+    /// `None` deletes the message; `Some(text)` replaces its body.
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SlackEditError {
+    /// The message was not posted by the authenticated user, so Slack
+    /// would refuse the update anyway. Refused locally so the caller gets
+    /// a clear reason rather than a wire error code.
+    NotOwnMessage,
+    UnknownWorkspace,
+    Fetch(String),
+}
+
+/// One reaction to add or remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SlackReactRequest {
+    /// Omitted when only one workspace is configured.
+    pub workspace: Option<String>,
+    pub conversation: String,
+    pub ts: String,
+    /// Slack's shortcode, without colons, e.g. `white_check_mark`.
+    pub name: String,
+    pub add: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SlackReactError {
+    UnknownWorkspace,
+    Fetch(String),
 }
 
 /// What a caller asked to watch, before it becomes records.
@@ -88,6 +158,22 @@ pub(crate) trait SlackFacade: Send + Sync {
         caller: &SessionKey,
         workspace: Option<&str>,
     ) -> Vec<SlackSubscriptionTarget>;
+
+    /// Post a message, held for the user's decision first. Returns only
+    /// once that decision is in, and nothing is sent unless it was an
+    /// approval - a rejected or unanswered draft is `Rejected`.
+    async fn post(
+        &self,
+        caller: &SessionKey,
+        request: SlackPostRequest,
+    ) -> Result<SlackPostOutcome, SlackPostError>;
+
+    /// Replace the body of one of the user's own messages, or delete it
+    /// when `text` is `None`. Not gated.
+    async fn edit(&self, request: SlackEditRequest) -> Result<(), SlackEditError>;
+
+    /// Add or remove one reaction. Not gated.
+    async fn react(&self, request: SlackReactRequest) -> Result<(), SlackReactError>;
 
     /// Record what the caller wants to watch in `workspace`, one record
     /// per target. Returns the new record ids.
@@ -139,6 +225,67 @@ impl SlackFacade for ProdSlackFacade {
             known: ws.slack.labels(),
         })?;
         client.list_conversations().await.map_err(|err| SlackListError::Fetch(err.to_string()))
+    }
+
+    async fn post(
+        &self,
+        caller: &SessionKey,
+        request: SlackPostRequest,
+    ) -> Result<SlackPostOutcome, SlackPostError> {
+        let ws = self.workspace.upgrade().ok_or(SlackPostError::UnknownWorkspace)?;
+        let label = resolve_label(&ws.slack, request.workspace.as_deref())
+            .ok_or(SlackPostError::UnknownWorkspace)?;
+        let api = ws.slack.client(&label).ok_or(SlackPostError::UnknownWorkspace)?;
+        let draft = SlackDraft {
+            id: Uuid::new_v4(),
+            workspace: label,
+            conversation: request.conversation,
+            thread_ts: request.thread_ts,
+            text: request.text,
+        };
+        let (_draft_id, decision) = ws.register_slack_draft(caller, draft.clone());
+        // Fails closed: a caller that went away without answering is not
+        // an approval, and neither is a rejected one.
+        if !decision.await.unwrap_or(false) {
+            return Err(SlackPostError::Rejected);
+        }
+        let parts = forge_connectors::slack::split_for_post(&draft.text);
+        for part in &parts {
+            api.post_message(&draft.conversation, part, draft.thread_ts.as_deref())
+                .await
+                .map_err(|err| SlackPostError::Fetch(err.to_string()))?;
+        }
+        Ok(SlackPostOutcome { posted: parts.len() })
+    }
+
+    async fn edit(&self, request: SlackEditRequest) -> Result<(), SlackEditError> {
+        let ws = self.workspace.upgrade().ok_or(SlackEditError::UnknownWorkspace)?;
+        let label = resolve_label(&ws.slack, request.workspace.as_deref())
+            .ok_or(SlackEditError::UnknownWorkspace)?;
+        let api = ws.slack.client(&label).ok_or(SlackEditError::UnknownWorkspace)?;
+        let own = ws.slack_user_ids.lock().get(&label).cloned();
+        let author = api
+            .message_author(&request.conversation, &request.ts)
+            .await
+            .map_err(|err| SlackEditError::Fetch(err.to_string()))?;
+        if own.is_none() || author != own {
+            return Err(SlackEditError::NotOwnMessage);
+        }
+        let result = match &request.text {
+            Some(text) => api.update_message(&request.conversation, &request.ts, text).await,
+            None => api.delete_message(&request.conversation, &request.ts).await,
+        };
+        result.map_err(|err| SlackEditError::Fetch(err.to_string()))
+    }
+
+    async fn react(&self, request: SlackReactRequest) -> Result<(), SlackReactError> {
+        let ws = self.workspace.upgrade().ok_or(SlackReactError::UnknownWorkspace)?;
+        let label = resolve_label(&ws.slack, request.workspace.as_deref())
+            .ok_or(SlackReactError::UnknownWorkspace)?;
+        let api = ws.slack.client(&label).ok_or(SlackReactError::UnknownWorkspace)?;
+        api.set_reaction(&request.conversation, &request.ts, &request.name, request.add)
+            .await
+            .map_err(|err| SlackReactError::Fetch(err.to_string()))
     }
 
     fn subscribed_targets(
@@ -217,6 +364,12 @@ pub(crate) struct MockSlackFacade {
         parking_lot::Mutex<Option<Result<Vec<SlackConversation>, SlackListError>>>,
     pub subscribed_targets_calls: parking_lot::Mutex<Vec<Option<String>>>,
     pub subscribed_targets: parking_lot::Mutex<Vec<SlackSubscriptionTarget>>,
+    pub post_calls: parking_lot::Mutex<Vec<SlackPostRequest>>,
+    pub post_result: parking_lot::Mutex<Option<Result<SlackPostOutcome, SlackPostError>>>,
+    pub edit_calls: parking_lot::Mutex<Vec<SlackEditRequest>>,
+    pub edit_result: parking_lot::Mutex<Option<Result<(), SlackEditError>>>,
+    pub react_calls: parking_lot::Mutex<Vec<SlackReactRequest>>,
+    pub react_result: parking_lot::Mutex<Option<Result<(), SlackReactError>>>,
     pub subscribe_calls: parking_lot::Mutex<Vec<(Option<String>, SlackSubscribeRequest)>>,
     pub subscribe_result: parking_lot::Mutex<Option<Result<Vec<Uuid>, SlackSubscribeError>>>,
     pub unsubscribe_calls: parking_lot::Mutex<Vec<Uuid>>,
@@ -242,6 +395,25 @@ impl SlackFacade for MockSlackFacade {
     ) -> Result<Vec<SlackConversation>, SlackListError> {
         self.conversations_calls.lock().push(workspace.map(str::to_owned));
         self.conversations_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    async fn post(
+        &self,
+        _caller: &SessionKey,
+        request: SlackPostRequest,
+    ) -> Result<SlackPostOutcome, SlackPostError> {
+        self.post_calls.lock().push(request);
+        self.post_result.lock().clone().unwrap_or(Ok(SlackPostOutcome { posted: 1 }))
+    }
+
+    async fn edit(&self, request: SlackEditRequest) -> Result<(), SlackEditError> {
+        self.edit_calls.lock().push(request);
+        self.edit_result.lock().clone().unwrap_or(Ok(()))
+    }
+
+    async fn react(&self, request: SlackReactRequest) -> Result<(), SlackReactError> {
+        self.react_calls.lock().push(request);
+        self.react_result.lock().clone().unwrap_or(Ok(()))
     }
 
     fn subscribed_targets(
@@ -273,11 +445,293 @@ impl SlackFacade for MockSlackFacade {
 mod tests {
     use super::*;
     use crate::config::LoadedConfig;
+    use forge_connectors::slack::{AuthTest, MessagePage, SlackApi, SlackError};
     use forge_primitives::slack::SlackConfig;
+    use std::collections::{BTreeMap, HashMap};
     use tempfile::tempdir;
 
     fn caller() -> SessionKey {
         SessionKey::from_session_id("caller-uuid")
+    }
+
+    /// Records every outbound call, so a test can assert what did and did
+    /// not reach Slack.
+    #[derive(Default)]
+    struct RecordingApi {
+        posts: parking_lot::Mutex<Vec<(String, String, Option<String>)>>,
+        updates: parking_lot::Mutex<Vec<(String, String, String)>>,
+        deletes: parking_lot::Mutex<Vec<(String, String)>>,
+        reactions: parking_lot::Mutex<Vec<(String, String, String, bool)>>,
+        authors: parking_lot::Mutex<HashMap<String, String>>,
+    }
+
+    impl RecordingApi {
+        fn seed_author(&self, ts: &str, user: &str) {
+            self.authors.lock().insert(ts.to_owned(), user.to_owned());
+        }
+        fn posts(&self) -> Vec<(String, String, Option<String>)> {
+            self.posts.lock().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SlackApi for RecordingApi {
+        async fn auth_test(&self) -> Result<AuthTest, SlackError> {
+            Ok(AuthTest {
+                team: "Test".to_owned(),
+                user: "tester".to_owned(),
+                team_id: "T1".to_owned(),
+                user_id: "U1".to_owned(),
+                url: "https://test.slack.com/".to_owned(),
+            })
+        }
+
+        async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
+            Ok(Vec::new())
+        }
+
+        async fn history(
+            &self,
+            _channel: &str,
+            _oldest: Option<&str>,
+            _limit: u32,
+            _cursor: Option<&str>,
+        ) -> Result<MessagePage, SlackError> {
+            Ok(MessagePage { messages: Vec::new(), next_cursor: None })
+        }
+
+        async fn replies(
+            &self,
+            _channel: &str,
+            _ts: &str,
+            _limit: u32,
+            _cursor: Option<&str>,
+        ) -> Result<MessagePage, SlackError> {
+            Ok(MessagePage { messages: Vec::new(), next_cursor: None })
+        }
+
+        async fn post_message(
+            &self,
+            channel: &str,
+            text: &str,
+            thread_ts: Option<&str>,
+        ) -> Result<(), SlackError> {
+            self.posts.lock().push((
+                channel.to_owned(),
+                text.to_owned(),
+                thread_ts.map(str::to_owned),
+            ));
+            Ok(())
+        }
+
+        async fn update_message(
+            &self,
+            channel: &str,
+            ts: &str,
+            text: &str,
+        ) -> Result<(), SlackError> {
+            self.updates.lock().push((channel.to_owned(), ts.to_owned(), text.to_owned()));
+            Ok(())
+        }
+
+        async fn delete_message(&self, channel: &str, ts: &str) -> Result<(), SlackError> {
+            self.deletes.lock().push((channel.to_owned(), ts.to_owned()));
+            Ok(())
+        }
+
+        async fn set_reaction(
+            &self,
+            channel: &str,
+            ts: &str,
+            name: &str,
+            add: bool,
+        ) -> Result<(), SlackError> {
+            self.reactions.lock().push((channel.to_owned(), ts.to_owned(), name.to_owned(), add));
+            Ok(())
+        }
+
+        async fn message_author(
+            &self,
+            _channel: &str,
+            ts: &str,
+        ) -> Result<Option<String>, SlackError> {
+            Ok(self.authors.lock().get(ts).cloned())
+        }
+    }
+
+    /// A workspace whose one Slack workspace is the recording double, with
+    /// a lead session recorded so the caller resolves to a project.
+    fn facade_with_recording_slack() -> (Arc<dyn SlackFacade>, Arc<Workspace>, Arc<RecordingApi>) {
+        let dir = tempdir().expect("tempdir");
+        let mut config = LoadedConfig::empty_for_test();
+        config.slack = vec![cfg("acme")];
+        let api = Arc::new(RecordingApi::default());
+        let mut apis: BTreeMap<String, Arc<dyn SlackApi>> = BTreeMap::new();
+        apis.insert("acme".to_owned(), api.clone());
+        let (ws, _rx) = Workspace::testing_stub_with_slack(
+            dir.path().to_path_buf(),
+            config,
+            Arc::new(crate::slack::SlackWorkspaces::from_apis(apis)),
+        );
+        ws.seed_test_project("forge", "/tmp/slack-facade-scope");
+        ws.record_connected_session("/tmp/slack-facade-scope", "caller-uuid", None);
+        // The own-message check reads the workspace's resolved user id.
+        ws.slack_user_ids.lock().insert("acme".to_owned(), "U1".to_owned());
+        let facade = ProdSlackFacade::from_arc(&ws);
+        (facade, ws, api)
+    }
+
+    /// Wait for the blocked post to register its draft, then hand back its
+    /// id. The post is parked on a oneshot until this is resolved.
+    async fn wait_for_draft(ws: &Arc<Workspace>) -> Uuid {
+        for _ in 0..200 {
+            if let Some(id) = ws.slack_drafts.lock().keys().next().copied() {
+                return id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("no draft was registered");
+    }
+
+    fn post_request(conversation: &str, text: &str) -> SlackPostRequest {
+        SlackPostRequest {
+            workspace: Some("acme".to_owned()),
+            conversation: conversation.to_owned(),
+            thread_ts: None,
+            text: text.to_owned(),
+        }
+    }
+
+    fn edit_request(conversation: &str, ts: &str, text: Option<&str>) -> SlackEditRequest {
+        SlackEditRequest {
+            workspace: Some("acme".to_owned()),
+            conversation: conversation.to_owned(),
+            ts: ts.to_owned(),
+            text: text.map(str::to_owned),
+        }
+    }
+
+    fn react_request(conversation: &str, ts: &str, name: &str, add: bool) -> SlackReactRequest {
+        SlackReactRequest {
+            workspace: Some("acme".to_owned()),
+            conversation: conversation.to_owned(),
+            ts: ts.to_owned(),
+            name: name.to_owned(),
+            add,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rejected_draft_never_reaches_slack() {
+        let (facade, ws, api) = facade_with_recording_slack();
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), false);
+
+        let outcome = task.await.expect("no panic");
+        assert_eq!(outcome, Err(SlackPostError::Rejected));
+        assert!(api.posts().is_empty(), "a rejected draft must not post");
+    }
+
+    /// A prompt nobody answers must read as "not approved". Dropping the
+    /// sender is how that happens - the session went away, or the dock
+    /// prompt was cleared without a decision - and it must never be taken
+    /// for an approval.
+    #[tokio::test]
+    async fn a_draft_whose_answer_never_comes_posts_nothing() {
+        let (facade, ws, api) = facade_with_recording_slack();
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        drop(ws.slack_drafts.lock().remove(&id));
+
+        let outcome = task.await.expect("no panic");
+        assert_eq!(outcome, Err(SlackPostError::Rejected));
+        assert!(api.posts().is_empty(), "an unanswered draft must not post");
+    }
+
+    #[tokio::test]
+    async fn an_approved_draft_posts_exactly_once() {
+        let (facade, ws, api) = facade_with_recording_slack();
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), true);
+
+        task.await.expect("no panic").expect("an approved draft posts");
+        assert_eq!(api.posts().len(), 1, "exactly one message goes out");
+    }
+
+    #[tokio::test]
+    async fn a_thread_reply_carries_the_parent_ts() {
+        let (facade, ws, api) = facade_with_recording_slack();
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move {
+                let mut request = post_request("C1", "hi");
+                request.thread_ts = Some("100.0".to_owned());
+                facade.post(&caller(), request).await
+            }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), true);
+        task.await.expect("no panic").expect("posted");
+
+        assert_eq!(api.posts()[0].2.as_deref(), Some("100.0"));
+    }
+
+    #[tokio::test]
+    async fn editing_someone_elses_message_is_refused_before_it_reaches_slack() {
+        // Slack's own rule: only the authenticated user's messages can be
+        // updated. Refused locally so the agent gets a clear reason rather
+        // than a wire error code.
+        let (facade, _ws, api) = facade_with_recording_slack();
+        api.seed_author("100.0", "U-OTHER");
+
+        let err = facade.edit(edit_request("C1", "100.0", Some("new text"))).await;
+        assert_eq!(err, Err(SlackEditError::NotOwnMessage));
+        assert!(api.updates.lock().is_empty(), "a foreign message is never updated");
+    }
+
+    #[tokio::test]
+    async fn editing_own_message_updates_it() {
+        let (facade, _ws, api) = facade_with_recording_slack();
+        api.seed_author("100.0", "U1");
+
+        facade.edit(edit_request("C1", "100.0", Some("new text"))).await.expect("updated");
+        assert_eq!(api.updates.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn deleting_own_message_removes_it() {
+        let (facade, _ws, api) = facade_with_recording_slack();
+        api.seed_author("100.0", "U1");
+
+        facade.edit(edit_request("C1", "100.0", None)).await.expect("deleted");
+        assert_eq!(api.deletes.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reacting_adds_then_removes() {
+        let (facade, _ws, api) = facade_with_recording_slack();
+
+        facade.react(react_request("C1", "100.0", "white_check_mark", true)).await.expect("added");
+        facade
+            .react(react_request("C1", "100.0", "white_check_mark", false))
+            .await
+            .expect("removed");
+
+        let reactions = api.reactions.lock().clone();
+        assert_eq!(reactions.len(), 2);
+        assert!(reactions[0].3, "the first call adds");
+        assert!(!reactions[1].3, "the second removes");
     }
 
     fn cfg(label: &str) -> SlackConfig {

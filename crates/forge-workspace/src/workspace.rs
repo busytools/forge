@@ -377,6 +377,13 @@ pub struct Workspace {
     /// The authenticated user's id per workspace, resolved once by the
     /// boot `auth.test` and needed to recognise `<@U...>` mentions.
     pub(crate) slack_user_ids: Mutex<std::collections::BTreeMap<String, String>>,
+    /// Composed Slack messages held for the user's decision, keyed by
+    /// draft id and carrying the session that asked. The sender is what
+    /// the blocked `slack__post` handler awaits; removing the entry is
+    /// what answers it. The owner is stored beside it so an answer is
+    /// only ever applied by the session it was addressed to.
+    pub(crate) slack_drafts:
+        Mutex<HashMap<uuid::Uuid, (SessionKey, tokio::sync::oneshot::Sender<bool>)>>,
     /// Set the first time [`Workspace::start_slack_verification`] runs.
     /// Subsequent calls early-return to avoid spawning duplicate probes.
     pub(crate) slack_verification_started: std::sync::atomic::AtomicBool,
@@ -1075,6 +1082,7 @@ impl Workspace {
             slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
+            slack_drafts: Mutex::new(HashMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
@@ -3485,6 +3493,9 @@ impl Workspace {
                         team_role.as_deref(),
                         notification,
                     );
+                }
+                Command::RespondSlackPost { key, id, approved } => {
+                    self.resolve_slack_draft(id, &key, approved);
                 }
                 Command::DeliverSlackMessage { project, team_role, message } => {
                     let span = tracing::info_span!(
@@ -6073,12 +6084,6 @@ impl Workspace {
         config_dir: PathBuf,
         config: LoadedConfig,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
-        // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
-        // that exercise the cron / state stores expect `forge/` present.
-        let _ = crate::config::ensure_forge_data_dir(&config_dir);
-        let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
-        let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
-        let config_dictate = config.dictate.clone();
         // Built from the injected config the way `new` builds it, so a
         // test that supplies a `[[slack]]` entry gets a workspace whose
         // clients exist. `new` cannot fail here on a stub config.
@@ -6086,6 +6091,24 @@ impl Workspace {
             crate::slack::SlackWorkspaces::from_config(&config.slack, &reqwest::Client::new())
                 .unwrap_or_default(),
         );
+        Self::testing_stub_with_slack(config_dir, config, slack)
+    }
+
+    /// [`Self::testing_stub_with_config`] with the Slack clients supplied
+    /// by the caller, so a test can drive a real facade against a double
+    /// rather than a live workspace.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn testing_stub_with_slack(
+        config_dir: PathBuf,
+        config: LoadedConfig,
+        slack: Arc<crate::slack::SlackWorkspaces>,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
+        // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
+        // that exercise the cron / state stores expect `forge/` present.
+        let _ = crate::config::ensure_forge_data_dir(&config_dir);
+        let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
+        let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
+        let config_dictate = config.dictate.clone();
         let workspace = Self {
             config_dir,
             config,
@@ -6125,6 +6148,7 @@ impl Workspace {
             slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
+            slack_drafts: Mutex::new(HashMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
