@@ -175,7 +175,6 @@ fn handle_resize(app: &mut App, width: u16, height: u16) {
     app.cached_frame_area = ratatui::layout::Rect::new(0, 0, width, height);
     app.rendered_chat_area = ratatui::layout::Rect::default();
     app.rendered_input_area = ratatui::layout::Rect::default();
-    app.rendered_chat_lines.clear();
     app.rendered_input_lines.clear();
     *app.selection_mut() = None;
     app.scrollbar_drag = None;
@@ -1538,7 +1537,6 @@ mod tests {
         assert!(app.selection().is_none());
         assert!(app.mention().is_none());
         assert!(!app.cancelled_turn_pending_hint());
-        assert!(app.rendered_chat_lines.is_empty());
         assert!(app.rendered_input_lines.is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
     }

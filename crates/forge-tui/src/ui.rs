@@ -86,13 +86,8 @@ pub(crate) fn refresh_selection_snapshot(app: &mut App) {
         return;
     };
 
-    match (app.active_view, selection.kind) {
-        (ActiveView::Chat, crate::app::SelectionKind::Chat) => {
-            chat::refresh_selection_snapshot(app);
-        }
-        (ActiveView::Chat, crate::app::SelectionKind::Input) => {
-            input::refresh_selection_snapshot(app);
-        }
-        _ => {}
+    if let (ActiveView::Chat, crate::app::SelectionKind::Input) = (app.active_view, selection.kind)
+    {
+        input::refresh_selection_snapshot(app);
     }
 }

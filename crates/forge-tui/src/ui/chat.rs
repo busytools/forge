@@ -618,31 +618,6 @@ pub(super) fn render_scrolled(
     paint_user_gutter(frame, area, &render_data.stats.gutter_rows, render_data.stats.local_scroll);
 }
 
-pub(super) fn refresh_selection_snapshot(app: &mut App) {
-    if !chat_selection_snapshot_needed(app.selection().copied()) {
-        return;
-    }
-
-    let area = app.rendered_chat_area;
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    let base_spinner = build_base_spinner(app);
-    let content_height = sync_chat_layout(app, area, &base_spinner);
-    let _t = app.perf.as_ref().map(|p| p.start("chat::selection_capture"));
-    let render_data = build_scrolled_render_data(
-        app,
-        &base_spinner,
-        area.width,
-        content_height,
-        usize::from(area.height),
-    );
-    app.rendered_chat_area = area;
-    app.rendered_chat_lines =
-        render_lines_from_paragraph(&render_data.paragraph, area, render_data.stats.local_scroll);
-}
-
 pub(super) fn chat_selection_snapshot_needed(selection: Option<SelectionState>) -> bool {
     selection.is_some_and(|selection| selection.kind == SelectionKind::Chat)
 }
@@ -1311,8 +1286,7 @@ mod tests {
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
-        ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SystemSeverity,
-        TextBlock, compute_scrollbar_geometry,
+        ScrollbarGeometry, SystemSeverity, TextBlock, compute_scrollbar_geometry,
     };
     use crate::ui::message::{self, SpinnerState};
     use ratatui::Terminal;
@@ -1364,36 +1338,6 @@ mod tests {
             show_compacting: false,
             live_turn_running: false,
         }
-    }
-
-    fn render_selected_chat_snapshot(app: &mut App, width: u16, height: u16) {
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| {
-                let spinner = idle_spinner();
-                let content_area = chat_content_area(Rect::new(0, 0, width, height));
-                let _ = app.active_viewport_mut().on_frame(content_area.width, content_area.height);
-                update_visual_heights(
-                    app,
-                    &spinner,
-                    content_area.width,
-                    usize::from(content_area.height),
-                );
-                app.active_viewport_mut().rebuild_prefix_sums();
-                let total_h = app.viewport().total_message_height();
-                render_scrolled(
-                    frame,
-                    content_area,
-                    app,
-                    &spinner,
-                    content_area.width,
-                    total_h,
-                    usize::from(content_area.height),
-                );
-            })
-            .expect("draw");
-        super::refresh_selection_snapshot(app);
     }
 
     /// Draw the chat and hand back the rendered grid, one entry per row:
@@ -3355,38 +3299,6 @@ mod tests {
     fn paragraph_scroll_offset_clamps_large_local_scroll_explicitly() {
         assert_eq!(paragraph_scroll_offset(42), 42);
         assert_eq!(paragraph_scroll_offset(usize::from(u16::MAX) + 123), u16::MAX);
-    }
-
-    #[test]
-    fn chat_selection_snapshot_refreshes_without_dragging_after_streaming_change() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Running;
-        *app.active_messages_mut() = vec![assistant_text_message("hello")];
-        app.bind_active_turn_assistant(0);
-        *app.selection_mut() = Some(SelectionState {
-            kind: SelectionKind::Chat,
-            start: SelectionPoint { row: 0, col: 0 },
-            end: SelectionPoint { row: 0, col: 5 },
-            dragging: false,
-        });
-
-        render_selected_chat_snapshot(&mut app, 20, 6);
-        let first_snapshot = app.rendered_chat_lines.clone();
-        assert!(!first_snapshot.is_empty());
-
-        if let Some(MessageBlock::Text(block)) =
-            app.active_messages_mut().get_mut(0).and_then(|message| message.blocks.get_mut(0))
-        {
-            block.text.push_str("\nworld");
-            block.markdown.append("\nworld");
-            block.cache.invalidate();
-        }
-        app.invalidate_layout(InvalidationLevel::MessageChanged(0));
-
-        render_selected_chat_snapshot(&mut app, 20, 6);
-
-        assert_ne!(app.rendered_chat_lines, first_snapshot);
-        assert!(app.rendered_chat_lines.iter().any(|line| line.contains("world")));
     }
 
     #[test]

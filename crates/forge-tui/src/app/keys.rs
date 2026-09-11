@@ -1520,7 +1520,6 @@ mod tests {
         ));
         app.bind_active_turn_assistant(0);
         app.rendered_chat_area = Rect::new(0, 0, 20, 6);
-        app.rendered_chat_lines = vec!["hello".to_owned()];
         *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },

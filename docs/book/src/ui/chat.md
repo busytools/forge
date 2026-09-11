@@ -1,6 +1,6 @@
 # Chat - message types
 
-Every message in the scrollback belongs to one role. Hovering shows an I-beam over selectable text, a hand over clickable blocks - the OS pointer via `OSC 22`, the default arrow at startup.
+Every message in the scrollback belongs to one role. Hovering shows an I-beam over selectable text, a hand over clickable blocks - the OS pointer via `OSC 22`, the default arrow at startup. Copying a selection returns the text behind the render: soft-wrapped rows rejoin into one line with the break space restored, real newlines and blank lines survive, render chrome (the role banner, the gutter rule, the code-panel pad and language label, tool titles and body prefixes) is dropped, and code blocks copy verbatim.
 
 <details>
 <summary>Pointer mechanics</summary>

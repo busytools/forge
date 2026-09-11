@@ -595,8 +595,6 @@ pub struct App {
     pub cached_frame_area: ratatui::layout::Rect,
     /// Active scrollbar drag state while left mouse button is held on the rail.
     pub scrollbar_drag: Option<ScrollbarDragState>,
-    /// Cached rendered chat lines for selection/copy.
-    pub rendered_chat_lines: Vec<String>,
     /// Area where chat content was rendered (for selection mapping).
     pub rendered_chat_area: ratatui::layout::Rect,
     /// Cached rendered input lines for selection/copy.
@@ -1004,7 +1002,6 @@ impl App {
             usage_overlay: None,
             cached_frame_area: ratatui::layout::Rect::default(),
             scrollbar_drag: None,
-            rendered_chat_lines: Vec::new(),
             rendered_chat_area: ratatui::layout::Rect::default(),
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),

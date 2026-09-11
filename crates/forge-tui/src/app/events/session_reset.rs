@@ -90,7 +90,6 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
 fn reset_render_state_for_new_session(app: &mut App) {
     *app.selection_mut() = None;
     app.scrollbar_drag = None;
-    app.rendered_chat_lines.clear();
     app.rendered_chat_area = ratatui::layout::Rect::default();
     app.rendered_input_lines.clear();
     app.rendered_input_area = ratatui::layout::Rect::default();
