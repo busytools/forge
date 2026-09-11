@@ -1,6 +1,7 @@
 //! The Extensions page's tab model and per-tab view state: which tab
-//! is open, each tab's filter and selection, and the flattened
-//! extension rows the tabs render.
+//! is open, each tab's filter and selection, and how a tab reads the
+//! pane's two row streams - installed, and available behind the
+//! Available toggle.
 
 use crate::app::input::InputState;
 use forge_primitives::plugins::ExtensionRow;
@@ -93,14 +94,14 @@ impl ExtensionsTab {
     }
 }
 
-/// The flattened extension rows for one tab: the rows the tab renders
-/// before filtering. Plugin rows appear only on the Installed tab;
-/// every component tab filters by kind.
+/// The kind-filtered rows of ONE stream: plugin rows only on the
+/// Installed tab, each component tab by its kind. The pane state holds
+/// two streams - installed and available - and a tab draws its rows
+/// from the installed one, joining the available one only behind the
+/// Available toggle.
 pub fn rows_for_tab(rows: &[ExtensionRow], tab: ExtensionsTab) -> Vec<&ExtensionRow> {
     use forge_primitives::plugins::ExtensionKind;
     match tab {
-        // Plugin rows only: the Installed tab is the plugin tier - one
-        // row per plugin, matching the book and the mock.
         ExtensionsTab::Installed => {
             rows.iter().filter(|row| row.kind == ExtensionKind::Plugin).collect()
         }
@@ -119,6 +120,12 @@ pub fn rows_for_tab(rows: &[ExtensionRow], tab: ExtensionsTab) -> Vec<&Extension
     }
 }
 
+/// Whether the Available toggle can change what this tab renders:
+/// only the component tabs can reveal the available stream.
+pub const fn tab_takes_available(tab: ExtensionsTab) -> bool {
+    !matches!(tab, ExtensionsTab::Installed | ExtensionsTab::Mcps | ExtensionsTab::Marketplaces)
+}
+
 /// A row matches the filter when its name or source carries the query
 /// (source is the plugin for components, the marketplace for plugin
 /// rows), case-insensitively.
@@ -131,15 +138,16 @@ pub fn row_matches(row: &ExtensionRow, query: &str) -> bool {
         || row.source.to_ascii_lowercase().contains(&query)
 }
 
-/// A row's live count for its tab, mirroring [`rows_for_tab`].
-pub fn count_for_tab(rows: &[ExtensionRow], tab: ExtensionsTab) -> usize {
-    if tab == ExtensionsTab::Installed {
-        rows.iter()
-            .filter(|row| row.kind == forge_primitives::plugins::ExtensionKind::Plugin)
-            .count()
-    } else {
-        rows_for_tab(rows, tab).len()
-    }
+/// The count beside the tab's name: the INSTALLED stream only, so the
+/// number means what it says. Available rows never inflate it.
+pub fn count_for_tab(installed_rows: &[ExtensionRow], tab: ExtensionsTab) -> usize {
+    rows_for_tab(installed_rows, tab).len()
+}
+
+/// The available rows a tab can reveal behind the Available toggle;
+/// the `+N` beside the toggle.
+pub fn available_count_for_tab(available_rows: &[ExtensionRow], tab: ExtensionsTab) -> usize {
+    rows_for_tab(available_rows, tab).len()
 }
 
 /// Per-tab input and selection, indexed by [`ExtensionsTab::index`].
@@ -208,6 +216,24 @@ mod tests {
             "component rows stay on their own tabs: {installed:?}"
         );
         assert_eq!(count_for_tab(&rows, ExtensionsTab::Installed), 1);
+    }
+
+    /// The number beside a tab counts the installed stream alone; the
+    /// `+N` reads the available stream; the Installed tab never
+    /// reveals the available stream at all.
+    #[test]
+    fn the_tab_count_reads_the_installed_stream_only() {
+        let installed = vec![row(ExtensionKind::Skill, "s1", RowState::Current)];
+        let available = (0..10)
+            .map(|n| row(ExtensionKind::Skill, &format!("a{n}"), RowState::AvailableNotInstalled))
+            .collect::<Vec<_>>();
+        assert_eq!(count_for_tab(&installed, ExtensionsTab::Skills), 1);
+        assert_eq!(available_count_for_tab(&available, ExtensionsTab::Skills), 10);
+        assert_eq!(
+            available_count_for_tab(&available, ExtensionsTab::Installed),
+            0,
+            "the Installed tab never reveals the available stream"
+        );
     }
 
     /// The update-all count is the stale PLUGIN rows - a stale skill

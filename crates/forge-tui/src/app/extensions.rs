@@ -24,7 +24,8 @@ pub mod state;
 pub mod updates;
 
 pub use state::{
-    ExtensionsTab, TabState, count_for_tab, row_matches, rows_for_tab, update_all_count,
+    ExtensionsTab, TabState, available_count_for_tab, count_for_tab, row_matches, rows_for_tab,
+    tab_takes_available, update_all_count,
 };
 
 // Plugin registry types defined in forge_primitives::plugins;
@@ -60,9 +61,16 @@ pub struct PluginsState {
     /// Out-of-date entries in the current inventory; recomputed on
     /// every refresh so the row markers stay truthful.
     pub update_availability: Vec<PluginUpdateAvailability>,
-    /// The flattened extension rows and marketplace health from the
-    /// last inventory refresh; the tabs render from these.
-    pub rows: Vec<ExtensionRow>,
+    /// The pane's two row streams from the last inventory refresh,
+    /// kept separate so a tab's count says what the tab shows: the
+    /// registry-backed INSTALLED rows (plugins, their components, the
+    /// load-failure rows), and the marketplace catalog's AVAILABLE
+    /// rows, which render only behind the Available toggle.
+    pub installed_rows: Vec<ExtensionRow>,
+    pub available_rows: Vec<ExtensionRow>,
+    /// The Available toggle: when set, component tabs append the
+    /// available stream's rows, dim, after the installed ones.
+    pub show_available: bool,
     pub health: Vec<MarketplaceHealth>,
     /// Always-on token cost per installed plugin id, version-keyed:
     /// id -> (installed version, cost). A version change refetches.
@@ -94,6 +102,20 @@ impl PluginsState {
     pub fn active_search_query_mut(&mut self) -> Option<&mut InputState> {
         let index = self.active_tab.index();
         self.tab_state.search_queries.get_mut(index)
+    }
+
+    /// Both streams, installed first: the walk order for
+    /// whole-inventory passes (annotation, restart stamps).
+    pub fn all_rows(&self) -> impl Iterator<Item = &ExtensionRow> {
+        self.installed_rows.iter().chain(self.available_rows.iter())
+    }
+
+    /// The row with this id across both streams, mutable.
+    pub fn row_mut(&mut self, id: &str) -> Option<&mut ExtensionRow> {
+        self.installed_rows
+            .iter_mut()
+            .find(|row| row.id == id)
+            .or_else(|| self.available_rows.iter_mut().find(|row| row.id == id))
     }
 }
 
@@ -233,6 +255,16 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 && search_enabled(app.plugins.active_tab) =>
         {
             start_update_run(app, PluginUpdateTrigger::Manual);
+            true
+        }
+        (KeyCode::Char(ch), modifiers)
+            if matches!(ch, 'a' | 'A')
+                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+                && !app.plugins.search_focused
+                && tab_takes_available(app.plugins.active_tab) =>
+        {
+            app.plugins.show_available = !app.plugins.show_available;
+            reset_selection_for_active_tab(app);
             true
         }
         (KeyCode::Char(ch), modifiers)
@@ -508,8 +540,7 @@ fn annotate_rows(app: &mut App) {
 fn annotate_rows_on_path(app: &mut App, path: Option<&str>) {
     let lsp: Vec<(String, String, Option<String>)> = app
         .plugins
-        .rows
-        .iter()
+        .all_rows()
         .filter(|row| row.kind == ExtensionKind::Lsp)
         .map(|row| {
             let command = app.plugins.lsp_commands.get(&(row.source.clone(), row.name.clone()));
@@ -518,14 +549,14 @@ fn annotate_rows_on_path(app: &mut App, path: Option<&str>) {
         .collect();
     for (id, name, command) in lsp {
         let checked = command.unwrap_or_else(|| name.clone());
-        let Some(row) = app.plugins.rows.iter_mut().find(|row| row.id == id) else { continue };
+        let Some(row) = app.plugins.row_mut(&id) else { continue };
         let on_path = path.is_some_and(|path| skills::lsp_binary_on_path(&checked, Some(path)));
         row.detail =
             Some(if on_path { format!("{name}: on PATH") } else { format!("{name}: missing") });
     }
     let costs: Vec<(String, Option<u64>, bool)> = app
         .plugins
-        .rows
+        .installed_rows
         .iter()
         .filter(|row| row.kind == ExtensionKind::Plugin)
         .map(|row| {
@@ -537,7 +568,7 @@ fn annotate_rows_on_path(app: &mut App, path: Option<&str>) {
         })
         .collect();
     for (id, cost, update_available) in costs {
-        let Some(row) = app.plugins.rows.iter_mut().find(|row| row.id == id) else { continue };
+        let Some(row) = app.plugins.row_mut(&id) else { continue };
         let mut parts: Vec<String> = Vec::new();
         if let Some(cost) = cost {
             parts.push(format!("~{cost} tok always-on"));
@@ -558,12 +589,12 @@ fn annotate_rows_on_path(app: &mut App, path: Option<&str>) {
 /// reload consumes the change. The stamp is derived, so it resets
 /// before re-applying - a cleared pending set must un-stamp too.
 fn apply_restart_overrides(app: &mut App) {
-    for row in &mut app.plugins.rows {
+    for row in app.plugins.installed_rows.iter_mut().chain(app.plugins.available_rows.iter_mut()) {
         if row.kind == ExtensionKind::Plugin && row.state == RowState::RestartRequired {
             row.state = RowState::Current;
         }
     }
-    for row in &mut app.plugins.rows {
+    for row in app.plugins.installed_rows.iter_mut().chain(app.plugins.available_rows.iter_mut()) {
         if row.kind == ExtensionKind::Plugin
             && row.state == RowState::Current
             && app.plugins.restart_pending.contains(&row.id)
@@ -626,7 +657,9 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     app.plugins.update_run = None;
     app.plugins.update_records.clear();
     app.plugins.update_availability.clear();
-    app.plugins.rows.clear();
+    app.plugins.installed_rows.clear();
+    app.plugins.available_rows.clear();
+    app.plugins.show_available = false;
     app.plugins.health.clear();
     app.plugins.token_costs.clear();
     app.plugins.lsp_commands.clear();
@@ -653,13 +686,22 @@ pub(crate) fn visible_row_count(app: &App, tab: ExtensionsTab) -> usize {
     }
 }
 
+/// The rows a tab draws before filtering: the installed stream always,
+/// plus the available stream's rows on component tabs behind the
+/// Available toggle. The Installed tab never reveals the catalog - it
+/// is the registry-backed tier alone.
+pub(crate) fn tab_rows(app: &App, tab: ExtensionsTab) -> Vec<&ExtensionRow> {
+    let mut rows = rows_for_tab(&app.plugins.installed_rows, tab);
+    if tab_takes_available(tab) && app.plugins.show_available {
+        rows.extend(rows_for_tab(&app.plugins.available_rows, tab));
+    }
+    rows
+}
+
 /// The tab's extension rows with the tab's filter applied.
 pub(crate) fn visible_rows(app: &App, tab: ExtensionsTab) -> Vec<&ExtensionRow> {
     let query = app.plugins.search_query_for(tab);
-    rows_for_tab(&app.plugins.rows, tab)
-        .into_iter()
-        .filter(|row| row_matches(row, &query))
-        .collect()
+    tab_rows(app, tab).into_iter().filter(|row| row_matches(row, &query)).collect()
 }
 
 pub(crate) fn visible_marketplaces(state: &PluginsState) -> Vec<&MarketplaceSourceEntry> {
@@ -777,25 +819,14 @@ fn open_marketplace_overlay(app: &mut App) -> bool {
 /// Enter on the Installed tab resolves the row the pane RENDERS -
 /// `visible_rows` positionally, matched back to its plugin by id - so
 /// the overlay can never open a different plugin than the one
-/// highlighted. An available-not-installed row opens the install
-/// overlay for its source plugin.
+/// highlighted. A load-failed row states its reason instead of
+/// opening an overlay nothing can act on.
 fn open_installed_actions_overlay(app: &mut App) -> bool {
     let tab = ExtensionsTab::Installed;
-    let query = app.plugins.search_query_for(tab);
     let selected = app.plugins.selected_index_for(tab);
-    let Some(row) = rows_for_tab(&app.plugins.rows, tab)
-        .into_iter()
-        .filter(|row| row_matches(row, &query))
-        .nth(selected)
-        .cloned()
-    else {
+    let Some(row) = visible_rows(app, tab).into_iter().nth(selected).cloned() else {
         return false;
     };
-    if row.state == RowState::AvailableNotInstalled {
-        // On this tab the row IS the plugin: its id, not the source
-        // (which carries the marketplace here).
-        return open_plugin_install_overlay(app, &row.id);
-    }
     if let RowState::LoadFailed(reason) = &row.state {
         // No overlay can act on a broken install; say why instead of
         // silently swallowing the keypress.
@@ -1345,7 +1376,14 @@ fn rebuild_rows(app: &mut App, components: &[PluginComponents], health: Vec<Mark
             })
         })
         .collect();
-    app.plugins.rows = extension_rows(components);
+    // The scan carries installed and available plugins in one list;
+    // the pane state must not. Registry-backed installs (including
+    // their load failures) form the installed stream; the marketplace
+    // catalog's remaining entries form the available one.
+    let (installed, available): (Vec<&PluginComponents>, Vec<&PluginComponents>) =
+        components.iter().partition(|entry| entry.installed);
+    app.plugins.installed_rows = extension_rows(installed);
+    app.plugins.available_rows = extension_rows(available);
     app.plugins.health = health;
     annotate_rows(app);
     apply_restart_overrides(app);
@@ -1430,7 +1468,7 @@ fn build_update_rows(app: &App, trigger: PluginUpdateTrigger) -> Vec<PluginUpdat
         use forge_primitives::plugins::{ExtensionKind, RowState};
         let stale: Vec<&str> = app
             .plugins
-            .rows
+            .installed_rows
             .iter()
             .filter(|row| {
                 row.kind == ExtensionKind::Plugin && row.state == RowState::UpdateAvailable
@@ -2365,11 +2403,7 @@ fn can_install_in_current_project(app: &App, entry: &InstalledPluginEntry) -> bo
 /// an extension row at all (MCPs and marketplaces select elsewhere).
 pub(crate) fn selected_extension_row(app: &App) -> Option<&ExtensionRow> {
     let tab = app.plugins.active_tab;
-    let query = app.plugins.search_query_for(tab);
-    rows_for_tab(&app.plugins.rows, tab)
-        .into_iter()
-        .filter(|row| row_matches(row, &query))
-        .nth(app.plugins.selected_index_for(tab))
+    visible_rows(app, tab).into_iter().nth(app.plugins.selected_index_for(tab))
 }
 
 fn selected_marketplace_source(app: &App) -> Option<&MarketplaceSourceEntry> {
@@ -2719,7 +2753,7 @@ mod tests {
                 capability: PluginCapability::Skill,
             },
         ];
-        app.plugins.rows = vec![
+        app.plugins.installed_rows = vec![
             plugin_row("beta@probe", RowState::Current),
             plugin_row("alpha@probe", RowState::Current),
         ];
@@ -2739,17 +2773,129 @@ mod tests {
         assert!(app.config.overlay.is_none());
     }
 
-    /// An available-not-installed row on the Installed tab offers the
-    /// install overlay - Enter must never silently close the page.
+    /// The streams stay separate: an available-not-installed plugin is
+    /// catalog, not install - it never renders on the Installed tab,
+    /// and Enter there can never open an install overlay for it. The
+    /// catalog's install seam is the component rows behind the
+    /// Available toggle.
     #[test]
-    fn installed_tab_enter_on_an_available_row_opens_the_install_overlay() {
+    fn the_installed_tab_never_renders_the_available_stream() {
         let mut app = App::test_default();
-        app.plugins.rows = vec![plugin_row("gone@probe", RowState::AvailableNotInstalled)];
+        app.plugins.installed.push(InstalledPluginEntry {
+            id: "superpowers@probe".to_owned(),
+            version: Some("6.3.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: PluginCapability::Skill,
+        });
+        app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+        app.plugins.available_rows =
+            vec![plugin_row("gone@claude-night-market", RowState::AvailableNotInstalled)];
         app.plugins.set_selected_index_for(ExtensionsTab::Installed, 0);
 
+        assert_eq!(
+            visible_rows(&app, ExtensionsTab::Installed)
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["superpowers@probe"],
+            "the catalog row stays off the Installed tab"
+        );
         assert!(open_installed_actions_overlay(&mut app));
-        let overlay = app.config.plugin_install_overlay().expect("install overlay");
-        assert_eq!(overlay.plugin_id, "gone@probe");
+        assert!(
+            app.config.installed_plugin_actions_overlay().is_some(),
+            "Enter opens the installed plugin's actions, not an install overlay"
+        );
+
+        // Behind the toggle, the Skills tab carries the catalog rows.
+        assert!(visible_rows(&app, ExtensionsTab::Skills).is_empty());
+        app.plugins.available_rows.push(ExtensionRow {
+            id: "skill:gone:ghost-skill".to_owned(),
+            kind: ExtensionKind::Skill,
+            name: "ghost-skill".to_owned(),
+            source: "gone@claude-night-market".to_owned(),
+            version: None,
+            available_version: Some("1.0.0".to_owned()),
+            state: RowState::AvailableNotInstalled,
+            detail: None,
+        });
+        app.plugins.show_available = true;
+        assert_eq!(
+            visible_rows(&app, ExtensionsTab::Skills)
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["skill:gone:ghost-skill"],
+            "the toggle reveals the available stream on component tabs"
+        );
+        app.plugins.show_available = false;
+        assert!(visible_rows(&app, ExtensionsTab::Skills).is_empty());
+    }
+
+    /// `a` flips the Available toggle on a component tab and resets the
+    /// selection; on the Installed tab it does nothing - the catalog
+    /// has no seam there.
+    #[test]
+    fn the_available_toggle_key_flips_only_component_tabs() {
+        let mut app = app_with_focused_search(ExtensionsTab::Skills);
+        app.plugins.search_focused = false;
+        app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+        app.plugins.set_selected_index_for(ExtensionsTab::Skills, 0);
+
+        assert!(press(&mut app, KeyCode::Char('a')));
+        assert!(app.plugins.show_available, "a reveals the available stream");
+        assert_eq!(app.plugins.selected_index_for(ExtensionsTab::Skills), 0);
+
+        app.plugins.active_tab = ExtensionsTab::Installed;
+        app.plugins.show_available = false;
+        assert!(press(&mut app, KeyCode::Char('a')));
+        assert!(!app.plugins.show_available, "the Installed tab has no Available toggle");
+    }
+
+    /// The scan's `installed` flag decides the stream: a refresh lands
+    /// registry-backed plugins (and their components) in the installed
+    /// stream and the catalog's entries in the available one - the
+    /// pane state never merges them back into one list.
+    #[test]
+    fn a_refresh_splits_the_scan_into_two_streams() {
+        let mut app = App::test_default();
+        let component = |plugin: &str, market: &str, name: &str, installed: bool| PluginComponents {
+            plugin: format!("{plugin}@{market}"),
+            marketplace: market.to_owned(),
+            version: Some("1.0.0".to_owned()),
+            installed,
+            enabled: installed,
+            auto: false,
+            available_version: None,
+            skills: vec![name.to_owned()],
+            ..PluginComponents::default()
+        };
+        apply_inventory_refresh_success(
+            &mut app,
+            PluginsInventorySnapshot {
+                components: vec![
+                    component("superpowers", "probe", "brainstorming", true),
+                    component("blabbermouth", "claude-night-market", "announce", false),
+                ],
+                ..PluginsInventorySnapshot::default()
+            },
+            PathBuf::new(),
+        );
+
+        assert_eq!(
+            app.plugins.installed_rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            vec!["superpowers@probe", "skill:superpowers:brainstorming"],
+            "the installed plugin and its skill land in the installed stream"
+        );
+        assert_eq!(
+            app.plugins.available_rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            vec!["blabbermouth@claude-night-market", "skill:blabbermouth:announce"],
+            "the catalog entry lands in the available stream: {:?}",
+            app.plugins.available_rows
+        );
     }
 
     /// The token cost rides the plugin row's detail; the cost-only
@@ -2767,7 +2913,7 @@ mod tests {
             project_path: None,
             capability: PluginCapability::Skill,
         }];
-        app.plugins.rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+        app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
 
         apply_inventory_refresh_success(
             &mut app,
@@ -2787,10 +2933,10 @@ mod tests {
         assert_eq!(app.plugins.installed.len(), 1, "the lists survive a costs-only event");
         assert!(!app.plugins.loading, "the costs-only landing does not touch the pane");
         assert_eq!(
-            app.plugins.rows[0].detail.as_deref(),
+            app.plugins.installed_rows[0].detail.as_deref(),
             Some("~450 tok always-on"),
             "the cost renders on the plugin row: {:?}",
-            app.plugins.rows[0].detail
+            app.plugins.installed_rows[0].detail
         );
     }
 
@@ -2809,7 +2955,7 @@ mod tests {
             project_path: None,
             capability: PluginCapability::Skill,
         }];
-        app.plugins.rows = vec![plugin_row("supabase@probe", RowState::Current)];
+        app.plugins.installed_rows = vec![plugin_row("supabase@probe", RowState::Current)];
         let mut row = PluginUpdateRunRow::queued(
             "supabase@probe".to_owned(),
             "user".to_owned(),
@@ -2830,7 +2976,7 @@ mod tests {
 
         apply_update_run_finished(&mut app, &run, None, None);
         assert_eq!(
-            app.plugins.rows[0].state,
+            app.plugins.installed_rows[0].state,
             RowState::RestartRequired,
             "the pane states the contract where the action was"
         );
@@ -2839,7 +2985,7 @@ mod tests {
         app.plugins.pending_runtime_reload_success_message = Some("done".to_owned());
         apply_runtime_reload_success(&mut app);
         assert!(app.plugins.restart_pending.is_empty());
-        assert_eq!(app.plugins.rows[0].state, RowState::Current);
+        assert_eq!(app.plugins.installed_rows[0].state, RowState::Current);
     }
 
     /// A FAILED row whose prose happens to contain the restart phrase
@@ -2857,7 +3003,7 @@ mod tests {
             project_path: None,
             capability: PluginCapability::Skill,
         }];
-        app.plugins.rows = vec![plugin_row("supabase@probe", RowState::Current)];
+        app.plugins.installed_rows = vec![plugin_row("supabase@probe", RowState::Current)];
         let mut row = PluginUpdateRunRow::queued(
             "supabase@probe".to_owned(),
             "user".to_owned(),
@@ -2876,7 +3022,7 @@ mod tests {
             "a failed row's prose is not the contract: {:?}",
             app.plugins.restart_pending
         );
-        assert_eq!(app.plugins.rows[0].state, RowState::Current);
+        assert_eq!(app.plugins.installed_rows[0].state, RowState::Current);
     }
 
     /// The stamp survives a rows REBUILD: an action between the stamped
@@ -2896,7 +3042,7 @@ mod tests {
             project_path: None,
             capability: PluginCapability::Skill,
         }];
-        app.plugins.rows = vec![plugin_row("supabase@probe", RowState::Current)];
+        app.plugins.installed_rows = vec![plugin_row("supabase@probe", RowState::Current)];
         let mut row = PluginUpdateRunRow::queued(
             "supabase@probe".to_owned(),
             "user".to_owned(),
@@ -2909,7 +3055,7 @@ mod tests {
         let run =
             PluginUpdateRun { trigger: PluginUpdateTrigger::Auto, finished: true, rows: vec![row] };
         apply_update_run_finished(&mut app, &run, None, None);
-        assert_eq!(app.plugins.rows[0].state, RowState::RestartRequired);
+        assert_eq!(app.plugins.installed_rows[0].state, RowState::RestartRequired);
 
         // Drain the run's reload request so the window is clean.
         while rx.try_recv().is_ok() {}
@@ -2936,10 +3082,10 @@ mod tests {
         );
 
         assert_eq!(
-            app.plugins.rows[0].state,
+            app.plugins.installed_rows[0].state,
             RowState::RestartRequired,
             "the stamp re-derives across the rebuild: {:?}",
-            app.plugins.rows[0].state
+            app.plugins.installed_rows[0].state
         );
         assert!(app.plugins.restart_pending.contains("supabase@probe"));
     }
@@ -3004,7 +3150,7 @@ mod tests {
             state: RowState::Current,
             detail: None,
         };
-        app.plugins.rows = vec![lsp_row("lsp:lsp-plugin:probe-ls", "probe-ls")];
+        app.plugins.installed_rows = vec![lsp_row("lsp:lsp-plugin:probe-ls", "probe-ls")];
         // A RELATIVE command: only the injected PATH can find it.
         app.plugins
             .lsp_commands
@@ -3013,23 +3159,23 @@ mod tests {
         annotate_rows_on_path(&mut app, Some(injected.as_str()));
 
         assert_eq!(
-            app.plugins.rows[0].detail.as_deref(),
+            app.plugins.installed_rows[0].detail.as_deref(),
             Some("probe-ls: on PATH"),
             "the declared command is what was probed against the injected PATH: {:?}",
-            app.plugins.rows[0].detail
+            app.plugins.installed_rows[0].detail
         );
 
         // No declared command: the key is the fallback - and this key
         // is NOT in the injected PATH, so it reads missing.
         app.plugins.lsp_commands.clear();
-        app.plugins.rows[0].name = "uninjected-server".to_owned();
-        app.plugins.rows[0].id = "lsp:lsp-plugin:uninjected-server".to_owned();
+        app.plugins.installed_rows[0].name = "uninjected-server".to_owned();
+        app.plugins.installed_rows[0].id = "lsp:lsp-plugin:uninjected-server".to_owned();
         annotate_rows_on_path(&mut app, Some(injected.as_str()));
         assert_eq!(
-            app.plugins.rows[0].detail.as_deref(),
+            app.plugins.installed_rows[0].detail.as_deref(),
             Some("uninjected-server: missing"),
             "the key falls back when no command is declared: {:?}",
-            app.plugins.rows[0].detail
+            app.plugins.installed_rows[0].detail
         );
     }
 
@@ -3051,7 +3197,7 @@ mod tests {
             project_path: None,
             capability: PluginCapability::Skill,
         }];
-        app.plugins.rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+        app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
 
         apply_inventory_refresh_success(
             &mut app,
@@ -3392,7 +3538,7 @@ mod tests {
             project_path: None,
             capability: PluginCapability::Skill,
         }];
-        app.plugins.rows = vec![plugin_row("supabase@probe", RowState::Current)];
+        app.plugins.installed_rows = vec![plugin_row("supabase@probe", RowState::Current)];
 
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -4036,7 +4182,7 @@ mod tests {
 
     /// Seed one stale extension row so `Update all` has a queue.
     fn seed_stale_row(app: &mut App, id: &str, from: &str, to: &str) {
-        app.plugins.rows.push(ExtensionRow {
+        app.plugins.installed_rows.push(ExtensionRow {
             id: id.to_owned(),
             kind: ExtensionKind::Plugin,
             name: id.split('@').next().unwrap_or(id).to_owned(),

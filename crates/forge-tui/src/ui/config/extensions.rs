@@ -1,12 +1,14 @@
-//! The Extensions page body: the tab bar with live counts, the filter
-//! plus update-all action row, and one tab's rows over the shared row
-//! grammar (`app::extensions::skills::render_extension_rows`).
+//! The Extensions page body: the tab bar with live counts, the filter,
+//! the Available toggle and update-all action row, and one tab's rows
+//! over the shared row grammar
+//! (`app::extensions::skills::render_extension_rows`).
 
 use super::theme;
 use crate::app::App;
 use crate::app::extensions::skills::render_extension_rows;
 use crate::app::extensions::{
-    ExtensionsTab, count_for_tab, search_enabled, update_all_count, updates, visible_rows,
+    ExtensionsTab, available_count_for_tab, count_for_tab, search_enabled, tab_takes_available,
+    update_all_count, updates, visible_rows,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -54,7 +56,7 @@ fn tab_header_line(app: &App) -> Line<'static> {
             let count = match tab {
                 ExtensionsTab::Mcps => app.mcp().servers.len(),
                 ExtensionsTab::Marketplaces => app.plugins.marketplaces.len(),
-                other => count_for_tab(&app.plugins.rows, other),
+                other => count_for_tab(&app.plugins.installed_rows, other),
             };
             let label = format!(" {} {count} ", tab.title());
             let mut spans = vec![Span::styled(
@@ -77,11 +79,11 @@ fn tab_header_line(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The action row: the focused filter field and the update-all button
-/// with its stale-row count; the button dims to `Update all (0)` when
-/// nothing is stale.
+/// The action row: the update-all button with its stale-row count, the
+/// Available toggle (component tabs only, carrying the tab's `+N` of
+/// catalog rows), and the focused filter field.
 fn action_row_line(app: &App) -> Line<'static> {
-    let stale = update_all_count(&app.plugins.rows);
+    let stale = update_all_count(&app.plugins.installed_rows);
     let mut spans = vec![Span::styled(
         format!(" Update all (u) ({stale}) "),
         if stale > 0 {
@@ -90,6 +92,17 @@ fn action_row_line(app: &App) -> Line<'static> {
             Style::default().fg(theme::DIM)
         },
     )];
+
+    if tab_takes_available(app.plugins.active_tab) {
+        let available_count =
+            available_count_for_tab(&app.plugins.available_rows, app.plugins.active_tab);
+        let toggle_style = if app.plugins.show_available {
+            Style::default().fg(Color::Black).bg(theme::AVAILABLE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::AVAILABLE)
+        };
+        spans.push(Span::styled(format!(" Available (a) +{available_count} "), toggle_style));
+    }
 
     let query = app.plugins.search_query_for(app.plugins.active_tab);
     let field_style = if app.plugins.search_focused {
@@ -145,7 +158,11 @@ fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
                 if Some(index) == selected
                     && let Some(span) = line.spans.first_mut()
                 {
-                    span.content = format!("> {}", span.content).into();
+                    // The row's leading gutter takes the marker in
+                    // place, so the columns never shift.
+                    span.content = ">".into();
+                    span.style =
+                        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
                 }
                 line
             })
@@ -322,6 +339,9 @@ fn marketplace_lines(app: &App, _viewport_width: u16) -> Vec<Line<'static>> {
 }
 
 #[cfg(test)]
+mod snapshots;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -351,7 +371,7 @@ mod tests {
             action_row_line(&app).spans.into_iter().map(|span| span.content.to_string()).collect();
         assert!(text.contains("Update all (u) (0)"), "nothing stale: {text}");
 
-        app.plugins.rows = vec![forge_primitives::plugins::ExtensionRow {
+        app.plugins.installed_rows = vec![forge_primitives::plugins::ExtensionRow {
             id: "stale@probe".to_owned(),
             kind: forge_primitives::plugins::ExtensionKind::Plugin,
             name: "stale".to_owned(),
