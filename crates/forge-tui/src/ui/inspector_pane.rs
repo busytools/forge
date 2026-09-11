@@ -1816,12 +1816,17 @@ fn append_slack_subscription(
         forge_primitives::slack::SlackSubscriptionTarget::Mentions => {
             "mentions anywhere".to_owned()
         }
-        forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, mode } => match mode {
-            forge_primitives::slack::SlackWatchMode::All => format!("{id} · every message"),
-            forge_primitives::slack::SlackWatchMode::MentionsOnly => {
-                format!("{id} · mentions only")
+        forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, name, mode } => {
+            // Records written before names were captured, and conversations
+            // the directory walk never saw, render the raw id.
+            let label = name.clone().map(|name| format!("#{name}")).unwrap_or_else(|| id.clone());
+            match mode {
+                forge_primitives::slack::SlackWatchMode::All => format!("{label} · every message"),
+                forge_primitives::slack::SlackWatchMode::MentionsOnly => {
+                    format!("{label} · mentions only")
+                }
             }
-        },
+        }
     };
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(indent + 2)),
@@ -4752,6 +4757,7 @@ mod tests {
             "acme",
             forge_primitives::slack::SlackSubscriptionTarget::Conversation {
                 id: "C1".to_owned(),
+                name: None,
                 mode: forge_primitives::slack::SlackWatchMode::All,
             },
         )];
@@ -4764,8 +4770,39 @@ mod tests {
         assert!(joined.contains("acme"), "the workspace label renders; got:\n{joined}");
         assert!(joined.contains("every message"), "the watch mode renders; got:\n{joined}");
         assert!(
+            joined.contains("C1"),
+            "an unnamed record falls back to the raw id; got:\n{joined}",
+        );
+        assert!(
             joined.contains('\u{25c8}'),
             "a connected pump shows the connected glyph; got:\n{joined}",
+        );
+    }
+
+    /// `slack__unsubscribe` keys on the subscription uuid, so the
+    /// conversation id on the row serves no action and the name wins.
+    #[test]
+    fn a_named_conversation_renders_the_channel_name_not_the_id() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![slack_sub(
+            3,
+            "acme",
+            forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                id: "C0C0T5E6RM1".to_owned(),
+                name: Some("ved-test".to_owned()),
+                mode: forge_primitives::slack::SlackWatchMode::All,
+            },
+        )];
+        app.slack_connected = std::collections::BTreeMap::from([("acme".to_owned(), true)]);
+
+        let joined = render_slack_section(&app);
+        assert!(
+            joined.contains("#ved-test \u{b7} every message"),
+            "the named row renders; got:\n{joined}",
+        );
+        assert!(
+            !joined.contains("C0C0T5E6RM1"),
+            "the raw id drops off the row once a name exists; got:\n{joined}",
         );
     }
 
