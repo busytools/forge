@@ -217,6 +217,17 @@ pub fn enqueue_prompt(session: &mut crate::app::session::UiSession, prompt: Prom
     session.prompt_queue.push_back(prompt);
 }
 
+/// Retire the queued Slack draft with `id`: the gate expired it
+/// unanswered, so nothing was sent and the dock must not go on offering
+/// a decision for it. Answers nothing - removal only.
+pub fn retire_slack_draft(session: &mut crate::app::session::UiSession, id: uuid::Uuid) -> bool {
+    let before = session.prompt_queue.len();
+    session.prompt_queue.retain(|prompt| {
+        !matches!(&prompt.source, PromptSource::SlackDraft { draft, .. } if draft.id == id)
+    });
+    session.prompt_queue.len() != before
+}
+
 /// One-line summary of the tool's args for display in the dock header.
 /// Bash → command; Edit → file_path; Read → file_path; etc.
 fn summarize_tool_args(tool_call: &forge_primitives::session_update::ToolCall) -> String {

@@ -465,6 +465,11 @@ impl Tool for Unsubscribe {
 fn format_post_error(err: &SlackPostError) -> String {
     match err {
         SlackPostError::Rejected => "the post was not approved, so nothing was sent".to_owned(),
+        SlackPostError::Expired => {
+            "the draft expired unanswered, so nothing was sent; call again when the user can \
+             decide"
+                .to_owned()
+        }
         SlackPostError::UnknownWorkspace => {
             "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
         }
@@ -483,6 +488,11 @@ fn format_edit_error(err: &SlackEditError) -> String {
         SlackEditError::Rejected => {
             "the replacement was not approved, so the message is untouched".to_owned()
         }
+        SlackEditError::Expired => {
+            "the draft expired unanswered, so the message is untouched; call again when the user \
+             can decide"
+                .to_owned()
+        }
         SlackEditError::UnknownWorkspace => {
             "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
         }
@@ -494,6 +504,11 @@ fn format_react_error(err: &SlackReactError) -> String {
     match err {
         SlackReactError::Rejected => {
             "the reaction was not approved, so nothing was added or removed".to_owned()
+        }
+        SlackReactError::Expired => {
+            "the draft expired unanswered, so nothing was added or removed; call again when the \
+             user can decide"
+                .to_owned()
         }
         SlackReactError::UnknownWorkspace => {
             "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
@@ -610,8 +625,9 @@ impl Tool for Edit {
          replacement puts new words in front of people as you, and a deletion changes what they \
          see on a message attributed to you and cannot be undone by editing again. The call does \
          not return until the user decides, and a rejected or unanswered draft leaves the \
-         message untouched. Slack refuses a message you did not post, and this refuses it \
-         locally so the reason is clear. Any session in the project may call this."
+         message untouched. Slack refuses a message you did not post - including an edit of \
+         your own thread reply, which a channel-history lookup cannot see. Any session in \
+         the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -749,6 +765,11 @@ fn format_attachment_error(err: &SlackAttachmentError) -> String {
         SlackAttachmentError::Io(message) => format!("file error: {message}"),
         SlackAttachmentError::Rejected => {
             "the upload was not approved, so nothing was sent".to_owned()
+        }
+        SlackAttachmentError::Expired => {
+            "the draft expired unanswered, so nothing was sent; call again when the user can \
+             decide"
+                .to_owned()
         }
         SlackAttachmentError::UnknownWorkspace => {
             "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
@@ -962,6 +983,10 @@ impl Tool for Search {
                             "conversation": hit.conversation_id,
                             "conversation_name": hit.conversation_name,
                             "username": hit.username,
+                            "files": hit.files.iter().map(|file| serde_json::json!({
+                                "id": file.id,
+                                "name": file.name,
+                            })).collect::<Vec<_>>(),
                         })
                     })
                     .collect();
@@ -1517,6 +1542,7 @@ mod tests {
             username: Some("ved".to_owned()),
             user: Some("U9".to_owned()),
             thread_ts: None,
+            files: Vec::new(),
         }]));
         let tool = Search { facade: mock.clone() };
 

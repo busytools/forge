@@ -144,9 +144,6 @@ pub trait SlackApi: Send + Sync {
         name: &str,
         add: bool,
     ) -> Result<(), SlackError>;
-    /// The author of one message, for the own-message check before an
-    /// edit or a delete. `None` when the page did not carry it.
-    async fn message_author(&self, channel: &str, ts: &str) -> Result<Option<String>, SlackError>;
     /// GET an absolute URL with the bearer attached, for a private file.
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SlackError>;
     /// POST raw bytes to an absolute pre-signed URL, with no bearer.
@@ -239,10 +236,6 @@ impl SlackApi for SlackClient {
         add: bool,
     ) -> Result<(), SlackError> {
         SlackClient::set_reaction(self, channel, ts, name, add).await
-    }
-
-    async fn message_author(&self, channel: &str, ts: &str) -> Result<Option<String>, SlackError> {
-        SlackClient::message_author(self, channel, ts).await
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, SlackError> {
@@ -611,7 +604,17 @@ async fn fetch_replies(
         pages += 1;
         match page.next_cursor {
             Some(next) if pages < MAX_REPLY_PAGES => cursor = Some(next),
-            _ => return Ok(out),
+            Some(_) => {
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    channel,
+                    parent = %ts,
+                    pages,
+                    "conversations.replies kept handing back a cursor; stopping the walk",
+                );
+                return Ok(out);
+            }
+            None => return Ok(out),
         }
     }
 }
@@ -687,7 +690,19 @@ pub(crate) async fn sweep(
             Err(SlackError::RateLimited { retry_after, .. }) => {
                 return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
             }
-            Err(error) => return Err(error),
+            // One conversation's failure is not the workspace's: the
+            // sweep continues with the conversations after it. The cursor
+            // stays where it was, so nothing is skipped.
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    workspace,
+                    conversation = %conversation.id,
+                    %error,
+                    "reading a conversation's history failed; skipping it this tick",
+                );
+                continue;
+            }
         };
 
         // The DM class covers conversations that cannot be pre-seeded per
@@ -721,7 +736,19 @@ pub(crate) async fn sweep(
                 Err(SlackError::RateLimited { retry_after, .. }) => {
                     return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
                 }
-                Err(error) => return Err(error),
+                // One conversation's failure is not the workspace's: the
+                // sweep continues with the conversations after it.
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_connectors::slack",
+                        workspace,
+                        conversation = %conversation.id,
+                        parent = %parent,
+                        %error,
+                        "reading a thread's replies failed; skipping them this tick",
+                    );
+                    continue;
+                }
             };
             for reply in replies {
                 if is_newer(&reply.ts, watermark.as_deref()) && seen.insert(reply.ts.clone()) {
@@ -827,7 +854,20 @@ pub(crate) async fn sweep(
                     Err(SlackError::RateLimited { retry_after, .. }) => {
                         return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
                     }
-                    Err(error) => return Err(error),
+                    // One thread's failure is not the workspace's: the
+                    // walk continues with the threads after it, and the
+                    // cursor stays where it was.
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "forge_connectors::slack",
+                            workspace,
+                            conversation = %conversation.id,
+                            parent = %thread.parent_ts,
+                            %error,
+                            "walking a followed thread failed; skipping it this tick",
+                        );
+                        continue;
+                    }
                 };
             let mut newest_reply: Option<String> = None;
             for reply in replies {
@@ -982,7 +1022,7 @@ pub(crate) async fn sweep_mentions(
                 thread_ts: hit.thread_ts.clone(),
                 user: hit.user.clone(),
                 text: hit.text.clone(),
-                files: Vec::new(),
+                files: hit.files.clone(),
             };
             if !host.deliver(subscription, &message) {
                 // Hits arrive newest-first, so a failed delivery means
@@ -1276,6 +1316,8 @@ fn decode_search(body: &str) -> Result<SearchPage, SlackError> {
         user: Option<String>,
         #[serde(default)]
         thread_ts: Option<String>,
+        #[serde(default)]
+        files: Vec<SlackFile>,
     }
     #[derive(Deserialize)]
     struct RawChannel {
@@ -1299,6 +1341,7 @@ fn decode_search(body: &str) -> Result<SearchPage, SlackError> {
             username: hit.username,
             user: hit.user,
             thread_ts: hit.thread_ts,
+            files: hit.files,
         })
         .collect();
     Ok(SearchPage { matches, next_cursor })
@@ -1506,24 +1549,6 @@ impl SlackClient {
         ];
         let _: serde_json::Value = self.call(method, &params).await?;
         Ok(())
-    }
-
-    /// The author of the message at `ts`, or `None` when the page did not
-    /// carry it. Backs the own-message check an edit needs.
-    pub async fn message_author(
-        &self,
-        channel: &str,
-        ts: &str,
-    ) -> Result<Option<String>, SlackError> {
-        let params = vec![
-            ("channel", channel.to_owned()),
-            ("latest", ts.to_owned()),
-            ("inclusive", "true".to_owned()),
-            ("limit", "1".to_owned()),
-        ];
-        let body = self.call_text("conversations.history", &params).await?;
-        let page = decode_message_page("conversations.history", &body)?;
-        Ok(page.messages.into_iter().find(|message| message.ts == ts).and_then(|m| m.user))
     }
 
     /// GET an absolute URL with the bearer attached. Slack's private file
@@ -2398,14 +2423,6 @@ mod tests {
             Ok(())
         }
 
-        async fn message_author(
-            &self,
-            _channel: &str,
-            _ts: &str,
-        ) -> Result<Option<String>, SlackError> {
-            Ok(None)
-        }
-
         async fn get_bytes(&self, _url: &str) -> Result<Vec<u8>, SlackError> {
             Ok(Vec::new())
         }
@@ -2474,6 +2491,20 @@ mod tests {
             params.iter().find(|(key, _)| *key == "sort").map(|(_, value)| value.as_str()),
             Some("timestamp"),
         );
+    }
+
+    /// A file-share mention carries its files in the hit: the ids are
+    /// what slack__attachment fetches with, so delivery loses nothing on
+    /// a no-text file share.
+    #[test]
+    fn a_search_hit_carries_its_files() {
+        let body = r#"{"ok":true,"messages":{"matches":[
+            {"ts":"100.1","text":"","channel":{"id":"C1"},"user":"U9",
+             "files":[{"id":"F1","name":"notes.txt","url_private":"https://files/x"}]}]}}"#;
+        let page = decode_search(body).expect("decodes");
+        assert_eq!(page.matches.len(), 1);
+        assert_eq!(page.matches[0].files.len(), 1, "the file rides on the hit");
+        assert_eq!(page.matches[0].files[0].id, "F1");
     }
 
     #[test]
@@ -2694,6 +2725,7 @@ mod tests {
             username: Some("U9".to_owned()),
             user: Some("U9".to_owned()),
             thread_ts: None,
+            files: Vec::new(),
         }
     }
 

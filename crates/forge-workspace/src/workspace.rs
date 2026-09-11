@@ -394,8 +394,7 @@ pub struct Workspace {
     /// 429 lands mid-sweep, a watermark write fails, or the process dies
     /// between the two - this is what makes that re-run idempotent rather
     /// than a re-delivery.
-    pub(crate) slack_recently_delivered:
-        Mutex<HashMap<SlackDeliveryKey, std::time::Instant>>,
+    pub(crate) slack_recently_delivered: Mutex<HashMap<SlackDeliveryKey, std::time::Instant>>,
     /// Set the first time [`Workspace::start_slack_verification`] runs.
     /// Subsequent calls early-return to avoid spawning duplicate probes.
     pub(crate) slack_verification_started: std::sync::atomic::AtomicBool,

@@ -7,7 +7,7 @@
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
-use forge_connectors::slack::MENTION_CURSOR;
+use forge_connectors::slack::{MENTION_CURSOR, SlackError};
 use forge_primitives::slack::{
     SlackBookmark, SlackConversation, SlackDraft, SlackPin, SlackSearchMatch, SlackSubscription,
     SlackSubscriptionTarget, SlackUser, SlackWatchMode,
@@ -61,6 +61,9 @@ pub(crate) struct SlackPostRequest {
 pub(crate) enum SlackPostError {
     /// The user rejected the draft. Nothing was posted.
     Rejected,
+    /// The draft waited out its approval window unanswered. Nothing was
+    /// posted.
+    Expired,
     /// Some parts of a split draft are live and the rest is not. Carries
     /// how many landed so a retry resumes instead of duplicating.
     Partial { posted: usize, total: usize, source: String },
@@ -90,13 +93,14 @@ pub(crate) struct SlackEditRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SlackEditError {
-    /// The message was not posted by the authenticated user, so Slack
-    /// would refuse the update anyway. Refused locally so the caller gets
-    /// a clear reason rather than a wire error code.
+    /// Slack refused the change because the message was not posted by the
+    /// authenticated user. The wire's verdict, surfaced as its reason.
     NotOwnMessage,
-    /// The user rejected the replacement, or it went unanswered. The
-    /// message is untouched.
+    /// The user rejected the replacement. The message is untouched.
     Rejected,
+    /// The draft waited out its approval window unanswered. The message
+    /// is untouched.
+    Expired,
     UnknownWorkspace,
     Fetch(String),
 }
@@ -115,9 +119,11 @@ pub(crate) struct SlackReactRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SlackReactError {
-    /// The user rejected the reaction, or it went unanswered. Nothing was
-    /// added or removed.
+    /// The user rejected the reaction. Nothing was added or removed.
     Rejected,
+    /// The draft waited out its approval window unanswered. Nothing was
+    /// added or removed.
+    Expired,
     UnknownWorkspace,
     Fetch(String),
 }
@@ -161,6 +167,9 @@ pub(crate) enum SlackAttachmentError {
     Io(String),
     /// The user rejected the upload. Nothing was sent.
     Rejected,
+    /// The draft waited out its approval window unanswered. Nothing was
+    /// sent.
+    Expired,
     UnknownWorkspace,
     /// The Web API or the transfer failed.
     Fetch(String),
@@ -334,6 +343,32 @@ pub(crate) struct ProdSlackFacade {
     workspace: Weak<Workspace>,
 }
 
+/// How a held draft ended. `Expired` is its own outcome, not a flavour of
+/// rejection: the session is told the draft timed out, and the TUI
+/// retires the dock prompt it can no longer answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GateDecision {
+    Approved,
+    Rejected,
+    Expired,
+}
+
+/// Resolves the draft if the awaiting future is dropped before the
+/// timeout answers - the calling session died mid-wait. Without this the
+/// registry entry and its oneshot sender outlive everyone who could
+/// answer them.
+struct ResolveOnDrop {
+    workspace: Arc<Workspace>,
+    id: Uuid,
+    caller: SessionKey,
+}
+
+impl Drop for ResolveOnDrop {
+    fn drop(&mut self) {
+        self.workspace.resolve_slack_draft(self.id, &self.caller, false);
+    }
+}
+
 impl ProdSlackFacade {
     pub(crate) fn from_arc(workspace: &Arc<Workspace>) -> Arc<dyn SlackFacade> {
         Arc::new(Self { workspace: Arc::downgrade(workspace) })
@@ -344,22 +379,38 @@ impl ProdSlackFacade {
     /// path exists once rather than at each gated operation - posting,
     /// replacing a body and deleting one all come through here.
     ///
-    /// A generous timeout resolves to a rejection rather than holding the
-    /// session forever on a prompt nobody can answer.
+    /// A generous timeout expires the draft rather than holding the
+    /// session forever on a prompt nobody can answer; rejection and
+    /// expiry are distinct outcomes the callers surface differently.
     async fn await_approval(
         workspace: &Arc<Workspace>,
         caller: &SessionKey,
         draft: SlackDraft,
-    ) -> bool {
+    ) -> GateDecision {
         let (id, decision) = workspace.register_slack_draft(caller, draft);
+        let guard = ResolveOnDrop {
+            workspace: Arc::clone(workspace),
+            id: id.clone(),
+            caller: caller.clone(),
+        };
         let answer = tokio::time::timeout(APPROVAL_TIMEOUT, decision).await;
-        // Rejected, dropped caller, or timed out: none is an approval, and
-        // all leave the message unsent.
-        let approved = matches!(answer, Ok(Ok(true)));
-        if !approved {
+        let resolved = match answer {
+            Ok(Ok(true)) => GateDecision::Approved,
+            Ok(Ok(false)) | Ok(Err(_)) => GateDecision::Rejected,
+            Err(_elapsed) => GateDecision::Expired,
+        };
+        if resolved == GateDecision::Expired {
+            let _ =
+                workspace.update_sender().send(crate::protocol::SessionUpdate::SlackDraftExpired {
+                    key: caller.clone(),
+                    id: id.clone(),
+                });
+        }
+        if resolved != GateDecision::Approved {
             workspace.resolve_slack_draft(id, caller, false);
         }
-        approved
+        drop(guard);
+        resolved
     }
 }
 
@@ -405,8 +456,10 @@ impl SlackFacade for ProdSlackFacade {
             thread_ts: request.thread_ts,
             text: request.text,
         };
-        if !Self::await_approval(&ws, caller, draft.clone()).await {
-            return Err(SlackPostError::Rejected);
+        match Self::await_approval(&ws, caller, draft.clone()).await {
+            GateDecision::Approved => {}
+            GateDecision::Rejected => return Err(SlackPostError::Rejected),
+            GateDecision::Expired => return Err(SlackPostError::Expired),
         }
         let parts = forge_connectors::slack::split_for_post(&draft.text);
         let mut posted = 0;
@@ -441,14 +494,6 @@ impl SlackFacade for ProdSlackFacade {
         let label = resolve_label(&ws.slack, request.workspace.as_deref())
             .ok_or(SlackEditError::UnknownWorkspace)?;
         let api = ws.slack.client(&label).ok_or(SlackEditError::UnknownWorkspace)?;
-        let own = ws.slack_user_ids.lock().get(&label).cloned();
-        let author = api
-            .message_author(&request.conversation, &request.ts)
-            .await
-            .map_err(|err| SlackEditError::Fetch(err.to_string()))?;
-        if own.is_none() || author != own {
-            return Err(SlackEditError::NotOwnMessage);
-        }
 
         // A replacement puts new words in front of people as the user, and
         // a deletion changes what they see on a message attributed to him -
@@ -464,15 +509,28 @@ impl SlackFacade for ProdSlackFacade {
                 None => format!("[delete] message {}", request.ts),
             },
         };
-        if !Self::await_approval(&ws, caller, draft).await {
-            return Err(SlackEditError::Rejected);
+        match Self::await_approval(&ws, caller, draft).await {
+            GateDecision::Approved => {}
+            GateDecision::Rejected => return Err(SlackEditError::Rejected),
+            GateDecision::Expired => return Err(SlackEditError::Expired),
         }
 
+        // Ownership is the wire's verdict, never a local lookup's:
+        // conversations.history cannot see thread replies, so a pre-check
+        // would wrongly refuse an edit of the user's own reply.
         let result = match &request.text {
             Some(text) => api.update_message(&request.conversation, &request.ts, text).await,
             None => api.delete_message(&request.conversation, &request.ts).await,
         };
-        result.map_err(|err| SlackEditError::Fetch(err.to_string()))
+        match result {
+            Ok(()) => Ok(()),
+            Err(SlackError::Api { error, .. })
+                if error == "cant_update_message" || error == "cant_delete_message" =>
+            {
+                Err(SlackEditError::NotOwnMessage)
+            }
+            Err(err) => Err(SlackEditError::Fetch(err.to_string())),
+        }
     }
 
     async fn react(
@@ -495,8 +553,10 @@ impl SlackFacade for ProdSlackFacade {
             thread_ts: Some(request.ts.clone()),
             text: format!("[{verb}: {}]", request.name),
         };
-        if !Self::await_approval(&ws, caller, draft).await {
-            return Err(SlackReactError::Rejected);
+        match Self::await_approval(&ws, caller, draft).await {
+            GateDecision::Approved => {}
+            GateDecision::Rejected => return Err(SlackReactError::Rejected),
+            GateDecision::Expired => return Err(SlackReactError::Expired),
         }
 
         api.set_reaction(&request.conversation, &request.ts, &request.name, request.add)
@@ -608,8 +668,10 @@ impl SlackFacade for ProdSlackFacade {
             thread_ts: request.thread_ts.clone(),
             text: format!("[file] {name}\nfrom {}", request.path.display()),
         };
-        if !Self::await_approval(&ws, caller, draft).await {
-            return Err(SlackAttachmentError::Rejected);
+        match Self::await_approval(&ws, caller, draft).await {
+            GateDecision::Approved => {}
+            GateDecision::Rejected => return Err(SlackAttachmentError::Rejected),
+            GateDecision::Expired => return Err(SlackAttachmentError::Expired),
         }
 
         let (url, file_id) = api
@@ -891,7 +953,8 @@ mod tests {
         updates: parking_lot::Mutex<Vec<(String, String, String)>>,
         deletes: parking_lot::Mutex<Vec<(String, String)>>,
         reactions: parking_lot::Mutex<Vec<(String, String, String, bool)>>,
-        authors: parking_lot::Mutex<HashMap<String, String>>,
+        /// Messages Slack refuses to change, by ts: not the user's own.
+        foreign: parking_lot::Mutex<std::collections::HashSet<String>>,
         /// Seeded files: id -> (name as the uploader chose it, bytes).
         files: parking_lot::Mutex<HashMap<String, (String, Vec<u8>)>>,
         uploads: parking_lot::Mutex<Vec<(String, String, Option<String>)>>,
@@ -904,8 +967,8 @@ mod tests {
     }
 
     impl RecordingApi {
-        fn seed_author(&self, ts: &str, user: &str) {
-            self.authors.lock().insert(ts.to_owned(), user.to_owned());
+        fn refuse_edits_of(&self, ts: &str) {
+            self.foreign.lock().insert(ts.to_owned());
         }
         fn seed_file(&self, id: &str, name: &str, bytes: &[u8]) {
             self.files.lock().insert(id.to_owned(), (name.to_owned(), bytes.to_vec()));
@@ -984,11 +1047,25 @@ mod tests {
             ts: &str,
             text: &str,
         ) -> Result<(), SlackError> {
+            if self.foreign.lock().contains(ts) {
+                return Err(SlackError::Api {
+                    method: "chat.update".to_owned(),
+                    error: "cant_update_message".to_owned(),
+                    needed: None,
+                });
+            }
             self.updates.lock().push((channel.to_owned(), ts.to_owned(), text.to_owned()));
             Ok(())
         }
 
         async fn delete_message(&self, channel: &str, ts: &str) -> Result<(), SlackError> {
+            if self.foreign.lock().contains(ts) {
+                return Err(SlackError::Api {
+                    method: "chat.delete".to_owned(),
+                    error: "cant_delete_message".to_owned(),
+                    needed: None,
+                });
+            }
             self.deletes.lock().push((channel.to_owned(), ts.to_owned()));
             Ok(())
         }
@@ -1002,14 +1079,6 @@ mod tests {
         ) -> Result<(), SlackError> {
             self.reactions.lock().push((channel.to_owned(), ts.to_owned(), name.to_owned(), add));
             Ok(())
-        }
-
-        async fn message_author(
-            &self,
-            _channel: &str,
-            ts: &str,
-        ) -> Result<Option<String>, SlackError> {
-            Ok(self.authors.lock().get(ts).cloned())
         }
 
         async fn file_info(&self, id: &str) -> Result<SlackFile, SlackError> {
@@ -1115,8 +1184,6 @@ mod tests {
         );
         ws.seed_test_project("forge", "/tmp/slack-facade-scope");
         ws.record_connected_session("/tmp/slack-facade-scope", "caller-uuid", None);
-        // The own-message check reads the workspace's resolved user id.
-        ws.slack_user_ids.lock().insert("acme".to_owned(), "U1".to_owned());
         let facade = ProdSlackFacade::from_arc(&ws);
         (facade, ws, api, rx)
     }
@@ -1357,6 +1424,29 @@ mod tests {
         assert!(api.posts().is_empty(), "an unanswered draft must not post");
     }
 
+    /// The approval window expiring is its own outcome, distinct from a
+    /// rejection, and leaves nothing behind: no post, no registry entry,
+    /// and an update the TUI retires the dock prompt on.
+    #[tokio::test(start_paused = true)]
+    async fn a_draft_whose_window_expires_is_expired_not_rejected() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+        let _id = wait_for_draft(&ws).await;
+
+        tokio::time::advance(APPROVAL_TIMEOUT + Duration::from_secs(1)).await;
+        let outcome = task.await.expect("no panic");
+        assert_eq!(
+            outcome,
+            Err(SlackPostError::Expired),
+            "a timed-out draft is an expiry, never a rejection and never an approval",
+        );
+        assert!(api.posts().is_empty(), "an expired draft must not post");
+        assert!(ws.slack_drafts.lock().is_empty(), "the expiry also clears the registry entry",);
+    }
+
     #[tokio::test]
     async fn an_approved_draft_posts_exactly_once() {
         let (facade, ws, api, _rx) = facade_with_recording_slack();
@@ -1390,22 +1480,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn editing_someone_elses_message_is_refused_before_it_reaches_slack() {
-        // Slack's own rule: only the authenticated user's messages can be
-        // updated. Refused locally so the agent gets a clear reason rather
-        // than a wire error code.
-        let (facade, _ws, api, _rx) = facade_with_recording_slack();
-        api.seed_author("100.0", "U-OTHER");
+    async fn a_foreign_message_is_refused_by_the_wire_and_surfaced_as_its_reason() {
+        // Slack's rule: only the authenticated user's messages can be
+        // changed. The refusal is the wire's verdict - a local lookup
+        // would wrongly refuse an edit of the user's own thread reply,
+        // which history cannot see.
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.refuse_edits_of("100.0");
 
-        let err = facade.edit(&caller(), edit_request("C1", "100.0", Some("new text"))).await;
-        assert_eq!(err, Err(SlackEditError::NotOwnMessage));
-        assert!(api.updates.lock().is_empty(), "a foreign message is never updated");
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.edit(&caller(), edit_request("C1", "100.0", Some("new text"))).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), true);
+
+        assert_eq!(
+            task.await.expect("no panic"),
+            Err(SlackEditError::NotOwnMessage),
+            "the wire's cant_update_message reads as not-your-message",
+        );
+        assert!(api.updates.lock().is_empty(), "a refused update changes nothing");
     }
 
     #[tokio::test]
     async fn editing_own_message_updates_it_once_approved() {
         let (facade, ws, api, _rx) = facade_with_recording_slack();
-        api.seed_author("100.0", "U1");
 
         let task = tokio::spawn({
             let facade = facade.clone();
@@ -1421,7 +1521,6 @@ mod tests {
     #[tokio::test]
     async fn a_rejected_edit_leaves_the_message_untouched() {
         let (facade, ws, api, _rx) = facade_with_recording_slack();
-        api.seed_author("100.0", "U1");
 
         let task = tokio::spawn({
             let facade = facade.clone();
@@ -1437,7 +1536,6 @@ mod tests {
     #[tokio::test]
     async fn deleting_own_message_removes_it_once_approved() {
         let (facade, ws, api, _rx) = facade_with_recording_slack();
-        api.seed_author("100.0", "U1");
 
         let task = tokio::spawn({
             let facade = facade.clone();
@@ -1453,7 +1551,6 @@ mod tests {
     #[tokio::test]
     async fn a_rejected_delete_leaves_the_message_alone() {
         let (facade, ws, api, _rx) = facade_with_recording_slack();
-        api.seed_author("100.0", "U1");
 
         let task = tokio::spawn({
             let facade = facade.clone();

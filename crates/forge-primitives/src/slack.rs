@@ -129,7 +129,8 @@ pub struct SlackFile {
 /// One hit from `search.messages`. `conversation_name` is absent on a DM,
 /// which has no name rather than an empty one. `user` is the author's id,
 /// which the mention sweep needs for the own-message filter - `username`
-/// is only a handle.
+/// is only a handle. A file-share with no text is a real hit, so the
+/// files ride along for delivery and `slack__attachment`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SlackSearchMatch {
     pub ts: String,
@@ -144,6 +145,8 @@ pub struct SlackSearchMatch {
     pub user: Option<String>,
     #[serde(default)]
     pub thread_ts: Option<String>,
+    #[serde(default)]
+    pub files: Vec<SlackFile>,
 }
 
 /// One user as `users.info` reports it. Every optional field is optional

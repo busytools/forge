@@ -265,6 +265,14 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // the user is pointed at it.
             app.notify(crate::app::notify::NotifyEvent::PermissionRequired, &key);
         }
+        SessionUpdate::SlackDraftExpired { key, id } => {
+            // The gate expired the draft unanswered, so nothing was sent:
+            // retire the dock prompt instead of leaving a decision the
+            // user's answer can no longer reach.
+            if let Some(session) = app.session_mut(&key) {
+                crate::app::prompt::retire_slack_draft(session, id);
+            }
+        }
         SessionUpdate::PermissionRequest { key, tool_id, request } => {
             let mut queued = false;
             if let Some(session) = app.session_mut(&key) {

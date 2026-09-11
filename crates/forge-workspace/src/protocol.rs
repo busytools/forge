@@ -43,6 +43,7 @@ use forge_primitives::{
     Message, PeerInflightStats, SessionId, SessionListEntry,
 };
 use tokio::sync::oneshot;
+use uuid::Uuid;
 
 use crate::SessionKey;
 use crate::mcp::peers::types::WrappedPrompt;
@@ -1050,17 +1051,23 @@ pub enum SessionUpdate {
     /// GotifyNotificationAppended). The session's LLM receives the same
     /// text via a separate `Command::Prompt` - this update only drives
     /// the visible echo.
+    CronPromptAppended {
+        session_id: String,
+        text: String,
+    },
     /// A composed Slack message is waiting for the user's decision in the
-    /// dock prompt. The `slack__post` handler is blocked on a oneshot
+    /// dock prompt. The authoring tool handler is blocked on a oneshot
     /// until `Command::RespondSlackPost` answers it, so nothing posts
     /// while this is outstanding.
     SlackPostPending {
         key: SessionKey,
         draft: forge_primitives::slack::SlackDraft,
     },
-    CronPromptAppended {
-        session_id: String,
-        text: String,
+    /// A held Slack draft expired without a decision. The TUI retires
+    /// the dock prompt; nothing was sent.
+    SlackDraftExpired {
+        key: SessionKey,
+        id: Uuid,
     },
     /// A workspace-originated prompt (cron fire, peer or gotify
     /// delivery, kick) landed while the target session's turn was in
@@ -1167,7 +1174,8 @@ impl SessionUpdate {
             | Self::DictateProgress { key, .. }
             | Self::PromptQueuedWhileBusy { key }
             | Self::DictateEnded { key, .. }
-            | Self::SlackPostPending { key, .. } => Some(key.clone()),
+            | Self::SlackPostPending { key, .. }
+            | Self::SlackDraftExpired { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::ChatAppended { session_id, .. }
@@ -1380,6 +1388,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("workspace", &draft.workspace)
                 .field("conversation", &draft.conversation)
                 .finish_non_exhaustive(),
+            Self::SlackDraftExpired { key, id } => {
+                f.debug_struct("SlackDraftExpired").field("key", key).field("id", id).finish()
+            }
             Self::PromptQueuedWhileBusy { key } => {
                 f.debug_struct("PromptQueuedWhileBusy").field("key", key).finish()
             }
