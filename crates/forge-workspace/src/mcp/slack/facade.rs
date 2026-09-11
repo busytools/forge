@@ -467,13 +467,13 @@ impl SlackFacade for ProdSlackFacade {
         let path = request.dir.join(name);
         // The name comes from Slack and the directory is not exclusive to
         // this call, so never clobber a file already sitting there.
-        use std::io::Write as _;
         let mut handle = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
             .map_err(|err| SlackAttachmentError::Io(err.to_string()))?;
-        handle.write_all(&bytes).map_err(|err| SlackAttachmentError::Io(err.to_string()))?;
+        std::io::Write::write_all(&mut handle, &bytes)
+            .map_err(|err| SlackAttachmentError::Io(err.to_string()))?;
         Ok(path)
     }
 
