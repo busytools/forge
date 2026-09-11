@@ -135,10 +135,13 @@ impl NotificationManager {
     ///
     /// This is the single entry-point that all event handlers should call.
     /// It is intentionally cheap when focused (just a bool check).
+    /// `session_key` is the event's own session, logged beside the
+    /// resolved context so a wrong title is diagnosable from the log.
     pub fn notify(
         &self,
         channel: PreferredNotifChannel,
         event: NotifyEvent,
+        session_key: &SessionKey,
         context: &NotifyContext,
     ) {
         if self.terminal_focused {
@@ -169,6 +172,9 @@ impl NotificationManager {
                 "notification channel disabled; nothing dispatched"
             },
             outcome = if dispatched { "success" } else { "skipped" },
+            session_key = %session_key.as_str(),
+            resolved_project = ?context.project,
+            resolved_worker_label = ?context.worker_label,
             event = ?event,
             channel = ?channel,
             title = %text.title,
@@ -216,6 +222,7 @@ impl crate::app::App {
                 event_name = "notification_suppressed_focused",
                 message = "notification suppressed because terminal is focused",
                 outcome = "skipped",
+                session_key = %session_key.as_str(),
                 event = ?event,
             );
             return;
@@ -224,6 +231,7 @@ impl crate::app::App {
         self.notifications.notify(
             self.config.preferred_notification_channel_effective(),
             event,
+            session_key,
             &context,
         );
     }
