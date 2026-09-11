@@ -187,6 +187,36 @@ pub fn threads_for(
     Ok(out)
 }
 
+/// Every followed thread of one workspace, across its conversations, as
+/// (conversation, parent ts, record). Backs removal-time pruning.
+pub fn threads_for_workspace(
+    db: &Db,
+    workspace: &str,
+) -> anyhow::Result<Vec<(String, String, SlackThreadRecord)>> {
+    let prefix = format!("{workspace}\u{0}");
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(THREADS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = Vec::new();
+    for entry in table.iter()? {
+        let (key, value) = entry?;
+        let Some(rest) = key.value().strip_prefix(&prefix) else { continue };
+        let Some((conversation, parent_ts)) = rest.split_once('\u{0}') else { continue };
+        match serde_json::from_str::<SlackThreadRecord>(value.value()) {
+            Ok(record) => out.push((conversation.to_owned(), parent_ts.to_owned(), record)),
+            Err(err) => tracing::warn!(
+                target: "forge_workspace::store::slack",
+                error = %err,
+                "skipping Slack thread record that failed to decode",
+            ),
+        }
+    }
+    Ok(out)
+}
+
 /// Delete one thread row. Returns whether a row existed.
 pub fn remove_thread(
     db: &Db,

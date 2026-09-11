@@ -924,6 +924,7 @@ mod tests {
                 conversation: "C1".to_owned(),
                 thread_ts: None,
                 text: "please review this text".to_owned(),
+                tool: "slack__post".to_owned(),
             },
         );
         let area = Rect::new(0, 0, 80, 20);

@@ -273,7 +273,8 @@ pub(crate) trait SlackFacade: Send + Sync {
         request: SlackEditRequest,
     ) -> Result<(), SlackEditError>;
 
-    /// Add or remove one reaction. Not gated.
+    /// Add or remove one reaction, held for the user's decision first -
+    /// a reaction is authored content in the user's name.
     async fn react(
         &self,
         caller: &SessionKey,
@@ -388,8 +389,7 @@ impl ProdSlackFacade {
         draft: SlackDraft,
     ) -> GateDecision {
         let (id, decision) = workspace.register_slack_draft(caller, draft);
-        let guard =
-            ResolveOnDrop { workspace: Arc::clone(workspace), id, caller: caller.clone() };
+        let guard = ResolveOnDrop { workspace: Arc::clone(workspace), id, caller: caller.clone() };
         let answer = tokio::time::timeout(APPROVAL_TIMEOUT, decision).await;
         let resolved = match answer {
             Ok(Ok(true)) => GateDecision::Approved,
@@ -452,6 +452,7 @@ impl SlackFacade for ProdSlackFacade {
             conversation: request.conversation,
             thread_ts: request.thread_ts,
             text: request.text,
+            tool: "slack__post".to_owned(),
         };
         match Self::await_approval(&ws, caller, draft.clone()).await {
             GateDecision::Approved => {}
@@ -505,6 +506,7 @@ impl SlackFacade for ProdSlackFacade {
                 Some(text) => text.clone(),
                 None => format!("[delete] message {}", request.ts),
             },
+            tool: "slack__edit".to_owned(),
         };
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
@@ -549,6 +551,7 @@ impl SlackFacade for ProdSlackFacade {
             conversation: request.conversation.clone(),
             thread_ts: Some(request.ts.clone()),
             text: format!("[{verb}: {}]", request.name),
+            tool: "slack__react".to_owned(),
         };
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
@@ -664,6 +667,7 @@ impl SlackFacade for ProdSlackFacade {
             conversation: request.conversation.clone(),
             thread_ts: request.thread_ts.clone(),
             text: format!("[file] {name}\nfrom {}", request.path.display()),
+            tool: "slack__attachment".to_owned(),
         };
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}

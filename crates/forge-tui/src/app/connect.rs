@@ -237,6 +237,7 @@ fn create_app_impl(
         gotify_connected: false,
         slack_subs: Vec::new(),
         slack_connected: std::collections::BTreeMap::new(),
+        slack_load_failed: false,
         help_view: HelpView::Keys,
         help_open: false,
         help_dialog: DialogState::default(),

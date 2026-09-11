@@ -1746,11 +1746,10 @@ fn gotify_section_visible(app: &App) -> bool {
 /// to this session and none needs an owner label. Only invoked when
 /// [`gotify_section_visible`] holds, so the subscription set is never
 /// empty; the stream may be up or down.
-/// Whether anything is worth rendering: a session with no Slack
-/// subscription of its own has nothing to receive, so the section is
-/// omitted without consulting liveness at all.
+/// The section shows for an owner's subscriptions, or when boot could
+/// not load the durable set - an empty set must not hide that failure.
 fn slack_section_visible(app: &App) -> bool {
-    !app.slack_subs.is_empty()
+    !app.slack_subs.is_empty() || app.slack_load_failed
 }
 
 /// Render the Inspector SLACK section: a labelled header then one row per
@@ -1761,6 +1760,19 @@ fn slack_section_visible(app: &App) -> bool {
 fn append_slack_section(lines: &mut Vec<Line<'static>>, app: &App) {
     lines.push(slack_header_line());
     lines.push(Line::default());
+    if app.slack_load_failed && app.slack_subs.is_empty() {
+        // The section exists to name the failure: boot could not read the
+        // durable subscriptions, so there is nothing to list and hiding
+        // the section would hide the failure with it.
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(usize::from(PANE_PAD) + 2)),
+            Span::styled(
+                "subscriptions failed to load at boot; none are active".to_owned(),
+                Style::default().fg(theme::STATUS_WARNING),
+            ),
+        ]));
+        return;
+    }
     for sub in &app.slack_subs {
         let connected = app.slack_connected.get(&sub.workspace).copied().unwrap_or(false);
         append_slack_subscription(lines, sub, connected);

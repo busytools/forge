@@ -404,6 +404,9 @@ pub struct App {
     /// entry, where Gotify has one server and a single bool.
     pub slack_subs: Vec<forge_primitives::slack::SlackSubscription>,
     pub slack_connected: std::collections::BTreeMap<String, bool>,
+    /// Boot could not read the durable Slack subscriptions, so there are
+    /// none to list and the section would otherwise hide the failure.
+    pub slack_load_failed: bool,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
     /// Whether the help overlay is explicitly open.
@@ -959,6 +962,7 @@ impl App {
             gotify_connected: false,
             slack_subs: Vec::new(),
             slack_connected: std::collections::BTreeMap::new(),
+            slack_load_failed: false,
             help_view: HelpView::Keys,
             help_open: false,
             help_dialog: dialog::DialogState::default(),

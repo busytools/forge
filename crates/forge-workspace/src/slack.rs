@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use forge_connectors::slack::{AuthTest, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
-    SlackConfig, SlackDraft, SlackFollowedThread, SlackMessage, SlackSubscription, SlackThreadOwner,
+    SlackConfig, SlackDraft, SlackFollowedThread, SlackMessage, SlackSubscription,
+    SlackThreadOwner, SlackThreadRecord,
 };
 use uuid::Uuid;
 
@@ -230,22 +231,25 @@ impl Workspace {
             return;
         };
 
-        let removed_ids: Vec<Uuid> = {
+        let removed: Vec<SlackSubscription> = {
             let mut subs = self.slack_subs.lock();
             let mut removed = Vec::new();
             subs.retain(|sub| {
                 let owned = sub.project == project_name && sub.team_role.as_deref() == Some(label);
                 if owned {
-                    removed.push(sub.id);
+                    removed.push(sub.clone());
                 }
                 !owned
             });
             removed
         };
 
-        for id in removed_ids {
+        if removed.is_empty() {
+            return;
+        }
+        for sub in &removed {
             if let Some(db) = self.db.lock().as_ref()
-                && let Err(error) = crate::store::slack::remove(db, id)
+                && let Err(error) = crate::store::slack::remove(db, sub.id)
             {
                 tracing::warn!(
                     target: "forge_workspace::slack",
@@ -253,6 +257,13 @@ impl Workspace {
                     "removing a persisted Slack subscription failed",
                 );
             }
+            self.prune_slack_thread_owners(
+                &sub.workspace,
+                &SlackThreadOwner {
+                    project: sub.project.clone(),
+                    team_role: sub.team_role.clone(),
+                },
+            );
         }
     }
 
@@ -531,16 +542,18 @@ impl Workspace {
         id: Uuid,
         owner: Option<&str>,
     ) -> bool {
-        let removed = {
-            let mut subs = self.slack_subs.lock();
-            let before = subs.len();
-            subs.retain(|s| {
-                !(s.id == id && s.project == project && s.team_role.as_deref() == owner)
-            });
-            subs.len() != before
+        let removed_sub = {
+            let subs = self.slack_subs.lock();
+            subs.iter()
+                .find(|s| s.id == id && s.project == project && s.team_role.as_deref() == owner)
+                .cloned()
         };
-        if removed
-            && let Some(db) = self.db.lock().as_ref()
+        let Some(removed_sub) = removed_sub else { return false };
+        {
+            let mut subs = self.slack_subs.lock();
+            subs.retain(|s| s.id != id);
+        }
+        if let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::slack::remove(db, id)
         {
             tracing::warn!(
@@ -549,7 +562,45 @@ impl Workspace {
                 "removing a persisted Slack subscription failed",
             );
         }
-        removed
+        self.prune_slack_thread_owners(
+            &removed_sub.workspace,
+            &SlackThreadOwner {
+                project: removed_sub.project.clone(),
+                team_role: removed_sub.team_role.clone(),
+            },
+        );
+        true
+    }
+
+    /// Drop `owner` from every followed thread in `workspace`, deleting
+    /// the rows whose last owner goes. Runs when a subscription is
+    /// removed, so a thread whose conversation is no longer swept does
+    /// not freeze until some sweep happens to list it - the sweep-time
+    /// pruning in [`Self::slack_followed_threads`] is the backstop, not
+    /// the only chance.
+    fn prune_slack_thread_owners(&self, workspace: &str, owner: &SlackThreadOwner) {
+        let db_guard = self.db.lock();
+        let Some(db) = db_guard.as_ref() else { return };
+        let Ok(rows) = crate::store::slack::threads_for_workspace(db, workspace) else { return };
+        for (conversation, parent_ts, record) in rows {
+            let kept: Vec<SlackThreadOwner> =
+                record.owners.iter().filter(|kept| *kept != owner).cloned().collect();
+            if kept.len() == record.owners.len() {
+                continue;
+            }
+            if kept.is_empty() {
+                let _ =
+                    crate::store::slack::remove_thread(db, workspace, &conversation, &parent_ts);
+            } else {
+                let _ = crate::store::slack::set_thread(
+                    db,
+                    workspace,
+                    &conversation,
+                    &parent_ts,
+                    &SlackThreadRecord { cursor: record.cursor, owners: kept },
+                );
+            }
+        }
     }
 
     /// Prove each workspace's token once, logging the team it belongs to
@@ -583,9 +634,56 @@ impl Workspace {
                         target: "forge_workspace::slack",
                         workspace = %label,
                         %error,
-                        "slack auth.test failed; this workspace stays dormant",
+                        "slack auth.test failed; the mention stream stays down until it succeeds",
                     ),
                 }
+            }
+        });
+    }
+
+    /// Whether boot could not read the durable Slack subscriptions.
+    pub fn slack_subscription_load_failed(&self) -> bool {
+        self.slack_load_failed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Re-prove one workspace's token in the background, so a boot-time
+    /// auth failure heals itself instead of leaving the mention stream
+    /// down until restart. Rate-limited to one attempt a minute per
+    /// workspace; the caller is the host's user-id miss.
+    pub(crate) fn retry_slack_user_id(self: &Arc<Self>, label: &str) {
+        const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+        {
+            let mut retries = self.slack_user_id_retries.lock();
+            if retries
+                .get(label)
+                .is_some_and(|last| last.elapsed().is_ok_and(|elapsed| elapsed < RETRY_INTERVAL))
+            {
+                return;
+            }
+            retries.insert(label.to_owned(), std::time::SystemTime::now());
+        }
+        let Some(api) = self.slack.client(label) else { return };
+        let weak = Arc::downgrade(self);
+        let label = label.to_owned();
+        tokio::spawn(async move {
+            let result = api.auth_test().await;
+            let Some(ws) = weak.upgrade() else { return };
+            match result {
+                Ok(auth) => {
+                    ws.slack_user_ids.lock().insert(label.clone(), auth.user_id);
+                    tracing::info!(
+                        target: "forge_workspace::slack",
+                        workspace = %label,
+                        user = %auth.user,
+                        "slack user id recovered on retry",
+                    );
+                }
+                Err(error) => tracing::debug!(
+                    target: "forge_workspace::slack",
+                    workspace = %label,
+                    %error,
+                    "slack user-id retry failed",
+                ),
             }
         });
     }
@@ -686,7 +784,16 @@ impl SlackHost for SlackSubsystemHost {
     }
 
     fn user_id(&self, workspace: &str) -> Option<String> {
-        self.0.upgrade()?.slack_user_ids.lock().get(workspace).cloned()
+        let ws = self.0.upgrade()?;
+        let cached = ws.slack_user_ids.lock().get(workspace).cloned();
+        if cached.is_some() {
+            return cached;
+        }
+        // A boot-time auth failure would otherwise keep the mention
+        // stream down until restart; the retry heals it in the
+        // background.
+        ws.retry_slack_user_id(workspace);
+        None
     }
 
     fn subscriptions(&self, workspace: &str) -> Vec<SlackSubscription> {
@@ -809,6 +916,7 @@ mod tests {
             conversation: conversation.to_owned(),
             thread_ts: None,
             text: "hello".to_owned(),
+            tool: "slack__post".to_owned(),
         }
     }
 
@@ -839,6 +947,21 @@ mod tests {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
         let caller = SessionKey::from_session_id("caller-uuid");
         assert!(!ws.resolve_slack_draft(Uuid::new_v4(), &caller, true));
+    }
+
+    /// No UI to answer the draft: the registry must not hold it, and the
+    /// awaiting caller sees a dead receiver - the fail-closed read.
+    #[tokio::test]
+    async fn a_draft_with_no_ui_to_answer_it_fails_closed() {
+        let (ws, _dir, rx) = workspace_with_one_slack_workspace("acme");
+        drop(rx);
+        let caller = SessionKey::from_session_id("caller-uuid");
+        let (_id, decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+        assert!(
+            ws.slack_drafts.lock().is_empty(),
+            "an unanswerable draft is dropped, not held forever",
+        );
+        assert!(decision.await.is_err(), "a dead receiver reads as not-approved");
     }
 
     #[test]
@@ -1051,11 +1174,28 @@ mod tests {
         let days_ago = |days: u64| format!("{}.{:06}", now - days * 24 * 60 * 60, 0);
 
         host.follow_thread("acme", "C1", &days_ago(15), owner("forge", None), &days_ago(15));
+        host.follow_thread("acme", "C1", &days_ago(14), owner("forge", None), &days_ago(14));
         host.follow_thread("acme", "C1", &days_ago(13), owner("forge", None), &days_ago(13));
 
         let threads = host.followed_threads("acme", "C1");
-        assert_eq!(threads.len(), 1, "the 15-day idle thread is dropped, the 13-day one kept");
+        assert_eq!(
+            threads.len(),
+            1,
+            "the 15- and 14-day idle threads are dropped, the 13-day one kept",
+        );
         assert_eq!(threads[0].parent_ts, days_ago(13), "and the survivor is the young one");
+    }
+
+    /// The documented fail-closed arm: a cursor that does not parse reads
+    /// as ancient, so the row drops rather than living forever.
+    #[test]
+    fn an_unparseable_thread_cursor_reads_as_ancient() {
+        assert!(
+            thread_idle_days("not-a-ts") >= THREAD_IDLE_DROP_DAYS,
+            "an unparseable cursor must drop the row, not keep it: {}",
+            thread_idle_days("not-a-ts"),
+        );
+        assert_eq!(thread_idle_days(&recent_ts()), 0, "a fresh cursor is not idle");
     }
 
     /// A mention dug up a weeks-old thread: the row's idle clock runs
@@ -1077,6 +1217,56 @@ mod tests {
             threads.len(),
             1,
             "a thread followed now must survive a weeks-old parent: {threads:?}",
+        );
+    }
+
+    /// Pruning runs at REMOVAL time, not only inside the sweep's listing:
+    /// a thread whose only owner is removed is gone from the store
+    /// before any sweep happens to list it.
+    #[test]
+    fn removing_the_last_owners_subscription_deletes_the_thread_row_at_once() {
+        let (host, ws, _dir) = host_with_c1_subscriber("forge", Some("tester"));
+        let parent = recent_ts();
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("tester")), &parent);
+
+        let id = ws
+            .slack_subscriptions_for_project("forge")
+            .into_iter()
+            .find(|sub| sub.team_role.as_deref() == Some("tester"))
+            .expect("the tester's subscription")
+            .id;
+        assert!(ws.remove_slack_subscription_owned_by("forge", id, Some("tester")));
+
+        assert_eq!(
+            ws.slack_thread_watermark("acme", "C1", &parent).expect("read"),
+            None,
+            "the row is pruned at removal, never left for a sweep to find",
+        );
+    }
+
+    /// Worker teardown removes that worker's subscriptions - and only
+    /// its own - from the active set, and prunes its thread rows in the
+    /// same pass, so a delivery for it cannot fall through to the lead.
+    #[test]
+    fn worker_teardown_removes_its_subscriptions_and_threads_only() {
+        let (host, ws, _dir) = host_with_c1_subscriber("forge", Some("a"));
+        ws.add_slack_subscription(sub_for_conversation("forge", Some("b"), "C1"), true);
+        let parent = recent_ts();
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("a")), &parent);
+        host.follow_thread("acme", "C1", &parent, owner("forge", Some("b")), &parent);
+
+        ws.seed_test_project("forge", "/tmp/slack-teardown");
+        let key = ws.list_projects().into_iter().find(|v| v.name == "forge").expect("seeded").key;
+        ws.remove_slack_subscriptions_for_worker(&key, "a");
+
+        let left = ws.slack_subscriptions_for_project("forge");
+        assert_eq!(left.len(), 1, "a's subscription is gone, b's remains");
+        assert_eq!(left[0].team_role.as_deref(), Some("b"));
+        let threads = host.followed_threads("acme", "C1");
+        assert_eq!(
+            threads[0].owners,
+            vec![owner("forge", Some("b"))],
+            "a's ownership is pruned, b keeps the thread",
         );
     }
 

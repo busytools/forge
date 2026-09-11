@@ -366,10 +366,10 @@ pub struct Workspace {
     /// keeps the Slack connector dormant. `pub(crate)` so the impl
     /// blocks in [`crate::slack`] and `crate::mcp::slack` can reach it.
     pub(crate) slack: Arc<crate::slack::SlackWorkspaces>,
-    /// Active Slack subscriptions (`mcp__forge__slack`). The set the
-    /// pump will read in phase 3; this phase only records it. Durable
-    /// ones are also persisted to `db` and reloaded here at boot.
-    /// `pub(crate)` so the impl block in [`crate::slack`] can reach it.
+    /// Active Slack subscriptions (`mcp__forge__slack`). The set each
+    /// workspace's pump sweeps. Durable ones are also persisted to `db`
+    /// and reloaded here at boot. `pub(crate)` so the impl block in
+    /// [`crate::slack`] can reach it.
     pub(crate) slack_subs: Mutex<Vec<forge_primitives::slack::SlackSubscription>>,
     /// Shutdown handles for the running Slack pumps, one per workspace
     /// label. Slack has a pump per `[[slack]]` entry where Gotify has a
@@ -390,11 +390,18 @@ pub struct Workspace {
     pub(crate) slack_drafts:
         Mutex<HashMap<uuid::Uuid, (SessionKey, tokio::sync::oneshot::Sender<bool>)>>,
     /// Slack messages handed to a session recently, keyed by
-    /// `(project, conversation, ts)`. A sweep re-runs a batch whenever a
-    /// 429 lands mid-sweep, a watermark write fails, or the process dies
-    /// between the two - this is what makes that re-run idempotent rather
-    /// than a re-delivery.
+    /// `(project, owner, conversation, ts)`. A sweep re-runs a batch
+    /// whenever a 429 lands mid-sweep, a watermark write fails, or the
+    /// process dies between the two - this is what makes that re-run
+    /// idempotent rather than a re-delivery.
     pub(crate) slack_recently_delivered: Mutex<HashMap<SlackDeliveryKey, std::time::Instant>>,
+    /// Set at boot when the durable Slack subscriptions could not be
+    /// read. The Inspector SLACK section reads it: without it the empty
+    /// subscription set would hide the failure.
+    pub(crate) slack_load_failed: std::sync::atomic::AtomicBool,
+    /// The last time each workspace's user-id retry ran, so a failing
+    /// `auth.test` is retried at most once a minute rather than per sweep.
+    pub(crate) slack_user_id_retries: Mutex<std::collections::BTreeMap<String, SystemTime>>,
     /// Set the first time [`Workspace::start_slack_verification`] runs.
     /// Subsequent calls early-return to avoid spawning duplicate probes.
     pub(crate) slack_verification_started: std::sync::atomic::AtomicBool,
@@ -973,6 +980,7 @@ impl Workspace {
             }),
             None => Vec::new(),
         };
+        let mut slack_load_failed = false;
         let slack_subs = match &db {
             Some(db) => crate::store::slack::list(db).unwrap_or_else(|error| {
                 tracing::warn!(
@@ -980,6 +988,7 @@ impl Workspace {
                     %error,
                     "loading durable Slack subscriptions failed; starting with none",
                 );
+                slack_load_failed = true;
                 Vec::new()
             }),
             None => Vec::new(),
@@ -1095,6 +1104,8 @@ impl Workspace {
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
+            slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),
+            slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
@@ -6153,6 +6164,8 @@ impl Workspace {
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
+            slack_load_failed: std::sync::atomic::AtomicBool::new(false),
+            slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
@@ -8306,6 +8319,40 @@ SOLO_TOKEN = "solo-secret"
             .pending_slack_prompts
             .len();
         assert_eq!(buffered, 1, "the message waits for the spawned session to drain");
+    }
+
+    /// A sweep re-run of the same message must not double-prompt: the
+    /// dedupe drops the second hand-off to the same destination, which is
+    /// what makes a post-failure re-sweep idempotent.
+    #[test]
+    fn a_second_delivery_of_the_same_message_to_the_same_owner_is_dropped() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("glead", "/tmp/slack-double");
+        ws.enable_test_dispatch_intercept();
+
+        let message = slack_message_for("hello");
+        assert!(
+            crate::spawn::deliver_slack_message(&ws, "glead", None, message.clone()),
+            "the first delivery lands",
+        );
+        assert!(
+            crate::spawn::deliver_slack_message(&ws, "glead", None, message),
+            "the re-run reads as already delivered, not as a failure",
+        );
+
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().all(|cmd| !matches!(cmd, crate::protocol::Command::Prompt { .. })),
+            "the asleep path buffers; the second delivery added no prompt",
+        );
+        let buffered = ws
+            .domain_session_for(&SessionKey::from_session_id("__spawn_glead__"))
+            .expect("the synthetic spawn key holds the buffer")
+            .lock()
+            .pending_slack_prompts
+            .len();
+        assert_eq!(buffered, 1, "one buffered message, not two");
     }
 
     fn make_workspace_dir() -> tempfile::TempDir {

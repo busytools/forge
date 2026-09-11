@@ -210,9 +210,11 @@ impl super::App {
         let Some(ws) = self.workspace.as_ref() else {
             self.slack_subs = Vec::new();
             self.slack_connected = std::collections::BTreeMap::new();
+            self.slack_load_failed = false;
             return;
         };
         self.slack_connected = ws.slack_connected_workspaces();
+        self.slack_load_failed = ws.slack_subscription_load_failed();
         self.slack_subs =
             project.map(|name| ws.slack_subscriptions_for_project(&name)).unwrap_or_default();
         self.slack_subs.retain(|s| s.team_role == own_role);

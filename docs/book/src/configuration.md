@@ -339,7 +339,9 @@ near-miss fails loudly.
 The token is a credential, so it lives here rather than in the state
 store beside the subscriptions. forge proves it with `auth.test` at boot
 and logs the team and user it resolves to, or the failure; a workspace
-whose token fails stays dormant without stopping the boot.
+whose token fails keeps its conversation sweeps running but its mention
+stream stays down - the sweeps cannot recognise `<@U...>` without it -
+and forge retries the proof in the background until it succeeds.
 
 ## `[plugins]`
 

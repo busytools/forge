@@ -675,6 +675,7 @@ pub(crate) mod tests {
             conversation: conversation.to_owned(),
             thread_ts: None,
             text: text.to_owned(),
+            tool: "slack__post".to_owned(),
         };
         let id = draft.id;
         let prompt = PromptState::from_slack_draft(key.clone(), draft);

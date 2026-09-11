@@ -4,7 +4,7 @@ The `[[slack]]` connector lets a session act as the user on Slack: it watches th
 
 ## Tools
 
-The in-process MCP server exposes the `mcp__forge__slack__*` tools to every session, whichever workspace configuration exists; a call naming no configured workspace fails with the labels that are configured.
+The in-process MCP server exposes the `mcp__forge__slack__*` tools to every session, whichever workspace configuration exists; a call naming no configured workspace fails, and `slack__list`'s error names the labels that are.
 
 | Tool | What it does |
 |---|---|

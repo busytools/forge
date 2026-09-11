@@ -3,8 +3,9 @@
 //!
 //! `slack__list` lists every conversation in a workspace and marks which
 //! ones the caller has subscribed; `slack__subscribe` and
-//! `slack__unsubscribe` manage those records. Nothing is delivered yet -
-//! the poll pump arrives in phase 3, so a record is inert until then.
+//! `slack__unsubscribe` manage those records. A subscription is live: the
+//! per-workspace poll pump sweeps it and delivers matches into the
+//! owning session.
 //!
 //! - [`facade`] - the `SlackFacade` seam (prod over `Weak<Workspace>` +
 //!   a mock for tool tests).
@@ -708,7 +709,8 @@ impl Tool for React {
     fn description(&self) -> &'static str {
         "Add a reaction to a Slack message, or remove one with `remove: true`. `name` is Slack's \
          shortcode without colons, e.g. `white_check_mark`. Removing requires being the original \
-         reaction's author. NOT HELD FOR APPROVAL. Any session in the project may call this."
+         reaction's author. HELD FOR APPROVAL like slack__post: a reaction is authored content \
+         in the user's name. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {

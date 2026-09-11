@@ -230,6 +230,9 @@ pub struct SlackDraft {
     /// `None` posts a root message; `Some(ts)` replies into that thread.
     pub thread_ts: Option<String>,
     pub text: String,
+    /// The MCP tool that composed the draft, so a held edit, reaction or
+    /// upload does not read as `slack__post` in the session list.
+    pub tool: String,
 }
 
 /// One message as the pump sees it, after matching. Carries what delivery
