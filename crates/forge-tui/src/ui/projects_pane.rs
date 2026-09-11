@@ -327,18 +327,25 @@ fn live_worker_keys(app: &App) -> std::collections::HashSet<forge_workspace::Ses
 /// pooled bucket whose `cwd_raw` matches the project path, which
 /// sidesteps catalog ordering (a freshly-spawned worker can overtake
 /// the lead by mtime) and the catalog-presence-of-the-lead question
-/// entirely. Falls back to a catalog walk excluding workers, for when
-/// the lead's bucket isn't yet pooled (cold project at launchpad
-/// time) but its session has a `SessionView` entry.
+/// entirely. A resumed second JSONL of the open project leaves two
+/// buckets on that cwd, so the selected session's bucket wins the tie
+/// and the row tracks where the user is rather than whichever
+/// HashMap yields first. Falls back to a catalog walk excluding
+/// workers, for when the lead's bucket isn't yet pooled (cold project
+/// at launchpad time) but its session has a `SessionView` entry.
 fn live_lead_key(
     app: &App,
     project: &ProjectView,
     project_path: &str,
     worker_keys: &std::collections::HashSet<forge_workspace::SessionKey>,
 ) -> Option<forge_workspace::SessionKey> {
+    let is_lead_bucket = |k: &forge_workspace::SessionKey, s: &crate::app::session::UiSession| {
+        s.cwd_raw.as_str() == project_path && !worker_keys.contains(k)
+    };
     app.sessions
         .iter()
-        .find(|(k, s)| s.cwd_raw.as_str() == project_path && !worker_keys.contains(k))
+        .find(|(k, s)| Some(*k) == app.active_session_key.as_ref() && is_lead_bucket(k, s))
+        .or_else(|| app.sessions.iter().find(|(k, s)| is_lead_bucket(k, s)))
         .map(|(k, _)| k.clone())
         .or_else(|| {
             project.sessions.iter().find_map(|s| {
@@ -3020,6 +3027,73 @@ mod tests {
             glyph_span.style.fg,
             Some(theme::STATUS_WARNING),
             "△ on the selected worker must still use STATUS_WARNING",
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // Resuming a second JSONL of the open project leaves two
+    // non-worker buckets on the project cwd. The row must represent
+    // the selected one - not whichever bucket HashMap yields first -
+    // so the highlight follows the user across the resume and back.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn resumed_second_jsonl_of_one_cwd_keeps_the_row_on_the_selection() {
+        use crate::app::session::UiSession;
+        use forge_workspace::{ProjectKey, SessionKey};
+
+        let project_path = "/tmp/resume-tie-project";
+        let first_key = SessionKey::from_session_id("lead-first");
+        let second_key = SessionKey::from_session_id("lead-resumed");
+        let project = ProjectView::new_for_test(
+            ProjectKey::new_for_test("resume-tie-project"),
+            "resume-tie-project",
+            project_path,
+            Vec::new(),
+        );
+        let no_workers = std::collections::HashSet::new();
+        let build = |active: &forge_workspace::SessionKey| {
+            let mut app = App::test_default();
+            for key in [&first_key, &second_key] {
+                let mut bucket = UiSession::new(key.clone());
+                bucket.cwd_raw = project_path.to_owned();
+                app.sessions.insert(key.clone(), bucket);
+            }
+            app.active_session_key = Some(active.clone());
+            app
+        };
+
+        // The row's owner is the selected session, not a HashMap-order
+        // pick between the two same-cwd buckets; each rebuild reseeds
+        // the map's iteration order.
+        for _ in 0..16 {
+            let app = build(&second_key);
+            assert_eq!(
+                live_lead_key(&app, &project, project_path, &no_workers).as_ref(),
+                Some(&second_key),
+                "the row must resolve to the selected session's bucket on a cwd tie",
+            );
+            let app = build(&first_key);
+            assert_eq!(
+                live_lead_key(&app, &project, project_path, &no_workers).as_ref(),
+                Some(&first_key),
+                "the row must follow the selection back to the first session",
+            );
+        }
+
+        // And the highlight rides along with the resolved row.
+        let mut app = build(&second_key);
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+        let highlighted = lines.iter().any(|line| {
+            line.spans.iter().any(|s| {
+                s.content.contains("resume-tie-project") && s.style.fg == Some(theme::RUST_ORANGE)
+            })
+        });
+        assert!(
+            highlighted,
+            "the resumed lead's row must highlight while it is selected; got: {lines:?}",
         );
     }
 
