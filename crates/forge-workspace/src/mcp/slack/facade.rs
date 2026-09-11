@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime};
 
 use forge_connectors::slack::MENTION_CURSOR;
 use forge_primitives::slack::{
-    SlackConversation, SlackDraft, SlackSearchMatch, SlackSubscription, SlackSubscriptionTarget,
-    SlackUser, SlackWatchMode,
+    SlackBookmark, SlackConversation, SlackDraft, SlackPin, SlackSearchMatch, SlackSubscription,
+    SlackSubscriptionTarget, SlackUser, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -300,6 +300,20 @@ pub(crate) trait SlackFacade: Send + Sync {
     /// `users.info` for one user id.
     async fn user(&self, workspace: Option<&str>, user: &str) -> Result<SlackUser, SlackReadError>;
 
+    /// `pins.list` for one conversation.
+    async fn pins(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+    ) -> Result<Vec<SlackPin>, SlackReadError>;
+
+    /// `bookmarks.list` for one conversation.
+    async fn bookmarks(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+    ) -> Result<Vec<SlackBookmark>, SlackReadError>;
+
     /// Record what the caller wants to watch in `workspace`, one record
     /// per target. Returns the new record ids.
     fn subscribe(
@@ -512,6 +526,28 @@ impl SlackFacade for ProdSlackFacade {
         api.user_info(user).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
     }
 
+    async fn pins(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+    ) -> Result<Vec<SlackPin>, SlackReadError> {
+        let ws = self.workspace.upgrade().ok_or(SlackReadError::UnknownWorkspace)?;
+        let label = resolve_label(&ws.slack, workspace).ok_or(SlackReadError::UnknownWorkspace)?;
+        let api = ws.slack.client(&label).ok_or(SlackReadError::UnknownWorkspace)?;
+        api.pins(conversation).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
+    }
+
+    async fn bookmarks(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+    ) -> Result<Vec<SlackBookmark>, SlackReadError> {
+        let ws = self.workspace.upgrade().ok_or(SlackReadError::UnknownWorkspace)?;
+        let label = resolve_label(&ws.slack, workspace).ok_or(SlackReadError::UnknownWorkspace)?;
+        let api = ws.slack.client(&label).ok_or(SlackReadError::UnknownWorkspace)?;
+        api.bookmarks(conversation).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
+    }
+
     async fn fetch_attachment(
         &self,
         request: SlackFetchRequest,
@@ -682,6 +718,10 @@ pub(crate) struct MockSlackFacade {
     pub search_result: parking_lot::Mutex<Option<Result<Vec<SlackSearchMatch>, SlackReadError>>>,
     pub user_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
     pub user_result: parking_lot::Mutex<Option<Result<SlackUser, SlackReadError>>>,
+    pub pins_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
+    pub pins_result: parking_lot::Mutex<Option<Result<Vec<SlackPin>, SlackReadError>>>,
+    pub bookmarks_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
+    pub bookmarks_result: parking_lot::Mutex<Option<Result<Vec<SlackBookmark>, SlackReadError>>>,
     pub fetch_calls: parking_lot::Mutex<Vec<SlackFetchRequest>>,
     pub fetch_result: parking_lot::Mutex<Option<Result<std::path::PathBuf, SlackAttachmentError>>>,
     pub upload_calls: parking_lot::Mutex<Vec<SlackUploadRequest>>,
@@ -739,6 +779,24 @@ impl SlackFacade for MockSlackFacade {
                 tz: None,
             })
         })
+    }
+
+    async fn pins(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+    ) -> Result<Vec<SlackPin>, SlackReadError> {
+        self.pins_calls.lock().push((workspace.map(str::to_owned), conversation.to_owned()));
+        self.pins_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    async fn bookmarks(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+    ) -> Result<Vec<SlackBookmark>, SlackReadError> {
+        self.bookmarks_calls.lock().push((workspace.map(str::to_owned), conversation.to_owned()));
+        self.bookmarks_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
     }
 
     async fn fetch_attachment(
@@ -815,7 +873,9 @@ mod tests {
     use super::*;
     use crate::config::LoadedConfig;
     use forge_connectors::slack::{AuthTest, MessagePage, SearchPage, SlackApi, SlackError};
-    use forge_primitives::slack::{SlackConfig, SlackFile};
+    use forge_primitives::slack::{
+        SlackBookmark, SlackConfig, SlackFile, SlackPin, SlackPinMessage,
+    };
     use std::collections::{BTreeMap, HashMap};
     use tempfile::tempdir;
 
@@ -836,6 +896,11 @@ mod tests {
         files: parking_lot::Mutex<HashMap<String, (String, Vec<u8>)>>,
         uploads: parking_lot::Mutex<Vec<(String, String, Option<String>)>>,
         upload_urls: parking_lot::Mutex<usize>,
+        /// Seeded reads: channel -> rows.
+        pins: parking_lot::Mutex<HashMap<String, Vec<SlackPin>>>,
+        bookmark_rows: parking_lot::Mutex<HashMap<String, Vec<SlackBookmark>>>,
+        pin_reads: parking_lot::Mutex<Vec<String>>,
+        bookmark_reads: parking_lot::Mutex<Vec<String>>,
     }
 
     impl RecordingApi {
@@ -844,6 +909,12 @@ mod tests {
         }
         fn seed_file(&self, id: &str, name: &str, bytes: &[u8]) {
             self.files.lock().insert(id.to_owned(), (name.to_owned(), bytes.to_vec()));
+        }
+        fn seed_pins(&self, channel: &str, rows: Vec<SlackPin>) {
+            self.pins.lock().insert(channel.to_owned(), rows);
+        }
+        fn seed_bookmarks(&self, channel: &str, rows: Vec<SlackBookmark>) {
+            self.bookmark_rows.lock().insert(channel.to_owned(), rows);
         }
         fn posts(&self) -> Vec<(String, String, Option<String>)> {
             self.posts.lock().clone()
@@ -1009,6 +1080,16 @@ mod tests {
                 real_name: None,
                 tz: None,
             })
+        }
+
+        async fn pins(&self, channel: &str) -> Result<Vec<SlackPin>, SlackError> {
+            self.pin_reads.lock().push(channel.to_owned());
+            Ok(self.pins.lock().get(channel).cloned().unwrap_or_default())
+        }
+
+        async fn bookmarks(&self, channel: &str) -> Result<Vec<SlackBookmark>, SlackError> {
+            self.bookmark_reads.lock().push(channel.to_owned());
+            Ok(self.bookmark_rows.lock().get(channel).cloned().unwrap_or_default())
         }
     }
 
@@ -1500,5 +1581,48 @@ mod tests {
             .expect("channels");
         assert_eq!(first.len() + second.len(), 2);
         assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_pins_read_reaches_the_workspace_client_with_its_conversation() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_pins(
+            "C1",
+            vec![SlackPin {
+                created: 1_700_000_000,
+                created_by: Some("U1".to_owned()),
+                message: Some(SlackPinMessage {
+                    ts: "1700000000.000100".to_owned(),
+                    user: Some("U2".to_owned()),
+                    text: "the pinned text".to_owned(),
+                }),
+            }],
+        );
+
+        let pins = facade.pins(Some("acme"), "C1").await.expect("read");
+        assert_eq!(pins.len(), 1, "the seeded row comes back");
+        assert_eq!(
+            pins[0].message.as_ref().expect("the message rides along").text,
+            "the pinned text",
+        );
+        assert_eq!(api.pin_reads.lock().as_slice(), ["C1"], "the conversation is what was read");
+    }
+
+    #[tokio::test]
+    async fn a_bookmarks_read_reaches_the_workspace_client_with_its_conversation() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_bookmarks(
+            "C1",
+            vec![SlackBookmark {
+                id: "Bk1".to_owned(),
+                title: Some("Runbook".to_owned()),
+                link: Some("https://example.com".to_owned()),
+            }],
+        );
+
+        let bookmarks = facade.bookmarks(Some("acme"), "C1").await.expect("read");
+        assert_eq!(bookmarks.len(), 1, "the seeded row comes back");
+        assert_eq!(bookmarks[0].title.as_deref(), Some("Runbook"));
+        assert_eq!(api.bookmark_reads.lock().as_slice(), ["C1"]);
     }
 }

@@ -159,6 +159,39 @@ pub struct SlackUser {
     pub tz: Option<String>,
 }
 
+/// One pinned message as `pins.list` reports it. Pins are messages, and
+/// Slack omits the message object on any other row, which carries nothing
+/// readable.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SlackPin {
+    #[serde(default)]
+    pub created: u64,
+    #[serde(default)]
+    pub created_by: Option<String>,
+    #[serde(default)]
+    pub message: Option<SlackPinMessage>,
+}
+
+/// The message body of a pinned row.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SlackPinMessage {
+    pub ts: String,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub text: String,
+}
+
+/// One channel bookmark as `bookmarks.list` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SlackBookmark {
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub link: Option<String>,
+}
+
 /// A composed but unsent Slack message. The workspace holds it until the
 /// user approves it in the dock prompt; nothing reaches Slack otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]

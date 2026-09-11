@@ -13,8 +13,8 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use forge_primitives::slack::{
-    SlackConversation, SlackFile, SlackMessage, SlackSearchMatch, SlackSubscription,
-    SlackSubscriptionTarget, SlackUser, SlackWatchMode,
+    SlackBookmark, SlackConversation, SlackFile, SlackMessage, SlackPin, SlackSearchMatch,
+    SlackSubscription, SlackSubscriptionTarget, SlackUser, SlackWatchMode,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -140,6 +140,10 @@ pub trait SlackApi: Send + Sync {
     ) -> Result<SearchPage, SlackError>;
     /// `users.info` for one user id.
     async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError>;
+    /// `pins.list` for one conversation.
+    async fn pins(&self, channel: &str) -> Result<Vec<SlackPin>, SlackError>;
+    /// `bookmarks.list` for one conversation.
+    async fn bookmarks(&self, channel: &str) -> Result<Vec<SlackBookmark>, SlackError>;
 }
 
 #[async_trait::async_trait]
@@ -243,6 +247,14 @@ impl SlackApi for SlackClient {
 
     async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
         SlackClient::user_info(self, user).await
+    }
+
+    async fn pins(&self, channel: &str) -> Result<Vec<SlackPin>, SlackError> {
+        SlackClient::pins(self, channel).await
+    }
+
+    async fn bookmarks(&self, channel: &str) -> Result<Vec<SlackBookmark>, SlackError> {
+        SlackClient::bookmarks(self, channel).await
     }
 }
 
@@ -1108,6 +1120,28 @@ fn decode_file(body: &str) -> Result<SlackFile, SlackError> {
     Ok(wrapper.file)
 }
 
+/// Split out of the async path so the decode is testable without HTTP.
+fn decode_pins(body: &str) -> Result<Vec<SlackPin>, SlackError> {
+    #[derive(Deserialize)]
+    struct Wrapper {
+        #[serde(default)]
+        items: Vec<SlackPin>,
+    }
+    let wrapper: Wrapper = decode_envelope("pins.list", body)?;
+    Ok(wrapper.items)
+}
+
+/// Split out of the async path so the decode is testable without HTTP.
+fn decode_bookmarks(body: &str) -> Result<Vec<SlackBookmark>, SlackError> {
+    #[derive(Deserialize)]
+    struct Wrapper {
+        #[serde(default)]
+        bookmarks: Vec<SlackBookmark>,
+    }
+    let wrapper: Wrapper = decode_envelope("bookmarks.list", body)?;
+    Ok(wrapper.bookmarks)
+}
+
 impl SlackClient {
     pub fn new(http: reqwest::Client, token: String) -> Self {
         Self { http, token }
@@ -1398,6 +1432,21 @@ impl SlackClient {
         decode_user(&body)
     }
 
+    /// `pins.list` for one conversation.
+    pub async fn pins(&self, channel: &str) -> Result<Vec<SlackPin>, SlackError> {
+        let params = vec![("channel", channel.to_owned())];
+        let body = self.call_text("pins.list", &params).await?;
+        decode_pins(&body)
+    }
+
+    /// `bookmarks.list` for one conversation. The param is `channel_id`
+    /// here against `channel` on pins.list.
+    pub async fn bookmarks(&self, channel: &str) -> Result<Vec<SlackBookmark>, SlackError> {
+        let params = vec![("channel_id", channel.to_owned())];
+        let body = self.call_text("bookmarks.list", &params).await?;
+        decode_bookmarks(&body)
+    }
+
     /// Every conversation the token's user is a member of, paging to the end.
     pub async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
         let mut out = Vec::new();
@@ -1534,13 +1583,39 @@ mod tests {
             "only the value is read; the metadata stays behind",
         );
 
-        let dm =
-            decode_conversations_page(r#"{"ok":true,"channels":[{"id":"D1","is_im":true}]}"#)
-                .expect("decodes");
+        let dm = decode_conversations_page(r#"{"ok":true,"channels":[{"id":"D1","is_im":true}]}"#)
+            .expect("decodes");
         assert!(
             dm.conversations[0].purpose.is_none() && dm.conversations[0].topic.is_none(),
             "a DM carries neither object",
         );
+    }
+
+    #[test]
+    fn pins_list_decodes_the_pinned_rows() {
+        let body = r#"{"ok":true,"items":[
+            {"type":"message","created":1700000000,"created_by":"U1",
+             "message":{"type":"message","ts":"1700000000.000100","user":"U2",
+                        "text":"the pinned text"}}]}"#;
+        let pins = decode_pins(body).expect("decodes");
+        assert_eq!(pins.len(), 1, "one row per pinned message");
+        let message = pins[0].message.as_ref().expect("a pin carries its message");
+        assert_eq!(message.ts, "1700000000.000100", "the ts survives verbatim");
+        assert_eq!(message.text, "the pinned text");
+        assert_eq!(message.user.as_deref(), Some("U2"));
+        assert_eq!(pins[0].created_by.as_deref(), Some("U1"), "who pinned it comes along");
+    }
+
+    #[test]
+    fn bookmarks_list_decodes_the_saved_links() {
+        let body = r#"{"ok":true,"bookmarks":[
+            {"id":"Bk1","type":"link","channel_id":"C1","title":"Runbook",
+             "link":"https://example.com","date_created":1700000000}]}"#;
+        let bookmarks = decode_bookmarks(body).expect("decodes");
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(bookmarks[0].id, "Bk1");
+        assert_eq!(bookmarks[0].title.as_deref(), Some("Runbook"));
+        assert_eq!(bookmarks[0].link.as_deref(), Some("https://example.com"));
     }
 
     /// The input class a message body actually contains, and the class a
@@ -2053,6 +2128,14 @@ mod tests {
 
         async fn user_info(&self, _user: &str) -> Result<SlackUser, SlackError> {
             Ok(SlackUser { id: String::new(), name: String::new(), real_name: None, tz: None })
+        }
+
+        async fn pins(&self, _channel: &str) -> Result<Vec<SlackPin>, SlackError> {
+            Ok(Vec::new())
+        }
+
+        async fn bookmarks(&self, _channel: &str) -> Result<Vec<SlackBookmark>, SlackError> {
+            Ok(Vec::new())
         }
     }
 

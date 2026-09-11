@@ -43,7 +43,9 @@ pub(crate) fn add_tools(
     let react = React { facade: facade.clone(), caller_key: caller_key.clone() };
     let attachment = Attachment { facade: facade.clone(), caller_key };
     let search = Search { facade: facade.clone() };
-    let user = User { facade };
+    let user = User { facade: facade.clone() };
+    let pins = Pins { facade: facade.clone() };
+    let bookmarks = Bookmarks { facade };
     builder
         .tool(list)
         .tool(subscribe)
@@ -54,6 +56,8 @@ pub(crate) fn add_tools(
         .tool(attachment)
         .tool(search)
         .tool(user)
+        .tool(pins)
+        .tool(bookmarks)
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -1033,11 +1037,154 @@ impl Tool for User {
     }
 }
 
+struct Pins {
+    facade: Arc<dyn SlackFacade>,
+}
+
+#[derive(serde::Deserialize)]
+struct PinsArgs {
+    #[serde(default)]
+    workspace: Option<String>,
+    conversation: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Pins {
+    fn name(&self) -> &'static str {
+        "slack__pins"
+    }
+
+    fn description(&self) -> &'static str {
+        "List a Slack conversation's pinned messages - what the channel has kept as standing \
+         context. Read-only and not held for approval. Pass `workspace` to choose one; omit it \
+         when only one is configured. Returns a JSON array of {ts, user, text}. Any session in \
+         the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "The `[[slack]]` workspace label. Omit it when only one \
+                                    workspace is configured.",
+                },
+                "conversation": {
+                    "type": "string",
+                    "description": "The conversation id from slack__list.",
+                },
+            },
+            "required": ["conversation"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: PinsArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        match self.facade.pins(args.workspace.as_deref(), &args.conversation).await {
+            Ok(pins) => {
+                let rows: Vec<serde_json::Value> = pins
+                    .iter()
+                    .filter_map(|pin| {
+                        let message = pin.message.as_ref()?;
+                        Some(serde_json::json!({
+                            "ts": message.ts,
+                            "user": message.user,
+                            "text": message.text,
+                        }))
+                    })
+                    .collect();
+                match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("pins serialization failed: {err}")),
+                }
+            }
+            Err(err) => tool_error(format_read_error(&err)),
+        }
+    }
+}
+
+struct Bookmarks {
+    facade: Arc<dyn SlackFacade>,
+}
+
+#[derive(serde::Deserialize)]
+struct BookmarksArgs {
+    #[serde(default)]
+    workspace: Option<String>,
+    conversation: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Bookmarks {
+    fn name(&self) -> &'static str {
+        "slack__bookmarks"
+    }
+
+    fn description(&self) -> &'static str {
+        "List a Slack conversation's bookmarks - the links saved on the channel. Read-only and \
+         not held for approval. Pass `workspace` to choose one; omit it when only one is \
+         configured. Returns a JSON array of {id, title, link}, each of the last two null when \
+         the workspace does not report it. Any session in the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "The `[[slack]]` workspace label. Omit it when only one \
+                                    workspace is configured.",
+                },
+                "conversation": {
+                    "type": "string",
+                    "description": "The conversation id from slack__list.",
+                },
+            },
+            "required": ["conversation"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: BookmarksArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        match self.facade.bookmarks(args.workspace.as_deref(), &args.conversation).await {
+            Ok(bookmarks) => {
+                let rows: Vec<serde_json::Value> = bookmarks
+                    .iter()
+                    .map(|bookmark| {
+                        serde_json::json!({
+                            "id": bookmark.id,
+                            "title": bookmark.title,
+                            "link": bookmark.link,
+                        })
+                    })
+                    .collect();
+                match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("bookmarks serialization failed: {err}")),
+                }
+            }
+            Err(err) => tool_error(format_read_error(&err)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mcp::slack::facade::MockSlackFacade;
-    use forge_primitives::slack::{SlackConversation, SlackConversationText};
+    use forge_primitives::slack::{
+        SlackBookmark, SlackConversation, SlackConversationText, SlackPin, SlackPinMessage,
+    };
     use std::sync::Arc;
 
     fn channel(id: &str, name: &str) -> SlackConversation {
@@ -1145,10 +1292,7 @@ mod tests {
 
         assert!(passes_filter(&ch, Some("rand"), None), "the name matches");
         assert!(passes_filter(&ch, Some("deploy"), None), "the purpose matches");
-        assert!(
-            passes_filter(&ch, Some("RELEASE"), None),
-            "the topic matches, case-insensitively",
-        );
+        assert!(passes_filter(&ch, Some("RELEASE"), None), "the topic matches, case-insensitively",);
         assert!(!passes_filter(&ch, Some("general"), None), "an unrelated needle matches nothing");
         assert!(
             passes_filter(&dm("D1", "U9"), Some("u9"), None),
@@ -1158,7 +1302,7 @@ mod tests {
 
     #[test]
     fn the_kind_filter_keeps_only_that_kind() {
-        let conversations = vec![channel("C1", "general"), dm("D1", "U9")];
+        let conversations = [channel("C1", "general"), dm("D1", "U9")];
         let kept: Vec<&SlackConversation> =
             conversations.iter().filter(|c| passes_filter(c, None, Some("im"))).collect();
         assert_eq!(kept.len(), 1, "one conversation survives the kind filter");
@@ -1322,7 +1466,8 @@ mod tests {
     #[tokio::test]
     async fn slack_list_filters_apply_before_the_rows_are_built() {
         let mock = Arc::new(MockSlackFacade::new());
-        *mock.conversations_result.lock() = Some(Ok(vec![channel("C1", "general"), dm("D1", "U9")]));
+        *mock.conversations_result.lock() =
+            Some(Ok(vec![channel("C1", "general"), dm("D1", "U9")]));
         let tool = List { facade: mock.clone(), caller_key: resolver() };
 
         let out = tool.call(input(serde_json::json!({ "kind": "im" }))).await;
@@ -1400,6 +1545,95 @@ mod tests {
         assert!(!out.is_error, "a lookup succeeds: {}", out.blocks[0].text);
         assert!(out.blocks[0].text.contains("Vedhavyas S"), "got: {}", out.blocks[0].text);
         assert_eq!(mock.user_calls.lock().as_slice(), [(None, "U1".to_owned())]);
+    }
+
+    fn pinned_row(ts: &str, text: &str) -> SlackPin {
+        SlackPin {
+            created: 1_700_000_000,
+            created_by: Some("U1".to_owned()),
+            message: Some(SlackPinMessage {
+                ts: ts.to_owned(),
+                user: Some("U2".to_owned()),
+                text: text.to_owned(),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn slack_pins_passes_the_conversation_through_and_lists_the_rows() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.pins_result.lock() =
+            Some(Ok(vec![pinned_row("1700000000.000100", "the pinned text")]));
+        let tool = Pins { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
+        assert!(!out.is_error, "a read succeeds: {}", out.blocks[0].text);
+        assert!(out.blocks[0].text.contains("the pinned text"), "got: {}", out.blocks[0].text);
+        assert!(
+            out.blocks[0].text.contains("1700000000.000100"),
+            "the ts reaches the caller verbatim: {}",
+            out.blocks[0].text,
+        );
+        assert_eq!(
+            mock.pins_calls.lock().as_slice(),
+            [(None, "C1".to_owned())],
+            "the conversation reaches the facade",
+        );
+    }
+
+    #[tokio::test]
+    async fn slack_pins_skips_a_row_without_a_message() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.pins_result.lock() = Some(Ok(vec![
+            pinned_row("1700000000.000100", "readable"),
+            SlackPin { created: 1, created_by: None, message: None },
+        ]));
+        let tool = Pins { facade: mock };
+
+        let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
+        assert!(!out.is_error);
+        assert!(out.blocks[0].text.contains("readable"), "got: {}", out.blocks[0].text);
+        assert_eq!(
+            out.blocks[0].text.matches("ts").count(),
+            1,
+            "a message-less row contributes nothing: {}",
+            out.blocks[0].text,
+        );
+    }
+
+    #[tokio::test]
+    async fn slack_pins_surfaces_a_facade_error() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.pins_result.lock() = Some(Err(SlackReadError::Fetch("boom".to_owned())));
+        let tool = Pins { facade: mock };
+
+        let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
+        assert!(out.is_error, "a failed read is an error, not an empty list");
+        assert!(
+            out.blocks[0].text.contains("boom"),
+            "the cause reaches the LLM: {}",
+            out.blocks[0].text,
+        );
+    }
+
+    #[tokio::test]
+    async fn slack_bookmarks_lists_the_rows_and_passes_the_conversation_through() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.bookmarks_result.lock() = Some(Ok(vec![SlackBookmark {
+            id: "Bk1".to_owned(),
+            title: Some("Runbook".to_owned()),
+            link: Some("https://example.com".to_owned()),
+        }]));
+        let tool = Bookmarks { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
+        assert!(!out.is_error, "a read succeeds: {}", out.blocks[0].text);
+        assert!(out.blocks[0].text.contains("Runbook"), "got: {}", out.blocks[0].text);
+        assert_eq!(
+            mock.bookmarks_calls.lock().as_slice(),
+            [(None, "C1".to_owned())],
+            "the conversation reaches the facade",
+        );
     }
 
     #[tokio::test]
