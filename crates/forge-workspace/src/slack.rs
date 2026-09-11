@@ -11,10 +11,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use forge_connectors::slack::{AuthTest, SlackApi, SlackClient, SlackHost};
+use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
     SlackConfig, SlackDraft, SlackFollowedThread, SlackMessage, SlackSubscription,
-    SlackThreadOwner, SlackThreadRecord,
+    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord,
 };
 use uuid::Uuid;
 
@@ -261,9 +261,11 @@ impl Workspace {
             let _ = workspaces.insert(sub.workspace.clone());
         }
         // The worker's subscriptions are all gone by now, so the
-        // alive-set prune drops exactly its ownership.
-        for workspace in workspaces {
-            self.prune_slack_threads(&workspace);
+        // alive-set prune drops exactly its ownership, and the cursor
+        // clear drops the cursors nothing covers any more.
+        for sub in &removed {
+            self.prune_slack_threads(&sub.workspace);
+            self.clear_slack_cursors_after_removal(sub);
         }
     }
 
@@ -577,7 +579,77 @@ impl Workspace {
             );
         }
         self.prune_slack_threads(&removed_sub.workspace);
+        self.clear_slack_cursors_after_removal(&removed_sub);
         true
+    }
+
+    /// Clear the sweep cursors the removed subscription was the last
+    /// cover for. "Has cursor" must mean a live pending window: a cursor
+    /// left behind by the last unsubscribe replays the whole gap to a
+    /// later subscriber as fresh deliveries, and the mention cursor has
+    /// no baseline arm at all, so its clearing is what makes the
+    /// re-subscribe seed fresh.
+    pub(crate) fn clear_slack_cursors_after_removal(&self, removed: &SlackSubscription) {
+        let db_guard = self.db.lock();
+        let Some(db) = db_guard.as_ref() else { return };
+        let remaining = self.slack_subs.lock();
+        let covered = |conversation: &str| {
+            remaining.iter().any(|sub| {
+                sub.workspace == removed.workspace
+                    && match &sub.target {
+                        SlackSubscriptionTarget::Conversation { id, .. } => id == conversation,
+                        SlackSubscriptionTarget::Mentions => conversation == MENTION_CURSOR,
+                        SlackSubscriptionTarget::DirectMessages => false,
+                    }
+            })
+        };
+        let drop_cursor = |db: &crate::store::Db, conversation: &str| {
+            match crate::store::slack::remove_watermark(db, &removed.workspace, conversation) {
+                Ok(true) => tracing::debug!(
+                    target: "forge_workspace::slack",
+                    workspace = %removed.workspace,
+                    conversation,
+                    "cleared a sweep cursor with no watcher left",
+                ),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "clearing a Slack sweep cursor failed",
+                ),
+            }
+        };
+        match &removed.target {
+            SlackSubscriptionTarget::Conversation { id, .. } => {
+                if !covered(id) {
+                    drop_cursor(db, id);
+                }
+            }
+            SlackSubscriptionTarget::Mentions => {
+                if !covered(MENTION_CURSOR) {
+                    drop_cursor(db, MENTION_CURSOR);
+                }
+            }
+            SlackSubscriptionTarget::DirectMessages => {
+                // The class covered every DM cursor the sweep baselined;
+                // the ones no remaining subscription names are stale now.
+                let Ok(cursors) =
+                    crate::store::slack::watermark_conversations(db, &removed.workspace)
+                else {
+                    tracing::warn!(
+                        target: "forge_workspace::slack",
+                        workspace = %removed.workspace,
+                        "reading Slack cursors for cleanup failed",
+                    );
+                    return;
+                };
+                for conversation in cursors {
+                    if !covered(&conversation) {
+                        drop_cursor(db, &conversation);
+                    }
+                }
+            }
+        }
     }
 
     /// Prune every followed thread in `workspace` against the same
@@ -799,7 +871,7 @@ impl SlackSubsystemHost {
 }
 
 impl SlackHost for SlackSubsystemHost {
-    fn client(&self, workspace: &str, timeout: Duration) -> Result<SlackClient, String> {
+    fn client(&self, workspace: &str, timeout: Duration) -> Result<Arc<dyn SlackApi>, String> {
         let ws = self.0.upgrade().ok_or("the workspace is gone")?;
         let config = ws
             .config
@@ -811,7 +883,7 @@ impl SlackHost for SlackSubsystemHost {
             forge_agent::http_trust::with_extra_roots(reqwest::Client::builder().timeout(timeout))
                 .build()
                 .map_err(|error| error.to_string())?;
-        Ok(SlackClient::new(http, config.token.clone()))
+        Ok(Arc::new(SlackClient::new(http, config.token.clone())))
     }
 
     fn user_id(&self, workspace: &str) -> Option<String> {
@@ -1487,6 +1559,8 @@ mod tests {
         );
     }
 
+    use forge_connectors::slack::MENTION_CURSOR;
+
     #[test]
     fn an_empty_workspace_label_is_refused() {
         let configs = vec![cfg("", "xoxp-test")];
@@ -1495,6 +1569,87 @@ mod tests {
         assert!(
             err.contains("empty workspace label"),
             "the error has to name the label, got: {err}",
+        );
+    }
+
+    /// Unsubscribing the last subscription covering a conversation
+    /// clears its cursor, so "has cursor" means a live pending window
+    /// and a later subscriber starts fresh instead of replaying the gap.
+    #[test]
+    fn unsubscribing_the_last_subscription_clears_the_conversation_cursor() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
+        ws.set_slack_watermark("acme", "C1", "100.0");
+
+        let id = ws.slack_subscriptions_for_project("forge")[0].id;
+        assert!(ws.remove_slack_subscription_owned_by("forge", id, None));
+
+        let db = ws.db.lock();
+        assert_eq!(
+            crate::store::slack::watermark(db.as_ref().expect("db installed"), "acme", "C1")
+                .expect("read"),
+            None,
+            "a cursor with no watcher is a stale backlog waiting to replay",
+        );
+    }
+
+    /// A cursor survives while ANY subscription still covers its
+    /// conversation: one owner leaving must not reset the other's window.
+    #[test]
+    fn a_surviving_second_subscription_keeps_the_conversation_cursor() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
+        ws.add_slack_subscription(sub_for_conversation("forge", Some("tester"), "C1"), true);
+        ws.set_slack_watermark("acme", "C1", "100.0");
+
+        let lead_id = ws
+            .slack_subscriptions_for_project("forge")
+            .into_iter()
+            .find(|sub| sub.team_role.is_none())
+            .expect("the lead's subscription")
+            .id;
+        assert!(ws.remove_slack_subscription_owned_by("forge", lead_id, None));
+
+        let db = ws.db.lock();
+        assert_eq!(
+            crate::store::slack::watermark(db.as_ref().expect("db installed"), "acme", "C1")
+                .expect("read"),
+            Some("100.0".to_owned()),
+            "the worker still watches C1, so its pending window survives",
+        );
+    }
+
+    /// The mention cursor follows the same rule: with the last Mentions
+    /// subscription gone it is cleared, because the mention sweep has no
+    /// baseline arm and a stale cursor would replay the whole stream.
+    #[test]
+    fn removing_the_last_mentions_subscription_clears_the_mention_cursor() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_mentions_for("forge", None), true);
+        ws.set_slack_watermark("acme", MENTION_CURSOR, "100.0");
+
+        let id = ws.slack_subscriptions_for_project("forge")[0].id;
+        assert!(ws.remove_slack_subscription_owned_by("forge", id, None));
+
+        let db = ws.db.lock();
+        assert_eq!(
+            crate::store::slack::watermark(
+                db.as_ref().expect("db installed"),
+                "acme",
+                MENTION_CURSOR
+            )
+            .expect("read"),
+            None,
+            "a stale mention cursor would replay the entire stream",
         );
     }
 }

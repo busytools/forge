@@ -109,6 +109,39 @@ pub fn set_watermark(db: &Db, workspace: &str, conversation: &str, ts: &str) -> 
     Ok(())
 }
 
+/// Remove a conversation's sweep cursor, the `__mentions__` stream
+/// included. Returns whether one existed.
+pub fn remove_watermark(db: &Db, workspace: &str, conversation: &str) -> anyhow::Result<bool> {
+    let key = watermark_key(workspace, conversation);
+    let txn = db.database().begin_write()?;
+    let existed = {
+        let mut table = txn.open_table(WATERMARKS)?;
+        table.remove(key.as_str())?.is_some()
+    };
+    txn.commit()?;
+    Ok(existed)
+}
+
+/// Every conversation with a sweep cursor in one workspace, including the
+/// `__mentions__` stream when present.
+pub fn watermark_conversations(db: &Db, workspace: &str) -> anyhow::Result<Vec<String>> {
+    let prefix = format!("{workspace}\u{0}");
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(WATERMARKS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = Vec::new();
+    for entry in table.iter()? {
+        let (key, _) = entry?;
+        if let Some(conversation) = key.value().strip_prefix(&prefix) {
+            out.push(conversation.to_owned());
+        }
+    }
+    Ok(out)
+}
+
 /// One followed thread per (workspace, conversation, parent) triple. The
 /// value is JSON because the owner list rides beside the verbatim reply
 /// cursor; a bare string would lose the owners.

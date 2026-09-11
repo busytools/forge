@@ -24,10 +24,12 @@ use serde::de::DeserializeOwned;
 /// of its own, so the subscription set, the watermarks and the liveness
 /// flag all live behind this.
 pub trait SlackHost: Send + Sync {
-    /// A ready client for this workspace, or an error when the workspace is
+    /// A ready API for this workspace, or an error when the workspace is
     /// not configured. The host builds it, so the token stays with the
     /// workspace and the connector never asks for the credential itself.
-    fn client(&self, workspace: &str, timeout: Duration) -> Result<SlackClient, String>;
+    /// The trait object is what the pump drives, so a test host can hand
+    /// back a double instead of a live client.
+    fn client(&self, workspace: &str, timeout: Duration) -> Result<Arc<dyn SlackApi>, String>;
 
     /// The authenticated user's id for a workspace, resolved at boot.
     /// Needed to recognise `<@U...>` mentions.
@@ -518,12 +520,16 @@ const MAX_REPLY_PAGES: usize = 200;
 const PUMP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What one sweep did.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct SweepOutcome {
     pub delivered: usize,
     /// Set when a call was throttled, so the caller backs off rather than
     /// hammering. A 429 is a report, not an error.
     pub rate_limited: Option<Duration>,
+    /// A conversation is gone from Slack's side: the pump folds this into
+    /// the glyph write, because the sweep returning `Ok` must not read as
+    /// a connected row over a conversation that can never deliver again.
+    pub conversation_gone: bool,
 }
 
 /// Whether `ts` is strictly after `watermark`. Timestamps are compared as
@@ -629,7 +635,7 @@ pub(crate) async fn sweep(
 ) -> Result<SweepOutcome, SlackError> {
     let subscriptions = host.subscriptions(workspace);
     if subscriptions.is_empty() {
-        return Ok(SweepOutcome { delivered: 0, rate_limited: None });
+        return Ok(SweepOutcome { delivered: 0, ..Default::default() });
     }
     let user_id = host.user_id(workspace).unwrap_or_default();
     if user_id.is_empty() {
@@ -643,13 +649,17 @@ pub(crate) async fn sweep(
             workspace,
             "slack user id unresolved; the sweep is skipped this tick",
         );
-        return Ok(SweepOutcome { delivered: 0, rate_limited: None });
+        return Ok(SweepOutcome { delivered: 0, ..Default::default() });
     }
 
     let mut conversations = match api.list_conversations().await {
         Ok(conversations) => conversations,
         Err(SlackError::RateLimited { retry_after, .. }) => {
-            return Ok(SweepOutcome { delivered: 0, rate_limited: Some(retry_after) });
+            return Ok(SweepOutcome {
+                delivered: 0,
+                rate_limited: Some(retry_after),
+                ..Default::default()
+            });
         }
         Err(error) => return Err(error),
     };
@@ -677,6 +687,7 @@ pub(crate) async fn sweep(
     }
 
     let mut delivered = 0;
+    let mut conversation_gone = false;
     for conversation in &conversations {
         if !targets(&subscriptions, conversation) {
             continue;
@@ -701,19 +712,23 @@ pub(crate) async fn sweep(
         let history = match fetch_history(api, &conversation.id, watermark.as_deref()).await {
             Ok(history) => history,
             Err(SlackError::RateLimited { retry_after, .. }) => {
-                return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
+                return Ok(SweepOutcome {
+                    delivered,
+                    rate_limited: Some(retry_after),
+                    ..Default::default()
+                });
             }
             // One conversation's failure is not the workspace's: the
             // sweep continues with the conversations after it. The cursor
             // stays where it was, so nothing is skipped.
             Err(error) => {
-                // A conversation deleted on Slack's side is permanent, and
-                // returning Ok would hold the connected glyph over a row
-                // that can never deliver again.
+                // A conversation deleted on Slack's side is permanent. The
+                // flag rides the outcome: the pump owns the glyph, and a
+                // write here would be clobbered by its Ok arm.
                 if matches!(&error, SlackError::Api { error: api_error, .. }
                     if api_error == "channel_not_found" || api_error == "invalid_channel_id")
                 {
-                    host.set_connected(workspace, false);
+                    conversation_gone = true;
                 }
                 tracing::warn!(
                     target: "forge_connectors::slack",
@@ -767,7 +782,11 @@ pub(crate) async fn sweep(
             let replies = match fetch_replies(api, &conversation.id, &parent, None).await {
                 Ok(replies) => replies,
                 Err(SlackError::RateLimited { retry_after, .. }) => {
-                    return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
+                    return Ok(SweepOutcome {
+                        delivered,
+                        rate_limited: Some(retry_after),
+                        ..Default::default()
+                    });
                 }
                 // One conversation's failure is not the workspace's: the
                 // sweep continues with the conversations after it.
@@ -885,7 +904,11 @@ pub(crate) async fn sweep(
                 {
                     Ok(replies) => replies,
                     Err(SlackError::RateLimited { retry_after, .. }) => {
-                        return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
+                        return Ok(SweepOutcome {
+                            delivered,
+                            rate_limited: Some(retry_after),
+                            ..Default::default()
+                        });
                     }
                     // One thread's failure is not the workspace's: the
                     // walk continues with the threads after it, and the
@@ -967,7 +990,7 @@ pub(crate) async fn sweep(
         }
     }
 
-    Ok(SweepOutcome { delivered, rate_limited: None })
+    Ok(SweepOutcome { delivered, conversation_gone, ..Default::default() })
 }
 
 /// The watermark key for a workspace's whole mention stream. One cursor,
@@ -1001,7 +1024,7 @@ pub(crate) async fn sweep_mentions(
         .filter(|s| matches!(s.target, SlackSubscriptionTarget::Mentions))
         .collect();
     if mention_subscriptions.is_empty() {
-        return Ok(SweepOutcome { delivered: 0, rate_limited: None });
+        return Ok(SweepOutcome { delivered: 0, ..Default::default() });
     }
     // Without the authenticated user's id there is no token to search
     // for, and no way to tell the user's own messages from anyone else's.
@@ -1012,7 +1035,7 @@ pub(crate) async fn sweep_mentions(
             workspace,
             "slack user id unresolved; the mention sweep is skipped this tick",
         );
-        return Ok(SweepOutcome { delivered: 0, rate_limited: None });
+        return Ok(SweepOutcome { delivered: 0, ..Default::default() });
     };
 
     let watermark = match host.watermark(workspace, MENTION_CURSOR) {
@@ -1024,7 +1047,7 @@ pub(crate) async fn sweep_mentions(
                 %error,
                 "reading the mention cursor failed; skipping the mention sweep this tick",
             );
-            return Ok(SweepOutcome { delivered: 0, rate_limited: None });
+            return Ok(SweepOutcome { delivered: 0, ..Default::default() });
         }
     };
     let query = format!("<@{user_id}>");
@@ -1045,7 +1068,11 @@ pub(crate) async fn sweep_mentions(
                 // The cursor stays where it was: advancing it here would
                 // drop the older undelivered pages behind it. Re-delivery
                 // is the cheap failure.
-                return Ok(SweepOutcome { delivered, rate_limited: Some(retry_after) });
+                return Ok(SweepOutcome {
+                    delivered,
+                    rate_limited: Some(retry_after),
+                    ..Default::default()
+                });
             }
             Err(error) => return Err(error),
         };
@@ -1085,7 +1112,7 @@ pub(crate) async fn sweep_mentions(
                 // everything behind it is undelivered too: hold the
                 // cursor where it was, skip the auto-subscribe, and let
                 // the next tick retry the whole window.
-                return Ok(SweepOutcome { delivered, rate_limited: None });
+                return Ok(SweepOutcome { delivered, ..Default::default() });
             }
             // Ved's ask: a mention pulls the agent into the conversation, so
             // the reply back and forth does not need another subscription.
@@ -1132,7 +1159,7 @@ pub(crate) async fn sweep_mentions(
         host.set_watermark(workspace, MENTION_CURSOR, &newest);
     }
 
-    Ok(SweepOutcome { delivered, rate_limited: None })
+    Ok(SweepOutcome { delivered, ..Default::default() })
 }
 
 /// The wait before the next sweep: the configured interval, or a rate
@@ -1166,9 +1193,12 @@ pub async fn run_workspace_pump(
             () = tokio::time::sleep(wait) => {}
         }
         wait = interval;
-        match sweep(host.as_ref(), &client, &workspace).await {
+        match sweep(host.as_ref(), client.as_ref(), &workspace).await {
             Ok(outcome) => {
-                host.set_connected(&workspace, true);
+                // A dead conversation rides the outcome so the Ok arm
+                // writes the glyph down; an unconditional write here
+                // would flip it back up in the same tick.
+                host.set_connected(&workspace, !outcome.conversation_gone);
                 tracing::debug!(
                     target: "forge_connectors::slack",
                     workspace = %workspace,
@@ -1190,7 +1220,7 @@ pub async fn run_workspace_pump(
         // The mention stream is one search per workspace, not one call per
         // conversation, so it costs the same whether one channel is watched
         // or fifty. It returns at once when nothing subscribes to mentions.
-        match sweep_mentions(host.as_ref(), &client, &workspace).await {
+        match sweep_mentions(host.as_ref(), client.as_ref(), &workspace).await {
             Ok(outcome) => {
                 if let Some(delay) = outcome.rate_limited {
                     // The conversation sweep may already have asked for a
@@ -2103,6 +2133,10 @@ mod tests {
     struct FakeHost {
         subscriptions: std::sync::Mutex<Vec<SlackSubscription>>,
         user_id_slot: std::sync::Mutex<Option<String>>,
+        /// The fake's own API trait object, set post-construction so the
+        /// pump's `client()` drives the seeded double instead of a live
+        /// client.
+        api_self: std::sync::Mutex<Option<Arc<dyn SlackApi>>>,
         rate_limited: Option<Duration>,
         conversations: std::sync::Mutex<Vec<SlackConversation>>,
         history: std::sync::Mutex<HashMap<String, Vec<Vec<SlackHistoryMessage>>>>,
@@ -2147,6 +2181,12 @@ mod tests {
                 user_id_slot: std::sync::Mutex::new(Some("U1".to_owned())),
                 ..Self::default()
             }
+        }
+
+        /// Expose the fake's own API impl for the pump's `client()`. Must
+        /// be called on the Arc before a pump test runs.
+        fn set_api_self(me: &Arc<Self>) {
+            *me.api_self.lock().expect("lock") = Some(Arc::clone(me) as Arc<dyn SlackApi>);
         }
 
         fn seed_history(&self, channel: &str, messages: Vec<SlackHistoryMessage>) {
@@ -2259,8 +2299,13 @@ mod tests {
     }
 
     impl SlackHost for FakeHost {
-        fn client(&self, _workspace: &str, _timeout: Duration) -> Result<SlackClient, String> {
-            Ok(SlackClient::new(reqwest::Client::new(), "xoxp-test".to_owned()))
+        fn client(
+            &self,
+            _workspace: &str,
+            _timeout: Duration,
+        ) -> Result<Arc<dyn SlackApi>, String> {
+            let exposed = self.api_self.lock().expect("lock").clone();
+            exposed.ok_or("the fake exposes no API; call set_api_self first".to_owned())
         }
 
         fn user_id(&self, _workspace: &str) -> Option<String> {
@@ -3399,11 +3444,17 @@ mod tests {
     }
 
     /// A conversation deleted on Slack's side never delivers again, and
-    /// returning Ok would hold the connected glyph over it.
+    /// the pump's Ok arm must not write the glyph straight back up after
+    /// the sweep has flipped it down - pinned through the PUMP, where the
+    /// clobbering happens, never through `sweep()` directly.
     #[tokio::test]
-    async fn a_deleted_conversation_flips_the_glyph_down() {
-        let host =
-            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+    async fn a_deleted_conversation_flips_the_glyph_down_through_the_pump() {
+        let host = Arc::new(FakeHost::with_subscriptions(vec![sub_channel(
+            "acme",
+            "C1",
+            SlackWatchMode::All,
+        )]));
+        FakeHost::set_api_self(&host);
         host.set_watermark("acme", "C1", "050.0");
         host.fail_history_with(
             "C1",
@@ -3414,12 +3465,28 @@ mod tests {
             },
         );
 
-        sweep(&host, &host, "acme").await.expect("the row's failure is not the sweep's error");
+        let (tx, rx) = oneshot::channel();
+        let pump = tokio::spawn(run_workspace_pump(host.clone(), "acme".to_owned(), 1, rx));
+        // The pump's first tick fires after one interval; wait until the
+        // glyph write has landed.
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if host.connected().is_some() {
+                break;
+            }
+        }
+
         assert_eq!(
             host.connected(),
             Some(false),
-            "a dead conversation must not read as a connected row",
+            "a dead conversation must not read as a connected row after a wired tick",
         );
+
+        tx.send(()).expect("signal shutdown");
+        tokio::time::timeout(Duration::from_secs(2), pump)
+            .await
+            .expect("the pump must not outlive its shutdown")
+            .expect("no panic");
     }
 
     /// The headline mention case: a mention from a public channel the
@@ -3541,6 +3608,7 @@ mod tests {
     #[tokio::test]
     async fn the_pump_stops_when_the_shutdown_fires() {
         let host = Arc::new(FakeHost::with_subscriptions(vec![sub_dm("acme")]));
+        FakeHost::set_api_self(&host);
         let (tx, rx) = oneshot::channel();
         let pump = tokio::spawn(run_workspace_pump(host.clone(), "acme".to_owned(), 3600, rx));
         tokio::time::sleep(Duration::from_millis(50)).await;

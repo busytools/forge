@@ -1705,6 +1705,49 @@ mod tests {
         assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2);
     }
 
+    /// A re-subscribe after the cursor cleared seeds fresh: the sweep
+    /// baselines at the newest message seen instead of replaying the gap.
+    #[tokio::test]
+    async fn re_subscribing_after_a_gap_baselines_fresh() {
+        let (_dir, ws, facade) = workspace_with_one_slack_workspace_and_store("acme");
+        facade
+            .subscribe(
+                &caller(),
+                Some("acme"),
+                SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
+                    id: "C1".to_owned(),
+                    mode: SlackWatchMode::All,
+                }]),
+            )
+            .expect("the first subscribe");
+        ws.set_slack_watermark("acme", "C1", "100.0");
+        let id = ws.slack_subscriptions_for_project("forge")[0].id;
+        assert!(ws.remove_slack_subscription_owned_by("forge", id, None));
+
+        facade
+            .subscribe(
+                &caller(),
+                Some("acme"),
+                SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
+                    id: "C1".to_owned(),
+                    mode: SlackWatchMode::All,
+                }]),
+            )
+            .expect("re-subscribe");
+
+        let cursor = {
+            let db = ws.db.lock();
+            crate::store::slack::watermark(db.as_ref().expect("db installed"), "acme", "C1")
+                .expect("read")
+        };
+        assert_ne!(
+            cursor,
+            Some("100.0".to_owned()),
+            "a fresh subscription starts from now, never from the stale cursor",
+        );
+        assert!(cursor.is_some(), "and it is seeded, so the sweep does not replay");
+    }
+
     /// The cursor belongs to the conversation and is shared by every
     /// owner watching it: a second subscriber seeds only when none
     /// exists, or every owner's pending window is silently dropped.
