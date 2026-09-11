@@ -1,7 +1,7 @@
+mod extensions;
 mod input;
 mod mcp;
 mod overlay;
-mod plugins;
 
 use crate::app::App;
 use ratatui::Frame;
@@ -18,11 +18,10 @@ use overlay::{
     render_overlay_shell,
 };
 
-/// Standalone Plugins view. Renders the same chrome the old Config
-/// screen drew (outer titled box + status footer + help line) but
-/// wraps the plugins body directly with no tab header.
-pub fn render_plugins(frame: &mut Frame, app: &mut App) {
-    render_view(frame, app, "Plugins", plugins_help_text, plugins::render);
+/// The Extensions page: one pane over everything installable, from
+/// plugins through their components to MCP servers and marketplaces.
+pub fn render_extensions(frame: &mut Frame, app: &mut App) {
+    render_view(frame, app, "Extensions", extensions_help_text, extensions::render);
 }
 
 /// Standalone MCP view. Same chrome pattern as `render_plugins`.
@@ -60,7 +59,9 @@ fn render_view(
     });
 
     // Modal overlays paint over the full frame, above the scaffold.
-    if app.config.installed_plugin_actions_overlay().is_some() {
+    if app.config.uninstall_confirm().is_some() {
+        render_uninstall_confirm_overlay(frame, frame_area, app);
+    } else if app.config.installed_plugin_actions_overlay().is_some() {
         render_installed_plugin_actions_overlay(frame, frame_area, app);
     } else if app.config.plugin_install_overlay().is_some() {
         render_plugin_install_overlay(frame, frame_area, app);
@@ -73,29 +74,80 @@ fn render_view(
     }
 }
 
-fn plugins_help_text(app: &App) -> String {
-    if crate::app::plugins::search_enabled(app.plugins.active_tab) {
+fn extensions_help_text(app: &App) -> String {
+    if crate::app::extensions::search_enabled(app.plugins.active_tab) {
         if app.plugins.search_focused {
-            "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Esc close".to_owned()
-        } else if matches!(
-            app.plugins.active_tab,
-            crate::app::plugins::PluginsViewTab::Installed
-                | crate::app::plugins::PluginsViewTab::Plugins
-        ) {
-            "Left/Right switch list | Up search | Up/Down move | Enter actions | u update all | c check updates | Esc close"
-                .to_owned()
+            "Left/Right switch tab | Down list | Type to filter | Backspace erase | Del clear | Esc close".to_owned()
         } else {
-            "Left/Right switch list | Up search | Up/Down move | Enter close | Esc close".to_owned()
+            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | u update all | c check updates | Esc close"
+                .to_owned()
         }
-    } else if matches!(app.plugins.active_tab, crate::app::plugins::PluginsViewTab::Marketplace) {
-        "Left/Right switch list | Up/Down move | Enter actions | Esc close".to_owned()
     } else {
-        "Left/Right switch list | Up/Down move | Enter close | Esc close".to_owned()
+        "Left/Right switch tab | Up/Down move | Enter actions | Esc close".to_owned()
     }
 }
 
 fn mcp_help_text() -> String {
     "Up/Down select | Enter actions | r refresh | Esc close".to_owned()
+}
+
+/// The uninstall confirm: Enter removes the whole bundle, Esc backs
+/// out. The description names the plugin and its component count.
+fn render_uninstall_confirm_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.uninstall_confirm() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 56,
+            min_height: 10,
+            width_percent: 70,
+            height_percent: 62,
+            preferred_height: 12,
+            fullscreen_below: Some((56, 16)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Uninstall plugin",
+            subtitle: None,
+            help: Some("Enter confirm | Esc cancel"),
+        },
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(rendered.body_area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.title.clone(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ))),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            overlay.description.clone(),
+            Style::default().fg(theme::STATUS_WARNING),
+        ))
+        .wrap(Wrap { trim: false }),
+        sections[1],
+    );
+    render_overlay_separator(frame, sections[2]);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!("Uninstall {} from {} scope?", overlay.title, overlay.scope),
+            Style::default().fg(theme::DIM),
+        )),
+        sections[3],
+    );
 }
 
 fn render_installed_plugin_actions_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -396,33 +448,163 @@ mod tests {
             .join("\n")
     }
 
+    /// The pane's full render path: the tab bar with counts, the
+    /// update-all button and the filter placeholder all ride the
+    /// production entry point.
     #[test]
-    fn plugins_tab_renders_inventory_shell() {
+    fn the_extensions_pane_renders_its_shell() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.rows = vec![crate::app::extensions::ExtensionRow {
+            id: "superpowers@claude-plugins-official".to_owned(),
+            kind: forge_primitives::plugins::ExtensionKind::Plugin,
+            name: "superpowers".to_owned(),
+            source: "claude-plugins-official".to_owned(),
+            version: Some("6.3.0".to_owned()),
+            available_version: None,
+            state: forge_primitives::plugins::RowState::Current,
+            detail: None,
+        }];
+
+        terminal
+            .draw(|frame| {
+                super::render_extensions(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Extensions"), "the page title: {rendered}");
+        for tab in
+            ["Installed", "Skills", "Agents", "Commands", "Hooks", "LSP", "MCPs", "Marketplaces"]
+        {
+            assert!(rendered.contains(tab), "tab {tab} in the bar: {rendered}");
+        }
+        assert!(rendered.contains("Installed 1 "), "the plugin count: {rendered}");
+        assert!(
+            rendered.contains("Update all (u) (0)"),
+            "the action row rides the full render path: {rendered}"
+        );
+        assert!(rendered.contains("Type to filter this tab"), "the filter placeholder: {rendered}");
+        assert!(
+            rendered.contains("\u{2713} superpowers"),
+            "the plugin row renders through the grammar: {rendered}"
+        );
+        assert!(rendered.contains("Left/Right switch tab"));
+    }
+
+    /// First paint never blocks on the CLI: with the inventory channel
+    /// still empty and a refresh in flight, the pane renders its
+    /// loading copy instead of an empty list.
+    #[test]
+    fn first_paint_renders_a_loading_state_with_no_inventory_yet() {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
 
-        app.active_view = crate::app::ActiveView::Plugins;
-        app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
-            id: "frontend-design@claude-plugins-official".to_owned(),
-            version: Some("1.0.0".to_owned()),
-            scope: "user".to_owned(),
-            enabled: true,
-            installed_at: None,
-            last_updated: None,
-            project_path: None,
-            capability: crate::app::plugins::PluginCapability::Skill,
-        }];
-        app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
-            plugin_id: "frontend-design@claude-plugins-official".to_owned(),
-            name: "frontend-design".to_owned(),
-            description: Some("Create distinctive interfaces".to_owned()),
-            marketplace_name: Some("claude-plugins-official".to_owned()),
-            version: Some("1.0.0".to_owned()),
-            install_count: Some(42),
-            source: None,
-        }];
-        app.plugins.marketplaces = vec![crate::app::plugins::MarketplaceSourceEntry {
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.loading = true;
+
+        terminal
+            .draw(|frame| {
+                super::render_extensions(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(
+            rendered.contains("Loading Installed..."),
+            "the loading copy names the tab: {rendered}"
+        );
+        assert!(
+            !rendered.contains("No Installed yet."),
+            "the empty copy must not shadow the loading state: {rendered}"
+        );
+    }
+
+    /// The Skills tab renders the shared grammar: three states, three
+    /// distinct rows, each row exactly one line.
+    #[test]
+    fn the_skills_tab_renders_its_rows_through_the_grammar() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Skills;
+        let row = |name: &str, source: &str, state| crate::app::extensions::ExtensionRow {
+            id: format!("skill:{source}:{name}"),
+            kind: forge_primitives::plugins::ExtensionKind::Skill,
+            name: name.to_owned(),
+            source: source.to_owned(),
+            version: Some("6.3.0".to_owned()),
+            available_version: None,
+            state,
+            detail: None,
+        };
+        app.plugins.rows = vec![
+            row("brainstorming", "superpowers", forge_primitives::plugins::RowState::Current),
+            row(
+                "executing-plans",
+                "superpowers",
+                forge_primitives::plugins::RowState::UpdateAvailable,
+            ),
+        ];
+        app.plugins.rows[1].available_version = Some("6.4.0".to_owned());
+
+        terminal
+            .draw(|frame| {
+                super::render_extensions(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(
+            rendered.contains("\u{2713} brainstorming  superpowers  installed 6.3.0"),
+            "current row: {rendered}"
+        );
+        assert!(
+            rendered.contains("6.3.0 -> 6.4.0 available  Update"),
+            "the stale row carries the delta and the action on ONE row: {rendered}"
+        );
+        assert!(rendered.contains("Skills 2 "), "the tab count: {rendered}");
+    }
+
+    /// The focused filter consumes Enter, so the hint bar must not
+    /// advertise a close key it does not have.
+    #[test]
+    fn focused_filter_hint_advertises_esc_alone_to_close() {
+        let mut app = App::test_default();
+        app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Installed;
+        app.plugins.search_focused = true;
+
+        assert_eq!(
+            super::extensions_help_text(&app),
+            "Left/Right switch tab | Down list | Type to filter | Backspace erase | Del clear | Esc close",
+            "the focused filter hint offers Esc alone to close"
+        );
+
+        app.plugins.search_focused = false;
+        assert_eq!(
+            super::extensions_help_text(&app),
+            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | u update all | c check updates | Esc close",
+            "the list hint names the update and check keys"
+        );
+    }
+
+    /// The Marketplaces tab lists the configured sources with the add
+    /// row beneath them.
+    #[test]
+    fn the_marketplaces_tab_renders_sources_and_the_add_row() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Marketplaces;
+        app.plugins.marketplaces = vec![crate::app::extensions::MarketplaceSourceEntry {
             name: "claude-plugins-official".to_owned(),
             source: Some("github".to_owned()),
             repo: Some("anthropics/claude-plugins-official".to_owned()),
@@ -431,178 +613,13 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render_plugins(frame, &mut app);
+                super::render_extensions(frame, &mut app);
             })
             .expect("draw");
 
         let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Installed (1)"));
-        assert!(rendered.contains("Plugins (1)"));
-        assert!(rendered.contains("Marketplace (1)"));
-        assert!(
-            rendered.contains("Type to filter this list"),
-            "the search field reads its placeholder now that the title row is gone"
-        );
-        assert!(
-            rendered.contains("Update all (u)"),
-            "the action row rides the full render path, not just its own line builder"
-        );
-        assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
-        assert!(rendered.contains("SKILL"));
-        assert!(rendered.contains("Left/Right switch list"));
-    }
-
-    /// The focused filter consumes Enter, so the hint bar must not
-    /// advertise a close key it does not have.
-    #[test]
-    fn focused_plugins_filter_hint_advertises_esc_alone_to_close() {
-        let mut app = App::test_default();
-        app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Installed;
-        app.plugins.search_focused = true;
-
-        assert_eq!(
-            super::plugins_help_text(&app),
-            "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Esc close",
-            "the focused filter hint offers Esc alone to close"
-        );
-
-        app.plugins.search_focused = false;
-        assert_eq!(
-            super::plugins_help_text(&app),
-            "Left/Right switch list | Up search | Up/Down move | Enter actions | u update all | c check updates | Esc close",
-            "the list hint names the update and check keys"
-        );
-    }
-
-    #[test]
-    fn plugins_tab_renders_marketplace_plugin_title_and_plugin_id() {
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-
-        app.active_view = crate::app::ActiveView::Plugins;
-        app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
-        app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
-            plugin_id: "frontend-design@claude-plugins-official".to_owned(),
-            name: "frontend-design".to_owned(),
-            description: Some("Review UI".to_owned()),
-            marketplace_name: Some("claude-plugins-official".to_owned()),
-            version: Some("1.0.0".to_owned()),
-            install_count: Some(42),
-            source: None,
-        }];
-
-        terminal
-            .draw(|frame| {
-                super::render_plugins(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Frontend Design"));
-        assert!(rendered.contains("Plugin: frontend-design@claude-plugins-official"));
-    }
-
-    #[test]
-    fn plugins_tab_groups_relevant_installed_plugins_above_other_projects() {
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.set_cwd_raw("C:\\work\\project-b");
-
-        app.active_view = crate::app::ActiveView::Plugins;
-        app.plugins.installed = vec![
-            crate::app::plugins::InstalledPluginEntry {
-                id: "other-local@claude-plugins-official".to_owned(),
-                version: Some("1.0.0".to_owned()),
-                scope: "local".to_owned(),
-                enabled: true,
-                installed_at: None,
-                last_updated: None,
-                project_path: Some("C:\\work\\project-a".to_owned()),
-                capability: crate::app::plugins::PluginCapability::Skill,
-            },
-            crate::app::plugins::InstalledPluginEntry {
-                id: "user-plugin@claude-plugins-official".to_owned(),
-                version: Some("1.0.0".to_owned()),
-                scope: "user".to_owned(),
-                enabled: true,
-                installed_at: None,
-                last_updated: None,
-                project_path: None,
-                capability: crate::app::plugins::PluginCapability::Skill,
-            },
-            crate::app::plugins::InstalledPluginEntry {
-                id: "current-local@claude-plugins-official".to_owned(),
-                version: Some("1.0.0".to_owned()),
-                scope: "local".to_owned(),
-                enabled: true,
-                installed_at: None,
-                last_updated: None,
-                project_path: Some("C:\\work\\project-b".to_owned()),
-                capability: crate::app::plugins::PluginCapability::Skill,
-            },
-        ];
-
-        terminal
-            .draw(|frame| {
-                super::render_plugins(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-        let user_index =
-            rendered.find("User Plugin From Claude Plugins Official").expect("user plugin");
-        let current_index = rendered
-            .find("Current Local From Claude Plugins Official")
-            .expect("current project plugin");
-        let other_index = rendered
-            .find("Other Local From Claude Plugins Official")
-            .expect("other project plugin");
-
-        assert!(user_index < other_index);
-        assert!(current_index < other_index);
-        assert!(rendered.contains("Available here"));
-        assert!(rendered.contains("Installed elsewhere"));
-    }
-
-    #[test]
-    fn plugins_tab_shows_loading_copy_instead_of_empty_state_during_refresh() {
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-
-        app.active_view = crate::app::ActiveView::Plugins;
-        app.plugins.loading = true;
-
-        terminal
-            .draw(|frame| {
-                super::render_plugins(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Loading installed plugins..."));
-        assert!(!rendered.contains("No installed plugins found."));
-    }
-
-    #[test]
-    fn marketplace_tab_renders_configured_heading_and_add_placeholder() {
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-
-        app.active_view = crate::app::ActiveView::Plugins;
-        app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
-
-        terminal
-            .draw(|frame| {
-                super::render_plugins(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Configured marketplaces"));
+        assert!(rendered.contains("claude-plugins-official"));
+        assert!(rendered.contains("anthropics/claude-plugins-official"));
         assert!(rendered.contains("Add marketplace"));
     }
 
@@ -612,7 +629,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
 
-        app.active_view = crate::app::ActiveView::Plugins;
+        app.active_view = crate::app::ActiveView::Extensions;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::InstalledPluginActions(
             InstalledPluginActionOverlayState {
                 plugin_id: "frontend-design@claude-plugins-official".to_owned(),
@@ -632,7 +649,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render_plugins(frame, &mut app);
+                super::render_extensions(frame, &mut app);
             })
             .expect("draw");
 
@@ -650,7 +667,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
 
-        app.active_view = crate::app::ActiveView::Plugins;
+        app.active_view = crate::app::ActiveView::Extensions;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::PluginInstallActions(
             PluginInstallOverlayState {
                 plugin_id: "frontend-design@claude-plugins-official".to_owned(),
@@ -667,7 +684,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render_plugins(frame, &mut app);
+                super::render_extensions(frame, &mut app);
             })
             .expect("draw");
 
@@ -685,7 +702,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
 
-        app.active_view = crate::app::ActiveView::Plugins;
+        app.active_view = crate::app::ActiveView::Extensions;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::MarketplaceActions(
             crate::app::config::MarketplaceActionsOverlayState {
                 name: "claude-plugins-official".to_owned(),
@@ -701,7 +718,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render_plugins(frame, &mut app);
+                super::render_extensions(frame, &mut app);
             })
             .expect("draw");
 
@@ -718,7 +735,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
 
-        app.active_view = crate::app::ActiveView::Plugins;
+        app.active_view = crate::app::ActiveView::Extensions;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::AddMarketplace(
             Box::new(crate::app::config::AddMarketplaceOverlayState {
                 editor: crate::app::input::InputState::new(),
@@ -727,7 +744,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render_plugins(frame, &mut app);
+                super::render_extensions(frame, &mut app);
             })
             .expect("draw");
 
@@ -797,6 +814,61 @@ mod tests {
         assert!(rendered.contains("Enter run"));
     }
 
+    /// The uninstall confirm names the whole bundle - the CLI cannot
+    /// remove one component alone - with its component count.
+    #[test]
+    fn the_uninstall_confirm_names_the_plugin_and_its_component_count() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+
+        app.active_view = crate::app::ActiveView::Extensions;
+        let row = |kind: forge_primitives::plugins::ExtensionKind, name: &str| {
+            crate::app::extensions::ExtensionRow {
+                id: format!("{kind:?}:superpowers:{name}"),
+                kind,
+                name: name.to_owned(),
+                source: "superpowers@claude-plugins-official".to_owned(),
+                version: Some("6.3.0".to_owned()),
+                available_version: None,
+                state: forge_primitives::plugins::RowState::Current,
+                detail: None,
+            }
+        };
+        app.plugins.rows = vec![
+            row(forge_primitives::plugins::ExtensionKind::Plugin, "superpowers"),
+            row(forge_primitives::plugins::ExtensionKind::Skill, "brainstorming"),
+            row(forge_primitives::plugins::ExtensionKind::Skill, "writing-plans"),
+            row(forge_primitives::plugins::ExtensionKind::Hook, "superpowers"),
+        ];
+        crate::app::extensions::installed::open_uninstall_confirm(
+            &mut app,
+            &crate::app::config::InstalledPluginActionOverlayState {
+                plugin_id: "superpowers@claude-plugins-official".to_owned(),
+                title: "superpowers".to_owned(),
+                description: String::new(),
+                scope: "user".to_owned(),
+                project_path: None,
+                selected_index: 0,
+                actions: vec![crate::app::config::InstalledPluginActionKind::Uninstall],
+            },
+        );
+
+        terminal
+            .draw(|frame| {
+                super::render_extensions(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Uninstall plugin"), "the chrome: {rendered}");
+        assert!(
+            rendered.contains("Removes superpowers and its 2 skills, 1 hook sets."),
+            "the bundle and its count: {rendered}"
+        );
+        assert!(rendered.contains("Enter confirm"), "the help: {rendered}");
+    }
+
     #[test]
     fn config_footer_renders_status_message_when_present() {
         let backend = TestBackend::new(100, 24);
@@ -807,7 +879,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render_plugins(frame, &mut app);
+                super::render_extensions(frame, &mut app);
             })
             .expect("draw");
 

@@ -208,6 +208,17 @@ pub struct AddMarketplaceOverlayState {
     pub editor: crate::app::input::InputState,
 }
 
+/// The uninstall confirm: the CLI cannot remove one component alone,
+/// so the confirm names the whole bundle and its component count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UninstallConfirmState {
+    pub plugin_id: String,
+    pub title: String,
+    pub description: String,
+    pub scope: String,
+    pub project_path: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ConfigOverlayState {
     InstalledPluginActions(InstalledPluginActionOverlayState),
@@ -215,6 +226,7 @@ pub enum ConfigOverlayState {
     MarketplaceActions(MarketplaceActionsOverlayState),
     AddMarketplace(Box<AddMarketplaceOverlayState>),
     McpDetails(McpDetailsOverlayState),
+    UninstallConfirm(UninstallConfirmState),
 }
 
 #[derive(Debug, Clone)]
@@ -343,6 +355,13 @@ impl ConfigState {
         }
     }
 
+    pub fn uninstall_confirm(&self) -> Option<&UninstallConfirmState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::UninstallConfirm(overlay)) => Some(overlay),
+            _ => None,
+        }
+    }
+
     pub fn add_marketplace_overlay_mut(&mut self) -> Option<&mut AddMarketplaceOverlayState> {
         match &mut self.overlay {
             Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay.as_mut()),
@@ -388,8 +407,8 @@ pub fn open_plugins(app: &mut App) -> Result<(), String> {
     app.config.apply_loaded(loaded, false);
     app.config.status_message = None;
     app.config.last_error = None;
-    view::set_active_view(app, ActiveView::Plugins);
-    crate::app::plugins::request_inventory_refresh_if_needed(app);
+    view::set_active_view(app, ActiveView::Extensions);
+    crate::app::extensions::request_inventory_refresh_if_needed(app);
     Ok(())
 }
 
@@ -411,8 +430,8 @@ pub fn open_mcp(app: &mut App) -> Result<(), String> {
 }
 
 pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
-    if app.active_view == ActiveView::Plugins {
-        crate::app::plugins::request_inventory_refresh_if_needed(app);
+    if app.active_view == ActiveView::Extensions {
+        crate::app::extensions::request_inventory_refresh_if_needed(app);
     }
 }
 
@@ -431,7 +450,7 @@ pub fn handle_plugins_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if crate::app::plugins::handle_key(app, key) {
+    if crate::app::extensions::handle_key(app, key) {
         return;
     }
 
@@ -464,7 +483,7 @@ pub fn handle_plugins_paste(app: &mut App, text: &str) -> bool {
     if app.config.overlay.is_some() {
         return overlay_input::handle_overlay_paste(app, text);
     }
-    crate::app::plugins::handle_paste(app, text)
+    crate::app::extensions::handle_paste(app, text)
 }
 
 pub fn handle_mcp_paste(app: &mut App, text: &str) -> bool {

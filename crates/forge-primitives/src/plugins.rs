@@ -3,9 +3,17 @@
 //! the `claude plugin` shell-out, etc.) live in
 //! `forge_agent::userdata::plugins`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::Value;
+
+/// A plugin's `claude plugin details` projection: the always-on token
+/// cost every session pays for the plugin being installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginDetails {
+    pub token_cost_always_on: u64,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginCapability {
@@ -68,6 +76,9 @@ pub struct PluginsInventorySnapshot {
     /// Marketplace load health for the Extensions page; empty when the
     /// producer does not scan.
     pub marketplace_health: Vec<MarketplaceHealth>,
+    /// Token cost for the plugins the producer fetched details for;
+    /// the producer decides the fetch set (version-keyed caching).
+    pub token_costs: BTreeMap<String, PluginDetails>,
 }
 
 /// Per-plugin component inventory read straight off disk (the plugin

@@ -16,9 +16,10 @@ pub enum ActiveView {
     /// section's `🦉` click. `Esc` closes (and, once wired,
     /// one-shot-submits any pending comments).
     Diff,
-    /// Full-screen Plugins view (installed plugins + marketplaces).
-    /// Opened by `/plugins`. `Esc` closes back to chat.
-    Plugins,
+    /// Full-screen Extensions page (plugins, their components, MCP
+    /// servers, marketplaces). Opened by `/extensions`. `Esc` closes
+    /// back to chat.
+    Extensions,
     /// Full-screen MCP server view. Opened by `/mcp`. `Esc` closes
     /// back to chat.
     Mcp,
@@ -55,7 +56,7 @@ fn clear_transient_view_state(app: &mut App) {
     *app.slash_mut() = None;
     *app.subagent_mut() = None;
     app.emoji = None;
-    if matches!(app.active_view, ActiveView::Plugins | ActiveView::Mcp) {
+    if matches!(app.active_view, ActiveView::Extensions | ActiveView::Mcp) {
         app.config.overlay = None;
     }
     if app.active_view == ActiveView::Diff {

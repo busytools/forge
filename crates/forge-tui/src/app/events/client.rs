@@ -293,14 +293,14 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
             let applied =
                 dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_dropped", |app| {
-                    crate::app::plugins::apply_inventory_refresh_success(
+                    crate::app::extensions::apply_inventory_refresh_success(
                         app,
                         snapshot,
                         claude_path,
                     );
                 });
             if !applied {
-                crate::app::plugins::settle_dropped_refresh_failure(app);
+                crate::app::extensions::settle_dropped_refresh_failure(app);
             }
         }
         SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message, trigger } => {
@@ -308,29 +308,29 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // below): its failure must unpin the seeded run whatever
             // session holds the focus.
             if trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
-                crate::app::plugins::apply_inventory_refresh_failure(app, message);
+                crate::app::extensions::apply_inventory_refresh_failure(app, message);
             } else {
                 let applied = dispatch_if_cwd_matches(
                     app,
                     &cwd_raw,
                     "plugins_inventory_failure_dropped",
                     |app| {
-                        crate::app::plugins::apply_inventory_refresh_failure(app, message);
+                        crate::app::extensions::apply_inventory_refresh_failure(app, message);
                     },
                 );
                 if !applied {
-                    crate::app::plugins::settle_dropped_refresh_failure(app);
+                    crate::app::extensions::settle_dropped_refresh_failure(app);
                 }
             }
         }
         SessionUpdate::PluginsCliActionSucceeded { cwd_raw, result } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_cli_success_dropped", |app| {
-                crate::app::plugins::apply_cli_action_success(app, result);
+                crate::app::extensions::apply_cli_action_success(app, result);
             });
         }
         SessionUpdate::PluginsCliActionFailed { cwd_raw, message } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_cli_failure_dropped", |app| {
-                crate::app::plugins::apply_cli_action_failure(app, message);
+                crate::app::extensions::apply_cli_action_failure(app, message);
             });
         }
         SessionUpdate::PluginsUpdateRunProgress { cwd_raw, run } => {
@@ -338,28 +338,28 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // project cwd that need not match the focused session, so
             // its events bypass the cwd gate.
             if run.trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
-                crate::app::plugins::apply_update_run_progress(app, run);
+                crate::app::extensions::apply_update_run_progress(app, run);
             } else {
                 dispatch_if_cwd_matches(
                     app,
                     &cwd_raw,
                     "plugins_update_run_progress_dropped",
                     |app| {
-                        crate::app::plugins::apply_update_run_progress(app, run);
+                        crate::app::extensions::apply_update_run_progress(app, run);
                     },
                 );
             }
         }
         SessionUpdate::PluginsUpdateRunFinished { cwd_raw, run, snapshot, claude_path } => {
             if run.trigger == forge_primitives::plugins::PluginUpdateTrigger::Auto {
-                crate::app::plugins::apply_update_run_finished(app, &run, snapshot, claude_path);
+                crate::app::extensions::apply_update_run_finished(app, &run, snapshot, claude_path);
             } else {
                 let applied = dispatch_if_cwd_matches(
                     app,
                     &cwd_raw,
                     "plugins_update_run_finished_dropped",
                     |app| {
-                        crate::app::plugins::apply_update_run_finished(
+                        crate::app::extensions::apply_update_run_finished(
                             app,
                             &run,
                             snapshot,
@@ -368,7 +368,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                     },
                 );
                 if !applied {
-                    crate::app::plugins::settle_dropped_manual_run(app);
+                    crate::app::extensions::settle_dropped_manual_run(app);
                 }
             }
         }
@@ -381,7 +381,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             claude_path,
         } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_rollback_success_dropped", |app| {
-                crate::app::plugins::apply_rollback_success(
+                crate::app::extensions::apply_rollback_success(
                     app,
                     &plugin_id,
                     &scope,
@@ -393,7 +393,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::PluginsRollbackFailed { cwd_raw, plugin_id, message, snapshot } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_rollback_failure_dropped", |app| {
-                crate::app::plugins::apply_rollback_failure(app, &plugin_id, &message, snapshot);
+                crate::app::extensions::apply_rollback_failure(app, &plugin_id, &message, snapshot);
             });
         }
         SessionUpdate::PeerInflightStatsChanged { key, stats } => {
@@ -601,12 +601,12 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                         if landing == DictateLanding::PluginsField {
                             // The plugins targets are single-line fields;
                             // dictated newlines flatten like a paste.
-                            editor.insert_str(&crate::app::plugins::normalize_single_line_input(
-                                text,
-                            ));
+                            editor.insert_str(
+                                &crate::app::extensions::normalize_single_line_input(text),
+                            );
                             // The overlay field has no selection list to reset.
                             if app.config.add_marketplace_overlay().is_none() {
-                                crate::app::plugins::reset_selection_for_active_tab(app);
+                                crate::app::extensions::reset_selection_for_active_tab(app);
                             }
                         } else {
                             editor.insert_str(text);
@@ -680,7 +680,7 @@ fn dictate_landing(app: &App, key: &forge_workspace::SessionKey) -> DictateLandi
             DictateLanding::Diff
         }
         crate::app::InputFocus::None => match app.active_view {
-            crate::app::ActiveView::Plugins => DictateLanding::PluginsField,
+            crate::app::ActiveView::Extensions => DictateLanding::PluginsField,
             _ => DictateLanding::Fallback,
         },
     }
@@ -728,7 +728,7 @@ fn dictate_destination<'a>(
             app.diff_overlay.as_mut()?.finish_review.as_mut().map(|finish| &mut finish.editor)
         }
         crate::app::InputFocus::None => match app.active_view {
-            crate::app::ActiveView::Plugins => {
+            crate::app::ActiveView::Extensions => {
                 // The add-marketplace field when its overlay is up, else
                 // the focused tab's search query.
                 if let Some(overlay) = app.config.add_marketplace_overlay_mut() {
@@ -1498,7 +1498,7 @@ fn apply_runtime_reload_completed_presentation(app: &mut App, session_id: &str) 
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     if is_active {
-        crate::app::plugins::apply_runtime_reload_success(app);
+        crate::app::extensions::apply_runtime_reload_success(app);
     } else if app.sessions.contains_key(&session_key) {
         tracing::debug!(
             target: crate::logging::targets::APP_CONFIG,
@@ -1534,7 +1534,7 @@ fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, mes
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     if is_active {
-        crate::app::plugins::apply_runtime_reload_failure(app, message);
+        crate::app::extensions::apply_runtime_reload_failure(app, message);
     } else if app.sessions.contains_key(&session_key) {
         tracing::warn!(
             target: crate::logging::targets::APP_CONFIG,

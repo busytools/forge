@@ -8,7 +8,7 @@ pub(crate) mod type_converters;
 
 use super::config::ConfigState;
 use super::dialog::DialogState;
-use super::plugins::PluginsState;
+use super::extensions::PluginsState;
 use super::state::RenderCacheBudget;
 use super::view::ActiveView;
 use super::{App, AppStatus, FocusManager, HelpView};
@@ -103,7 +103,7 @@ fn create_app_impl(
     } else {
         cwd_raw.clone()
     };
-    let boot_cli = crate::app::plugins::UpdateCli::real();
+    let boot_cli = crate::app::extensions::UpdateCli::real();
     let boot_workspace = workspace.clone();
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
@@ -323,7 +323,7 @@ fn create_app_impl(
         app.config.last_error = Some(err);
     }
 
-    crate::app::plugins::maybe_spawn_boot_auto_update(
+    crate::app::extensions::maybe_spawn_boot_auto_update(
         &boot_workspace,
         &mut app,
         boot_cwd_raw,

@@ -18,60 +18,30 @@ use tracing::{Instrument, info_span};
 
 const INVENTORY_REFRESH_TTL: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PluginsViewTab {
-    #[default]
-    Installed,
-    Plugins,
-    Marketplace,
-}
+pub mod installed;
+pub mod skills;
+pub mod state;
 
-impl PluginsViewTab {
-    pub const ALL: [Self; 3] = [Self::Installed, Self::Plugins, Self::Marketplace];
-
-    pub const fn title(self) -> &'static str {
-        match self {
-            Self::Installed => "Installed",
-            Self::Plugins => "Plugins",
-            Self::Marketplace => "Marketplace",
-        }
-    }
-
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Installed => Self::Plugins,
-            Self::Plugins => Self::Marketplace,
-            Self::Marketplace => Self::Installed,
-        }
-    }
-
-    pub const fn prev(self) -> Self {
-        match self {
-            Self::Installed => Self::Marketplace,
-            Self::Plugins => Self::Installed,
-            Self::Marketplace => Self::Plugins,
-        }
-    }
-}
+pub use state::{
+    ExtensionsTab, TabState, count_for_tab, row_matches, rows_for_tab, update_all_count,
+};
 
 // Plugin registry types defined in forge_primitives::plugins;
 // re-exported here so the existing forge-tui import paths resolve.
 pub use forge_primitives::plugins::{
-    InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
-    PluginRunRowStatus, PluginUpdateAvailability, PluginUpdateRecord, PluginUpdateRun,
-    PluginUpdateRunRow, PluginUpdateTrigger, PluginsCliActionSuccess, PluginsInventorySnapshot,
-    update_availability,
+    ExtensionRow, InstalledPluginEntry, MarketplaceEntry, MarketplaceHealth,
+    MarketplaceSourceEntry, PluginRunRowStatus, PluginUpdateAvailability, PluginUpdateRecord,
+    PluginUpdateRun, PluginUpdateRunRow, PluginUpdateTrigger, PluginsCliActionSuccess,
+    PluginsInventorySnapshot, extension_rows, update_availability,
 };
 
 #[derive(Debug, Clone, Default)]
 pub struct PluginsState {
-    pub active_tab: PluginsViewTab,
+    pub active_tab: ExtensionsTab,
     pub search_focused: bool,
-    pub installed_search_query: InputState,
-    pub plugins_search_query: InputState,
-    pub installed_selected_index: usize,
-    pub plugins_selected_index: usize,
-    pub marketplace_selected_index: usize,
+    /// Per-tab filter and selection, indexed by the tab's position in
+    /// [`ExtensionsTab::ALL`].
+    pub tab_state: TabState,
     pub installed: Vec<InstalledPluginEntry>,
     pub marketplace: Vec<MarketplaceEntry>,
     pub marketplaces: Vec<MarketplaceSourceEntry>,
@@ -88,42 +58,34 @@ pub struct PluginsState {
     /// Out-of-date entries in the current inventory; recomputed on
     /// every refresh so the row markers stay truthful.
     pub update_availability: Vec<PluginUpdateAvailability>,
+    /// The flattened extension rows and marketplace health from the
+    /// last inventory refresh; the tabs render from these.
+    pub rows: Vec<ExtensionRow>,
+    pub health: Vec<MarketplaceHealth>,
+    /// Always-on token cost per installed plugin id, version-keyed:
+    /// id -> (installed version, cost). A version change refetches.
+    pub token_costs: std::collections::BTreeMap<String, (String, u64)>,
     /// Test seam: the per-run CLI surface a run uses. `None` means
     /// the real `claude` subprocess calls.
     pub(crate) update_cli: Option<UpdateCli>,
 }
 
 impl PluginsState {
-    pub fn selected_index_for(&self, tab: PluginsViewTab) -> usize {
-        match tab {
-            PluginsViewTab::Installed => self.installed_selected_index,
-            PluginsViewTab::Plugins => self.plugins_selected_index,
-            PluginsViewTab::Marketplace => self.marketplace_selected_index,
-        }
+    pub fn selected_index_for(&self, tab: ExtensionsTab) -> usize {
+        self.tab_state.selected[tab.index()]
     }
 
-    pub fn set_selected_index_for(&mut self, tab: PluginsViewTab, index: usize) {
-        match tab {
-            PluginsViewTab::Installed => self.installed_selected_index = index,
-            PluginsViewTab::Plugins => self.plugins_selected_index = index,
-            PluginsViewTab::Marketplace => self.marketplace_selected_index = index,
-        }
+    pub fn set_selected_index_for(&mut self, tab: ExtensionsTab, index: usize) {
+        self.tab_state.selected[tab.index()] = index;
     }
 
-    pub fn search_query_for(&self, tab: PluginsViewTab) -> String {
-        match tab {
-            PluginsViewTab::Installed => self.installed_search_query.text(),
-            PluginsViewTab::Plugins => self.plugins_search_query.text(),
-            PluginsViewTab::Marketplace => String::new(),
-        }
+    pub fn search_query_for(&self, tab: ExtensionsTab) -> String {
+        self.tab_state.search_queries[tab.index()].text()
     }
 
     pub fn active_search_query_mut(&mut self) -> Option<&mut InputState> {
-        match self.active_tab {
-            PluginsViewTab::Installed => Some(&mut self.installed_search_query),
-            PluginsViewTab::Plugins => Some(&mut self.plugins_search_query),
-            PluginsViewTab::Marketplace => None,
-        }
+        let index = self.active_tab.index();
+        self.tab_state.search_queries.get_mut(index)
     }
 }
 
@@ -197,9 +159,15 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Enter, KeyModifiers::NONE) => match app.plugins.active_tab {
-            PluginsViewTab::Installed => open_installed_actions_overlay(app),
-            PluginsViewTab::Plugins => open_plugin_install_overlay(app),
-            PluginsViewTab::Marketplace => open_marketplace_overlay(app),
+            ExtensionsTab::Installed => open_installed_actions_overlay(app),
+            ExtensionsTab::Skills
+            | ExtensionsTab::Agents
+            | ExtensionsTab::Commands
+            | ExtensionsTab::Hooks
+            | ExtensionsTab::Lsp => installed::open_component_actions_overlay(app),
+            // The Mcps tab's actions arrive with its tab render.
+            ExtensionsTab::Mcps => true,
+            ExtensionsTab::Marketplaces => open_marketplace_overlay(app),
         },
         (KeyCode::Backspace, KeyModifiers::NONE) => {
             if search_enabled(app.plugins.active_tab)
@@ -297,6 +265,21 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
     let cwd_context = app.cwd_raw();
     let cwd_raw = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
+    // Plugins whose token cost is missing or stale under their current
+    // version; the cache means a steady-state refresh fetches nothing.
+    let cost_requests = app
+        .plugins
+        .installed
+        .iter()
+        .filter_map(|entry| {
+            let version = entry.version.as_deref()?;
+            let fresh =
+                app.plugins.token_costs.get(&entry.id).is_some_and(|(cached, _)| cached == version);
+            (!fresh).then(|| (entry.id.clone(), version.to_owned()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     let span = info_span!(
         target: crate::logging::targets::APP_CONFIG,
         "plugin_inventory_refresh",
@@ -304,8 +287,10 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
     );
     tokio::task::spawn_local(
         async move {
-            match cli::refresh_inventory(cwd_raw, cached_claude_path).await {
-                Ok((snapshot, claude_path)) => {
+            match cli::refresh_inventory(cwd_raw.clone(), cached_claude_path.clone()).await {
+                Ok((mut snapshot, claude_path)) => {
+                    snapshot.token_costs =
+                        cli::fetch_plugin_details(cwd_raw, cached_claude_path, cost_requests).await;
                     let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
                         cwd_raw: cwd_context,
                         snapshot,
@@ -334,6 +319,20 @@ pub(crate) fn apply_inventory_refresh_success(
     app.plugins.installed = snapshot.installed;
     app.plugins.marketplace = snapshot.marketplace;
     app.plugins.marketplaces = snapshot.marketplaces;
+    app.plugins.rows = extension_rows(&snapshot.components);
+    app.plugins.health = snapshot.marketplace_health;
+    // Merge, not replace: the costs map is a version-keyed cache, so a
+    // refresh that fetched nothing keeps every badge on screen.
+    for (id, details) in snapshot.token_costs {
+        let version = app
+            .plugins
+            .installed
+            .iter()
+            .find(|entry| entry.id == id)
+            .and_then(|entry| entry.version.clone())
+            .unwrap_or_default();
+        app.plugins.token_costs.insert(id, (version, details.token_cost_always_on));
+    }
     app.plugins.loading = false;
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(claude_path);
@@ -402,23 +401,42 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     app.plugins.update_run = None;
     app.plugins.update_records.clear();
     app.plugins.update_availability.clear();
+    app.plugins.rows.clear();
+    app.plugins.health.clear();
+    app.plugins.token_costs.clear();
     clamp_selection(app);
 }
 
 pub(crate) fn clamp_selection(app: &mut App) {
-    let installed_len = filtered_installed(&app.plugins).len();
-    let plugin_len = filtered_marketplace_plugins(&app.plugins).len();
-    let marketplace_len = marketplace_row_count(&app.plugins);
-    app.plugins.installed_selected_index =
-        clamp_index(app.plugins.installed_selected_index, installed_len);
-    app.plugins.plugins_selected_index =
-        clamp_index(app.plugins.plugins_selected_index, plugin_len);
-    app.plugins.marketplace_selected_index =
-        clamp_index(app.plugins.marketplace_selected_index, marketplace_len);
+    for tab in ExtensionsTab::ALL {
+        let len = visible_row_count(app, tab);
+        let selected = app.plugins.selected_index_for(tab);
+        app.plugins.set_selected_index_for(tab, clamp_index(selected, len));
+    }
+}
+
+/// The rows one tab renders: the flattened extension rows for the
+/// row-backed tabs, the MCP servers, or the marketplaces plus the
+/// add row - each already filtered.
+pub(crate) fn visible_row_count(app: &App, tab: ExtensionsTab) -> usize {
+    match tab {
+        ExtensionsTab::Mcps => app.mcp().servers.len(),
+        ExtensionsTab::Marketplaces => app.plugins.marketplaces.len().saturating_add(1),
+        _ => visible_rows(app, tab).len(),
+    }
+}
+
+/// The tab's extension rows with the tab's filter applied.
+pub(crate) fn visible_rows(app: &App, tab: ExtensionsTab) -> Vec<&ExtensionRow> {
+    let query = app.plugins.search_query_for(tab);
+    rows_for_tab(&app.plugins.rows, tab)
+        .into_iter()
+        .filter(|row| row_matches(row, &query))
+        .collect()
 }
 
 pub(crate) fn filtered_installed(state: &PluginsState) -> Vec<&InstalledPluginEntry> {
-    let query = state.search_query_for(PluginsViewTab::Installed);
+    let query = state.search_query_for(ExtensionsTab::Installed);
     state.installed.iter().filter(|entry| installed_entry_matches(entry, &query)).collect()
 }
 
@@ -442,34 +460,8 @@ pub(crate) fn ordered_installed<'a>(
     relevant
 }
 
-pub(crate) fn relevant_installed_count(state: &PluginsState, current_project_raw: &str) -> usize {
-    let current_project = normalize_project_path(current_project_raw);
-    filtered_installed(state)
-        .into_iter()
-        .filter(|entry| is_relevant_installed_entry(entry, &current_project))
-        .count()
-}
-
-pub(crate) fn filtered_marketplace_plugins(state: &PluginsState) -> Vec<&MarketplaceEntry> {
-    let query = state.search_query_for(PluginsViewTab::Plugins);
-    state.marketplace.iter().filter(|entry| marketplace_plugin_matches(entry, &query)).collect()
-}
-
 pub(crate) fn visible_marketplaces(state: &PluginsState) -> Vec<&MarketplaceSourceEntry> {
     state.marketplaces.iter().collect()
-}
-
-/// The out-of-date marker a finished check left for one installed
-/// entry, if any.
-pub(crate) fn availability_for<'a>(
-    state: &'a PluginsState,
-    plugin_id: &str,
-    scope: &str,
-) -> Option<&'a PluginUpdateAvailability> {
-    state
-        .update_availability
-        .iter()
-        .find(|availability| availability.plugin_id == plugin_id && availability.scope == scope)
 }
 
 pub(crate) fn display_label(raw: &str) -> String {
@@ -585,7 +577,11 @@ fn open_installed_actions_overlay(app: &mut App) -> bool {
     let Some(entry) = selected else {
         return false;
     };
+    open_installed_actions_for(app, entry)
+}
 
+/// The plugin action overlay for a known install.
+pub(crate) fn open_installed_actions_for(app: &mut App, entry: InstalledPluginEntry) -> bool {
     let title = display_label(&entry.id);
     let description = installed_overlay_description(app, &entry);
     let actions = installed_overlay_actions(app, &entry);
@@ -602,19 +598,14 @@ fn open_installed_actions_overlay(app: &mut App) -> bool {
     true
 }
 
-fn open_plugin_install_overlay(app: &mut App) -> bool {
-    let selected = selected_marketplace_plugin(app).cloned();
-    let Some(entry) = selected else {
-        return false;
-    };
-
+/// Install on an available row: the source plugin installs, so the
+/// scope overlay opens for the row's owning plugin.
+pub(crate) fn open_plugin_install_overlay(app: &mut App, plugin_id: &str) -> bool {
     app.config.overlay =
         Some(ConfigOverlayState::PluginInstallActions(PluginInstallOverlayState {
-            plugin_id: entry.plugin_id,
-            title: display_label(&entry.name),
-            description: entry
-                .description
-                .unwrap_or_else(|| "Install this plugin into Claude Code.".to_owned()),
+            plugin_id: plugin_id.to_owned(),
+            title: display_label(plugin_id),
+            description: "Install this plugin into Claude Code.".to_owned(),
             selected_index: 0,
             actions: vec![
                 PluginInstallActionKind::User,
@@ -702,7 +693,7 @@ fn move_marketplace_overlay_selection(app: &mut App, delta: isize) {
     };
 }
 
-fn execute_selected_installed_overlay_action(app: &mut App) {
+pub(crate) fn execute_selected_installed_overlay_action(app: &mut App) {
     let Some(overlay) = app.config.installed_plugin_actions_overlay().cloned() else {
         return;
     };
@@ -712,6 +703,13 @@ fn execute_selected_installed_overlay_action(app: &mut App) {
 
     if action == InstalledPluginActionKind::Rollback {
         start_rollback(app, overlay.plugin_id.clone(), overlay.scope.clone());
+        return;
+    }
+
+    // The uninstall confirm names the whole bundle before anything is
+    // removed; the CLI has no per-component uninstall.
+    if action == InstalledPluginActionKind::Uninstall {
+        installed::open_uninstall_confirm(app, &overlay);
         return;
     }
 
@@ -1036,6 +1034,28 @@ fn build_rows_from_entries(
 
 fn build_update_rows(app: &App, trigger: PluginUpdateTrigger) -> Vec<PluginUpdateRunRow> {
     let cwd = app.cwd_raw();
+    if trigger == PluginUpdateTrigger::Manual {
+        // Update all queues exactly the stale set - the rows wearing
+        // the Update action - not every installed plugin.
+        use forge_primitives::plugins::{ExtensionKind, RowState};
+        let stale: Vec<&str> = app
+            .plugins
+            .rows
+            .iter()
+            .filter(|row| {
+                row.kind == ExtensionKind::Plugin && row.state == RowState::UpdateAvailable
+            })
+            .map(|row| row.id.as_str())
+            .collect();
+        let entries = app
+            .plugins
+            .installed
+            .iter()
+            .filter(|entry| stale.contains(&entry.id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        return build_rows_from_entries(&entries, &cwd, trigger);
+    }
     build_rows_from_entries(&app.plugins.installed, &cwd, trigger)
 }
 
@@ -1880,25 +1900,29 @@ fn can_install_in_current_project(app: &App, entry: &InstalledPluginEntry) -> bo
 }
 
 fn selected_installed_entry(app: &App) -> Option<&InstalledPluginEntry> {
-    ordered_installed(&app.plugins, &app.cwd_raw())
-        .get(app.plugins.installed_selected_index)
-        .copied()
+    let index = app.plugins.selected_index_for(ExtensionsTab::Installed);
+    ordered_installed(&app.plugins, &app.cwd_raw()).get(index).copied()
 }
 
-fn selected_marketplace_plugin(app: &App) -> Option<&MarketplaceEntry> {
-    filtered_marketplace_plugins(&app.plugins).get(app.plugins.plugins_selected_index).copied()
+/// The component row the active component tab has selected, when it is
+/// an extension row at all (MCPs and marketplaces select elsewhere).
+pub(crate) fn selected_extension_row(app: &App) -> Option<&ExtensionRow> {
+    let tab = app.plugins.active_tab;
+    let query = app.plugins.search_query_for(tab);
+    rows_for_tab(&app.plugins.rows, tab)
+        .into_iter()
+        .filter(|row| row_matches(row, &query))
+        .nth(app.plugins.selected_index_for(tab))
 }
 
 fn selected_marketplace_source(app: &App) -> Option<&MarketplaceSourceEntry> {
-    visible_marketplaces(&app.plugins).get(app.plugins.marketplace_selected_index).copied()
+    let index = app.plugins.selected_index_for(ExtensionsTab::Marketplaces);
+    visible_marketplaces(&app.plugins).get(index).copied()
 }
 
 fn selected_add_marketplace_row(app: &App) -> bool {
-    app.plugins.marketplace_selected_index >= visible_marketplaces(&app.plugins).len()
-}
-
-fn marketplace_row_count(state: &PluginsState) -> usize {
-    state.marketplaces.len().saturating_add(1)
+    app.plugins.selected_index_for(ExtensionsTab::Marketplaces)
+        >= visible_marketplaces(&app.plugins).len()
 }
 
 fn marketplace_overlay_description(entry: &MarketplaceSourceEntry) -> String {
@@ -1931,11 +1955,7 @@ pub(crate) fn reset_selection_for_active_tab(app: &mut App) {
 
 fn move_selection(app: &mut App, delta: isize) {
     let tab = app.plugins.active_tab;
-    let len = match tab {
-        PluginsViewTab::Installed => filtered_installed(&app.plugins).len(),
-        PluginsViewTab::Plugins => filtered_marketplace_plugins(&app.plugins).len(),
-        PluginsViewTab::Marketplace => marketplace_row_count(&app.plugins),
-    };
+    let len = visible_row_count(app, tab);
     if len == 0 {
         app.plugins.set_selected_index_for(tab, 0);
         return;
@@ -1978,29 +1998,8 @@ fn is_relevant_installed_entry(entry: &InstalledPluginEntry, current_project: &s
     }
 }
 
-fn marketplace_plugin_matches(entry: &MarketplaceEntry, query: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-    let query = query.to_ascii_lowercase();
-    entry.plugin_id.to_ascii_lowercase().contains(&query)
-        || entry.name.to_ascii_lowercase().contains(&query)
-        || entry
-            .description
-            .as_deref()
-            .is_some_and(|description| description.to_ascii_lowercase().contains(&query))
-        || entry
-            .marketplace_name
-            .as_deref()
-            .is_some_and(|marketplace| marketplace.to_ascii_lowercase().contains(&query))
-        || entry
-            .version
-            .as_deref()
-            .is_some_and(|version| version.to_ascii_lowercase().contains(&query))
-}
-
-pub(crate) const fn search_enabled(tab: PluginsViewTab) -> bool {
-    !matches!(tab, PluginsViewTab::Marketplace)
+pub(crate) const fn search_enabled(tab: ExtensionsTab) -> bool {
+    tab.filters_rows()
 }
 
 #[cfg(test)]
@@ -2008,13 +2007,14 @@ mod tests {
     use super::*;
     use crate::agent::model;
     use crate::app::events::apply_session_update;
+    use forge_primitives::plugins::{ExtensionKind, PluginCapability, RowState};
     use forge_workspace::{DictateOutcome, SessionKey};
 
     fn plugins_view_with_live_take() -> (crate::app::App, SessionKey) {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
-        app.active_view = crate::app::ActiveView::Plugins;
-        app.plugins.active_tab = PluginsViewTab::Installed;
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.active_tab = ExtensionsTab::Installed;
         app.plugins.search_focused = true;
         apply_session_update(
             &mut app,
@@ -2040,7 +2040,7 @@ mod tests {
                 },
             },
         );
-        assert_eq!(app.plugins.installed_search_query.text(), "retry guard");
+        assert_eq!(app.plugins.search_query_for(ExtensionsTab::Installed), "retry guard");
         assert!(app.input().text().is_empty(), "the chat draft keeps nothing");
 
         apply_session_update(
@@ -2055,7 +2055,7 @@ mod tests {
             },
         );
         assert_eq!(
-            app.plugins.installed_search_query.text(),
+            app.plugins.search_query_for(ExtensionsTab::Installed),
             "retry guard alpha beta gamma delta",
             "dictated newlines flatten instead of entering the one-line query"
         );
@@ -2079,7 +2079,7 @@ mod tests {
                 capability: PluginCapability::Skill,
             });
         }
-        app.plugins.installed_selected_index = 2;
+        app.plugins.set_selected_index_for(ExtensionsTab::Installed, 2);
 
         apply_session_update(
             &mut app,
@@ -2090,9 +2090,10 @@ mod tests {
             },
         );
 
-        assert_eq!(app.plugins.installed_search_query.text(), "sample");
+        assert_eq!(app.plugins.search_query_for(ExtensionsTab::Installed), "sample");
         assert_eq!(
-            app.plugins.installed_selected_index, 0,
+            app.plugins.selected_index_for(ExtensionsTab::Installed),
+            0,
             "the landing filtered the list to two rows; index 2 points past them"
         );
     }
@@ -2109,7 +2110,7 @@ mod tests {
         assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         assert_eq!(
             app.active_view,
-            crate::app::ActiveView::Plugins,
+            crate::app::ActiveView::Extensions,
             "the first Esc abandons the take, the view stands"
         );
         let dispatched = app.workspace.as_ref().map(|ws| ws.drain_test_dispatch_buffer());
@@ -2128,7 +2129,7 @@ mod tests {
     #[test]
     fn a_take_lands_in_the_marketplace_field() {
         let mut app = app_with_add_marketplace_open();
-        app.active_view = crate::app::ActiveView::Plugins;
+        app.active_view = crate::app::ActiveView::Extensions;
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         apply_session_update(
             &mut app,
@@ -2170,7 +2171,7 @@ mod tests {
     #[test]
     fn esc_abandons_a_live_take_before_closing_the_marketplace_overlay() {
         let mut app = app_with_add_marketplace_open();
-        app.active_view = crate::app::ActiveView::Plugins;
+        app.active_view = crate::app::ActiveView::Extensions;
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         apply_session_update(
             &mut app,
@@ -2197,12 +2198,6 @@ mod tests {
                 .any(|command| matches!(command, forge_workspace::Command::DictateStop { .. })),
             "Esc dispatched the abandon: {dispatched:?}"
         );
-    }
-
-    fn query(text: &str) -> InputState {
-        let mut editor = InputState::new();
-        editor.set_text(text);
-        editor
     }
 
     fn app_with_connection()
@@ -2340,19 +2335,20 @@ mod tests {
             marketplaces: vec![],
             components: vec![],
             marketplace_health: vec![],
+            token_costs: std::collections::BTreeMap::default(),
         }
     }
 
     #[test]
     fn plugins_tabs_wrap_in_both_directions() {
-        assert_eq!(PluginsViewTab::Installed.prev(), PluginsViewTab::Marketplace);
-        assert_eq!(PluginsViewTab::Marketplace.next(), PluginsViewTab::Installed);
+        assert_eq!(ExtensionsTab::Installed.prev(), ExtensionsTab::Marketplaces);
+        assert_eq!(ExtensionsTab::Marketplaces.next(), ExtensionsTab::Installed);
     }
 
     #[test]
     fn recent_inventory_snapshot_skips_refresh() {
         let mut app = crate::app::App::test_default();
-        app.plugins.active_tab = PluginsViewTab::Installed;
+        app.plugins.active_tab = ExtensionsTab::Installed;
         app.plugins.last_inventory_refresh_at = Some(Instant::now());
 
         request_inventory_refresh_if_needed(&mut app);
@@ -2370,34 +2366,29 @@ mod tests {
     }
 
     #[test]
-    fn filtered_marketplace_plugins_match_on_name_description_and_marketplace() {
-        let state = PluginsState {
-            plugins_search_query: query("official"),
-            marketplace: vec![MarketplaceEntry {
-                plugin_id: "frontend-design@claude-plugins-official".to_owned(),
-                name: "frontend-design".to_owned(),
-                description: Some("Create distinctive interfaces".to_owned()),
-                marketplace_name: Some("claude-plugins-official".to_owned()),
-                version: Some("1.0.0".to_owned()),
-                install_count: Some(42),
-                source: None,
-            }],
-            ..PluginsState::default()
+    fn extension_rows_match_their_name_and_source() {
+        let mut row = forge_primitives::plugins::ExtensionRow {
+            id: "skill:superpowers:brainstorming".to_owned(),
+            kind: forge_primitives::plugins::ExtensionKind::Skill,
+            name: "brainstorming".to_owned(),
+            source: "superpowers@probe-market".to_owned(),
+            version: Some("6.3.0".to_owned()),
+            available_version: None,
+            state: forge_primitives::plugins::RowState::Current,
+            detail: None,
         };
 
-        assert_eq!(filtered_marketplace_plugins(&state).len(), 1);
-
-        // Negative case: a query matching none of the three fields
-        // excludes the entry entirely.
-        let mut none = state;
-        none.plugins_search_query = query("zzz-no-match");
+        assert!(row_matches(&row, ""));
+        assert!(row_matches(&row, "brainstorm"), "the name matches");
+        assert!(row_matches(&row, "superpowers"), "the source matches");
+        row.name = "planning".to_owned();
         assert!(
-            filtered_marketplace_plugins(&none).is_empty(),
-            "a non-matching query filters the row out"
+            !row_matches(&row, "brainstorm"),
+            "a query matching neither field filters the row out"
         );
     }
 
-    fn app_with_focused_search(tab: PluginsViewTab) -> crate::app::App {
+    fn app_with_focused_search(tab: ExtensionsTab) -> crate::app::App {
         let mut app = crate::app::App::test_default();
         app.plugins.active_tab = tab;
         app.plugins.search_focused = true;
@@ -2410,27 +2401,27 @@ mod tests {
 
     #[test]
     fn search_filter_appends_pops_one_and_wipes_on_delete() {
-        let mut app = app_with_focused_search(PluginsViewTab::Installed);
+        let mut app = app_with_focused_search(ExtensionsTab::Installed);
 
         for ch in ['a', 'b', 'c'] {
             let _ = press(&mut app, KeyCode::Char(ch));
         }
         assert_eq!(
-            app.plugins.search_query_for(PluginsViewTab::Installed),
+            app.plugins.search_query_for(ExtensionsTab::Installed),
             "abc",
             "typing appends to the filter in order"
         );
 
         let _ = press(&mut app, KeyCode::Backspace);
         assert_eq!(
-            app.plugins.search_query_for(PluginsViewTab::Installed),
+            app.plugins.search_query_for(ExtensionsTab::Installed),
             "ab",
             "Backspace drops exactly one character off the end"
         );
 
         let _ = press(&mut app, KeyCode::Delete);
         assert_eq!(
-            app.plugins.search_query_for(PluginsViewTab::Installed),
+            app.plugins.search_query_for(ExtensionsTab::Installed),
             "",
             "Delete wipes the whole filter rather than one character"
         );
@@ -2441,7 +2432,7 @@ mod tests {
     /// either into the editor would make this insert mid-string.
     #[test]
     fn search_filter_has_no_reachable_cursor_movement() {
-        let mut app = app_with_focused_search(PluginsViewTab::Installed);
+        let mut app = app_with_focused_search(ExtensionsTab::Installed);
         for ch in ['a', 'b'] {
             let _ = press(&mut app, KeyCode::Char(ch));
         }
@@ -2451,7 +2442,7 @@ mod tests {
 
         let _ = press(&mut app, KeyCode::Char('c'));
         assert_eq!(
-            app.plugins.search_query_for(PluginsViewTab::Installed),
+            app.plugins.search_query_for(ExtensionsTab::Installed),
             "abc",
             "typing after Home/End still appends rather than inserting mid-string"
         );
@@ -2462,11 +2453,11 @@ mod tests {
     /// the filter agree on one line.
     #[test]
     fn search_filter_rejects_typed_newlines_and_flattens_pasted_ones() {
-        let mut app = app_with_focused_search(PluginsViewTab::Installed);
+        let mut app = app_with_focused_search(ExtensionsTab::Installed);
 
         assert!(handle_paste(&mut app, "a\nb\r\nc\rd"), "a focused filter accepts a paste");
         assert_eq!(
-            app.plugins.search_query_for(PluginsViewTab::Installed),
+            app.plugins.search_query_for(ExtensionsTab::Installed),
             "a b c d",
             "pasted newlines collapse to spaces"
         );
@@ -2474,7 +2465,7 @@ mod tests {
         for ch in ['\n', '\r'] {
             assert!(press(&mut app, KeyCode::Char(ch)), "a rejected key is still consumed");
             assert_eq!(
-                app.plugins.search_query_for(PluginsViewTab::Installed),
+                app.plugins.search_query_for(ExtensionsTab::Installed),
                 "a b c d",
                 "a typed {ch:?} never enters the filter"
             );
@@ -2482,7 +2473,7 @@ mod tests {
 
         let _ = press(&mut app, KeyCode::Char('e'));
         assert_eq!(
-            app.plugins.search_query_for(PluginsViewTab::Installed),
+            app.plugins.search_query_for(ExtensionsTab::Installed),
             "a b c de",
             "typing still appends after a rejection"
         );
@@ -2494,8 +2485,8 @@ mod tests {
     /// through to the view closer; Esc alone closes.
     #[test]
     fn focused_filter_consumes_enter_and_esc_alone_closes() {
-        let mut app = app_with_focused_search(PluginsViewTab::Installed);
-        app.active_view = crate::app::ActiveView::Plugins;
+        let mut app = app_with_focused_search(ExtensionsTab::Installed);
+        app.active_view = crate::app::ActiveView::Extensions;
         let _ = press(&mut app, KeyCode::Char('a'));
 
         crate::app::config::handle_plugins_key(
@@ -2504,11 +2495,11 @@ mod tests {
         );
         assert_eq!(
             app.active_view,
-            crate::app::ActiveView::Plugins,
+            crate::app::ActiveView::Extensions,
             "Enter with the filter focused does not close the view"
         );
         assert_eq!(
-            app.plugins.search_query_for(PluginsViewTab::Installed),
+            app.plugins.search_query_for(ExtensionsTab::Installed),
             "a",
             "Enter inserts nothing into the filter"
         );
@@ -2520,11 +2511,11 @@ mod tests {
             );
             assert_eq!(
                 app.active_view,
-                crate::app::ActiveView::Plugins,
+                crate::app::ActiveView::Extensions,
                 "a modified Enter with the filter focused does not close the view"
             );
             assert_eq!(
-                app.plugins.search_query_for(PluginsViewTab::Installed),
+                app.plugins.search_query_for(ExtensionsTab::Installed),
                 "a",
                 "a modified Enter inserts nothing into the filter"
             );
@@ -2538,15 +2529,19 @@ mod tests {
     }
 
     #[test]
-    fn installed_and_plugins_search_queries_are_independent() {
-        let state = PluginsState {
-            installed_search_query: query("installed"),
-            plugins_search_query: query("plugins"),
-            ..PluginsState::default()
-        };
+    fn installed_and_skills_search_queries_are_independent() {
+        let mut state = PluginsState::default();
+        if let Some(query) =
+            state.tab_state.search_queries.get_mut(ExtensionsTab::Installed.index())
+        {
+            query.set_text("installed");
+        }
+        if let Some(query) = state.tab_state.search_queries.get_mut(ExtensionsTab::Skills.index()) {
+            query.set_text("skills");
+        }
 
-        assert_eq!(state.search_query_for(PluginsViewTab::Installed), "installed");
-        assert_eq!(state.search_query_for(PluginsViewTab::Plugins), "plugins");
+        assert_eq!(state.search_query_for(ExtensionsTab::Installed), "installed");
+        assert_eq!(state.search_query_for(ExtensionsTab::Skills), "skills");
     }
 
     #[test]
@@ -2820,17 +2815,36 @@ mod tests {
         assert_eq!(rows[3].detail.as_deref(), Some("plugin id carries no marketplace"));
     }
 
-    /// The same entries under the manual `u` key queue everything:
-    /// the no-marketplace skip is an auto-update-only affordance.
+    /// Seed one stale extension row so `Update all` has a queue.
+    fn seed_stale_row(app: &mut App, id: &str, from: &str, to: &str) {
+        app.plugins.rows.push(ExtensionRow {
+            id: id.to_owned(),
+            kind: ExtensionKind::Plugin,
+            name: id.split('@').next().unwrap_or(id).to_owned(),
+            source: id.split('@').nth(1).unwrap_or_default().to_owned(),
+            version: Some(from.to_owned()),
+            available_version: Some(to.to_owned()),
+            state: RowState::UpdateAvailable,
+            detail: None,
+        });
+    }
+
+    /// Under the manual `u` key only the stale set queues - the rows
+    /// wearing the Update action - not every installed plugin.
     #[test]
-    fn manual_rows_queue_everything() {
+    fn manual_rows_queue_exactly_the_stale_set() {
         let mut app = App::test_default();
         seeded_installed(&mut app);
         push_no_marketplace_entry(&mut app);
+        seed_stale_row(&mut app, "supabase@claude-plugins-official", "1.0.0", "2.0.0");
+        seed_stale_row(&mut app, "pensive@claude-night-market", "1.7.2", "2.0.0");
 
         let rows = build_update_rows(&app, PluginUpdateTrigger::Manual);
 
+        assert_eq!(rows.len(), 2, "only the two stale plugins: {rows:?}");
         assert!(rows.iter().all(|row| row.status == PluginRunRowStatus::Queued));
+        assert_eq!(rows[0].plugin_id, "supabase@claude-plugins-official");
+        assert_eq!(rows[1].plugin_id, "pensive@claude-night-market");
     }
 
     #[test]
@@ -2881,7 +2895,10 @@ mod tests {
         app.config.last_error = Some("stale".to_owned());
         apply_update_run_finished(&mut app, &run, None, None);
         assert_eq!(
-            availability_for(&app.plugins, "supabase@claude-plugins-official", "user")
+            app.plugins
+                .update_availability
+                .iter()
+                .find(|availability| availability.plugin_id == "supabase@claude-plugins-official")
                 .and_then(|availability| availability.available_version.as_deref()),
             Some("2.0.0"),
             "a finished check leaves the marker"
@@ -2898,7 +2915,10 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.plugins.update_run.is_none(), "Esc clears the report");
         assert!(
-            availability_for(&app.plugins, "supabase@claude-plugins-official", "user").is_some(),
+            app.plugins
+                .update_availability
+                .iter()
+                .any(|availability| availability.plugin_id == "supabase@claude-plugins-official"),
             "the marker survives the report"
         );
 
@@ -2930,6 +2950,7 @@ mod tests {
                 marketplaces: Vec::new(),
                 components: Vec::new(),
                 marketplace_health: Vec::new(),
+                token_costs: std::collections::BTreeMap::default(),
             },
             PathBuf::new(),
         );
@@ -2956,6 +2977,7 @@ mod tests {
                 marketplaces: Vec::new(),
                 components: Vec::new(),
                 marketplace_health: Vec::new(),
+                token_costs: std::collections::BTreeMap::default(),
             },
             PathBuf::new(),
         );
@@ -3048,7 +3070,8 @@ mod tests {
     async fn the_update_start_message_surfaces_on_the_footer_pair() {
         let mut app = App::test_default();
         seeded_installed(&mut app);
-        app.plugins.active_tab = PluginsViewTab::Installed;
+        seed_stale_row(&mut app, "supabase@claude-plugins-official", "1.0.0", "2.0.0");
+        app.plugins.active_tab = ExtensionsTab::Installed;
 
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -3056,7 +3079,7 @@ mod tests {
                 handle_key(&mut app, KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
                 assert_eq!(
                     app.config.status_message.as_deref(),
-                    Some("Updating 3 plugin(s)..."),
+                    Some("Updating 1 plugin(s)..."),
                     "the start message reaches the footer pair: {:?}",
                     app.config.status_message
                 );
@@ -3071,7 +3094,7 @@ mod tests {
     async fn the_check_start_message_surfaces_on_the_footer_pair() {
         let mut app = App::test_default();
         seeded_installed(&mut app);
-        app.plugins.active_tab = PluginsViewTab::Installed;
+        app.plugins.active_tab = ExtensionsTab::Installed;
 
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -3093,7 +3116,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn the_refresh_start_message_surfaces_on_the_footer_pair() {
         let mut app = App::test_default();
-        app.plugins.active_tab = PluginsViewTab::Installed;
+        app.plugins.active_tab = ExtensionsTab::Installed;
 
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -3236,6 +3259,7 @@ mod tests {
             marketplaces: Vec::new(),
             components: Vec::new(),
             marketplace_health: Vec::new(),
+            token_costs: std::collections::BTreeMap::default(),
         };
         let update = PluginUpdateRun {
             trigger: PluginUpdateTrigger::Manual,
@@ -3306,6 +3330,7 @@ mod tests {
             marketplaces: Vec::new(),
             components: Vec::new(),
             marketplace_health: Vec::new(),
+            token_costs: std::collections::BTreeMap::default(),
         };
 
         apply_rollback_success(
@@ -3612,6 +3637,7 @@ mod tests {
             marketplaces: vec![],
             components: vec![],
             marketplace_health: vec![],
+            token_costs: std::collections::BTreeMap::default(),
         }
     }
 
@@ -3682,13 +3708,14 @@ mod tests {
     /// injected CLI, one call per entry, and the pane settles with the
     /// report instead of refusing silently.
     #[tokio::test(flavor = "current_thread")]
-    async fn the_u_key_runs_every_installed_plugin() {
+    async fn the_u_key_runs_exactly_the_stale_rows() {
         let mut app = App::test_default();
         seeded_installed(&mut app);
+        seed_stale_row(&mut app, "supabase@claude-plugins-official", "1.0.0", "2.0.0");
         let calls = call_log();
         app.plugins.update_cli =
             Some(fake_cli("is already at the latest version.", &two_plugin_snapshot(), &calls));
-        app.plugins.active_tab = PluginsViewTab::Installed;
+        app.plugins.active_tab = ExtensionsTab::Installed;
 
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -3706,11 +3733,14 @@ mod tests {
             .await;
 
         let log = calls.lock().expect("call log").clone();
+        let update_calls =
+            log.iter().filter(|call| !call.starts_with("refresh")).cloned().collect::<Vec<_>>();
         assert_eq!(
-            log.iter().filter(|call| !call.starts_with("refresh")).count(),
-            3,
-            "one update call per installed entry: {log:?}"
+            update_calls.len(),
+            1,
+            "one update call, for the one stale plugin: {update_calls:?}"
         );
+        assert!(update_calls[0].contains("supabase@claude-plugins-official"));
         let run = app.plugins.update_run.as_ref().expect("the report stands");
         assert!(run.finished);
         assert!(run.rows.iter().all(|row| row.status == PluginRunRowStatus::AlreadyCurrent));
@@ -3842,6 +3872,7 @@ mod tests {
             project_path: None,
             capability: PluginCapability::Skill,
         }];
+        seed_stale_row(&mut app, "supabase@claude-plugins-official", "1.0.0", "2.0.0");
         let mut snapshot = two_plugin_snapshot();
         snapshot.installed = vec![InstalledPluginEntry {
             id: "supabase@claude-plugins-official".to_owned(),

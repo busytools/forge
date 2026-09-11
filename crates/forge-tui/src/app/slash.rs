@@ -308,7 +308,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/plugins");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Plugins);
+        assert_eq!(app.active_view, super::super::ActiveView::Extensions);
     }
 
     #[test]

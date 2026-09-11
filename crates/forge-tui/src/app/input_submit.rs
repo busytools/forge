@@ -630,7 +630,7 @@ mod tests {
 
         submit_input(&mut app);
 
-        assert_eq!(app.active_view, ActiveView::Plugins);
+        assert_eq!(app.active_view, ActiveView::Extensions);
         assert!(app.input().text().is_empty());
         assert!(!app.pending_cancel());
         assert!(rx.try_recv().is_err());

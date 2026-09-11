@@ -191,6 +191,7 @@ fn refresh_inventory_blocking(
         marketplaces: marketplace_sources,
         components,
         marketplace_health,
+        token_costs: std::collections::BTreeMap::new(),
     })
 }
 
@@ -402,11 +403,10 @@ pub async fn run_plugin_rollback(
 }
 
 /// A plugin's `claude plugin details` projection: the always-on token
-/// cost every session pays for the plugin being installed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginDetails {
-    pub token_cost_always_on: u64,
-}
+/// cost every session pays for the plugin being installed. The shape
+/// lives in forge_primitives::plugins beside the snapshot that
+/// carries it.
+pub use forge_primitives::plugins::PluginDetails;
 
 /// The always-on token cost parsed from a details output, recorded
 /// from the CLI ("  Always-on:   ~450 tok   added to every session").
@@ -454,22 +454,58 @@ pub async fn plugin_details(
 ) -> Result<PluginDetails, String> {
     tokio::task::spawn_blocking(move || {
         let claude_path = resolve_claude_path(claude_path)?;
-        let output = Command::new(&claude_path)
-            .args(["plugin", "details", &plugin_id])
-            .current_dir(&cwd_raw)
-            .output()
-            .map_err(|error| format!("Failed to run `claude plugin details`: {error}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(format!("`claude plugin details` failed: {stderr}"));
-        }
-        let text = String::from_utf8_lossy(&output.stdout).into_owned();
-        let token_cost_always_on = parse_always_on_tokens(&text)
-            .ok_or_else(|| "no Always-on cost in the `claude plugin details` output".to_owned())?;
-        Ok(PluginDetails { token_cost_always_on })
+        plugin_details_blocking(&claude_path, &cwd_raw, &plugin_id)
     })
     .await
     .map_err(|error| format!("Plugin details task failed: {error}"))?
+}
+
+fn plugin_details_blocking(
+    claude_path: &Path,
+    cwd_raw: &str,
+    plugin_id: &str,
+) -> Result<PluginDetails, String> {
+    let output = Command::new(claude_path)
+        .args(["plugin", "details", plugin_id])
+        .current_dir(cwd_raw)
+        .output()
+        .map_err(|error| format!("Failed to run `claude plugin details`: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(format!("`claude plugin details` failed: {stderr}"));
+    }
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let token_cost_always_on = parse_always_on_tokens(&text)
+        .ok_or_else(|| "no Always-on cost in the `claude plugin details` output".to_owned())?;
+    Ok(PluginDetails { token_cost_always_on })
+}
+
+/// Fetch the always-on cost for `(plugin id, version)` requests,
+/// sequentially, one `claude plugin details` call each. A plugin whose
+/// details fail is simply absent from the map - a missing cost reads
+/// as no badge, never as an error on the pane.
+pub async fn fetch_plugin_details(
+    cwd_raw: String,
+    cached_claude_path: Option<PathBuf>,
+    requests: Vec<(String, String)>,
+) -> std::collections::BTreeMap<String, PluginDetails> {
+    if requests.is_empty() {
+        return std::collections::BTreeMap::new();
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut costs = std::collections::BTreeMap::new();
+        let Ok(claude_path) = resolve_claude_path(cached_claude_path) else {
+            return costs;
+        };
+        for (plugin_id, _version) in requests {
+            if let Ok(details) = plugin_details_blocking(&claude_path, &cwd_raw, &plugin_id) {
+                costs.insert(plugin_id, details);
+            }
+        }
+        costs
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Token cost per plugin, keyed by the installed version it was
