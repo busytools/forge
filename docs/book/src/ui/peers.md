@@ -71,7 +71,7 @@ Notices stay single-line with a `⚠` modifier inline.
 
 ## Gotify notification chat block
 
-Every matched Gotify notification delivered into a subscribed session echoes into the chat as an external-notification block, ahead of the response it triggers - every notification is its own turn. It is an external event, not agent traffic: a Gotify source label, the `◈` glyph in place of `▶`, and an `app 'X' - priority N` header over the title then message. The priority number renders in warning at or above 5, otherwise dim.
+Every matched Gotify notification delivered into a subscribed session echoes into the chat as an external-notification block, ahead of the response it triggers - every notification is its own turn. It is an external event, not agent traffic: a Gotify source label, the `◈` glyph in place of `▶`, and an `app 'X' - priority N` header over the title then message. The priority number renders in warning at or above 5, otherwise dim. The message body is a user turn, so it carries the [gutter rule](./chat.md#user-message) rather than a background band.
 
 <div class="term">
 
@@ -97,7 +97,7 @@ The block never merges into a peer messaging group - it keeps its own source lab
 
 ## Cron chat block
 
-Every durable cron that fires into its owner echoes into the chat as a cron block, ahead of the response it triggers. It is an internal scheduled event, not typed input: a Cron source label, the `◴` glyph (the same one the [SCHEDULES](./inspector-processes.md) section uses), and the fired prompt under the tree connectors. An overdue fire (forge or the owner was down through the scheduled minute) prefixes the prompt with a plain `[missed cron]` marker.
+Every durable cron that fires into its owner echoes into the chat as a cron block, ahead of the response it triggers. It is an internal scheduled event, not typed input: a Cron source label, the `◴` glyph (the same one the [SCHEDULES](./inspector-processes.md) section uses), and the fired prompt under the tree connectors. An overdue fire (forge or the owner was down through the scheduled minute) prefixes the prompt with a plain `[missed cron]` marker. The fired prompt is a user turn, so it carries the [gutter rule](./chat.md#user-message) rather than a background band.
 
 <div class="term">
 

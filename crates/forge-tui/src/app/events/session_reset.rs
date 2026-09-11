@@ -204,8 +204,8 @@ fn is_queued_only_user_envelope(msg: &forge_primitives::Message) -> bool {
 /// timestamp as a single user bubble. The first text block is a DIM
 /// header (`Queued during the previous turn · N messages`), followed
 /// by one `▸ <prompt>` text block per message. All blocks live
-/// inside one [`MessageRole::User`] [`ChatMessage`] so the existing
-/// `USER_MSG_BG` background stretches over the whole group - visually
+/// inside one [`MessageRole::User`] [`ChatMessage`] so the turn's
+/// gutter rule runs unbroken over the whole group - visually
 /// a single bordered area, which is what option B's mockup showed.
 fn push_queued_group(app: &mut App, prompts: &[String]) {
     app.clear_active_turn_assistant();
