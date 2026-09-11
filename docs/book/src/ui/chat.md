@@ -16,7 +16,7 @@ The banner is the literal text "User" in dim bold; the body is full markdown wit
 <details>
 <summary>The gutter rule</summary>
 
-The rule is `▌` in [rust orange](./reference.md) on column 0, drawn after the turn renders rather than prefixed onto the text: a prefix span would survive only the first row of each wrapped line. Column 1 stays blank and the body starts at column 2. The rule covers the rows the turn's text body occupies and nothing else - not the "User" banner, not the blank separator below the turn, not the neighbouring messages - so it clips correctly when the turn is scrolled off the top of the viewport.
+The rule is `▏` in [rust orange](./reference.md) on column 0, drawn after the turn renders rather than prefixed onto the text: a prefix span would survive only the first row of each wrapped line. Column 1 stays blank and the body starts at column 2. The rule covers the rows the turn's text body occupies and nothing else - not the "User" banner, not the blank separator below the turn, not the neighbouring messages - so it clips correctly when the turn is scrolled off the top of the viewport.
 
 </details>
 
@@ -24,8 +24,8 @@ The rule is `▌` in [rust orange](./reference.md) on column 0, drawn after the 
 
   <pre class="indent">
   <span class="dim bold">User</span>
-  <span class="rust-orange">&#x258c;</span>  Read the rate-limit code and add a
-  <span class="rust-orange">&#x258c;</span>  softer wording branch.</pre>
+  <span class="rust-orange">&#x258f;</span>  Read the rate-limit code and add a
+  <span class="rust-orange">&#x258f;</span>  softer wording branch.</pre>
 
 </div>
 

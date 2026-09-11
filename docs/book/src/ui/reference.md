@@ -98,7 +98,7 @@ Every character used as chrome - borders, icons, status, separators. Scope is cu
 | `▤` | narrow-tier Projects top-bar icon | toggles the Projects overlay |
 | `💬` `✎` `↳` | diff comment cards; the [Inspector GIT header](./inspector.md) and [NEEDS ATTENTION](./inspector.md) band | the card and rail badge, your editable turns, the reply line; outside the overlay the balloon counts worker answers nobody has come back to |
 | `?` `[ ]` | question header and help toggle; mode badge and checkbox | rust orange in the question header; ASCII brackets |
-| `▌` | user turn gutter | rust-orange rule down the left of the rows a user turn's body occupies, excluding its banner and the separator below ([chat](./chat.md#user-message)) |
+| `▏` | user turn gutter | rust-orange rule down the left of the rows a user turn's body occupies, excluding its banner and the separator below ([chat](./chat.md#user-message)) |
 | `▓ ░` | projects-pane usage bars | filled cells color by position (four zones); empty cells dim |
 | `⎇` | Inspector GIT branch marker | dim on default, rust orange on a feature branch, yellow `HEAD` when detached |
 | `⠋ ⠙ ⠹ ...` | spinner frames; running project rows | braille spinner |
