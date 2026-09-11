@@ -8,11 +8,16 @@ use crate::ui::fence;
 use crate::ui::peer_block;
 use crate::ui::theme;
 use crate::ui::tool_call;
+use crate::ui::wrap;
 
 pub mod grouping;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
+
+/// Blank columns at the left of every row a user turn's text body
+/// occupies. The rust-orange rule is painted into them after render.
+const USER_GUTTER: u16 = 2;
 
 const FERRIS_SAYS: &[&str] = &[
     r" ------------------------ ",
@@ -91,11 +96,14 @@ struct MessageLayout {
     segments: Vec<MessageLayoutSegment>,
     height: usize,
     wrapped_lines: usize,
+    /// Wrapped-row ranges, counted from the message's first row, that the
+    /// user-turn gutter covers. The chat paints the rule over them.
+    gutter_rows: Vec<std::ops::Range<usize>>,
 }
 
 impl MessageLayout {
     fn new() -> Self {
-        Self { segments: Vec::new(), height: 0, wrapped_lines: 0 }
+        Self { segments: Vec::new(), height: 0, wrapped_lines: 0, gutter_rows: Vec::new() }
     }
 
     fn push_blank(&mut self) {
@@ -119,6 +127,20 @@ impl MessageLayout {
         self.segments.push(MessageLayoutSegment::Lines { lines, height });
         self.height += height;
         self.wrapped_lines += wrapped_lines;
+    }
+
+    /// As [`Self::push_lines`], recording the pushed rows as gutter rows.
+    fn push_gutter_lines(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        height: usize,
+        wrapped_lines: usize,
+    ) {
+        let start = self.height;
+        self.push_lines(lines, height, wrapped_lines);
+        if self.height > start {
+            self.gutter_rows.push(start..self.height);
+        }
     }
 }
 
@@ -777,8 +799,8 @@ fn append_user_block(
                 return;
             }
             let trailing_gap = block.trailing_blank_lines();
-            let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
-            layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+            let rendered = text_block_layout(block, width, true, USER_GUTTER);
+            layout.push_gutter_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
             for _ in 0..trailing_gap {
                 layout.push_blank();
             }
@@ -1461,7 +1483,7 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageL
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                let mut rendered = text_block_layout(block, width, None, false);
+                let mut rendered = text_block_layout(block, width, false, 0);
                 tint_lines(&mut rendered.lines, color);
                 layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
                 for _ in 0..trailing_gap {
@@ -1741,7 +1763,8 @@ fn get_or_build_message_render_cache<'a>(
         let wrapped_lines = layout.wrapped_lines;
         let segments =
             layout.segments.iter().cloned().map(MessageLayoutSegment::into_cached).collect();
-        msg.render_cache.store(key, segments, height, wrapped_lines);
+        let gutter_rows = layout.gutter_rows;
+        msg.render_cache.store(key, segments, height, wrapped_lines, gutter_rows);
     }
     &msg.render_cache
 }
@@ -1966,12 +1989,12 @@ fn welcome_block_layout(block: &mut WelcomeBlock, width: u16) -> RenderedBlockLa
 fn text_block_layout(
     block: &mut TextBlock,
     width: u16,
-    bg: Option<Color>,
     preserve_newlines: bool,
+    gutter: u16,
 ) -> RenderedBlockLayout {
     let had_height = block.cache.height_at(width).is_some();
     let mut lines = Vec::new();
-    render_text_block_cached(block, width, bg, preserve_newlines, &mut lines);
+    render_text_block_cached(block, width, preserve_newlines, gutter, &mut lines);
     let height = block.cache.height_at(width).unwrap_or_else(|| {
         let height = rendered_lines_height(&lines, width);
         block.cache.set_height(height, width);
@@ -1986,7 +2009,7 @@ fn assistant_text_block_layout(
     width: u16,
     trim_leading_blank_lines: bool,
 ) -> RenderedBlockLayout {
-    let mut rendered = text_block_layout(block, width, None, false);
+    let mut rendered = text_block_layout(block, width, false, 0);
 
     if trim_leading_blank_lines {
         let leading_blank_lines = count_leading_blank_lines(&rendered.lines);
@@ -2333,9 +2356,11 @@ fn tint_lines(lines: &mut [Line<'static>], color: Color) {
 fn render_markdown_segments(
     text: &str,
     width: u16,
-    bg: Option<Color>,
     preserve_newlines: bool,
+    gutter: u16,
 ) -> Vec<Line<'static>> {
+    let gutter = gutter.min(width.saturating_sub(1));
+    let content_width = width.saturating_sub(gutter).max(1);
     let mut out = Vec::new();
     for segment in fence::segments(text) {
         match segment.kind {
@@ -2346,18 +2371,85 @@ fn render_markdown_segments(
                 } else {
                     preprocessed
                 };
-                out.extend(super::document_table::render_markdown_with_tables(&body, width, bg));
+                let lines =
+                    super::document_table::render_markdown_with_tables(&body, content_width, None);
+                out.extend(indent_rows(lines, content_width, gutter));
             }
             fence::SegmentKind::Code { language, body } => {
                 // `tui_markdown` separates a block from what precedes it.
                 if out.last().is_some_and(|line| !line_is_blank(line)) {
-                    out.push(Line::default());
+                    out.push(gutter_row(Line::default(), gutter));
                 }
-                out.extend(fence::render_code_panel(body, language, width));
+                out.extend(
+                    fence::render_code_panel(body, language, content_width)
+                        .into_iter()
+                        .map(|line| gutter_row(line, gutter)),
+                );
             }
         }
     }
     out
+}
+
+/// Push `gutter` blank columns in front of a row, so the paint step finds
+/// empty cells at columns 0..gutter on every row the turn occupies. Any
+/// row-level background is shed with them: the gutter is the rule's
+/// ground, not a code panel's.
+fn gutter_row(mut line: Line<'static>, gutter: u16) -> Line<'static> {
+    if gutter == 0 {
+        return line;
+    }
+    let mut spans = Vec::with_capacity(line.spans.len() + 1);
+    spans.push(Span::raw(" ".repeat(usize::from(gutter))));
+    spans.append(&mut line.spans);
+    let mut style = line.style;
+    style.bg = None;
+    Line::from(spans).style(style)
+}
+
+/// Wrap the prose rows to the gutter-narrowed width and re-emit the gutter
+/// on each one. The paragraph would otherwise leave a wrapped continuation
+/// at column 0, straight under the rule. Every emitted row fits the chat
+/// width, so the paragraph wraps none of them and the measured height
+/// stays what is drawn - the invariant that makes this wrap safe.
+///
+/// A row already inside the budget passes through untouched, which is what
+/// keeps a markdown table's grid, laid out for exactly this width, intact.
+fn indent_rows(lines: Vec<Line<'static>>, content_width: u16, gutter: u16) -> Vec<Line<'static>> {
+    if gutter == 0 {
+        return lines;
+    }
+    let width = usize::from(content_width);
+    lines.into_iter().flat_map(|line| indent_row(line, width, gutter)).collect()
+}
+
+fn indent_row(line: Line<'static>, width: usize, gutter: u16) -> Vec<Line<'static>> {
+    if wrap::line_display_width(&line) <= width && !row_has_newline(&line) {
+        return vec![gutter_row(line, gutter)];
+    }
+    let (indent, content) = fence::split_line_indent(line.spans);
+    let budget = width.saturating_sub(wrap::display_width(&indent)).max(1);
+    let chunks: Vec<wrap::StyledChunk> = content
+        .into_iter()
+        .map(|span| wrap::StyledChunk { text: span.content.into_owned(), style: span.style })
+        .collect();
+    wrap::wrap_styled_chunks(&chunks, budget)
+        .into_iter()
+        .map(|wrapped| {
+            let mut spans = Vec::with_capacity(wrapped.spans.len() + 1);
+            if !indent.is_empty() {
+                spans.push(Span::raw(indent.clone()));
+            }
+            spans.extend(wrapped.spans);
+            gutter_row(Line::from(spans), gutter)
+        })
+        .collect()
+}
+
+/// A newline inside a span is not measured by `line_display_width`, so a
+/// row carrying one has to go through the wrapper whatever its width.
+fn row_has_newline(line: &Line<'_>) -> bool {
+    line.spans.iter().any(|span| span.content.contains('\n'))
 }
 
 /// Headings (`# Title`) become `**Title**` (bold) with a blank line
@@ -2466,8 +2558,8 @@ pub(super) fn render_text_cached(
     cache: &mut BlockCache,
     incr: &mut IncrementalMarkdown,
     width: u16,
-    bg: Option<Color>,
     preserve_newlines: bool,
+    gutter: u16,
     out: &mut Vec<Line<'static>>,
 ) {
     // Fast path only when the cached lines were measured at this width.
@@ -2486,9 +2578,9 @@ pub(super) fn render_text_cached(
 
     // Build a render function that handles preprocessing + tui_markdown
     let render_fn = |src: &str| -> Vec<Line<'static>> {
-        render_markdown_segments(src, width, bg, preserve_newlines)
+        render_markdown_segments(src, width, preserve_newlines, gutter)
     };
-    let render_key = MarkdownRenderKey { width, bg, preserve_newlines };
+    let render_key = MarkdownRenderKey { width, gutter, preserve_newlines };
 
     // Ensure any previously invalidated paragraph caches are re-rendered
     incr.ensure_rendered(render_key, &render_fn);
@@ -2513,11 +2605,18 @@ pub(super) fn render_text_cached(
 fn render_text_block_cached(
     block: &mut TextBlock,
     width: u16,
-    bg: Option<Color>,
     preserve_newlines: bool,
+    gutter: u16,
     out: &mut Vec<Line<'static>>,
 ) {
-    render_text_cached(&mut block.cache, &mut block.markdown, width, bg, preserve_newlines, out);
+    render_text_cached(
+        &mut block.cache,
+        &mut block.markdown,
+        width,
+        preserve_newlines,
+        gutter,
+        out,
+    );
 }
 
 /// Convert single line breaks into hard breaks so user-entered newlines persist.
@@ -2914,35 +3013,67 @@ mod tests {
             })
             .collect();
         assert_eq!(code_lines.len(), 2, "{role}: label row plus one code row");
-        assert!(
-            code_lines.iter().all(|line| line
+        for line in code_lines {
+            // The leading blank gutter columns are the rule's, outside the
+            // panel; everything the panel paints must carry its background.
+            let painted: Vec<_> = line
                 .spans
                 .iter()
-                .all(|span| span.style.bg == Some(theme::CODE_PANEL_BG))),
-            "{role}: a span escapes the panel background"
-        );
+                .skip_while(|span| span.style.bg.is_none() && span.content.trim().is_empty())
+                .collect();
+            assert!(
+                painted.iter().all(|span| span.style.bg == Some(theme::CODE_PANEL_BG)),
+                "{role}: a span escapes the panel background"
+            );
+        }
     }
 
     const FENCED_MESSAGE: &str = "Here is the guard:\n\n```rust\nfn main() {}\n```\n\n";
 
+    /// Both roles reach the panel through `render_message`, so this pairs
+    /// with the assistant test below to pin that one renderer serves both.
+    /// The two differ only in the user turn's gutter: prose two columns in
+    /// and the panel rendered two columns narrower, so the panel's own pad
+    /// lands its content one nesting level deeper than the prose.
     #[test]
     fn a_user_fenced_block_renders_as_a_code_panel() {
-        let mut block = TextBlock::from_complete(FENCED_MESSAGE);
-        let rendered = text_block_layout(&mut block, 80, Some(theme::USER_MSG_BG), true);
-        assert_rows(&rendered.lines, &["Here is the guard:", "  rust", "  fn main() {}"], "user");
-        assert_panel_painted(&rendered.lines, "user");
+        let mut messages = [make_text_message(MessageRole::User, FENCED_MESSAGE.trim_end())];
+        let lines = render_one_lines_with(&mut messages, 0, 80, options_without_separator());
+        assert_rows(
+            &lines,
+            &["User", "  Here is the guard:", "    rust", "    fn main() {}"],
+            "user",
+        );
+        assert_panel_painted(&lines, "user");
     }
 
     #[test]
     fn an_assistant_fenced_block_renders_as_a_code_panel() {
-        let mut block = TextBlock::from_complete(FENCED_MESSAGE);
-        let rendered = assistant_text_block_layout(&mut block, 80, false);
-        assert_rows(
-            &rendered.lines,
-            &["Here is the guard:", "  rust", "  fn main() {}"],
-            "assistant",
-        );
-        assert_panel_painted(&rendered.lines, "assistant");
+        let mut messages = [make_text_message(MessageRole::Assistant, FENCED_MESSAGE.trim_end())];
+        let lines = render_one_lines_with(&mut messages, 0, 80, options_without_separator());
+        assert_rows(&lines, &["Here is the guard:", "  rust", "  fn main() {}"], "assistant");
+        assert_panel_painted(&lines, "assistant");
+    }
+
+    /// The rule is painted, not prefixed, so the indent has to be real on
+    /// every row the turn occupies - a wrapped row that started at column
+    /// zero would put text under the rule.
+    #[test]
+    fn every_user_row_is_indented_past_the_gutter() {
+        let long = "word ".repeat(20);
+        let mut messages = [make_text_message(MessageRole::User, &format!("{long}\n"))];
+        let rows = rendered_rows(&render_one_lines_with(
+            &mut messages,
+            0,
+            40,
+            options_without_separator(),
+        ));
+        let body: Vec<&String> = rows.iter().skip(1).collect();
+        assert!(body.len() > 2, "the line must wrap to pin the continuation rows: {body:?}");
+        for row in &body {
+            assert!(row.starts_with("  "), "every user row starts past the gutter: {row:?}");
+            assert!(row.chars().count() <= 40, "row {row:?} exceeds the chat width");
+        }
     }
 
     #[test]
@@ -2959,13 +3090,29 @@ mod tests {
         assert_rows(&rendered.lines, &["intro", "", "  rust", "  fn main() {}"], "assistant");
     }
 
+    /// The slate band is gone. A user prose row renders on the terminal's
+    /// own background, so the gutter is the only thing marking the turn.
+    #[test]
+    fn a_user_prose_row_carries_no_background_band() {
+        let mut messages = [make_text_message(MessageRole::User, "Read the rate-limit code.\n")];
+        let lines = render_one_lines(&mut messages, 0);
+        let banded: Vec<String> = lines
+            .iter()
+            .filter(|line| {
+                line.style.bg.is_some() || line.spans.iter().any(|span| span.style.bg.is_some())
+            })
+            .map(row_text)
+            .collect();
+        assert!(banded.is_empty(), "user prose rows must carry no background, got: {banded:?}");
+    }
+
     #[test]
     fn a_user_line_break_survives_as_its_own_row() {
         let mut messages = [make_text_message(MessageRole::User, "first line\nsecond line\n")];
         assert_eq!(
             render_one(&mut messages, 0),
-            ["User", "first line", "second line", ""],
-            "the user path forces the break, so each line keeps its own row"
+            ["User", "  first line", "  second line", ""],
+            "the user path forces the break, so each line keeps its own row past the gutter"
         );
     }
 
@@ -3084,15 +3231,32 @@ mod tests {
     }
 
     fn render_one(messages: &mut [ChatMessage], idx: usize) -> Vec<String> {
+        render_lines_to_strings(&render_one_lines(messages, idx))
+    }
+
+    /// Render one message through the production entry point, keeping the
+    /// styled lines. Role dispatch lives in `render_message`, so a test
+    /// that calls a layout helper directly cannot see the flags each role
+    /// actually passes.
+    fn render_one_lines(messages: &mut [ChatMessage], idx: usize) -> Vec<Line<'static>> {
+        render_one_lines_with(messages, idx, 80, default_options())
+    }
+
+    fn render_one_lines_with(
+        messages: &mut [ChatMessage],
+        idx: usize,
+        width: u16,
+        options: MessageRenderOptions,
+    ) -> Vec<Line<'static>> {
         let spinner = idle_spinner();
         let mut lines = Vec::new();
         render_message(
             &mut messages[idx],
             &spinner,
-            MessageRenderContext::new(None, 80, 0, default_options()),
+            MessageRenderContext::new(None, width, 0, options),
             &mut lines,
         );
-        render_lines_to_strings(&lines)
+        lines
     }
 
     /// The signature must see the segment's tally: two groups identical

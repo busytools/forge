@@ -1,6 +1,5 @@
 use super::block_cache::BlockCache;
 use super::tool_call_info::ToolCallInfo;
-use ratatui::style::Color;
 use ratatui::text::Line;
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
@@ -328,6 +327,9 @@ pub struct MessageRenderCache {
     cached_bytes: usize,
     height: usize,
     wrapped_lines: usize,
+    /// Wrapped-row ranges, from the message's first row, that the
+    /// user-turn gutter covers. Empty for every other role.
+    gutter_rows: Vec<Range<usize>>,
     last_access_tick: Cell<u64>,
 }
 
@@ -361,6 +363,11 @@ impl MessageRenderCache {
         self.wrapped_lines
     }
 
+    pub fn gutter_rows(&self) -> &[Range<usize>] {
+        self.touch();
+        &self.gutter_rows
+    }
+
     pub fn cached_bytes(&self) -> usize {
         self.cached_bytes
     }
@@ -375,6 +382,7 @@ impl MessageRenderCache {
         segments: Vec<CachedMessageSegment>,
         height: usize,
         wrapped_lines: usize,
+        gutter_rows: Vec<Range<usize>>,
     ) {
         let cached_bytes = segments.iter().map(CachedMessageSegment::cached_bytes).sum();
         self.key = Some(key);
@@ -382,6 +390,7 @@ impl MessageRenderCache {
         self.cached_bytes = cached_bytes;
         self.height = height;
         self.wrapped_lines = wrapped_lines;
+        self.gutter_rows = gutter_rows;
         self.touch();
     }
 
@@ -391,6 +400,7 @@ impl MessageRenderCache {
         self.cached_bytes = 0;
         self.height = 0;
         self.wrapped_lines = 0;
+        self.gutter_rows.clear();
     }
 
     pub fn evict_cached_render(&mut self) -> usize {
@@ -450,7 +460,9 @@ fn line_utf8_bytes(line: &Line<'static>) -> usize {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MarkdownRenderKey {
     pub width: u16,
-    pub bg: Option<Color>,
+    /// Blank columns the caller reserves at the left of every emitted row
+    /// for the user turn's gutter. Zero for every other role.
+    pub gutter: u16,
     pub preserve_newlines: bool,
 }
 
@@ -801,7 +813,7 @@ mod tests {
     }
 
     fn test_render_key() -> MarkdownRenderKey {
-        MarkdownRenderKey { width: 80, bg: None, preserve_newlines: false }
+        MarkdownRenderKey { width: 80, gutter: 0, preserve_newlines: false }
     }
 
     #[test]

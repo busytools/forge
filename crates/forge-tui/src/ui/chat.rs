@@ -66,13 +66,15 @@ impl RemeasureBudget {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct CulledRenderStats {
     local_scroll: usize,
     render_start: usize,
     rendered_msgs: usize,
     last_rendered_idx: Option<usize>,
     rendered_line_count: usize,
+    /// Rows, in paragraph coordinates, the user turns' gutters cover.
+    gutter_rows: Vec<std::ops::Range<usize>>,
 }
 
 struct ScrolledRenderData {
@@ -609,6 +611,7 @@ fn render_scrolled(
             area,
         );
     }
+    paint_user_gutter(frame, area, &render_data.stats.gutter_rows, render_data.stats.local_scroll);
 }
 
 pub(super) fn refresh_selection_snapshot(app: &mut App) {
@@ -902,6 +905,7 @@ fn render_message_range(
     let mut rendered_msgs = 0usize;
     let mut local_scroll = 0usize;
     let mut last_rendered_idx = None;
+    let mut gutter_rows: Vec<std::ops::Range<usize>> = Vec::new();
     // Snapshot loop-invariant fields once - hoisting avoids N
     // String allocations on remeasure-heavy frames.
     let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
@@ -938,12 +942,24 @@ fn render_message_range(
                 out,
             );
             let structural_rows_skipped = structural_skip.saturating_sub(remaining_skip);
+            record_gutter_rows(
+                &mut gutter_rows,
+                app.messages()[i].render_cache.gutter_rows(),
+                rendered_rows,
+                structural_rows_skipped,
+            );
             rendered_rows = rendered_rows
                 .saturating_add(message_height.saturating_sub(structural_rows_skipped));
             local_scroll = remaining_skip;
             structural_skip = 0;
         } else {
             message::render_message(&mut app.active_messages_mut()[i], &sp, ctx, out);
+            record_gutter_rows(
+                &mut gutter_rows,
+                app.messages()[i].render_cache.gutter_rows(),
+                rendered_rows,
+                0,
+            );
             rendered_rows = rendered_rows.saturating_add(message_height);
         }
         app.sync_render_cache_message(i);
@@ -963,6 +979,56 @@ fn render_message_range(
         rendered_msgs,
         last_rendered_idx,
         rendered_line_count: out.len(),
+        gutter_rows,
+    }
+}
+
+/// Translate one message's gutter rows into paragraph coordinates. The
+/// message's own ranges are measured from its first row; `skipped` rows of
+/// it were cut off above the render window.
+fn record_gutter_rows(
+    out: &mut Vec<std::ops::Range<usize>>,
+    message_rows: &[std::ops::Range<usize>],
+    paragraph_row: usize,
+    skipped: usize,
+) {
+    for range in message_rows {
+        let start = range.start.saturating_sub(skipped);
+        let end = range.end.saturating_sub(skipped);
+        if end > start {
+            out.push((paragraph_row + start)..(paragraph_row + end));
+        }
+    }
+}
+
+/// The rule glyph a user turn's gutter is painted with.
+const GUTTER_GLYPH: &str = "\u{258c}";
+
+/// Paint the rust-orange rule down the left of every row a user turn
+/// covers. Runs after the paragraph render, so the rule lands on the rows
+/// actually drawn - wrapped rows included - rather than on the logical
+/// line a prefix span would have reached, and it clips to the chat area
+/// and to the scroll position.
+fn paint_user_gutter(
+    frame: &mut Frame,
+    area: Rect,
+    gutter_rows: &[std::ops::Range<usize>],
+    local_scroll: usize,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let style = Style::default().fg(crate::ui::theme::RUST_ORANGE);
+    let buf = frame.buffer_mut();
+    for range in gutter_rows {
+        let first = range.start.saturating_sub(local_scroll);
+        let last = range.end.min(local_scroll + usize::from(area.height));
+        for row in first..last {
+            if let Some(cell) = buf.cell_mut((area.x, area.y + row as u16)) {
+                cell.set_symbol(GUTTER_GLYPH);
+                cell.set_style(style);
+            }
+        }
     }
 }
 
@@ -1298,6 +1364,152 @@ mod tests {
             })
             .expect("draw");
         super::refresh_selection_snapshot(app);
+    }
+
+    /// Draw the chat and hand back the rendered grid, one entry per row:
+    /// the row text, then the styles of its first two cells.
+    fn draw_chat_rows(
+        app: &mut App,
+        width: u16,
+        height: u16,
+    ) -> Vec<(String, ratatui::style::Style, ratatui::style::Style)> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let spinner = idle_spinner();
+                let content_area = chat_content_area(Rect::new(0, 0, width, height));
+                let _ = app.active_viewport_mut().on_frame(content_area.width, content_area.height);
+                update_visual_heights(
+                    app,
+                    &spinner,
+                    content_area.width,
+                    usize::from(content_area.height),
+                );
+                app.active_viewport_mut().rebuild_prefix_sums();
+                let total_h = app.viewport().total_message_height();
+                render_scrolled(
+                    frame,
+                    content_area,
+                    app,
+                    &spinner,
+                    content_area.width,
+                    total_h,
+                    usize::from(content_area.height),
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let content_width = chat_content_area(Rect::new(0, 0, width, height)).width;
+        (0..height)
+            .map(|y| {
+                let mut text = String::new();
+                for x in 0..content_width {
+                    if let Some(cell) = buffer.cell((x, y)) {
+                        text.push_str(cell.symbol());
+                    }
+                }
+                let style =
+                    |x| buffer.cell((x, y)).map(ratatui::buffer::Cell::style).unwrap_or_default();
+                (text.trim_end().to_owned(), style(0), style(1))
+            })
+            .collect()
+    }
+
+    fn rule_row(row: &(String, ratatui::style::Style, ratatui::style::Style)) -> bool {
+        row.0.starts_with('\u{258c}')
+    }
+
+    /// The rule is painted over the rows the turn occupies, so it runs
+    /// unbroken through prose, wrapped prose and the code panel, and never
+    /// lands on the label above it or the assistant turn below it.
+    #[test]
+    fn the_user_turn_rule_runs_unbroken_through_the_turn() {
+        let long = "word ".repeat(20);
+        let mut app = App::test_default();
+        *app.active_messages_mut() = vec![
+            user_message(&format!("{long}\n\n```rust\nfn main() {{}}\n```\n")),
+            assistant_text_message("assistant prose after"),
+        ];
+        let rows = draw_chat_rows(&mut app, 60, 30);
+
+        let label = rows.iter().position(|row| row.0.starts_with("User")).expect("User label row");
+        assert!(!rule_row(&rows[label]), "the label row carries no rule");
+        let after = rows
+            .iter()
+            .position(|row| row.0.starts_with("assistant prose after"))
+            .expect("assistant row below the turn");
+        assert!(!rule_row(&rows[after]), "the assistant row carries no rule");
+
+        let body = &rows[label + 1..after];
+        let ruled_end = body.iter().position(|row| !rule_row(row)).unwrap_or(body.len());
+        assert!(ruled_end >= 4, "prose, wrap, panel label and code expected: {body:?}");
+        assert!(
+            body[..ruled_end].iter().filter(|row| row.0.contains("word")).count() >= 2,
+            "the prose must wrap so a continuation row is covered: {body:?}"
+        );
+        assert!(
+            body[ruled_end - 1].0.contains("fn main"),
+            "the rule runs down to the last panel row: {:?}",
+            body[ruled_end - 1].0
+        );
+        for row in &body[..ruled_end] {
+            assert_eq!(
+                row.1.fg,
+                Some(crate::ui::theme::RUST_ORANGE),
+                "the rule is rust orange: {:?}",
+                row.0
+            );
+            assert!(
+                row.2.bg.is_none_or(|bg| bg == ratatui::style::Color::Reset),
+                "the cell beside the rule belongs to neither rule nor panel: {:?} style={:?}",
+                row.0,
+                row.2
+            );
+        }
+        for row in &body[ruled_end..] {
+            assert!(!rule_row(row), "the rule stops at the turn's content: {:?}", row.0);
+        }
+    }
+
+    /// Scrolled so the turn straddles the top of the viewport, the rule
+    /// clips to the visible rows and never lands on a neighbouring turn.
+    #[test]
+    fn the_rule_stays_on_the_turn_when_the_chat_is_scrolled() {
+        let long = "word ".repeat(60);
+        let mut app = App::test_default();
+        *app.active_messages_mut() = vec![
+            assistant_text_message("top prose"),
+            user_message(&format!("{long}\n")),
+            assistant_text_message("bottom prose"),
+        ];
+        {
+            let viewport = app.active_viewport_mut();
+            viewport.auto_scroll = false;
+            viewport.scroll_target = 4;
+            viewport.scroll_pos = 4.0;
+        }
+        let rows = draw_chat_rows(&mut app, 60, 10);
+        assert!(
+            !rows.iter().any(|row| row.0.contains("top prose")),
+            "the top of the content is scrolled off: {:?}",
+            rows.iter().map(|row| row.0.clone()).collect::<Vec<_>>()
+        );
+
+        let ruled: Vec<usize> =
+            rows.iter().enumerate().filter(|(_, row)| rule_row(row)).map(|(i, _)| i).collect();
+        assert!(!ruled.is_empty(), "the turn is on screen");
+        assert!(
+            ruled.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "the rule is unbroken down the turn: {ruled:?}"
+        );
+        for index in &ruled {
+            let text = &rows[*index].0;
+            assert!(
+                text.contains("word"),
+                "every ruled row is one of the turn's prose rows: {text:?}"
+            );
+        }
     }
 
     /// A peer-dense session: every other message carries a messaging
