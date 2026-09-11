@@ -291,21 +291,56 @@ pub(crate) fn detect_outbound(tc: &ToolCallInfo) -> Option<PeerOutboundKind> {
 /// the `▶ Verb name` line is dropped and only the body lines render,
 /// so consecutive messages from the same worker stack as one
 /// paragraph.
+#[cfg(test)]
 pub(crate) fn render_inbound(
     kind: &PeerInboundKind,
     suppress_header: bool,
     collapsed: bool,
 ) -> Vec<Line<'static>> {
+    let mut copy_rows = Vec::new();
+    render_inbound_with_metas(kind, suppress_header, collapsed, &mut copy_rows)
+}
+
+/// As [`Self::render_inbound`], also emitting each row's copy provenance:
+/// the header and collapsed-summary rows are chrome, the tree body rows
+/// carry the 5-column connector prefix as chrome.
+pub(crate) fn render_inbound_with_metas(
+    kind: &PeerInboundKind,
+    suppress_header: bool,
+    collapsed: bool,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) -> Vec<Line<'static>> {
     match kind {
-        PeerInboundKind::Question { from, body, .. } => {
-            render_block("Question", from, None, body, INBOUND_GLYPH, suppress_header, collapsed)
-        }
-        PeerInboundKind::Message { from, body, .. } => {
-            render_block("Message", from, None, body, INBOUND_GLYPH, suppress_header, collapsed)
-        }
-        PeerInboundKind::Reply { from, body, .. } => {
-            render_block("Reply", from, None, body, INBOUND_GLYPH, suppress_header, collapsed)
-        }
+        PeerInboundKind::Question { from, body, .. } => render_block(
+            "Question",
+            from,
+            None,
+            body,
+            INBOUND_GLYPH,
+            suppress_header,
+            collapsed,
+            copy_rows,
+        ),
+        PeerInboundKind::Message { from, body, .. } => render_block(
+            "Message",
+            from,
+            None,
+            body,
+            INBOUND_GLYPH,
+            suppress_header,
+            collapsed,
+            copy_rows,
+        ),
+        PeerInboundKind::Reply { from, body, .. } => render_block(
+            "Reply",
+            from,
+            None,
+            body,
+            INBOUND_GLYPH,
+            suppress_header,
+            collapsed,
+            copy_rows,
+        ),
         PeerInboundKind::DeliveryFailure { target, reason, .. } => render_block(
             "Ask",
             target,
@@ -314,25 +349,45 @@ pub(crate) fn render_inbound(
             INBOUND_GLYPH,
             suppress_header,
             collapsed,
+            copy_rows,
         ),
         PeerInboundKind::WorkerSpawnFailed { label, reason } => {
-            render_worker_spawn_failed(label, reason)
+            render_worker_spawn_failed(label, reason, copy_rows)
         }
-        PeerInboundKind::Gotify { app, title, message, priority } => {
-            render_gotify_notification(app, *priority, title, message, suppress_header, collapsed)
+        PeerInboundKind::Gotify { app, title, message, priority } => render_gotify_notification(
+            app,
+            *priority,
+            title,
+            message,
+            suppress_header,
+            collapsed,
+            copy_rows,
+        ),
+        PeerInboundKind::Cron { prompt } => {
+            render_cron_prompt(prompt, suppress_header, collapsed, copy_rows)
         }
-        PeerInboundKind::Cron { prompt } => render_cron_prompt(prompt, suppress_header, collapsed),
     }
 }
 
 /// Build the styled lines for an outbound peer / worker block.
+#[cfg(test)]
 pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<Line<'static>> {
+    let mut copy_rows = Vec::new();
+    render_outbound_with_metas(kind, collapsed, &mut copy_rows)
+}
+
+/// As [`Self::render_outbound`], also emitting each row's copy provenance.
+pub(crate) fn render_outbound_with_metas(
+    kind: &PeerOutboundKind,
+    collapsed: bool,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) -> Vec<Line<'static>> {
     match kind {
         PeerOutboundKind::Ask { target, body } => {
-            render_block("Ask", target, None, body, OUTBOUND_GLYPH, false, collapsed)
+            render_block("Ask", target, None, body, OUTBOUND_GLYPH, false, collapsed, copy_rows)
         }
         PeerOutboundKind::Tell { target, body } => {
-            render_block("Tell", target, None, body, OUTBOUND_GLYPH, false, collapsed)
+            render_block("Tell", target, None, body, OUTBOUND_GLYPH, false, collapsed, copy_rows)
         }
     }
 }
@@ -387,6 +442,7 @@ fn render_block(
     direction_glyph: &str,
     suppress_header: bool,
     collapsed: bool,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if !suppress_header {
@@ -414,11 +470,12 @@ fn render_block(
             ));
         }
         lines.push(header);
+        copy_rows.push(crate::ui::copy::CopyRowMeta::chrome(0));
     }
     if collapsed {
-        push_collapsed_summary(&mut lines, body);
+        push_collapsed_summary(&mut lines, copy_rows, body);
     } else {
-        push_tree_body_lines(&mut lines, body);
+        push_tree_body_lines(&mut lines, copy_rows, body);
     }
     lines
 }
@@ -429,7 +486,11 @@ fn render_block(
 /// through the verb-row shape would force a non-fitting verb. The
 /// ✗-glyph + plain prose treatment signals "system notice, not a
 /// peer row" at a glance.
-fn render_worker_spawn_failed(label: &str, reason: &str) -> Vec<Line<'static>> {
+fn render_worker_spawn_failed(
+    label: &str,
+    reason: &str,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut header = Line::default();
     header.spans.push(Span::raw("  "));
@@ -443,7 +504,8 @@ fn render_worker_spawn_failed(label: &str, reason: &str) -> Vec<Line<'static>> {
         Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
     ));
     lines.push(header);
-    push_tree_body_lines(&mut lines, reason);
+    copy_rows.push(crate::ui::copy::CopyRowMeta::chrome(0));
+    push_tree_body_lines(&mut lines, copy_rows, reason);
     lines
 }
 
@@ -460,6 +522,7 @@ fn render_gotify_notification(
     message: &str,
     suppress_header: bool,
     collapsed: bool,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if !suppress_header {
@@ -479,12 +542,13 @@ fn render_gotify_notification(
             Span::styled(" - priority ".to_owned(), Style::default().fg(theme::DIM)),
             Span::styled(format!("{priority}"), priority_style),
         ]));
+        copy_rows.push(crate::ui::copy::CopyRowMeta::chrome(0));
     }
     let body = if message.is_empty() { title.to_owned() } else { format!("{title}\n{message}") };
     if collapsed {
-        push_collapsed_summary(&mut lines, &body);
+        push_collapsed_summary(&mut lines, copy_rows, &body);
     } else {
-        push_tree_body_lines(&mut lines, &body);
+        push_tree_body_lines(&mut lines, copy_rows, &body);
     }
     lines
 }
@@ -494,7 +558,12 @@ fn render_gotify_notification(
 /// the fired prompt under the standard tree connectors. `suppress_header`
 /// drops the header line (streak follower); cron turns stand alone in
 /// practice, so it's normally rendered in full.
-fn render_cron_prompt(prompt: &str, suppress_header: bool, collapsed: bool) -> Vec<Line<'static>> {
+fn render_cron_prompt(
+    prompt: &str,
+    suppress_header: bool,
+    collapsed: bool,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if !suppress_header {
         lines.push(Line::from(vec![
@@ -506,11 +575,12 @@ fn render_cron_prompt(prompt: &str, suppress_header: bool, collapsed: bool) -> V
             Span::raw(" "),
             Span::styled("Cron", Style::default().add_modifier(Modifier::BOLD)),
         ]));
+        copy_rows.push(crate::ui::copy::CopyRowMeta::chrome(0));
     }
     if collapsed {
-        push_collapsed_summary(&mut lines, prompt);
+        push_collapsed_summary(&mut lines, copy_rows, prompt);
     } else {
-        push_tree_body_lines(&mut lines, prompt);
+        push_tree_body_lines(&mut lines, copy_rows, prompt);
     }
     lines
 }
@@ -568,7 +638,11 @@ pub(crate) fn kind_row_target(peer: &str, body: &str) -> String {
 /// Skips entirely when the body is empty so notice variants (which
 /// have no prose body) don't render an orphan `└─ click to expand`
 /// row pointing at nothing.
-fn push_collapsed_summary(lines: &mut Vec<Line<'static>>, body: &str) {
+fn push_collapsed_summary(
+    lines: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+    body: &str,
+) {
     // First non-blank line, truncated to a short width so the summary
     // fits on one terminal row. Matches the standard tool card's
     // collapsed summary length (`DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT`
@@ -593,6 +667,7 @@ fn push_collapsed_summary(lines: &mut Vec<Line<'static>>, body: &str) {
     line.spans.push(Span::styled(summary, dim));
     line.spans.push(Span::styled("  click or ctrl+x to expand".to_owned(), dim));
     lines.push(line);
+    copy_rows.push(crate::ui::copy::CopyRowMeta::chrome(0));
 }
 
 /// Push the body lines under `│  ` / `└─ ` tree connectors - matches
@@ -601,7 +676,13 @@ fn push_collapsed_summary(lines: &mut Vec<Line<'static>>, body: &str) {
 /// collapsed summary (see [`push_collapsed_summary`]) is the only
 /// place we truncate, and only to fit a single summary row. When the
 /// body is empty, pushes nothing so the header stands alone.
-fn push_tree_body_lines(lines: &mut Vec<Line<'static>>, body: &str) {
+fn push_tree_body_lines(
+    lines: &mut Vec<Line<'static>>,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+    body: &str,
+) {
+    /// Display columns of the `  │  ` / `  └─ ` connector prefix.
+    const CONNECTOR_COLS: u16 = 5;
     let body = body.trim();
     if body.is_empty() {
         return;
@@ -622,6 +703,7 @@ fn push_tree_body_lines(lines: &mut Vec<Line<'static>>, body: &str) {
             Span::styled(prefix, pipe_style),
             Span::styled((*raw_line).to_owned(), body_text_style),
         ]));
+        copy_rows.push(crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(CONNECTOR_COLS));
     }
 }
 

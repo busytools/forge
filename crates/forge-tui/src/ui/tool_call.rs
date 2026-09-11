@@ -82,6 +82,12 @@ pub fn status_icon(status: model::ToolCallStatus, spinner_glyph: char) -> (Strin
 /// The title is rendered live; the expanded body is cached. Session
 /// collapse preference can change without invalidating completed
 /// tool-call body caches.
+/// Display columns of the `  │  ` / `  └─ ` prefix every standard body
+/// row wears. It is render chrome: copy takes the content under it.
+const BODY_PREFIX_COLS: u16 = 5;
+
+/// Render a tool call with caching, also returning each emitted row's copy
+/// provenance: the title and the `  │  `-prefixed body rows.
 pub fn render_tool_call_cached_with_tools_collapsed(
     tc: &mut ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
@@ -89,20 +95,29 @@ pub fn render_tool_call_cached_with_tools_collapsed(
     spinner_glyph: char,
     tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
-) {
+) -> Vec<crate::ui::copy::CopyRowMeta> {
+    let mut copy_rows = Vec::new();
     let title = standard::render_tool_call_title(tc, render_context, width, spinner_glyph);
     out.push(title);
+    // The title row is the tool call's identity label - status icon, kind,
+    // display title - so it copies as chrome, like the `User` label.
+    copy_rows.push(crate::ui::copy::CopyRowMeta::chrome(0));
 
     let has_execute_body = tc.is_execute_tool()
         && (tc.terminal_output.is_some() || matches!(tc.status, model::ToolCallStatus::InProgress));
     let has_body = !tc.content.is_empty() || has_execute_body;
     if !has_body {
-        return;
+        return copy_rows;
     }
 
     if standard::tool_call_effectively_collapsed(tc, tools_collapsed) {
+        let before = out.len();
         standard::render_collapsed_tool_call_summary(tc, out);
-        return;
+        copy_rows.extend(std::iter::repeat_n(
+            crate::ui::copy::CopyRowMeta::chrome(BODY_PREFIX_COLS),
+            out.len() - before,
+        ));
+        return copy_rows;
     }
 
     let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
@@ -137,6 +152,11 @@ pub fn render_tool_call_cached_with_tools_collapsed(
             out.extend_from_slice(stored);
         }
     }
+    copy_rows.extend(std::iter::repeat_n(
+        crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(BODY_PREFIX_COLS),
+        out.len() - copy_rows.len(),
+    ));
+    copy_rows
 }
 
 /// Ensure tool call caches are up-to-date and return visual wrapped height at `width`.

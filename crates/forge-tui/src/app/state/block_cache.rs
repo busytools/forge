@@ -31,6 +31,9 @@ const MAX_STALE_WIDTHS: usize = 2;
 pub struct BlockCache {
     version: u64,
     lines: Option<Vec<ratatui::text::Line<'static>>>,
+    /// Copy provenance for `lines`, stored alongside them by the markdown
+    /// render path. `None` for blocks that render only hard-line rows.
+    copy_rows: Option<Vec<crate::ui::copy::CopyRowMeta>>,
     render_width: Option<u16>,
     /// Segmentation metadata for KB-sized cache chunks shared across message/tool caches.
     segments: Vec<CacheLineSegment>,
@@ -92,6 +95,7 @@ impl BlockCache {
         self.version += 1;
         self.wrapped_height_valid = false;
         self.stale_widths.clear();
+        self.copy_rows = None;
     }
 
     /// Get a reference to the cached lines, if fresh.
@@ -105,6 +109,20 @@ impl BlockCache {
         } else {
             None
         }
+    }
+
+    /// Copy provenance for the cached lines, fresh exactly when `get()` is.
+    pub(crate) fn copy_rows(&self) -> Option<&[crate::ui::copy::CopyRowMeta]> {
+        if self.version == 0 && self.render_width.is_none() {
+            self.copy_rows.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Store copy provenance for the lines just stored.
+    pub(crate) fn set_copy_rows(&mut self, copy_rows: Vec<crate::ui::copy::CopyRowMeta>) {
+        self.copy_rows = Some(copy_rows);
     }
 
     pub fn get_for_width(&mut self, width: u16) -> Option<&Vec<ratatui::text::Line<'static>>> {

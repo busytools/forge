@@ -146,13 +146,27 @@ fn prose(text: &str, range: Range<usize>) -> Segment<'_> {
 /// Columns of the panel kept clear left of the code.
 const PANEL_PAD: usize = 2;
 
+/// [`PANEL_PAD`] in the u16 the copy provenance counts columns in.
+fn panel_pad_cols() -> u16 {
+    u16::try_from(PANEL_PAD).unwrap_or(u16::MAX)
+}
+
 /// Render a fenced code block as a quiet panel: the info string dimmed on
 /// the first row, the highlighted code wrapped to the panel's own width
 /// under it. Fence delimiters are never part of the output.
-pub(crate) fn render_code_panel(body: &str, language: &str, width: u16) -> Vec<Line<'static>> {
+///
+/// Returns the rows plus their copy provenance: the label row is chrome,
+/// each source line starts a copied line, and its wrapped continuations
+/// join it with the whitespace the break consumed.
+pub(crate) fn render_code_panel(
+    body: &str,
+    language: &str,
+    width: u16,
+) -> (Vec<Line<'static>>, Vec<crate::ui::copy::CopyRowMeta>) {
     let panel_width = usize::from(width);
     let content_width = panel_width.saturating_sub(PANEL_PAD).max(1);
     let mut lines = Vec::new();
+    let mut copy_rows = Vec::new();
 
     let language = language.trim();
     if !language.is_empty() {
@@ -161,6 +175,7 @@ pub(crate) fn render_code_panel(body: &str, language: &str, width: u16) -> Vec<L
             vec![Span::styled(label, Style::default().fg(theme::CODE_PANEL_LABEL))],
             panel_width,
         ));
+        copy_rows.push(crate::ui::copy::CopyRowMeta::chrome(panel_pad_cols()));
     }
 
     // `highlight_code` treats a trailing newline as a line of its own,
@@ -184,18 +199,39 @@ pub(crate) fn render_code_panel(body: &str, language: &str, width: u16) -> Vec<L
                 style: span.style,
             })
             .collect();
+        let logical = chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>();
+        let wrapped = wrap::wrap_styled_chunks(&chunks, wrap_width);
+        let separators = crate::ui::copy::wrap_join_separators(
+            &logical,
+            &wrapped
+                .iter()
+                .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+                .collect::<Vec<_>>(),
+        );
+        let indent_cols = u16::try_from(wrap::display_width(&indent)).unwrap_or(u16::MAX);
 
-        for wrapped in wrap::wrap_styled_chunks(&chunks, wrap_width) {
-            let mut spans = Vec::with_capacity(wrapped.spans.len() + 1);
+        for (i, piece) in wrapped.into_iter().enumerate() {
+            let mut spans = Vec::with_capacity(piece.spans.len() + 1);
             if !indent.is_empty() {
                 spans.push(Span::raw(indent.clone()));
             }
-            spans.extend(wrapped.spans);
+            spans.extend(piece.spans);
             lines.push(panel_row(spans, panel_width));
+            copy_rows.push(if i == 0 {
+                crate::ui::copy::CopyRowMeta::hard_line().offset_chrome(panel_pad_cols())
+            } else {
+                // A continuation row re-emits the code's own indentation;
+                // the source keeps it once, on the row that started the
+                // line.
+                crate::ui::copy::CopyRowMeta::soft(
+                    separators.get(i - 1).cloned().unwrap_or_default(),
+                    panel_pad_cols().saturating_add(indent_cols),
+                )
+            });
         }
     }
 
-    lines
+    (lines, copy_rows)
 }
 
 /// Peel a line's leading whitespace off its spans so a wrapper can re-emit
@@ -375,6 +411,10 @@ mod tests {
         lines.iter().map(|line| row_text(line).trim_end().to_owned()).collect()
     }
 
+    fn panel(body: &str, language: &str, width: u16) -> Vec<Line<'static>> {
+        render_code_panel(body, language, width).0
+    }
+
     fn assert_paints_what_it_measures(lines: &[Line<'static>]) {
         for line in lines {
             let measured: usize = line.spans.iter().map(Span::width).sum();
@@ -398,7 +438,7 @@ mod tests {
 
     #[test]
     fn the_panel_labels_the_code_with_its_info_string() {
-        let lines = render_code_panel("fn main() {}\n", "rust", 40);
+        let lines = panel("fn main() {}\n", "rust", 40);
         assert_eq!(panel_rows(&lines), ["  rust", "  fn main() {}"]);
         assert_eq!(
             lines[0].spans[1].style.fg,
@@ -409,28 +449,28 @@ mod tests {
 
     #[test]
     fn the_panel_keeps_every_level_of_indentation() {
-        let lines = render_code_panel("fn f() {\n    nested();\n}\n", "rust", 40);
+        let lines = panel("fn f() {\n    nested();\n}\n", "rust", 40);
         assert_eq!(panel_rows(&lines), ["  rust", "  fn f() {", "      nested();", "  }"]);
     }
 
     #[test]
     fn a_tab_paints_every_column_it_measures() {
-        let indented = render_code_panel("\tfn main() {}\n", "rust", 40);
+        let indented = panel("\tfn main() {}\n", "rust", 40);
         assert_eq!(panel_rows(&indented), ["  rust", "      fn main() {}"]);
         assert_paints_what_it_measures(&indented);
-        assert_paints_what_it_measures(&render_code_panel("let a = 1;\t// note\n", "", 40));
+        assert_paints_what_it_measures(&panel("let a = 1;\t// note\n", "", 40));
     }
 
     #[test]
     fn the_panel_prints_no_fence_delimiters() {
-        let lines = render_code_panel("let a = 1;\n", "rust", 40);
+        let lines = panel("let a = 1;\n", "rust", 40);
         let text = panel_rows(&lines).join("\n");
         assert!(!text.contains("```"), "delimiters never reach the panel: {text:?}");
     }
 
     #[test]
     fn a_panel_without_a_language_starts_at_the_code() {
-        let lines = render_code_panel("plain text\n", "", 40);
+        let lines = panel("plain text\n", "", 40);
         assert_eq!(panel_rows(&lines), ["  plain text"], "no label row");
     }
 
@@ -453,14 +493,13 @@ mod tests {
 
     #[test]
     fn every_panel_row_paints_the_background_to_the_full_width() {
-        assert_panel_rows_fill(&render_code_panel("fn main() {}\n", "rust", 40), 40);
-        assert_panel_rows_fill(&render_code_panel(&format!("{}x\n", " ".repeat(40)), "", 20), 20);
+        assert_panel_rows_fill(&panel("fn main() {}\n", "rust", 40), 40);
+        assert_panel_rows_fill(&panel(&format!("{}x\n", " ".repeat(40)), "", 20), 20);
     }
 
     #[test]
     fn a_long_code_line_wraps_inside_the_panel() {
-        let lines =
-            render_code_panel("let value = some_function(argument_one, argument_two);\n", "", 20);
+        let lines = panel("let value = some_function(argument_one, argument_two);\n", "", 20);
         assert!(
             lines.len() > 1,
             "the line wraps rather than overflowing: {:?}",
@@ -473,7 +512,7 @@ mod tests {
 
     #[test]
     fn a_blank_line_in_the_code_keeps_its_row() {
-        let lines = render_code_panel("let a = 1;\n\nlet b = 2;\n", "", 40);
+        let lines = panel("let a = 1;\n\nlet b = 2;\n", "", 40);
         assert_eq!(panel_rows(&lines), ["  let a = 1;", "", "  let b = 2;"]);
     }
 

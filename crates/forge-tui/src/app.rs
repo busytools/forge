@@ -34,7 +34,7 @@ pub(crate) mod prompt;
 #[cfg(test)]
 pub(crate) mod replay;
 pub(crate) mod review_waiting;
-mod selection;
+pub(crate) mod selection;
 mod service_status_check;
 pub mod session;
 mod session_runtime;
@@ -65,7 +65,6 @@ pub use prompt::{PromptMode, PromptSource, PromptState};
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
 pub use spinner_picker::SpinnerPickerState;
-pub(crate) use state::MarkdownRenderKey;
 pub(crate) use state::cache_metrics;
 pub use state::{
     AnsweredQuestion, App, AppStatus, AttentionEntry, AttentionKind, BackgroundTask, BlockCache,
@@ -84,6 +83,7 @@ pub use state::{
     control_gutter_start, hash_text_block_content, hash_welcome_block_content,
     is_execute_tool_name, is_monitor_tool_name,
 };
+pub(crate) use state::{MarkdownRenderKey, RenderedChunk};
 pub use usage_overlay::UsageOverlayState;
 pub use view::ActiveView;
 

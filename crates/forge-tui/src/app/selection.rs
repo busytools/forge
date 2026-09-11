@@ -11,7 +11,6 @@ pub(crate) fn normalize_selection(
 
 pub(super) fn clear_selection(app: &mut App) {
     *app.selection_mut() = None;
-    app.rendered_chat_lines.clear();
     app.rendered_input_lines.clear();
 }
 

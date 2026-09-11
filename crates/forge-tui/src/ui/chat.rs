@@ -35,7 +35,7 @@ const OVERSCROLL_CLAMP_EASE: f32 = 0.2;
 const CHAT_SCROLLBAR_WIDTH: u16 = 1;
 
 #[derive(Clone, Copy, Default)]
-struct HeightUpdateStats {
+pub(super) struct HeightUpdateStats {
     measured_msgs: usize,
     measured_lines: usize,
     reused_msgs: usize,
@@ -67,24 +67,26 @@ impl RemeasureBudget {
 }
 
 #[derive(Clone, Default)]
-struct CulledRenderStats {
-    local_scroll: usize,
+pub(super) struct CulledRenderStats {
+    pub(super) local_scroll: usize,
     render_start: usize,
     rendered_msgs: usize,
     last_rendered_idx: Option<usize>,
     rendered_line_count: usize,
     /// Rows, in paragraph coordinates, the user turns' gutters cover.
     gutter_rows: Vec<std::ops::Range<usize>>,
+    /// Copy provenance per paragraph row, from the builders.
+    pub(super) copy_rows: Vec<crate::ui::copy::CopyRowMeta>,
 }
 
-struct ScrolledRenderData {
+pub(super) struct ScrolledRenderData {
     paragraph: Paragraph<'static>,
     stats: CulledRenderStats,
     max_scroll: usize,
     scroll_offset: usize,
 }
 
-fn chat_content_area(area: Rect) -> Rect {
+pub(super) fn chat_content_area(area: Rect) -> Rect {
     Rect { width: area.width.saturating_sub(CHAT_SCROLLBAR_WIDTH), ..area }
 }
 
@@ -127,7 +129,7 @@ fn msg_spinner(
 /// is already valid at this width, all earlier messages are also valid (content
 /// only changes at the tail during streaming). This turns the common case from
 /// O(n) to O(1).
-fn update_visual_heights(
+pub(super) fn update_visual_heights(
     app: &mut App,
     base: &SpinnerState,
     width: u16,
@@ -451,7 +453,7 @@ fn stop_hook_summary_for(app: &App, idx: usize) -> StopHookSnapshot {
     }
 }
 
-fn build_base_spinner(app: &App) -> SpinnerState {
+pub(super) fn build_base_spinner(app: &App) -> SpinnerState {
     // `show_thinking` fires on both `Thinking` (no body streamed yet)
     // and `Running` (mid-stream / tool execution) so the spinner keeps
     // ticking visibly across the whole turn - not just the pre-body
@@ -470,7 +472,7 @@ fn build_base_spinner(app: &App) -> SpinnerState {
     }
 }
 
-fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &SpinnerState) -> usize {
+pub(super) fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &SpinnerState) -> usize {
     let width = area.width;
     let viewport_height = usize::from(area.height);
 
@@ -515,13 +517,23 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &SpinnerState) -> u
     content_height
 }
 
-fn build_scrolled_render_data(
+/// The rendered paragraph window: the rows and the scroll bookkeeping the
+/// frame and the copy path both need.
+pub(super) struct ScrolledWindow {
+    pub(super) all_lines: Vec<Line<'static>>,
+    pub(super) stats: CulledRenderStats,
+    pub(super) max_scroll: usize,
+    pub(super) scroll_offset: usize,
+}
+
+/// Settle the scroll position and render the visible window's rows.
+pub(super) fn assemble_scrolled_window(
     app: &mut App,
     base: &SpinnerState,
     width: u16,
     content_height: usize,
     viewport_height: usize,
-) -> ScrolledRenderData {
+) -> ScrolledWindow {
     let reduced_motion = app.config.prefers_reduced_motion_effective();
     let vp = app.active_viewport_mut();
     let max_scroll = content_height.saturating_sub(viewport_height);
@@ -565,19 +577,37 @@ fn build_scrolled_render_data(
     crate::perf::mark_with("chat::render_scrolled_msgs", "msgs", stats.rendered_msgs);
     crate::perf::mark_with("chat::render_scrolled_start", "idx", stats.render_start);
 
+    ScrolledWindow { all_lines, stats, max_scroll, scroll_offset }
+}
+
+fn build_scrolled_render_data(
+    app: &mut App,
+    base: &SpinnerState,
+    width: u16,
+    content_height: usize,
+    viewport_height: usize,
+) -> ScrolledRenderData {
+    let window = assemble_scrolled_window(app, base, width, content_height, viewport_height);
     let paragraph = {
         let _t = app
             .perf
             .as_ref()
-            .map(|p| p.start_with("chat::paragraph_build", "lines", all_lines.len()));
-        Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false })
+            .map(|p| p.start_with("chat::paragraph_build", "lines", window.all_lines.len()));
+        // Moves the rows in; the copy path keeps its own window instead, so
+        // the frame never clones them.
+        Paragraph::new(Text::from(window.all_lines)).wrap(Wrap { trim: false })
     };
 
-    ScrolledRenderData { paragraph, stats, max_scroll, scroll_offset }
+    ScrolledRenderData {
+        paragraph,
+        stats: window.stats,
+        max_scroll: window.max_scroll,
+        scroll_offset: window.scroll_offset,
+    }
 }
 
 /// Long content: smooth scroll + viewport culling.
-fn render_scrolled(
+pub(super) fn render_scrolled(
     frame: &mut Frame,
     area: Rect,
     app: &mut App,
@@ -614,32 +644,7 @@ fn render_scrolled(
     paint_user_gutter(frame, area, &render_data.stats.gutter_rows, render_data.stats.local_scroll);
 }
 
-pub(super) fn refresh_selection_snapshot(app: &mut App) {
-    if !chat_selection_snapshot_needed(app.selection().copied()) {
-        return;
-    }
-
-    let area = app.rendered_chat_area;
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    let base_spinner = build_base_spinner(app);
-    let content_height = sync_chat_layout(app, area, &base_spinner);
-    let _t = app.perf.as_ref().map(|p| p.start("chat::selection_capture"));
-    let render_data = build_scrolled_render_data(
-        app,
-        &base_spinner,
-        area.width,
-        content_height,
-        usize::from(area.height),
-    );
-    app.rendered_chat_area = area;
-    app.rendered_chat_lines =
-        render_lines_from_paragraph(&render_data.paragraph, area, render_data.stats.local_scroll);
-}
-
-fn chat_selection_snapshot_needed(selection: Option<SelectionState>) -> bool {
+pub(super) fn chat_selection_snapshot_needed(selection: Option<SelectionState>) -> bool {
     selection.is_some_and(|selection| selection.kind == SelectionKind::Chat)
 }
 
@@ -906,6 +911,7 @@ fn render_message_range(
     let mut local_scroll = 0usize;
     let mut last_rendered_idx = None;
     let mut gutter_rows: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut copy_rows: Vec<crate::ui::copy::CopyRowMeta> = Vec::new();
     // Snapshot loop-invariant fields once - hoisting avoids N
     // String allocations on remeasure-heavy frames.
     let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
@@ -934,12 +940,14 @@ fn render_message_range(
             .with_messaging_group_collapse_levels(&messaging_group_collapse_levels)
             .with_project_root(&cwd_raw);
         if structural_skip > 0 {
-            let remaining_skip = message::render_message_from_offset_internal_with_mode(
+            let mut msg_copy_rows = Vec::new();
+            let remaining_skip = message::render_message_from_offset_with_copy_rows(
                 &mut app.active_messages_mut()[i],
                 &sp,
                 ctx,
                 structural_skip,
                 out,
+                &mut msg_copy_rows,
             );
             let structural_rows_skipped = structural_skip.saturating_sub(remaining_skip);
             record_gutter_rows(
@@ -948,18 +956,27 @@ fn render_message_range(
                 rendered_rows,
                 structural_rows_skipped,
             );
+            record_copy_rows(&mut copy_rows, &msg_copy_rows);
             rendered_rows = rendered_rows
                 .saturating_add(message_height.saturating_sub(structural_rows_skipped));
             local_scroll = remaining_skip;
             structural_skip = 0;
         } else {
-            message::render_message(&mut app.active_messages_mut()[i], &sp, ctx, out);
+            let mut msg_copy_rows = Vec::new();
+            message::render_message_with_copy_rows(
+                &mut app.active_messages_mut()[i],
+                &sp,
+                ctx,
+                out,
+                &mut msg_copy_rows,
+            );
             record_gutter_rows(
                 &mut gutter_rows,
                 app.messages()[i].render_cache.gutter_rows(),
                 rendered_rows,
                 0,
             );
+            record_copy_rows(&mut copy_rows, &msg_copy_rows);
             rendered_rows = rendered_rows.saturating_add(message_height);
         }
         app.sync_render_cache_message(i);
@@ -980,6 +997,7 @@ fn render_message_range(
         last_rendered_idx,
         rendered_line_count: out.len(),
         gutter_rows,
+        copy_rows,
     }
 }
 
@@ -999,6 +1017,16 @@ fn record_gutter_rows(
             out.push((paragraph_row + start)..(paragraph_row + end));
         }
     }
+}
+
+/// Append one message's copy provenance to the paragraph-level vec. The
+/// metas arrive aligned one-to-one with the rows the message just emitted
+/// into the paragraph, so they extend in order.
+fn record_copy_rows(
+    out: &mut Vec<crate::ui::copy::CopyRowMeta>,
+    message_rows: &[crate::ui::copy::CopyRowMeta],
+) {
+    out.extend(message_rows.iter().cloned());
 }
 
 /// The rule glyph a user turn's gutter is painted with.
@@ -1253,7 +1281,7 @@ impl Widget for SelectionOverlay {
     }
 }
 
-fn render_lines_from_paragraph(
+pub(super) fn render_lines_from_paragraph(
     paragraph: &Paragraph,
     area: Rect,
     scroll_offset: usize,
@@ -1284,8 +1312,7 @@ mod tests {
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
-        ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SystemSeverity,
-        TextBlock, compute_scrollbar_geometry,
+        ScrollbarGeometry, SystemSeverity, TextBlock, compute_scrollbar_geometry,
     };
     use crate::ui::message::{self, SpinnerState};
     use ratatui::Terminal;
@@ -1337,36 +1364,6 @@ mod tests {
             show_compacting: false,
             live_turn_running: false,
         }
-    }
-
-    fn render_selected_chat_snapshot(app: &mut App, width: u16, height: u16) {
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| {
-                let spinner = idle_spinner();
-                let content_area = chat_content_area(Rect::new(0, 0, width, height));
-                let _ = app.active_viewport_mut().on_frame(content_area.width, content_area.height);
-                update_visual_heights(
-                    app,
-                    &spinner,
-                    content_area.width,
-                    usize::from(content_area.height),
-                );
-                app.active_viewport_mut().rebuild_prefix_sums();
-                let total_h = app.viewport().total_message_height();
-                render_scrolled(
-                    frame,
-                    content_area,
-                    app,
-                    &spinner,
-                    content_area.width,
-                    total_h,
-                    usize::from(content_area.height),
-                );
-            })
-            .expect("draw");
-        super::refresh_selection_snapshot(app);
     }
 
     /// Draw the chat and hand back the rendered grid, one entry per row:
@@ -3328,38 +3325,6 @@ mod tests {
     fn paragraph_scroll_offset_clamps_large_local_scroll_explicitly() {
         assert_eq!(paragraph_scroll_offset(42), 42);
         assert_eq!(paragraph_scroll_offset(usize::from(u16::MAX) + 123), u16::MAX);
-    }
-
-    #[test]
-    fn chat_selection_snapshot_refreshes_without_dragging_after_streaming_change() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Running;
-        *app.active_messages_mut() = vec![assistant_text_message("hello")];
-        app.bind_active_turn_assistant(0);
-        *app.selection_mut() = Some(SelectionState {
-            kind: SelectionKind::Chat,
-            start: SelectionPoint { row: 0, col: 0 },
-            end: SelectionPoint { row: 0, col: 5 },
-            dragging: false,
-        });
-
-        render_selected_chat_snapshot(&mut app, 20, 6);
-        let first_snapshot = app.rendered_chat_lines.clone();
-        assert!(!first_snapshot.is_empty());
-
-        if let Some(MessageBlock::Text(block)) =
-            app.active_messages_mut().get_mut(0).and_then(|message| message.blocks.get_mut(0))
-        {
-            block.text.push_str("\nworld");
-            block.markdown.append("\nworld");
-            block.cache.invalidate();
-        }
-        app.invalidate_layout(InvalidationLevel::MessageChanged(0));
-
-        render_selected_chat_snapshot(&mut app, 20, 6);
-
-        assert_ne!(app.rendered_chat_lines, first_snapshot);
-        assert!(app.rendered_chat_lines.iter().any(|line| line.contains("world")));
     }
 
     #[test]

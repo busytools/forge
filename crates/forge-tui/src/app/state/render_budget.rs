@@ -1044,6 +1044,7 @@ mod tests {
             1,
             1,
             Vec::new(),
+            Vec::new(),
         );
     }
 

@@ -291,7 +291,6 @@ fn create_app_impl(
         usage_overlay: None,
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         scrollbar_drag: None,
-        rendered_chat_lines: Vec::new(),
         rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
