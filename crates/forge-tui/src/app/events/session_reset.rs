@@ -105,7 +105,7 @@ fn reset_render_state_for_new_session(app: &mut App) {
 fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
     *app.mcp_mut() = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
-    crate::app::plugins::reset_for_session_change(app);
+    crate::app::extensions::reset_for_session_change(app);
     app.force_redraw = true;
     app.needs_redraw = true;
 }

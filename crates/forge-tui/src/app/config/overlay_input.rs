@@ -8,16 +8,19 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
     }
     match app.config.overlay.clone() {
         Some(ConfigOverlayState::InstalledPluginActions(_)) => {
-            crate::app::plugins::handle_installed_overlay_key(app, key);
+            crate::app::extensions::handle_installed_overlay_key(app, key);
         }
         Some(ConfigOverlayState::PluginInstallActions(_)) => {
-            crate::app::plugins::handle_plugin_install_overlay_key(app, key);
+            crate::app::extensions::handle_plugin_install_overlay_key(app, key);
         }
         Some(ConfigOverlayState::MarketplaceActions(_)) => {
-            crate::app::plugins::handle_marketplace_overlay_key(app, key);
+            crate::app::extensions::handle_marketplace_overlay_key(app, key);
         }
         Some(ConfigOverlayState::AddMarketplace(_)) => {
-            crate::app::plugins::handle_add_marketplace_overlay_key(app, key);
+            crate::app::extensions::handle_add_marketplace_overlay_key(app, key);
+        }
+        Some(ConfigOverlayState::UninstallConfirm(_)) => {
+            crate::app::extensions::installed::handle_uninstall_confirm_key(app, key);
         }
         Some(ConfigOverlayState::McpDetails(_)) | None => {}
     }
@@ -29,13 +32,14 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
     }
     match app.config.overlay {
         Some(ConfigOverlayState::AddMarketplace(_)) => {
-            crate::app::plugins::handle_add_marketplace_overlay_paste(app, text);
+            crate::app::extensions::handle_add_marketplace_overlay_paste(app, text);
             true
         }
         Some(
             ConfigOverlayState::InstalledPluginActions(_)
             | ConfigOverlayState::PluginInstallActions(_)
             | ConfigOverlayState::MarketplaceActions(_)
+            | ConfigOverlayState::UninstallConfirm(_)
             | ConfigOverlayState::McpDetails(_),
         )
         | None => false,

@@ -244,6 +244,6 @@ chat continues here...
 <details>
 <summary>Click targets</summary>
 
-The `🦉` opens the [Diff overlay](./diff.md) (present only when a layer is populated). The MCP SERVERS section is a whole-section click-through: header or any row opens the same `/mcp` view the slash command opens. Everything else is read-only - file tree, branch line, PR row, TASKS rows, PROCESSES rows. At Narrow tier the `▦` icon toggles the overlay; `✕` dismisses.
+The `🦉` opens the [Diff overlay](./diff.md) (present only when a layer is populated). The MCP SERVERS section is a whole-section click-through: header or any row opens the [Extensions page](./extensions.md) with its Mcps tab selected. Everything else is read-only - file tree, branch line, PR row, TASKS rows, PROCESSES rows. At Narrow tier the `▦` icon toggles the overlay; `✕` dismisses.
 
 </details>

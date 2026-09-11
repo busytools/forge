@@ -61,9 +61,9 @@ fn busy_view_test_app() -> App {
 fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
     let mut app = busy_view_test_app();
 
-    set_active_view(&mut app, ActiveView::Plugins);
+    set_active_view(&mut app, ActiveView::Extensions);
 
-    assert_eq!(app.active_view, ActiveView::Plugins);
+    assert_eq!(app.active_view, ActiveView::Extensions);
     assert_eq!(app.input().text(), "draft");
     assert!(app.selection().is_none());
     assert!(app.scrollbar_drag.is_none());
@@ -95,8 +95,8 @@ fn set_active_view_same_view_is_noop() {
 fn set_active_view_keeps_permission_unfocused_when_returning_to_chat_with_draft() {
     let mut app = busy_view_test_app();
 
-    set_active_view(&mut app, ActiveView::Plugins);
-    assert_eq!(app.active_view, ActiveView::Plugins);
+    set_active_view(&mut app, ActiveView::Extensions);
+    assert_eq!(app.active_view, ActiveView::Extensions);
 
     set_active_view(&mut app, ActiveView::Chat);
 
@@ -117,7 +117,7 @@ fn set_active_view_closes_help_without_clearing_question_mark_draft() {
     app.help_view = crate::app::HelpView::Subagents;
     app.help_visible_count = 7;
 
-    set_active_view(&mut app, ActiveView::Plugins);
+    set_active_view(&mut app, ActiveView::Extensions);
     assert_eq!(app.input().text(), "?");
     assert!(!app.is_help_active());
     assert_eq!(app.help_view, crate::app::HelpView::Keys);
@@ -131,7 +131,7 @@ fn set_active_view_closes_help_without_clearing_question_mark_draft() {
 #[test]
 fn leaving_plugins_clears_config_overlay() {
     let mut app = App::test_default();
-    app.active_view = ActiveView::Plugins;
+    app.active_view = ActiveView::Extensions;
     app.config.overlay =
         Some(ConfigOverlayState::AddMarketplace(Box::new(AddMarketplaceOverlayState {
             editor: crate::app::input::InputState::new(),

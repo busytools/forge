@@ -55,9 +55,9 @@ use tokio::sync::mpsc;
 
 use super::config::ConfigState;
 use super::dialog;
+use super::extensions::PluginsState;
 use super::file_index;
 use super::focus::FocusManager;
-use super::plugins::PluginsState;
 use super::view::ActiveView;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

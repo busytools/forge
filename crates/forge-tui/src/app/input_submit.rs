@@ -618,19 +618,19 @@ mod tests {
     }
 
     #[test]
-    fn plugins_slash_command_fires_regardless_of_busy() {
-        // /plugins is a TUI-side view switch and should work even when
-        // a turn is in flight (slash commands don't queue).
+    fn extensions_slash_command_fires_regardless_of_busy() {
+        // /extensions is a TUI-side view switch and should work even
+        // when a turn is in flight (slash commands don't queue).
         let (mut app, mut rx) = app_with_connection();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
         app.status = AppStatus::Running;
-        app.input_mut().set_text("/plugins");
+        app.input_mut().set_text("/extensions");
 
         submit_input(&mut app);
 
-        assert_eq!(app.active_view, ActiveView::Plugins);
+        assert_eq!(app.active_view, ActiveView::Extensions);
         assert!(app.input().text().is_empty());
         assert!(!app.pending_cancel());
         assert!(rx.try_recv().is_err());
