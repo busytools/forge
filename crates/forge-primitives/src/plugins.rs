@@ -56,11 +56,63 @@ pub struct MarketplaceSourceEntry {
     pub install_location: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PluginsInventorySnapshot {
     pub installed: Vec<InstalledPluginEntry>,
     pub marketplace: Vec<MarketplaceEntry>,
     pub marketplaces: Vec<MarketplaceSourceEntry>,
+    /// Per-plugin component inventory read off disk by the catalog
+    /// scan (`forge_agent::userdata::plugins::components`); empty when
+    /// the producer does not scan.
+    pub components: Vec<PluginComponents>,
+    /// Marketplace load health for the Extensions page; empty when the
+    /// producer does not scan.
+    pub marketplace_health: Vec<MarketplaceHealth>,
+}
+
+/// Per-plugin component inventory read straight off disk (the plugin
+/// cache plus marketplace manifests). Produced by the scan in
+/// `forge_agent::userdata::plugins::components`; one entry per plugin
+/// the cache or a manifest knows about.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginComponents {
+    /// Full installed id (`name@marketplace`).
+    pub plugin: String,
+    pub marketplace: String,
+    /// Version of the installed copy, from the plugin registry.
+    pub version: Option<String>,
+    pub installed: bool,
+    /// Every registry entry for the plugin is enabled. False for an
+    /// uninstalled plugin.
+    pub enabled: bool,
+    /// The registry marks the install as an auto-installed dependency.
+    pub auto: bool,
+    /// Latest version the marketplace manifest declares.
+    pub available_version: Option<String>,
+    pub skills: Vec<String>,
+    pub agents: Vec<String>,
+    pub commands: Vec<String>,
+    /// Hook trigger events (`SessionStart`, ...), from hooks.json.
+    pub hooks: Vec<String>,
+    /// The plugin ships `.mcp.json`.
+    pub mcp: bool,
+    /// LSP server names the marketplace manifest declares.
+    pub lsp_servers: Vec<String>,
+}
+
+/// One marketplace's on-disk health for the Extensions page.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MarketplaceHealth {
+    pub name: String,
+    pub source: String,
+    /// Plugin count in the marketplace's manifest; 0 when it cannot
+    /// load.
+    pub available: usize,
+    /// Why the manifest could not be read (cache-miss, parse failure).
+    pub load_error: Option<String>,
+    pub install_location: PathBuf,
+    /// The registry's installLocation sits outside the config dir.
+    pub drifted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

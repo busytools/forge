@@ -2450,6 +2450,8 @@ mod tests {
             }],
             marketplace: vec![],
             marketplaces: vec![],
+            components: vec![],
+            marketplace_health: vec![],
         }
     }
 
@@ -3038,6 +3040,8 @@ mod tests {
                     source: None,
                 }],
                 marketplaces: Vec::new(),
+                components: Vec::new(),
+                marketplace_health: Vec::new(),
             },
             PathBuf::new(),
         );
@@ -3062,6 +3066,8 @@ mod tests {
                 installed: Vec::new(),
                 marketplace: Vec::new(),
                 marketplaces: Vec::new(),
+                components: Vec::new(),
+                marketplace_health: Vec::new(),
             },
             PathBuf::new(),
         );
@@ -3340,6 +3346,8 @@ mod tests {
                 },
             ],
             marketplaces: Vec::new(),
+            components: Vec::new(),
+            marketplace_health: Vec::new(),
         };
         let update = PluginUpdateRun {
             trigger: PluginUpdateTrigger::Manual,
@@ -3408,6 +3416,8 @@ mod tests {
                 source: None,
             }],
             marketplaces: Vec::new(),
+            components: Vec::new(),
+            marketplace_health: Vec::new(),
         };
 
         apply_rollback_success(
@@ -3712,6 +3722,8 @@ mod tests {
             ],
             marketplace: vec![],
             marketplaces: vec![],
+            components: vec![],
+            marketplace_health: vec![],
         }
     }
 

@@ -1,3 +1,4 @@
+use super::components::{scan_components, scan_marketplaces};
 use super::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
     PluginUpdateRecord, PluginsInventorySnapshot,
@@ -159,10 +160,36 @@ fn refresh_inventory_blocking(
         .collect::<Vec<_>>();
     marketplace_sources.sort_by_cached_key(|entry| entry.name.to_ascii_lowercase());
 
+    // The component scan reads the same config dir the CLI calls
+    // above resolved against (process-level env), so both halves of
+    // the snapshot describe one installation.
+    let (components, marketplace_health) = match super::components::plugins_root() {
+        Some(root) => {
+            let started = std::time::Instant::now();
+            let marketplaces_root = root.join("marketplaces");
+            let config_dir = root.parent().unwrap_or(root.as_path()).to_path_buf();
+            let components = scan_components(&root, &marketplaces_root);
+            let marketplace_health = scan_marketplaces(&marketplaces_root, &config_dir);
+            tracing::info!(
+                target: "forge_agent::userdata::plugins",
+                duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                installed = components.iter().filter(|row| row.installed).count(),
+                available = components.iter().filter(|row| !row.installed).count(),
+                skills = components.iter().map(|row| row.skills.len()).sum::<usize>(),
+                marketplaces = marketplace_health.len(),
+                "extension inventory scan"
+            );
+            (components, marketplace_health)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+
     Ok(PluginsInventorySnapshot {
         installed: installed_entries,
         marketplace: marketplace_entries,
         marketplaces: marketplace_sources,
+        components,
+        marketplace_health,
     })
 }
 
