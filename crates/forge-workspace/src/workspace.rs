@@ -8227,6 +8227,92 @@ SOLO_TOKEN = "solo-secret"
         assert!(signalled, "a gotify delivered mid-turn signals PromptQueuedWhileBusy");
     }
 
+    fn slack_message_for(text: &str) -> forge_primitives::slack::SlackMessage {
+        forge_primitives::slack::SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: "D1".to_owned(),
+            conversation_label: "U9".to_owned(),
+            ts: "100.000001".to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            text: text.to_owned(),
+            files: Vec::new(),
+        }
+    }
+
+    /// The lead-owned subscription's running lead receives the message as
+    /// a prompt, and the asleep path never fires.
+    #[test]
+    fn slack_delivery_to_a_running_lead_dispatches_a_prompt() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("glead", "/tmp/slack-lead-running");
+        let cwd = project_expanded_path(&ws, "glead");
+        ws.record_connected_session(&cwd, "lead-uuid", None);
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
+        ws.enable_test_dispatch_intercept();
+
+        crate::spawn::deliver_slack_message(&ws, "glead", None, slack_message_for("ping"));
+
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|cmd| matches!(
+                cmd,
+                crate::protocol::Command::Prompt { key, .. } if *key == lead_key
+            )),
+            "the running lead receives the message as a prompt: {dispatched:?}",
+        );
+        assert!(
+            dispatched
+                .iter()
+                .all(|cmd| !matches!(cmd, crate::protocol::Command::SpawnProject { .. })),
+            "a running lead must not fire the asleep spawn path",
+        );
+        assert!(
+            ws.domain_session_for(&SessionKey::from_session_id("__spawn_glead__")).is_none(),
+            "nothing buffers on the synthetic spawn key",
+        );
+    }
+
+    /// With no running session, the message buffers on the synthetic spawn
+    /// key and the project's spawn is fired to pick it up.
+    #[test]
+    fn slack_delivery_to_an_asleep_lead_buffers_and_spawns_the_project() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("glead", "/tmp/slack-lead-asleep");
+        ws.enable_test_dispatch_intercept();
+
+        crate::spawn::deliver_slack_message(&ws, "glead", None, slack_message_for("wake up"));
+
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|cmd| matches!(
+                cmd,
+                crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "glead"
+            )),
+            "the asleep project is spawned: {dispatched:?}",
+        );
+        assert!(
+            dispatched.iter().all(|cmd| !matches!(cmd, crate::protocol::Command::Prompt { .. })),
+            "no session is prompted directly",
+        );
+        let buffered = ws
+            .domain_session_for(&SessionKey::from_session_id("__spawn_glead__"))
+            .expect("the synthetic spawn key holds the buffer")
+            .lock()
+            .pending_slack_prompts
+            .len();
+        assert_eq!(buffered, 1, "the message waits for the spawned session to drain");
+    }
+
     fn make_workspace_dir() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
         fs::write(

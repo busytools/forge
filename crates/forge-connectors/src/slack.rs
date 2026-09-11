@@ -827,7 +827,11 @@ pub(crate) async fn sweep(
                     break;
                 }
                 delivered += 1;
-                newest_reply = Some(reply.ts.clone());
+                // Pages arrive newest-first, so the cursor is the newest
+                // delivered reply, not the last one processed.
+                if newest_reply.as_deref().is_none_or(|current| reply.ts.as_str() > current) {
+                    newest_reply = Some(reply.ts.clone());
+                }
             }
             if let Some(newest) = newest_reply {
                 host.set_thread_watermark(workspace, &conversation.id, &thread.parent_ts, &newest);
@@ -1952,7 +1956,7 @@ mod tests {
         rate_limited: Option<Duration>,
         conversations: std::sync::Mutex<Vec<SlackConversation>>,
         history: std::sync::Mutex<HashMap<String, Vec<Vec<SlackHistoryMessage>>>>,
-        replies: std::sync::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
+        replies: std::sync::Mutex<HashMap<String, Vec<Vec<SlackHistoryMessage>>>>,
         watermarks: std::sync::Mutex<HashMap<String, String>>,
         connected: std::sync::Mutex<Option<bool>>,
         delivered: std::sync::Mutex<Vec<SlackMessage>>,
@@ -2010,7 +2014,19 @@ mod tests {
         }
 
         fn seed_replies(&self, channel: &str, parent: &str, messages: Vec<SlackHistoryMessage>) {
-            self.replies.lock().expect("lock").insert(format!("{channel}/{parent}"), messages);
+            self.seed_replies_pages(channel, parent, vec![messages]);
+        }
+
+        /// Seed several reply pages. The fake serves them in order,
+        /// handing back the next index as the cursor, mirroring Slack's
+        /// newest-first pages that repeat the parent.
+        fn seed_replies_pages(
+            &self,
+            channel: &str,
+            parent: &str,
+            pages: Vec<Vec<SlackHistoryMessage>>,
+        ) {
+            self.replies.lock().expect("lock").insert(format!("{channel}/{parent}"), pages);
         }
 
         fn fail_with_rate_limit(&mut self, retry_after: Duration) {
@@ -2277,17 +2293,16 @@ mod tests {
             ts: &str,
             _oldest: Option<&str>,
             _limit: u32,
-            _cursor: Option<&str>,
+            cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
+            let pages = self.replies.lock().expect("lock");
+            let Some(seeded) = pages.get(&format!("{channel}/{ts}")) else {
+                return Ok(MessagePage { messages: Vec::new(), next_cursor: None });
+            };
+            let index = cursor.and_then(|cursor| cursor.parse::<usize>().ok()).unwrap_or(0);
             Ok(MessagePage {
-                messages: self
-                    .replies
-                    .lock()
-                    .expect("lock")
-                    .get(&format!("{channel}/{ts}"))
-                    .cloned()
-                    .unwrap_or_default(),
-                next_cursor: None,
+                messages: seeded.get(index).cloned().unwrap_or_default(),
+                next_cursor: (index + 1 < seeded.len()).then(|| (index + 1).to_string()),
             })
         }
 
@@ -3008,6 +3023,49 @@ mod tests {
         assert_eq!(threads.len(), 1, "the thread of the mention is tracked");
         assert_eq!(threads[0].parent_ts, "99.0");
         assert_eq!(threads[0].owners, vec![thread_owner("forge", None)]);
+    }
+
+    /// Slack pages a thread newest-first and repeats the parent on every
+    /// page (measured live at limit=3). The walk must page to the end,
+    /// dedupe the parent on each page, and lose nothing at the boundary.
+    #[tokio::test]
+    async fn a_thread_walk_pages_to_the_end_deduping_the_parent() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        let mut parent = history_message("100.0", "U9", "trigger");
+        parent.reply_count = 3;
+        host.seed_history("C1", vec![parent.clone()]);
+        sweep(&host, &host, "acme").await.expect("trigger sweep");
+
+        host.seed_replies_pages(
+            "C1",
+            "100.0",
+            vec![
+                vec![parent.clone(), history_message("300.0", "U8", "reply three")],
+                vec![
+                    parent,
+                    history_message("200.0", "U8", "reply two"),
+                    history_message("150.0", "U8", "reply one"),
+                ],
+            ],
+        );
+        sweep(&host, &host, "acme").await.expect("follow-up sweep");
+
+        let delivered = host.delivered();
+        let seen_ts = |ts: &str| delivered.iter().filter(|message| message.ts == ts).count();
+        assert_eq!(seen_ts("100.0"), 1, "the parent is delivered once, never per page");
+        assert_eq!(seen_ts("300.0"), 1, "the newest page's reply arrives");
+        assert_eq!(seen_ts("200.0"), 1, "the older page's replies arrive too");
+        assert_eq!(seen_ts("150.0"), 1, "nothing is lost at the page boundary");
+        assert_eq!(
+            host.thread_cursor("acme", "C1", "100.0"),
+            Some("300.0".to_owned()),
+            "the cursor lands on the newest reply",
+        );
     }
 
     #[tokio::test]

@@ -1701,6 +1701,56 @@ mod tests {
         (task, update_rx)
     }
 
+    /// Slack prompts buffered while the session was asleep flush as the
+    /// session's own prompts, leaving the buffer empty.
+    #[test]
+    fn drain_pending_slack_prompts_flushes_the_buffer_as_prompts() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let (handle, mut agent_cmds) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let key = SessionKey::from_str_for_test("slack-drain");
+        let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(handle.clone()))));
+        workspace.domain_handles.lock().insert(key.clone(), domain.clone());
+        let task = SessionTask {
+            key,
+            handle,
+            command_rx,
+            domain: domain.clone(),
+            update_tx,
+            spawn_key: None,
+            account: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        domain.lock().pending_slack_prompts.push(forge_primitives::slack::SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: "D1".to_owned(),
+            conversation_label: "U9".to_owned(),
+            ts: "100.000001".to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            text: "the buffered text".to_owned(),
+            files: Vec::new(),
+        });
+        // Production drains on the first Connected event, by which time
+        // the session id exists.
+        domain.lock().session_id = Some(forge_primitives::SessionId("sid-1".to_owned()));
+
+        task.drain_pending_slack_prompts();
+
+        assert!(domain.lock().pending_slack_prompts.is_empty(), "the buffer drains once flushed");
+        let prompt =
+            agent_cmds.try_recv().expect("the drained message reaches the session as a prompt");
+        assert!(
+            matches!(&prompt, forge_primitives::AgentCommand::PromptWithImages { text, .. }
+                if text.contains("the buffered text")),
+            "the buffered message arrives as the session's own prompt: {prompt:?}",
+        );
+    }
+
     /// The review-activity notice a task emitted, if any.
     fn drained_notice(
         update_rx: &mut mpsc::UnboundedReceiver<SessionUpdate>,

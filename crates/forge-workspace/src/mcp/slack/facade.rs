@@ -1626,4 +1626,63 @@ mod tests {
         assert_eq!(bookmarks[0].title.as_deref(), Some("Runbook"));
         assert_eq!(api.bookmark_reads.lock().as_slice(), ["C1"]);
     }
+
+    /// The list marks only the CALLER's own subscriptions: a lead and a
+    /// worker in the same project each see their own records, never each
+    /// other's.
+    #[tokio::test]
+    async fn subscribed_targets_scopes_to_the_callers_role() {
+        let (ws, facade) = workspace_with_one_slack_workspace("acme");
+        let lead = caller();
+        facade
+            .subscribe(
+                &lead,
+                Some("acme"),
+                SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
+                    id: "C1".to_owned(),
+                    mode: SlackWatchMode::All,
+                }]),
+            )
+            .expect("the lead subscribes to C1");
+
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let project_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == "forge")
+            .expect("the seeded project")
+            .key;
+        ws.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "tester".into(),
+                charter: "c".into(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "caller-uuid".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        facade
+            .subscribe(&worker_key, Some("acme"), SlackSubscribeRequest::DirectMessages)
+            .expect("the worker subscribes to the DM class");
+
+        assert_eq!(
+            facade.subscribed_targets(&lead, Some("acme")),
+            vec![SlackSubscriptionTarget::Conversation {
+                id: "C1".to_owned(),
+                mode: SlackWatchMode::All,
+            }],
+            "the lead sees only its own record",
+        );
+        assert_eq!(
+            facade.subscribed_targets(&worker_key, Some("acme")),
+            vec![SlackSubscriptionTarget::DirectMessages],
+            "the worker sees only its own record, never the lead's",
+        );
+    }
 }
