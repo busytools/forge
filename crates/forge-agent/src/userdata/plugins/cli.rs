@@ -1,7 +1,8 @@
 use super::components::{scan_components, scan_marketplaces};
 use super::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
-    PluginUpdateRecord, PluginsInventorySnapshot,
+    PluginRunRowStatus, PluginUpdateRecord, PluginUpdateRun, PluginsInventorySnapshot,
+    classify_update_row,
 };
 use crate::env::git_command;
 use serde::Deserialize;
@@ -419,7 +420,7 @@ fn parse_always_on_tokens(output: &str) -> Option<u64> {
 
 /// The CLI's own contract: an applied update lands only after a
 /// restart, stated in the update output.
-fn restart_required(output: &str) -> bool {
+pub fn output_states_restart_required(output: &str) -> bool {
     output.to_ascii_lowercase().contains("restart required")
 }
 
@@ -441,7 +442,7 @@ pub async fn update_plugin(
 ) -> Result<UpdateOutcome, String> {
     let args = plugin_update_args(plugin_id, scope);
     let (_, output) = run_cli_command(cwd_raw, claude_path, args).await?;
-    let restart_required = restart_required(&output);
+    let restart_required = output_states_restart_required(&output);
     Ok(UpdateOutcome { output, restart_required })
 }
 
@@ -504,9 +505,402 @@ impl TokenCostCache {
     }
 }
 
+/// One future handed back by the [`UpdateRunner`] seams.
+pub type RunnerFut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
+/// The update seam's result: the resolved claude path plus the CLI's
+/// combined stdout+stderr.
+pub type RunnerUpdateResult = Result<(PathBuf, String), String>;
+/// The refresh seam's result: the inventory plus a resolved claude path.
+pub type RunnerRefreshResult = Result<(PluginsInventorySnapshot, PathBuf), String>;
+type SharedUpdateFn =
+    std::sync::Arc<dyn Fn(Option<PathBuf>, String, Vec<String>) -> RunnerFut<RunnerUpdateResult>>;
+type SharedRefreshFn =
+    std::sync::Arc<dyn Fn(Option<PathBuf>, String) -> RunnerFut<RunnerRefreshResult>>;
+
+/// The CLI surface one update batch runs through; injectable so tests
+/// drive a whole batch without shelling out. The production instance
+/// wraps the `claude` subprocess calls.
+#[derive(Clone)]
+pub struct UpdateRunner {
+    pub run_update: SharedUpdateFn,
+    pub refresh: SharedRefreshFn,
+}
+
+impl std::fmt::Debug for UpdateRunner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateRunner").finish_non_exhaustive()
+    }
+}
+
+impl UpdateRunner {
+    /// The real runner: one `claude plugin update` call per row plus
+    /// the closing inventory refresh.
+    pub fn real() -> Self {
+        Self {
+            run_update: std::sync::Arc::new(|cached, cwd, args| {
+                Box::pin(run_cli_command(cwd, cached, args))
+            }),
+            refresh: std::sync::Arc::new(|cached, cwd| Box::pin(refresh_inventory(cwd, cached))),
+        }
+    }
+}
+
+/// Everything one update batch needs beyond its queued rows. The
+/// caller owns plan capture: which plugins, their per-row cwd, and the
+/// marketplace clone HEADs a later rollback restores.
+pub struct BatchPlan {
+    pub cwd_context: String,
+    pub claude_path: Option<PathBuf>,
+    /// Upper bound on one CLI call inside the batch; a hung call fails
+    /// its row instead of pinning the batch forever.
+    pub call_timeout: std::time::Duration,
+    pub marketplace_refs: std::collections::HashMap<String, String>,
+    pub run: PluginUpdateRun,
+}
+
+/// The batch's outcome: the finished run, the rollback records for the
+/// rows that moved, the plugins whose update stated the restart
+/// contract, and the post-batch inventory when the refresh landed.
+pub struct BatchOut {
+    pub run: PluginUpdateRun,
+    pub records: Vec<PluginUpdateRecord>,
+    pub restart_required: Vec<String>,
+    pub snapshot: Option<PluginsInventorySnapshot>,
+    pub claude_path: Option<PathBuf>,
+}
+
+/// Run a queued update batch: one CLI call per row, sequentially,
+/// continuing past failures. Every row reaches a terminal status in
+/// plan order; `on_progress` observes each intermediate run state.
+pub async fn execute_update_batch(
+    mut plan: BatchPlan,
+    runner: UpdateRunner,
+    mut on_progress: impl FnMut(PluginUpdateRun),
+) -> BatchOut {
+    let row_count = plan.run.rows.len();
+    for index in 0..row_count {
+        if plan.run.rows[index].status != PluginRunRowStatus::Queued {
+            continue;
+        }
+        plan.run.rows[index].status = PluginRunRowStatus::Updating;
+        on_progress(plan.run.clone());
+        let row = &plan.run.rows[index];
+        let call = (runner.run_update)(
+            plan.claude_path.clone(),
+            row.cwd_raw.clone(),
+            plugin_update_args(&row.plugin_id, &row.scope),
+        );
+        let result = match tokio::time::timeout(plan.call_timeout, call).await {
+            Ok(result) => result,
+            Err(_) => Err(format!(
+                "`claude plugin update` timed out after {}s",
+                plan.call_timeout.as_secs()
+            )),
+        };
+        match result {
+            Ok((path, output)) => {
+                plan.claude_path = Some(path);
+                plan.run.rows[index].detail = Some(output);
+            }
+            Err(message) => {
+                plan.run.rows[index].status = PluginRunRowStatus::Failed;
+                plan.run.rows[index].detail = Some(message);
+            }
+        }
+    }
+
+    let refresh = (runner.refresh)(plan.claude_path.clone(), plan.cwd_context.clone());
+    let snapshot = match tokio::time::timeout(plan.call_timeout, refresh).await {
+        Ok(Ok((snapshot, path))) => {
+            plan.claude_path = Some(path);
+            Some(snapshot)
+        }
+        Ok(Err(message)) => {
+            fail_still_running(
+                &mut plan.run,
+                &format!("post-update inventory refresh failed: {message}"),
+            );
+            None
+        }
+        Err(_) => {
+            fail_still_running(
+                &mut plan.run,
+                &format!(
+                    "post-update inventory refresh timed out after {}s",
+                    plan.call_timeout.as_secs()
+                ),
+            );
+            None
+        }
+    };
+
+    let mut records = Vec::new();
+    let mut restart_required = Vec::new();
+    for row in &mut plan.run.rows {
+        if row.status != PluginRunRowStatus::Updating {
+            continue;
+        }
+        if row.detail.as_deref().is_some_and(output_states_restart_required) {
+            restart_required.push(row.plugin_id.clone());
+        }
+        let version_after = snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .installed
+                .iter()
+                .find(|entry| entry.id == row.plugin_id && entry.scope == row.scope)
+                .and_then(|entry| entry.version.as_deref())
+        });
+        let Some(version_after) = version_after else {
+            // An entry that vanished from the inventory has no
+            // observable outcome and must not yield a rollback record
+            // naming a version nobody can see.
+            row.status = PluginRunRowStatus::Failed;
+            row.detail = Some("not found in post-update inventory".to_owned());
+            continue;
+        };
+        let before = row.installed_version.clone();
+        let output = row.detail.take().unwrap_or_default();
+        let outcome = classify_update_row(
+            &row.plugin_id,
+            &row.scope,
+            before.as_deref(),
+            Some(version_after),
+            &output,
+        );
+        row.status = outcome.status;
+        row.installed_version.clone_from(&outcome.installed_version);
+        row.detail = outcome.detail;
+        if outcome.status == PluginRunRowStatus::Updated {
+            records.push(PluginUpdateRecord {
+                plugin_id: row.plugin_id.clone(),
+                marketplace: row.marketplace.clone(),
+                scope: row.scope.clone(),
+                cwd_raw: row.cwd_raw.clone(),
+                from_version: before,
+                to_version: row.installed_version.clone(),
+                marketplace_ref_before: plan.marketplace_refs.get(&row.marketplace).cloned(),
+                updated_at: now_rfc3339(),
+                trigger: plan.run.trigger,
+            });
+        }
+    }
+
+    plan.run.finished = true;
+    on_progress(plan.run.clone());
+    BatchOut { run: plan.run, records, restart_required, snapshot, claude_path: plan.claude_path }
+}
+
+fn fail_still_running(run: &mut PluginUpdateRun, message: &str) {
+    for row in &mut run.rows {
+        if row.status != PluginRunRowStatus::Updating {
+            continue;
+        }
+        row.status = PluginRunRowStatus::Failed;
+        // The captured CLI output is the only evidence the update may
+        // have applied; keep it on the row.
+        let output = row.detail.take().unwrap_or_default();
+        row.detail = Some(if output.is_empty() {
+            message.to_owned()
+        } else {
+            format!("{output} | {message}")
+        });
+    }
+}
+
+fn now_rfc3339() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use forge_primitives::plugins::{PluginUpdateRunRow, PluginUpdateTrigger};
+
+    // -- sequential batch -------------------------------------------------
+
+    fn queued_row(id: &str, version: &str) -> PluginUpdateRunRow {
+        PluginUpdateRunRow::queued(
+            format!("{id}@probe-market"),
+            "user".to_owned(),
+            String::new(),
+            Some(version.to_owned()),
+        )
+    }
+
+    /// A runner whose update calls fail for plugins named in `failing`
+    /// and otherwise report an applied update carrying the restart
+    /// contract; the refresh reports every plugin moved one version.
+    fn fake_runner(
+        failing: &[&str],
+    ) -> (UpdateRunner, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let failing: Vec<String> = failing.iter().map(|s| format!("{s}@probe-market")).collect();
+        let calls: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls_update = std::sync::Arc::clone(&calls);
+        let runner = UpdateRunner {
+            run_update: std::sync::Arc::new(move |_, _, args| {
+                let id = args[2].clone();
+                let failing = failing.clone();
+                let calls = std::sync::Arc::clone(&calls_update);
+                Box::pin(async move {
+                    calls.lock().expect("call log").push(id.clone());
+                    if failing.contains(&id) {
+                        Err(format!("`claude plugin update` failed for {id}"))
+                    } else {
+                        Ok((
+                            PathBuf::from("claude"),
+                            format!(
+                                "Plugin \"{id}\" updated from 1.0.0 to 2.0.0 for scope user. \
+                                     Restart required to apply."
+                            ),
+                        ))
+                    }
+                })
+            }),
+            refresh: std::sync::Arc::new(|_, _| {
+                Box::pin(async {
+                    let entry =
+                        |id: &str, version: &str| forge_primitives::plugins::InstalledPluginEntry {
+                            id: format!("{id}@probe-market"),
+                            version: Some(version.to_owned()),
+                            scope: "user".to_owned(),
+                            enabled: true,
+                            installed_at: None,
+                            last_updated: None,
+                            project_path: None,
+                            capability: forge_primitives::plugins::PluginCapability::Skill,
+                        };
+                    let snapshot = forge_primitives::plugins::PluginsInventorySnapshot {
+                        installed: vec![
+                            entry("first", "2.0.0"),
+                            entry("second", "1.0.0"),
+                            entry("third", "2.0.0"),
+                        ],
+                        ..Default::default()
+                    };
+                    Ok((snapshot, PathBuf::from("claude")))
+                })
+            }),
+        };
+        (runner, calls)
+    }
+
+    fn three_row_plan() -> BatchPlan {
+        BatchPlan {
+            cwd_context: "/proj".to_owned(),
+            claude_path: None,
+            call_timeout: std::time::Duration::from_secs(5),
+            marketplace_refs: std::collections::HashMap::new(),
+            run: PluginUpdateRun {
+                trigger: PluginUpdateTrigger::Manual,
+                finished: false,
+                rows: vec![
+                    queued_row("first", "1.0.0"),
+                    queued_row("second", "1.0.0"),
+                    queued_row("third", "1.0.0"),
+                ],
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn a_mid_batch_failure_does_not_stop_the_batch() {
+        let (runner, calls) = fake_runner(&["second"]);
+        let progress: std::sync::Arc<std::sync::Mutex<Vec<Vec<PluginRunRowStatus>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&progress);
+
+        let out = execute_update_batch(three_row_plan(), runner, move |run| {
+            sink.lock()
+                .expect("progress log")
+                .push(run.rows.iter().map(|row| row.status).collect());
+        })
+        .await;
+
+        assert!(out.run.finished);
+        let statuses: Vec<PluginRunRowStatus> = out.run.rows.iter().map(|row| row.status).collect();
+        assert_eq!(
+            statuses,
+            vec![
+                PluginRunRowStatus::Updated,
+                PluginRunRowStatus::Failed,
+                PluginRunRowStatus::Updated
+            ],
+            "every row reached a terminal status in plan order; got {statuses:?}"
+        );
+        assert_eq!(
+            *calls.lock().expect("call log"),
+            vec![
+                "first@probe-market".to_owned(),
+                "second@probe-market".to_owned(),
+                "third@probe-market".to_owned(),
+            ],
+            "the later rows were still attempted"
+        );
+        assert_eq!(out.run.summary(), "2 updated, 1 failed, 0 current");
+        assert_eq!(out.run.finished_count(), 2, "the panel's done count for the failed batch");
+        let last = progress.lock().expect("progress frames").last().cloned().unwrap_or_default();
+        assert_eq!(last.len(), 3, "the final progress frame carries all rows");
+        assert!(out.snapshot.is_some(), "the post-batch refresh landed");
+    }
+
+    #[tokio::test]
+    async fn restart_required_is_parsed_onto_the_row() {
+        let (runner, _) = fake_runner(&[]);
+        let out = execute_update_batch(three_row_plan(), runner, |_| {}).await;
+        let mut ids = out.restart_required.clone();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "first@probe-market".to_owned(),
+                "second@probe-market".to_owned(),
+                "third@probe-market".to_owned()
+            ],
+            "every applied update in the fake states the contract; got {:?}",
+            out.restart_required
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_failure_fails_only_the_still_running_rows() {
+        let runner = UpdateRunner {
+            run_update: std::sync::Arc::new(|_, _, args| {
+                let id = args[2].clone();
+                Box::pin(async move {
+                    Ok((
+                        PathBuf::from("claude"),
+                        format!(
+                            "Plugin \"{id}\" updated from 1.0.0 to 2.0.0 for scope user. \
+                                 Restart required to apply."
+                        ),
+                    ))
+                })
+            }),
+            refresh: std::sync::Arc::new(|_, _| {
+                Box::pin(async { Err("claude not found".to_owned()) })
+            }),
+        };
+        let out = execute_update_batch(three_row_plan(), runner, |_| {}).await;
+        assert!(out.snapshot.is_none());
+        assert!(
+            out.run.rows.iter().all(|row| row.status == PluginRunRowStatus::Failed),
+            "with no post-run inventory every row is undecidable and reads as failed: {:?}",
+            out.run.rows
+        );
+        assert!(
+            out.run
+                .rows
+                .iter()
+                .all(|row| row.detail.as_deref().is_some_and(|d| d.contains("refresh failed"))),
+            "the failure names the refresh: {:?}",
+            out.run.rows.iter().map(|row| row.detail.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(out.run.finished_count(), 0);
+    }
 
     const DETAILS_OUTPUT: &str = "superpowers 6.3.0\n  Description: Core skills library\n  Source: superpowers@claude-plugins-official\n\nComponent inventory\n  Skills (14)  brainstorming, test-driven-development\n  Agents (0)\n  Hooks (1)  SessionStart  (harness-only - no model context cost)\n  MCP servers (0)\n  LSP servers (0)\n\nProjected token cost\n  Always-on:   ~450 tok   added to every session\n\nPer-component (rounded)\n  component                       always-on  on-invoke\n  using-git-worktrees                   ~40      ~1.5k\n";
 
@@ -518,10 +912,10 @@ mod tests {
 
     #[test]
     fn restart_required_reads_the_cli_contract_line() {
-        assert!(restart_required(
+        assert!(output_states_restart_required(
             "Plugin \"hello\" updated from 0.2.0 to 0.3.0 for scope user. Restart required to apply."
         ));
-        assert!(!restart_required("hello is already at the latest version (0.2.0)."));
+        assert!(!output_states_restart_required("hello is already at the latest version (0.2.0)."));
     }
 
     #[tokio::test]

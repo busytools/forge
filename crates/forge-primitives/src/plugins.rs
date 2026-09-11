@@ -212,6 +212,20 @@ impl PluginUpdateRun {
             "all current".to_owned()
         }
     }
+
+    /// Rows that landed successfully - the "done" side of the
+    /// Extensions page's batch counter.
+    pub fn finished_count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    PluginRunRowStatus::Updated | PluginRunRowStatus::AlreadyCurrent
+                )
+            })
+            .count()
+    }
 }
 
 /// The CLI marker printed when an update finds nothing to do.

@@ -60,7 +60,7 @@ pub use forge_primitives::plugins::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
     PluginRunRowStatus, PluginUpdateAvailability, PluginUpdateRecord, PluginUpdateRun,
     PluginUpdateRunRow, PluginUpdateTrigger, PluginsCliActionSuccess, PluginsInventorySnapshot,
-    classify_update_row, update_availability,
+    update_availability,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -1094,6 +1094,17 @@ impl std::fmt::Debug for UpdateCli {
     }
 }
 
+impl UpdateCli {
+    /// The batch runner view of this seam: the update and refresh
+    /// arms, without rollback.
+    fn runner(&self) -> cli::UpdateRunner {
+        cli::UpdateRunner {
+            run_update: std::sync::Arc::clone(&self.run_update),
+            refresh: std::sync::Arc::clone(&self.refresh),
+        }
+    }
+}
+
 /// Upper bound on one `claude plugin` call inside a run (updates,
 /// refresh, rollback); a hung CLI fails its row instead of pinning
 /// the pane's loading flag forever. Expiry abandons the call without
@@ -1246,160 +1257,37 @@ async fn capture_marketplace_refs(
     refs
 }
 
-async fn execute_update_plan(
-    update_tx: mpsc::UnboundedSender<SessionUpdate>,
-    mut plan: UpdateRunPlan,
-) {
+async fn execute_update_plan(update_tx: mpsc::UnboundedSender<SessionUpdate>, plan: UpdateRunPlan) {
     let refs = capture_marketplace_refs(&plan.marketplaces).await;
-    let mut claude_path = plan.claude_path.clone();
-
-    let row_count = plan.run.rows.len();
-    for index in 0..row_count {
-        if plan.run.rows[index].status != PluginRunRowStatus::Queued {
-            continue;
-        }
-        plan.run.rows[index].status = PluginRunRowStatus::Updating;
-        let _ = update_tx.send(SessionUpdate::PluginsUpdateRunProgress {
-            cwd_raw: plan.cwd_context.clone(),
-            run: plan.run.clone(),
-        });
-        let row = &plan.run.rows[index];
-        let call = (plan.cli.run_update)(
-            claude_path.clone(),
-            row.cwd_raw.clone(),
-            cli::plugin_update_args(&row.plugin_id, &row.scope),
-        );
-        let result = match tokio::time::timeout(UPDATE_CALL_TIMEOUT, call).await {
-            Ok(result) => result,
-            Err(_) => Err(format!(
-                "`claude plugin update` timed out after {}s",
-                UPDATE_CALL_TIMEOUT.as_secs()
-            )),
-        };
-        match result {
-            Ok((path, output)) => {
-                claude_path = Some(path);
-                plan.run.rows[index].detail = Some(output);
-            }
-            Err(message) => {
-                plan.run.rows[index].status = PluginRunRowStatus::Failed;
-                plan.run.rows[index].detail = Some(message);
-            }
-        }
-    }
-
-    let refresh = (plan.cli.refresh)(claude_path.clone(), plan.cwd_context.clone());
-    let snapshot = match tokio::time::timeout(UPDATE_CALL_TIMEOUT, refresh).await {
-        Ok(Ok((snapshot, path))) => {
-            claude_path = Some(path);
-            Some(snapshot)
-        }
-        Ok(Err(message)) => {
-            for row in &mut plan.run.rows {
-                if row.status == PluginRunRowStatus::Updating {
-                    row.status = PluginRunRowStatus::Failed;
-                    // The captured CLI output is the only evidence the
-                    // update may have applied; keep it on the row.
-                    let output = row.detail.take().unwrap_or_default();
-                    row.detail = Some(if output.is_empty() {
-                        format!("post-update inventory refresh failed: {message}")
-                    } else {
-                        format!("{output} | post-update inventory refresh failed: {message}")
-                    });
-                }
-            }
-            None
-        }
-        Err(_) => {
-            for row in &mut plan.run.rows {
-                if row.status == PluginRunRowStatus::Updating {
-                    row.status = PluginRunRowStatus::Failed;
-                    let output = row.detail.take().unwrap_or_default();
-                    row.detail = Some(if output.is_empty() {
-                        format!(
-                            "post-update inventory refresh timed out after {}s",
-                            UPDATE_CALL_TIMEOUT.as_secs()
-                        )
-                    } else {
-                        format!(
-                            "{output} | post-update inventory refresh timed out after {}s",
-                            UPDATE_CALL_TIMEOUT.as_secs()
-                        )
-                    });
-                }
-            }
-            None
-        }
+    let batch_plan = cli::BatchPlan {
+        cwd_context: plan.cwd_context.clone(),
+        claude_path: plan.claude_path.clone(),
+        call_timeout: UPDATE_CALL_TIMEOUT,
+        marketplace_refs: refs,
+        run: plan.run,
     };
-
-    let mut records = Vec::new();
-    for row in &mut plan.run.rows {
-        if row.status != PluginRunRowStatus::Updating {
-            continue;
-        }
-        let version_after = snapshot.as_ref().and_then(|snapshot| {
-            snapshot
-                .installed
-                .iter()
-                .find(|entry| entry.id == row.plugin_id && entry.scope == row.scope)
-                .and_then(|entry| entry.version.as_deref())
-        });
-        let Some(version_after) = version_after else {
-            // An entry that vanished from the inventory has no
-            // observable outcome and must not yield a rollback record
-            // naming a version nobody can see.
-            row.status = PluginRunRowStatus::Failed;
-            row.detail = Some("not found in post-update inventory".to_owned());
-            continue;
-        };
-        let before = row.installed_version.clone();
-        let output = row.detail.take().unwrap_or_default();
-        let outcome = classify_update_row(
-            &row.plugin_id,
-            &row.scope,
-            before.as_deref(),
-            Some(version_after),
-            &output,
-        );
-        row.status = outcome.status;
-        row.installed_version.clone_from(&outcome.installed_version);
-        row.detail = outcome.detail;
-        if outcome.status == PluginRunRowStatus::Updated {
-            records.push(PluginUpdateRecord {
-                plugin_id: row.plugin_id.clone(),
-                marketplace: row.marketplace.clone(),
-                scope: row.scope.clone(),
-                cwd_raw: row.cwd_raw.clone(),
-                from_version: before,
-                to_version: row.installed_version.clone(),
-                marketplace_ref_before: refs.get(&row.marketplace).cloned(),
-                updated_at: now_rfc3339(),
-                trigger: plan.run.trigger,
-            });
-        }
-    }
+    let progress_tx = update_tx.clone();
+    let progress_cwd = plan.cwd_context.clone();
+    let out = cli::execute_update_batch(batch_plan, plan.cli.runner(), move |run| {
+        let _ = progress_tx
+            .send(SessionUpdate::PluginsUpdateRunProgress { cwd_raw: progress_cwd.clone(), run });
+    })
+    .await;
 
     // Persist in the task: the report event can be dropped on a cwd
     // mismatch, the record must not be.
-    if !records.is_empty()
+    if !out.records.is_empty()
         && let Some(store) = plan.store.as_ref()
     {
-        store.record_plugin_updates(&records);
+        store.record_plugin_updates(&out.records);
     }
 
-    plan.run.finished = true;
     let _ = update_tx.send(SessionUpdate::PluginsUpdateRunFinished {
         cwd_raw: plan.cwd_context,
-        run: plan.run,
-        snapshot,
-        claude_path,
+        run: out.run,
+        snapshot: out.snapshot,
+        claude_path: out.claude_path,
     });
-}
-
-fn now_rfc3339() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default()
 }
 
 /// Boot hook: with `[plugins] auto_update = true`, refresh the
