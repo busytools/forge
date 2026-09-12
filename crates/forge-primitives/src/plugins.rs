@@ -85,8 +85,9 @@ pub struct PluginsInventorySnapshot {
 
 /// Per-plugin component inventory read straight off disk (the plugin
 /// cache plus marketplace manifests). Produced by the scan in
-/// `forge_agent::userdata::plugins::components`; one entry per plugin
-/// the cache or a manifest knows about.
+/// `forge_agent::userdata::plugins::components`; one entry per
+/// registered plugin, per plugin a manifest or the cache names, and one
+/// per marketplace whose manifest failed to load.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PluginComponents {
     /// Full installed id (`name@marketplace`).
@@ -112,8 +113,9 @@ pub struct PluginComponents {
     /// LSP servers the marketplace manifest declares: server key to
     /// the binary command it launches.
     pub lsp_servers: BTreeMap<String, String>,
-    /// Why the plugin could not be scanned, when it is registered but
-    /// its on-disk copy is gone or unreadable.
+    /// Why the row could not load: a registered install whose dir is
+    /// gone, unreadable, or absent from the registry entry, or a
+    /// marketplace whose manifest failed to load.
     pub load_error: Option<String>,
 }
 
@@ -125,7 +127,10 @@ pub struct MarketplaceHealth {
     /// Plugin count in the marketplace's manifest; 0 when it cannot
     /// load.
     pub available: usize,
-    /// Why the manifest could not be read (cache-miss, parse failure).
+    /// Why the marketplace could not load: no clone recorded on disk,
+    /// no manifest found in the clone, a manifest that cannot be read
+    /// or cannot be parsed, or the registry error carried onto every
+    /// clone row.
     pub load_error: Option<String>,
     pub install_location: PathBuf,
     /// The registry's installLocation sits outside the config dir.
@@ -369,7 +374,9 @@ pub enum PluginUpdateTrigger {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionRow {
     /// Stable row id: the plugin id for plugin rows,
-    /// `<kind>:<plugin-name>:<component>` for components.
+    /// `<kind>:<plugin-name>:<component>` for components, and
+    /// `hooks:<plugin-name>` for a plugin's hook set, which is one row
+    /// rather than one per trigger.
     pub id: String,
     pub kind: ExtensionKind,
     pub name: String,
