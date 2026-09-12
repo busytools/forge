@@ -80,6 +80,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
+/// Lifecycle to paint for a live worker whose session bucket is absent (the
+/// spawn window before `Connected`, a dropped or renamed key, a swept
+/// bucket). The worker's own liveness is all forge knows, and a
+/// connected-but-unbucketed worker has no chat or Inspector row behind it to
+/// explain a spinner, so it reads settled. Shared by the Projects pane worker
+/// row and the launchpad worker list, which render the same worker.
+pub(crate) fn worker_lifecycle_without_bucket(
+    status: forge_primitives::WorkerLiveness,
+) -> crate::app::session::SessionLifecycleState {
+    use crate::app::session::SessionLifecycleState as Lifecycle;
+    match status {
+        forge_primitives::WorkerLiveness::Running => Lifecycle::Idle,
+        forge_primitives::WorkerLiveness::Spawning => Lifecycle::Spawning,
+        forge_primitives::WorkerLiveness::Failed => Lifecycle::Failed,
+    }
+}
+
 pub(crate) fn refresh_selection_snapshot(app: &mut App) {
     let Some(selection) = app.selection() else {
         return;
