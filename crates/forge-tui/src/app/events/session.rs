@@ -872,8 +872,9 @@ pub(super) fn apply_session_update_session_replaced(
         bucket.pending_compact_clear = false;
     }
     seed_compaction_count(app, key, compaction_count);
-    // This arm never passes through `Connected`, the only other place a
-    // bucket's project is resolved from its cwd.
+    // Nothing on this arm passes through `Connected`, which is where a
+    // bucket would otherwise pick its project up; `false` keeps a name
+    // a preceding `Spawning` already stamped.
     stamp_bucket_project_from_cwd(app, key, false);
 }
 
