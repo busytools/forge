@@ -330,7 +330,24 @@ impl Workspace {
         }
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
+        // Only records the store already holds are rewritten. An ephemeral
+        // ad-hoc-worker subscription lives in memory only by design, and
+        // inserting it here would promote it to durable.
+        let durable: Vec<Uuid> = match crate::store::slack::list(db) {
+            Ok(stored) => stored.into_iter().map(|sub| sub.id).collect(),
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "reading Slack subscriptions to heal a name failed",
+                );
+                return;
+            }
+        };
         for sub in &updated {
+            if !durable.contains(&sub.id) {
+                continue;
+            }
             if let Err(error) = crate::store::slack::insert(db, sub) {
                 tracing::warn!(
                     target: "forge_workspace::slack",
@@ -1316,6 +1333,108 @@ mod tests {
             named,
             Some(Some("ved-test".to_owned())),
             "the backfilled name is persisted, not only held in memory",
+        );
+    }
+
+    /// The guard the doc comment promises: a conversation renamed since it
+    /// was subscribed keeps the stored name rather than picking up the
+    /// directory's current one.
+    #[test]
+    fn naming_a_conversation_leaves_an_already_named_record_alone() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let mut sub = sub_for_conversation("forge", None, "C1");
+        sub.target = SlackSubscriptionTarget::Conversation {
+            id: "C1".to_owned(),
+            name: Some("stale-name".to_owned()),
+            mode: SlackWatchMode::All,
+        };
+        ws.add_slack_subscription(sub, true);
+
+        ws.name_slack_conversation("acme", "C1", "renamed");
+
+        let db = ws.db.lock();
+        let stored = crate::store::slack::list(db.as_ref().expect("db installed")).expect("list");
+        let name = stored.iter().find_map(|sub| match &sub.target {
+            SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => name.clone(),
+            _ => None,
+        });
+        assert_eq!(
+            name,
+            Some("stale-name".to_owned()),
+            "a record that already has a name is never rewritten",
+        );
+    }
+
+    /// The same conversation id can be watched in two workspaces, so the
+    /// heal is scoped to the workspace it was called for.
+    #[test]
+    fn naming_a_conversation_leaves_another_workspace_alone() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
+        let mut other = sub_for_conversation("forge", None, "C1");
+        other.id = Uuid::new_v4();
+        other.workspace = "beta".to_owned();
+        ws.add_slack_subscription(other, true);
+
+        ws.name_slack_conversation("acme", "C1", "ved-test");
+
+        let db = ws.db.lock();
+        let stored = crate::store::slack::list(db.as_ref().expect("db installed")).expect("list");
+        // Keyed, not ordered: the store iterates by uuid bytes.
+        let named: BTreeMap<String, Option<String>> = stored
+            .iter()
+            .filter_map(|sub| match &sub.target {
+                SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => {
+                    Some((sub.workspace.clone(), name.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            named.get("acme"),
+            Some(&Some("ved-test".to_owned())),
+            "the named workspace's record is healed",
+        );
+        assert_eq!(named.get("beta"), Some(&None), "the other workspace's record is untouched");
+    }
+
+    /// An ephemeral ad-hoc-worker subscription is in memory only by design,
+    /// so healing its name must not write it to the store and resurrect it
+    /// on the next boot under a worker label that is gone.
+    #[test]
+    fn naming_an_ephemeral_conversation_does_not_persist_it() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation("forge", Some("tester"), "C1"), false);
+
+        ws.name_slack_conversation("acme", "C1", "ved-test");
+
+        let db = ws.db.lock();
+        let stored = crate::store::slack::list(db.as_ref().expect("db installed")).expect("list");
+        assert!(stored.is_empty(), "an ephemeral record never reaches the store: {stored:?}");
+        drop(db);
+
+        let named =
+            ws.slack_subscriptions_for_project("forge").into_iter().find_map(|sub| {
+                match sub.target {
+                    SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => {
+                        Some(name)
+                    }
+                    _ => None,
+                }
+            });
+        assert_eq!(
+            named,
+            Some(Some("ved-test".to_owned())),
+            "the in-memory record still gets its name",
         );
     }
 

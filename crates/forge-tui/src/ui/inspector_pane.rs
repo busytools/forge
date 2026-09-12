@@ -4855,14 +4855,6 @@ mod tests {
             joined.contains("#ved-test") && joined.contains("direct messages"),
             "both subscription rows render under the heading; got:\n{joined}",
         );
-        // One heading pass then one row pass would still satisfy the
-        // counts above while losing the grouping entirely.
-        let heading_at = joined.find("acme").expect("the heading renders");
-        assert!(
-            joined.find("#ved-test").expect("the named row") > heading_at
-                && joined.find("direct messages").expect("the DM row") > heading_at,
-            "every row sits beneath its own heading; got:\n{joined}",
-        );
     }
 
     /// Group order follows the workspace's first appearance, not the
@@ -4895,6 +4887,14 @@ mod tests {
         let zeta_at = joined.find("zeta").expect("the zeta heading renders");
         let acme_at = joined.find("acme").expect("the acme heading renders");
         assert!(zeta_at < acme_at, "first-seen workspace must head the section:\n{joined}");
+        // With two workspaces this distinguishes the grouped render from
+        // emitting every heading first and then every row: under that
+        // arrangement zeta's row lands past acme's heading.
+        let zeta_row_at = joined.find("#zeta-ch").expect("the zeta row renders");
+        assert!(
+            zeta_at < zeta_row_at && zeta_row_at < acme_at,
+            "a workspace's rows sit between its heading and the next; got:\n{joined}",
+        );
         let headings =
             joined.lines().filter(|line| line.trim_start().starts_with("zeta \u{25c8}")).count();
         assert_eq!(

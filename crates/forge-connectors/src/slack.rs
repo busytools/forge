@@ -2374,12 +2374,15 @@ mod tests {
             *self.connected.lock().expect("lock") = Some(connected);
         }
 
+        /// Deliberately without the sweep's unnamed-only guard: the double
+        /// records what it is told, so a test asserting the guard is
+        /// testing the sweep's filter rather than the fake's copy of it.
         fn name_conversation(&self, workspace: &str, conversation: &str, name: &str) {
             for sub in self.subscriptions.lock().expect("lock").iter_mut() {
                 if sub.workspace != workspace {
                     continue;
                 }
-                if let SlackSubscriptionTarget::Conversation { id, name: stored @ None, .. } =
+                if let SlackSubscriptionTarget::Conversation { id, name: stored, .. } =
                     &mut sub.target
                     && id.as_str() == conversation
                 {
