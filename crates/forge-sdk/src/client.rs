@@ -198,8 +198,8 @@ impl Client {
 
         // Build the initialize control_request body. the CLI keeps
         // the same field-inclusion rules:
-        // `hooks` always present (null when empty),
-        // `excludeDynamicSections` / `skills` only when explicitly set.
+        // `hooks` always present (null when empty), `excludeDynamicSections`
+        // only when explicitly set.
         let exclude_dynamic_sections = match &options.system_prompt {
             Some(crate::options::SystemPromptKind::Preset {
                 exclude_dynamic_sections: Some(v),

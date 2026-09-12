@@ -2,9 +2,8 @@
 //! matches Python SDK v0.1.64 `_internal/query.py:196-207`:
 //!
 //! - `hooks` - always present; value is `null` when no callbacks.
-//! - `agents` - omitted unless callers configured agents.
+//! - `agents` - forge never sends one; the assertion below pins that.
 //! - `excludeDynamicSections` - omitted unless explicitly set.
-//! - `skills` - omitted unless a concrete list (not empty / not `"all"`).
 //!
 //! A spawn-time fixture captures the initialize frame to a tempfile;
 //! tests parse it and assert field presence.
