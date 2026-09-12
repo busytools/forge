@@ -655,7 +655,7 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        append_slack_section(lines, app);
+        append_slack_section(lines, app, width);
     }
 
     // MCP SERVERS sits above PROCESSES and is sourced entirely from
@@ -1753,7 +1753,7 @@ fn slack_section_visible(app: &App) -> bool {
 /// every row belongs to this session. Liveness is keyed by workspace
 /// label, so it rides the heading rather than a single-status header the
 /// way GOTIFY's does.
-fn append_slack_section(lines: &mut Vec<Line<'static>>, app: &App) {
+fn append_slack_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     lines.push(slack_header_line());
     lines.push(Line::default());
     if app.slack_load_failed && app.slack_subs.is_empty() {
@@ -1769,6 +1769,7 @@ fn append_slack_section(lines: &mut Vec<Line<'static>>, app: &App) {
         ]));
         return;
     }
+    let inner_width = usize::from(width);
     let mut groups: Vec<(&str, Vec<&forge_primitives::slack::SlackSubscription>)> = Vec::new();
     for sub in &app.slack_subs {
         match groups.iter_mut().find(|(workspace, _)| *workspace == sub.workspace) {
@@ -1776,11 +1777,14 @@ fn append_slack_section(lines: &mut Vec<Line<'static>>, app: &App) {
             None => groups.push((&sub.workspace, vec![sub])),
         }
     }
-    for (workspace, subs) in groups {
+    for (workspace, mut subs) in groups {
         let connected = app.slack_connected.get(workspace).copied().unwrap_or(false);
         append_slack_workspace_heading(lines, workspace, connected);
+        // The label is the last key part, so two rows sharing one keep the
+        // order the snapshot arrived in.
+        subs.sort_by_key(|sub| (slack_watch_rank(&sub.target), slack_watch_label(&sub.target)));
         for sub in subs {
-            append_slack_watch_row(lines, sub);
+            append_slack_watch_row(lines, sub, inner_width);
         }
     }
 }
@@ -1816,36 +1820,70 @@ fn append_slack_workspace_heading(
     ]));
 }
 
-/// One subscription row beneath its workspace heading: a DIM line naming
-/// what it watches.
-fn append_slack_watch_row(
-    lines: &mut Vec<Line<'static>>,
-    sub: &forge_primitives::slack::SlackSubscription,
-) {
-    let indent = usize::from(PANE_PAD) + 4;
-    let watching = match &sub.target {
-        forge_primitives::slack::SlackSubscriptionTarget::DirectMessages => {
-            "direct messages".to_owned()
-        }
-        forge_primitives::slack::SlackSubscriptionTarget::Mentions => {
-            "mentions anywhere".to_owned()
-        }
-        forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, name, mode } => {
+/// The label a subscription's row leads with. Shared with the row
+/// ordering, which sorts conversations by what they display.
+fn slack_watch_label(target: &forge_primitives::slack::SlackSubscriptionTarget) -> String {
+    use forge_primitives::slack::SlackSubscriptionTarget as Target;
+
+    match target {
+        Target::DirectMessages => "direct messages".to_owned(),
+        Target::Mentions => "mentions anywhere".to_owned(),
+        Target::Conversation { id, name, .. } => {
             // Unnamed means the record has not been swept yet - one written
             // before names were captured heals on its first tick - or it
             // covers a conversation the directory walk never saw.
-            let label = name.clone().map_or_else(|| id.clone(), |name| format!("#{name}"));
-            match mode {
-                forge_primitives::slack::SlackWatchMode::All => format!("{label} · every message"),
-                forge_primitives::slack::SlackWatchMode::MentionsOnly => {
-                    format!("{label} · mentions only")
-                }
-            }
+            name.clone().map_or_else(|| id.clone(), |name| format!("#{name}"))
         }
-    };
+    }
+}
+
+/// Where a subscription sorts within its workspace: the DM class first,
+/// then the mention target, then the conversations.
+fn slack_watch_rank(target: &forge_primitives::slack::SlackSubscriptionTarget) -> u8 {
+    use forge_primitives::slack::SlackSubscriptionTarget as Target;
+
+    match target {
+        Target::DirectMessages => 0,
+        Target::Mentions => 1,
+        Target::Conversation { .. } => 2,
+    }
+}
+
+/// One subscription row beneath its workspace heading: a DIM line naming
+/// what it watches, with a conversation's mode on its own line one step
+/// deeper - the same ladder [`append_gotify_subscription`] puts its
+/// priority line on. The class rows watch everything in the workspace,
+/// so they carry no mode and stay single lines.
+fn append_slack_watch_row(
+    lines: &mut Vec<Line<'static>>,
+    sub: &forge_primitives::slack::SlackSubscription,
+    inner_width: usize,
+) {
+    use forge_primitives::slack::{SlackSubscriptionTarget as Target, SlackWatchMode};
+
+    let indent = usize::from(PANE_PAD) + 4;
+    push_slack_dim_line(lines, &slack_watch_label(&sub.target), indent, inner_width);
+
+    if let Target::Conversation { mode, .. } = &sub.target {
+        let mode = match mode {
+            SlackWatchMode::All => "every message",
+            SlackWatchMode::MentionsOnly => "mentions only",
+        };
+        push_slack_dim_line(lines, mode, indent + 2, inner_width);
+    }
+}
+
+/// Push one DIM row at `indent`, truncated at the pane's right gutter.
+fn push_slack_dim_line(
+    lines: &mut Vec<Line<'static>>,
+    text: &str,
+    indent: usize,
+    inner_width: usize,
+) {
+    let budget = row_text_budget(inner_width, indent + usize::from(PANE_PAD));
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(indent)),
-        Span::styled(watching, Style::default().fg(theme::DIM)),
+        Span::styled(truncate_or_pass(text, budget), Style::default().fg(theme::DIM)),
     ]));
 }
 
@@ -4758,8 +4796,12 @@ mod tests {
     }
 
     fn render_slack_section(app: &App) -> String {
+        render_slack_section_at(app, 60)
+    }
+
+    fn render_slack_section_at(app: &App, width: u16) -> String {
         let mut lines = Vec::new();
-        append_slack_section(&mut lines, app);
+        append_slack_section(&mut lines, app, width);
         lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n")
     }
 
@@ -4791,8 +4833,8 @@ mod tests {
         assert!(joined.contains("acme"), "the workspace label renders; got:\n{joined}");
         assert!(joined.contains("every message"), "the watch mode renders; got:\n{joined}");
         assert!(
-            joined.contains("C1 \u{b7} every message"),
-            "an unnamed record renders the raw id unprefixed; got:\n{joined}",
+            joined.lines().any(|line| line.trim() == "C1"),
+            "an unnamed record renders the raw id unprefixed on its own line; got:\n{joined}",
         );
         assert!(
             !joined.contains("#C1"),
@@ -4822,12 +4864,61 @@ mod tests {
 
         let joined = render_slack_section(&app);
         assert!(
-            joined.contains("#ved-test \u{b7} every message"),
+            joined.lines().any(|line| line.trim() == "#ved-test"),
             "the named row renders; got:\n{joined}",
         );
         assert!(
             !joined.contains("C0C0T5E6RM1"),
             "the raw id drops off the row once a name exists; got:\n{joined}",
+        );
+    }
+
+    /// The mode sits on its own line under the channel it belongs to, one
+    /// step deeper - the same ladder GOTIFY's priority line sits on. The
+    /// class rows carry no mode, so they stay single lines.
+    #[test]
+    fn a_conversations_mode_nests_beneath_its_channel_line() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![
+            slack_sub(
+                40,
+                "acme",
+                forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                    id: "C1".to_owned(),
+                    name: Some("ved-test".to_owned()),
+                    mode: forge_primitives::slack::SlackWatchMode::All,
+                },
+            ),
+            slack_sub(41, "acme", forge_primitives::slack::SlackSubscriptionTarget::DirectMessages),
+        ];
+        app.slack_connected = std::collections::BTreeMap::from([("acme".to_owned(), true)]);
+
+        let joined = render_slack_section(&app);
+        let rows: Vec<&str> = joined.lines().collect();
+        let channel_at = rows
+            .iter()
+            .position(|row| row.trim() == "#ved-test")
+            .unwrap_or_else(|| panic!("the channel renders on its own line; got:\n{joined}"));
+        assert_eq!(
+            rows[channel_at + 1].trim(),
+            "every message",
+            "the mode renders on the line beneath its channel; got:\n{joined}",
+        );
+        let indent = |row: &str| row.len() - row.trim_start().len();
+        assert_eq!(
+            indent(rows[channel_at + 1]),
+            indent(rows[channel_at]) + 2,
+            "the mode sits one step deeper than its channel; got:\n{joined}",
+        );
+
+        let dm_at = rows
+            .iter()
+            .position(|row| row.trim() == "direct messages")
+            .expect("the DM class row renders");
+        assert_ne!(
+            rows[dm_at + 1].trim(),
+            "every message",
+            "a class row carries no mode line; got:\n{joined}",
         );
     }
 
@@ -4906,6 +4997,128 @@ mod tests {
         assert!(
             joined.lines().any(|line| line.trim_start().starts_with("acme \u{26a0}")),
             "the down workspace keeps its own warning glyph; got:\n{joined}",
+        );
+    }
+
+    /// Creation order interleaves the DM class and the mention target
+    /// with the conversations they sort between, so a workspace's rows
+    /// group the DM class first, the mention target second.
+    #[test]
+    fn slack_rows_lead_with_the_dm_class_and_the_mention_target() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![
+            slack_sub(
+                9,
+                "acme",
+                forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                    id: "C1".to_owned(),
+                    name: Some("alpha".to_owned()),
+                    mode: forge_primitives::slack::SlackWatchMode::All,
+                },
+            ),
+            slack_sub(10, "acme", forge_primitives::slack::SlackSubscriptionTarget::DirectMessages),
+            slack_sub(11, "acme", forge_primitives::slack::SlackSubscriptionTarget::Mentions),
+            slack_sub(
+                12,
+                "acme",
+                forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                    id: "C2".to_owned(),
+                    name: Some("beta".to_owned()),
+                    mode: forge_primitives::slack::SlackWatchMode::All,
+                },
+            ),
+        ];
+        app.slack_connected = std::collections::BTreeMap::from([("acme".to_owned(), true)]);
+
+        let joined = render_slack_section(&app);
+        let dm_at = joined.find("direct messages").expect("the DM row renders");
+        let mentions_at = joined.find("mentions anywhere").expect("the mention row renders");
+        let alpha_at = joined.find("#alpha").expect("the first channel row renders");
+        let beta_at = joined.find("#beta").expect("the second channel row renders");
+
+        assert!(
+            dm_at < mentions_at,
+            "the DM class subscribed between two channels leads the mention target; got:\n{joined}",
+        );
+        assert!(
+            dm_at < alpha_at && dm_at < beta_at,
+            "the DM class leads the channels it was subscribed between; got:\n{joined}",
+        );
+        assert!(
+            mentions_at < alpha_at && mentions_at < beta_at,
+            "the mention target leads the channels; got:\n{joined}",
+        );
+    }
+
+    /// Conversations sort by the label the row displays, so a workspace
+    /// reads the same however the subscriptions arrived.
+    #[test]
+    fn slack_conversations_sort_by_their_displayed_label() {
+        let mut app = App::test_default();
+        app.slack_subs = [("zeta-channel", "C3"), ("alpha-channel", "C1"), ("mid-channel", "C2")]
+            .iter()
+            .enumerate()
+            .map(|(offset, (name, id))| {
+                slack_sub(
+                    20 + u128::try_from(offset).expect("a small offset"),
+                    "acme",
+                    forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                        id: (*id).to_owned(),
+                        name: Some((*name).to_owned()),
+                        mode: forge_primitives::slack::SlackWatchMode::All,
+                    },
+                )
+            })
+            .collect();
+        app.slack_connected = std::collections::BTreeMap::from([("acme".to_owned(), true)]);
+
+        let joined = render_slack_section(&app);
+        let alpha_at = joined.find("#alpha-channel").expect("the alpha row renders");
+        let mid_at = joined.find("#mid-channel").expect("the mid row renders");
+        let zeta_at = joined.find("#zeta-channel").expect("the zeta row renders");
+
+        assert!(
+            alpha_at < mid_at && mid_at < zeta_at,
+            "conversations sort by their displayed label, not by subscription order; got:\n{joined}",
+        );
+    }
+
+    /// A row wider than the pane truncates at the pane edge with the
+    /// section's ellipsis rather than being clipped mid-word by the
+    /// frame, which would render a label cut in half with no mark that
+    /// anything was dropped.
+    #[test]
+    fn a_slack_row_wider_than_the_pane_truncates_with_an_ellipsis() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![slack_sub(
+            30,
+            "acme",
+            forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                id: "C0C0T5E6RM1".to_owned(),
+                name: Some("granite-prod-aeusdc-alerts".to_owned()),
+                mode: forge_primitives::slack::SlackWatchMode::All,
+            },
+        )];
+        app.slack_connected = std::collections::BTreeMap::from([("acme".to_owned(), true)]);
+
+        let width = 30_u16;
+        let joined = render_slack_section_at(&app, width);
+        let row = joined
+            .lines()
+            .find(|line| line.trim_start().starts_with('#'))
+            .unwrap_or_else(|| panic!("the conversation row renders; got:\n{joined}"));
+
+        assert!(
+            row.ends_with('\u{2026}'),
+            "a row wider than the pane truncates with an ellipsis; got:\n{joined}",
+        );
+        assert!(
+            row.chars().count() <= usize::from(width),
+            "the truncated row fits the pane rather than overflowing it; got:\n{joined}",
+        );
+        assert!(
+            !joined.contains("granite-prod-aeusdc-alerts"),
+            "the name past the pane edge is dropped, not carried to a hard clip; got:\n{joined}",
         );
     }
 
