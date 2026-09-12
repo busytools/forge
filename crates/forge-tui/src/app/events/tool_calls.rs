@@ -186,10 +186,6 @@ fn build_tool_info_from_tool_call(
     sdk_tool_name: String,
     scope: &ToolCallScope,
 ) -> ToolCallInfo {
-    let terminal_id = tc.content.iter().find_map(|content| match content {
-        model::RenderToolCallContent::Terminal(term) => Some(term.terminal_id.clone()),
-        _ => None,
-    });
     let initial_execute_output = if super::super::is_execute_tool_name(&sdk_tool_name) {
         tc.raw_output.as_ref().and_then(raw_output_to_terminal_text)
     } else {
@@ -243,7 +239,7 @@ fn build_tool_info_from_tool_call(
         // stream and surfaces only in the Inspector SUBAGENTS section.
         hidden: is_chat_suppressed
             || matches!(scope, ToolCallScope::SubagentRoot | ToolCallScope::SubagentChild { .. },),
-        terminal_id,
+        terminal_id: None,
         terminal_output: None,
         monitor_output_tail: Vec::default(),
         monitor_status,

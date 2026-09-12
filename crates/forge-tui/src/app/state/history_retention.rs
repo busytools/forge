@@ -118,7 +118,6 @@ impl super::App {
                 .saturating_add(
                     resource.blob_saved_to.as_ref().map_or(0, std::path::PathBuf::capacity),
                 ),
-            model::RenderToolCallContent::Terminal(term) => term.terminal_id.capacity(),
         }
     }
 

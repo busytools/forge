@@ -335,15 +335,6 @@ fn apply_tool_call_content_update(
         return false;
     };
     let mut changed = false;
-    for cb in content {
-        if let model::RenderToolCallContent::Terminal(t) = cb {
-            let tid = t.terminal_id.clone();
-            if tc.terminal_id.as_deref() != Some(tid.as_str()) {
-                tc.terminal_id = Some(tid);
-                changed = true;
-            }
-        }
-    }
     // Preserve the original Diff for Edit / Write tools when the
     // incoming update doesn't include one. The original Diff was
     // synthesized from the tool_use input (old_string / new_string
