@@ -100,7 +100,7 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 
 | Glyph | Meaning | Color |
 |---|---|---|
-| `⠋` | A turn in progress - or a settled session with background work the Inspector draws a row for, so the row keeps spinning. Same predicate as that row: a rostered `local_bash` counts only once its `task_started` command resolves, an agent or workflow while its card lives, an unrouted kind never | terminal default; the attention / died / auth glyphs keep their own even with live background work - the promotion is over the idle bullet only |
+| `⠋` | A turn in progress - or a settled session with background work the Inspector draws a row for, so the row keeps spinning. Same predicate as that row: a rostered `local_bash` counts once its `task_started` recorded the command, an agent or workflow once it recorded the card, an unrouted kind never | terminal default; the attention / died / auth glyphs keep their own even with live background work - the promotion is over the idle bullet only |
 | `△` | Attention: a pending permission prompt | yellow |
 | `✕` | A turn on this session died; outranks `△` | red |
 | `⚠` | Auth required | |
