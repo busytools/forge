@@ -59,33 +59,6 @@ pub struct QuotaLimitEntry {
     pub next_reset_time: Option<i64>,
 }
 
-/// `/api/biz/subscription/list` envelope. `data` lists the account's
-/// purchased plans.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SubscriptionListResponse {
-    pub code: Option<i64>,
-    pub msg: Option<String>,
-    pub data: Option<Vec<Subscription>>,
-    #[serde(default)]
-    pub success: bool,
-}
-
-/// One purchased plan. Deliberately partial: prices and the payment
-/// channel are on the payload and unmapped.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Subscription {
-    /// Purchased plan name, e.g. `"GLM Coding Max"`.
-    pub product_name: Option<String>,
-    /// e.g. `"VALID"`.
-    pub status: Option<String>,
-    /// e.g. `"monthly"`.
-    pub billing_cycle: Option<String>,
-    /// Renewal date as a bare date string - NOT epoch milliseconds
-    /// like the quota endpoint's `nextResetTime`.
-    pub next_renew_time: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,27 +150,4 @@ mod tests {
         assert_eq!(wrong_path.code, Some(500));
     }
 
-    /// `nextRenewTime` on the subscription list is a DATE STRING,
-    /// unlike the quota endpoint's epoch milliseconds.
-    #[test]
-    fn decodes_subscription_list_with_date_string_renewal() {
-        let body = br#"{
-            "code": 200,
-            "msg": "success",
-            "data": [
-                {"productName":"GLM Coding Max","status":"VALID",
-                 "billingCycle":"monthly","nextRenewTime":"2026-10-04",
-                 "paymentChannel":"STRIPE","autoRenew":true,
-                 "prices":[{"amount":3000,"currency":"CNY"}]}
-            ],
-            "success": true
-        }"#;
-        let envelope: SubscriptionListResponse = serde_json::from_slice(body).expect("decode");
-        let subs = envelope.data.expect("data");
-        assert_eq!(subs.len(), 1);
-        assert_eq!(subs[0].product_name.as_deref(), Some("GLM Coding Max"));
-        assert_eq!(subs[0].status.as_deref(), Some("VALID"));
-        assert_eq!(subs[0].billing_cycle.as_deref(), Some("monthly"));
-        assert_eq!(subs[0].next_renew_time.as_deref(), Some("2026-10-04"));
-    }
 }

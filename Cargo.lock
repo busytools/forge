@@ -1221,7 +1221,6 @@ dependencies = [
  "forge-providers",
  "forge-sdk",
  "futures",
- "httpdate",
  "iana-time-zone",
  "ignore",
  "notify",
