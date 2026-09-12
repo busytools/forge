@@ -111,7 +111,7 @@ pub use permissions::{
     PermissionUpdateDestination, ToolPermissionContext,
 };
 pub use public_types::{
-    AccountInfo, ContextUsageCategory, ContextUsageResponse, ForgeAccountIdentity, McpServerConfig,
+    AccountInfo, ContextUsageResponse, ForgeAccountIdentity, McpServerConfig,
     McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpSetServersResponse,
     McpStatusResponse, McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations,
     SandboxNetworkConfig, SandboxSettings, SessionHistory, SessionMessage, SessionMessageKind,

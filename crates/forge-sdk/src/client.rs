@@ -198,16 +198,8 @@ impl Client {
 
         // Build the initialize control_request body. the CLI keeps
         // the same field-inclusion rules:
-        // `hooks` always present (null when empty), `agents` /
-        // `excludeDynamicSections` / `skills` only when explicitly set.
-        let agents_payload = if options.subagents.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::to_value(&options.subagents)
-                    .map_err(|e| Error::encode("subagents map", e))?,
-            )
-        };
+        // `hooks` always present (null when empty), `excludeDynamicSections`
+        // only when explicitly set.
         let exclude_dynamic_sections = match &options.system_prompt {
             Some(crate::options::SystemPromptKind::Preset {
                 exclude_dynamic_sections: Some(v),
@@ -223,9 +215,6 @@ impl Client {
         let mut init_body = serde_json::Map::new();
         init_body.insert("subtype".into(), serde_json::Value::String("initialize".into()));
         init_body.insert("hooks".into(), hooks_field);
-        if let Some(a) = agents_payload {
-            init_body.insert("agents".into(), a);
-        }
         if let Some(flag) = exclude_dynamic_sections {
             init_body.insert("excludeDynamicSections".into(), serde_json::Value::Bool(flag));
         }

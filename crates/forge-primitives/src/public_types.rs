@@ -272,22 +272,6 @@ pub struct McpSetServersResponse {
     pub errors: std::collections::HashMap<String, String>,
 }
 
-/// One breakdown row in [`ContextUsageResponse::categories`]. Mirrors
-/// the CLI's `ContextUsageCategory`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContextUsageCategory {
-    /// Human-readable category name (e.g. `"System prompt"`).
-    pub name: String,
-    /// Tokens this category consumes.
-    pub tokens: u64,
-    /// UI hint for the `/context` display.
-    pub color: String,
-    /// Category is held in reserve (not currently loaded).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_deferred: Option<bool>,
-}
-
 /// Response from `Client::get_context_usage()`. Wire shape:
 /// `ContextUsageResponse`. Only the commonly-used
 /// fields are typed here; the `Value`-backed vectors capture the
@@ -295,8 +279,6 @@ pub struct ContextUsageCategory {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextUsageResponse {
-    /// Token usage by category.
-    pub categories: Vec<ContextUsageCategory>,
     /// Total tokens currently in the context window.
     pub total_tokens: u64,
     /// Effective max tokens (possibly reduced by autocompact).

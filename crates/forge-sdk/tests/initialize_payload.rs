@@ -2,9 +2,8 @@
 //! matches Python SDK v0.1.64 `_internal/query.py:196-207`:
 //!
 //! - `hooks` - always present; value is `null` when no callbacks.
-//! - `agents` - omitted unless callers configured agents.
+//! - `agents` - forge never sends one; the assertion below pins that.
 //! - `excludeDynamicSections` - omitted unless explicitly set.
-//! - `skills` - omitted unless a concrete list (not empty / not `"all"`).
 //!
 //! A spawn-time fixture captures the initialize frame to a tempfile;
 //! tests parse it and assert field presence.
@@ -41,10 +40,7 @@ async fn default_init_omits_conditional_fields() {
     assert!(req.get("hooks").is_some(), "hooks must be present");
     assert!(req["hooks"].is_null(), "hooks must be null when empty");
     // The conditional fields must NOT appear.
-    assert!(
-        req.get("agents").is_none(),
-        "agents must be omitted when no agents configured, got {req:?}"
-    );
+    assert!(req.get("agents").is_none(), "agents must never appear in the init body, got {req:?}");
     assert!(
         req.get("excludeDynamicSections").is_none(),
         "excludeDynamicSections must be omitted when no preset sets it, got {req:?}"

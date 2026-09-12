@@ -13,8 +13,8 @@
   than `cargo test`.
 - **`mdbook`**, for the book. CI pins `0.5.4`; rule 11's workflow
   verifies a UI change with `mdbook serve docs/book`.
-- **`just`**, if you want the task recipes. Everything they run is a
-  cargo invocation you can also type out.
+- **`just`**, if you want the task recipes. Most wrap a cargo
+  invocation you can also type out.
 - **A C and C++ toolchain, `cmake`, and `libclang`.** `forge-workspace`
   depends on `forge-dictate`, which builds two native model runtimes
   (`transcribe-cpp-sys`, `llama-cpp-sys-2`) - so these are needed to

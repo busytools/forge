@@ -31,6 +31,9 @@ ansi-to-tui = { workspace = true }
 notify-rust = { workspace = true }
 pulldown-cmark = { workspace = true }
 ratatui = { workspace = true }
+# Load-bearing despite having no `use` here: a direct declaration is what
+# makes the workspace `=0.1.0` pin on ratatui-core bind.
+ratatui-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 similar = { workspace = true }

@@ -106,7 +106,7 @@ fn parse_semver_triple(s: &str) -> Option<(u32, u32, u32)> {
 /// name is not covered, except where it collides with one of these -
 /// forge routes `--effort` that way, so the collision is the common
 /// case rather than a corner.
-const LOGGABLE_FLAGS: [&str; 18] = [
+const LOGGABLE_FLAGS: [&str; 17] = [
     "output-format",
     "verbose",
     "system-prompt",
@@ -121,7 +121,6 @@ const LOGGABLE_FLAGS: [&str; 18] = [
     "session-id",
     "settings",
     "mcp-config",
-    "setting-sources",
     "plugin-dir",
     "effort",
     "input-format",
@@ -191,9 +190,9 @@ pub struct Subprocess {
     /// task would wait for every clone to drop and the child wouldn't
     /// see EOF on stdin until then.
     writer_task: Option<JoinHandle<()>>,
-    /// Stderr drain task - best-effort logged or forwarded to the
-    /// caller's callback. Joined during [`close`](Self::close), which
-    /// takes its returned tail for [`Error::Process`].
+    /// Stderr drain task - best-effort logged. Joined during
+    /// [`close`](Self::close), which takes its returned tail for
+    /// [`Error::Process`].
     stderr_task: Option<JoinHandle<String>>,
     /// The child handle. [`close`](Self::close) waits on it (with
     /// timeout) and SIGKILLs on hang.
@@ -270,24 +269,6 @@ impl Subprocess {
             cmd.env("PWD", cwd);
         }
 
-        // `options.user` must setuid the child - `tokio::process::Command`
-        // exposes `uid()` on Unix; no-op on other targets, so the
-        // option stays a Unix-only knob.
-        #[cfg(unix)]
-        if let Some(user) = &options.user {
-            match user.parse::<u32>() {
-                Ok(uid) => {
-                    cmd.uid(uid);
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        %user,
-                        "Options::user did not parse as a uid; ignoring (wire accepts a numeric uid)"
-                    );
-                }
-            }
-        }
-
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
 
@@ -318,15 +299,13 @@ impl Subprocess {
             .take()
             .ok_or_else(|| Error::Connection { reason: "stderr pipe missing".into() })?;
 
-        let stderr_callback = options.stderr.clone();
         let stderr_task = tokio::spawn(tracing::Instrument::instrument(
-            drain_stderr(stderr, stderr_callback),
+            drain_stderr(stderr),
             tracing::info_span!("forge_sdk::stderr_reader"),
         ));
 
-        let buf_capacity = options.max_buffer_size.filter(|n| *n > 0);
         let (reader_tx, reader_rx) = mpsc::unbounded_channel();
-        spawn_reader_task(stdout, buf_capacity, options.tee_inbound.clone(), reader_tx);
+        spawn_reader_task(stdout, options.tee_inbound.clone(), reader_tx);
 
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
         let writer_task = spawn_writer_task(stdin, options.tee_outbound.clone(), writer_rx);
@@ -593,7 +572,6 @@ impl SharedWriter {
 
 fn spawn_reader_task(
     stdout: ChildStdout,
-    buf_capacity: Option<usize>,
     tee: Option<WireTee>,
     tx: mpsc::UnboundedSender<Result<Option<String>, Error>>,
 ) {
@@ -601,10 +579,7 @@ fn spawn_reader_task(
     let span = tracing::info_span!("forge_sdk::stdout_reader");
     tokio::spawn(
         async move {
-            let mut reader = match buf_capacity {
-                Some(n) => BufReader::with_capacity(n, stdout),
-                None => BufReader::new(stdout),
-            };
+            let mut reader = BufReader::new(stdout);
             let mut buf = String::new();
             loop {
                 buf.clear();
@@ -731,16 +706,11 @@ impl StderrTail {
 }
 
 /// Background drain for the subprocess stderr pipe. Reads lines as UTF-8
-/// (lossy on invalid bytes) and forwards each to the caller-supplied
-/// callback when set. Silently consumes lines otherwise so the pipe
-/// never blocks.
+/// (lossy on invalid bytes) and logs each, so the pipe never blocks.
 ///
 /// Returns the tail of what it drained, which [`Subprocess::close`]
 /// attaches to [`Error::Process`] on a non-zero exit.
-async fn drain_stderr(
-    stderr: ChildStderr,
-    callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
-) -> String {
+async fn drain_stderr(stderr: ChildStderr) -> String {
     let mut reader = BufReader::new(stderr);
     let mut raw = Vec::new();
     let mut tail = StderrTail::default();
@@ -764,9 +734,7 @@ async fn drain_stderr(
             line.pop();
         }
         tail.push(&line);
-        if let Some(cb) = callback.as_ref() {
-            cb(line.clone());
-        } else if line.starts_with("ERROR") || line.starts_with("Error") {
+        if line.starts_with("ERROR") || line.starts_with("Error") {
             tracing::warn!(target: "forge_sdk::stderr", line = %line, "claude stderr");
         } else {
             tracing::info!(target: "forge_sdk::stderr", line = %line, "claude stderr");
@@ -969,9 +937,9 @@ mod tests {
         let stdout = child.stdout.take().expect("stdout");
         let stderr = child.stderr.take().expect("stderr");
 
-        let stderr_task = tokio::spawn(drain_stderr(stderr, None));
+        let stderr_task = tokio::spawn(drain_stderr(stderr));
         let (reader_tx, reader_rx) = mpsc::unbounded_channel();
-        spawn_reader_task(stdout, None, None, reader_tx);
+        spawn_reader_task(stdout, None, reader_tx);
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
         let writer_task = spawn_writer_task(stdin, None, writer_rx);
 

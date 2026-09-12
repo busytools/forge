@@ -304,13 +304,14 @@ pub(crate) fn keyboard_enhancement_supported() -> Option<bool> {
 
 /// Wipe the screen and force the next draw to repaint every cell.
 ///
-/// Deliberately not `Terminal::clear`. That saves and restores the
-/// cursor, and reading the cursor back is a DSR query that blocks on a
-/// terminal reply - which cannot be answered from here, because the
-/// event loop's `EventStream` owns the reader. It times out after 2s
-/// and the error ends the session. The query is ratatui's rather than
-/// forge's, so it is not visible in this file: `Terminal::clear` grew
-/// the read in ratatui-core 0.1.2.
+/// Deliberately not `Terminal::clear`. On a ratatui whose `clear`
+/// reads the cursor, that read is a DSR query which cannot be answered
+/// from here, because the event loop's `EventStream` owns the reader;
+/// it times out after 2s and the error ends the session. The query is
+/// ratatui's rather than forge's, so it is not visible in this file:
+/// `Terminal::clear` grew the read in ratatui-core 0.1.2, which the
+/// workspace pin keeps the tree off. Routing through `clear` would
+/// reinstate the hazard the moment that pin moves.
 ///
 /// `resize` to the current area does the two things this path actually
 /// wants - clear the viewport and reset the diff buffer - and reads
@@ -965,9 +966,10 @@ mod tests {
     /// locked ratatui-core 0.1.0, whose `clear` does not read the
     /// cursor - the two are equivalent there, so nothing can tell them
     /// apart. That is unkillable by construction rather than a gap in
-    /// the assertion. The test bites the moment the tree is on a
-    /// ratatui whose `clear` reads, which is the version the shipped
-    /// binary was already using.
+    /// the assertion. The workspace pins ratatui-core at `=0.1.0`, so
+    /// the tree cannot reach a reading version at all; treat this as a
+    /// tripwire for a deliberate version move, and re-check the two
+    /// still differ there.
     #[test]
     fn forcing_a_full_redraw_never_reads_the_cursor() {
         let mut terminal =

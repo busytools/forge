@@ -1,5 +1,5 @@
 # forge workspace task runner.
-# All recipes are thin wrappers over cargo; see CLAUDE.md for policy.
+# Most recipes are thin wrappers over cargo; see CLAUDE.md for policy.
 
 # Default: show the available recipes.
 default:

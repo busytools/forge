@@ -49,10 +49,10 @@ Core types and functions exposed from the crate root:
   context types live in `forge_primitives::permissions`.
 - **MCP hosting** - `mcp::{McpServer, McpServerBuilder, Tool,
   ToolInput, ToolOutput}` + `tool!` declarative macro.
-- **Subagents** - `SubagentDefinition` (populated
-  by setting struct fields directly; the `::new` + `with_*` builder
-  family was removed pending re-add when subagent registration
-  becomes a runtime feature).
+- **Subagents** - `SubagentDefinition` and its nested types, populated
+  by setting struct fields directly and reaching no CLI path today.
+  `SubagentEffort` and `EffortPreset` are separate: they go out as
+  `--effort`.
 - **Path resolution** - `claude_config_dir()`, `projects_dir()`.
 - **Errors** - `Error` enum (variants mirror Python's
   `CLIConnectionError` / `CLINotFoundError` / `ProcessError` /

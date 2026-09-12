@@ -454,14 +454,10 @@ inspected.
     `ui/input.md` - and touched no other book page. User-visible is not
     the test; a page reading false is.
 
-    #751 is the other shape, and it is not clean. Adding the seventh
-    crate falsified `architecture.md`'s crate count, layering diagram,
-    crate table and placement guide: four edits on one page, where
-    stopping at the table leaves the other three reading false. It also
-    falsified `install.md` and did not update it. The crate builds
-    under every `--workspace` command and needs ALSA headers on Linux,
-    so CI grew a `libasound2-dev` step in four jobs while the
-    prerequisites list named four things and not that one.
+    #751 is the other shape. Adding the seventh crate falsified
+    `architecture.md`'s crate count, layering diagram, crate table and
+    placement guide: four edits on one page, where stopping at the
+    table leaves the other three reading false.
 
     **The layering diagrams differ in grain deliberately. Do not
     reconcile them.** This file draws `forge-test-harness` on
@@ -541,19 +537,22 @@ inspected.
     quietly does nothing reads as forge being broken rather than as
     the multiplexer eating it.
 
-    **forge has no example of that clause to copy, and #767 is the
-    gap.** `resume_terminal` (`crates/forge-tui/src/app.rs`) pushes
-    the kitty enhancement flags because `SUPER` arrives no other way,
-    discards the result, and never asks whether they took;
-    `supports_keyboard_enhancement` is crossterm public API and
-    appears nowhere in `crates/`. #767 is open on exactly that: under
-    a byte-transparent session manager the flags live on the terminal
-    rather than the session, so a reattach silently stops delivering
-    what the protocol provides. `is_cmd_shortcut` in `app/keys.rs`,
-    which accepts `CONTROL` where `SUPER` cannot arrive, is worth
-    reading, but accepting a substitute is a fallback and not a
-    detection, and treating one as the other is how this rule gets
-    satisfied on paper.
+    **The keyboard-enhancement negotiation is the example to copy.**
+    `resume_terminal` (`crates/forge-tui/src/app.rs`) pushes the
+    kitty enhancement flags because `SUPER` arrives no other way, and
+    then asks whether they took: `report_keyboard_enhancement_support`
+    calls `supports_keyboard_enhancement` (crossterm public API),
+    warns when the answer is no or the query fails, and records the
+    verdict in `KEYBOARD_ENHANCEMENT_SUPPORTED`. The TUI reads it back
+    through `keyboard_enhancement_supported()` and surfaces it on the
+    dictate preflight row, so a terminal that ate the flags says so
+    where the user is looking instead of leaving a dead key. A
+    reattach under a byte-transparent session manager arrives as a
+    resize, which rewrites the flags. `is_cmd_shortcut` in
+    `app/keys.rs`, which accepts `CONTROL` where `SUPER` cannot
+    arrive, is worth reading, but accepting a substitute is a
+    fallback and not a detection, and treating one as the other is
+    how this rule gets satisfied on paper.
 
     **Where the implementation must be multiplexer-specific, it owes
     three things**: why the generic path was not possible, which
