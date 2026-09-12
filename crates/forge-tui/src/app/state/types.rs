@@ -170,8 +170,9 @@ impl BackgroundTask {
 /// a per-tick message sweep.
 ///
 /// A card the history drops after the mapping leaves these facts standing: a
-/// pruned agent or workflow card still promotes the row glyph, while a pruned
-/// bash card still draws, from the recorded command.
+/// pruned agent card still promotes the row glyph, while a pruned bash card
+/// still draws, from the recorded command. A workflow kind is unaffected
+/// either way, because its section paints from its own entry list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionTaskCard {
     pub tool_use_id: String,

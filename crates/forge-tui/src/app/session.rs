@@ -1067,7 +1067,7 @@ mod tests {
         session.session_task_tool_use_ids.insert("t2".to_owned(), seen("tu-2", None));
         assert!(
             session.has_live_background_work(),
-            "an agent row paints from its card, which this one has",
+            "a recorded card is what the agent kind is credited on",
         );
 
         session.background_tasks.clear();
