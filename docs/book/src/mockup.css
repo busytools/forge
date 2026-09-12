@@ -21,6 +21,7 @@
   --slash:         #c084dc;
   --subagent:      #88c0d8;
   --gotify:        #4ec9c9;
+  --slack:         #2eb67d;
   --experimental:  #c9a13b;
   --addressed:     #61a0e0;
   --success:       #82c76b;
@@ -97,6 +98,7 @@ pre .warning::before { content: none; }
 .term .slash        { color: var(--slash); }
 .term .subagent     { color: var(--subagent); }
 .term .gotify       { color: var(--gotify); }
+.term .slack        { color: var(--slack); }
 .term .experimental { color: var(--experimental); }
 .term .addressed    { color: var(--addressed); }
 .term .bold         { font-weight: 700; }

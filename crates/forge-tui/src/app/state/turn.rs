@@ -258,7 +258,7 @@ impl super::App {
 
     /// Fold one assistant frame's usage into the live turn, returning
     /// the turn's start and running totals. Starts the turn if nothing
-    /// did - cron, auto-continue and peer traffic arrive with it
+    /// did - cron, auto-continue, peer, gotify and slack traffic arrive with it
     /// already under way.
     pub fn record_live_turn_usage(
         &mut self,

@@ -556,6 +556,27 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             };
             apply_session_update_chat_appended(app, &session_id, synthetic);
         }
+        SessionUpdate::SlackMessageAppended { session_id, prose } => {
+            // Mirror the gotify path: the workspace hands over the same prose
+            // the session's LLM receives, so `peer_block::detect_inbound`
+            // recognises the `[Slack ...]` header and renders the block.
+            let synthetic = forge_primitives::Message::User {
+                message: forge_primitives::UserEnvelope {
+                    role: "user".to_owned(),
+                    content: vec![forge_primitives::ContentBlock::Text {
+                        text: {
+                            assert_envelope_parses(&prose, "slack_message");
+                            prose
+                        },
+                    }],
+                },
+                session_id: session_id.clone(),
+                parent_tool_use_id: None,
+                uuid: None,
+                tool_use_result: None,
+            };
+            apply_session_update_chat_appended(app, &session_id, synthetic);
+        }
         SessionUpdate::CronPromptAppended { session_id, text } => {
             // Mirror the gotify path: forge a synthetic user turn wrapping
             // the fired prompt in a display-only `[Cron]` prefix so
@@ -822,7 +843,7 @@ fn apply_dictate_outcome(
 /// recorded its key in [`App::pending_spawn_focus`] (a cold project
 /// has no bucket yet, so the reducer completes the move when the
 /// bucket appears), or nothing is focused at all. An existing bucket
-/// whose wake nobody asked for - a cron or peer repeat hitting the
+/// whose wake nobody asked for - a cron, peer, gotify or slack repeat hitting the
 /// stub an earlier failed spawn left behind - registers silently.
 /// A click on a stub row never reaches this reducer at all: the
 /// click handler switches or refuses directly.
@@ -836,7 +857,7 @@ fn apply_session_update_spawning(
     if app.sessions.contains_key(&key) {
         // Same focus rule as the fresh-bucket path below: only a
         // click that asked for THIS wake moves focus. A background
-        // SpawnProject (cron, peer prompt) hitting a stale synthetic
+        // SpawnProject (cron, peer prompt, gotify or slack delivery) hitting a stale synthetic
         // stub left by an earlier failed spawn must not yank the tab
         // away from the spawn the user is waiting on.
         let user_asked_for_this = app.pending_spawn_focus.as_ref() == Some(&key);
@@ -1237,8 +1258,9 @@ fn apply_mcp_snapshot_presentation(
 /// viewport); [`apply_sdk_message_presentation`] temp-swaps
 /// `active_session_key` to route background sessions through the
 /// same path.
-/// The three envelope reducers forge a synthetic `Message::User` whose
-/// only job is to be re-parsed by `detect_inbound`. If that parse fails
+/// The four envelope reducers - peer, gotify, cron and slack - forge a
+/// synthetic `Message::User` whose only job is to be re-parsed by
+/// `detect_inbound`. If that parse fails
 /// the chat echo is dropped silently while the LLM still receives the
 /// prose via `Command::Prompt` - the agent works on a message the user
 /// never saw arrive. forge-workspace cannot depend on forge-tui, so no
@@ -2163,6 +2185,38 @@ mod tests {
         );
     }
 
+    /// The `SlackMessageAppended` reducer surfaces an inbound Slack message:
+    /// a User turn carrying the prose the session's LLM received, flagged
+    /// `is_slack_envelope` so the role label reads `Slack` and the block
+    /// renderer paints it. Reproduce-first: without the reducer the live
+    /// delivery paints nothing.
+    #[test]
+    fn slack_message_appended_appends_a_slack_block() {
+        use crate::app::{MessageBlock, MessageRole};
+
+        let mut app = App::test_default();
+        let (key_a, _key_b) = seed_two_sessions(&mut app);
+        let prose = "[Slack - workspace 'Trust Machines', granite-staging-alerts] id C0AE ts 1789.5\nunknown: _Large STX Transfer_";
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SlackMessageAppended {
+                session_id: key_a.as_str().to_owned(),
+                prose: prose.to_owned(),
+            },
+        );
+
+        let slack_msg = app
+            .messages()
+            .iter()
+            .find(|m| matches!(m.role, MessageRole::User) && m.is_slack_envelope)
+            .expect("a Slack-envelope user turn was appended");
+        assert!(
+            slack_msg.blocks.iter().any(|b| matches!(b, MessageBlock::Text(t) if t.text == prose)),
+            "the block carries the prose the session's LLM received",
+        );
+    }
+
     /// Single-session focused twin of
     /// [`background_event_updates_target_session_only`]: with only one
     /// real session in the map, an event tagged for the active key
@@ -3000,7 +3054,7 @@ mod tests {
     /// `SessionUpdate::Spawning` should be idempotent: a second
     /// Spawning for the same key must NOT reset the bucket. In
     /// production the repeat arrives from a background wake (cron,
-    /// peer prompt); once the stub exists, a duplicate click is
+    /// peer prompt, gotify or slack delivery); once the stub exists, a duplicate click is
     /// refused by the click handler. Bucket state is preserved and
     /// focus stays where the user put it.
     #[test]
@@ -3152,7 +3206,7 @@ mod tests {
         );
     }
 
-    /// A background spawn wake (cron, peer prompt) landing while the
+    /// A background spawn wake (cron, peer prompt, gotify or slack delivery) landing while the
     /// user's own click-woken spawn is mid-boot must not steal the
     /// landing. Project B's earlier spawn failed and left its
     /// `__spawn_b__` stub behind; when B is woken again in the
@@ -3184,8 +3238,8 @@ mod tests {
         );
 
         // Project B failed to spawn earlier; its synthetic stub
-        // survived. A cron (or peer prompt) wakes B in the
-        // background during A's boot window.
+        // survived. A cron, peer prompt, gotify or slack delivery wakes B
+        // in the background during A's boot window.
         let stale = SessionKey::from_session_id("__spawn_b__".to_owned());
         app.sessions.insert(stale.clone(), crate::app::session::UiSession::new(stale.clone()));
         app.needs_redraw = false;

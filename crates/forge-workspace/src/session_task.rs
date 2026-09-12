@@ -440,18 +440,15 @@ impl SessionTask {
                         &key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
-                    // A project-spawn that never connected still holds
-                    // its buffered peer asks on the synth key - those
-                    // were never delivered, so the target_session match
-                    // above can't reach them.
-                    workspace.expire_buffered_peer_prompts(
-                        &key,
-                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
-                    );
-                    // Same for Gotify notifications buffered at the synth
-                    // key: the failed spawn strands them - drain and
-                    // record the drop.
-                    workspace.expire_buffered_gotify_prompts(&key);
+                    // A project-spawn that never connected still holds its
+                    // buffered deliveries - the target_session match above
+                    // can't reach those. Both keys, because the handoff may
+                    // already have moved the domain from the synth key to the
+                    // resolved one, and either way the domain is released below.
+                    workspace.expire_spawn_key_buffers(&key);
+                    if self.key != key {
+                        workspace.expire_spawn_key_buffers(&self.key);
+                    }
                     // Worker async spawn failure: classify the
                     // failure, dispatch a typed
                     // WorkerSpawnFailedNotice envelope to the lead's
@@ -982,8 +979,9 @@ impl SessionTask {
     /// first `Connected` event - Gotify notifications buffered while the
     /// project was asleep. Each is echoed into chat as a notification
     /// block and re-dispatched as a plain `Command::Prompt`, landing as an
-    /// ordinary user turn. Mirrors [`Self::drain_pending_cron_prompts`]
-    /// plus the peer chat-echo. No-op when the buffer is empty.
+    /// ordinary user turn. Mirrors [`Self::drain_pending_cron_prompts`],
+    /// which echoes its own block before dispatching. No-op when the buffer is
+    /// empty.
     fn drain_pending_gotify_prompts(&self) {
         let pending: Vec<crate::mcp::gotify::types::GotifyNotification> =
             std::mem::take(&mut self.domain.lock().pending_gotify_prompts);
@@ -1010,9 +1008,12 @@ impl SessionTask {
         }
     }
 
-    /// first `Connected` event - Slack messages buffered while the project
-    /// was asleep. Each is re-dispatched as a plain user turn. No-op when
-    /// the buffer is empty.
+    /// Drain `DomainSession.pending_slack_prompts` after the session's first
+    /// `Connected` event - Slack messages buffered while the project was
+    /// asleep. Each is echoed into chat as a notification block and
+    /// re-dispatched as a plain `Command::Prompt`, landing as an ordinary user
+    /// turn. Mirrors [`Self::drain_pending_gotify_prompts`]. No-op when the
+    /// buffer is empty.
     fn drain_pending_slack_prompts(&self) {
         let pending: Vec<forge_primitives::slack::SlackMessage> =
             std::mem::take(&mut self.domain.lock().pending_slack_prompts);
@@ -1022,6 +1023,7 @@ impl SessionTask {
         let Some(workspace) = self.workspace.upgrade() else { return };
         for message in pending {
             let prose = crate::spawn::slack_message_to_prose(&message);
+            crate::spawn::push_slack_message_into_chat(&workspace, &self.key, &prose);
             if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, prose) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
@@ -1700,30 +1702,21 @@ mod tests {
         (task, update_rx)
     }
 
-    /// Slack prompts buffered while the session was asleep flush as the
-    /// session's own prompts, leaving the buffer empty.
+    /// First-Connected drains the session's buffered Slack messages: each
+    /// dispatches a plain `Command::Prompt` AND echoes a
+    /// `SlackMessageAppended` so a message that arrived while the project was
+    /// asleep shows its block once the session connects. Driven through
+    /// Connected rather than the private drain so the ordering is pinned -
+    /// `rekey_to` runs first, so the echo has to carry the real key, not the
+    /// synthetic one.
     #[test]
-    fn drain_pending_slack_prompts_flushes_the_buffer_as_prompts() {
-        let (workspace, _rx) = crate::Workspace::testing_stub();
-        let (handle, mut agent_cmds) = Agent::testing_stub();
-        let handle = Arc::new(handle);
-        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
-        let (update_tx, _update_rx) = mpsc::unbounded_channel();
-        let key = SessionKey::from_str_for_test("slack-drain");
-        let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(handle.clone()))));
-        workspace.domain_handles.lock().insert(key.clone(), domain.clone());
-        let task = SessionTask {
-            key,
-            handle,
-            command_rx,
-            domain: domain.clone(),
-            update_tx,
-            spawn_key: None,
-            account: None,
-            connected_once: false,
-            workspace: Arc::downgrade(&workspace),
-        };
+    fn first_connected_drains_pending_slack_prompts_and_echoes_block() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("slack-drain", "/tmp/slack-drain");
 
+        let session_key = SessionKey::from_session_id("slack-drain-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         domain.lock().pending_slack_prompts.push(forge_primitives::slack::SlackMessage {
             workspace: "acme".to_owned(),
             conversation: "D1".to_owned(),
@@ -1734,20 +1727,102 @@ mod tests {
             text: "the buffered text".to_owned(),
             files: Vec::new(),
         });
-        // Production drains on the first Connected event, by which time
-        // the session id exists.
-        domain.lock().session_id = Some(forge_primitives::SessionId("sid-1".to_owned()));
 
-        task.drain_pending_slack_prompts();
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = workspace.update_sender();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx,
+            spawn_key: None,
+            account: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        workspace.enable_test_dispatch_intercept();
+        task.translate_event(connected_event(session_key.as_str(), "/tmp/slack-drain"));
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|c| matches!(
+                c, crate::protocol::Command::Prompt { key, text, .. }
+                    if key == &session_key && text.contains("the buffered text")
+            )),
+            "the buffered message arrives as the session's own prompt: {dispatched:?}",
+        );
+
+        let mut echoed = false;
+        while let Ok(u) = update_rx.try_recv() {
+            if matches!(
+                u,
+                SessionUpdate::SlackMessageAppended { session_id, prose }
+                    if session_id == session_key.as_str() && prose.contains("the buffered text")
+            ) {
+                echoed = true;
+            }
+        }
+        assert!(echoed, "an asleep-buffered Slack message echoes a SlackMessageAppended on drain");
 
         assert!(domain.lock().pending_slack_prompts.is_empty(), "the buffer drains once flushed");
-        let prompt =
-            agent_cmds.try_recv().expect("the drained message reaches the session as a prompt");
+    }
+
+    /// The drain runs after `rekey_to`, so the echo and the dispatch both carry
+    /// the real session key rather than the synthetic one the delivery was
+    /// parked on. Driven through Connected with a distinct synth key, so
+    /// moving the rekey below the drains fails here.
+    #[test]
+    fn first_connected_drains_slack_under_the_real_key_after_rekey() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("slack-rekey", "/tmp/slack-rekey");
+        let synth_key = SessionKey::from_str_for_test("__spawn_slack-rekey__");
+        let real_key = SessionKey::from_session_id("slack-rekey-uuid");
+        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(synth_key.clone(), None)));
+        domain.lock().pending_slack_prompts.push(buffered_slack("buffered while asleep"));
+
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = workspace.update_sender();
+        let mut task = SessionTask {
+            key: synth_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx,
+            spawn_key: Some(synth_key.clone()),
+            account: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        workspace.enable_test_dispatch_intercept();
+        task.translate_event(connected_event(real_key.as_str(), "/tmp/slack-rekey"));
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
         assert!(
-            matches!(&prompt, forge_primitives::AgentCommand::PromptWithImages { text, .. }
-                if text.contains("the buffered text")),
-            "the buffered message arrives as the session's own prompt: {prompt:?}",
+            dispatched.iter().any(|c| matches!(
+                c, crate::protocol::Command::Prompt { key, text, .. }
+                    if key == &real_key && text.contains("buffered while asleep")
+            )),
+            "the drained prompt rides the real key, not the synth one: {dispatched:?}",
         );
+
+        let mut echoed = false;
+        while let Ok(u) = update_rx.try_recv() {
+            if matches!(
+                u,
+                SessionUpdate::SlackMessageAppended { session_id, .. }
+                    if session_id == real_key.as_str()
+            ) {
+                echoed = true;
+            }
+        }
+        assert!(echoed, "and the echo carries the real key, not the synthetic one");
     }
 
     /// The review-activity notice a task emitted, if any.
@@ -1988,6 +2063,61 @@ mod tests {
         assert!(
             !workspace.command_senders.lock().contains_key(&key),
             "command sender under the real key released"
+        );
+    }
+
+    /// A spawn that never connected strands whatever was buffered for it, and
+    /// the expiry has to reach BOTH keys: the spawn can fail before the handoff
+    /// moved the domain off the synth key, or after. Whichever holds the
+    /// buffers must be drained, because the release below drops the domain - and
+    /// for Slack the delivery was already committed, so nothing re-delivers it.
+    #[tokio::test]
+    async fn connection_failed_expires_the_buffers_under_either_key() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
+        let key = SessionKey::from_str_for_test("real-key");
+        let spawn_key = SessionKey::from_str_for_test("__spawn_proj__");
+        let (handle, _cmds) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let (cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        workspace.pool.lock().insert(
+            key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: crate::account::AccountKey("Acct".to_owned()),
+            },
+        );
+        workspace.command_senders.lock().insert(key.clone(), cmd_tx);
+        let synth_domain =
+            workspace.register_domain_session(spawn_key.clone(), Some(Arc::clone(&handle)));
+        let resolved_domain =
+            workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
+        synth_domain.lock().pending_slack_prompts.push(buffered_slack("before the handoff"));
+        resolved_domain.lock().pending_slack_prompts.push(buffered_slack("after the handoff"));
+
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::clone(&handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
+            update_tx,
+            spawn_key: Some(spawn_key.clone()),
+            account: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        let continues = task
+            .translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+
+        assert!(!continues);
+        assert!(
+            synth_domain.lock().pending_slack_prompts.is_empty(),
+            "a message parked on the synth key is drained",
+        );
+        assert!(
+            resolved_domain.lock().pending_slack_prompts.is_empty(),
+            "and so is one the handoff already moved to the resolved key",
         );
     }
 
@@ -2534,6 +2664,20 @@ mod tests {
             domain.lock().pending_peer_prompts.is_empty(),
             "pending_peer_prompts is drained after first-Connected"
         );
+    }
+
+    /// One Slack message, shaped as a delivery buffers it.
+    fn buffered_slack(text: &str) -> forge_primitives::slack::SlackMessage {
+        forge_primitives::slack::SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: "D1".to_owned(),
+            conversation_label: "U9".to_owned(),
+            ts: "100.000001".to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            text: text.to_owned(),
+            files: Vec::new(),
+        }
     }
 
     fn connected_event(session_id: &str, cwd: &str) -> AgentEvent {

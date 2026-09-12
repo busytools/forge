@@ -206,13 +206,10 @@ pub(crate) fn handle_spawn_project(
                 "spawn_project: get_agent_handle failed"
             );
             // No SessionTask exists to run its ConnectionFailed arm, so
-            // fail any peer asks buffered against this synth key here -
+            // record everything buffered against this synth key here -
             // otherwise the caller's LLM waits on a spawn that never
-            // happened.
-            workspace.expire_buffered_peer_prompts(
-                &synth_key,
-                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
-            );
+            // happened, and a committed delivery is lost unannounced.
+            workspace.expire_spawn_key_buffers(&synth_key);
             try_emit(
                 workspace,
                 "spawn_project::ConnectionFailed",
@@ -495,8 +492,7 @@ fn cron_owner_exists(
 /// `Command::Prompt` if it's running, else buffer on the synthetic
 /// spawn-key's DomainSession and dispatch `Command::SpawnProject`
 /// (`SessionTask` drains + echoes on Connected via
-/// `drain_pending_gotify_prompts`). Mirrors [`deliver_cron_prompt`] plus
-/// the peer chat-echo. A team-worker subscription with NO live entry
+/// `drain_pending_gotify_prompts`). A team-worker subscription with NO live entry
 /// falls through to lead delivery (spawning the project brings the team
 /// up); a live-but-not-yet-connected worker buffers on its own domain
 /// instead. A project no longer in forge.toml is logged and skipped.
@@ -619,8 +615,9 @@ pub(crate) fn deliver_gotify_message(
 /// The user-turn prose for a delivered Slack message. It carries the ids a
 /// reply needs - conversation, ts, thread - because the only way an agent
 /// can answer in place is to feed those back to `slack__post` or
-/// `slack__edit`. Rendering it as a chat block of its own is a later
-/// concern; this lands as a plain turn.
+/// `slack__edit`. The session chat parses this shape back into a Slack block
+/// (`forge_tui::ui::peer_block`), so the bracketed header and the
+/// `<author>: ` line are a contract with it.
 pub(crate) fn slack_message_to_prose(message: &SlackMessage) -> String {
     let author = message.user.as_deref().unwrap_or("unknown");
     let mut out = format!(
@@ -684,7 +681,7 @@ pub(crate) fn deliver_slack_message(
             .domain_session_for(&worker_key)
             .is_some_and(|d| d.lock().session_id.is_some());
         if connected {
-            if let Err(err) = workspace.dispatch_workspace_prompt(&worker_key, prose) {
+            if let Err(err) = workspace.dispatch_workspace_prompt(&worker_key, prose.clone()) {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
                     project = %project,
@@ -695,6 +692,10 @@ pub(crate) fn deliver_slack_message(
                 send_dispatch_turn_error(workspace, worker_key, &err);
                 return false;
             }
+            // Echo only once the dispatch lands: a failed one returns false so
+            // the sweep re-runs the message, and an echo pushed before it would
+            // paint the block twice for a turn the LLM sees once.
+            push_slack_message_into_chat(workspace, &worker_key, &prose);
             workspace.slack_delivery_commit(project, team_role, &message);
         } else if let Some(domain) = workspace.domain_session_for(&worker_key) {
             workspace.slack_delivery_commit(project, team_role, &message);
@@ -729,7 +730,7 @@ pub(crate) fn deliver_slack_message(
         });
 
     if let Some(target_key) = running_lead {
-        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, prose) {
+        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, prose.clone()) {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 project = %project,
@@ -739,6 +740,9 @@ pub(crate) fn deliver_slack_message(
             send_dispatch_turn_error(workspace, target_key, &err);
             return false;
         }
+        // Echo after the dispatch lands, so the sweep's re-run of a failed
+        // delivery does not paint a second block for the same message.
+        push_slack_message_into_chat(workspace, &target_key, &prose);
         workspace.slack_delivery_commit(project, team_role, &message);
         return true;
     }
@@ -845,6 +849,22 @@ pub(crate) fn push_cron_prompt_into_chat(
     let _ = workspace.update_sender().send(SessionUpdate::CronPromptAppended {
         session_id: target_key.as_str().to_owned(),
         text: text.to_owned(),
+    });
+}
+
+/// Emit a typed `SlackMessageAppended` so the target session's TUI chat buffer
+/// shows the inbound Slack block. Mirrors
+/// [`push_gotify_notification_into_chat`] - the target's `claude` subprocess
+/// still receives the prose via a separate `Command::Prompt` dispatch; this
+/// only drives the visible chat echo.
+pub(crate) fn push_slack_message_into_chat(
+    workspace: &Workspace,
+    target_key: &SessionKey,
+    prose: &str,
+) {
+    let _ = workspace.update_sender().send(SessionUpdate::SlackMessageAppended {
+        session_id: target_key.as_str().to_owned(),
+        prose: prose.to_owned(),
     });
 }
 
@@ -968,7 +988,7 @@ pub(crate) fn handle_switch_account(
 
     // Authoritative idle backstop: refuse the switch while a turn is in
     // flight, independent of the TUI idle-gate. A delivered peer / cron
-    // / gotify prompt can start a turn between picker-open and Enter, and
+    // / gotify / slack prompt can start a turn between picker-open and Enter, and
     // tearing that turn down would silently drop pending interactions and
     // strand inflight peer asks. Surface a notice; do NOT tear down.
     let turn_in_flight =
@@ -2251,6 +2271,166 @@ provider = "anthropic"
         );
     }
 
+    /// A live delivery to a connected team worker dispatches the prose AND
+    /// echoes the block into that worker's chat. The CLI never echoes a
+    /// stdin-injected prompt back, so without the echo the agent works the
+    /// message and the user sees nothing; asserting only the echo would let a
+    /// regression through where the block paints and the agent never receives it.
+    #[test]
+    fn deliver_slack_message_to_a_connected_worker_dispatches_and_echoes() {
+        let (ws, mut update_rx) = Workspace::testing_stub();
+        ws.seed_test_project("forge", "/tmp/slack-worker-echo");
+        let key = ws.list_projects().into_iter().find(|v| v.name == "forge").expect("seeded").key;
+        ws.insert_live_worker(&key, fake_worker_entry("tester", "worker-uuid"));
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+        ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
+        ws.enable_test_dispatch_intercept();
+
+        deliver_slack_message(&ws, "forge", Some("tester"), slack_msg("hello"));
+
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|c| matches!(
+                c, crate::protocol::Command::Prompt { key, text, .. }
+                    if key == &worker_key && text.contains("hello")
+            )),
+            "the worker receives the message as a prompt: {dispatched:?}",
+        );
+
+        let mut echoed = false;
+        while let Ok(u) = update_rx.try_recv() {
+            if matches!(
+                u,
+                crate::protocol::SessionUpdate::SlackMessageAppended { session_id, prose }
+                    if session_id == worker_key.as_str()
+                        && prose.starts_with("[Slack")
+                        && prose.contains("hello")
+            ) {
+                echoed = true;
+            }
+        }
+        assert!(
+            echoed,
+            "a connected worker's delivery emits a SlackMessageAppended echo with the body",
+        );
+    }
+
+    /// A worker spawn that fails rolls its live entry back, so no live row
+    /// lingers with no session behind it. The failure is the same
+    /// `FreshInProject` miss the project-spawn arm hits: the overlay satisfies
+    /// `list_projects` but not the config lookup inside the spawn.
+    #[tokio::test]
+    async fn a_failed_worker_spawn_rolls_the_live_entry_back() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path());
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        // The overlay supplies the project the caller names; the config lookup
+        // inside the spawn is what misses, which is the failure under test.
+        ws.seed_test_project("overlayonly", "/tmp/slack-worker-rollback");
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "overlayonly")
+            .expect("seeded project present")
+            .key;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            "tester",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+
+        assert!(matches!(rx.await, Ok(Err(_))), "the spawn reports the failure to its caller");
+        assert!(
+            ws.list_live_workers(&key).is_empty(),
+            "and the placeholder entry is rolled back, not left live",
+        );
+    }
+
+    /// A spawn failing on the project lookup records what it stranded. The
+    /// domain is already resident at the key the guard holds, so this does not
+    /// exercise the handoff's move branch - it pins the mechanism (arm, hit a
+    /// `?`, record on Drop), which is the whole fix.
+    #[tokio::test]
+    async fn a_spawn_failing_on_the_project_lookup_records_the_buffered_delivery() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path());
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        let synth_key = SessionKey::from_session_id("__spawn_missing__");
+        let domain = ws.register_domain_session(synth_key.clone(), None);
+        domain.lock().pending_slack_prompts.push(slack_msg("parked while asleep"));
+
+        let result = ws.get_agent_handle_with_spawn_key(
+            crate::target::SessionTarget::FreshInProject {
+                project_key: crate::ProjectKey::new_for_test("not-in-config"),
+                synth_key: synth_key.clone(),
+            },
+            forge_agent::client::SessionLaunchSettings::default(),
+            Some(synth_key.clone()),
+            None,
+        );
+
+        assert!(result.is_err(), "the project lookup misses, so the spawn fails after the move");
+        assert!(
+            domain.lock().pending_slack_prompts.is_empty(),
+            "the failed spawn records the delivery the handoff had moved",
+        );
+    }
+
+    /// The synchronous spawn-failure arm is reachable: a project present only
+    /// in the test overlay resolves by name but not by target, so the spawn
+    /// fails before any `SessionTask` exists. Everything a delivery parked on
+    /// the synth key has to be recorded there, because the launchpad's retry
+    /// releases that domain.
+    #[test]
+    fn a_failed_project_spawn_expires_the_synth_key_buffers() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("overlayonly", "/tmp/slack-overlay-only");
+        let synth_key = SessionKey::from_session_id("__spawn_overlayonly__");
+        let domain = ws.register_domain_session(synth_key.clone(), None);
+        domain.lock().pending_slack_prompts.push(slack_msg("parked while asleep"));
+
+        crate::spawn::handle_spawn_project(
+            &ws,
+            "overlayonly",
+            forge_agent::client::SessionLaunchSettings::default(),
+        );
+
+        assert!(
+            domain.lock().pending_slack_prompts.is_empty(),
+            "the failed spawn records the messages parked on the synth key",
+        );
+    }
+
+    /// A delivery whose dispatch fails must not echo: `false` tells the sweep
+    /// to re-run the message, and an echo pushed first would paint the block a
+    /// second time on that re-run, for a turn the LLM never received.
+    #[test]
+    fn a_failed_worker_dispatch_leaves_no_echo_for_the_sweep_to_duplicate() {
+        let (ws, mut update_rx) = Workspace::testing_stub();
+        ws.seed_test_project("forge", "/tmp/slack-worker-doomed");
+        let key = ws.list_projects().into_iter().find(|v| v.name == "forge").expect("seeded").key;
+        ws.insert_live_worker(&key, fake_worker_entry("tester", "worker-uuid"));
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+        // Connected, but with no pooled handle and no conn: the dispatch fails.
+        ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
+
+        let delivered = deliver_slack_message(&ws, "forge", Some("tester"), slack_msg("hello"));
+
+        assert!(!delivered, "a failed dispatch tells the sweep to re-run the message");
+        let echoed = std::iter::from_fn(|| update_rx.try_recv().ok())
+            .any(|u| matches!(u, crate::protocol::SessionUpdate::SlackMessageAppended { .. }));
+        assert!(!echoed, "a failed worker dispatch must not echo a SlackMessageAppended");
+    }
+
     /// The ids in the prose are the arguments a reply takes: without them
     /// the agent cannot answer in the place the message came from.
     #[test]
@@ -2270,13 +2450,16 @@ provider = "anthropic"
         assert!(prose.contains("F1"), "the file id is present: {prose}");
     }
 
+    /// The header and the `<author>: ` line are a contract with the chat
+    /// block's detector, so the whole shape is pinned: a reformat here
+    /// silently reverts the block to painting nothing.
     #[test]
     fn slack_prose_names_the_workspace_and_the_author() {
         let prose = slack_message_to_prose(&slack_msg("hello there"));
-        assert!(prose.starts_with("[Slack"), "the prefix a chat block would key on: {prose}");
-        assert!(prose.contains("acme"), "the workspace label is in the prose: {prose}");
-        assert!(prose.contains("U9"), "the author is in the prose: {prose}");
-        assert!(prose.contains("hello there"), "and so is the text: {prose}");
+        assert_eq!(
+            prose, "[Slack - workspace 'acme', U9] id D1 ts 100.000001\nU9: hello there",
+            "the exact prose the chat block's detector keys on",
+        );
     }
 
     /// #1: the at-most-one-live-per-label guard lives in the shared
@@ -3808,6 +3991,26 @@ provider = "anthropic"
         assert!(
             workspace.inflight_asks.lock().is_empty(),
             "ask must be expired when the worker it targets closes"
+        );
+    }
+
+    /// A worker closed while it was still spawning drops whatever was buffered
+    /// for it. The delivery already committed, so nothing re-delivers it, and
+    /// the release is the last point that can record the loss.
+    #[test]
+    fn close_worker_records_the_delivery_buffered_on_its_key() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        workspace.insert_live_worker(&project, fake_worker_entry("reviewer", "worker-1"));
+        let worker_key = SessionKey::from_session_id("worker-1");
+        let domain = workspace.register_domain_session(worker_key.clone(), None);
+        domain.lock().pending_slack_prompts.push(slack_msg("buffered while spawning"));
+
+        handle_close_worker(&workspace, &project, "reviewer");
+
+        assert!(
+            domain.lock().pending_slack_prompts.is_empty(),
+            "the closed worker's buffered delivery is recorded, not dropped with the domain",
         );
     }
 }

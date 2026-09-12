@@ -31,6 +31,10 @@ pub struct ChatMessage {
     /// time by the `CronPromptAppended` path so the role label renders a
     /// distinct `Cron` source where peer traffic renders none.
     pub is_cron_envelope: bool,
+    /// Companion flag for an inbound Slack message. Stamped at push time by
+    /// the `SlackMessageAppended` path so the role label renders a distinct
+    /// `Slack` source where peer traffic renders none.
+    pub is_slack_envelope: bool,
     /// #273: stop_hook_summary chip hit-test - wrapped-row offset
     /// inside this message of the clickable chip line(s). `0` when
     /// no chip is rendered. Stamped by `append_stop_hook_summary`.
@@ -194,6 +198,7 @@ impl ChatMessage {
             is_peer_envelope: false,
             is_gotify_envelope: false,
             is_cron_envelope: false,
+            is_slack_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
             turn_info: TurnInfo::default(),
@@ -216,6 +221,7 @@ impl ChatMessage {
             is_peer_envelope: true,
             is_gotify_envelope: false,
             is_cron_envelope: false,
+            is_slack_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
             turn_info: TurnInfo::default(),
@@ -236,6 +242,7 @@ impl ChatMessage {
             is_peer_envelope: false,
             is_gotify_envelope: true,
             is_cron_envelope: false,
+            is_slack_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
             turn_info: TurnInfo::default(),
@@ -256,6 +263,29 @@ impl ChatMessage {
             is_peer_envelope: false,
             is_gotify_envelope: false,
             is_cron_envelope: true,
+            is_slack_envelope: false,
+            stop_hook_summary_y_in_msg: 0,
+            stop_hook_summary_height: 0,
+            turn_info: TurnInfo::default(),
+            turn_info_y_in_msg: 0,
+            turn_info_height: 0,
+            turn_info_width: 0,
+        }
+    }
+
+    /// Variant of `new` for an inbound Slack message, pre-stamping
+    /// [`Self::is_slack_envelope`]. Used by
+    /// `push_peer_envelope_user_turn_if_present` so the role label renders
+    /// the distinct `Slack` source.
+    pub fn new_slack_envelope(role: MessageRole, blocks: Vec<MessageBlock>) -> Self {
+        Self {
+            role,
+            blocks,
+            render_cache: MessageRenderCache::default(),
+            is_peer_envelope: false,
+            is_gotify_envelope: false,
+            is_cron_envelope: false,
+            is_slack_envelope: true,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
             turn_info: TurnInfo::default(),

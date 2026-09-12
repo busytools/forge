@@ -53,8 +53,8 @@ pub struct DomainSession {
     pub pending_gotify_prompts: Vec<GotifyNotification>,
     /// Slack messages targeted at this session that arrived while it was
     /// still spawning (pre-Connected). `SessionTask` drains on
-    /// `AgentEvent::Connected` and re-dispatches each as a plain user
-    /// turn. Empty in steady state.
+    /// `AgentEvent::Connected`, emits a chat echo, and re-dispatches each
+    /// as a plain user turn. Empty in steady state.
     pub pending_slack_prompts: Vec<forge_primitives::slack::SlackMessage>,
     /// `--new` boot-wave flag, stamped at spawn time from
     /// `SessionLaunchSettings.force_new`. For a project lead it makes
@@ -68,7 +68,7 @@ pub struct DomainSession {
     /// otherwise lives on the TUI's `UiSession`; this one signal is
     /// duplicated here so `handle_switch_account` can authoritatively
     /// refuse an `/account` switch while a turn is in flight (the TUI
-    /// idle-gate alone can race a just-delivered peer / cron / gotify
+    /// idle-gate alone can race a just-delivered peer / cron / gotify / slack
     /// prompt). `None` until the first state message.
     pub runtime_state: Option<RuntimeSessionState>,
     /// Turn committed at `Command::Prompt` routing, ahead of the

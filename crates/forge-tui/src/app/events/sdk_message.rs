@@ -377,8 +377,8 @@ fn handle_user(app: &mut App, msg: Message) {
     }
     walk_user_tool_results(app, &message.content, tool_use_result.as_ref());
     // The CLI never echoes stdin-injected prompts live on stream-json
-    // (live peer/worker turns are painted workspace-side via
-    // `PeerEnvelopeAppended`); this is the resume path, where
+    // (live peer, gotify, cron and slack turns are painted workspace-side
+    // via their own `SessionUpdate`); this is the resume path, where
     // `load_resume_history` replays the persisted envelope through here
     // as a `Message::User` the peer-wrapper prefix detects, so the
     // reconstructed bubble matches what live delivery rendered.
@@ -402,14 +402,15 @@ fn handle_user(app: &mut App, msg: Message) {
 }
 
 /// Which envelope constructor built a message. Merging is gated on this:
-/// `role_label_line` picks the `Gotify` / `Cron` source label from these
-/// per-message flags, so appending a notification to a peer message
+/// `role_label_line` picks the `Gotify` / `Cron` / `Slack` source label from
+/// these per-message flags, so appending a notification to a peer message
 /// would render an external alert as agent traffic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EnvelopeKind {
     Peer,
     Gotify,
     Cron,
+    Slack,
 }
 
 impl EnvelopeKind {
@@ -417,6 +418,7 @@ impl EnvelopeKind {
         match kind {
             crate::ui::peer_block::PeerInboundKind::Gotify { .. } => Self::Gotify,
             crate::ui::peer_block::PeerInboundKind::Cron { .. } => Self::Cron,
+            crate::ui::peer_block::PeerInboundKind::Slack { .. } => Self::Slack,
             // Spelled out, not `_`: a new inbound kind must not silently
             // inherit peer traffic's unlabelled treatment and merge into it.
             crate::ui::peer_block::PeerInboundKind::Message { .. }
@@ -430,6 +432,8 @@ impl EnvelopeKind {
     fn of_message(msg: &crate::app::ChatMessage) -> Option<Self> {
         if msg.is_gotify_envelope {
             Some(Self::Gotify)
+        } else if msg.is_slack_envelope {
+            Some(Self::Slack)
         } else if msg.is_cron_envelope {
             Some(Self::Cron)
         } else if msg.is_peer_envelope {
@@ -451,8 +455,8 @@ fn append_or_push_envelope(app: &mut App, kind: EnvelopeKind, text: &str) {
     use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
 
     let block = MessageBlock::Text(TextBlock::from_complete(text));
-    // Peer only. Gotify and Cron can never reach the group threshold -
-    // `is_messaging_block` needs a `peer_sender_identity` and both return
+    // Peer only. Gotify, Cron and Slack can never reach the group threshold -
+    // `is_messaging_block` needs a `peer_sender_identity` and all three return
     // None - so merging buys them nothing, while costing them one role
     // label for N alerts and one retention unit for N drops.
     if kind == EnvelopeKind::Peer
@@ -471,6 +475,7 @@ fn append_or_push_envelope(app: &mut App, kind: EnvelopeKind, text: &str) {
     let msg = match kind {
         EnvelopeKind::Gotify => ChatMessage::new_gotify_envelope(MessageRole::User, blocks),
         EnvelopeKind::Cron => ChatMessage::new_cron_envelope(MessageRole::User, blocks),
+        EnvelopeKind::Slack => ChatMessage::new_slack_envelope(MessageRole::User, blocks),
         EnvelopeKind::Peer => ChatMessage::new_peer_envelope(MessageRole::User, blocks),
     };
     app.push_message_tracked(msg);
@@ -3291,7 +3296,7 @@ mod thinking_tokens_clear_on_user_tests {
 mod inbound_message_surfacing_tests {
     //! Coverage for the two inbound-surfacing fixes:
     //!
-    //! - Arrival order: a delivered peer / worker / gotify user turn
+    //! - Arrival order: a delivered peer / worker / gotify / cron / slack user turn
     //!   appends at the TAIL, never inserted above an in-flight
     //!   assistant turn (which is where the outbound send lives).
     //! - Running indicator: a delivered prompt flips `status` to
@@ -3308,6 +3313,7 @@ mod inbound_message_surfacing_tests {
     const SECOND: &str =
         "[Message id=t-2 from agent 'planner' (org 'forge')]\n\npicking up the migration";
     const GOTIFY: &str = "[Gotify - app 'ci', priority 5]\nbuild failed\nsee the log";
+    const SLACK: &str = "[Slack - workspace 'Trust Machines', granite-staging-alerts] id C0AE ts 1789182982.499299\nunknown: _Large STX Transfer_";
 
     /// Consecutive envelopes arrive as separate updates, each forging its
     /// own one-block message, so they must be merged here or a run of
@@ -3378,9 +3384,9 @@ mod inbound_message_surfacing_tests {
         let _ = tail;
     }
 
-    /// The kind gate: `role_label_line` picks the Gotify / Cron source
-    /// label from per-MESSAGE flags, so a notification sharing a message
-    /// with peer traffic would lose its label to peer traffic's none.
+    /// The kind gate: `role_label_line` picks the Gotify / Cron / Slack
+    /// source label from per-MESSAGE flags, so a notification sharing a
+    /// message with peer traffic would lose its label to peer traffic's none.
     #[test]
     fn a_gotify_notification_never_merges_into_a_peer_envelope_message() {
         let mut app = App::test_default();
@@ -3396,14 +3402,64 @@ mod inbound_message_surfacing_tests {
         assert_eq!(gotify.len(), 1, "the notification gets its own message");
     }
 
-    /// Merging is Peer-only. Notifications and crons never reach the
-    /// group threshold, so merging would buy them nothing and would cost
-    /// them their separate role labels and separate retention units.
+    /// A Slack delivery is stamped as its own kind, so it keeps its own
+    /// message and its own `Slack` role label rather than folding into the
+    /// peer turn it arrived next to.
     #[test]
-    fn gotify_and_cron_never_merge_even_with_their_own_kind() {
+    fn a_slack_delivery_is_its_own_stamped_envelope() {
+        let mut app = App::test_default();
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(FIRST)]);
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SLACK)]);
+
+        let peer: Vec<&crate::app::ChatMessage> =
+            app.messages().iter().filter(|m| m.is_peer_envelope).collect();
+        let slack: Vec<&crate::app::ChatMessage> =
+            app.messages().iter().filter(|m| m.is_slack_envelope).collect();
+        assert_eq!(peer.len(), 1, "the peer envelope keeps its own message");
+        assert_eq!(peer[0].blocks.len(), 1, "the Slack delivery must NOT be appended to it");
+        assert_eq!(slack.len(), 1, "the Slack delivery gets its own message");
+        assert!(
+            !slack[0].is_gotify_envelope
+                && !slack[0].is_cron_envelope
+                && !slack[0].is_peer_envelope,
+            "stamped Slack and nothing else",
+        );
+    }
+
+    /// `of_message` is the inverse of `of_inbound` and the merge guard reads
+    /// it, so every stamped constructor has to classify as its own kind -
+    /// and an unstamped message as none.
+    #[test]
+    fn every_stamped_envelope_reports_its_own_kind() {
+        let cases = [
+            (ChatMessage::new_peer_envelope(MessageRole::User, vec![]), EnvelopeKind::Peer),
+            (ChatMessage::new_gotify_envelope(MessageRole::User, vec![]), EnvelopeKind::Gotify),
+            (ChatMessage::new_cron_envelope(MessageRole::User, vec![]), EnvelopeKind::Cron),
+            (ChatMessage::new_slack_envelope(MessageRole::User, vec![]), EnvelopeKind::Slack),
+        ];
+        for (msg, want) in cases {
+            assert_eq!(
+                EnvelopeKind::of_message(&msg),
+                Some(want),
+                "a stamped envelope classifies as its own kind",
+            );
+        }
+        assert_eq!(
+            EnvelopeKind::of_message(&ChatMessage::new(MessageRole::User, vec![])),
+            None,
+            "an unstamped user message is no envelope at all",
+        );
+    }
+
+    /// Merging is Peer-only. Notifications, crons and Slack messages never
+    /// reach the group threshold, so merging would buy them nothing and would
+    /// cost them their separate role labels and separate retention units.
+    #[test]
+    fn external_kinds_never_merge_even_with_their_own_kind() {
         const GOTIFY_2: &str = "[Gotify - app 'ci', priority 5]\nsecond alert\nbody";
         const CRON_1: &str = "[Cron]\n\nmorning summary";
         const CRON_2: &str = "[Cron]\n\nevening summary";
+        const SLACK_2: &str = "[Slack - workspace 'Trust Machines', granite-staging-alerts] id C0AF ts 1789182999.0\nalert-bot: second alert";
 
         let mut app = App::test_default();
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(GOTIFY)]);
@@ -3418,6 +3474,13 @@ mod inbound_message_surfacing_tests {
         let cron: Vec<&crate::app::ChatMessage> =
             app.messages().iter().filter(|m| m.is_cron_envelope).collect();
         assert_eq!(cron.len(), 2, "each fired cron keeps its own message");
+
+        let mut app = App::test_default();
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SLACK)]);
+        push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SLACK_2)]);
+        let slack: Vec<&crate::app::ChatMessage> =
+            app.messages().iter().filter(|m| m.is_slack_envelope).collect();
+        assert_eq!(slack.len(), 2, "each Slack message keeps its own message");
     }
 
     use super::handle_user;

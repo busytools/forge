@@ -1,6 +1,6 @@
 # Peer MCP - cross-agent coordination
 
-Every spawned `claude` child gets an in-process MCP server exposing the peer and cron tools (the table below). The `forge.toml` project name is the agent identity - one session per project. When the LLM in project A calls `peers__ask_agent`, forge wraps the prompt in a bracket-prefixed envelope and dispatches it as a synthetic user turn to project B; B's reply lands as another wrapped envelope on A's chat. The renderer matches the wrappers and shows a styled peer block instead of the raw bracket prose. All `mcp__forge__*` calls are auto-approved, and the default tool card is suppressed so the chat shows the styled block. See the [Projects pane](./projects-pane.md) for the per-row in-flight badges.
+Every spawned `claude` child gets an in-process MCP server exposing the peer, worker, review, cron, [Gotify](./inspector-processes.md) and [Slack](./slack.md) groups; the table below covers the peer and cron ones. The `forge.toml` project name is the agent identity - one session per project. When the LLM in project A calls `peers__ask_agent`, forge wraps the prompt in a bracket-prefixed envelope and dispatches it as a synthetic user turn to project B; B's reply lands as another wrapped envelope on A's chat. The renderer matches the wrappers and shows a styled peer block instead of the raw bracket prose. All `mcp__forge__*` calls are auto-approved, and the default tool card is suppressed so the chat shows the styled block. See the [Projects pane](./projects-pane.md) for the per-row in-flight badges.
 
 ## Peer / worker chat blocks
 
@@ -71,7 +71,7 @@ Notices stay single-line with a `⚠` modifier inline.
 
 ## Gotify notification chat block
 
-Every matched Gotify notification delivered into a subscribed session echoes into the chat as an external-notification block, ahead of the response it triggers - every notification is its own turn. It is an external event, not agent traffic: a Gotify source label, the `◈` glyph in place of `▶`, and an `app 'X' - priority N` header over the title then message. The priority number renders in warning at or above 5, otherwise dim. The message body is a user turn, so it carries the [gutter rule](./chat.md#user-message) rather than a background band.
+Every matched Gotify notification delivered into a subscribed session echoes into the chat as an external-notification block, ahead of the response it triggers - every notification is its own turn. It is an external event, not agent traffic: a Gotify source label, the `◈` glyph in place of `▶`, and an `app 'X' - priority N` header over the title then message. The priority number renders in warning at or above 5, otherwise dim. The message body renders under the block's own tree connectors, not the [user turn's gutter](./chat.md#user-message).
 
 <div class="term">
 
@@ -97,7 +97,7 @@ The block never merges into a peer messaging group - it keeps its own source lab
 
 ## Cron chat block
 
-Every durable cron that fires into its owner echoes into the chat as a cron block, ahead of the response it triggers. It is an internal scheduled event, not typed input: a Cron source label, the `◴` glyph (the same one the [SCHEDULES](./inspector-processes.md) section uses), and the fired prompt under the tree connectors. An overdue fire (forge or the owner was down through the scheduled minute) prefixes the prompt with a plain `[missed cron]` marker. The fired prompt is a user turn, so it carries the [gutter rule](./chat.md#user-message) rather than a background band.
+Every durable cron that fires into its owner echoes into the chat as a cron block, ahead of the response it triggers. It is an internal scheduled event, not typed input: a Cron source label, the `◴` glyph (the same one the [SCHEDULES](./inspector-processes.md) section uses), and the fired prompt under the tree connectors. An overdue fire (forge or the owner was down through the scheduled minute) prefixes the prompt with a plain `[missed cron]` marker. The fired prompt renders under the block's own tree connectors, not the [user turn's gutter](./chat.md#user-message).
 
 <div class="term">
 
@@ -116,7 +116,38 @@ Every durable cron that fires into its owner echoes into the chat as a cron bloc
 <details>
 <summary>Cron block details</summary>
 
-The `[Cron]` wrapper is display-only: it drives the visible block and inherits the delivered-turn spinner, while the subprocess receives the raw prompt - the bracket never reaches the LLM. The block never merges into a peer messaging group, keeps its own source label and the `◴` glyph, appends at the tail in arrival order with the same placeholder and running-state behavior as the peer and Gotify blocks, and collapses the same way.
+The `[Cron]` wrapper is display-only: it drives the visible block and inherits the delivered-turn spinner, while the subprocess receives the raw prompt - the bracket never reaches the LLM. The block never merges into a peer messaging group, keeps its own source label and the `◴` glyph, appends at the tail in arrival order with the same placeholder and running-state behavior as the peer, Gotify and Slack blocks, and collapses the same way.
+
+</details>
+
+## Slack notification chat block
+
+Every matched Slack message delivered into a subscribed session echoes into the chat as an external-notification block, ahead of the response it triggers - every message is its own turn. It is an external event, not agent traffic: a Slack source label, the `◇` glyph in place of `▶`, and a one-line header naming the conversation and the workspace over the message.
+
+The header prefixes the conversation with `#` when the label looks like a channel name rather than an id. A DM's label is the partner's user id, and an id is never dressed as a channel - though the test is a shape, so an all-caps channel name loses its `#` too. The author clause needs a resolved handle, and the producer does not emit one yet: `message.user` reaches the prose as a raw id, and a bot post as the literal `unknown`, so both are dropped.
+
+Slack's mrkdwn is tidied for display: `*bold*` and `_italic_` lose their markers, and `<url|label>` reads `label: url`. The message body renders under the block's own tree connectors, not the [user turn's gutter](./chat.md#user-message).
+
+<div class="term">
+
+  <pre class="indent">
+   <span class="slack bold">Slack</span>
+
+     <span class="slack bold">&#x25C7;</span> <span class="bold">#granite-staging-alerts</span> <span class="dim">&#183; Trust Machines</span>
+     <span class="dim">&#x2502;&nbsp;&nbsp;Large STX Transfer</span>
+     <span class="dim">&#x2514;&#x2500; Amount: 233468.293536 STX (~$60434.82 USD)</span>
+
+     <span class="slack bold">&#x25C7;</span> <span class="bold">U0AE0CBJ77G</span> <span class="dim">&#183; Trust Machines</span>
+     <span class="dim">&#x2514;&#x2500; Slow slot: 57296338 took 1s 347ms 924us against a 1s 200ms threshold</span></pre>
+
+</div>
+
+<details>
+<summary>Slack block details</summary>
+
+The block never merges into a peer messaging group - it keeps its own source label and the `◇` glyph. It appends at the tail in arrival order, opens a fresh assistant placeholder so the thinking spinner pins to the bottom, and flips the session to a running state - the same delivery path the peer block uses. Collapse is the same one-line ellipsis with click to expand.
+
+The block hides the conversation and message ids the delivered turn carries; the prose the agent receives is unchanged, so a reply still feeds those ids back to `slack__post`.
 
 </details>
 
@@ -151,7 +182,7 @@ Sleeping projects have no live state to read peer counters from, so their rows c
 
 ## Tools exposed by the `mcp__forge__` server
 
-Every spawned `claude` child gets these tools, all auto-approved.
+These are the peer and cron tools, all auto-approved. `peers__*` is lead-only, so a worker's server carries the cron half of this table and not the peer half.
 
 <details>
 <summary>The peer and cron tools</summary>

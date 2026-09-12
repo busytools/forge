@@ -54,6 +54,10 @@ pub const EXPERIMENTAL: Color = Color::Rgb(201, 161, 59);
 // RUST_ORANGE (peer / agent traffic).
 pub const GOTIFY: Color = Color::Rgb(78, 201, 201);
 
+// Slack external-notification accent - the ◇ glyph + the `Slack` source label
+// in the chat notification block. Slack green, distinct from GOTIFY's cyan.
+pub const SLACK: Color = Color::Rgb(46, 182, 125);
+
 // Diff row background tints - GitHub dark-mode added / removed surface.
 // Single source of truth shared by the /diff overlay and the
 // Edit-tool inline diff renderer.
