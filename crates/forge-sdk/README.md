@@ -50,8 +50,9 @@ Core types and functions exposed from the crate root:
 - **MCP hosting** - `mcp::{McpServer, McpServerBuilder, Tool,
   ToolInput, ToolOutput}` + `tool!` declarative macro.
 - **Subagents** - `SubagentDefinition` and its nested types, populated
-  by setting struct fields directly. Nothing reaches the CLI through
-  them today.
+  by setting struct fields directly and reaching no CLI path today.
+  `SubagentEffort` and `EffortPreset` are separate: they go out as
+  `--effort`.
 - **Path resolution** - `claude_config_dir()`, `projects_dir()`.
 - **Errors** - `Error` enum (variants mirror Python's
   `CLIConnectionError` / `CLINotFoundError` / `ProcessError` /
