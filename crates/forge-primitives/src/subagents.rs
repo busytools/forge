@@ -1,8 +1,10 @@
 //! Subagent declaration shapes. Pure data - no callbacks.
 //!
-//! Nothing forwards these to the CLI: the `initialize`
-//! `control_request`'s `agents` field was the only path, and nothing
-//! builds one now.
+//! `SubagentDefinition` and its nested types reach no CLI path today:
+//! the `initialize` `control_request`'s `agents` field was the only
+//! one. `SubagentEffort` and `EffortPreset` share this module and are
+//! separate: they have their own path through `Options::effort`, which
+//! the argv builder emits as `--effort`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
