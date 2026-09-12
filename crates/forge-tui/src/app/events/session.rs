@@ -117,12 +117,6 @@ fn apply_connected_presentation(
             );
         }
         crate::app::active_bucket_scope::with_pivoted(app, session_key.clone(), |app| {
-            // The old chat goes with this replacement, and the roster
-            // described it: left set, the row spins for work no Inspector
-            // section can show.
-            if let Some(bucket) = app.sessions.get_mut(session_key) {
-                bucket.clear_background_task_registry();
-            }
             app.clear_messages_tracked();
             let welcome = app.build_welcome_message();
             app.push_message_tracked(welcome);
@@ -846,6 +840,15 @@ pub(super) fn apply_session_update_session_replaced(
     // background chain `Connected` uses, leaving every App-global
     // surface (focus, input, status, terminals, overlays) untouched.
     super::client::apply_session_update_key_renamed(app, previous_key, key.clone());
+    // The old chat is replaced below, and the roster and its recorded cards
+    // described it: left set, the row spins for work no Inspector section can
+    // show. Only here, never on `Connected` - `task_started` is not re-emitted
+    // for a task that is still running, so a cleared record could not be
+    // re-earned, while a stale roster entry is replaced wholesale by the CLI's
+    // next snapshot.
+    if let Some(bucket) = app.sessions.get_mut(key) {
+        bucket.clear_background_task_registry();
+    }
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_replaced",
