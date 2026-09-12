@@ -5,6 +5,11 @@
 # 3 GB and decode repeatedly, so they run closer to the limit.
 slow-timeout = { period = "30s", terminate-after = 4 }
 
+# nextest's window for a finished test's stdout/stderr to close before marking
+# it leaky; widened from the 200ms default so a process that closes a few
+# seconds later is not annotated.
+leak-timeout = "10s"
+
 # Live capture runs against the real CLI, whose shutdown after stdin
 # close now lingers past a minute (2.1.263), so a single capture can
 # legitimately outlast the default ceiling. Run with `-P capture`.
