@@ -110,17 +110,20 @@ mod enabled {
     /// per-message leaf and must stay subject to the cap, or the cap
     /// stops bounding per-frame memory.
     ///
-    /// Membership is the OUTERMOST framing span of each dominant leaf's
-    /// chain, not every ancestor on it: `chat::measure_msg` sits under
-    /// `chat::update_heights` and `tc::render_body` under `chat::render`,
-    /// and those two are what make a slow frame attributable. Inner
-    /// ancestors such as `chat::render_msgs` and `chat::render_scrolled`
-    /// are deliberately left capped.
+    /// The criterion is the OUTERMOST framing span of a dominant leaf's
+    /// chain - `chat::update_heights` for `chat::measure_msg`, `chat::render`
+    /// for `tc::render_body` - since those two parents are what make a slow
+    /// frame attributable.
     ///
-    /// A late-emitted leaf is not exempt even when the overflow drops it:
-    /// `chat::paragraph_build` closes before its parents and can be lost,
-    /// but nothing nests inside it and its cost already sits inside
-    /// `chat::render`'s total.
+    /// The match is a prefix, so the exempt set is wider than the criterion:
+    /// `chat::render` also catches `chat::render_msgs` and
+    /// `chat::render_scrolled*`. Each emits once per frame, so the cap still
+    /// bounds memory.
+    ///
+    /// `chat::measure_msg` is the leaf the exemption must not reach, because
+    /// it fires once per visible message; no exempt prefix matches it. The
+    /// late-emitted `chat::paragraph_build` is left capped too: nothing nests
+    /// inside it, and its cost already sits inside `chat::render`'s total.
     const PARENT_SPAN_PREFIXES: &[&str] =
         &["frame::", "ui::", "chat::render", "chat::update_heights"];
 
