@@ -1,8 +1,6 @@
-//! Test scaffolding for `Workspace`.
-//!
-//! Gated on `cfg(any(test, feature = "testing"))`. No production path
-//! calls into this module; it exists so tests in this crate and in
-//! `forge-tui` can construct a `Workspace` without a real subprocess.
+//! Test-only constructors, seed helpers and dispatch interception for
+//! `Workspace`, so tests here and in `forge-tui` can drive a workspace
+//! without a real subprocess.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
