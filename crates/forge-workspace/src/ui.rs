@@ -39,12 +39,12 @@ pub struct UiSettings {
     /// Detection reads `TERM_PROGRAM`, `ITERM_SESSION_ID` and `TERM`
     /// (`TERM` only when it reads `xterm-ghostty`). The first two
     /// describe the terminal at the far end of the pipe; `TERM` is the
-    /// one shpool forwards while dropping `TERM_PROGRAM`, and so the
-    /// one a multiplexer can rewrite. A multiplexer that strips the
-    /// escape leaves the default notification channel silent rather
-    /// than degraded. A banner that does arrive shows while Ghostty is
-    /// not the frontmost app and is downgraded to a dock bounce when
-    /// it is. `off` serves a setup where the escape is emitted but
+    /// one that can survive a multiplexer which drops them, and tmux
+    /// substitutes both. A multiplexer that strips the escape leaves
+    /// the default notification channel silent rather than degraded. A
+    /// banner that does arrive shows while Ghostty is not the
+    /// frontmost app and is downgraded to a dock bounce when it is.
+    /// `off` serves a setup where the escape is emitted but
     /// stripped, and `on` the converse, a terminal that speaks OSC 9
     /// without announcing itself; the seam is config here, not code.
     #[serde(default)]

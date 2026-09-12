@@ -257,8 +257,9 @@ and a non-integer `fps` resolves to the default.
 load, naming the key and the value.
 
 `notifications_osc9` governs whether forge sends OSC 9
-desktop-notification escapes. Those are raised only while the terminal
-window is unfocused; a focused window gets none. Detection reads
+desktop-notification escapes. Those are raised only while forge
+believes the terminal window is unfocused; a window it reads as
+focused gets none. Detection reads
 `TERM_PROGRAM`, `ITERM_SESSION_ID` and `TERM` - three signals because
 a multiplexer between forge and the terminal can drop some while
 forwarding others. `TERM` counts only when it reads `xterm-ghostty`.
