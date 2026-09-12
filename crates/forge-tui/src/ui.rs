@@ -31,7 +31,7 @@ pub(crate) mod schedule_format;
 pub(crate) mod spinner;
 pub(crate) mod spinner_picker;
 pub(crate) mod theme;
-mod tool_call;
+pub(crate) mod tool_call;
 pub mod top_bar;
 mod two_column_list;
 mod usage_overlay;

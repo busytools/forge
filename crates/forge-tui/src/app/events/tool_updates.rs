@@ -194,16 +194,50 @@ fn apply_tool_call_update_to_indexed_block(
         app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
-        let mut changed = false;
-        changed |= apply_tool_call_status_update(tc, tcu.fields.status);
-        changed |= apply_tool_call_title_update(tc, tcu.fields.title.as_deref(), &cwd_raw);
-        changed |= apply_tool_call_content_update(tc, tcu.fields.content.as_deref());
-        changed |= apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
-        changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
-        changed |= apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
-        changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
-        changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
-        changed |= apply_tool_call_hidden_update(tc, tcu.meta.as_ref());
+        // Which of these can change the bytes `render_tool_call_body`
+        // produces, derived from that function and everything it reads on
+        // `ToolCallInfo`. The body depends on `sdk_tool_name` (the
+        // Execute branch, and `"Write"` picks the diff highlight window),
+        // `status` (the Execute gate plus the Failed/Killed/InProgress
+        // branches), `terminal_output`, `content`, and `title`
+        // (`is_markdown_file` / `lang_from_title` choose markdown over
+        // code highlighting). It reads nothing else.
+        //
+        //   status          -> status            body
+        //   title           -> title             body
+        //   content         -> content           body
+        //   raw_input       -> raw_input         body-preserving
+        //   output_metadata -> output_metadata   body-preserving
+        //   task_metadata   -> task_metadata     body-preserving
+        //   raw_output      -> terminal_output   body
+        //   name            -> sdk_tool_name     body
+        //   hidden          -> hidden            body-preserving
+        //
+        // `hidden` is also hashed into the message render signature
+        // directly, so it invalidates the message either way.
+        let status_changed = apply_tool_call_status_update(tc, tcu.fields.status);
+        let title_changed = apply_tool_call_title_update(tc, tcu.fields.title.as_deref(), &cwd_raw);
+        let content_changed = apply_tool_call_content_update(tc, tcu.fields.content.as_deref());
+        let raw_input_changed = apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
+        let output_metadata_changed =
+            apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
+        let task_metadata_changed =
+            apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
+        let raw_output_changed =
+            apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
+        let name_changed = apply_tool_call_name_update(tc, tcu.meta.as_ref());
+        let hidden_changed = apply_tool_call_hidden_update(tc, tcu.meta.as_ref());
+
+        let body_changed = status_changed
+            || title_changed
+            || content_changed
+            || raw_output_changed
+            || name_changed;
+        let changed = body_changed
+            || raw_input_changed
+            || output_metadata_changed
+            || task_metadata_changed
+            || hidden_changed;
         // #268: Task* family delta. Read post-apply so `tc.status`
         // reflects the fields just merged from this update; the
         // delta fires exactly once per tool_call when the call
@@ -215,7 +249,13 @@ fn apply_tool_call_update_to_indexed_block(
         if changed {
             out.changed = true;
             should_engage_auto_scroll = should_jump_on_large_write(tc);
-            tc.mark_tool_call_layout_dirty();
+            // A body-preserving change still has to re-measure (the title
+            // is rendered live), but it must not cost a body rebuild.
+            if body_changed {
+                tc.mark_tool_call_layout_dirty();
+            } else {
+                tc.mark_tool_call_layout_dirty_only();
+            }
             out.layout_dirty_idx = Some(mi);
         } else {
             crate::perf::mark("tool_update_noop_skips");
@@ -797,6 +837,7 @@ fn command_failure_kind(tc: &ToolCallInfo) -> &'static str {
 mod tests {
     use super::*;
     use crate::app::{App, BlockCache, ChatMessage, MessageBlock, MessageRole};
+    use crate::ui::tool_call::measure_tool_call_height_cached_with_tools_collapsed;
 
     fn make_bash_tool_call(
         id: &str,
@@ -860,6 +901,175 @@ mod tests {
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
         }
+    }
+
+    /// Populate the body cache through the cached render path.
+    fn warm_body_cache(tc: &mut ToolCallInfo) {
+        let mut out = Vec::new();
+        crate::ui::tool_call::render_tool_call_cached_with_tools_collapsed(
+            tc,
+            crate::ui::tool_call::ToolCallRenderContext::default(),
+            80,
+            '\u{280B}',
+            false,
+            &mut out,
+        );
+    }
+
+    /// Flatten the cached body to plain rows. Empty when nothing is cached.
+    fn cached_body_rows(tc: &ToolCallInfo) -> Vec<String> {
+        tc.cache
+            .get()
+            .map(|lines| {
+                lines
+                    .iter()
+                    .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn body_preserving_update_does_not_invalidate_the_rendered_body() {
+        // A tool-call update that cannot change the rendered bytes must
+        // not throw away the rendered body. The assertion is on the
+        // rendered output being identical AND the render cache surviving,
+        // so a future field added to the update path that DOES affect the
+        // body will fail this test rather than silently serving a stale
+        // body.
+        let mut app = App::test_default();
+        let id = "tu-body-preserving";
+        let mut tc = make_bash_tool_call(id, model::ToolCallStatus::Completed, Some("term-1"));
+        tc.terminal_output = Some("alpha\nbeta\ngamma\n".to_owned());
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc))],
+        ));
+        app.index_tool_call(id.to_owned(), 0, 0);
+
+        let layout_generation = 7;
+        let (before_body, before_render_epoch) = {
+            let MessageBlock::ToolCall(tc) = &mut app.active_messages_mut()[0].blocks[0] else {
+                panic!("expected tool call block");
+            };
+            warm_body_cache(tc);
+            // Warm the measured-height key so its invalidation below is an
+            // observation rather than an artefact of never having measured.
+            measure_tool_call_height_cached_with_tools_collapsed(
+                tc,
+                crate::ui::tool_call::ToolCallRenderContext::default(),
+                80,
+                '\u{280B}',
+                layout_generation,
+                false,
+            );
+            assert!(
+                tc.cache_measurement_key_matches(80, layout_generation, false),
+                "precondition: the measurement key must be warm before the update"
+            );
+            let body = cached_body_rows(tc);
+            // Without this the comparisons below would pass on two empty
+            // vectors no matter what the update did.
+            assert!(
+                !body.is_empty(),
+                "precondition: the tool call must have a cached body to lose"
+            );
+            (body, tc.render_epoch)
+        };
+
+        let update = model::RenderToolCallUpdate::new(
+            id,
+            model::RenderToolCallUpdateFields::new()
+                .task_metadata(model::TaskMetadata::new().backgrounded(Some(true))),
+        );
+        handle_tool_call_update_session(&mut app, &update);
+
+        let MessageBlock::ToolCall(tc) = &mut app.active_messages_mut()[0].blocks[0] else {
+            panic!("expected tool call block");
+        };
+
+        assert_eq!(
+            tc.render_epoch, before_render_epoch,
+            "a metadata-only update must not bump the render epoch"
+        );
+        // The title is rendered live and reflects `raw_input` (and other
+        // metadata), so the MEASUREMENT must still be invalidated even
+        // when the body is reused - otherwise a title change would leave
+        // a stale height behind.
+        assert!(
+            !tc.cache_measurement_key_matches(80, layout_generation, false),
+            "the height must still be recomputed for a metadata-only update"
+        );
+
+        // The comparison covers the cached BODY only. The title row is
+        // rendered live and does change here - the update carries the
+        // `[backgrounded]` badge - which is precisely why the measurement
+        // still has to be invalidated.
+        assert_eq!(
+            cached_body_rows(tc),
+            before_body,
+            "the body must survive a metadata-only update"
+        );
+
+        // Rebuild from scratch so the comparison above is against freshly
+        // rendered bytes rather than the very cache it proves survives.
+        tc.cache.invalidate();
+        warm_body_cache(tc);
+        assert_eq!(
+            cached_body_rows(tc),
+            before_body,
+            "re-rendering the body after a metadata-only update must be byte-identical"
+        );
+    }
+
+    #[test]
+    fn body_affecting_update_still_discards_the_rendered_body() {
+        // Inverse of `body_preserving_update_does_not_invalidate_*`. A
+        // field the derivation marks body-affecting MUST still drop the
+        // body. Getting this direction wrong serves a stale body, which
+        // is height drift and a visible corruption - so a body-affecting
+        // field dropped from the disjunction has to fail here rather
+        // than quietly take the cheap path.
+        let mut app = App::test_default();
+        let id = "tu-body-affecting";
+        let mut tc = make_bash_tool_call(id, model::ToolCallStatus::InProgress, Some("term-1"));
+        tc.terminal_output = Some("alpha\nbeta\ngamma\n".to_owned());
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc))],
+        ));
+        app.index_tool_call(id.to_owned(), 0, 0);
+
+        let before = {
+            let MessageBlock::ToolCall(tc) = &mut app.active_messages_mut()[0].blocks[0] else {
+                panic!("expected tool call block");
+            };
+            warm_body_cache(tc);
+            let body = cached_body_rows(tc);
+            assert!(
+                !body.is_empty(),
+                "precondition: the tool call must have a cached body to lose"
+            );
+            tc.render_epoch
+        };
+
+        let update = model::RenderToolCallUpdate::new(
+            id,
+            model::RenderToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
+        );
+        handle_tool_call_update_session(&mut app, &update);
+
+        let MessageBlock::ToolCall(tc) = &mut app.active_messages_mut()[0].blocks[0] else {
+            panic!("expected tool call block");
+        };
+        assert_ne!(
+            tc.render_epoch, before,
+            "a status change can alter the Execute body, so it must bump the render epoch"
+        );
+        assert!(
+            tc.cache.get().is_none(),
+            "a status change must discard the cached body rather than risk serving a stale one"
+        );
     }
 
     #[test]

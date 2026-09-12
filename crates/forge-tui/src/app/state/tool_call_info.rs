@@ -137,15 +137,30 @@ impl ToolCallInfo {
         crate::perf::mark("tc_invalidations_applied");
     }
 
-    /// Mark layout cache for this tool call as stale.
+    /// Mark layout cache for this tool call as stale, discarding the
+    /// rendered body too.
     pub fn mark_tool_call_layout_dirty(&mut self) {
+        self.invalidate_layout_measurement();
+        self.mark_tool_call_render_dirty();
+    }
+
+    /// Mark only the layout cache stale, keeping the rendered body.
+    ///
+    /// For updates that cannot change the bytes `render_tool_call_body`
+    /// produces. The height still has to be recomputed even then, because
+    /// the title is rendered live and does read fields the body ignores -
+    /// `raw_input` feeds the display title.
+    pub fn mark_tool_call_layout_dirty_only(&mut self) {
+        self.invalidate_layout_measurement();
+    }
+
+    fn invalidate_layout_measurement(&mut self) {
         self.layout_epoch = self.layout_epoch.wrapping_add(1);
         self.last_measured_width = 0;
         self.last_measured_height = 0;
         self.last_measured_layout_epoch = 0;
         self.last_measured_layout_generation = 0;
         self.last_measured_y_in_msg = 0;
-        self.mark_tool_call_render_dirty();
     }
 
     /// Drop the click target of a tool an L2 summary has collapsed
