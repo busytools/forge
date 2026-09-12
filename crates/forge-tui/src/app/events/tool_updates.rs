@@ -956,11 +956,31 @@ mod tests {
         tc.cache.get().cloned().unwrap_or_default()
     }
 
-    /// Push one Bash tool call with a live body into a fresh app.
-    fn app_with_bash_tool(id: &str, status: model::ToolCallStatus) -> App {
+    /// Which tool the per-field cases run against. `render_tool_content`
+    /// returns early on the Execute branch, so the two reach different code,
+    /// and only the content fixture reaches the loop that reads `title`.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Fixture {
+        /// Bash with terminal output.
+        Execute,
+        /// Read with a text block.
+        Content,
+    }
+
+    /// Push one tool call with a live body into a fresh app.
+    fn app_with_tool(id: &str, fixture: Fixture, status: model::ToolCallStatus) -> App {
         let mut app = App::test_default();
         let mut tc = make_bash_tool_call(id, status, Some("term-1"));
-        tc.terminal_output = Some("alpha\nbeta\ngamma\n".to_owned());
+        match fixture {
+            Fixture::Execute => tc.terminal_output = Some("alpha\nbeta\ngamma\n".to_owned()),
+            Fixture::Content => {
+                tc.sdk_tool_name = "Read".to_owned();
+                tc.terminal_id = None;
+                tc.content = vec![model::RenderToolCallContent::Content(model::ContentChunk::new(
+                    model::RenderContentBlock::Text(model::TextContent::new("fn main() {}\n")),
+                ))];
+            }
+        }
         app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc))],
@@ -981,6 +1001,9 @@ mod tests {
     struct FieldCase {
         field: &'static str,
         body_preserving: bool,
+        /// Set for `raw_output`, which the reducer drops for a non-Execute
+        /// tool, so the content fixture has no case to make for it.
+        execute_only: bool,
         update: model::RenderToolCallUpdate,
     }
 
@@ -998,6 +1021,7 @@ mod tests {
             FieldCase {
                 field: "status",
                 body_preserving: false,
+                execute_only: false,
                 update: model::RenderToolCallUpdate::new(
                     id,
                     model::RenderToolCallUpdateFields::new().status(model::ToolCallStatus::Failed),
@@ -1007,6 +1031,7 @@ mod tests {
             FieldCase {
                 field: "title",
                 body_preserving: false,
+                execute_only: false,
                 update: model::RenderToolCallUpdate::new(
                     id,
                     model::RenderToolCallUpdateFields::new().title("renamed tool"),
@@ -1016,6 +1041,7 @@ mod tests {
             FieldCase {
                 field: "content",
                 body_preserving: false,
+                execute_only: false,
                 update: model::RenderToolCallUpdate::new(
                     id,
                     model::RenderToolCallUpdateFields::new().content(vec![
@@ -1029,6 +1055,7 @@ mod tests {
             FieldCase {
                 field: "raw_input",
                 body_preserving: true,
+                execute_only: false,
                 update: model::RenderToolCallUpdate::new(
                     id,
                     model::RenderToolCallUpdateFields::new()
@@ -1039,6 +1066,7 @@ mod tests {
             FieldCase {
                 field: "output_metadata",
                 body_preserving: true,
+                execute_only: false,
                 update: model::RenderToolCallUpdate::new(
                     id,
                     model::RenderToolCallUpdateFields::new().output_metadata(
@@ -1053,6 +1081,7 @@ mod tests {
             FieldCase {
                 field: "task_metadata",
                 body_preserving: true,
+                execute_only: false,
                 update: model::RenderToolCallUpdate::new(
                     id,
                     model::RenderToolCallUpdateFields::new()
@@ -1063,22 +1092,27 @@ mod tests {
             FieldCase {
                 field: "raw_output",
                 body_preserving: false,
+                execute_only: true,
                 update: model::RenderToolCallUpdate::new(
                     id,
                     model::RenderToolCallUpdateFields::new()
                         .raw_output(serde_json::json!("delta\nepsilon")),
                 ),
             },
-            // The Execute branch, and `"Write"` picks the diff window.
+            // The Execute branch, and `"Write"` picks the diff window. The
+            // name has to differ from BOTH fixtures' starting names, or the
+            // update is a no-op on the one that already carries it.
             FieldCase {
                 field: "name",
                 body_preserving: false,
-                update: meta(serde_json::json!({ "claudeCode": { "toolName": "Read" } })),
+                execute_only: false,
+                update: meta(serde_json::json!({ "claudeCode": { "toolName": "Glob" } })),
             },
             // Hashed into the message signature directly.
             FieldCase {
                 field: "hidden",
                 body_preserving: true,
+                execute_only: false,
                 update: meta(
                     serde_json::json!({ "claudeCode": { "parentToolUseId": "parent-1" } }),
                 ),
@@ -1088,107 +1122,120 @@ mod tests {
 
     #[test]
     fn field_updates_take_the_path_the_render_function_implies() {
-        // One case per field, so mis-classifying ANY field fails here rather
-        // than silently serving a stale body. Both directions are covered: a
-        // body-affecting field taking the cheap path corrupts the render,
-        // and a presentation field taking the expensive path is the
-        // regression this work exists to prevent.
+        // One case per field, over both tool shapes, so mis-classifying ANY
+        // field fails here rather than silently serving a stale body. Both
+        // directions are covered: a body-affecting field taking the cheap
+        // path corrupts the render, and a presentation field taking the
+        // expensive path is the regression this work exists to prevent.
+        //
+        // Two fixtures rather than one because `render_tool_content` returns
+        // early on the Execute branch: a leak that only lands on the content
+        // loop is invisible to the execute fixture.
         let id = "tu-field-path";
         let cases = field_cases(id);
         // Ties the oracle to the production array: a tenth row moves
         // `FIELD_UPDATE_COUNT` and lands here until it has a case.
         assert_eq!(cases.len(), FIELD_UPDATE_COUNT, "every field update needs a case here");
 
-        for case in cases {
-            let mut app = app_with_bash_tool(id, model::ToolCallStatus::InProgress);
-            let layout_generation = 7;
+        for fixture in [Fixture::Execute, Fixture::Content] {
+            for case in &cases {
+                if case.execute_only && fixture == Fixture::Content {
+                    continue;
+                }
+                let mut app = app_with_tool(id, fixture, model::ToolCallStatus::InProgress);
+                let layout_generation = 7;
 
-            let (before_body, epoch_before, layout_before) = {
+                let (before_body, epoch_before, layout_before) = {
+                    let tc = tool_call_block(&mut app);
+                    warm_body_cache(tc);
+                    // Warm the measured-height key so its invalidation below is
+                    // an observation rather than an artefact of never measuring.
+                    measure_tool_call_height_cached_with_tools_collapsed(
+                        tc,
+                        crate::ui::tool_call::ToolCallRenderContext::default(),
+                        80,
+                        '\u{280B}',
+                        layout_generation,
+                        false,
+                    );
+                    assert!(
+                        tc.cache_measurement_key_matches(80, layout_generation, false),
+                        "{}: precondition, the measurement key must be warm",
+                        case.field
+                    );
+                    let body = cached_body(tc);
+                    assert!(
+                        !body.is_empty(),
+                        "{}: precondition, there must be a cached body to lose",
+                        case.field
+                    );
+                    (body, tc.render_epoch, tc.layout_epoch)
+                };
+
+                app.last_invalidation_level.set(None);
+                handle_tool_call_update_session(&mut app, &case.update);
+                let invalidation = app.last_invalidation_level.get();
+
                 let tc = tool_call_block(&mut app);
-                warm_body_cache(tc);
-                // Warm the measured-height key so its invalidation below is
-                // an observation rather than an artefact of never measuring.
-                measure_tool_call_height_cached_with_tools_collapsed(
-                    tc,
-                    crate::ui::tool_call::ToolCallRenderContext::default(),
-                    80,
-                    '\u{280B}',
-                    layout_generation,
-                    false,
-                );
+                // Without this a case whose update never applied would still
+                // pass, because nothing would have moved.
                 assert!(
-                    tc.cache_measurement_key_matches(80, layout_generation, false),
-                    "{}: precondition, the measurement key must be warm",
+                    tc.layout_epoch > layout_before,
+                    "{}: the update did not apply, so this case proves nothing",
                     case.field
                 );
-                let body = cached_body(tc);
-                assert!(
-                    !body.is_empty(),
-                    "{}: precondition, there must be a cached body to lose",
-                    case.field
-                );
-                (body, tc.render_epoch, tc.layout_epoch)
-            };
-
-            app.last_invalidation_level.set(None);
-            handle_tool_call_update_session(&mut app, &case.update);
-            let invalidation = app.last_invalidation_level.get();
-
-            let tc = tool_call_block(&mut app);
-            // Without this a case whose update never applied would still
-            // pass, because nothing would have moved.
-            assert!(
-                tc.layout_epoch > layout_before,
-                "{}: the update did not apply, so this case proves nothing",
-                case.field
-            );
-            // The message is invalidated either way: a presentation field
-            // moves the badges or the one-liner target, a body field moves
-            // the body itself. Reporting none leaves the visible call stale.
-            assert_eq!(
-                invalidation,
-                Some(InvalidationLevel::MessageChanged(0)),
-                "{}: the update must invalidate the message",
-                case.field
-            );
-
-            if case.body_preserving {
+                // The message is invalidated either way: a presentation field
+                // moves the badges or the one-liner target, a body field moves
+                // the body itself. Reporting none leaves the visible call stale.
                 assert_eq!(
-                    tc.render_epoch, epoch_before,
-                    "{}: expected the body-preserving path",
+                    invalidation,
+                    Some(InvalidationLevel::MessageChanged(0)),
+                    "{}: the update must invalidate the message",
                     case.field
                 );
-                assert!(tc.cache.get().is_some(), "{}: the rendered body must survive", case.field);
-                // The height is recomputed even though the body is reused,
-                // or a badge that moved the row count would keep its old
-                // height.
-                assert!(
-                    !tc.cache_measurement_key_matches(80, layout_generation, false),
-                    "{}: the height must still be recomputed",
-                    case.field
-                );
-                // Independent proof that reusing the body was safe, rather
-                // than a comparison of the cache against itself: rebuild from
-                // scratch and compare against the pre-update render.
-                tc.cache.invalidate();
-                warm_body_cache(tc);
-                assert_eq!(
-                    cached_body(tc),
-                    before_body,
-                    "{}: this field must not reach the body, so a fresh render must match",
-                    case.field
-                );
-            } else {
-                assert!(
-                    tc.render_epoch > epoch_before,
-                    "{}: expected the body-affecting path",
-                    case.field
-                );
-                assert!(
-                    tc.cache.get().is_none(),
-                    "{}: the cached body must be discarded",
-                    case.field
-                );
+
+                if case.body_preserving {
+                    assert_eq!(
+                        tc.render_epoch, epoch_before,
+                        "{}: expected the body-preserving path",
+                        case.field
+                    );
+                    assert!(
+                        tc.cache.get().is_some(),
+                        "{}: the rendered body must survive",
+                        case.field
+                    );
+                    // The height is recomputed even though the body is reused,
+                    // or a badge that moved the row count would keep its old
+                    // height.
+                    assert!(
+                        !tc.cache_measurement_key_matches(80, layout_generation, false),
+                        "{}: the height must still be recomputed",
+                        case.field
+                    );
+                    // Independent proof that reusing the body was safe, rather
+                    // than a comparison of the cache against itself: rebuild from
+                    // scratch and compare against the pre-update render.
+                    tc.cache.invalidate();
+                    warm_body_cache(tc);
+                    assert_eq!(
+                        cached_body(tc),
+                        before_body,
+                        "{}: this field must not reach the body, so a fresh render must match",
+                        case.field
+                    );
+                } else {
+                    assert!(
+                        tc.render_epoch > epoch_before,
+                        "{}: expected the body-affecting path",
+                        case.field
+                    );
+                    assert!(
+                        tc.cache.get().is_none(),
+                        "{}: the cached body must be discarded",
+                        case.field
+                    );
+                }
             }
         }
     }
