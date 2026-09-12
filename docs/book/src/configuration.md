@@ -259,11 +259,12 @@ load, naming the key and the value.
 `notifications_osc9` governs whether forge sends OSC 9
 desktop-notification escapes. Detection reads `TERM_PROGRAM`,
 `ITERM_SESSION_ID` and `TERM` - three signals because a multiplexer
-between forge and the terminal can drop some while forwarding others,
-and `TERM=xterm-ghostty` is what reaches Ghostty through one that
-drops `TERM_PROGRAM` (shpool). Those variables describe the terminal
-at the far end of the pipe and say nothing about what forwards to it:
-a multiplexer can also strip the escape while passing the environment
+between forge and the terminal can drop some while forwarding others.
+`TERM` counts only when it reads `xterm-ghostty`: shpool drops
+`TERM_PROGRAM` but forwards `TERM`, so that value is how Ghostty is
+identified there. Those variables describe the terminal at the far
+end of the pipe and say nothing about what forwards to it: a
+multiplexer can also strip the escape while passing the environment
 through unchanged (shpool forwards OSC 9 through unchanged; tmux
 drops the notification form; dtach forwards nothing it does not know),
 so the default notification channel ends up silent rather than

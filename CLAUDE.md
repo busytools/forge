@@ -495,10 +495,11 @@ inspected.
     from `terminal_capabilities_from_env` reading `TERM_PROGRAM`,
     `ITERM_SESSION_ID` and `TERM` - the last because shpool does not
     carry `TERM_PROGRAM` into the pane, so `TERM` is the signal that
-    survives a multiplexer. Measured 2026-08-29: both reach a pane
-    under zellij 0.44.3 and under GNU screen 4.00.03 unchanged, while
-    an OSC 9 emitted inside either does not reach the outer pty, with
-    plain text written on both sides of it arriving normally.
+    survives shpool. Measured 2026-08-29: `TERM_PROGRAM` and
+    `ITERM_SESSION_ID` both reach a pane under zellij 0.44.3 and under
+    GNU screen 4.00.03 unchanged, while an OSC 9 emitted inside either
+    does not reach the outer pty, with plain text written on both sides
+    of it arriving normally.
 
     Corrected 2026-09-07 by a live three-probe matrix on the user's
     mac-studio (Ghostty + ws/shpool 0.9.8, one probe at a time, the
