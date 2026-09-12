@@ -81,17 +81,6 @@ pub type Content = ContentChunk;
 pub use forge_primitives::{ToolCallLocation, ToolCallStatus, ToolKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TerminalToolCallContent {
-    pub terminal_id: String,
-}
-
-impl TerminalToolCallContent {
-    pub fn new(terminal_id: impl Into<String>) -> Self {
-        Self { terminal_id: terminal_id.into() }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diff {
     pub path: PathBuf,
     pub old_text: Option<String>,
@@ -150,7 +139,6 @@ pub enum RenderToolCallContent {
     Content(Content),
     Diff(Diff),
     McpResource(McpResource),
-    Terminal(TerminalToolCallContent),
 }
 
 impl From<&str> for RenderToolCallContent {

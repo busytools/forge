@@ -219,7 +219,6 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                     return truncate_summary_line(first, DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT);
                 }
             }
-            model::RenderToolCallContent::Terminal(_) => {}
         }
     }
     String::new()
@@ -297,7 +296,6 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
                     render_text_content(tc, &text.text, &mut lines);
                 }
             }
-            model::RenderToolCallContent::Terminal(_) => {}
         }
     }
 
