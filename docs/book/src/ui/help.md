@@ -29,7 +29,7 @@ Toggled with <kbd>?</kbd>: a rounded panel above the input area, fixed 14 rows w
 <details>
 <summary>Platform-aware bindings</summary>
 
-Input-editing shortcuts swap modifiers per OS: macOS uses `Cmd+Z` / `Cmd+Shift+Z` (undo / redo), `Alt+Left/Right` (word nav), `Alt+Backspace/Delete` (word delete), and `Cmd+C` / `Cmd+V` for copy / paste; Linux and Windows use `Ctrl+` for all of these. `Ctrl+C` still works as fallback copy + interrupt-on-empty everywhere. Reaching the app on macOS requires the kitty enhanced-keyboard protocol (Ghostty / kitty / WezTerm); forge negotiates the flags at startup and again on every resize, since a byte-transparent session manager leaves them on the terminal a reattach left behind.
+Input-editing shortcuts swap modifiers per OS: macOS uses `Cmd+Z` / `Cmd+Shift+Z` (undo / redo), `Alt+Left/Right` (word nav), `Alt+Backspace/Delete` (word delete), and `Cmd+C` / `Cmd+V` for copy / paste; Linux and Windows use `Ctrl+` for all of these. `Ctrl+C` still works as fallback copy + interrupt-on-empty everywhere. Reaching the app on macOS requires the kitty enhanced-keyboard protocol (Ghostty / kitty / WezTerm); forge negotiates the flags at startup and re-sets them on resize, since a byte-transparent session manager leaves them on the terminal a reattach left behind.
 
 </details>
 
