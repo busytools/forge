@@ -965,9 +965,10 @@ mod tests {
     /// locked ratatui-core 0.1.0, whose `clear` does not read the
     /// cursor - the two are equivalent there, so nothing can tell them
     /// apart. That is unkillable by construction rather than a gap in
-    /// the assertion. The test bites the moment the tree is on a
-    /// ratatui whose `clear` reads, which is the version the shipped
-    /// binary was already using.
+    /// the assertion. The workspace pins ratatui-core at `=0.1.0`, so
+    /// the tree cannot reach a reading version at all; treat this as a
+    /// tripwire for a deliberate version move, and re-check the two
+    /// still differ there.
     #[test]
     fn forcing_a_full_redraw_never_reads_the_cursor() {
         let mut terminal =
