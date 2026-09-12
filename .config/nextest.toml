@@ -5,6 +5,11 @@
 # 3 GB and decode repeatedly, so they run closer to the limit.
 slow-timeout = { period = "30s", terminate-after = 4 }
 
+# A test process can outlast the 100ms exit default under parallel load, which
+# the detector reports as a leak; a real leaked fd never closes, so a longer
+# wait cannot mask one.
+leak-timeout = "10s"
+
 # Live capture runs against the real CLI, whose shutdown after stdin
 # close now lingers past a minute (2.1.263), so a single capture can
 # legitimately outlast the default ceiling. Run with `-P capture`.
