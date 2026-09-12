@@ -110,13 +110,17 @@ mod enabled {
     /// per-message leaf and must stay subject to the cap, or the cap
     /// stops bounding per-frame memory.
     ///
-    /// Membership is the ancestor chain of the dominant leaf cost
-    /// (`chat::measure_msg` under `chat::update_heights`, `tc::render_body`
-    /// under `chat::render`), which is what makes a slow frame
-    /// attributable. A late-emitted leaf is not exempt even when the
-    /// overflow drops it: `chat::paragraph_build` closes before its parents
-    /// and can be lost, but nothing nests inside it and its cost already
-    /// sits inside `chat::render`'s total.
+    /// Membership is the OUTERMOST framing span of each dominant leaf's
+    /// chain, not every ancestor on it: `chat::measure_msg` sits under
+    /// `chat::update_heights` and `tc::render_body` under `chat::render`,
+    /// and those two are what make a slow frame attributable. Inner
+    /// ancestors such as `chat::render_msgs` and `chat::render_scrolled`
+    /// are deliberately left capped.
+    ///
+    /// A late-emitted leaf is not exempt even when the overflow drops it:
+    /// `chat::paragraph_build` closes before its parents and can be lost,
+    /// but nothing nests inside it and its cost already sits inside
+    /// `chat::render`'s total.
     const PARENT_SPAN_PREFIXES: &[&str] =
         &["frame::", "ui::", "chat::render", "chat::update_heights"];
 

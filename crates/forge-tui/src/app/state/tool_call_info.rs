@@ -150,7 +150,8 @@ impl ToolCallInfo {
     /// produces. They still change the message, so the layout epoch has to
     /// keep moving: it is hashed into the message render signature, and
     /// these fields drive how the message draws the call (`raw_input` picks
-    /// the one-liner target, the metadata fields add title badges).
+    /// the one-liner target, the metadata fields add title badges, `hidden`
+    /// is hashed into that signature directly).
     pub fn mark_tool_call_layout_dirty_only(&mut self) {
         self.invalidate_layout_measurement();
     }
