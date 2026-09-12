@@ -62,10 +62,12 @@ pub struct PluginsState {
     /// every refresh so the row markers stay truthful.
     pub update_availability: Vec<PluginUpdateAvailability>,
     /// The pane's two row streams from the last inventory refresh,
-    /// kept separate so a tab's count says what the tab shows: the
-    /// registry-backed INSTALLED rows (plugins, their components, the
-    /// load-failure rows), and the marketplace catalog's AVAILABLE
-    /// rows, which render only behind the Available toggle.
+    /// kept separate so a tab's count describes its installed rows
+    /// even with the Available toggle showing more than that: the
+    /// INSTALLED rows (registry installs, their components, the
+    /// load-failure rows), and the AVAILABLE rows (the marketplace
+    /// catalog plus the cache leftovers), which render only behind the
+    /// Available toggle.
     pub installed_rows: Vec<ExtensionRow>,
     pub available_rows: Vec<ExtensionRow>,
     /// The Available toggle: when set, component tabs append the
@@ -689,7 +691,7 @@ pub(crate) fn visible_row_count(app: &App, tab: ExtensionsTab) -> usize {
 /// The rows a tab draws before filtering: the installed stream always,
 /// plus the available stream's rows on component tabs behind the
 /// Available toggle. The Installed tab never reveals the catalog - it
-/// is the registry-backed tier alone.
+/// draws the installed stream alone.
 pub(crate) fn tab_rows(app: &App, tab: ExtensionsTab) -> Vec<&ExtensionRow> {
     let mut rows = rows_for_tab(&app.plugins.installed_rows, tab);
     if tab_takes_available(tab) && app.plugins.show_available {
@@ -1377,10 +1379,10 @@ fn rebuild_rows(app: &mut App, components: &[PluginComponents], health: Vec<Mark
         })
         .collect();
     // The scan carries installed and available plugins in one list;
-    // the pane state must not. Registry-backed installs and
-    // health-failure rows (a corrupt manifest must stay visible on the
-    // page) form the installed stream; the marketplace catalog's
-    // remaining entries form the available one.
+    // the pane state must not. Registry installs and health-failure
+    // rows (a failed manifest must stay visible on the page) form the
+    // installed stream; the marketplace catalog and the cache leftovers
+    // form the available one.
     let (installed, available): (Vec<&PluginComponents>, Vec<&PluginComponents>) =
         components.iter().partition(|entry| entry.installed || entry.load_error.is_some());
     app.plugins.installed_rows = extension_rows(installed);
@@ -2856,9 +2858,10 @@ mod tests {
         assert!(!app.plugins.show_available, "the Installed tab has no Available toggle");
     }
 
-    /// The scan's `installed` flag decides the stream: a refresh lands
-    /// registry-backed plugins (and their components) in the installed
-    /// stream and the catalog's entries in the available one - the
+    /// The partition is `installed || load_error.is_some()`: a refresh
+    /// lands registry installs (and their components) plus the
+    /// load-failure rows in the installed stream, and the catalog's
+    /// entries plus the cache leftovers in the available one - the
     /// pane state never merges them back into one list.
     #[test]
     fn a_refresh_splits_the_scan_into_two_streams() {

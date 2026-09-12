@@ -28,8 +28,9 @@ pub const STATUS_WARNING: Color = Color::Yellow;
 pub const SLASH_COMMAND: Color = Color::LightMagenta;
 pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
 
-// Available-not-installed rows on the Extensions page: the catalog's
-// blue, kept apart from the installed tiers' green / orange / red.
+// Available-not-installed rows on the Extensions page: the available
+// stream's blue, kept apart from the installed tiers' green / orange /
+// red.
 pub const AVAILABLE: Color = Color::Rgb(111, 143, 163);
 
 // Resolved review-thread accent - a muted green distinct from the diff
