@@ -3582,6 +3582,48 @@ mod tests {
         );
     }
 
+    /// The `false` at the background arm's stamp matters, and only shows
+    /// here: the bucket already carries a name the session's cwd does not
+    /// name, and `false` leaves it. A `true` would overwrite it with the
+    /// cwd's project.
+    #[test]
+    fn background_session_replaced_keeps_a_previously_stamped_project() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonical = dir.path().canonicalize().expect("canonicalize");
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("test workspace");
+        ws.seed_test_project("resumed-proj", canonical.to_str().expect("utf-8 path"));
+
+        app.active_session_key = Some(SessionKey::from_str_for_test("on-screen"));
+
+        let previous = SessionKey::from_session_id("old-uuid".to_owned());
+        let mut bucket = UiSession::new(previous.clone());
+        bucket.project = Some("preset".to_owned());
+        app.sessions.insert(previous.clone(), bucket);
+
+        let replacement = SessionKey::from_session_id("new-uuid".to_owned());
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::SessionReplaced {
+                key: replacement.clone(),
+                previous_key: previous,
+                session_id: forge_primitives::SessionId::new("new-uuid"),
+                cwd: canonical.to_string_lossy().into_owned(),
+                current_model: test_current_model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 0,
+            },
+        );
+
+        assert_eq!(
+            app.sessions.get(&replacement).and_then(|b| b.project.as_deref()),
+            Some("preset"),
+            "a project already stamped survives the replacement",
+        );
+    }
+
     /// `SessionUpdate::PermissionRequest` enqueues a `PromptState`
     /// onto the target session's `prompt_queue`; the unified-prompt
     /// dock reads from that queue.
