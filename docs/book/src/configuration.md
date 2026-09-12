@@ -257,15 +257,18 @@ and a non-integer `fps` resolves to the default.
 load, naming the key and the value.
 
 `notifications_osc9` governs whether forge sends OSC 9
-desktop-notification escapes. Detection reads `TERM_PROGRAM`,
-`ITERM_SESSION_ID` and `TERM` - three signals because a multiplexer
-between forge and the terminal can drop some while forwarding others.
-`TERM` counts only when it reads `xterm-ghostty`. Those variables
-describe the terminal at the far end of the pipe and say nothing about
-what forwards to it, so the default notification channel ends up
-silent rather than degraded there. When the escape does arrive, its
-banner shows while Ghostty is not the frontmost app and is downgraded
-to a dock bounce when it is.
+desktop-notification escapes. Those are raised only while the terminal
+window is unfocused; a focused window gets none. Detection reads
+`TERM_PROGRAM`, `ITERM_SESSION_ID` and `TERM` - three signals because
+a multiplexer between forge and the terminal can drop some while
+forwarding others. `TERM` counts only when it reads `xterm-ghostty`.
+`TERM_PROGRAM` and `ITERM_SESSION_ID` describe the terminal at the far
+end of the pipe; `TERM` is the one that can survive a multiplexer
+which drops them. None of the three says what forwards the escape, so
+in that case the default notification channel ends up silent rather
+than degraded. When the escape does arrive, its banner shows while
+Ghostty is not the frontmost app and is downgraded to a dock bounce
+when it is.
 
 `auto` trusts that detection. `off` makes forge treat OSC 9 as
 unavailable and fall back to what does not cross the terminal: the
@@ -287,13 +290,14 @@ Under zellij and GNU screen, `TERM_PROGRAM` reaches the pane, so
 detection was already true, but an OSC 9 emitted inside does not reach
 the outer pty (measured 2026-08-29). The banner does not appear there
 and never did, which is what `off` is for. tmux drops the OSC 9
-notification form and rewrites `TERM` away from `xterm-ghostty`, so it
-is neither detected nor rendered; dtach forwards nothing it does not
-know.
+notification form and substitutes both `TERM_PROGRAM` and `TERM` with
+its own values, so it is neither detected nor rendered.
 
-Detection can also read true without a banner: a `TERM=xterm-ghostty`
-exported by a shell profile, or a session manager that freezes `TERM`
-so a reattach from another terminal keeps it. `off` is the remedy.
+Detection can also read true when the terminal at the other end is not
+Ghostty, so the escape is sent to whatever is actually attached: a
+`TERM=xterm-ghostty` exported by a shell profile, or a session manager
+that freezes `TERM` so a reattach from another terminal keeps it.
+`off` is the remedy.
 
 `launchpad_spinner` is accepted as an alias for `spinner`.
 
