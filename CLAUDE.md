@@ -548,7 +548,7 @@ inspected.
     dictate preflight row, so a terminal that ate the flags says so
     where the user is looking instead of leaving a dead key. A
     reattach under a byte-transparent session manager arrives as a
-    resize, which re-pushes the flags. `is_cmd_shortcut` in
+    resize, which rewrites the flags. `is_cmd_shortcut` in
     `app/keys.rs`, which accepts `CONTROL` where `SUPER` cannot
     arrive, is worth reading, but accepting a substitute is a
     fallback and not a detection, and treating one as the other is
