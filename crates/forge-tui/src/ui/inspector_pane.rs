@@ -4789,8 +4789,12 @@ mod tests {
         assert!(joined.contains("acme"), "the workspace label renders; got:\n{joined}");
         assert!(joined.contains("every message"), "the watch mode renders; got:\n{joined}");
         assert!(
-            joined.contains("C1"),
-            "an unnamed record falls back to the raw id; got:\n{joined}",
+            joined.contains("C1 \u{b7} every message"),
+            "an unnamed record renders the raw id unprefixed; got:\n{joined}",
+        );
+        assert!(
+            !joined.contains("#C1"),
+            "the fallback is never dressed as a channel name; got:\n{joined}",
         );
         assert!(
             joined.contains('\u{25c8}'),
@@ -4851,6 +4855,14 @@ mod tests {
             joined.contains("#ved-test") && joined.contains("direct messages"),
             "both subscription rows render under the heading; got:\n{joined}",
         );
+        // One heading pass then one row pass would still satisfy the
+        // counts above while losing the grouping entirely.
+        let heading_at = joined.find("acme").expect("the heading renders");
+        assert!(
+            joined.find("#ved-test").expect("the named row") > heading_at
+                && joined.find("direct messages").expect("the DM row") > heading_at,
+            "every row sits beneath its own heading; got:\n{joined}",
+        );
     }
 
     /// Group order follows the workspace's first appearance, not the
@@ -4872,9 +4884,11 @@ mod tests {
             slack_sub(7, "acme", forge_primitives::slack::SlackSubscriptionTarget::DirectMessages),
             slack_sub(8, "zeta", forge_primitives::slack::SlackSubscriptionTarget::Mentions),
         ];
+        // One pump up and one down: a single hoisted liveness lookup would
+        // give both headings the same glyph.
         app.slack_connected = std::collections::BTreeMap::from([
             ("zeta".to_owned(), true),
-            ("acme".to_owned(), true),
+            ("acme".to_owned(), false),
         ]);
 
         let joined = render_slack_section(&app);
@@ -4886,6 +4900,10 @@ mod tests {
         assert_eq!(
             headings, 1,
             "subscriptions split by another workspace share one heading; got:\n{joined}",
+        );
+        assert!(
+            joined.lines().any(|line| line.trim_start().starts_with("acme \u{26a0}")),
+            "the down workspace keeps its own warning glyph; got:\n{joined}",
         );
     }
 

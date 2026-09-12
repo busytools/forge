@@ -1276,12 +1276,14 @@ mod tests {
         };
         assert!(host.auto_subscribe("acme", &message), "the mention subscribes the conversation");
 
-        let named = ws
-            .slack_subscriptions_for_project("forge")
-            .into_iter()
-            .find_map(|sub| match sub.target {
-                SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C9" => Some(name),
-                _ => None,
+        let named =
+            ws.slack_subscriptions_for_project("forge").into_iter().find_map(|sub| {
+                match sub.target {
+                    SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C9" => {
+                        Some(name)
+                    }
+                    _ => None,
+                }
             });
         assert_eq!(
             named,
