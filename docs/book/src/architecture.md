@@ -72,7 +72,7 @@ primitives, multi-session state in workspace, and only what the user
 sees in the TUI. The common mistake is putting too much in
 `forge-tui`, so when in doubt, push it down.
 
-Four patterns get caught in review repeatedly:
+Five patterns get caught in review repeatedly:
 
 - **Spawning a subprocess from `forge-tui`.** That belongs in
   `forge-agent`, exposed as a workspace method the TUI awaits.
