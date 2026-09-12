@@ -3428,15 +3428,25 @@ mod tests {
         let project_path = "/tmp/bg-activity-project";
         let (mut app, project, lead_key) =
             app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
-        app.sessions.get_mut(&lead_key).expect("lead bucket").background_tasks.push(
-            BackgroundTask {
+        {
+            let lead = app.sessions.get_mut(&lead_key).expect("lead bucket");
+            lead.background_tasks.push(BackgroundTask {
                 task_id: "t1".to_owned(),
                 // An agent kind: the row glyph follows the Inspector's draw
-                // decision, and a drawn bash would need its resolved command.
+                // decision, and a drawn bash would need the wire command only
+                // a `local_bash` card carries.
                 task_type: "local_agent".to_owned(),
                 description: "cargo build".to_owned(),
-            },
-        );
+            });
+            lead.session_task_tool_use_ids.insert(
+                "t1".to_owned(),
+                crate::app::SessionTaskCard {
+                    tool_use_id: "tu-1".to_owned(),
+                    card_seen: true,
+                    command: None,
+                },
+            );
+        }
         let frames = app.spinner_style.frames();
 
         let area = Rect { x: 0, y: 0, width: 44, height: 20 };
@@ -3524,6 +3534,16 @@ mod tests {
                 task_type: "local_bash".to_owned(),
                 description: "cargo build".to_owned(),
             });
+            // The spinner this test overrides has to be live, or the △ would
+            // win by default rather than by outranking anything.
+            lead.session_task_tool_use_ids.insert(
+                "t1".to_owned(),
+                crate::app::SessionTaskCard {
+                    tool_use_id: "tu-1".to_owned(),
+                    card_seen: true,
+                    command: Some("cargo build".to_owned()),
+                },
+            );
             lead.prompt_queue.push_back(crate::app::prompt::PromptState::from_permission(
                 "tc-bg".to_owned(),
                 crate::app::prompt::tests::make_permission_request(),
@@ -3675,10 +3695,19 @@ mod tests {
         worker_session.background_tasks.push(BackgroundTask {
             task_id: "t1".to_owned(),
             // An agent kind: the row glyph follows the Inspector's draw
-            // decision, and a drawn bash would need its resolved command.
+            // decision, and a drawn bash would need the wire command only a
+            // `local_bash` card carries.
             task_type: "local_agent".to_owned(),
             description: "gh run watch".to_owned(),
         });
+        worker_session.session_task_tool_use_ids.insert(
+            "t1".to_owned(),
+            crate::app::SessionTaskCard {
+                tool_use_id: "tu-1".to_owned(),
+                card_seen: true,
+                command: None,
+            },
+        );
         app.sessions.insert(worker_session_key, worker_session);
 
         let project = ProjectView::new_for_test(

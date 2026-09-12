@@ -1839,7 +1839,9 @@ mod tests {
     // visible with the in-flight entries.
     // ---------------------------------------------------------------
 
-    use crate::app::state::types::{MonitorEntry, MonitorStatus, WorkflowEntry, WorkflowStatus};
+    use crate::app::state::types::{
+        MonitorEntry, MonitorStatus, SessionTaskCard, WorkflowEntry, WorkflowStatus,
+    };
 
     fn stub_monitor(id: &str, status: MonitorStatus) -> MonitorEntry {
         MonitorEntry {
@@ -1994,7 +1996,9 @@ mod tests {
                 task_type: "local_bash".to_owned(),
                 description: "gh run watch".to_owned(),
             });
-            bucket.session_task_tool_use_ids.insert("t1".to_owned(), "tc-1".to_owned());
+            bucket
+                .session_task_tool_use_ids
+                .insert("t1".to_owned(), SessionTaskCard::unseen("tc-1".to_owned()));
         }
 
         reset_for_new_session(
@@ -2007,7 +2011,7 @@ mod tests {
 
         let active = app.active_session_key.clone().expect("active key after reset");
         let bucket = app.sessions.get(&active).expect("active bucket after reset");
-        assert!(!bucket.has_live_background_work(), "reset drops the background-task registry");
+        assert!(bucket.background_tasks.is_empty(), "roster cleared on reset too");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared on reset too");
     }
 }

@@ -36,7 +36,7 @@ use crate::agent::model::ToolCallStatus;
 use crate::app::MessageBlock;
 use crate::app::MessageRole;
 use crate::app::state::tool_call_info::{ToolCallInfo, is_execute_tool_name, is_monitor_tool_name};
-use crate::app::state::types::BackgroundTask;
+use crate::app::state::types::{BackgroundTask, SessionTaskCard, WorkflowEntry, WorkflowStatus};
 
 /// Soft cap on the rendered PROCESSES section. Sanity bound so a
 /// runaway process tree doesn't blow up the body line count; users
@@ -221,37 +221,44 @@ pub(crate) fn wire_alive_tool_calls(
         .collect()
 }
 
-/// Build `task_id` -> wire command for the active session by joining the
-/// session-scoped task map (`task_id` -> `tool_use_id`, survives turn
-/// finalisation) with each tool call's `raw_input.command`. Used to dedup
-/// the backgrounded-`local_bash` feed against OS-scan rows.
-///
-/// Walks the messages newest-first and stops once every mapped task has
-/// resolved. The Projects-pane row glyph reads this through
-/// `inspector_draws_row` on every loop tick, and the mapped set is only the
-/// handful of tasks the CLI currently lists as live.
+/// What a task's tool card looked like when its `task_started` mapping was
+/// made. Called once per task, while the card is normally near the end of the
+/// messages, so the walk back to it is short; a card forge cannot find records
+/// no card at all rather than guessing.
+pub(crate) fn card_facts(
+    session: &crate::app::session::UiSession,
+    tool_use_id: &str,
+) -> SessionTaskCard {
+    for message in session.messages.iter().rev() {
+        for block in message.blocks.iter().rev() {
+            let MessageBlock::ToolCall(tc) = block else { continue };
+            if tc.id != tool_use_id {
+                continue;
+            }
+            let command = read_str_field(tc.raw_input.as_ref(), "command");
+            return SessionTaskCard {
+                tool_use_id: tool_use_id.to_owned(),
+                card_seen: true,
+                command: (!command.is_empty()).then(|| command.to_owned()),
+            };
+        }
+    }
+    SessionTaskCard::unseen(tool_use_id.to_owned())
+}
+
+/// Build `task_id` -> wire command for the active session from the facts
+/// recorded at each task's `task_started`. Used to dedup the backgrounded-
+/// `local_bash` feed against OS-scan rows.
 pub(crate) fn session_command_by_task_id(
     session: &crate::app::session::UiSession,
 ) -> HashMap<String, String> {
-    let mut wanted: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (task_id, tool_use_id) in &session.session_task_tool_use_ids {
-        wanted.entry(tool_use_id.as_str()).or_default().push(task_id.as_str());
-    }
-    let mut commands = HashMap::new();
-    'messages: for message in session.messages.iter().rev() {
-        for block in message.blocks.iter().rev() {
-            if wanted.is_empty() {
-                break 'messages;
-            }
-            let MessageBlock::ToolCall(tc) = block else { continue };
-            let Some(task_ids) = wanted.remove(tc.id.as_str()) else { continue };
-            let command = read_str_field(tc.raw_input.as_ref(), "command");
-            if !command.is_empty() {
-                commands.extend(task_ids.into_iter().map(|id| (id.to_owned(), command.to_owned())));
-            }
-        }
-    }
-    commands
+    session
+        .session_task_tool_use_ids
+        .iter()
+        .filter_map(|(task_id, card)| {
+            card.command.as_ref().map(|command| (task_id.clone(), command.clone()))
+        })
+        .collect()
 }
 
 /// The active session's live backgrounded `local_bash` commands, resolved
@@ -277,29 +284,45 @@ pub(crate) fn live_local_bash_commands(session: &crate::app::session::UiSession)
 }
 
 /// Whether the Inspector paints a row for one rostered background task.
-/// A `local_bash` needs its wire command resolved: that is what tells
-/// whether the OS walk already covers the process, and it arrives through
-/// the same `task_started` mapping the row is built from. The agent and
-/// workflow kinds paint from the message stream, so a rostered entry of
-/// either is drawn while its card lives. An unrouted kind paints nowhere.
+/// Every section paints from the task's tool card, so a rostered entry whose
+/// card forge never saw draws nothing - which is the fact the row glyph needs
+/// and the one it used to get wrong for the agent and workflow kinds. On top
+/// of that a `local_bash` needs its wire command, which is what tells whether
+/// the OS walk already covers the process, and a workflow kind needs its own
+/// in-flight entry.
 ///
-/// One predicate for the PROCESSES feed, the Projects-pane row glyph and
-/// the frame-tick gate, so a spinner can never outrun a drawable row.
+/// One predicate for the PROCESSES feed, the Projects-pane row glyph and the
+/// frame-tick gate, so a spinner can never outrun a drawable row. Reads
+/// recorded facts only, so the gate can ask it on every tick.
 pub(crate) fn inspector_draws_row(
     task: &BackgroundTask,
-    command_by_task_id: &HashMap<String, String>,
+    cards: &HashMap<String, SessionTaskCard>,
+    workflows: &[WorkflowEntry],
 ) -> bool {
     if !task.routes_to_inspector_section() {
         return false;
     }
-    task.task_type != "local_bash" || command_by_task_id.contains_key(&task.task_id)
+    let Some(card) = cards.get(&task.task_id) else { return false };
+    if !card.card_seen {
+        return false;
+    }
+    match task.task_type.as_str() {
+        "local_bash" => card.command.is_some(),
+        "local_workflow" | "workflow" => workflows.iter().any(|entry| {
+            entry.tool_use_id == card.tool_use_id && entry.status == WorkflowStatus::InProgress
+        }),
+        "agent" | "local_agent" => true,
+        _ => false,
+    }
 }
 
 /// Synthesise PROCESSES rows for CLI-registry backgrounded `local_bash`
 /// the OS scan hasn't surfaced. Skips a task whose command already
-/// substring-matches a scanned process (the OS walk covers it) or which
-/// [`inspector_draws_row`] rejects for want of a resolved command;
-/// non-`local_bash` kinds route to SUBAGENTS / WORKFLOWS.
+/// substring-matches a scanned process (the OS walk covers it) or which has no
+/// recorded command at all. `command_by_task_id` is
+/// [`session_command_by_task_id`]'s projection of the recorded card facts, so
+/// this gate is the same `local_bash` arm [`inspector_draws_row`] reads for
+/// the row glyph; non-`local_bash` kinds route to SUBAGENTS / WORKFLOWS.
 fn background_bash_rows(
     background_tasks: &[BackgroundTask],
     command_by_task_id: &HashMap<String, String>,
@@ -308,7 +331,7 @@ fn background_bash_rows(
     background_tasks
         .iter()
         .filter(|task| {
-            task.task_type == "local_bash" && inspector_draws_row(task, command_by_task_id)
+            task.task_type == "local_bash" && command_by_task_id.contains_key(&task.task_id)
         })
         .filter_map(|task| {
             let command = command_by_task_id.get(&task.task_id)?;
@@ -1355,11 +1378,11 @@ mod tests {
         assert!(rows.is_empty(), "unresolved task must not double the OS row; got {rows:?}");
     }
 
-    /// Reproduce-first: a rostered bash whose `task_started` mapping never
-    /// resolved draws no PROCESSES row, so the spinner it promotes explains
-    /// nothing. The glyph reads the feed's own predicate, so it goes quiet.
+    /// Reproduce-first: a rostered bash forge recorded no card for draws no
+    /// PROCESSES row, so the spinner it promotes explains nothing. The glyph
+    /// reads the feed's own gate, so it goes quiet.
     #[test]
-    fn rostered_bash_with_no_resolved_command_promotes_no_spinner() {
+    fn rostered_bash_with_no_recorded_card_promotes_no_spinner() {
         use crate::app::App;
 
         let mut app = App::test_default();
@@ -1369,7 +1392,7 @@ mod tests {
         let commands = session_command_by_task_id(session);
         assert!(
             background_bash_rows(&session.background_tasks, &commands, None).is_empty(),
-            "precondition: with no resolved command the feed paints no row",
+            "precondition: no recorded card, no row",
         );
         assert!(
             !session.has_live_background_work(),
@@ -1399,9 +1422,14 @@ mod tests {
         let session = app.active_session().expect("active session");
         let commands = session_command_by_task_id(session);
         assert_eq!(
+            commands.get("task-bash").map(String::as_str),
+            Some("gh run watch 123 --exit-status"),
+            "precondition: the mapping captured the card's wire command",
+        );
+        assert_eq!(
             background_bash_rows(&session.background_tasks, &commands, None).len(),
             1,
-            "precondition: a resolved command paints a row",
+            "precondition: a captured command paints a row",
         );
         assert!(
             session.has_live_background_work(),
@@ -1409,19 +1437,38 @@ mod tests {
         );
     }
 
-    /// A kind the Inspector has no section for renders nowhere, so it
-    /// promotes no spinner either - the set the drift warning names.
+    /// The capture records what the card looked like at `task_started`, and
+    /// finds it however far back the history has moved on since - the live
+    /// card is not assumed to be on the newest message.
     #[test]
-    fn rostered_task_of_an_unrouted_kind_promotes_no_spinner() {
-        use crate::app::App;
+    fn card_facts_find_the_card_behind_older_messages() {
+        use crate::app::{App, ChatMessage};
 
         let mut app = App::test_default();
-        *app.background_tasks_mut() = vec![bg_task("task-unknown", "local_monitor", "watch")];
-
-        assert!(
-            !app.active_session().expect("active session").has_live_background_work(),
-            "an unrouted kind renders in no Inspector section",
+        let bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({ "command": "gh run watch 123 --exit-status", "run_in_background": true }),
         );
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+        ));
+        let newer = fake_tool_call_info("tu-newer", "Bash", json!({ "command": "echo later" }));
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(newer))],
+        ));
+
+        let session = app.active_session().expect("active session");
+        let facts = card_facts(session, "tu-bash");
+        assert!(facts.card_seen, "the card is behind the newer message, not gone");
+        assert_eq!(
+            facts.command.as_deref(),
+            Some("gh run watch 123 --exit-status"),
+            "the recorded command belongs to the task's own card",
+        );
+        assert!(!card_facts(session, "tu-absent").card_seen, "an absent card is not seen");
     }
 
     #[test]

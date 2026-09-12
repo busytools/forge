@@ -830,9 +830,10 @@ fn push_worker_rows(
 /// has not spawned this boot.
 ///
 /// A Running worker whose bucket has not arrived falls back to
-/// `Spawning`, matching what the Projects pane renders for the same
-/// worker in the same instant (see `append_worker_tree_children`): the
-/// gap is a `Connected` the TUI has not drained yet.
+/// [`crate::ui::worker_lifecycle_without_bucket`], the same answer the
+/// Projects pane renders for that worker (see `append_worker_tree_children`):
+/// the gap is a `Connected` the TUI has not drained yet, and a row with no
+/// bucket has nothing on screen for a spinner to point at.
 fn worker_lifecycle(
     app: &App,
     live: &[forge_workspace::LiveWorkerState],

@@ -1434,9 +1434,9 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         // A terminal patch is one of the two events that may clear the
         // sticky backgrounded marker. The turn-scoped lookup below
         // resets every turn, so resolve through the session map.
-        let root_id = app
-            .active_session()
-            .and_then(|session| session.session_task_tool_use_ids.get(&task_id).cloned());
+        let root_id = app.active_session().and_then(|session| {
+            session.session_task_tool_use_ids.get(&task_id).map(|card| card.tool_use_id.clone())
+        });
         if let Some(root_id) = root_id {
             app.clear_backgrounded_root(&root_id);
         } else {
@@ -1509,7 +1509,9 @@ fn handle_task_notification(app: &mut App, msg: Message) {
         // notification's own tool_use_id.
         let root_id = app
             .active_session()
-            .and_then(|session| session.session_task_tool_use_ids.get(&task_id).cloned())
+            .and_then(|session| {
+                session.session_task_tool_use_ids.get(&task_id).map(|card| card.tool_use_id.clone())
+            })
             .or_else(|| (!id.is_empty()).then(|| id.to_owned()));
         app.remove_session_task_mapping(&task_id);
         if let Some(root_id) = root_id {
@@ -1742,9 +1744,9 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
         // children settle now rather than waiting for the next turn
         // boundary (#789). The root's own card stays open for its
         // terminal `task_updated`, which lands a frame after the drain.
-        let root_id = app
-            .active_session()
-            .and_then(|session| session.session_task_tool_use_ids.get(task_id).cloned());
+        let root_id = app.active_session().and_then(|session| {
+            session.session_task_tool_use_ids.get(task_id).map(|card| card.tool_use_id.clone())
+        });
         app.remove_session_task_mapping(task_id);
         if let Some(root_id) = root_id {
             app.clear_backgrounded_root(&root_id);
@@ -1758,8 +1760,12 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
         .iter()
         .filter(|task| matches!(task.task_type.as_str(), "agent" | "local_agent"))
         .filter_map(|task| {
-            app.active_session()
-                .and_then(|session| session.session_task_tool_use_ids.get(&task.task_id).cloned())
+            app.active_session().and_then(|session| {
+                session
+                    .session_task_tool_use_ids
+                    .get(&task.task_id)
+                    .map(|card| card.tool_use_id.clone())
+            })
         })
         .collect();
     *app.background_tasks_mut() = parsed;

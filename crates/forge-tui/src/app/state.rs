@@ -35,9 +35,9 @@ pub use types::{
     MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus,
     RecentSessionInfo, RenderCacheBudget, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry,
     ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
-    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
-    SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageState,
-    UsageWindow, WorkflowEntry, WorkflowStatus,
+    SessionTaskCard, SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState,
+    SubagentChildEntry, SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot,
+    UsageSourceKind, UsageState, UsageWindow, WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,

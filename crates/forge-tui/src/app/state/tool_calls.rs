@@ -302,12 +302,17 @@ impl super::App {
         &mut self.active_bucket_mut().background_tasks
     }
 
-    /// Record a session-scoped `task_id` -> `tool_use_id` at
-    /// `task_started`, so a task that outlives its turn stays resolvable
-    /// after the turn-scoped map is wiped (see
-    /// `UiSession::session_task_tool_use_ids`).
+    /// Record a session-scoped mapping at `task_started`, capturing what the
+    /// task's tool card looked like then - so a task that outlives its turn
+    /// stays resolvable after the turn-scoped map is wiped, and the row glyph
+    /// can answer from the recorded facts instead of re-reading the history
+    /// (see `UiSession::session_task_tool_use_ids`).
     pub(crate) fn insert_session_task_mapping(&mut self, task_id: String, tool_use_id: String) {
-        self.active_bucket_mut().session_task_tool_use_ids.insert(task_id, tool_use_id);
+        let card = match self.active_session() {
+            Some(session) => crate::app::processes::card_facts(session, &tool_use_id),
+            None => crate::app::state::types::SessionTaskCard::unseen(tool_use_id),
+        };
+        self.active_bucket_mut().session_task_tool_use_ids.insert(task_id, card);
     }
 
     /// Drop a session-scoped task mapping when the task reaches a

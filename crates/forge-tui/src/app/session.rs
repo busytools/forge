@@ -16,7 +16,8 @@ use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotSt
 use crate::app::state::types::{
     BackgroundTask, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
     MonitorEntry, PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState,
-    SessionUsageState, StopHookSummaryState, TodoItem, ToolCallScope, UsageState, WorkflowEntry,
+    SessionTaskCard, SessionUsageState, StopHookSummaryState, TodoItem, ToolCallScope, UsageState,
+    WorkflowEntry,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TurnNoticeRef};
@@ -316,20 +317,21 @@ pub struct UiSession {
     /// background tasks outlive the turn that spawned them.
     pub background_tasks: Vec<BackgroundTask>,
 
-    /// Session-scoped `task_id` -> `tool_use_id`, mirroring
-    /// `SessionTurnState::task_tool_use_ids` but surviving turn
-    /// finalisation. Populated at `task_started` (when the mapping is live);
-    /// the turn-scoped copy is wiped every turn-complete, so surfaces driven
-    /// by the session-scoped `background_tasks` registry - SUBAGENTS
-    /// backgrounded-agent liveness and the PROCESSES `local_bash` feed -
-    /// resolve a task that outlived its turn through this map instead. Both
-    /// consumers INTERSECT it with the registry (the authoritative gate), so
-    /// a stale entry is inert, never a phantom live row. Cleanup is split by
+    /// Session-scoped `task_id` -> its tool card's facts, mirroring
+    /// `SessionTurnState::task_tool_use_ids` but surviving turn finalisation.
+    /// Populated at `task_started` (when the mapping is live), capturing what
+    /// the card looked like then; the turn-scoped copy is wiped every
+    /// turn-complete, so surfaces driven by the session-scoped
+    /// `background_tasks` registry - SUBAGENTS backgrounded-agent liveness,
+    /// the PROCESSES `local_bash` feed and the Projects-pane row glyph -
+    /// resolve a task that outlived its turn through this map instead. All of
+    /// them INTERSECT it with the registry (the authoritative gate), so a
+    /// stale entry is inert, never a phantom live row. Cleanup is split by
     /// kind: an agent's entry is dropped at its `task_notification`; a
     /// rostered non-agent's when it leaves `background_tasks` (the roster
     /// diff). An entry for a task that never enters the roster and gets no
     /// `task_notification` persists until session reset - bounded and inert.
-    pub session_task_tool_use_ids: std::collections::HashMap<String, String>,
+    pub session_task_tool_use_ids: std::collections::HashMap<String, SessionTaskCard>,
 
     /// Agent-kind tasks this session saw backgrounded and that no
     /// terminal `task_updated` / `task_notification` has cleared. The
@@ -558,20 +560,13 @@ impl UiSession {
     /// never turn for work that renders nowhere. Drives the Projects-pane
     /// activity spinner alongside the turn-driven lifecycle state.
     pub fn has_live_background_work(&self) -> bool {
-        if self.background_tasks.is_empty() {
-            return false;
-        }
-        // The command join is only needed for a `local_bash`; the
-        // message-driven kinds answer from the roster alone.
-        let command_by_task_id =
-            if self.background_tasks.iter().any(|task| task.task_type == "local_bash") {
-                crate::app::processes::session_command_by_task_id(self)
-            } else {
-                std::collections::HashMap::new()
-            };
-        self.background_tasks
-            .iter()
-            .any(|task| crate::app::processes::inspector_draws_row(task, &command_by_task_id))
+        self.background_tasks.iter().any(|task| {
+            crate::app::processes::inspector_draws_row(
+                task,
+                &self.session_task_tool_use_ids,
+                &self.workflows,
+            )
+        })
     }
 
     /// Drop the CLI-fed background-task registry, its task-id ->
@@ -603,12 +598,16 @@ impl UiSession {
             .session_task_tool_use_ids
             .iter()
             .filter(|(task_id, _)| task_ids.contains(task_id.as_str()))
-            .map(|(_, tool_use_id)| tool_use_id.as_str())
+            .map(|(_, card)| card.tool_use_id.as_str())
             .collect();
         alive.extend(
             self.backgrounded_roots
                 .iter()
-                .filter(|id| self.session_task_tool_use_ids.values().any(|v| v == *id))
+                .filter(|id| {
+                    self.session_task_tool_use_ids
+                        .values()
+                        .any(|card| card.tool_use_id.as_str() == **id)
+                })
                 .map(String::as_str),
         );
         alive
@@ -751,10 +750,9 @@ impl UiSession {
 /// in-progress turn (`Running` / `Spawning`), or an otherwise-Idle session
 /// with backgrounded work that draws an Inspector row. Attention /
 /// AuthRequired / Failed keep their own glyph, so the promotion is over
-/// the Idle bullet only. Shared
-/// by the row glyph (`glyph_for_lifecycle`) and the frame-tick gate
-/// (`App::shows_activity`) so the two never disagree about what
-/// animates.
+/// the Idle bullet only. Shared by the row glyph (`glyph_for_lifecycle`)
+/// and the frame-tick gate (`App::shows_activity`) so the two never
+/// disagree about what animates.
 pub fn session_shows_spinner(lifecycle: SessionLifecycleState, has_background_work: bool) -> bool {
     matches!(lifecycle, SessionLifecycleState::Running | SessionLifecycleState::Spawning)
         || (matches!(lifecycle, SessionLifecycleState::Idle) && has_background_work)
@@ -952,6 +950,7 @@ mod tests {
 
     use super::UiSession;
     use crate::app::App;
+    use crate::app::state::types::SessionTaskCard;
 
     /// `clear_runtime_identity` is the mirror-clear choke point for a
     /// hard teardown; the observed-assistant-model mirror must leave
@@ -1010,9 +1009,10 @@ mod tests {
     }
 
     /// The registry lists only currently-live backgrounded tasks, but the
-    /// spinner follows the narrower question the Inspector answers - is a
-    /// row painted for it? A bash whose `task_started` mapping never
-    /// resolved draws no PROCESSES row, and an unrouted kind draws nowhere.
+    /// spinner follows the narrower question the Inspector answers - is a row
+    /// painted for it? Every section paints from the task's tool card, so a
+    /// rostered task whose card forge never saw draws nothing whatever its
+    /// kind, and so does a kind with no section at all.
     #[test]
     fn has_live_background_work_follows_the_inspector_row() {
         use crate::app::state::types::BackgroundTask;
@@ -1022,21 +1022,58 @@ mod tests {
             task_type: task_type.to_owned(),
             description: "cargo build".to_owned(),
         };
+        // A card forge saw, with the wire command a bash row needs.
+        let seen = |tool_use_id: &str, command: Option<&str>| SessionTaskCard {
+            tool_use_id: tool_use_id.to_owned(),
+            card_seen: true,
+            command: command.map(str::to_owned),
+        };
         let mut session = super::UiSession::new(forge_workspace::SessionKey::from_session_id("bg"));
         assert!(!session.has_live_background_work(), "empty registry is not live work");
 
         session.background_tasks.push(task("t1", "local_bash"));
         assert!(
             !session.has_live_background_work(),
-            "a bash with no resolved command paints no PROCESSES row",
+            "a bash with no card behind it paints no PROCESSES row",
+        );
+
+        session.session_task_tool_use_ids.insert("t1".to_owned(), seen("tu-1", None));
+        assert!(
+            !session.has_live_background_work(),
+            "a bash whose card carries no command paints no PROCESSES row",
+        );
+
+        session
+            .session_task_tool_use_ids
+            .insert("t1".to_owned(), seen("tu-1", Some("cargo build")));
+        assert!(session.has_live_background_work(), "a drawn bash row keeps the spinner on");
+
+        session.background_tasks.clear();
+        session.session_task_tool_use_ids.clear();
+        session.background_tasks.push(task("t2", "local_agent"));
+        assert!(
+            !session.has_live_background_work(),
+            "an agent with no card behind it paints in no section, so it must not spin either",
+        );
+
+        session
+            .session_task_tool_use_ids
+            .insert("t2".to_owned(), SessionTaskCard::unseen("tu-2".to_owned()));
+        assert!(
+            !session.has_live_background_work(),
+            "a mapping whose card was never found paints in no section either",
+        );
+
+        session.session_task_tool_use_ids.insert("t2".to_owned(), seen("tu-2", None));
+        assert!(
+            session.has_live_background_work(),
+            "an agent row paints from its card, which this one has",
         );
 
         session.background_tasks.clear();
-        session.background_tasks.push(task("t2", "local_agent"));
-        assert!(session.has_live_background_work(), "an agent row paints off the message stream");
-
-        session.background_tasks.clear();
+        session.session_task_tool_use_ids.clear();
         session.background_tasks.push(task("t3", "local_monitor"));
+        session.session_task_tool_use_ids.insert("t3".to_owned(), seen("tu-3", None));
         assert!(
             !session.has_live_background_work(),
             "an unrouted kind renders in no Inspector section",
@@ -1060,7 +1097,9 @@ mod tests {
                 task_type: task_type.to_owned(),
                 description: String::new(),
             });
-            session.session_task_tool_use_ids.insert(task_id.to_owned(), format!("tu-{task_id}"));
+            session
+                .session_task_tool_use_ids
+                .insert(task_id.to_owned(), SessionTaskCard::unseen(format!("tu-{task_id}")));
         }
         // Roster row with no session-map entry: excluded (unresolvable).
         session.background_tasks.push(BackgroundTask {
@@ -1069,7 +1108,9 @@ mod tests {
             description: String::new(),
         });
         // Session-map entry with no roster row: excluded (already drained).
-        session.session_task_tool_use_ids.insert("task-stale".to_owned(), "tu-stale".to_owned());
+        session
+            .session_task_tool_use_ids
+            .insert("task-stale".to_owned(), SessionTaskCard::unseen("tu-stale".to_owned()));
 
         let mut got: Vec<&str> = session.backgrounded_alive_tool_use_ids().into_iter().collect();
         got.sort_unstable();

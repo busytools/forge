@@ -1141,6 +1141,7 @@ mod teardown_clears_background_registry_tests {
     use crate::app::App;
     use crate::app::BackgroundTask;
     use crate::app::session::UiSession;
+    use crate::app::state::types::SessionTaskCard;
     use forge_workspace::SessionKey;
 
     fn seed_task(bucket: &mut UiSession) {
@@ -1149,7 +1150,9 @@ mod teardown_clears_background_registry_tests {
             task_type: "local_bash".to_owned(),
             description: "gh run watch".to_owned(),
         });
-        bucket.session_task_tool_use_ids.insert("t1".to_owned(), "tc-1".to_owned());
+        bucket
+            .session_task_tool_use_ids
+            .insert("t1".to_owned(), SessionTaskCard::unseen("tc-1".to_owned()));
     }
 
     /// A background (non-active) session that fails to connect while a
@@ -1173,7 +1176,6 @@ mod teardown_clears_background_registry_tests {
         handle_connection_failed_event(&mut app, &key, "connection refused");
 
         let bucket = app.sessions.get(&key).expect("bucket survives as a Failed shell");
-        assert!(!bucket.has_live_background_work(), "background_tasks cleared on teardown");
         assert!(bucket.background_tasks.is_empty(), "roster cleared on teardown");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
@@ -1188,7 +1190,6 @@ mod teardown_clears_background_registry_tests {
         handle_connection_failed_event(&mut app, &key, "connection refused");
 
         let bucket = app.sessions.get(&key).expect("bucket");
-        assert!(!bucket.has_live_background_work(), "background_tasks cleared on teardown");
         assert!(bucket.background_tasks.is_empty(), "roster cleared on teardown");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
@@ -1212,7 +1213,6 @@ mod teardown_clears_background_registry_tests {
         handle_auth_required_event(&mut app, &key, "oauth".to_owned(), "Log in".to_owned());
 
         let bucket = app.sessions.get(&key).expect("bucket");
-        assert!(!bucket.has_live_background_work(), "auth-required clears background_tasks");
         assert!(bucket.background_tasks.is_empty(), "roster cleared on auth-required");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
@@ -1267,7 +1267,6 @@ mod teardown_clears_background_registry_tests {
         handle_auth_required_event(&mut app, &key, "oauth".to_owned(), "Log in".to_owned());
 
         let bucket = app.sessions.get(&key).expect("bucket");
-        assert!(!bucket.has_live_background_work(), "auth-required clears background_tasks");
         assert!(bucket.background_tasks.is_empty(), "roster cleared on auth-required");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }

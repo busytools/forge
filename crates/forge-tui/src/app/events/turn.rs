@@ -950,6 +950,7 @@ fn push_turn_error_message(
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::app::state::types::SessionTaskCard;
 
     fn seed_bucket(app: &mut App, id: &str, project: &str) -> SessionKey {
         let key = SessionKey::from_str_for_test(id);
@@ -1364,7 +1365,10 @@ mod tests {
         let mut bg_session = UiSession::new(bg_key.clone());
         bg_session.messages.push(bg_tool_message("tu-bg", model::ToolCallStatus::InProgress));
         bg_session.messages.push(bg_tool_message("tu-ord", model::ToolCallStatus::InProgress));
-        bg_session.session_task_tool_use_ids.insert("task-bg".to_owned(), "tu-bg".to_owned());
+        bg_session.session_task_tool_use_ids.insert(
+            "task-bg".to_owned(),
+            SessionTaskCard { tool_use_id: "tu-bg".to_owned(), card_seen: true, command: None },
+        );
         bg_session.background_tasks.push(BackgroundTask {
             task_id: "task-bg".to_owned(),
             task_type: "local_bash".to_owned(),
