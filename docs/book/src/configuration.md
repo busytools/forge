@@ -260,17 +260,12 @@ load, naming the key and the value.
 desktop-notification escapes. Detection reads `TERM_PROGRAM`,
 `ITERM_SESSION_ID` and `TERM` - three signals because a multiplexer
 between forge and the terminal can drop some while forwarding others.
-`TERM` counts only when it reads `xterm-ghostty`: shpool drops
-`TERM_PROGRAM` but forwards `TERM`, so that value is how Ghostty is
-identified there. Those variables describe the terminal at the far
-end of the pipe and say nothing about what forwards to it: a
-multiplexer can also strip the escape while passing the environment
-through unchanged (shpool forwards OSC 9 through unchanged; tmux
-drops the notification form; dtach forwards nothing it does not know),
-so the default notification channel ends up silent rather than
-degraded there. When the escape does arrive, its banner shows while
-Ghostty is not the frontmost app and is downgraded to a dock bounce
-when it is.
+`TERM` counts only when it reads `xterm-ghostty`. Those variables
+describe the terminal at the far end of the pipe and say nothing about
+what forwards to it, so the default notification channel ends up
+silent rather than degraded there. When the escape does arrive, its
+banner shows while Ghostty is not the frontmost app and is downgraded
+to a dock bounce when it is.
 
 `auto` trusts that detection. `off` makes forge treat OSC 9 as
 unavailable and fall back to what does not cross the terminal: the
@@ -281,6 +276,24 @@ itself: the escape is sent regardless of detection. Between them the
 key covers a setup where the escape is emitted but stripped, or
 supported but undetected, however that happens; it is config, not
 per-multiplexer code.
+
+Ghostty with no multiplexer sets `TERM_PROGRAM=ghostty`, so detection
+is true and the banner renders. Ghostty through shpool is why `TERM`
+is read at all: shpool does not carry `TERM_PROGRAM` into the pane,
+and it forwards OSC 9 (measured 2026-09-12 on shpool 0.11.0), so the
+banner renders there too.
+
+Under zellij and GNU screen, `TERM_PROGRAM` reaches the pane, so
+detection was already true, but an OSC 9 emitted inside does not reach
+the outer pty (measured 2026-08-29). The banner does not appear there
+and never did, which is what `off` is for. tmux drops the OSC 9
+notification form and rewrites `TERM` away from `xterm-ghostty`, so it
+is neither detected nor rendered; dtach forwards nothing it does not
+know.
+
+Detection can also read true without a banner: a `TERM=xterm-ghostty`
+exported by a shell profile, or a session manager that freezes `TERM`
+so a reattach from another terminal keeps it. `off` is the remedy.
 
 `launchpad_spinner` is accepted as an alias for `spinner`.
 
