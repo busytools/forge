@@ -3432,7 +3432,9 @@ mod tests {
         app.sessions.get_mut(&lead_key).expect("lead bucket").background_tasks.push(
             BackgroundTask {
                 task_id: "t1".to_owned(),
-                task_type: "local_bash".to_owned(),
+                // An agent kind: the row glyph follows the Inspector's draw
+                // decision, and a drawn bash would need its resolved command.
+                task_type: "local_agent".to_owned(),
                 description: "cargo build".to_owned(),
             },
         );
@@ -3673,7 +3675,9 @@ mod tests {
         worker_session.lifecycle_state = SessionLifecycleState::Idle;
         worker_session.background_tasks.push(BackgroundTask {
             task_id: "t1".to_owned(),
-            task_type: "local_bash".to_owned(),
+            // An agent kind: the row glyph follows the Inspector's draw
+            // decision, and a drawn bash would need its resolved command.
+            task_type: "local_agent".to_owned(),
             description: "gh run watch".to_owned(),
         });
         app.sessions.insert(worker_session_key, worker_session);

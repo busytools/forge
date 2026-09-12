@@ -1707,10 +1707,7 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
     // and needs no registry backstop). An unrecognised kind renders
     // nowhere - warn so a renamed CLI kind is caught rather than silent.
     for task in &parsed {
-        if !matches!(
-            task.task_type.as_str(),
-            "local_bash" | "agent" | "local_agent" | "local_workflow" | "workflow"
-        ) {
+        if !task.routes_to_inspector_section() {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "background_task_unrouted_kind",

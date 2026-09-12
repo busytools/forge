@@ -551,13 +551,27 @@ impl UiSession {
     }
 
     /// True while the session has a live backgrounded task (bash / agent /
-    /// workflow). The CLI keeps `background_tasks` to the currently-live
-    /// set, replacing it wholesale on each `background_tasks_changed`, so a
-    /// non-empty registry means work is happening even after the spawning
-    /// turn has completed. Drives the Projects-pane activity spinner
-    /// alongside the turn-driven lifecycle state.
+    /// workflow) that the Inspector will paint a row for. The CLI keeps
+    /// `background_tasks` to the currently-live set, replacing it wholesale
+    /// on each `background_tasks_changed`; `inspector_draws_row` narrows
+    /// that to the roster entries that reach a section, so the spinner can
+    /// never turn for work that renders nowhere. Drives the Projects-pane
+    /// activity spinner alongside the turn-driven lifecycle state.
     pub fn has_live_background_work(&self) -> bool {
-        !self.background_tasks.is_empty()
+        if self.background_tasks.is_empty() {
+            return false;
+        }
+        // The command join is only needed for a `local_bash`; the
+        // message-driven kinds answer from the roster alone.
+        let command_by_task_id =
+            if self.background_tasks.iter().any(|task| task.task_type == "local_bash") {
+                crate::app::processes::session_command_by_task_id(self)
+            } else {
+                std::collections::HashMap::new()
+            };
+        self.background_tasks
+            .iter()
+            .any(|task| crate::app::processes::inspector_draws_row(task, &command_by_task_id))
     }
 
     /// Drop the CLI-fed background-task registry, its task-id ->
@@ -735,8 +749,9 @@ impl UiSession {
 
 /// Whether a session's Projects-pane row shows the activity spinner: an
 /// in-progress turn (`Running` / `Spawning`), or an otherwise-Idle session
-/// with a live backgrounded task. Attention / AuthRequired / Failed keep
-/// their own glyph, so the promotion is over the Idle bullet only. Shared
+/// with backgrounded work that draws an Inspector row. Attention /
+/// AuthRequired / Failed keep their own glyph, so the promotion is over
+/// the Idle bullet only. Shared
 /// by the row glyph (`glyph_for_lifecycle`) and the frame-tick gate
 /// (`App::shows_activity`) so the two never disagree about what
 /// animates.
@@ -994,23 +1009,38 @@ mod tests {
         assert_eq!(app.files_accessed(), 3);
     }
 
-    /// The `background_tasks` registry lists only currently-live
-    /// backgrounded tasks (the CLI replaces it wholesale on each
-    /// `background_tasks_changed`), so a non-empty registry is the
-    /// "session is doing background work" signal the Projects pane reads.
+    /// The registry lists only currently-live backgrounded tasks, but the
+    /// spinner follows the narrower question the Inspector answers - is a
+    /// row painted for it? A bash whose `task_started` mapping never
+    /// resolved draws no PROCESSES row, and an unrouted kind draws nowhere.
     #[test]
-    fn has_live_background_work_tracks_registry_emptiness() {
+    fn has_live_background_work_follows_the_inspector_row() {
         use crate::app::state::types::BackgroundTask;
 
+        let task = |task_id: &str, task_type: &str| BackgroundTask {
+            task_id: task_id.to_owned(),
+            task_type: task_type.to_owned(),
+            description: "cargo build".to_owned(),
+        };
         let mut session = super::UiSession::new(forge_workspace::SessionKey::from_session_id("bg"));
         assert!(!session.has_live_background_work(), "empty registry is not live work");
 
-        session.background_tasks.push(BackgroundTask {
-            task_id: "t1".to_owned(),
-            task_type: "local_bash".to_owned(),
-            description: "cargo build".to_owned(),
-        });
-        assert!(session.has_live_background_work(), "a live backgrounded task is live work");
+        session.background_tasks.push(task("t1", "local_bash"));
+        assert!(
+            !session.has_live_background_work(),
+            "a bash with no resolved command paints no PROCESSES row",
+        );
+
+        session.background_tasks.clear();
+        session.background_tasks.push(task("t2", "local_agent"));
+        assert!(session.has_live_background_work(), "an agent row paints off the message stream");
+
+        session.background_tasks.clear();
+        session.background_tasks.push(task("t3", "local_monitor"));
+        assert!(
+            !session.has_live_background_work(),
+            "an unrouted kind renders in no Inspector section",
+        );
     }
 
     /// The backgrounded-alive set resolves every task kind (bash, agent,

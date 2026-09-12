@@ -225,7 +225,9 @@ pub(crate) fn wire_alive_tool_calls(
 /// session-scoped task map (`task_id` -> `tool_use_id`, survives turn
 /// finalisation) with each tool call's `raw_input.command`. Used to dedup
 /// the backgrounded-`local_bash` feed against OS-scan rows.
-fn session_command_by_task_id(session: &crate::app::session::UiSession) -> HashMap<String, String> {
+pub(crate) fn session_command_by_task_id(
+    session: &crate::app::session::UiSession,
+) -> HashMap<String, String> {
     let command_by_tool_use: HashMap<&str, &str> = session
         .messages
         .iter()
@@ -271,11 +273,30 @@ pub(crate) fn live_local_bash_commands(session: &crate::app::session::UiSession)
         .collect()
 }
 
+/// Whether the Inspector paints a row for one rostered background task.
+/// A `local_bash` needs its wire command resolved: that is what tells
+/// whether the OS walk already covers the process, and it arrives through
+/// the same `task_started` mapping the row is built from. The agent and
+/// workflow kinds paint from the message stream, so a rostered entry of
+/// either is drawn while its card lives. An unrouted kind paints nowhere.
+///
+/// One predicate for the PROCESSES feed, the Projects-pane row glyph and
+/// the frame-tick gate, so a spinner can never outrun a drawable row.
+pub(crate) fn inspector_draws_row(
+    task: &BackgroundTask,
+    command_by_task_id: &HashMap<String, String>,
+) -> bool {
+    if !task.routes_to_inspector_section() {
+        return false;
+    }
+    task.task_type != "local_bash" || command_by_task_id.contains_key(&task.task_id)
+}
+
 /// Synthesise PROCESSES rows for CLI-registry backgrounded `local_bash`
 /// the OS scan hasn't surfaced. Skips a task whose command already
-/// substring-matches a scanned process (the OS walk covers it) or whose
-/// command is unresolvable from the session map (no `task_started` mapping
-/// recorded); non-`local_bash` kinds route to SUBAGENTS / WORKFLOWS.
+/// substring-matches a scanned process (the OS walk covers it) or which
+/// [`inspector_draws_row`] rejects for want of a resolved command;
+/// non-`local_bash` kinds route to SUBAGENTS / WORKFLOWS.
 fn background_bash_rows(
     background_tasks: &[BackgroundTask],
     command_by_task_id: &HashMap<String, String>,
@@ -283,7 +304,9 @@ fn background_bash_rows(
 ) -> Vec<ProcessRow> {
     background_tasks
         .iter()
-        .filter(|task| task.task_type == "local_bash")
+        .filter(|task| {
+            task.task_type == "local_bash" && inspector_draws_row(task, command_by_task_id)
+        })
         .filter_map(|task| {
             let command = command_by_task_id.get(&task.task_id)?;
             let has_os_row = snapshot.is_some_and(|snapshot| {
@@ -1327,6 +1350,75 @@ mod tests {
             ProcessSnapshot { processes: vec![entry], scanned_at: std::time::SystemTime::now() };
         let rows = background_bash_rows(&tasks, &HashMap::new(), Some(&snapshot));
         assert!(rows.is_empty(), "unresolved task must not double the OS row; got {rows:?}");
+    }
+
+    /// Reproduce-first: a rostered bash whose `task_started` mapping never
+    /// resolved draws no PROCESSES row, so the spinner it promotes explains
+    /// nothing. The glyph reads the feed's own predicate, so it goes quiet.
+    #[test]
+    fn rostered_bash_with_no_resolved_command_promotes_no_spinner() {
+        use crate::app::App;
+
+        let mut app = App::test_default();
+        *app.background_tasks_mut() = vec![bg_task("task-orphan", "local_bash", "watch CI")];
+
+        let session = app.active_session().expect("active session");
+        let commands = session_command_by_task_id(session);
+        assert!(
+            background_bash_rows(&session.background_tasks, &commands, None).is_empty(),
+            "precondition: with no resolved command the feed paints no row",
+        );
+        assert!(
+            !session.has_live_background_work(),
+            "a roster entry that renders in no section must not spin the project row",
+        );
+    }
+
+    /// The other half: a rostered bash the feed does paint keeps promoting
+    /// the spinner, so the narrowing cannot go quiet on drawn work.
+    #[test]
+    fn rostered_bash_the_feed_draws_still_promotes_the_spinner() {
+        use crate::app::{App, ChatMessage};
+
+        let mut app = App::test_default();
+        let bash = fake_tool_call_info(
+            "tu-bash",
+            "Bash",
+            json!({ "command": "gh run watch 123 --exit-status", "run_in_background": true }),
+        );
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash))],
+        ));
+        app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
+        *app.background_tasks_mut() = vec![bg_task("task-bash", "local_bash", "watch CI")];
+
+        let session = app.active_session().expect("active session");
+        let commands = session_command_by_task_id(session);
+        assert_eq!(
+            background_bash_rows(&session.background_tasks, &commands, None).len(),
+            1,
+            "precondition: a resolved command paints a row",
+        );
+        assert!(
+            session.has_live_background_work(),
+            "a roster entry the feed draws must keep the project row spinning",
+        );
+    }
+
+    /// A kind the Inspector has no section for renders nowhere, so it
+    /// promotes no spinner either - the set the drift warning names.
+    #[test]
+    fn rostered_task_of_an_unrouted_kind_promotes_no_spinner() {
+        use crate::app::App;
+
+        let mut app = App::test_default();
+        *app.background_tasks_mut() = vec![bg_task("task-unknown", "local_monitor", "watch")];
+
+        assert!(
+            !app.active_session().expect("active session").has_live_background_work(),
+            "an unrouted kind renders in no Inspector section",
+        );
     }
 
     #[test]

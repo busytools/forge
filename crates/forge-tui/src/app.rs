@@ -1577,12 +1577,14 @@ mod tests {
         // Idle with no background work: nothing to animate.
         assert!(!app.shows_activity(), "idle with no background work must not animate");
 
-        // A live backgrounded task promotes the gate so the frame ticker
-        // keeps advancing for a row that's active only because of it.
+        // A live backgrounded task the Inspector draws promotes the gate so
+        // the frame ticker keeps advancing for a row that's active only
+        // because of it. An agent kind, because a drawn bash needs the
+        // `task_started` mapping that resolves its wire command.
         app.sessions.get_mut(&key).expect("bucket").background_tasks.push(
             crate::app::BackgroundTask {
                 task_id: "t1".to_owned(),
-                task_type: "local_bash".to_owned(),
+                task_type: "local_agent".to_owned(),
                 description: "cargo build".to_owned(),
             },
         );
@@ -1605,7 +1607,7 @@ mod tests {
         session.lifecycle_state = SessionLifecycleState::Attention;
         session.background_tasks.push(crate::app::BackgroundTask {
             task_id: "t1".to_owned(),
-            task_type: "local_bash".to_owned(),
+            task_type: "local_agent".to_owned(),
             description: "gh run watch".to_owned(),
         });
         app.sessions.insert(key.clone(), session);

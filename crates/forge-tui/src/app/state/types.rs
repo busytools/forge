@@ -143,6 +143,21 @@ pub struct BackgroundTask {
     pub description: String,
 }
 
+impl BackgroundTask {
+    /// Whether this task's kind routes to an Inspector section at all:
+    /// `local_bash` to PROCESSES, an agent kind to SUBAGENTS, a workflow
+    /// kind to WORKFLOWS. One list, shared by the drift warning in
+    /// `handle_background_tasks_changed` and the Projects-pane row glyph -
+    /// a kind the CLI renames on one side only renders nowhere while its
+    /// spinner keeps turning.
+    pub(crate) fn routes_to_inspector_section(&self) -> bool {
+        matches!(
+            self.task_type.as_str(),
+            "local_bash" | "agent" | "local_agent" | "local_workflow" | "workflow"
+        )
+    }
+}
+
 /// Kind of a schedule entry in the Inspector SCHEDULES section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScheduleKind {
