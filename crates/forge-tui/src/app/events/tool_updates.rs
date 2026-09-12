@@ -1140,6 +1140,19 @@ mod tests {
         for fixture in [Fixture::Execute, Fixture::Content] {
             for case in &cases {
                 if case.execute_only && fixture == Fixture::Content {
+                    // Prove the skip instead of trusting the flag: an
+                    // execute-only field must genuinely not apply here, or a
+                    // future case marked this way would silently lose its
+                    // content coverage.
+                    let mut app = app_with_tool(id, fixture, model::ToolCallStatus::InProgress);
+                    let layout_before = tool_call_block(&mut app).layout_epoch;
+                    handle_tool_call_update_session(&mut app, &case.update);
+                    assert_eq!(
+                        tool_call_block(&mut app).layout_epoch,
+                        layout_before,
+                        "{}: marked execute-only, but it applied on the content fixture",
+                        case.field
+                    );
                     continue;
                 }
                 let mut app = app_with_tool(id, fixture, model::ToolCallStatus::InProgress);
