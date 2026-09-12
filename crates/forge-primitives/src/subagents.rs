@@ -1,6 +1,8 @@
-//! Subagent declarations forwarded to the `claude` CLI via the
-//! `initialize` `control_request`'s `agents` field. Pure data - no
-//! callbacks.
+//! Subagent declaration shapes. Pure data - no callbacks.
+//!
+//! Nothing forwards these to the CLI: the `initialize`
+//! `control_request`'s `agents` field was the only path, and nothing
+//! builds one now.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -53,10 +55,6 @@ pub struct SubagentDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionMode>,
 }
-
-// Populate `SubagentDefinition` fields directly. A builder family
-// (`::new` / `with_*`) can be added when subagent registration
-// becomes a runtime feature with real callers.
 
 /// `CLAUDE.md` scope surfaced to a subagent. Wire shape:
 /// `Literal["user", "project", "local"]`.
