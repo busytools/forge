@@ -6,7 +6,8 @@
 slow-timeout = { period = "30s", terminate-after = 4 }
 
 # nextest's window for a finished test's stdout/stderr to close before marking
-# it leaky; raised to stop false-positive annotations under parallel load.
+# it leaky; widened from the 200ms default so a process that closes a few
+# seconds later is not annotated.
 leak-timeout = "10s"
 
 # Live capture runs against the real CLI, whose shutdown after stdin
