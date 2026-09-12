@@ -71,8 +71,9 @@ pub struct DeliveredNotification {
 ///    channels that can emit it suppress the desktop notification (and the
 ///    bell too, except on `iterm2_with_bell`), so a multiplexer that strips
 ///    the escape silently leaves nothing. The `[ui] notifications_osc9`
-///    forge.toml key forces that belief off: the Iterm2 channel regains
-///    bell + desktop, Ghostty keeps desktop only.
+///    forge.toml key forces that belief either way: `off` gives the Iterm2
+///    channel bell + desktop and Ghostty desktop only, `on` sends the
+///    escape regardless of detection.
 #[derive(Debug)]
 pub struct NotificationManager {
     terminal_focused: bool,
@@ -329,6 +330,7 @@ fn notification_plan(
 ) -> NotificationPlan {
     let osc9_available = match osc9_mode {
         Osc9NotificationMode::Auto => capabilities.osc9_notifications,
+        Osc9NotificationMode::On => true,
         Osc9NotificationMode::Off => false,
     };
     let osc9_text = osc9_available.then(|| text.osc9_line());
@@ -367,18 +369,23 @@ where
     I: IntoIterator<Item = (String, String)>,
 {
     let mut term_program = None::<String>;
+    let mut term = None::<String>;
     let mut iterm_session = false;
 
     for (key, value) in vars {
         match key.as_str() {
             "TERM_PROGRAM" => term_program = Some(value),
+            "TERM" => term = Some(value),
             "ITERM_SESSION_ID" if !value.is_empty() => iterm_session = true,
             _ => {}
         }
     }
 
-    let osc9_notifications =
-        matches!(term_program.as_deref(), Some("iTerm.app" | "ghostty")) || iterm_session;
+    // `TERM` is read because a multiplexer can drop `TERM_PROGRAM` while
+    // forwarding `TERM` unchanged, which is how shpool reaches Ghostty.
+    let osc9_notifications = matches!(term_program.as_deref(), Some("iTerm.app" | "ghostty"))
+        || matches!(term.as_deref(), Some("xterm-ghostty"))
+        || iterm_session;
     TerminalCapabilities { osc9_notifications }
 }
 
@@ -594,6 +601,28 @@ mod tests {
     }
 
     #[test]
+    fn detects_ghostty_via_term_when_term_program_is_absent() {
+        let capabilities =
+            terminal_capabilities_from_env([("TERM".to_owned(), "xterm-ghostty".to_owned())]);
+
+        assert!(
+            capabilities.osc9_notifications,
+            "TERM survives a multiplexer that drops TERM_PROGRAM",
+        );
+    }
+
+    #[test]
+    fn a_term_that_is_not_ghostty_does_not_advertise_osc9() {
+        let capabilities =
+            terminal_capabilities_from_env([("TERM".to_owned(), "xterm-256color".to_owned())]);
+
+        assert!(
+            !capabilities.osc9_notifications,
+            "only ghostty's TERM value counts, so this branch is not matching every TERM",
+        );
+    }
+
+    #[test]
     fn unsupported_term_does_not_advertise_osc9() {
         let capabilities =
             terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "wezterm".to_owned())]);
@@ -624,6 +653,42 @@ mod tests {
                 &fixture_text(),
             ),
             NotificationPlan { ring_bell: false, send_desktop: true, osc9_text: None }
+        );
+    }
+
+    #[test]
+    fn osc9_override_on_sends_osc9_from_iterm2_despite_negative_detection() {
+        assert_eq!(
+            notification_plan(
+                PreferredNotifChannel::Iterm2,
+                TerminalCapabilities { osc9_notifications: false },
+                Osc9NotificationMode::On,
+                &fixture_text(),
+            ),
+            NotificationPlan {
+                ring_bell: false,
+                send_desktop: false,
+                osc9_text: Some("companies - turn complete".to_owned()),
+            },
+            "On forces OSC 9 and suppresses both fallback channels, detection notwithstanding",
+        );
+    }
+
+    #[test]
+    fn osc9_override_on_sends_osc9_from_ghostty_despite_negative_detection() {
+        assert_eq!(
+            notification_plan(
+                PreferredNotifChannel::Ghostty,
+                TerminalCapabilities { osc9_notifications: false },
+                Osc9NotificationMode::On,
+                &fixture_text(),
+            ),
+            NotificationPlan {
+                ring_bell: false,
+                send_desktop: false,
+                osc9_text: Some("companies - turn complete".to_owned()),
+            },
+            "On forces OSC 9 and suppresses the desktop toast, detection notwithstanding",
         );
     }
 

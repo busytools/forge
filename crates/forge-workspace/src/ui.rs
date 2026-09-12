@@ -29,14 +29,14 @@ pub struct UiSettings {
     #[serde(default, deserialize_with = "deserialize_fps")]
     pub fps: RepaintCadence,
     /// Whether forge may send OSC 9 desktop-notification escapes:
-    /// `auto` (default) trusts the detected capability, `off` treats
-    /// OSC 9 as unavailable and falls back to what does not cross the
-    /// terminal: the Iterm2 channel gains the bell plus the OS-native
-    /// desktop notification, Ghostty keeps the desktop notification
-    /// only.
+    /// `auto` (default) trusts the detected capability, `on` forces the
+    /// escape on, `off` treats OSC 9 as unavailable and falls back to
+    /// what does not cross the terminal: the Iterm2 channel gains the
+    /// bell plus the OS-native desktop notification, Ghostty keeps the
+    /// desktop notification only.
     ///
-    /// Detection reads `TERM_PROGRAM` / `ITERM_SESSION_ID`, which
-    /// describe the terminal at the far end of the pipe and say
+    /// Detection reads `TERM_PROGRAM`, `ITERM_SESSION_ID` and `TERM`,
+    /// which describe the terminal at the far end of the pipe and say
     /// nothing about what forwards to it: a multiplexer can strip the
     /// escape while passing the environment through unchanged (shpool
     /// forwards OSC 9 through unchanged; tmux drops the notification
@@ -44,9 +44,9 @@ pub struct UiSettings {
     /// default notification channel silent rather than degraded
     /// there. A banner that does arrive shows while Ghostty is not
     /// the frontmost app and is downgraded to a dock bounce when it
-    /// is. This key serves any setup where the escape is emitted but
-    /// stripped, however the stripping happens, and is the seam:
-    /// serving another silent path is config here, not code.
+    /// is. `off` serves a setup where the escape is emitted but
+    /// stripped, and `on` the converse, a terminal that speaks OSC 9
+    /// without announcing itself; the seam is config here, not code.
     #[serde(default)]
     pub notifications_osc9: Osc9NotificationMode,
 }
@@ -58,6 +58,8 @@ pub enum Osc9NotificationMode {
     /// Trust the detected terminal capability.
     #[default]
     Auto,
+    /// Always send OSC 9, regardless of the detected capability.
+    On,
     /// Never send OSC 9; the plan falls back to bell and desktop.
     Off,
 }
@@ -70,8 +72,9 @@ impl<'de> Deserialize<'de> for Osc9NotificationMode {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "auto" => Ok(Self::Auto),
+            "on" => Ok(Self::On),
             "off" => Ok(Self::Off),
-            other => Err(serde::de::Error::unknown_variant(other, &["auto", "off"])),
+            other => Err(serde::de::Error::unknown_variant(other, &["auto", "on", "off"])),
         }
     }
 }
@@ -529,6 +532,12 @@ mod tests {
     }
 
     #[test]
+    fn notifications_osc9_parses_on() {
+        let parsed: UiSettings = toml::from_str("notifications_osc9 = \"on\"\n").expect("parse");
+        assert_eq!(parsed.notifications_osc9, Osc9NotificationMode::On);
+    }
+
+    #[test]
     fn notifications_osc9_parses_explicit_auto() {
         let parsed: UiSettings = toml::from_str("notifications_osc9 = \"auto\"\n").expect("parse");
         assert_eq!(parsed.notifications_osc9, Osc9NotificationMode::Auto);
@@ -547,6 +556,12 @@ mod tests {
             rendered.contains("notifications_osc9"),
             "the error must name the key, got: {rendered}"
         );
+        for accepted in ["`auto`", "`on`", "`off`"] {
+            assert!(
+                rendered.contains(accepted),
+                "the error must list {accepted} among the accepted values, got: {rendered}"
+            );
+        }
     }
 
     #[test]

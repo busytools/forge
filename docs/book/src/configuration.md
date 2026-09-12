@@ -246,7 +246,7 @@ as all defaults.
 |---|---|---|---|
 | `spinner` | string | `braille` | `braille`, `phase_of_moon`, `ember`, `bars_v`, `star`, `sparkle` |
 | `fps` | integer | `120` | 30 to 240 |
-| `notifications_osc9` | string | `auto` | `auto`, `off` |
+| `notifications_osc9` | string | `auto` | `auto`, `on`, `off` |
 
 `spinner` and `fps` are lenient, so a hand-edited typo does not stop
 forge booting. A `spinner` name forge does not recognise resolves to
@@ -257,21 +257,29 @@ and a non-integer `fps` resolves to the default.
 load, naming the key and the value.
 
 `notifications_osc9` governs whether forge sends OSC 9
-desktop-notification escapes. Detection reads `TERM_PROGRAM` /
-`ITERM_SESSION_ID`, which describe the terminal at the far end of the
-pipe and say nothing about what forwards to it: a multiplexer between
-forge and that terminal can strip the escape while passing the
-environment through unchanged (shpool forwards OSC 9 through
-unchanged; tmux drops the notification form; dtach forwards nothing
-it does not know), so the default notification channel ends up silent
-rather than degraded there. When the escape does arrive, its banner
-shows while Ghostty is not the frontmost app and is downgraded to a
-dock bounce when it is. `off` makes forge treat
-OSC 9 as unavailable and fall back to what does not cross the
-terminal: the Iterm2 channel gains the bell plus the OS-native
-desktop notification, Ghostty keeps the desktop notification only.
-The key serves any setup where the escape is emitted but stripped, however
-the stripping happens; it is config, not per-multiplexer code.
+desktop-notification escapes. Detection reads `TERM_PROGRAM`,
+`ITERM_SESSION_ID` and `TERM` - three signals because a multiplexer
+between forge and the terminal can drop some while forwarding others,
+and `TERM=xterm-ghostty` is what reaches Ghostty through one that
+drops `TERM_PROGRAM` (shpool). Those variables describe the terminal
+at the far end of the pipe and say nothing about what forwards to it:
+a multiplexer can also strip the escape while passing the environment
+through unchanged (shpool forwards OSC 9 through unchanged; tmux
+drops the notification form; dtach forwards nothing it does not know),
+so the default notification channel ends up silent rather than
+degraded there. When the escape does arrive, its banner shows while
+Ghostty is not the frontmost app and is downgraded to a dock bounce
+when it is.
+
+`auto` trusts that detection. `off` makes forge treat OSC 9 as
+unavailable and fall back to what does not cross the terminal: the
+Iterm2 channel gains the bell plus the OS-native desktop
+notification, Ghostty keeps the desktop notification only. `on` is
+the converse, for a terminal that speaks OSC 9 without announcing
+itself: the escape is sent regardless of detection. Between them the
+key covers a setup where the escape is emitted but stripped, or
+supported but undetected, however that happens; it is config, not
+per-multiplexer code.
 
 `launchpad_spinner` is accepted as an alias for `spinner`.
 
