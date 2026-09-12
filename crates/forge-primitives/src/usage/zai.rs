@@ -149,5 +149,4 @@ mod tests {
         assert!(!wrong_path.success);
         assert_eq!(wrong_path.code, Some(500));
     }
-
 }
