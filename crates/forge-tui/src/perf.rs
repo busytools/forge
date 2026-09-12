@@ -110,10 +110,13 @@ mod enabled {
     /// per-message leaf and must stay subject to the cap, or the cap
     /// stops bounding per-frame memory.
     ///
-    /// The criterion is the OUTERMOST framing span of a dominant leaf's
-    /// chain - `chat::update_heights` for `chat::measure_msg`, `chat::render`
-    /// for `tc::render_body` - since those two parents are what make a slow
-    /// frame attributable.
+    /// Each entry is the framing span bracketing a phase that dominates the
+    /// frame's cost: `chat::update_heights` around the height measure,
+    /// `chat::render` around the render. Each closes after the leaves inside
+    /// it have pushed, so a buffer filled by those leaves drops it - which is
+    /// what the exemption is for. `chat::update_heights` earns its place even
+    /// though `chat::render` encloses it: it closes first, so it is the one
+    /// an overflow loses.
     ///
     /// The match is a prefix, so the exempt set is wider than the criterion:
     /// `chat::render` also catches `chat::render_msgs` and
