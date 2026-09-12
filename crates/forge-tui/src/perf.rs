@@ -90,10 +90,11 @@ mod enabled {
     /// fires). 1024 spans/marks per frame is comfortably above the
     /// natural per-frame budget for active sessions with many
     /// visible messages + tool calls (observed up to ~250 per slow
-    /// frame in chats with 30+ messages). Parent spans (`frame::*`,
-    /// `ui::*`, `frame_total`) are always pushed regardless of cap
-    /// so the structural framing of a slow frame survives a
-    /// sub-event overflow; only the leaf sub-events drop at cap.
+    /// frame in chats with 30+ messages). Parent spans (every
+    /// `PARENT_SPAN_PREFIXES` match, plus `frame_total`) are always
+    /// pushed regardless of cap so the structural framing of a slow
+    /// frame survives a sub-event overflow; only the leaf sub-events
+    /// drop at cap.
     const FRAME_BUFFER_CAP: usize = 1024;
 
     /// Name prefixes for frame-level "parent" spans whose presence
@@ -102,8 +103,14 @@ mod enabled {
     /// scope (the bracketing `Timer` drops at end of block) and
     /// would otherwise be silently lost when sub-events fill the
     /// buffer first. Matches the emit sites in `app.rs`
-    /// (`frame::terminal_draw`) and `ui/chat_view.rs` (`ui::*`).
-    const PARENT_SPAN_PREFIXES: &[&str] = &["frame::", "ui::"];
+    /// (`frame::terminal_draw`), `ui/chat_view.rs` (`ui::*`) and
+    /// `ui/chat.rs` (`chat::render*`, `chat::update_heights`).
+    ///
+    /// Deliberately narrower than `chat::`: `chat::measure_msg` is a
+    /// per-message leaf and must stay subject to the cap, or the cap
+    /// stops bounding per-frame memory.
+    const PARENT_SPAN_PREFIXES: &[&str] =
+        &["frame::", "ui::", "chat::render", "chat::update_heights"];
 
     fn is_parent_span(name: &str) -> bool {
         name == "frame_total" || PARENT_SPAN_PREFIXES.iter().any(|p| name.starts_with(p))
@@ -342,10 +349,10 @@ mod enabled {
         let to_flush: Option<Vec<BufferedSample>> = FRAME_BUFFER.with(|b| {
             let mut buf = b.borrow_mut();
             let is_frame_total = name == "frame_total";
-            // Parent spans (`frame::*`, `ui::*`, `frame_total`) are
-            // exempt from the cap so the framing of a slow frame
-            // survives even when sub-events have already filled
-            // the buffer. Without this, a frame with 200+ chat /
+            // Parent spans (every `PARENT_SPAN_PREFIXES` match, plus
+            // `frame_total`) are exempt from the cap so the framing of
+            // a slow frame survives even when sub-events have already
+            // filled the buffer. Without this, a frame with 200+ chat /
             // tool-call sub-events plus its 5-10 pane parents
             // would silently lose the parents because parent
             // Timers drop at end of scope, after sub-events have
@@ -690,6 +697,44 @@ mod enabled {
         }
 
         #[test]
+        fn chat_framing_spans_survive_when_subevents_exceed_buffer_cap() {
+            // The chat framing spans are the parents of the dominant
+            // cost on slow frames. Without them the worst frames read as
+            // unattributed time inside `ui::chat`, so the exact chain
+            // needed to diagnose the tail is missing from precisely the
+            // frames that matter.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            // Fill the buffer past cap with leaf sub-events.
+            for _ in 0..(FRAME_BUFFER_CAP + 10) {
+                write_entry("msg::cache_miss", SampleKind::Mark, 0.0, None);
+            }
+            // Framing spans emit at end-of-frame, after the leaves have
+            // already filled the buffer.
+            write_entry("chat::update_heights", SampleKind::Duration, 100.0, None);
+            write_entry("chat::render", SampleKind::Duration, 105.0, None);
+            // Slow `frame_total` triggers the flush.
+            write_entry("frame_total", SampleKind::Duration, SLOW_FRAME_THRESHOLD_MS + 1.0, None);
+
+            close_log_file();
+            let lines = read_log_lines(tmp.path());
+
+            let metrics: Vec<String> = lines
+                .iter()
+                .filter_map(|line| {
+                    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+                    v.get("metric")?.as_str().map(str::to_owned)
+                })
+                .collect();
+
+            let has = |needle: &str| metrics.iter().any(|m| m == needle);
+            assert!(has("chat::update_heights"), "chat::update_heights missing from flushed batch");
+            assert!(has("chat::render"), "chat::render missing from flushed batch");
+        }
+
+        #[test]
         fn non_parent_subevents_capped_at_buffer_limit() {
             // Inverse contract for `parent_spans_survive_*`: non-
             // parent sub-events that overflow the cap MUST drop. A
@@ -725,6 +770,41 @@ mod enabled {
                 FRAME_BUFFER_CAP
             );
             assert_eq!(metrics.iter().filter(|m| *m == "frame_total").count(), 1);
+        }
+
+        #[test]
+        fn per_message_chat_leaf_stays_capped_under_a_chat_prefix_widening() {
+            // The framing exemption is deliberately narrower than
+            // `chat::`: `chat::measure_msg` fires once per visible
+            // message, so exempting it makes `FRAME_BUFFER_CAP`
+            // unbounded on a long chat. The neighbouring inverse test
+            // covers only `msg::` leaves, so it cannot catch a
+            // widening to the bare `chat::` prefix.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            for _ in 0..(FRAME_BUFFER_CAP + 10) {
+                write_entry("chat::measure_msg", SampleKind::Duration, 1.0, None);
+            }
+            write_entry("frame_total", SampleKind::Duration, SLOW_FRAME_THRESHOLD_MS + 1.0, None);
+
+            close_log_file();
+            let lines = read_log_lines(tmp.path());
+
+            let metrics: Vec<String> = lines
+                .iter()
+                .filter_map(|line| {
+                    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+                    v.get("metric")?.as_str().map(str::to_owned)
+                })
+                .collect();
+
+            assert_eq!(
+                metrics.iter().filter(|m| *m == "chat::measure_msg").count(),
+                FRAME_BUFFER_CAP,
+                "chat::measure_msg is a per-message leaf and must stay capped"
+            );
         }
 
         #[test]
