@@ -31,6 +31,7 @@ ansi-to-tui = { workspace = true }
 notify-rust = { workspace = true }
 pulldown-cmark = { workspace = true }
 ratatui = { workspace = true }
+ratatui-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 similar = { workspace = true }
