@@ -303,6 +303,44 @@ impl Workspace {
         }
     }
 
+    /// Fill in the display name on this workspace's conversation
+    /// subscriptions that have none, persisting each through the store.
+    /// Only unnamed records are touched: a conversation renamed since it
+    /// was subscribed keeps the stored name.
+    pub(crate) fn name_slack_conversation(&self, workspace: &str, conversation: &str, name: &str) {
+        let updated: Vec<SlackSubscription> = {
+            let mut subs = self.slack_subs.lock();
+            let mut updated = Vec::new();
+            for sub in subs.iter_mut() {
+                if sub.workspace != workspace {
+                    continue;
+                }
+                if let SlackSubscriptionTarget::Conversation { id, name: stored @ None, .. } =
+                    &mut sub.target
+                    && id.as_str() == conversation
+                {
+                    *stored = Some(name.to_owned());
+                    updated.push(sub.clone());
+                }
+            }
+            updated
+        };
+        if updated.is_empty() {
+            return;
+        }
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        for sub in &updated {
+            if let Err(error) = crate::store::slack::insert(db, sub) {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "writing a Slack conversation name failed",
+                );
+            }
+        }
+    }
+
     /// Whether the conversation (or the `__mentions__` stream) has a sweep
     /// cursor yet. The cursor belongs to the conversation and is shared by
     /// every owner watching it, so a second subscriber seeds only when
@@ -960,6 +998,11 @@ impl SlackHost for SlackSubsystemHost {
         ws.slack_connected.lock().insert(workspace.to_owned(), connected);
     }
 
+    fn name_conversation(&self, workspace: &str, conversation: &str, name: &str) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.name_slack_conversation(workspace, conversation, name);
+    }
+
     fn auto_subscribe(&self, workspace: &str, message: &SlackMessage) -> bool {
         let Some(ws) = self.0.upgrade() else { return false };
         ws.auto_subscribe_slack_conversation(
@@ -1203,9 +1246,74 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        assert_eq!(named.len(), 3, "every record contributed a name slot: {named:?}");
         assert!(
             named.iter().all(Option::is_none),
             "no record invents a name from the id or an empty label: {named:?}",
+        );
+    }
+
+    /// The delivered message's label is the only name source for a
+    /// conversation a mention pulled us into but the user never joined:
+    /// `users.conversations` is membership-scoped, so the sweep can never
+    /// name that one. Drives the trait seam rather than the helper, so a
+    /// `None` handed to it cannot pass unnoticed.
+    #[test]
+    fn the_auto_subscribe_seam_names_the_pulled_in_conversation() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.add_slack_subscription(sub_mentions_for("forge", Some("tester")), true);
+        let host = SlackSubsystemHost::new(&ws);
+
+        let message = SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: "C9".to_owned(),
+            conversation_label: "granite-staging-alerts".to_owned(),
+            ts: "200.1".to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            text: "ping".to_owned(),
+            files: Vec::new(),
+        };
+        assert!(host.auto_subscribe("acme", &message), "the mention subscribes the conversation");
+
+        let named = ws
+            .slack_subscriptions_for_project("forge")
+            .into_iter()
+            .find_map(|sub| match sub.target {
+                SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C9" => Some(name),
+                _ => None,
+            });
+        assert_eq!(
+            named,
+            Some(Some("granite-staging-alerts".to_owned())),
+            "the search hit's label names the conversation at creation",
+        );
+    }
+
+    /// The sweep's backfill writes through to the store, so the name
+    /// survives the restart that produced the unnamed record.
+    #[test]
+    fn a_backfilled_conversation_name_reaches_the_store() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
+
+        ws.name_slack_conversation("acme", "C1", "ved-test");
+
+        let db = ws.db.lock();
+        let stored = crate::store::slack::list(db.as_ref().expect("db installed")).expect("list");
+        let named = stored.iter().find_map(|sub| match &sub.target {
+            SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => {
+                Some(name.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(
+            named,
+            Some(Some("ved-test".to_owned())),
+            "the backfilled name is persisted, not only held in memory",
         );
     }
 
