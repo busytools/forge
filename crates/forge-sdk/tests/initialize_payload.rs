@@ -40,10 +40,7 @@ async fn default_init_omits_conditional_fields() {
     assert!(req.get("hooks").is_some(), "hooks must be present");
     assert!(req["hooks"].is_null(), "hooks must be null when empty");
     // The conditional fields must NOT appear.
-    assert!(
-        req.get("agents").is_none(),
-        "agents must be omitted when no agents configured, got {req:?}"
-    );
+    assert!(req.get("agents").is_none(), "agents must never appear in the init body, got {req:?}");
     assert!(
         req.get("excludeDynamicSections").is_none(),
         "excludeDynamicSections must be omitted when no preset sets it, got {req:?}"
