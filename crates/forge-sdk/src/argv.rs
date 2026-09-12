@@ -103,10 +103,6 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
         args.push(hosts.config_argv());
     }
 
-    if let Some(sources) = &options.setting_sources {
-        args.push(format!("--setting-sources={}", sources.join(",")));
-    }
-
     for plugin in &options.plugins {
         match plugin {
             SdkPluginConfig::Local { path } => {

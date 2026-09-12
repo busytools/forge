@@ -12,7 +12,7 @@ use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
 // Pure-data option enums live in forge-primitives.
 use forge_primitives::subagents::SubagentEffort;
-pub use forge_primitives::{PermissionMode, SdkPluginConfig, SubagentDefinition, SystemPromptKind};
+pub use forge_primitives::{PermissionMode, SdkPluginConfig, SystemPromptKind};
 
 /// Per-line callback used by [`Options::tee_inbound`] and
 /// [`Options::tee_outbound`] to capture the wire bytes the SDK
@@ -68,9 +68,6 @@ pub struct Options {
     /// Tool names the model is allowed to invoke. Passed to the CLI as
     /// `--allowedTools <comma,list>`. Empty means "no explicit allowlist".
     pub allowed_tools: Vec<String>,
-    /// CLI `--setting-sources` value. When `None`, the CLI uses its own
-    /// default.
-    pub setting_sources: Option<Vec<String>>,
     /// Orthogonal permission-prompt tool. When set, passed as
     /// `--permission-prompt-tool <name>`.
     pub permission_prompt_tool_name: Option<String>,
@@ -79,11 +76,6 @@ pub struct Options {
     /// and checks the reported major version is at least the first
     /// component.
     pub minimum_cli_version: Option<String>,
-    /// Subagent definitions forwarded via the `initialize`
-    /// `control_request`'s `agents` field. Key is the subagent name
-    /// the model picks; value is the [`SubagentDefinition`]. Empty by
-    /// default.
-    pub subagents: HashMap<String, SubagentDefinition>,
     /// System prompt configuration. `None` = inherit CLI default.
     /// `Some` emits `--system-prompt`, `--system-prompt-file`, or
     /// `--append-system-prompt` depending on variant.
@@ -97,8 +89,6 @@ pub struct Options {
     pub plugins: Vec<SdkPluginConfig>,
     /// Environment variables added to the subprocess env.
     pub env: HashMap<String, String>,
-    /// Override `$USER` in the subprocess env.
-    pub user: Option<String>,
     /// Arbitrary forward flags - `{"flag": Some("v")}` emits
     /// `--flag v`, `{"flag": None}` emits a bare `--flag`.
     pub extra_args: HashMap<String, Option<String>>,
@@ -107,12 +97,6 @@ pub struct Options {
     /// for its origin on the subagent declaration shape, but the
     /// session-level effort uses the same wire enum).
     pub effort: Option<SubagentEffort>,
-    /// Internal stdout buffer upper bound. `None` = default 1 MiB.
-    pub max_buffer_size: Option<usize>,
-    /// Stderr line callback. When set, each line from the subprocess
-    /// stderr is forwarded to `callback(line)`. Drained in the
-    /// background so the pipe never blocks.
-    pub stderr: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     /// Inbound wire tee. When set, the SDK invokes
     /// `callback(line)` for every stream-json line read from the
     /// subprocess stdout BEFORE decoding. Used by
@@ -152,20 +136,15 @@ impl Default for Options {
             external_mcp_servers: HashMap::new(),
             hooks: Hooks::default(),
             allowed_tools: Vec::new(),
-            setting_sources: None,
             permission_prompt_tool_name: None,
             minimum_cli_version: Some("2.0.0".into()),
-            subagents: HashMap::new(),
             system_prompt: None,
             max_turns: None,
             session_id: None,
             plugins: Vec::new(),
             env: HashMap::new(),
-            user: None,
             extra_args: HashMap::new(),
             effort: None,
-            max_buffer_size: None,
-            stderr: None,
             tee_inbound: None,
             tee_outbound: None,
             settings: None,
@@ -280,20 +259,15 @@ impl std::fmt::Debug for Options {
             )
             .field("hooks", &self.hooks)
             .field("allowed_tools", &self.allowed_tools)
-            .field("setting_sources", &self.setting_sources)
             .field("permission_prompt_tool_name", &self.permission_prompt_tool_name)
             .field("minimum_cli_version", &self.minimum_cli_version)
-            .field("subagents", &format!("<{} subagents>", self.subagents.len()))
             .field("system_prompt", &self.system_prompt)
             .field("max_turns", &self.max_turns)
             .field("session_id", &self.session_id)
             .field("plugins", &self.plugins)
             .field("env", &format!("<{} vars>", self.env.len()))
-            .field("user", &self.user)
             .field("extra_args", &format!("<{} flags>", self.extra_args.len()))
             .field("effort", &self.effort)
-            .field("max_buffer_size", &self.max_buffer_size)
-            .field("stderr", &self.stderr.as_ref().map(|_| "<callback>"))
             .field("tee_inbound", &self.tee_inbound.as_ref().map(|_| "<callback>"))
             .field("tee_outbound", &self.tee_outbound.as_ref().map(|_| "<callback>"))
             .field("settings", &self.settings)
@@ -406,13 +380,6 @@ impl OptionsBuilder {
         self
     }
 
-    /// Register a subagent under `name`. Forwards to the CLI via the
-    /// `initialize` `control_request`'s `agents` field.
-    pub fn subagent(mut self, name: impl Into<String>, def: SubagentDefinition) -> Self {
-        self.inner.subagents.insert(name.into(), def);
-        self
-    }
-
     /// Set the system prompt.
     pub fn system_prompt(mut self, sp: SystemPromptKind) -> Self {
         self.inner.system_prompt = Some(sp);
@@ -452,12 +419,6 @@ impl OptionsBuilder {
     /// Set the reasoning-effort hint.
     pub fn effort(mut self, e: SubagentEffort) -> Self {
         self.inner.effort = Some(e);
-        self
-    }
-
-    /// Attach a stderr line callback.
-    pub fn stderr(mut self, cb: impl Fn(String) + Send + Sync + 'static) -> Self {
-        self.inner.stderr = Some(Arc::new(cb));
         self
     }
 
