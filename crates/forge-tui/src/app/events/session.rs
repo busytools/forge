@@ -117,6 +117,12 @@ fn apply_connected_presentation(
             );
         }
         crate::app::active_bucket_scope::with_pivoted(app, session_key.clone(), |app| {
+            // The old chat goes with this replacement, and the roster
+            // described it: left set, the row spins for work no Inspector
+            // section can show.
+            if let Some(bucket) = app.sessions.get_mut(session_key) {
+                bucket.clear_background_task_registry();
+            }
             app.clear_messages_tracked();
             let welcome = app.build_welcome_message();
             app.push_message_tracked(welcome);
@@ -1168,6 +1174,7 @@ mod teardown_clears_background_registry_tests {
 
         let bucket = app.sessions.get(&key).expect("bucket survives as a Failed shell");
         assert!(!bucket.has_live_background_work(), "background_tasks cleared on teardown");
+        assert!(bucket.background_tasks.is_empty(), "roster cleared on teardown");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
 
@@ -1182,6 +1189,7 @@ mod teardown_clears_background_registry_tests {
 
         let bucket = app.sessions.get(&key).expect("bucket");
         assert!(!bucket.has_live_background_work(), "background_tasks cleared on teardown");
+        assert!(bucket.background_tasks.is_empty(), "roster cleared on teardown");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
 
@@ -1205,6 +1213,47 @@ mod teardown_clears_background_registry_tests {
 
         let bucket = app.sessions.get(&key).expect("bucket");
         assert!(!bucket.has_live_background_work(), "auth-required clears background_tasks");
+        assert!(bucket.background_tasks.is_empty(), "roster cleared on auth-required");
+        assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
+    }
+
+    /// A replacement that lands on a session the user is not looking at
+    /// re-seeds the bucket with a fresh welcome and drops the old chat, so
+    /// the roster that described it must go too. Left set, the row spins
+    /// for work no Inspector section can show - the sections read the
+    /// messages just cleared.
+    #[test]
+    fn background_session_replacement_clears_background_registry() {
+        use super::apply_session_update_session_replaced;
+
+        let mut app = App::test_default();
+        let previous = SessionKey::from_session_id("replaced-uuid");
+        let mut bucket = UiSession::new(previous.clone());
+        seed_task(&mut bucket);
+        app.sessions.insert(previous.clone(), bucket);
+        assert_ne!(
+            app.active_session_key.as_ref(),
+            Some(&previous),
+            "precondition: the replaced session is not the one on screen",
+        );
+        let current_model = app.current_model().cloned().expect("test_default seeds a model");
+
+        let replacement = SessionKey::from_session_id("replacement-uuid");
+        apply_session_update_session_replaced(
+            &mut app,
+            &replacement,
+            &previous,
+            forge_primitives::SessionId::new("replacement-uuid"),
+            "/tmp/replaced".to_owned(),
+            current_model,
+            Vec::new(),
+            None,
+            &[],
+            0,
+        );
+
+        let bucket = app.sessions.get(&replacement).expect("bucket migrated to the new key");
+        assert!(bucket.background_tasks.is_empty(), "replacement clears background_tasks");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
 
@@ -1219,6 +1268,7 @@ mod teardown_clears_background_registry_tests {
 
         let bucket = app.sessions.get(&key).expect("bucket");
         assert!(!bucket.has_live_background_work(), "auth-required clears background_tasks");
+        assert!(bucket.background_tasks.is_empty(), "roster cleared on auth-required");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
 }
