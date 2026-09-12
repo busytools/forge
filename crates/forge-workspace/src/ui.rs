@@ -30,24 +30,23 @@ pub struct UiSettings {
     pub fps: RepaintCadence,
     /// Whether forge may send OSC 9 desktop-notification escapes:
     /// `auto` (default) trusts the detected capability, `on` forces the
-    /// escape on, `off` treats OSC 9 as unavailable and falls back to
-    /// what does not cross the terminal: the Iterm2 channel gains the
-    /// bell plus the OS-native desktop notification, Ghostty keeps the
-    /// desktop notification only.
+    /// escape on and suppresses the fallbacks as a true detection does,
+    /// `off` treats OSC 9 as unavailable and falls back to what does
+    /// not cross the terminal: the Iterm2 channel gains the bell plus
+    /// the OS-native desktop notification, Ghostty keeps the desktop
+    /// notification only.
     ///
     /// Detection reads `TERM_PROGRAM`, `ITERM_SESSION_ID` and `TERM`
-    /// (`TERM` only when it reads `xterm-ghostty`), which describe the
-    /// terminal at the far end of the pipe and say nothing about what
-    /// forwards to it: a multiplexer can strip the escape while
-    /// passing the environment through unchanged (shpool forwards
-    /// OSC 9 through unchanged; tmux drops the notification form;
-    /// dtach forwards nothing it does not know), leaving the default
-    /// notification channel silent rather than degraded there. A
-    /// banner that does arrive shows while Ghostty is not the
-    /// frontmost app and is downgraded to a dock bounce when it is.
-    /// `off` serves a setup where the escape is emitted but stripped,
-    /// and `on` the converse, a terminal that speaks OSC 9 without
-    /// announcing itself; the seam is config here, not code.
+    /// (`TERM` only when it reads `xterm-ghostty`). The first two
+    /// describe the terminal at the far end of the pipe; `TERM` is the
+    /// one shpool forwards while dropping `TERM_PROGRAM`, and so the
+    /// one a multiplexer can rewrite. A multiplexer that strips the
+    /// escape leaves the default notification channel silent rather
+    /// than degraded. A banner that does arrive shows while Ghostty is
+    /// not the frontmost app and is downgraded to a dock bounce when
+    /// it is. `off` serves a setup where the escape is emitted but
+    /// stripped, and `on` the converse, a terminal that speaks OSC 9
+    /// without announcing itself; the seam is config here, not code.
     #[serde(default)]
     pub notifications_osc9: Osc9NotificationMode,
 }
