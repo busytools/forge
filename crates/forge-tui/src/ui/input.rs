@@ -114,6 +114,16 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
     InputRenderGeometry { hint_pad, box_area, padded }
 }
 
+/// The dim spinner plus label a blocked composer shows in place of the
+/// editor.
+fn blocked_input_line(app: &App, label: &str) -> Line<'static> {
+    let spinner_ch = app.active_spinner_glyph();
+    Line::from(vec![
+        Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
+        Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
+    ])
+}
+
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let hint_lines = hint_line_count(app);
     let geometry = compute_render_geometry(area, hint_lines);
@@ -209,23 +219,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // During Connecting state, show a spinner with static text
     if app.status == AppStatus::Connecting {
-        let spinner_ch = app.active_spinner_glyph();
-        let line = Line::from(vec![
-            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-            Span::styled("Connecting to Claude Code...", Style::default().fg(theme::DIM)),
-        ]);
-        frame.render_widget(Paragraph::new(line), geometry.padded);
+        frame.render_widget(
+            Paragraph::new(blocked_input_line(app, "Connecting to Claude Code...")),
+            geometry.padded,
+        );
         return;
     }
 
     if app.status == AppStatus::CommandPending {
-        let spinner_ch = app.active_spinner_glyph();
         let label = app.pending_command_label().unwrap_or("Processing command...");
-        let line = Line::from(vec![
-            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-            Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
-        ]);
-        frame.render_widget(Paragraph::new(line), geometry.padded);
+        frame.render_widget(Paragraph::new(blocked_input_line(app, label)), geometry.padded);
+        return;
+    }
+
+    if app.is_compacting() {
+        frame.render_widget(
+            Paragraph::new(blocked_input_line(app, "Compacting context...")),
+            geometry.padded,
+        );
         return;
     }
 
@@ -499,7 +510,66 @@ mod tests {
     };
     use crate::app::subagent::find_subagent_spans;
     use crate::app::{App, LoginHint};
+    use crate::ui::input::render;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
+
+    fn render_input(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("terminal");
+        terminal.draw(|frame| render(frame, frame.area(), app)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| {
+                        buffer
+                            .cell((x, y))
+                            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                    })
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compacting_locks_the_box_with_a_line_saying_so() {
+        let mut app = App::test_default();
+        app.input_mut().set_text("a draft that must not paint");
+        app.set_is_compacting(true);
+
+        let rows = render_input(&mut app, 80, 4);
+        // The spinner glyph advances with the frame clock, so it is the one
+        // cell masked before the interior row is compared exactly.
+        let interior: String =
+            rows[1].chars().enumerate().map(|(i, ch)| if i == 1 { '?' } else { ch }).collect();
+        let label = " Compacting context...";
+        let expected =
+            format!("\u{2503}?{label}{}\u{2503}", " ".repeat(80 - 2 - 1 - label.chars().count()));
+        assert_eq!(
+            interior, expected,
+            "a compacting session replaces the editor with the line that names it, got: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_pending_cancel_keeps_its_own_row_beside_the_compacting_line() {
+        let mut app = App::test_default();
+        app.set_is_compacting(true);
+        app.set_pending_cancel(true);
+
+        let rows = render_input(&mut app, 80, 5);
+        assert!(
+            rows.iter().any(|row| row.contains("Cancelling current turn")),
+            "the cancel hint keeps its own row while compacting, got: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("Compacting context")),
+            "the compacting line still renders beside a pending cancel, got: {rows:?}"
+        );
+    }
 
     #[test]
     fn slash_range_matches_leading_command_token() {
@@ -590,30 +660,10 @@ mod tests {
     mod dictate_indicator {
         use super::*;
         use crate::app::events::apply_session_update;
-        use crate::ui::input::render;
         use forge_workspace::{DictateOutcome, SessionUpdate};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         use std::time::{Duration, Instant};
-
-        fn render_input(app: &mut App, w: u16, h: u16) -> Vec<String> {
-            let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("terminal");
-            terminal.draw(|frame| render(frame, frame.area(), app)).expect("draw");
-            let buffer = terminal.backend().buffer().clone();
-            (0..h)
-                .map(|y| {
-                    (0..w)
-                        .map(|x| {
-                            buffer
-                                .cell((x, y))
-                                .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
-                        })
-                        .collect::<String>()
-                        .trim_end()
-                        .to_owned()
-                })
-                .collect()
-        }
 
         fn active_key(app: &App) -> forge_workspace::SessionKey {
             app.active_session_key.clone().expect("test_default has an active bucket")
