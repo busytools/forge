@@ -109,6 +109,14 @@ mod enabled {
     /// Deliberately narrower than `chat::`: `chat::measure_msg` is a
     /// per-message leaf and must stay subject to the cap, or the cap
     /// stops bounding per-frame memory.
+    ///
+    /// Membership is the ancestor chain of the dominant leaf cost
+    /// (`chat::measure_msg` under `chat::update_heights`, `tc::render_body`
+    /// under `chat::render`), which is what makes a slow frame
+    /// attributable. A late-emitted leaf is not exempt even when the
+    /// overflow drops it: `chat::paragraph_build` closes before its parents
+    /// and can be lost, but nothing nests inside it and its cost already
+    /// sits inside `chat::render`'s total.
     const PARENT_SPAN_PREFIXES: &[&str] =
         &["frame::", "ui::", "chat::render", "chat::update_heights"];
 
@@ -736,13 +744,15 @@ mod enabled {
 
         #[test]
         fn non_parent_subevents_capped_at_buffer_limit() {
-            // Inverse contract for `parent_spans_survive_*`: non-
-            // parent sub-events that overflow the cap MUST drop. A
-            // future broadening of `is_parent_span` (e.g. to a
-            // `contains` check, or a prefix that catches `msg::`)
-            // would silently let memory grow per-frame; this test
-            // pins the exact post-flush metric count so that drift
-            // trips the check.
+            // Inverse contract for `parent_spans_survive_*`: non-parent
+            // sub-events that overflow the cap MUST drop. Pins the exact
+            // post-flush count for a `msg::` leaf, so a prefix broad
+            // enough to catch `msg::` trips it.
+            //
+            // It does NOT pin the predicate's strength: no shipped metric
+            // name carries a prefix mid-string, so `starts_with` and
+            // `contains` classify every one of them identically and both
+            // pass here.
             reset_thread_locals();
             let tmp = tempfile::NamedTempFile::new().unwrap();
             let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
