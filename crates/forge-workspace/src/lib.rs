@@ -78,8 +78,6 @@ mod slack;
 mod spawn;
 pub mod store;
 mod target;
-#[cfg(any(test, feature = "testing"))]
-mod testing;
 pub mod ui;
 mod views;
 mod workspace;

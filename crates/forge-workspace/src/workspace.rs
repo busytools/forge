@@ -28,6 +28,9 @@ use crate::spawn;
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
 use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 
+#[cfg(any(test, feature = "testing"))]
+mod testing;
+
 /// How often the background poller refreshes account usage. The
 /// TUI's bottom panel + the spawn-path account picker both read
 /// from the cache this poll populates. 60 s upper-bounds how stale
@@ -178,7 +181,7 @@ pub struct Workspace {
     /// Retained so error messages can reference the `forge.toml`
     /// path the workspace was constructed from, and so the per-account
     /// config-dir binding can re-resolve from here.
-    pub(crate) config_dir: PathBuf,
+    config_dir: PathBuf,
     /// `pub(crate)` so the impl block in [`crate::gotify`] can read the
     /// `[gotify]` section.
     pub(crate) config: LoadedConfig,
@@ -191,7 +194,7 @@ pub struct Workspace {
     /// tasks (the pane render, the connect-flow event handler) reach
     /// for it across `await` points; `Arc` so the scan task can swap
     /// its contents without holding an `Arc<Workspace>` cycle.
-    pub(crate) catalog: Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
+    catalog: Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
     /// Live Agents keyed by session id. `parking_lot::Mutex` so the
     /// public methods can take `&self`. `pub(crate)` so sibling
     /// modules (`spawn::handle_deliver_worker_prompt_to_lead`,
@@ -201,14 +204,14 @@ pub struct Workspace {
     pub(crate) pool: Mutex<HashMap<SessionKey, PooledAgent>>,
     /// Account picker state. Updated on every spawn; refreshed by
     /// the in-memory usage poller.
-    pub(crate) accounts: Mutex<AccountStateMap>,
+    accounts: Mutex<AccountStateMap>,
     /// Deterministic per-session account assignment. `None` until the
     /// boot-time loading tasks reach `all_loaded()`; populated by
     /// `recompute_plan_if_ready`. Spawn paths consult this for
     /// CLAUDE_CONFIG_DIR selection; the launchpad gates clickable
     /// project rows on it being `Some` AND the project having a
     /// non-empty pool. See `crate::assignment_plan`.
-    pub(crate) assignment_plan: Mutex<Option<crate::assignment_plan::AssignmentPlan>>,
+    assignment_plan: Mutex<Option<crate::assignment_plan::AssignmentPlan>>,
     /// Dictation preflight: the per-model progress the launchpad
     /// renders, the flag Escape sets, and the loaded engine held for
     /// the run. Populated by `start_dictate_preflight`; inert when
@@ -232,7 +235,7 @@ pub struct Workspace {
     pub(crate) update_tx: mpsc::UnboundedSender<SessionUpdate>,
     /// Single-take slot holding the matching receiver. [`Self::subscribe`]
     /// pops it on first call; subsequent calls return `None`.
-    pub(crate) update_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<SessionUpdate>>>,
+    update_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<SessionUpdate>>>,
     /// Per-session [`Command`] sender map. Populated when
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
     /// key; cleared on [`Self::release_session_with_cascade`] and [`Self::shutdown`].
@@ -244,8 +247,7 @@ pub struct Workspace {
     /// wiped on forge restart by design (workers are ephemeral at the
     /// forge UI level; their JSONLs persist on disk). Mutated via
     /// `insert_live_worker` / `remove_latest_worker` / `drain_live_workers`.
-    pub(crate) live_workers:
-        Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
+    live_workers: Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
     /// `pub(crate)` so crate-internal spawn and delivery paths can
     /// reach a session's `DomainSession` directly.
@@ -285,7 +287,7 @@ pub struct Workspace {
     pub(crate) review_activity: Mutex<HashMap<SessionKey, Vec<crate::mcp::review::ReviewActivity>>>,
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
-    pub(crate) usage_poller_started: std::sync::atomic::AtomicBool,
+    usage_poller_started: std::sync::atomic::AtomicBool,
     /// Guards against double-spawning the cron scheduler (mirrors
     /// `usage_poller_started`). Started once at boot from the binary.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
@@ -295,13 +297,13 @@ pub struct Workspace {
     /// (and any future kick site). The matching receiver lives in
     /// `kick_dispatcher_rx_slot` until [`Self::start_kick_dispatcher`]
     /// takes it out and spawns the drainer task.
-    pub(crate) kick_dispatcher_tx: mpsc::UnboundedSender<KickRequest>,
+    kick_dispatcher_tx: mpsc::UnboundedSender<KickRequest>,
     /// Single-take slot holding the matching receiver.
     /// [`Self::start_kick_dispatcher`] pops it on first call and
     /// hands it to the drainer task; subsequent calls find `None`
     /// and no-op (mirrors `start_usage_poller`'s guard against
     /// duplicate spawns).
-    pub(crate) kick_dispatcher_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<KickRequest>>>,
+    kick_dispatcher_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<KickRequest>>>,
     /// Single-instance lock file held open for the process lifetime.
     /// `Workspace::new` takes an exclusive flock on a machine-local
     /// lockfile keyed by the config dir (see [`crate::single_instance`])
@@ -309,7 +311,7 @@ pub struct Workspace {
     /// flock releases when this `File` drops (Workspace teardown / process
     /// exit / crash). Held purely for that side effect - never read.
     /// `None` in `testing_stub` and on the degraded acquire path.
-    pub(crate) _single_instance_lock: Option<std::fs::File>,
+    _single_instance_lock: Option<std::fs::File>,
     /// Durable forge crons (`mcp__forge__cron`). In-memory working set,
     /// loaded from `cron.toml` at boot and persisted back after
     /// every mutation - create/delete, the scheduler's fire-advance, and
@@ -343,11 +345,11 @@ pub struct Workspace {
     /// runs in the background off the boot path; spawn paths that read
     /// the catalog for a resume decision gate on this via
     /// [`Workspace::wait_catalog_ready`].
-    pub(crate) catalog_loaded: Arc<std::sync::atomic::AtomicBool>,
+    catalog_loaded: Arc<std::sync::atomic::AtomicBool>,
     /// Wakes `wait_catalog_ready` waiters when the scan lands.
-    pub(crate) catalog_ready_notify: Arc<tokio::sync::Notify>,
+    catalog_ready_notify: Arc<tokio::sync::Notify>,
     /// Idempotence guard for [`Workspace::start_catalog_scan`].
-    pub(crate) catalog_scan_started: std::sync::atomic::AtomicBool,
+    catalog_scan_started: std::sync::atomic::AtomicBool,
     /// Whether the Gotify stream is currently connected. Set by the
     /// subsystem pump on `Connected` / `Disconnected`; read by the
     /// Inspector's status line.
@@ -416,7 +418,7 @@ pub struct Workspace {
     /// respawn, preventing duplicate worker sets while the scan
     /// is in flight. The existing `live_workers.is_empty()` gate
     /// covers the post-dispatch case.
-    pub(crate) respawn_in_flight: Mutex<std::collections::HashSet<ProjectKey>>,
+    respawn_in_flight: Mutex<std::collections::HashSet<ProjectKey>>,
     /// Test-only intercept buffer for app-level Commands. When
     /// `Some`, `dispatch` captures the command into the buffer
     /// instead of routing it to the spawn::* handler - used by
@@ -424,14 +426,14 @@ pub struct Workspace {
     /// dispatched without spinning up real subprocesses. Always
     /// `None` in production (no enable hook outside test cfg).
     #[cfg(any(test, feature = "testing"))]
-    pub(crate) command_intercept: Mutex<Option<Vec<Command>>>,
+    command_intercept: Mutex<Option<Vec<Command>>>,
     /// Test-only project overlay. Entries appended via
     /// `seed_test_project` are searched first in
     /// `find_project_view_by_name` so tests can drive the
     /// Connected-hook respawn trigger without writing a
     /// real `forge.toml`. Empty in production.
     #[cfg(any(test, feature = "testing"))]
-    pub(crate) test_extra_projects: Mutex<Vec<LoadedProject>>,
+    test_extra_projects: Mutex<Vec<LoadedProject>>,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>` and the account key
