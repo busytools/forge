@@ -124,11 +124,6 @@ fn msg_spinner(
 /// `render_message()` and measured with `Paragraph::line_count(width)`. This uses
 /// the exact same wrapping algorithm as the actual render path, so heights can
 /// never drift from reality.
-///
-/// Iterates in reverse so we can break early: once we hit a message whose height
-/// is already valid at this width, all earlier messages are also valid (content
-/// only changes at the tail during streaming). This turns the common case from
-/// O(n) to O(1).
 pub(super) fn update_visual_heights(
     app: &mut App,
     base: &SpinnerState,
