@@ -225,30 +225,33 @@ pub(crate) fn wire_alive_tool_calls(
 /// session-scoped task map (`task_id` -> `tool_use_id`, survives turn
 /// finalisation) with each tool call's `raw_input.command`. Used to dedup
 /// the backgrounded-`local_bash` feed against OS-scan rows.
+///
+/// Walks the messages newest-first and stops once every mapped task has
+/// resolved. The Projects-pane row glyph reads this through
+/// `inspector_draws_row` on every loop tick, and the mapped set is only the
+/// handful of tasks the CLI currently lists as live.
 pub(crate) fn session_command_by_task_id(
     session: &crate::app::session::UiSession,
 ) -> HashMap<String, String> {
-    let command_by_tool_use: HashMap<&str, &str> = session
-        .messages
-        .iter()
-        .flat_map(|message| &message.blocks)
-        .filter_map(|block| match block {
-            MessageBlock::ToolCall(tc) => {
-                let command = read_str_field(tc.raw_input.as_ref(), "command");
-                (!command.is_empty()).then_some((tc.id.as_str(), command))
+    let mut wanted: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (task_id, tool_use_id) in &session.session_task_tool_use_ids {
+        wanted.entry(tool_use_id.as_str()).or_default().push(task_id.as_str());
+    }
+    let mut commands = HashMap::new();
+    'messages: for message in session.messages.iter().rev() {
+        for block in message.blocks.iter().rev() {
+            if wanted.is_empty() {
+                break 'messages;
             }
-            _ => None,
-        })
-        .collect();
-    session
-        .session_task_tool_use_ids
-        .iter()
-        .filter_map(|(task_id, tool_use_id)| {
-            command_by_tool_use
-                .get(tool_use_id.as_str())
-                .map(|command| (task_id.clone(), (*command).to_owned()))
-        })
-        .collect()
+            let MessageBlock::ToolCall(tc) = block else { continue };
+            let Some(task_ids) = wanted.remove(tc.id.as_str()) else { continue };
+            let command = read_str_field(tc.raw_input.as_ref(), "command");
+            if !command.is_empty() {
+                commands.extend(task_ids.into_iter().map(|id| (id.to_owned(), command.to_owned())));
+            }
+        }
+    }
+    commands
 }
 
 /// The active session's live backgrounded `local_bash` commands, resolved
