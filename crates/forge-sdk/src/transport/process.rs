@@ -106,7 +106,7 @@ fn parse_semver_triple(s: &str) -> Option<(u32, u32, u32)> {
 /// name is not covered, except where it collides with one of these -
 /// forge routes `--effort` that way, so the collision is the common
 /// case rather than a corner.
-const LOGGABLE_FLAGS: [&str; 18] = [
+const LOGGABLE_FLAGS: [&str; 17] = [
     "output-format",
     "verbose",
     "system-prompt",
@@ -121,7 +121,6 @@ const LOGGABLE_FLAGS: [&str; 18] = [
     "session-id",
     "settings",
     "mcp-config",
-    "setting-sources",
     "plugin-dir",
     "effort",
     "input-format",
@@ -191,9 +190,9 @@ pub struct Subprocess {
     /// task would wait for every clone to drop and the child wouldn't
     /// see EOF on stdin until then.
     writer_task: Option<JoinHandle<()>>,
-    /// Stderr drain task - best-effort logged or forwarded to the
-    /// caller's callback. Joined during [`close`](Self::close), which
-    /// takes its returned tail for [`Error::Process`].
+    /// Stderr drain task - best-effort logged. Joined during
+    /// [`close`](Self::close), which takes its returned tail for
+    /// [`Error::Process`].
     stderr_task: Option<JoinHandle<String>>,
     /// The child handle. [`close`](Self::close) waits on it (with
     /// timeout) and SIGKILLs on hang.
