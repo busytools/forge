@@ -147,9 +147,10 @@ impl ToolCallInfo {
     /// Mark only the layout cache stale, keeping the rendered body.
     ///
     /// For updates that cannot change the bytes `render_tool_call_body`
-    /// produces. The height still has to be recomputed even then, because
-    /// the title is rendered live and does read fields the body ignores -
-    /// `raw_input` feeds the display title.
+    /// produces. They still change the message, so the layout epoch has to
+    /// keep moving: it is hashed into the message render signature, and
+    /// these fields drive how the message draws the call (`raw_input` picks
+    /// the one-liner target, the metadata fields add title badges).
     pub fn mark_tool_call_layout_dirty_only(&mut self) {
         self.invalidate_layout_measurement();
     }
