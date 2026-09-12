@@ -647,9 +647,10 @@ fn append_body(
         append_gotify_section(lines, app, width);
     }
 
-    // SLACK sits below GOTIFY, rendered only while the active session owns
-    // at least one subscription. Liveness is per workspace, so it rides
-    // each row rather than the header.
+    // SLACK sits below GOTIFY, rendered while the active session owns at
+    // least one subscription or boot could not read the durable set, so a
+    // load failure still surfaces. Liveness is per workspace, so it rides
+    // each workspace heading rather than the section header.
     if slack_section_visible(app) {
         lines.push(Line::default());
         push_section_rule(lines, width);
@@ -1740,23 +1741,18 @@ fn gotify_section_visible(app: &App) -> bool {
     !app.gotify_subs.is_empty()
 }
 
-/// Render the Inspector GOTIFY section: a status-carrying header then
-/// the active session's own subscriptions. The snapshot is already
-/// scoped by owner in `App::refresh_gotify`, so every row here belongs
-/// to this session and none needs an owner label. Only invoked when
-/// [`gotify_section_visible`] holds, so the subscription set is never
-/// empty; the stream may be up or down.
 /// The section shows for an owner's subscriptions, or when boot could
 /// not load the durable set - an empty set must not hide that failure.
 fn slack_section_visible(app: &App) -> bool {
     !app.slack_subs.is_empty() || app.slack_load_failed
 }
 
-/// Render the Inspector SLACK section: a labelled header then one row per
-/// subscription. The snapshot is already scoped by owner in
-/// [`App::refresh_slack`], so every row belongs to this session. Liveness
-/// is keyed by workspace label, so it rides each row rather than a
-/// single-status header the way GOTIFY's does.
+/// Render the Inspector SLACK section: a labelled header, then one
+/// workspace heading per workspace with its subscription rows beneath.
+/// The snapshot is already scoped by owner in [`App::refresh_slack`], so
+/// every row belongs to this session. Liveness is keyed by workspace
+/// label, so it rides the heading rather than a single-status header the
+/// way GOTIFY's does.
 fn append_slack_section(lines: &mut Vec<Line<'static>>, app: &App) {
     lines.push(slack_header_line());
     lines.push(Line::default());
@@ -1773,9 +1769,19 @@ fn append_slack_section(lines: &mut Vec<Line<'static>>, app: &App) {
         ]));
         return;
     }
+    let mut groups: Vec<(&str, Vec<&forge_primitives::slack::SlackSubscription>)> = Vec::new();
     for sub in &app.slack_subs {
-        let connected = app.slack_connected.get(&sub.workspace).copied().unwrap_or(false);
-        append_slack_subscription(lines, sub, connected);
+        match groups.iter_mut().find(|(workspace, _)| *workspace == sub.workspace) {
+            Some((_, subs)) => subs.push(sub),
+            None => groups.push((&sub.workspace, vec![sub])),
+        }
+    }
+    for (workspace, subs) in groups {
+        let connected = app.slack_connected.get(workspace).copied().unwrap_or(false);
+        append_slack_workspace_heading(lines, workspace, connected);
+        for sub in subs {
+            append_slack_watch_row(lines, sub);
+        }
     }
 }
 
@@ -1788,12 +1794,12 @@ fn slack_header_line() -> Line<'static> {
     )])
 }
 
-/// Render one SLACK subscription: the workspace label in bold with its
-/// pump's status glyph beside it, then a DIM line naming what it watches.
-/// The `◈` / `⚠` pairing is the one [`gotify_header_line`] uses.
-fn append_slack_subscription(
+/// One workspace's heading: the label in bold with its pump's status
+/// glyph beside it. The `◈` / `⚠` pairing is the one
+/// [`gotify_header_line`] uses.
+fn append_slack_workspace_heading(
     lines: &mut Vec<Line<'static>>,
-    sub: &forge_primitives::slack::SlackSubscription,
+    workspace: &str,
     connected: bool,
 ) {
     let indent = usize::from(PANE_PAD) + 2;
@@ -1804,11 +1810,19 @@ fn append_slack_subscription(
     };
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(indent)),
-        Span::styled(sub.workspace.clone(), Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(workspace.to_owned(), Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" ".to_owned()),
         Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
     ]));
+}
 
+/// One subscription row beneath its workspace heading: a DIM line naming
+/// what it watches.
+fn append_slack_watch_row(
+    lines: &mut Vec<Line<'static>>,
+    sub: &forge_primitives::slack::SlackSubscription,
+) {
+    let indent = usize::from(PANE_PAD) + 4;
     let watching = match &sub.target {
         forge_primitives::slack::SlackSubscriptionTarget::DirectMessages => {
             "direct messages".to_owned()
@@ -1816,19 +1830,31 @@ fn append_slack_subscription(
         forge_primitives::slack::SlackSubscriptionTarget::Mentions => {
             "mentions anywhere".to_owned()
         }
-        forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, mode } => match mode {
-            forge_primitives::slack::SlackWatchMode::All => format!("{id} · every message"),
-            forge_primitives::slack::SlackWatchMode::MentionsOnly => {
-                format!("{id} · mentions only")
+        forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, name, mode } => {
+            // Unnamed means the record has not been swept yet - one written
+            // before names were captured heals on its first tick - or it
+            // covers a conversation the directory walk never saw.
+            let label = name.clone().map_or_else(|| id.clone(), |name| format!("#{name}"));
+            match mode {
+                forge_primitives::slack::SlackWatchMode::All => format!("{label} · every message"),
+                forge_primitives::slack::SlackWatchMode::MentionsOnly => {
+                    format!("{label} · mentions only")
+                }
             }
-        },
+        }
     };
     lines.push(Line::from(vec![
-        Span::raw(" ".repeat(indent + 2)),
+        Span::raw(" ".repeat(indent)),
         Span::styled(watching, Style::default().fg(theme::DIM)),
     ]));
 }
 
+/// Render the Inspector GOTIFY section: a status-carrying header then
+/// the active session's own subscriptions. The snapshot is already
+/// scoped by owner in `App::refresh_gotify`, so every row here belongs
+/// to this session and none needs an owner label. Only invoked when
+/// [`gotify_section_visible`] holds, so the subscription set is never
+/// empty; the stream may be up or down.
 fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     lines.push(gotify_header_line(width, app.gotify_connected));
     lines.push(Line::default());
@@ -4752,6 +4778,7 @@ mod tests {
             "acme",
             forge_primitives::slack::SlackSubscriptionTarget::Conversation {
                 id: "C1".to_owned(),
+                name: None,
                 mode: forge_primitives::slack::SlackWatchMode::All,
             },
         )];
@@ -4764,8 +4791,121 @@ mod tests {
         assert!(joined.contains("acme"), "the workspace label renders; got:\n{joined}");
         assert!(joined.contains("every message"), "the watch mode renders; got:\n{joined}");
         assert!(
+            joined.contains("C1 \u{b7} every message"),
+            "an unnamed record renders the raw id unprefixed; got:\n{joined}",
+        );
+        assert!(
+            !joined.contains("#C1"),
+            "the fallback is never dressed as a channel name; got:\n{joined}",
+        );
+        assert!(
             joined.contains('\u{25c8}'),
             "a connected pump shows the connected glyph; got:\n{joined}",
+        );
+    }
+
+    /// `slack__unsubscribe` keys on the subscription uuid, so the
+    /// conversation id on the row serves no action and the name wins.
+    #[test]
+    fn a_named_conversation_renders_the_channel_name_not_the_id() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![slack_sub(
+            3,
+            "acme",
+            forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                id: "C0C0T5E6RM1".to_owned(),
+                name: Some("ved-test".to_owned()),
+                mode: forge_primitives::slack::SlackWatchMode::All,
+            },
+        )];
+        app.slack_connected = std::collections::BTreeMap::from([("acme".to_owned(), true)]);
+
+        let joined = render_slack_section(&app);
+        assert!(
+            joined.contains("#ved-test \u{b7} every message"),
+            "the named row renders; got:\n{joined}",
+        );
+        assert!(
+            !joined.contains("C0C0T5E6RM1"),
+            "the raw id drops off the row once a name exists; got:\n{joined}",
+        );
+    }
+
+    #[test]
+    fn one_workspace_with_two_subscriptions_renders_one_heading() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![
+            slack_sub(
+                4,
+                "acme",
+                forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                    id: "C1".to_owned(),
+                    name: Some("ved-test".to_owned()),
+                    mode: forge_primitives::slack::SlackWatchMode::All,
+                },
+            ),
+            slack_sub(5, "acme", forge_primitives::slack::SlackSubscriptionTarget::DirectMessages),
+        ];
+        app.slack_connected = std::collections::BTreeMap::from([("acme".to_owned(), true)]);
+
+        let joined = render_slack_section(&app);
+        assert!(
+            joined.matches("acme").count() == 1,
+            "one workspace renders one heading, not one per subscription; got:\n{joined}",
+        );
+        assert!(
+            joined.contains("#ved-test") && joined.contains("direct messages"),
+            "both subscription rows render; got:\n{joined}",
+        );
+    }
+
+    /// Group order follows the workspace's first appearance, not the
+    /// label: a map keyed by workspace would sort or scatter the
+    /// headings while every per-group property still passed.
+    #[test]
+    fn group_order_follows_first_appearance_of_the_workspace() {
+        let mut app = App::test_default();
+        app.slack_subs = vec![
+            slack_sub(
+                6,
+                "zeta",
+                forge_primitives::slack::SlackSubscriptionTarget::Conversation {
+                    id: "C1".to_owned(),
+                    name: Some("zeta-ch".to_owned()),
+                    mode: forge_primitives::slack::SlackWatchMode::All,
+                },
+            ),
+            slack_sub(7, "acme", forge_primitives::slack::SlackSubscriptionTarget::DirectMessages),
+            slack_sub(8, "zeta", forge_primitives::slack::SlackSubscriptionTarget::Mentions),
+        ];
+        // One pump up and one down: a single hoisted liveness lookup would
+        // give both headings the same glyph.
+        app.slack_connected = std::collections::BTreeMap::from([
+            ("zeta".to_owned(), true),
+            ("acme".to_owned(), false),
+        ]);
+
+        let joined = render_slack_section(&app);
+        let zeta_at = joined.find("zeta").expect("the zeta heading renders");
+        let acme_at = joined.find("acme").expect("the acme heading renders");
+        assert!(zeta_at < acme_at, "first-seen workspace must head the section:\n{joined}");
+        // With two workspaces this distinguishes the grouped render from
+        // emitting every heading first and then every row: under that
+        // arrangement zeta's row lands past acme's heading.
+        let zeta_row_at = joined.find("#zeta-ch").expect("the zeta row renders");
+        assert!(
+            zeta_at < zeta_row_at && zeta_row_at < acme_at,
+            "a workspace's rows sit between its heading and the next; got:\n{joined}",
+        );
+        let headings =
+            joined.lines().filter(|line| line.trim_start().starts_with("zeta \u{25c8}")).count();
+        assert_eq!(
+            headings, 1,
+            "subscriptions split by another workspace share one heading; got:\n{joined}",
+        );
+        assert!(
+            joined.lines().any(|line| line.trim_start().starts_with("acme \u{26a0}")),
+            "the down workspace keeps its own warning glyph; got:\n{joined}",
         );
     }
 

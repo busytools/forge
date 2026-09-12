@@ -217,3 +217,44 @@ Same subscriptions with the stream down - the section stays, the status changes:
 - Colors: header dim bold; the status word dim; app names white bold; the `priority` caption and `any` dim; the `>=N` floor white.
 
 </details>
+
+## SLACK
+
+The session's own Slack subscriptions, grouped by workspace. Renders only when the session owns at least one subscription, or when boot could not read the durable set - the failure row names that rather than hiding the section. One heading per workspace carries the label and that workspace's pump status, `◈` connected or `⚠` down, and one dim row per subscription sits beneath it: `#name · every message` or `#name · mentions only` for a conversation, `direct messages` for the DM class, `mentions anywhere` for the workspace mention target.
+
+<div class="term">
+
+<pre class="indent">
+  <span class="dim bold">  SLACK</span>
+
+      <span class="bold">Trust Machines</span> <span class="accent">◈</span>
+        <span class="dim">#ved-test · every message</span>
+        <span class="dim">#ved-test1 · every message</span>
+</pre>
+
+</div>
+
+Two workspaces, the second pump down, a mentions-only row, and a conversation whose name was never captured:
+
+<div class="term">
+
+<pre class="indent">
+  <span class="dim bold">  SLACK</span>
+
+      <span class="bold">Trust Machines</span> <span class="accent">◈</span>
+        <span class="dim">#ved-test · mentions only</span>
+      <span class="bold">Acme</span> <span class="warning">⚠</span>
+        <span class="dim">C0C0T5E6RM1 · every message</span>
+</pre>
+
+</div>
+
+<details>
+<summary>Slack details</summary>
+
+- Visibility keys on the owned subscriptions alone, never on the pumps: a session that subscribed keeps the section when a pump drops, swapping its workspace glyph; a session with no owned subscription hides the section. Boot failing to read the durable set shows the section with a warning row instead, so the failure is not silent.
+- One pump per workspace, so liveness is per workspace and rides the heading rather than a single status on the section header the way GOTIFY's does. Two subscriptions in one workspace render one heading, not two.
+- A conversation's name arrives from one of two sources: the sweep's directory walk, which backfills any record that has none, or the search hit's label, captured when a mention pulls the session into a conversation it was not watching. Either way a record can be rendered before it has a name, and an unnamed row renders its raw id unprefixed. It is never dressed as a channel - the id is not a name, and `#C0C0T5E6RM1` would read as a channel that does not exist.
+- Colors: header dim bold; the workspace label white bold; the glyph rust orange connected and warning when down; subscription rows dim.
+
+</details>

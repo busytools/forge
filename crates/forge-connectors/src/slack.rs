@@ -86,6 +86,12 @@ pub trait SlackHost: Send + Sync {
     /// Liveness for the Inspector's status line.
     fn set_connected(&self, workspace: &str, connected: bool);
 
+    /// Fill in a conversation's display name on any subscription that has
+    /// none, so the Inspector can render the name rather than the raw id.
+    /// Only unnamed records are touched: a conversation renamed since it
+    /// was subscribed keeps the stored name.
+    fn name_conversation(&self, workspace: &str, conversation: &str, name: &str);
+
     /// Hand one matched message to its subscriber's session. Returns
     /// whether it was handed off: a `false` means the caller did not
     /// advance the conversation cursor past this message, so the next
@@ -337,7 +343,7 @@ fn matches(
     }
     match &subscription.target {
         SlackSubscriptionTarget::DirectMessages => conversation.is_im || conversation.is_mpim,
-        SlackSubscriptionTarget::Conversation { id, mode } => {
+        SlackSubscriptionTarget::Conversation { id, mode, .. } => {
             id == &conversation.id
                 && match mode {
                     SlackWatchMode::All => true,
@@ -683,6 +689,20 @@ pub(crate) async fn sweep(
                 purpose: None,
                 topic: None,
             });
+        }
+    }
+    // The synthetic entries above carry no name, so they are skipped
+    // without a case of their own.
+    for subscription in &subscriptions {
+        if let SlackSubscriptionTarget::Conversation { id, name: None, .. } = &subscription.target
+            && let Some(name) = conversations
+                .iter()
+                .find(|conversation| &conversation.id == id)
+                .and_then(|conversation| conversation.name.as_deref())
+            && !name.is_empty()
+            && name != id
+        {
+            host.name_conversation(workspace, id, name);
         }
     }
 
@@ -2052,6 +2072,7 @@ mod tests {
     fn a_mentions_only_channel_filters_on_the_token() {
         let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
             id: "C1".to_owned(),
+            name: None,
             mode: SlackWatchMode::MentionsOnly,
         })];
         let channel = conversation_channel("C1", "general");
@@ -2065,6 +2086,7 @@ mod tests {
         // agent answering in Slack would answer itself.
         let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
             id: "C1".to_owned(),
+            name: None,
             mode: SlackWatchMode::All,
         })];
         let channel = conversation_channel("C1", "general");
@@ -2086,6 +2108,7 @@ mod tests {
     fn an_unsubscribed_conversation_is_never_wanted() {
         let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
             id: "C1".to_owned(),
+            name: None,
             mode: SlackWatchMode::All,
         })];
         assert!(!wants(&subs, &conversation_channel("C2", "other"), Some("U9"), "hi", "U1"));
@@ -2349,6 +2372,23 @@ mod tests {
             *self.connected.lock().expect("lock") = Some(connected);
         }
 
+        /// Deliberately without the sweep's unnamed-only guard: the double
+        /// records what it is told, so a test asserting the guard is
+        /// testing the sweep's filter rather than the fake's copy of it.
+        fn name_conversation(&self, workspace: &str, conversation: &str, name: &str) {
+            for sub in self.subscriptions.lock().expect("lock").iter_mut() {
+                if sub.workspace != workspace {
+                    continue;
+                }
+                if let SlackSubscriptionTarget::Conversation { id, name: stored, .. } =
+                    &mut sub.target
+                    && id.as_str() == conversation
+                {
+                    *stored = Some(name.to_owned());
+                }
+            }
+        }
+
         fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool {
             let attempt = {
                 let mut attempts = self.deliver_attempts.lock().expect("lock");
@@ -2462,6 +2502,7 @@ mod tests {
                 team_role: None,
                 target: SlackSubscriptionTarget::Conversation {
                     id: message.conversation.clone(),
+                    name: None,
                     mode: SlackWatchMode::All,
                 },
                 created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -2852,6 +2893,7 @@ mod tests {
     ) -> SlackSubscription {
         let mut sub = sub_for(SlackSubscriptionTarget::Conversation {
             id: id.to_owned(),
+            name: None,
             mode: SlackWatchMode::All,
         });
         sub.workspace = workspace.to_owned();
@@ -3052,7 +3094,8 @@ mod tests {
     }
 
     fn sub_channel(workspace: &str, id: &str, mode: SlackWatchMode) -> SlackSubscription {
-        let mut sub = sub_for(SlackSubscriptionTarget::Conversation { id: id.to_owned(), mode });
+        let mut sub =
+            sub_for(SlackSubscriptionTarget::Conversation { id: id.to_owned(), name: None, mode });
         sub.workspace = workspace.to_owned();
         sub
     }
@@ -3669,6 +3712,95 @@ mod tests {
         sweep(&host, &host, "acme").await.expect("second sweep");
         let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
         assert_eq!(texts, vec!["new one".to_owned()], "only what follows the baseline arrives");
+    }
+
+    /// A record written before names were captured holds none, so the
+    /// Inspector renders its raw id. The sweep already has the directory
+    /// in hand, so it fills that in on the next tick - re-subscribing
+    /// would mint a second record rather than update this one.
+    #[tokio::test]
+    async fn a_sweep_backfills_a_missing_conversation_name() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.conversations.lock().expect("lock").push(conversation_channel("C1", "ved-test"));
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        let stored = host
+            .subscriptions("acme")
+            .into_iter()
+            .find_map(|sub| match sub.target {
+                SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => Some(name),
+                _ => None,
+            })
+            .expect("the C1 record");
+        assert_eq!(
+            stored.as_deref(),
+            Some("ved-test"),
+            "the sweep stamps the name the directory reports",
+        );
+    }
+
+    /// The directory can hand back a name that is empty or is really the
+    /// conversation id; stamping either renders `#` or `#C1`, so the
+    /// sweep writes neither.
+    #[tokio::test]
+    async fn a_sweep_rejects_a_name_that_is_empty_or_the_id() {
+        let host = FakeHost::with_subscriptions(vec![
+            sub_channel("acme", "C1", SlackWatchMode::All),
+            sub_channel("acme", "C2", SlackWatchMode::All),
+        ]);
+        host.conversations
+            .lock()
+            .expect("lock")
+            .extend([conversation_channel("C1", ""), conversation_channel("C2", "C2")]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        let names: Vec<Option<String>> = host
+            .subscriptions("acme")
+            .into_iter()
+            .filter_map(|sub| match sub.target {
+                SlackSubscriptionTarget::Conversation { id, name, .. }
+                    if id == "C1" || id == "C2" =>
+                {
+                    Some(name)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec![None, None], "neither an empty name nor the id is stamped");
+    }
+
+    /// Only unnamed records are filled. A conversation renamed since it
+    /// was subscribed keeps the stored name, so the sweep never rewrites
+    /// a record that already has one.
+    #[tokio::test]
+    async fn a_sweep_leaves_an_already_named_record_alone() {
+        let mut sub = sub_channel("acme", "C1", SlackWatchMode::All);
+        sub.target = SlackSubscriptionTarget::Conversation {
+            id: "C1".to_owned(),
+            name: Some("stale-name".to_owned()),
+            mode: SlackWatchMode::All,
+        };
+        let host = FakeHost::with_subscriptions(vec![sub]);
+        host.conversations.lock().expect("lock").push(conversation_channel("C1", "renamed"));
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        let stored = host
+            .subscriptions("acme")
+            .into_iter()
+            .find_map(|sub| match sub.target {
+                SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => Some(name),
+                _ => None,
+            })
+            .expect("the C1 record");
+        assert_eq!(
+            stored.as_deref(),
+            Some("stale-name"),
+            "a record that already has a name is never rewritten",
+        );
     }
 
     /// A failed mention delivery holds the mention cursor and skips the

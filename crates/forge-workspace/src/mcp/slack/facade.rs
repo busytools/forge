@@ -718,10 +718,13 @@ impl SlackFacade for ProdSlackFacade {
             SlackSubscribeRequest::DirectMessages => {
                 vec![SlackSubscriptionTarget::DirectMessages]
             }
+            // Left unnamed here: the sweep's directory walk fills names in
+            // on its next tick, so subscribing makes no network call.
             SlackSubscribeRequest::Conversations(watches) => watches
                 .into_iter()
                 .map(|watch| SlackSubscriptionTarget::Conversation {
                     id: watch.id,
+                    name: None,
                     mode: watch.mode,
                 })
                 .collect(),
@@ -1909,6 +1912,7 @@ mod tests {
             lead_targets,
             vec![SlackSubscriptionTarget::Conversation {
                 id: "C1".to_owned(),
+                name: None,
                 mode: SlackWatchMode::All,
             }],
             "the lead sees only its own record",

@@ -1278,7 +1278,11 @@ mod tests {
     }
 
     fn watching(id: &str) -> SlackSubscriptionTarget {
-        SlackSubscriptionTarget::Conversation { id: id.to_owned(), mode: SlackWatchMode::All }
+        SlackSubscriptionTarget::Conversation {
+            id: id.to_owned(),
+            name: None,
+            mode: SlackWatchMode::All,
+        }
     }
 
     fn owned_sub(

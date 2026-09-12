@@ -79,7 +79,15 @@ pub enum SlackSubscriptionTarget {
     /// design settled on, so a new DM needs no new subscription.
     DirectMessages,
     /// One conversation, with the mode that decides what reaches the session.
-    Conversation { id: String, mode: SlackWatchMode },
+    /// `name` is the display name, which may arrive after the record is
+    /// written: the sweep backfills it from its directory, and a record
+    /// still without one renders the raw id.
+    Conversation {
+        id: String,
+        #[serde(default)]
+        name: Option<String>,
+        mode: SlackWatchMode,
+    },
     /// Every message in this workspace that mentions the user, including
     /// public channels they are not in. Not private channels they are not
     /// in, which they could not read anyway.
@@ -268,5 +276,24 @@ mod tests {
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("supersecret"), "token leaked: {rendered}");
         assert!(rendered.contains("acme"), "the label stays readable: {rendered}");
+    }
+
+    /// Records written before conversation names were captured carry no
+    /// `name` key; dropping them at decode would silently unsubscribe
+    /// every session on restart.
+    #[test]
+    fn a_target_recorded_without_a_name_still_decodes() {
+        let old = r#"{"Conversation":{"id":"C0C0T5E6RM1","mode":"All"}}"#;
+        let target: SlackSubscriptionTarget =
+            serde_json::from_str(old).expect("the old shape decodes");
+        assert_eq!(
+            target,
+            SlackSubscriptionTarget::Conversation {
+                id: "C0C0T5E6RM1".to_owned(),
+                name: None,
+                mode: SlackWatchMode::All,
+            },
+            "a missing name decodes as None, never as a decode failure",
+        );
     }
 }

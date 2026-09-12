@@ -303,6 +303,61 @@ impl Workspace {
         }
     }
 
+    /// Fill in the display name on this workspace's conversation
+    /// subscriptions that have none. A durable record is written through
+    /// the store; an ephemeral one is named in memory only. Only unnamed
+    /// records are touched: a conversation renamed since it was
+    /// subscribed keeps the stored name.
+    pub(crate) fn name_slack_conversation(&self, workspace: &str, conversation: &str, name: &str) {
+        let updated: Vec<SlackSubscription> = {
+            let mut subs = self.slack_subs.lock();
+            let mut updated = Vec::new();
+            for sub in subs.iter_mut() {
+                if sub.workspace != workspace {
+                    continue;
+                }
+                if let SlackSubscriptionTarget::Conversation { id, name: stored @ None, .. } =
+                    &mut sub.target
+                    && id.as_str() == conversation
+                {
+                    *stored = Some(name.to_owned());
+                    updated.push(sub.clone());
+                }
+            }
+            updated
+        };
+        if updated.is_empty() {
+            return;
+        }
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        // An ephemeral ad-hoc-worker subscription lives in memory only by
+        // design, and inserting it here would promote it to durable.
+        let durable: Vec<Uuid> = match crate::store::slack::list(db) {
+            Ok(stored) => stored.into_iter().map(|sub| sub.id).collect(),
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "reading Slack subscriptions to heal a name failed",
+                );
+                return;
+            }
+        };
+        for sub in &updated {
+            if !durable.contains(&sub.id) {
+                continue;
+            }
+            if let Err(error) = crate::store::slack::insert(db, sub) {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "writing a Slack conversation name failed",
+                );
+            }
+        }
+    }
+
     /// Whether the conversation (or the `__mentions__` stream) has a sweep
     /// cursor yet. The cursor belongs to the conversation and is shared by
     /// every owner watching it, so a second subscriber seeds only when
@@ -473,12 +528,14 @@ impl Workspace {
     /// should see what is said next rather than only the next mention.
     /// The cursor starts at `since` (the mention that pulled us in), so
     /// the channel's history is not swept. Returns whether a record was
-    /// added.
+    /// added. A label that is empty or the conversation id itself (the
+    /// search path's fallback) stores as no name.
     pub(crate) fn auto_subscribe_slack_conversation(
         &self,
         workspace: &str,
         conversation: &str,
         since: &str,
+        name: Option<&str>,
     ) -> bool {
         let owner = {
             let subs = self.slack_subs.lock();
@@ -523,6 +580,9 @@ impl Workspace {
                 team_role: owner.1,
                 target: forge_primitives::slack::SlackSubscriptionTarget::Conversation {
                     id: conversation.to_owned(),
+                    name: name
+                        .filter(|label| !label.is_empty() && *label != conversation)
+                        .map(str::to_owned),
                     mode: forge_primitives::slack::SlackWatchMode::All,
                 },
                 created_at: std::time::SystemTime::now(),
@@ -955,9 +1015,19 @@ impl SlackHost for SlackSubsystemHost {
         ws.slack_connected.lock().insert(workspace.to_owned(), connected);
     }
 
+    fn name_conversation(&self, workspace: &str, conversation: &str, name: &str) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.name_slack_conversation(workspace, conversation, name);
+    }
+
     fn auto_subscribe(&self, workspace: &str, message: &SlackMessage) -> bool {
         let Some(ws) = self.0.upgrade() else { return false };
-        ws.auto_subscribe_slack_conversation(workspace, &message.conversation, &message.ts)
+        ws.auto_subscribe_slack_conversation(
+            workspace,
+            &message.conversation,
+            &message.ts,
+            Some(&message.conversation_label),
+        )
     }
 
     fn deliver(&self, subscription: &SlackSubscription, message: &SlackMessage) -> bool {
@@ -1158,7 +1228,7 @@ mod tests {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
         ws.add_slack_subscription(sub_mentions_for("forge", Some("tester")), true);
 
-        ws.auto_subscribe_slack_conversation("acme", "C1", "200.1");
+        ws.auto_subscribe_slack_conversation("acme", "C1", "200.1", Some("general"));
 
         let added = ws.slack_subscriptions_for_project("forge");
         assert!(
@@ -1166,9 +1236,205 @@ mod tests {
                 && sub.target
                     == SlackSubscriptionTarget::Conversation {
                         id: "C1".to_owned(),
+                        name: Some("general".to_owned()),
                         mode: SlackWatchMode::All,
                     }),
             "the conversation lands on the mention subscription's owner: {added:?}",
+        );
+    }
+
+    /// The mention sweep's label falls back to the conversation id when
+    /// Slack omits the name; storing it would render `#C1` and read as
+    /// a channel that does not exist.
+    #[test]
+    fn an_auto_subscription_stores_no_name_when_the_label_is_not_one() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.add_slack_subscription(sub_mentions_for("forge", Some("tester")), true);
+
+        assert!(ws.auto_subscribe_slack_conversation("acme", "C1", "200.1", Some("C1")));
+        assert!(ws.auto_subscribe_slack_conversation("acme", "C2", "200.1", Some("")));
+        assert!(ws.auto_subscribe_slack_conversation("acme", "C3", "200.1", None));
+
+        let named = ws
+            .slack_subscriptions_for_project("forge")
+            .into_iter()
+            .filter_map(|sub| match sub.target {
+                SlackSubscriptionTarget::Conversation { name, .. } => Some(name),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(named.len(), 3, "every record contributed a name slot: {named:?}");
+        assert!(
+            named.iter().all(Option::is_none),
+            "no record invents a name from the id or an empty label: {named:?}",
+        );
+    }
+
+    /// The delivered message's label is the only name source for a
+    /// conversation a mention pulled us into but the user never joined:
+    /// `users.conversations` is membership-scoped, so the sweep can never
+    /// name that one. Drives the trait seam rather than the helper, so a
+    /// `None` handed to it cannot pass unnoticed.
+    #[test]
+    fn the_auto_subscribe_seam_names_the_pulled_in_conversation() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.add_slack_subscription(sub_mentions_for("forge", Some("tester")), true);
+        let host = SlackSubsystemHost::new(&ws);
+
+        let message = SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: "C9".to_owned(),
+            conversation_label: "granite-staging-alerts".to_owned(),
+            ts: "200.1".to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            text: "ping".to_owned(),
+            files: Vec::new(),
+        };
+        assert!(host.auto_subscribe("acme", &message), "the mention subscribes the conversation");
+
+        let named =
+            ws.slack_subscriptions_for_project("forge").into_iter().find_map(|sub| {
+                match sub.target {
+                    SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C9" => {
+                        Some(name)
+                    }
+                    _ => None,
+                }
+            });
+        assert_eq!(
+            named,
+            Some(Some("granite-staging-alerts".to_owned())),
+            "the search hit's label names the conversation at creation",
+        );
+    }
+
+    /// The sweep's backfill writes through to the store, so the name
+    /// survives the restart that produced the unnamed record.
+    #[test]
+    fn a_backfilled_conversation_name_reaches_the_store() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
+
+        ws.name_slack_conversation("acme", "C1", "ved-test");
+
+        let db = ws.db.lock();
+        let stored = crate::store::slack::list(db.as_ref().expect("db installed")).expect("list");
+        let named = stored.iter().find_map(|sub| match &sub.target {
+            SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => {
+                Some(name.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(
+            named,
+            Some(Some("ved-test".to_owned())),
+            "the backfilled name is persisted, not only held in memory",
+        );
+    }
+
+    /// The guard the doc comment promises: a conversation renamed since it
+    /// was subscribed keeps the stored name rather than picking up the
+    /// directory's current one.
+    #[test]
+    fn naming_a_conversation_leaves_an_already_named_record_alone() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let mut sub = sub_for_conversation("forge", None, "C1");
+        sub.target = SlackSubscriptionTarget::Conversation {
+            id: "C1".to_owned(),
+            name: Some("stale-name".to_owned()),
+            mode: SlackWatchMode::All,
+        };
+        ws.add_slack_subscription(sub, true);
+
+        ws.name_slack_conversation("acme", "C1", "renamed");
+
+        let db = ws.db.lock();
+        let stored = crate::store::slack::list(db.as_ref().expect("db installed")).expect("list");
+        let name = stored.iter().find_map(|sub| match &sub.target {
+            SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => name.clone(),
+            _ => None,
+        });
+        assert_eq!(
+            name,
+            Some("stale-name".to_owned()),
+            "a record that already has a name is never rewritten",
+        );
+    }
+
+    /// The same conversation id can be watched in two workspaces, so the
+    /// heal is scoped to the workspace it was called for.
+    #[test]
+    fn naming_a_conversation_leaves_another_workspace_alone() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
+        let mut other = sub_for_conversation("forge", None, "C1");
+        other.id = Uuid::new_v4();
+        other.workspace = "beta".to_owned();
+        ws.add_slack_subscription(other, true);
+
+        ws.name_slack_conversation("acme", "C1", "ved-test");
+
+        let db = ws.db.lock();
+        let stored = crate::store::slack::list(db.as_ref().expect("db installed")).expect("list");
+        // Keyed, not ordered: the store iterates by uuid bytes.
+        let named: BTreeMap<String, Option<String>> = stored
+            .iter()
+            .filter_map(|sub| match &sub.target {
+                SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => {
+                    Some((sub.workspace.clone(), name.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            named.get("acme"),
+            Some(&Some("ved-test".to_owned())),
+            "the named workspace's record is healed",
+        );
+        assert_eq!(named.get("beta"), Some(&None), "the other workspace's record is untouched");
+    }
+
+    /// An ephemeral ad-hoc-worker subscription is in memory only by design,
+    /// so healing its name must not write it to the store and resurrect it
+    /// on the next boot under a worker label that is gone.
+    #[test]
+    fn naming_an_ephemeral_conversation_does_not_persist_it() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.add_slack_subscription(sub_for_conversation("forge", Some("tester"), "C1"), false);
+
+        ws.name_slack_conversation("acme", "C1", "ved-test");
+
+        let db = ws.db.lock();
+        let stored = crate::store::slack::list(db.as_ref().expect("db installed")).expect("list");
+        assert!(stored.is_empty(), "an ephemeral record never reaches the store: {stored:?}");
+        drop(db);
+
+        let named =
+            ws.slack_subscriptions_for_project("forge").into_iter().find_map(|sub| {
+                match sub.target {
+                    SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => {
+                        Some(name)
+                    }
+                    _ => None,
+                }
+            });
+        assert_eq!(
+            named,
+            Some(Some("ved-test".to_owned())),
+            "the in-memory record still gets its name",
         );
     }
 
@@ -1185,7 +1451,7 @@ mod tests {
         ws.set_slack_watermark("acme", "C1", "100.0");
 
         assert!(
-            ws.auto_subscribe_slack_conversation("acme", "C1", "200.1"),
+            ws.auto_subscribe_slack_conversation("acme", "C1", "200.1", None),
             "the conversation is watched by nobody yet, so a record is added",
         );
         let db = ws.db.lock();
@@ -1201,8 +1467,11 @@ mod tests {
 
     fn sub_for_conversation(project: &str, team_role: Option<&str>, id: &str) -> SlackSubscription {
         let mut sub = sub_for(project, team_role);
-        sub.target =
-            SlackSubscriptionTarget::Conversation { id: id.to_owned(), mode: SlackWatchMode::All };
+        sub.target = SlackSubscriptionTarget::Conversation {
+            id: id.to_owned(),
+            name: None,
+            mode: SlackWatchMode::All,
+        };
         sub
     }
 
@@ -1413,6 +1682,7 @@ mod tests {
                 sub.target
                     == SlackSubscriptionTarget::Conversation {
                         id: "C1".to_owned(),
+                        name: None,
                         mode: SlackWatchMode::All,
                     }
             })
@@ -1479,7 +1749,7 @@ mod tests {
         ws.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
 
         assert!(
-            !ws.auto_subscribe_slack_conversation("acme", "C1", "200.1"),
+            !ws.auto_subscribe_slack_conversation("acme", "C1", "200.1", None),
             "a conversation that owner already watches adds nothing",
         );
         assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2, "and no third record");

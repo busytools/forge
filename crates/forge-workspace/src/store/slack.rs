@@ -375,6 +375,7 @@ mod tests {
         s.team_role = Some("tester".to_owned());
         s.target = SlackSubscriptionTarget::Conversation {
             id: "C1".to_owned(),
+            name: Some("ved-test".to_owned()),
             mode: SlackWatchMode::MentionsOnly,
         };
         insert(&db, &s).expect("insert");
