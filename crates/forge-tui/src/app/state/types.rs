@@ -143,6 +143,53 @@ pub struct BackgroundTask {
     pub description: String,
 }
 
+impl BackgroundTask {
+    /// Whether this task's kind routes to an Inspector section at all:
+    /// `local_bash` to PROCESSES, an agent kind to SUBAGENTS, a workflow
+    /// kind to WORKFLOWS. One list, shared by the drift warning in
+    /// `handle_background_tasks_changed` and the Projects-pane row glyph -
+    /// a kind the CLI renames on one side only renders nowhere while its
+    /// spinner keeps turning.
+    pub(crate) fn routes_to_inspector_section(&self) -> bool {
+        matches!(
+            self.task_type.as_str(),
+            "local_bash" | "agent" | "local_agent" | "local_workflow" | "workflow"
+        )
+    }
+}
+
+/// What forge saw of a rostered task's tool card when its `task_started`
+/// mapping was made: whether the card was in the messages at all, and the
+/// wire command when it carried one. Every Inspector section paints from that
+/// card, so a rostered task with none draws nothing.
+///
+/// Recorded once, at the mapping, while the card is normally the newest thing
+/// in the messages; a `task_started` whose card forge cannot find records
+/// `card_seen: false` instead. The row glyph and the PROCESSES feed read these
+/// facts rather than the history, which is what keeps the frame-tick gate off
+/// a per-tick message sweep.
+///
+/// A card the history drops after the mapping leaves these facts standing: a
+/// pruned agent card still promotes the row glyph, while a pruned bash card
+/// still draws, from the recorded command. A workflow kind is unaffected
+/// either way, because its section paints from its own entry list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTaskCard {
+    pub tool_use_id: String,
+    pub card_seen: bool,
+    /// The card's wire command, for the kinds that carry one. `None` for a
+    /// card with no `command` field (an agent dispatch) and for no card.
+    pub command: Option<String>,
+}
+
+impl SessionTaskCard {
+    /// A mapping whose card forge could not find - a `task_started` arriving
+    /// before its tool call, or a fixture that seeds the mapping alone.
+    pub fn unseen(tool_use_id: String) -> Self {
+        Self { tool_use_id, card_seen: false, command: None }
+    }
+}
+
 /// Kind of a schedule entry in the Inspector SCHEDULES section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScheduleKind {

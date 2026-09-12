@@ -840,6 +840,15 @@ pub(super) fn apply_session_update_session_replaced(
     // background chain `Connected` uses, leaving every App-global
     // surface (focus, input, status, terminals, overlays) untouched.
     super::client::apply_session_update_key_renamed(app, previous_key, key.clone());
+    // The old chat is replaced below, and the roster and its recorded cards
+    // described it: left set, the row spins for work no Inspector section can
+    // show. Only here, never on `Connected` - `task_started` is not re-emitted
+    // for a task that is still running, so a cleared record could not be
+    // re-earned, while a stale roster entry is replaced wholesale by the CLI's
+    // next snapshot.
+    if let Some(bucket) = app.sessions.get_mut(key) {
+        bucket.clear_background_task_registry();
+    }
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_replaced",
@@ -1135,6 +1144,7 @@ mod teardown_clears_background_registry_tests {
     use crate::app::App;
     use crate::app::BackgroundTask;
     use crate::app::session::UiSession;
+    use crate::app::state::types::SessionTaskCard;
     use forge_workspace::SessionKey;
 
     fn seed_task(bucket: &mut UiSession) {
@@ -1143,7 +1153,9 @@ mod teardown_clears_background_registry_tests {
             task_type: "local_bash".to_owned(),
             description: "gh run watch".to_owned(),
         });
-        bucket.session_task_tool_use_ids.insert("t1".to_owned(), "tc-1".to_owned());
+        bucket
+            .session_task_tool_use_ids
+            .insert("t1".to_owned(), SessionTaskCard::unseen("tc-1".to_owned()));
     }
 
     /// A background (non-active) session that fails to connect while a
@@ -1167,7 +1179,7 @@ mod teardown_clears_background_registry_tests {
         handle_connection_failed_event(&mut app, &key, "connection refused");
 
         let bucket = app.sessions.get(&key).expect("bucket survives as a Failed shell");
-        assert!(!bucket.has_live_background_work(), "background_tasks cleared on teardown");
+        assert!(bucket.background_tasks.is_empty(), "roster cleared on teardown");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
 
@@ -1181,7 +1193,7 @@ mod teardown_clears_background_registry_tests {
         handle_connection_failed_event(&mut app, &key, "connection refused");
 
         let bucket = app.sessions.get(&key).expect("bucket");
-        assert!(!bucket.has_live_background_work(), "background_tasks cleared on teardown");
+        assert!(bucket.background_tasks.is_empty(), "roster cleared on teardown");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
 
@@ -1204,7 +1216,47 @@ mod teardown_clears_background_registry_tests {
         handle_auth_required_event(&mut app, &key, "oauth".to_owned(), "Log in".to_owned());
 
         let bucket = app.sessions.get(&key).expect("bucket");
-        assert!(!bucket.has_live_background_work(), "auth-required clears background_tasks");
+        assert!(bucket.background_tasks.is_empty(), "roster cleared on auth-required");
+        assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
+    }
+
+    /// A replacement that lands on a session the user is not looking at
+    /// re-seeds the bucket with a fresh welcome and drops the old chat, so
+    /// the roster that described it must go too. Left set, the row spins
+    /// for work no Inspector section can show - the sections read the
+    /// messages just cleared.
+    #[test]
+    fn background_session_replacement_clears_background_registry() {
+        use super::apply_session_update_session_replaced;
+
+        let mut app = App::test_default();
+        let previous = SessionKey::from_session_id("replaced-uuid");
+        let mut bucket = UiSession::new(previous.clone());
+        seed_task(&mut bucket);
+        app.sessions.insert(previous.clone(), bucket);
+        assert_ne!(
+            app.active_session_key.as_ref(),
+            Some(&previous),
+            "precondition: the replaced session is not the one on screen",
+        );
+        let current_model = app.current_model().cloned().expect("test_default seeds a model");
+
+        let replacement = SessionKey::from_session_id("replacement-uuid");
+        apply_session_update_session_replaced(
+            &mut app,
+            &replacement,
+            &previous,
+            forge_primitives::SessionId::new("replacement-uuid"),
+            "/tmp/replaced".to_owned(),
+            current_model,
+            Vec::new(),
+            None,
+            &[],
+            0,
+        );
+
+        let bucket = app.sessions.get(&replacement).expect("bucket migrated to the new key");
+        assert!(bucket.background_tasks.is_empty(), "replacement clears background_tasks");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
 
@@ -1218,7 +1270,7 @@ mod teardown_clears_background_registry_tests {
         handle_auth_required_event(&mut app, &key, "oauth".to_owned(), "Log in".to_owned());
 
         let bucket = app.sessions.get(&key).expect("bucket");
-        assert!(!bucket.has_live_background_work(), "auth-required clears background_tasks");
+        assert!(bucket.background_tasks.is_empty(), "roster cleared on auth-required");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
     }
 }

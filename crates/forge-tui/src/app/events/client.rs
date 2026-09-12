@@ -2652,6 +2652,63 @@ mod tests {
         assert!(bucket_account_info_for(&app, &active).is_none());
     }
 
+    /// A background `Connected` refreshes a connecting bucket's presentation
+    /// and must leave its background roster standing. `task_started` is not
+    /// re-emitted for a task that is still running, so a record cleared here
+    /// could never be re-earned: a live bash would lose both its PROCESSES row
+    /// and its spinner. Only the replacement path clears, because only there is
+    /// the chat the roster described actually dropped.
+    #[test]
+    fn connected_background_leaves_the_background_roster_standing() {
+        let mut app = App::test_default();
+        let (_active, background) = seed_two_sessions(&mut app);
+        {
+            let bucket = app.sessions.get_mut(&background).expect("bucket");
+            bucket.background_tasks.push(crate::app::BackgroundTask {
+                task_id: "task-bash".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "watch CI".to_owned(),
+            });
+            bucket.session_task_tool_use_ids.insert(
+                "task-bash".to_owned(),
+                crate::app::SessionTaskCard {
+                    tool_use_id: "tu-bash".to_owned(),
+                    card_seen: true,
+                    command: Some("gh run watch 123".to_owned()),
+                },
+            );
+        }
+        assert!(
+            app.sessions.get(&background).expect("bucket").has_live_background_work(),
+            "precondition: the roster drives the row",
+        );
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Connected {
+                key: background.clone(),
+                session_id: forge_primitives::SessionId::new(background.as_str()),
+                cwd: "/bg".to_owned(),
+                current_model: test_current_model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 0,
+            },
+        );
+
+        let bucket = app.sessions.get(&background).expect("bucket present");
+        assert!(
+            bucket.background_tasks.iter().any(|task| task.task_id == "task-bash"),
+            "a connected bucket keeps the roster it already had",
+        );
+        assert!(
+            bucket.session_task_tool_use_ids.contains_key("task-bash"),
+            "and the card recorded with it, which cannot be re-earned",
+        );
+        assert!(bucket.has_live_background_work(), "so the row keeps spinning");
+    }
+
     /// `SessionUpdate::Connected` on a background bucket writes
     /// session_id + cwd_raw + lifecycle Idle directly onto the bucket
     /// while also mirroring session_id onto the workspace's

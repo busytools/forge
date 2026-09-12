@@ -10,7 +10,7 @@ use forge_tui::agent::model;
 use forge_tui::app::session::UiSession;
 use forge_tui::app::{
     App, AppStatus, BackgroundTask, BlockCache, ChatMessage, MessageBlock, MessageRole,
-    ToolCallInfo, ToolCallScope,
+    SessionTaskCard, ToolCallInfo, ToolCallScope,
 };
 use pretty_assertions::assert_eq;
 
@@ -754,7 +754,7 @@ async fn backgrounded_bash_survives_turn_reset_over_real_wire_path() {
 
     let session = app.active_session().expect("active session");
     assert_eq!(
-        session.session_task_tool_use_ids.get("task-bash").map(String::as_str),
+        session.session_task_tool_use_ids.get("task-bash").map(|card| card.tool_use_id.as_str()),
         Some("toolu_bash"),
         "session task map resolves the backgrounded bash across turn reset",
     );
@@ -1140,7 +1140,7 @@ async fn turn_end_does_not_force_complete_a_backgrounded_bash_card() {
         session.background_tasks,
     );
     assert_eq!(
-        session.session_task_tool_use_ids.get("task-bash").map(String::as_str),
+        session.session_task_tool_use_ids.get("task-bash").map(|card| card.tool_use_id.as_str()),
         Some("toolu_bash"),
         "the session task map still resolves it across the boundary",
     );
@@ -1224,7 +1224,10 @@ fn bg_bucket_with_backgrounded_bash(key: &SessionKey) -> UiSession {
         MessageRole::Assistant,
         vec![MessageBlock::ToolCall(Box::new(backgrounded_bash_card("toolu_bash")))],
     ));
-    session.session_task_tool_use_ids.insert("task-bash".to_owned(), "toolu_bash".to_owned());
+    session.session_task_tool_use_ids.insert(
+        "task-bash".to_owned(),
+        SessionTaskCard { tool_use_id: "toolu_bash".to_owned(), card_seen: true, command: None },
+    );
     session.background_tasks.push(BackgroundTask {
         task_id: "task-bash".to_owned(),
         task_type: "local_bash".to_owned(),
@@ -1706,7 +1709,10 @@ async fn the_background_sweep_spares_a_live_backgrounded_subagents_children() {
         "toolu_child".to_owned(),
         ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
     );
-    bg.session_task_tool_use_ids.insert("task-root".to_owned(), "toolu_root".to_owned());
+    bg.session_task_tool_use_ids.insert(
+        "task-root".to_owned(),
+        SessionTaskCard { tool_use_id: "toolu_root".to_owned(), card_seen: true, command: None },
+    );
     bg.background_tasks.push(BackgroundTask {
         task_id: "task-root".to_owned(),
         task_type: "local_agent".to_owned(),

@@ -751,18 +751,17 @@ fn append_worker_tree_children(
         // Lifecycle glyph in front of the label - matches the project
         // row's leading glyph column. Prefer the bucket's actual
         // lifecycle (Idle ●, Running spinner, etc.) when present in
-        // `app.sessions`; fall back to a Spawning spinner when the
-        // worker's Connected hasn't landed yet so the column never
-        // collapses to a blank cell.
+        // `app.sessions`; with no bucket the worker's own liveness is all
+        // forge knows, so read that rather than assuming a live spawn.
         //
         // A pending permission/question prompt surfaces yellow △
         // regardless of selection - the prompt is the worker's own
         // state (#153 parity with the project-lead row). Selection
         // recolours the glyph below, never swaps it.
-        let lifecycle = app
-            .sessions
-            .get(&worker.session_key)
-            .map_or(SessionLifecycleState::Spawning, |s| s.lifecycle_state);
+        let lifecycle = app.sessions.get(&worker.session_key).map_or_else(
+            || crate::ui::worker_lifecycle_without_bucket(worker.status),
+            |s| s.lifecycle_state,
+        );
         let needs_attention =
             app.sessions.get(&worker.session_key).is_some_and(|b| !b.prompt_queue.is_empty());
         // Same red `✕` the lead row uses for a dead turn - distinct from
@@ -3429,13 +3428,25 @@ mod tests {
         let project_path = "/tmp/bg-activity-project";
         let (mut app, project, lead_key) =
             app_with_lead_bucket(project_path, SessionLifecycleState::Idle);
-        app.sessions.get_mut(&lead_key).expect("lead bucket").background_tasks.push(
-            BackgroundTask {
+        {
+            let lead = app.sessions.get_mut(&lead_key).expect("lead bucket");
+            lead.background_tasks.push(BackgroundTask {
                 task_id: "t1".to_owned(),
-                task_type: "local_bash".to_owned(),
+                // An agent kind: the row glyph follows the Inspector's draw
+                // decision, and a drawn bash would need the wire command only
+                // a `local_bash` card carries.
+                task_type: "local_agent".to_owned(),
                 description: "cargo build".to_owned(),
-            },
-        );
+            });
+            lead.session_task_tool_use_ids.insert(
+                "t1".to_owned(),
+                crate::app::SessionTaskCard {
+                    tool_use_id: "tu-1".to_owned(),
+                    card_seen: true,
+                    command: None,
+                },
+            );
+        }
         let frames = app.spinner_style.frames();
 
         let area = Rect { x: 0, y: 0, width: 44, height: 20 };
@@ -3523,6 +3534,16 @@ mod tests {
                 task_type: "local_bash".to_owned(),
                 description: "cargo build".to_owned(),
             });
+            // The spinner this test overrides has to be live, or the △ would
+            // win by default rather than by outranking anything.
+            lead.session_task_tool_use_ids.insert(
+                "t1".to_owned(),
+                crate::app::SessionTaskCard {
+                    tool_use_id: "tu-1".to_owned(),
+                    card_seen: true,
+                    command: Some("cargo build".to_owned()),
+                },
+            );
             lead.prompt_queue.push_back(crate::app::prompt::PromptState::from_permission(
                 "tc-bg".to_owned(),
                 crate::app::prompt::tests::make_permission_request(),
@@ -3673,9 +3694,20 @@ mod tests {
         worker_session.lifecycle_state = SessionLifecycleState::Idle;
         worker_session.background_tasks.push(BackgroundTask {
             task_id: "t1".to_owned(),
-            task_type: "local_bash".to_owned(),
+            // An agent kind: the row glyph follows the Inspector's draw
+            // decision, and a drawn bash would need the wire command only a
+            // `local_bash` card carries.
+            task_type: "local_agent".to_owned(),
             description: "gh run watch".to_owned(),
         });
+        worker_session.session_task_tool_use_ids.insert(
+            "t1".to_owned(),
+            crate::app::SessionTaskCard {
+                tool_use_id: "tu-1".to_owned(),
+                card_seen: true,
+                command: None,
+            },
+        );
         app.sessions.insert(worker_session_key, worker_session);
 
         let project = ProjectView::new_for_test(
@@ -3702,6 +3734,70 @@ mod tests {
             !row.contains('\u{25cf}'),
             "worker with background work must not show the idle bullet; got: {row}"
         );
+    }
+
+    /// A live worker whose session bucket is absent - the spawn window
+    /// before `Connected`, a dropped or renamed key, or a swept bucket.
+    /// Returns its rendered row.
+    fn render_bucketless_worker_row(status: forge_primitives::WorkerLiveness) -> String {
+        use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("bucketless-worker-project");
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "runner".into(),
+                charter: "bucketless".into(),
+                session_key: SessionKey::from_session_id("worker-nobucket"),
+                status,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        // Deliberately no `app.sessions` bucket for that key.
+
+        let project = ProjectView::new_for_test(
+            project_key,
+            "bucketless-worker-project",
+            "/tmp/bucketless-worker-project",
+            Vec::new(),
+        );
+        let area = Rect { x: 0, y: 0, width: 44, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .find(|l| l.contains("runner"))
+            .expect("worker row renders")
+    }
+
+    /// Reproduce-first: with no bucket the worker renders in neither pane,
+    /// so its row has nothing to spin for. A connected worker reads settled
+    /// instead of painting the spawn spinner forever.
+    #[test]
+    fn bucketless_worker_row_shows_settled_glyph_not_spinner() {
+        let row = render_bucketless_worker_row(forge_primitives::WorkerLiveness::Running);
+        assert!(
+            !row.contains('\u{280B}'),
+            "a bucketless worker has nothing visible to explain a spinner; got: {row}"
+        );
+        assert!(row.contains('\u{25cf}'), "an unbucketed live worker reads settled; got: {row}");
+    }
+
+    /// The spawn window keeps its spinner: a worker that really is spawning
+    /// has a state the row itself renders.
+    #[test]
+    fn bucketless_spawning_worker_row_still_spins() {
+        let row = render_bucketless_worker_row(forge_primitives::WorkerLiveness::Spawning);
+        assert!(row.contains('\u{280B}'), "a spawning worker still spins; got: {row}");
     }
 
     const ORG_TREE_PANE_WIDTH: u16 = 44;

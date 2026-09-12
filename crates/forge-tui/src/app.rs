@@ -75,13 +75,13 @@ pub use state::{
     MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget, PasteSessionState,
     PendingCommandAck, PhaseEntry, PhaseStatus, ROW_CLOSE_BUTTON, RateLimitIncidentKey,
     RecentSessionInfo, ReviewRepliesWaiting, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind,
-    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
-    SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry, SubagentEntry,
-    SystemSeverity, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
-    TurnInfo, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageState,
-    UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus, compute_scrollbar_geometry,
-    control_gutter_start, hash_text_block_content, hash_welcome_block_content,
-    is_execute_tool_name, is_monitor_tool_name,
+    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionTaskCard,
+    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
+    SubagentEntry, SystemSeverity, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
+    ToolCallScope, TurnInfo, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind,
+    UsageState, UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus,
+    compute_scrollbar_geometry, control_gutter_start, hash_text_block_content,
+    hash_welcome_block_content, is_execute_tool_name, is_monitor_tool_name,
 };
 pub(crate) use state::{MarkdownRenderKey, RenderedChunk};
 pub use usage_overlay::UsageOverlayState;
@@ -1579,15 +1579,26 @@ mod tests {
         // Idle with no background work: nothing to animate.
         assert!(!app.shows_activity(), "idle with no background work must not animate");
 
-        // A live backgrounded task promotes the gate so the frame ticker
-        // keeps advancing for a row that's active only because of it.
-        app.sessions.get_mut(&key).expect("bucket").background_tasks.push(
-            crate::app::BackgroundTask {
+        // A live backgrounded task the Inspector draws promotes the gate so
+        // the frame ticker keeps advancing for a row that's active only
+        // because of it. An agent kind, because a drawn bash needs the wire
+        // command only a `local_bash` card carries.
+        {
+            let bucket = app.sessions.get_mut(&key).expect("bucket");
+            bucket.background_tasks.push(crate::app::BackgroundTask {
                 task_id: "t1".to_owned(),
-                task_type: "local_bash".to_owned(),
+                task_type: "local_agent".to_owned(),
                 description: "cargo build".to_owned(),
-            },
-        );
+            });
+            bucket.session_task_tool_use_ids.insert(
+                "t1".to_owned(),
+                crate::app::SessionTaskCard {
+                    tool_use_id: "tu-1".to_owned(),
+                    card_seen: true,
+                    command: None,
+                },
+            );
+        }
         assert!(app.shows_activity(), "idle with live background work must animate");
     }
 
@@ -1607,9 +1618,19 @@ mod tests {
         session.lifecycle_state = SessionLifecycleState::Attention;
         session.background_tasks.push(crate::app::BackgroundTask {
             task_id: "t1".to_owned(),
-            task_type: "local_bash".to_owned(),
+            task_type: "local_agent".to_owned(),
             description: "gh run watch".to_owned(),
         });
+        // The promotion this test overrides has to be live, or the triangle
+        // would win by default rather than by outranking anything.
+        session.session_task_tool_use_ids.insert(
+            "t1".to_owned(),
+            crate::app::SessionTaskCard {
+                tool_use_id: "tu-1".to_owned(),
+                card_seen: true,
+                command: None,
+            },
+        );
         app.sessions.insert(key.clone(), session);
         assert!(
             !app.shows_activity(),

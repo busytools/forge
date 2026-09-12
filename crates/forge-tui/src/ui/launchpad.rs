@@ -830,9 +830,10 @@ fn push_worker_rows(
 /// has not spawned this boot.
 ///
 /// A Running worker whose bucket has not arrived falls back to
-/// `Spawning`, matching what the Projects pane renders for the same
-/// worker in the same instant (see `append_worker_tree_children`): the
-/// gap is a `Connected` the TUI has not drained yet.
+/// [`crate::ui::worker_lifecycle_without_bucket`], the same answer the
+/// Projects pane renders for that worker (see `append_worker_tree_children`):
+/// the gap is a `Connected` the TUI has not drained yet, and a row with no
+/// bucket has nothing on screen for a spinner to point at.
 fn worker_lifecycle(
     app: &App,
     live: &[forge_workspace::LiveWorkerState],
@@ -845,10 +846,10 @@ fn worker_lifecycle(
     match entry.status {
         WorkerLiveness::Spawning => SessionLifecycleState::Spawning,
         WorkerLiveness::Failed => SessionLifecycleState::Failed,
-        WorkerLiveness::Running => app
-            .sessions
-            .get(&entry.session_key)
-            .map_or(SessionLifecycleState::Spawning, |s| s.lifecycle_state),
+        WorkerLiveness::Running => app.sessions.get(&entry.session_key).map_or_else(
+            || crate::ui::worker_lifecycle_without_bucket(entry.status),
+            |s| s.lifecycle_state,
+        ),
     }
 }
 
@@ -1503,11 +1504,11 @@ mod tests {
     }
 
     /// A live worker's glyph tracks its own session, and a Running one
-    /// whose bucket has not arrived reads as `Spawning` - the same
-    /// answer the Projects pane gives for that worker in that instant,
-    /// so the two surfaces cannot disagree about it.
+    /// whose bucket has not arrived reads as idle - the same answer the
+    /// Projects pane gives for that worker, from the same helper, so the
+    /// two surfaces cannot disagree about it.
     #[test]
-    fn a_running_worker_without_a_bucket_reads_as_spawning() {
+    fn a_running_worker_without_a_bucket_reads_as_idle() {
         use crate::app::session::UiSession;
         use forge_primitives::WorkerLiveness;
 
@@ -1528,8 +1529,8 @@ mod tests {
         );
         assert_eq!(
             worker_lifecycle(&app, &live, "unbucketed"),
-            SessionLifecycleState::Spawning,
-            "a Running worker whose bucket has not arrived reads as Spawning, the same answer \
+            SessionLifecycleState::Idle,
+            "a Running worker whose bucket has not arrived reads as idle, the same answer \
              projects_pane.rs gives for it",
         );
         assert_eq!(
