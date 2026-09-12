@@ -241,9 +241,9 @@ Two workspaces, the second pump down, a mentions-only row, and a conversation wh
 <pre class="indent">
   <span class="dim bold">  SLACK</span>
 
-      <span class="bold">Trust Machines</span> <span class="warning">⚠</span>
+      <span class="bold">Trust Machines</span> <span class="accent">◈</span>
         <span class="dim">#ved-test · mentions only</span>
-      <span class="bold">Acme</span> <span class="accent">◈</span>
+      <span class="bold">Acme</span> <span class="warning">⚠</span>
         <span class="dim">C0C0T5E6RM1 · every message</span>
 </pre>
 
@@ -254,7 +254,7 @@ Two workspaces, the second pump down, a mentions-only row, and a conversation wh
 
 - Visibility keys on the owned subscriptions alone, never on the pumps: a session that subscribed keeps the section when a pump drops, swapping its workspace glyph; a session with no owned subscription hides the section. Boot failing to read the durable set shows the section with a warning row instead, so the failure is not silent.
 - One pump per workspace, so liveness is per workspace and rides the heading rather than a single status on the section header the way GOTIFY's does. Two subscriptions in one workspace render one heading, not two.
-- A conversation's name comes from the sweep's directory walk, so a record can be rendered before it has one: a conversation subscribed this tick, one written before names were captured, or one the walk never saw renders its raw id unprefixed. It is never dressed as a channel - the id is not a name, and `#C0C0T5E6RM1` would read as a channel that does not exist.
+- A conversation's name arrives from one of two sources: the sweep's directory walk, which backfills any record that has none, or the search hit's label, captured when a mention pulls the session into a conversation it was not watching. Either way a record can be rendered before it has a name, and an unnamed row renders its raw id unprefixed. It is never dressed as a channel - the id is not a name, and `#C0C0T5E6RM1` would read as a channel that does not exist.
 - Colors: header dim bold; the workspace label white bold; the glyph rust orange connected and warning when down; subscription rows dim.
 
 </details>

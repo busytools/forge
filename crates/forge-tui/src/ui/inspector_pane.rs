@@ -647,9 +647,10 @@ fn append_body(
         append_gotify_section(lines, app, width);
     }
 
-    // SLACK sits below GOTIFY, rendered only while the active session owns
-    // at least one subscription. Liveness is per workspace, so it rides
-    // each row rather than the header.
+    // SLACK sits below GOTIFY, rendered while the active session owns at
+    // least one subscription or boot could not read the durable set, so a
+    // load failure still surfaces. Liveness is per workspace, so it rides
+    // each workspace heading rather than the section header.
     if slack_section_visible(app) {
         lines.push(Line::default());
         push_section_rule(lines, width);
@@ -1740,12 +1741,6 @@ fn gotify_section_visible(app: &App) -> bool {
     !app.gotify_subs.is_empty()
 }
 
-/// Render the Inspector GOTIFY section: a status-carrying header then
-/// the active session's own subscriptions. The snapshot is already
-/// scoped by owner in `App::refresh_gotify`, so every row here belongs
-/// to this session and none needs an owner label. Only invoked when
-/// [`gotify_section_visible`] holds, so the subscription set is never
-/// empty; the stream may be up or down.
 /// The section shows for an owner's subscriptions, or when boot could
 /// not load the durable set - an empty set must not hide that failure.
 fn slack_section_visible(app: &App) -> bool {
@@ -1836,9 +1831,9 @@ fn append_slack_watch_row(
             "mentions anywhere".to_owned()
         }
         forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, name, mode } => {
-            // Unnamed covers three cases: written before names were
-            // captured, subscribed since but not yet swept, and a
-            // conversation the directory walk never saw.
+            // Unnamed means the record has not been swept yet - one written
+            // before names were captured heals on its first tick - or it
+            // covers a conversation the directory walk never saw.
             let label = name.clone().map_or_else(|| id.clone(), |name| format!("#{name}"));
             match mode {
                 forge_primitives::slack::SlackWatchMode::All => format!("{label} · every message"),
@@ -1854,6 +1849,12 @@ fn append_slack_watch_row(
     ]));
 }
 
+/// Render the Inspector GOTIFY section: a status-carrying header then
+/// the active session's own subscriptions. The snapshot is already
+/// scoped by owner in `App::refresh_gotify`, so every row here belongs
+/// to this session and none needs an owner label. Only invoked when
+/// [`gotify_section_visible`] holds, so the subscription set is never
+/// empty; the stream may be up or down.
 fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     lines.push(gotify_header_line(width, app.gotify_connected));
     lines.push(Line::default());
