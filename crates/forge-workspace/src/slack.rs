@@ -304,9 +304,10 @@ impl Workspace {
     }
 
     /// Fill in the display name on this workspace's conversation
-    /// subscriptions that have none, persisting each through the store.
-    /// Only unnamed records are touched: a conversation renamed since it
-    /// was subscribed keeps the stored name.
+    /// subscriptions that have none. A durable record is written through
+    /// the store; an ephemeral one is named in memory only. Only unnamed
+    /// records are touched: a conversation renamed since it was
+    /// subscribed keeps the stored name.
     pub(crate) fn name_slack_conversation(&self, workspace: &str, conversation: &str, name: &str) {
         let updated: Vec<SlackSubscription> = {
             let mut subs = self.slack_subs.lock();
@@ -330,9 +331,8 @@ impl Workspace {
         }
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
-        // Only records the store already holds are rewritten. An ephemeral
-        // ad-hoc-worker subscription lives in memory only by design, and
-        // inserting it here would promote it to durable.
+        // An ephemeral ad-hoc-worker subscription lives in memory only by
+        // design, and inserting it here would promote it to durable.
         let durable: Vec<Uuid> = match crate::store::slack::list(db) {
             Ok(stored) => stored.into_iter().map(|sub| sub.id).collect(),
             Err(error) => {

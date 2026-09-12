@@ -86,11 +86,10 @@ pub trait SlackHost: Send + Sync {
     /// Liveness for the Inspector's status line.
     fn set_connected(&self, workspace: &str, connected: bool);
 
-    /// Fill in a conversation's display name on subscriptions recorded
-    /// before names were captured, so the Inspector can render the name
-    /// rather than the raw id. Only records with no name are touched: a
-    /// conversation renamed since it was subscribed keeps the stored
-    /// name.
+    /// Fill in a conversation's display name on any subscription that has
+    /// none, so the Inspector can render the name rather than the raw id.
+    /// Only unnamed records are touched: a conversation renamed since it
+    /// was subscribed keeps the stored name.
     fn name_conversation(&self, workspace: &str, conversation: &str, name: &str);
 
     /// Hand one matched message to its subscriber's session. Returns
@@ -692,9 +691,8 @@ pub(crate) async fn sweep(
             });
         }
     }
-    // Records written before names were captured heal here, off the
-    // directory this tick already fetched. The synthetic entries above
-    // carry no name, so they are skipped without a case of their own.
+    // The synthetic entries above carry no name, so they are skipped
+    // without a case of their own.
     for subscription in &subscriptions {
         if let SlackSubscriptionTarget::Conversation { id, name: None, .. } = &subscription.target
             && let Some(name) = conversations

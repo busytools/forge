@@ -1836,8 +1836,9 @@ fn append_slack_watch_row(
             "mentions anywhere".to_owned()
         }
         forge_primitives::slack::SlackSubscriptionTarget::Conversation { id, name, mode } => {
-            // Records written before names were captured, and conversations
-            // the directory walk never saw, render the raw id.
+            // Unnamed covers three cases: written before names were
+            // captured, subscribed since but not yet swept, and a
+            // conversation the directory walk never saw.
             let label = name.clone().map_or_else(|| id.clone(), |name| format!("#{name}"));
             match mode {
                 forge_primitives::slack::SlackWatchMode::All => format!("{label} · every message"),
@@ -4853,7 +4854,7 @@ mod tests {
         );
         assert!(
             joined.contains("#ved-test") && joined.contains("direct messages"),
-            "both subscription rows render under the heading; got:\n{joined}",
+            "both subscription rows render; got:\n{joined}",
         );
     }
 

@@ -79,9 +79,9 @@ pub enum SlackSubscriptionTarget {
     /// design settled on, so a new DM needs no new subscription.
     DirectMessages,
     /// One conversation, with the mode that decides what reaches the session.
-    /// `name` is the display name captured when the record was written;
-    /// records from before it was captured decode as `None` and render
-    /// the raw id.
+    /// `name` is the display name, which may arrive after the record is
+    /// written: the sweep backfills it from its directory, and a record
+    /// still without one renders the raw id.
     Conversation {
         id: String,
         #[serde(default)]
