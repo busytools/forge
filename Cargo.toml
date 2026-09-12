@@ -47,7 +47,10 @@ ratatui = { version = "=0.30.0", features = ["unstable-rendered-line-info"] }
 # same one it cannot reach: `ratatui` requires `ratatui-core` by caret,
 # so pinning the facade alone leaves the dependency the crash lives in
 # free to float. Declared directly here so cargo unifies on this
-# version.
+# version - which holds only while `ratatui`'s own requirement stays
+# semver-compatible with `=0.1.0`. A facade bump to `^0.2` would let
+# cargo keep both versions, and this edge would quietly stop
+# constraining what `ratatui` actually links.
 ratatui-core = "=0.1.0"
 crossterm = "0.29"
 image = { version = "0.25", default-features = false, features = ["png"] }
