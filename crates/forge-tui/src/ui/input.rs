@@ -232,9 +232,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // The chat draws this line whenever an assistant is bound to the
-    // in-flight turn, so the composer draws it only when that cannot.
-    if app.is_compacting() && app.active_turn_assistant_idx().is_none() {
+    if app.is_compacting() {
         frame.render_widget(
             Paragraph::new(blocked_input_line(app, "Compacting context...")),
             geometry.padded,
@@ -553,23 +551,6 @@ mod tests {
         assert_eq!(
             interior, expected,
             "a compacting session replaces the editor with the line that names it, got: {rows:?}"
-        );
-    }
-
-    #[test]
-    fn a_bound_assistant_leaves_the_line_to_the_chat() {
-        let mut app = App::test_default();
-        app.push_active_turn_assistant_placeholder();
-        assert!(
-            app.active_turn_assistant_idx().is_some(),
-            "precondition: a compaction the user submits binds an assistant to the in-flight turn"
-        );
-        app.set_is_compacting(true);
-
-        let rows = render_input(&mut app, 80, 4);
-        assert!(
-            !rows.iter().any(|row| row.contains("Compacting context")),
-            "the chat carries the line for a bound assistant, so the composer must keep its editor, got: {rows:?}"
         );
     }
 

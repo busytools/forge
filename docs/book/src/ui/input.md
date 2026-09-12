@@ -20,7 +20,7 @@ A login hint: `Authentication required: <method> -- <description>` in yellow wit
 
 </details>
 
-While the session is in an input-blocking state the entire input area is replaced with a status line: a spinner and "Connecting to Claude Code..." while connecting, the pending command's own label while a slash command is in flight, "Compacting context..." while a compaction runs and the chat has no active-turn assistant to carry the line, and "Input disabled due to error" with a dim "Press Ctrl+Q to quit and try again." beneath on error.
+While the session is in an input-blocking state the entire input area is replaced with a status line: a spinner and "Connecting to Claude Code..." while connecting, the pending command's own label while a slash command is in flight, "Compacting context..." while a compaction runs, and "Input disabled due to error" with a dim "Press Ctrl+Q to quit and try again." beneath on error.
 
 <div class="term">
 
