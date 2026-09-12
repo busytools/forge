@@ -197,7 +197,7 @@ A fenced code block is a quiet panel: a lifted background, no box-drawing glyphs
 
 ## Compacting indicator
 
-While the session compacts the active assistant's status slot shows the spinner frame and "Compacting context..." in rust orange.
+While the session compacts the active assistant's status slot shows the spinner frame and "Compacting context..." in rust orange. The composer carries the same line in dim, and it is the one that renders when no assistant message is bound to the in-flight turn - the usual case for a compaction the CLI starts between turns, where the chat slot has nothing to attach to.
 
 <details>
 <summary>Compacting details</summary>
