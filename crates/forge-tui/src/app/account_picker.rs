@@ -105,7 +105,7 @@ fn commit(app: &mut App) {
     let account = selected.display_name.clone();
     close(app);
 
-    // Re-check at commit time: a delivered peer / cron / gotify prompt
+    // Re-check at commit time: a delivered peer / cron / gotify / slack prompt
     // may have started a turn while the picker was open. Block only a
     // known in-flight turn (`None` / `Some(Idle)` allow, matching the
     // open-gate); the workspace backstop is authoritative. Bailing here

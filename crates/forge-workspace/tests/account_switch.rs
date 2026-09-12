@@ -99,8 +99,8 @@ async fn switch_account_respawns_same_session_under_forced_config_dir() {
 
 #[tokio::test]
 async fn switch_account_refused_while_a_turn_is_in_flight() {
-    // The authoritative backstop: a delivered peer / cron / gotify prompt
-    // can start a turn between picker-open and Enter. handle_switch_account
+    // The authoritative backstop: a delivered peer / cron / gotify / slack
+    // prompt can start a turn between picker-open and Enter. handle_switch_account
     // must refuse (notice, no teardown) rather than tear down the live turn.
     let dir = tempdir().expect("tempdir");
     let workspace = three_account_workspace(dir.path());

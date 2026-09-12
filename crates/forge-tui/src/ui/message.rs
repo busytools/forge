@@ -2272,6 +2272,13 @@ fn role_label_line(msg: &ChatMessage) -> Option<Line<'static>> {
                     "Gotify",
                     Style::default().fg(theme::GOTIFY).add_modifier(Modifier::BOLD),
                 )))
+            } else if is_slack_envelope_user_message(msg) {
+                // An inbound Slack message - an external event from the
+                // user's own workspace, not typed input or agent traffic.
+                Some(Line::from(Span::styled(
+                    "Slack",
+                    Style::default().fg(theme::SLACK).add_modifier(Modifier::BOLD),
+                )))
             } else if is_cron_envelope_user_message(msg) {
                 // A fired cron - a scheduled internal event, distinct from
                 // typed input and from peer traffic.
@@ -2326,6 +2333,14 @@ fn is_cron_envelope_user_message(msg: &ChatMessage) -> bool {
     msg.is_cron_envelope
 }
 
+/// True when this `MessageRole::User` carries an inbound Slack message.
+/// Reads the cached `is_slack_envelope` flag stamped at push time by the
+/// `SlackMessageAppended` path, mirroring
+/// [`is_gotify_envelope_user_message`].
+fn is_slack_envelope_user_message(msg: &ChatMessage) -> bool {
+    msg.is_slack_envelope
+}
+
 /// Position of one envelope inside a same-project envelope streak.
 /// Drives the peer-block renderer's branch between the full
 /// streak-starter shape (existing `render_peer_card` chrome with
@@ -2350,7 +2365,7 @@ pub(crate) enum EnvelopeStreakPosition {
 }
 
 /// The `(org, sender)` an inbound envelope block carries, or `None` for
-/// anything that is not peer/worker traffic. Gotify and cron return
+/// anything that is not peer/worker traffic. Gotify, cron and Slack return
 /// `None` from `peer_sender_identity`, so they never join a streak.
 fn block_envelope_identity(block: &MessageBlock) -> Option<(String, String)> {
     use crate::ui::peer_block::{PeerInboundKind, detect_inbound};
@@ -5605,6 +5620,11 @@ mod tests {
             header_row_text(&ChatMessage::new_cron_envelope(MessageRole::User, vec![])).as_deref(),
             Some("Cron"),
             "a fired cron keeps its Cron source label",
+        );
+        assert_eq!(
+            header_row_text(&ChatMessage::new_slack_envelope(MessageRole::User, vec![])).as_deref(),
+            Some("Slack"),
+            "an inbound Slack message keeps its Slack source label",
         );
         assert_eq!(
             header_row_text(&make_text_message(MessageRole::User, "typed")).as_deref(),

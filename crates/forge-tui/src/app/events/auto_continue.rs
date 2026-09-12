@@ -360,7 +360,7 @@ mod tests {
     }
 
     /// A continuation is a mid-turn-capable dispatch: when any turn
-    /// (typed, or a cron/peer/gotify fire) starts inside the backoff
+    /// (typed, or a cron/peer/gotify/slack fire) starts inside the backoff
     /// window, the helper signals `PromptQueuedWhileBusy`; an idle
     /// fire stays silent.
     #[test]

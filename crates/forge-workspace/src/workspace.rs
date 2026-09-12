@@ -330,8 +330,9 @@ pub struct Workspace {
     /// at boot; ephemeral ad-hoc-worker ones live only in memory.
     /// `pub(crate)` so the impl block in [`crate::gotify`] can reach it.
     pub(crate) gotify_subs: Mutex<Vec<forge_primitives::GotifySubscription>>,
-    /// Machine-local redb store. Backs durable Gotify subscriptions
-    /// ([`crate::store::gotify`]) and persisted dynamic workers
+    /// Machine-local redb store. Backs durable crons ([`crate::store::cron`]),
+    /// Gotify and Slack subscriptions ([`crate::store::gotify`],
+    /// [`crate::store::slack`]) and persisted dynamic workers
     /// ([`crate::store::dynamic_workers`]). `None` when the DB couldn't
     /// open (degrade to in-memory-only, no persistence) or in
     /// `testing_stub`. `pub(crate)` so the impl block in
@@ -653,7 +654,7 @@ fn persist_session_tag_cache(
 /// Open the machine-local redb store at `<app_support>/db.redb`,
 /// creating the app-support dir first. Returns `None` (with a warn) when
 /// the dir can't be created or the DB can't open - forge then runs
-/// without durable Gotify subscriptions or dynamic workers this session
+/// without durable crons, subscriptions or dynamic workers this session
 /// (hard rule #14: no cwd fallback).
 fn open_db(app_support: &Path) -> Option<crate::store::Db> {
     if let Err(error) = std::fs::create_dir_all(app_support) {
@@ -661,7 +662,7 @@ fn open_db(app_support: &Path) -> Option<crate::store::Db> {
             target: "forge_workspace::workspace",
             %error,
             path = %app_support.display(),
-            "creating the app-support dir failed; Gotify subscriptions will not persist",
+            "creating the app-support dir failed; durable crons, subscriptions and dynamic workers will not persist",
         );
         return None;
     }
@@ -671,7 +672,7 @@ fn open_db(app_support: &Path) -> Option<crate::store::Db> {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 %error,
-                "opening the redb store failed; Gotify subscriptions will not persist",
+                "opening the redb store failed; durable crons, subscriptions and dynamic workers will not persist",
             );
             None
         }
@@ -820,6 +821,28 @@ fn build_resume_map_from_sessions(
     resume_map
 }
 
+/// Records what a failed spawn stranded after
+/// [`Workspace::get_agent_handle_with_spawn_key`] took ownership of the buffered
+/// domain and moved it onto the resolved key - a key nothing else knows yet, so
+/// no caller-side expiry can reach it. What it covers is the session call
+/// failing on a dead bridge dispatcher, which is what a `?` between arming and
+/// disarming can realistically hit;
+/// `a_spawn_failing_on_the_project_lookup_records_the_buffered_delivery` drives
+/// it through the project lookup instead, the one failure reachable from a test.
+struct SpawnBuffersGuard<'a> {
+    workspace: &'a Arc<Workspace>,
+    key: &'a SessionKey,
+    armed: bool,
+}
+
+impl Drop for SpawnBuffersGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.workspace.expire_spawn_key_buffers(self.key);
+        }
+    }
+}
+
 impl Workspace {
     /// Builds a Workspace, kicks off the background catalog scan, and
     /// loads `<config_dir>/forge.toml`. Errors if `forge.toml` is
@@ -917,7 +940,7 @@ impl Workspace {
                     tracing::warn!(
                         target: "forge_workspace::workspace",
                         %error,
-                        "app-support dir unresolved; the single-instance guard is skipped and Gotify subscriptions will not persist",
+                        "app-support dir unresolved; the single-instance guard is skipped and durable state will not persist",
                     );
                     None
                 }
@@ -949,8 +972,8 @@ impl Workspace {
             );
         }
 
-        // Open the machine-local redb store: durable crons + Gotify
-        // subscriptions both live in it. A failure to resolve the app-
+        // Open the machine-local redb store: durable crons, Gotify and Slack
+        // subscriptions all live in it. A failure to resolve the app-
         // support dir or open the DB degrades to no durable state this run
         // (non-fatal, like the state cache) - no cwd fallback (hard rule #14).
         let db = app_support.as_deref().and_then(open_db);
@@ -1115,12 +1138,12 @@ impl Workspace {
         };
         if workspace.db.lock().is_none() {
             // One user-visible notice for the whole best-effort-persist
-            // class (spinner override, durable crons, Gotify subs): the
+            // class (spinner override, durable crons, subscriptions): the
             // store is gone this run, so every one of those warns would
             // otherwise fire per-op into the log only.
             let _ = workspace.update_tx.send(SessionUpdate::ServiceStatus {
                 severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-                message: "Machine-local store unavailable this run; crons, Gotify subscriptions and the spinner override will not persist".to_owned(),
+                message: "Machine-local store unavailable this run; crons, Gotify and Slack subscriptions and the spinner override will not persist".to_owned(),
             });
         }
         Ok(workspace)
@@ -1396,12 +1419,10 @@ impl Workspace {
         let session_key = self.resolve_target(&target)?;
 
         // Fast path: cache hit. When `spawn_key` was provided AND a
-        // DomainSession is buffered there (peer-coordination path:
-        // `handle_deliver_peer_prompt` parks the wrapped prompt at
-        // `__spawn_<name>__` and dispatches SpawnProject), we MUST
-        // drain that buffer into the live session before returning
-        // the pooled handle - otherwise the pending peer prompt
-        // strands at the synth key forever.
+        // DomainSession is buffered there (a delivery path parks its payload at
+        // `__spawn_<name>__` and dispatches SpawnProject), we MUST drain that
+        // buffer into the live session before returning the pooled handle -
+        // otherwise everything it holds strands at the synth key forever.
         {
             let pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_key) {
@@ -1550,6 +1571,12 @@ impl Workspace {
         // and fall back to a fresh session in that project's cwd
         // otherwise. Pool key = lead's session id from the catalog
         // so it stays consistent with the running session id.
+        // The domain this spawn took ownership of now sits at `session_key`, and
+        // the fallible calls below can still fail. Nothing else knows that key
+        // yet, so without this guard a delivery parked on it would be released
+        // with the failure and never recorded.
+        let mut spawn_buffers =
+            SpawnBuffersGuard { workspace: self, key: &session_key, armed: true };
         match target {
             SessionTarget::Default => {
                 let project = self.config.default_project();
@@ -1604,6 +1631,11 @@ impl Workspace {
                 handle.new_session(cwd, settings)?;
             }
         }
+        // The session is up; whatever is buffered on it belongs to the live
+        // SessionTask to drain on Connected. The explicit drop ends the guard's
+        // borrow of `session_key` before it moves into the task.
+        spawn_buffers.armed = false;
+        drop(spawn_buffers);
 
         let arc = Arc::new(handle);
 
@@ -1697,14 +1729,14 @@ impl Workspace {
     }
 
     /// When `get_agent_handle_with_spawn_key` hits the pool fast-path
-    /// for a session that's already running, drain any
-    /// `pending_peer_prompts` buffered at the synthetic `spawn_key` (e.g.
-    /// `__spawn_<project>__`) into the live session via `Command::Prompt`.
-    /// Without this, peer asks aimed at a running-but-pre-spawn-dispatched
-    /// target strand at the synth key forever - the regular Connected-time
-    /// drain only fires when a fresh SessionTask boots. Cron prompts use
-    /// the owner-keyed buffer, not the synth key, so they are not drained
-    /// here.
+    /// for a session that's already running, drain every buffer held at the
+    /// synthetic `spawn_key` (e.g. `__spawn_<project>__`) into the live session
+    /// via `Command::Prompt`, echoing each as a block. Without this, peer asks,
+    /// notifications and Slack messages aimed at a
+    /// running-but-pre-spawn-dispatched target strand at the synth key forever -
+    /// the regular Connected-time drain only fires when a fresh SessionTask
+    /// boots. Cron prompts use the owner-keyed buffer, not the synth key, so
+    /// they are not drained here.
     fn drain_spawn_key_buffer_into(
         self: &Arc<Self>,
         session_key: &SessionKey,
@@ -1716,11 +1748,15 @@ impl Workspace {
         }
         let buffered_domain = self.domain_handles.lock().remove(spawn_key);
         let Some(buffered_domain) = buffered_domain else { return };
-        let pending = {
+        let (pending, gotify, slack) = {
             let mut guard = buffered_domain.lock();
-            std::mem::take(&mut guard.pending_peer_prompts)
+            (
+                std::mem::take(&mut guard.pending_peer_prompts),
+                std::mem::take(&mut guard.pending_gotify_prompts),
+                std::mem::take(&mut guard.pending_slack_prompts),
+            )
         };
-        if pending.is_empty() {
+        if pending.is_empty() && gotify.is_empty() && slack.is_empty() {
             return;
         }
         // Re-dispatch each buffered prompt against the live session.
@@ -1749,14 +1785,39 @@ impl Workspace {
                 );
             }
         }
+        // Every buffer the synth key holds moves, not just the peer one: a
+        // gotify notification or slack message parked here is dropped silently
+        // otherwise - nothing re-runs a delivery that reached this point.
+        for notification in gotify {
+            crate::spawn::push_gotify_notification_into_chat(self, session_key, &notification);
+            if let Err(err) = self.dispatch_workspace_prompt(session_key, notification.to_prose()) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    key = %session_key.as_str(),
+                    error = ?err,
+                    "drain_spawn_key_buffer_into: dispatch failed; gotify prompt dropped",
+                );
+            }
+        }
+        for message in slack {
+            let prose = crate::spawn::slack_message_to_prose(&message);
+            crate::spawn::push_slack_message_into_chat(self, session_key, &prose);
+            if let Err(err) = self.dispatch_workspace_prompt(session_key, prose) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    key = %session_key.as_str(),
+                    error = ?err,
+                    "drain_spawn_key_buffer_into: dispatch failed; slack prompt dropped",
+                );
+            }
+        }
     }
 
-    /// Merge a synthetic spawn-key DomainSession's buffered peer prompts
-    /// into an existing placeholder (Case 1 in
-    /// `get_agent_handle_with_spawn_key`: a peer ask arrived while a
-    /// pre-Connect placeholder already sat at `session_key`). Cron prompts
-    /// live in the owner-keyed buffer, not on the synth key, so they need
-    /// no merge here.
+    /// Merge a synthetic spawn-key DomainSession's buffered prompts into an
+    /// existing placeholder (Case 1 in `get_agent_handle_with_spawn_key`: a
+    /// delivery arrived while a pre-Connect placeholder already sat at
+    /// `session_key`). Cron prompts live in the owner-keyed buffer, not on the
+    /// synth key, so they need no merge here.
     fn merge_spawn_buffer_into_placeholder(
         placeholder: &Mutex<DomainSession>,
         buffered: &Mutex<DomainSession>,
@@ -1764,6 +1825,8 @@ impl Workspace {
         let mut placeholder = placeholder.lock();
         let mut src = buffered.lock();
         placeholder.pending_peer_prompts.append(&mut src.pending_peer_prompts);
+        placeholder.pending_gotify_prompts.append(&mut src.pending_gotify_prompts);
+        placeholder.pending_slack_prompts.append(&mut src.pending_slack_prompts);
     }
 
     /// Crate-internal accessor for the boot-time loading task to
@@ -3188,8 +3251,8 @@ impl Workspace {
         Ok(())
     }
 
-    /// Dispatch a workspace-originated plain prompt (cron fire, peer
-    /// or gotify delivery, kick, notices), signalling
+    /// Dispatch a workspace-originated plain prompt (cron fire, peer,
+    /// gotify or slack delivery, kick, notices), signalling
     /// `PromptQueuedWhileBusy` first when the target's turn is in
     /// flight so the TUI bridges the spinner across the gap.
     pub fn dispatch_workspace_prompt(
@@ -3917,10 +3980,52 @@ impl Workspace {
     /// the lead-row close gesture.
     pub(crate) fn release_session(&self, session_key: &SessionKey) {
         crate::dictate::teardown_for_closed_session(self, session_key);
+        if let Some(released) = self.domain_handles.lock().remove(session_key) {
+            Self::record_released_buffers(session_key, &released);
+        }
         let removed = self.pool.lock().remove(session_key);
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);
-        let _ = self.domain_handles.lock().remove(session_key);
+    }
+
+    /// Drain and log whatever a released domain still held. Anything buffered
+    /// there was never dispatched and the domain is going with the release - and
+    /// a delivery buffered while a worker spawned already committed, so nothing
+    /// re-runs it.
+    fn record_released_buffers(session_key: &SessionKey, domain: &Mutex<DomainSession>) {
+        let (peer, gotify, slack) = {
+            let mut guard = domain.lock();
+            (
+                std::mem::take(&mut guard.pending_peer_prompts),
+                std::mem::take(&mut guard.pending_gotify_prompts),
+                std::mem::take(&mut guard.pending_slack_prompts),
+            )
+        };
+        for wrapped in peer {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                key = %session_key.as_str(),
+                correlation_id = %wrapped.correlation_id,
+                "buffered peer prompt dropped: the session was released before it connected",
+            );
+        }
+        for notification in gotify {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                key = %session_key.as_str(),
+                app = %notification.app,
+                "buffered gotify notification dropped: the session was released before it connected",
+            );
+        }
+        for message in slack {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                key = %session_key.as_str(),
+                conversation = %message.conversation,
+                ts = %message.ts,
+                "buffered slack message dropped: the session was released before it connected",
+            );
+        }
     }
 
     /// Whether a session task still exists for `key`, which is what
@@ -6004,6 +6109,41 @@ impl Workspace {
                 "gotify notification dropped: the spawn it was buffered for failed",
             );
         }
+    }
+
+    /// Drain and record any Slack messages buffered on `synth_key` for a spawn
+    /// that never connected. `slack_delivery_commit` already ran when they were
+    /// buffered, so the sweep will not re-deliver them: without this the drop
+    /// is silent and nothing retries.
+    pub(crate) fn expire_buffered_slack_prompts(&self, synth_key: &SessionKey) {
+        let domain = self.domain_handles.lock().get(synth_key).cloned();
+        let Some(domain) = domain else {
+            return;
+        };
+        let buffered = std::mem::take(&mut domain.lock().pending_slack_prompts);
+        for message in buffered {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                synth_key = %synth_key.as_str(),
+                conversation = %message.conversation,
+                ts = %message.ts,
+                "slack message dropped: the spawn it was buffered for failed",
+            );
+        }
+    }
+
+    /// Record everything a failed spawn stranded at `key`. Every split-out
+    /// delivery path buffers on the same domain, and the spawn can fail before
+    /// or after the handoff moved that domain from the synth key to the
+    /// resolved one - so callers pass each key they know, and the three `take`s
+    /// make a second pass over an already-drained domain a no-op.
+    pub(crate) fn expire_spawn_key_buffers(self: &Arc<Self>, key: &SessionKey) {
+        self.expire_buffered_peer_prompts(
+            key,
+            crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+        );
+        self.expire_buffered_gotify_prompts(key);
+        self.expire_buffered_slack_prompts(key);
     }
 }
 
@@ -8253,7 +8393,7 @@ SOLO_TOKEN = "solo-secret"
     #[test]
     fn slack_delivery_to_a_running_lead_dispatches_a_prompt() {
         let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let (ws, mut update_rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("glead", "/tmp/slack-lead-running");
         let cwd = project_expanded_path(&ws, "glead");
         ws.record_connected_session(&cwd, "lead-uuid", None);
@@ -8286,6 +8426,188 @@ SOLO_TOKEN = "solo-secret"
             ws.domain_session_for(&SessionKey::from_session_id("__spawn_glead__")).is_none(),
             "nothing buffers on the synthetic spawn key",
         );
+
+        // The delivery ALSO echoes the block into the lead's chat: the CLI
+        // never echoes a stdin-injected prompt, so without it the user sees
+        // nothing.
+        let echoed = drain_updates(&mut update_rx).into_iter().any(|u| {
+            matches!(
+                u,
+                crate::protocol::SessionUpdate::SlackMessageAppended { session_id, prose }
+                    if session_id == lead_key.as_str()
+                        && prose.starts_with("[Slack")
+                        && prose.contains("ping")
+            )
+        });
+        assert!(echoed, "a running-lead delivery emits a SlackMessageAppended echo with the body");
+    }
+
+    /// One buffered peer prompt.
+    fn buffered_peer_prompt() -> crate::mcp::peers::types::WrappedPrompt {
+        crate::mcp::peers::types::WrappedPrompt {
+            correlation_id: crate::mcp::peers::types::CorrelationId::new_ask(),
+            kind: crate::mcp::peers::types::WrappedKind::Question,
+            channel: crate::mcp::peers::types::AskChannel::Peers,
+            sender_name: "forge".to_owned(),
+            sender_org: "Personal".to_owned(),
+            body: "are you up?".to_owned(),
+        }
+    }
+
+    /// Anything parked at `__spawn_<project>__` is lost if the handoff carries
+    /// only the peer buffer, and for Slack silently: the delivery was committed
+    /// when it was buffered, so nothing re-delivers it. This drives
+    /// `drain_spawn_key_buffer_into` directly - neither the pool fast-path call
+    /// site nor the merge call site is reached end to end by a test.
+    #[test]
+    fn the_spawn_key_handoff_carries_every_buffer() {
+        let (ws, mut update_rx) = Workspace::testing_stub();
+        let spawn_key = SessionKey::from_session_id("__spawn_glead__");
+        let session_key = SessionKey::from_session_id("lead-uuid");
+        {
+            let domain = ws.register_domain_session(spawn_key.clone(), None);
+            let mut domain = domain.lock();
+            domain.pending_peer_prompts.push(buffered_peer_prompt());
+            domain.pending_slack_prompts.push(slack_message_for("buffered while asleep"));
+            domain.pending_gotify_prompts.push(gotify_notif("ci", "build", "failed", 5));
+        }
+
+        ws.enable_test_dispatch_intercept();
+        ws.drain_spawn_key_buffer_into(&session_key, Some(&spawn_key));
+
+        // The handoff has to DELIVER as well as paint: asserting only the
+        // echoes would let a regression through where the block appears and the
+        // agent never receives the message.
+        let dispatched = ws.drain_test_dispatch_buffer();
+        for (needle, what) in [
+            ("buffered while asleep", "the buffered Slack message"),
+            ("app 'ci'", "the gotify one"),
+        ] {
+            assert!(
+                dispatched.iter().any(|c| matches!(
+                    c, crate::protocol::Command::Prompt { key, text, .. }
+                        if key == &session_key && text.contains(needle)
+                )),
+                "{what} reaches the live session as a prompt: {dispatched:?}",
+            );
+        }
+
+        let updates: Vec<_> = std::iter::from_fn(|| update_rx.try_recv().ok()).collect();
+        assert!(
+            updates.iter().any(|u| matches!(
+                u,
+                crate::protocol::SessionUpdate::PeerEnvelopeAppended { session_id, .. }
+                    if session_id == session_key.as_str()
+            )),
+            "the buffered peer prompt still rides along",
+        );
+        assert!(
+            updates.iter().any(|u| matches!(
+                u,
+                crate::protocol::SessionUpdate::SlackMessageAppended { session_id, prose }
+                    if session_id == session_key.as_str() && prose.contains("buffered while asleep")
+            )),
+            "the fast-path handoff echoes the buffered Slack message on the live key",
+        );
+        assert!(
+            updates.iter().any(|u| matches!(
+                u,
+                crate::protocol::SessionUpdate::GotifyNotificationAppended { session_id, .. }
+                    if session_id == session_key.as_str()
+            )),
+            "and the buffered Gotify notification too",
+        );
+    }
+
+    /// The race path - a pre-Connect placeholder already at the live key -
+    /// merges the synth-key domain in, and has to carry every buffer to the
+    /// placeholder the SessionTask drains.
+    #[test]
+    fn the_placeholder_merge_carries_every_buffer() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let spawn_key = SessionKey::from_session_id("__spawn_glead__");
+        let session_key = SessionKey::from_session_id("lead-uuid");
+        let placeholder = ws.register_domain_session(session_key.clone(), None);
+        let buffered = ws.register_domain_session(spawn_key.clone(), None);
+        {
+            let mut buffered = buffered.lock();
+            buffered.pending_peer_prompts.push(buffered_peer_prompt());
+            buffered.pending_slack_prompts.push(slack_message_for("buffered while asleep"));
+            buffered.pending_gotify_prompts.push(gotify_notif("ci", "build", "failed", 5));
+        }
+
+        Workspace::merge_spawn_buffer_into_placeholder(&placeholder, &buffered);
+
+        let placeholder = placeholder.lock();
+        assert_eq!(
+            placeholder.pending_peer_prompts.len(),
+            1,
+            "the placeholder the SessionTask drains holds the buffered peer prompt",
+        );
+        assert_eq!(
+            placeholder.pending_slack_prompts.len(),
+            1,
+            "the placeholder the SessionTask drains holds the buffered Slack message",
+        );
+        assert_eq!(
+            placeholder.pending_gotify_prompts.len(),
+            1,
+            "and the buffered Gotify notification",
+        );
+    }
+
+    /// A failed spawn strands the messages buffered for it. Their delivery was
+    /// already committed, so nothing re-delivers them: draining the synth key
+    /// here is the only record that they were lost.
+    #[test]
+    fn expire_buffered_slack_prompts_drains_the_synth_key_buffer() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let spawn_key = SessionKey::from_session_id("__spawn_glead__");
+        let domain = ws.register_domain_session(spawn_key.clone(), None);
+        domain.lock().pending_slack_prompts.push(slack_message_for("lost with the spawn"));
+
+        ws.expire_buffered_slack_prompts(&spawn_key);
+
+        assert!(
+            domain.lock().pending_slack_prompts.is_empty(),
+            "a failed spawn drains the messages buffered for it",
+        );
+    }
+
+    /// The lead arm carries the stricter rule - a failed dispatch returns false
+    /// so the sweep re-runs the message - and must not have echoed before it.
+    /// The pool and the catalogue row stay in place so the delivery reaches the
+    /// lead arm; the failure is a task channel whose receiver is gone, the
+    /// teardown window a session close leaves behind.
+    #[test]
+    fn a_failed_lead_dispatch_leaves_no_echo_for_the_sweep_to_duplicate() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut update_rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("glead", "/tmp/slack-lead-doomed");
+        let cwd = project_expanded_path(&ws, "glead");
+        ws.record_connected_session(&cwd, "lead-uuid", None);
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
+        // A sender whose receiver is dropped: `dispatch` takes the production
+        // routing path and returns `SessionClosed`, instead of falling through
+        // to the test-only path that would run it against the stub handle.
+        let (tx, rx) = mpsc::unbounded_channel::<crate::protocol::Command>();
+        drop(rx);
+        ws.command_senders.lock().insert(lead_key.clone(), tx);
+
+        let delivered =
+            crate::spawn::deliver_slack_message(&ws, "glead", None, slack_message_for("ping"));
+
+        assert!(!delivered, "a failed dispatch tells the sweep to re-run the message");
+        let echoed = drain_updates(&mut update_rx)
+            .into_iter()
+            .any(|u| matches!(u, crate::protocol::SessionUpdate::SlackMessageAppended { .. }));
+        assert!(!echoed, "a failed lead dispatch must not echo a SlackMessageAppended");
     }
 
     /// With no running session, the message buffers on the synthetic spawn
@@ -9158,8 +9480,8 @@ provider = "anthropic"
     }
 
     /// Any second wake of a live project reaches the fast path: a cron,
-    /// a peer prompt, a gotify message or the boot auto-start wave
-    /// landing after one of them.
+    /// a peer prompt, a gotify message, a slack delivery or the boot
+    /// auto-start wave landing after one of them.
     #[test]
     fn respawn_of_connected_project_retires_its_spawn_bucket() {
         let (ws, mut update_rx, _lead, _dir) = stub_with_connected_lead();

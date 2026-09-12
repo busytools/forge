@@ -1058,6 +1058,16 @@ pub enum SessionUpdate {
         session_id: String,
         text: String,
     },
+    /// A matched Slack message arrived at session `session_id`. Carries the
+    /// prose rather than the typed message: the prose builder is `pub(crate)`
+    /// to forge-workspace, so a typed message would force the TUI to rebuild
+    /// the very format it parses. The session's LLM receives the same prose
+    /// via a separate `Command::Prompt` - this update only drives the visible
+    /// echo (mirrors GotifyNotificationAppended).
+    SlackMessageAppended {
+        session_id: String,
+        prose: String,
+    },
     /// A composed Slack message is waiting for the user's decision in the
     /// dock prompt. The authoring tool handler is blocked on a oneshot
     /// until `Command::RespondSlackPost` answers it, so nothing posts
@@ -1072,7 +1082,7 @@ pub enum SessionUpdate {
         key: SessionKey,
         id: Uuid,
     },
-    /// A workspace-originated prompt (cron fire, peer or gotify
+    /// A workspace-originated prompt (cron fire, peer, gotify or slack
     /// delivery, kick) landed while the target session's turn was in
     /// flight. The TUI counts it into the bucket's queued-send bridge
     /// so the spinner stays open across the gap; the prompt itself
@@ -1189,7 +1199,8 @@ impl SessionUpdate {
             | Self::McpSnapshot { session_id, .. }
             | Self::PeerEnvelopeAppended { session_id, .. }
             | Self::GotifyNotificationAppended { session_id, .. }
-            | Self::CronPromptAppended { session_id, .. } => {
+            | Self::CronPromptAppended { session_id, .. }
+            | Self::SlackMessageAppended { session_id, .. } => {
                 Some(SessionKey::from_session_id(session_id.clone()))
             }
             Self::KeyRenamed { .. }
@@ -1383,6 +1394,10 @@ impl std::fmt::Debug for SessionUpdate {
                 .finish_non_exhaustive(),
             Self::CronPromptAppended { session_id, .. } => f
                 .debug_struct("CronPromptAppended")
+                .field("session_id", session_id)
+                .finish_non_exhaustive(),
+            Self::SlackMessageAppended { session_id, .. } => f
+                .debug_struct("SlackMessageAppended")
                 .field("session_id", session_id)
                 .finish_non_exhaustive(),
             Self::SlackPostPending { key, draft } => f

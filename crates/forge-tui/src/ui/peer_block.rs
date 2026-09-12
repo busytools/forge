@@ -9,9 +9,9 @@
 //!    in_reply_to=q-...]\n\n<body>`) and render a styled block in
 //!    place of the default user-message bubble. Catches the five
 //!    peer/worker kinds the workspace produces (`Question`, `Message`,
-//!    `Reply`, `DeliveryFailure`, `WorkerSpawnFailed`) plus
-//!    the inbound `Gotify` external-notification block, which renders
-//!    with distinct chrome (the ◈ gotify glyph + a `Gotify` source label).
+//!    `Reply`, `DeliveryFailure`, `WorkerSpawnFailed`) plus the `Gotify`,
+//!    `Cron` and `Slack` blocks, which render with their own chrome (glyph
+//!    + source label).
 //!
 //! 2. **Outbound rendering**. Replace the default tool_use card for
 //!    `mcp__forge__peers__ask_agent` / `peers__tell_agent` /
@@ -95,6 +95,21 @@ pub(crate) enum PeerInboundKind {
     Cron {
         prompt: String,
     },
+    /// `[Slack - workspace 'X', <channel>] id ... ts ...\n<author>: <text>` -
+    /// a matched Slack message delivered as a user turn. Rendered with the
+    /// ◇ glyph + a `Slack` source label so it reads as an external event,
+    /// not agent traffic. Never groups with peer envelopes (see
+    /// [`PeerInboundKind::peer_sender_identity`]).
+    Slack {
+        workspace: String,
+        channel: String,
+        /// `None` when there is no name to print: a bot message arrives with
+        /// `user: None`, which the producer writes as `unknown`, and
+        /// `message.user` is otherwise a raw id until the producer resolves a
+        /// handle.
+        author: Option<String>,
+        body: String,
+    },
 }
 
 impl PeerInboundKind {
@@ -111,15 +126,17 @@ impl PeerInboundKind {
             | Self::Message { org, .. }
             | Self::Reply { org, .. }
             | Self::DeliveryFailure { org, .. } => org,
-            Self::WorkerSpawnFailed { .. } | Self::Gotify { .. } | Self::Cron { .. } => "",
+            Self::WorkerSpawnFailed { .. }
+            | Self::Gotify { .. }
+            | Self::Cron { .. }
+            | Self::Slack { .. } => "",
         }
     }
 
     /// The peer/worker sender identity used for envelope grouping (the
-    /// `from` / `target` / `label` name). `None` for the `Gotify`
-    /// external-notification variant, which is not agent traffic and must
-    /// never merge into a peer messaging group - the grouping predicates
-    /// key off `Some(..)` here.
+    /// `from` / `target` / `label` name). `None` for `Gotify`, `Cron` and
+    /// `Slack`: those are not agent traffic and must never merge into a peer
+    /// messaging group - the grouping predicates key off `Some(..)` here.
     pub(crate) fn peer_sender_identity(&self) -> Option<&str> {
         match self {
             Self::Question { from, .. } | Self::Message { from, .. } | Self::Reply { from, .. } => {
@@ -127,7 +144,7 @@ impl PeerInboundKind {
             }
             Self::DeliveryFailure { target, .. } => Some(target),
             Self::WorkerSpawnFailed { label, .. } => Some(label),
-            Self::Gotify { .. } | Self::Cron { .. } => None,
+            Self::Gotify { .. } | Self::Cron { .. } | Self::Slack { .. } => None,
         }
     }
 }
@@ -242,6 +259,26 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
             None => (raw_body.to_owned(), String::new()),
         };
         return Some(PeerInboundKind::Gotify { app: app.to_owned(), title, message, priority });
+    }
+
+    if let Some(rest) = header.strip_prefix("Slack - workspace '") {
+        let (workspace, channel) = take_until(rest, "', ")?;
+        // The `id … ts …` tail (and ` in thread …`) sits past the closing
+        // bracket, so the body is what follows the newline.
+        let (_, rest) = after_bracket.split_once('\n')?;
+        // `slack_message_to_prose` always writes `<author>: <text>`, so a body
+        // without the separator is not this shape at all.
+        let (author, body) = rest.split_once(": ")?;
+        // A raw Slack id is not a name to print: `message.user` reaches the
+        // prose as a `U…` id, and a bot post as the literal `unknown`.
+        let author =
+            if author == "unknown" || is_slack_id(author) { None } else { Some(author.to_owned()) };
+        return Some(PeerInboundKind::Slack {
+            workspace: workspace.to_owned(),
+            channel: channel.to_owned(),
+            author,
+            body: body.to_owned(),
+        });
     }
 
     if header == "Cron" {
@@ -366,6 +403,15 @@ pub(crate) fn render_inbound_with_metas(
         PeerInboundKind::Cron { prompt } => {
             render_cron_prompt(prompt, suppress_header, collapsed, copy_rows)
         }
+        PeerInboundKind::Slack { workspace, channel, author, body } => render_slack_notification(
+            workspace,
+            channel,
+            author.as_deref(),
+            body,
+            suppress_header,
+            collapsed,
+            copy_rows,
+        ),
     }
 }
 
@@ -416,6 +462,12 @@ const GOTIFY_GLYPH: &str = "\u{25C8}";
 /// QUADRANT - the same glyph the Inspector SCHEDULES section uses for a
 /// cron, so cron reads with one icon everywhere.
 const CRON_GLYPH: &str = "\u{25f4}";
+
+/// Kind-icon for an inbound Slack message. U+25C7 WHITE DIAMOND - already the
+/// Task / Agent kind row's glyph, and the hollow companion to gotify's filled
+/// ◈, distinct from cron's ◴. Monochrome + width-1, matching the codebase
+/// glyph convention.
+const SLACK_GLYPH: &str = "\u{25c7}";
 
 /// A Gotify priority at or above this renders in `STATUS_WARNING` (a
 /// severity cue); below it stays `DIM`. Gotify priorities run 0-10.
@@ -585,6 +637,131 @@ fn render_cron_prompt(
     lines
 }
 
+/// Render an inbound Slack message block. Distinct chrome from the peer and
+/// Gotify rows: the ◇ glyph and one header row carrying the channel, then the
+/// workspace and author, over the message body. The author clause needs a
+/// resolved handle, so it is dropped for a bot post (`unknown`) and for a raw
+/// id alike.
+fn render_slack_notification(
+    workspace: &str,
+    channel: &str,
+    author: Option<&str>,
+    body: &str,
+    suppress_header: bool,
+    collapsed: bool,
+    copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if !suppress_header {
+        let dim = Style::default().fg(theme::DIM);
+        let mut header = Line::default();
+        header.spans.push(Span::raw("  "));
+        header.spans.push(Span::styled(
+            SLACK_GLYPH.to_owned(),
+            Style::default().fg(theme::SLACK).add_modifier(Modifier::BOLD),
+        ));
+        header.spans.push(Span::raw(" "));
+        // An id is never dressed as a channel: a DM's label is the partner's
+        // user id, and `#U0AE0CBJ77G` reads as a channel that does not exist.
+        let label = if is_slack_id(channel) { channel.to_owned() } else { format!("#{channel}") };
+        header.spans.push(Span::styled(label, Style::default().add_modifier(Modifier::BOLD)));
+        header.spans.push(Span::styled(format!(" \u{b7} {workspace}"), dim));
+        if let Some(author) = author {
+            header.spans.push(Span::styled(format!(" \u{b7} {author}"), dim));
+        }
+        lines.push(header);
+        copy_rows.push(crate::ui::copy::CopyRowMeta::chrome(0));
+    }
+    let body = tidy_mrkdwn(body);
+    if collapsed {
+        push_collapsed_summary(&mut lines, copy_rows, &body);
+    } else {
+        push_tree_body_lines(&mut lines, copy_rows, &body);
+    }
+    lines
+}
+
+/// Strip Slack's mrkdwn down to plain text: emphasis markers drop, a labelled
+/// link becomes `label: url`, and the `&`/`<`/`>` entities decode.
+fn tidy_mrkdwn(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&strip_emphasis(&rest[..open]));
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('>') else {
+            out.push_str(&strip_emphasis(&rest[open..]));
+            return decode_entities(&out);
+        };
+        // The target goes out whole: Slack reads no emphasis inside a URL.
+        if let Some((url, label)) = after[..close].split_once('|') {
+            out.push_str(&strip_emphasis(label));
+            out.push_str(": ");
+            out.push_str(url);
+        } else {
+            out.push('<');
+            out.push_str(&after[..close]);
+            out.push('>');
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(&strip_emphasis(rest));
+    decode_entities(&out)
+}
+
+/// Drop the markers around an emphasised span. A marker pair is only emphasis
+/// when each end sits at a word boundary with a single marker, so the `_` in
+/// an identifier, an unpaired `_` and the `**` of a glob all stay literal.
+fn strip_emphasis(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut dropped = vec![false; chars.len()];
+    let mut i = 0;
+    while i < chars.len() {
+        if matches!(chars[i], '*' | '_')
+            && opens_a_span(&chars, i)
+            && let Some(close) = first_closer(&chars, i)
+        {
+            dropped[i] = true;
+            dropped[close] = true;
+            i = close + 1;
+            continue;
+        }
+        i += 1;
+    }
+    chars.iter().zip(&dropped).filter(|(_, dropped)| !**dropped).map(|(c, _)| *c).collect()
+}
+
+/// A marker opens a span only at a word boundary, with text after it and no
+/// doubled marker on either side - the `_` inside an identifier and the `**`
+/// of a glob are both literals rather than openers.
+fn opens_a_span(chars: &[char], i: usize) -> bool {
+    let marker = chars[i];
+    let before = i.checked_sub(1).and_then(|p| chars.get(p));
+    let after = chars.get(i + 1).copied();
+    before.is_none_or(|p| !p.is_alphanumeric() && *p != marker)
+        && after.is_some_and(|n| !n.is_whitespace() && n != marker)
+}
+
+/// The first index able to close a span opened at `open`: the same marker,
+/// with non-space before it, no word character after it, and no ability to open
+/// a span of its own - otherwise the two `*` of a pair of globs would close a
+/// span between them.
+fn first_closer(chars: &[char], open: usize) -> Option<usize> {
+    let marker = chars[open];
+    ((open + 1)..chars.len()).find(|&j| {
+        chars[j] == marker
+            && chars.get(j - 1).is_some_and(|p| !p.is_whitespace())
+            && chars.get(j + 1).is_none_or(|n| !n.is_alphanumeric())
+            && !opens_a_span(chars, j)
+    })
+}
+
+/// Slack escapes `&`, `<` and `>` in message text. The angle-bracket entities
+/// decode first so a doubly-escaped `&amp;lt;` stays the literal it was.
+fn decode_entities(text: &str) -> String {
+    text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+}
+
 /// Tree row data for one envelope: the direction glyph, the kind label,
 /// and whether the kind is a failure (styled as a warning).
 ///
@@ -600,7 +777,9 @@ pub(crate) fn inbound_kind_row(
         PeerInboundKind::DeliveryFailure { .. } => (INBOUND_GLYPH, "failed", true),
         PeerInboundKind::WorkerSpawnFailed { .. } => (INBOUND_GLYPH, "spawn failed", true),
         // External events, never agent traffic - excluded from grouping.
-        PeerInboundKind::Gotify { .. } | PeerInboundKind::Cron { .. } => return None,
+        PeerInboundKind::Gotify { .. }
+        | PeerInboundKind::Cron { .. }
+        | PeerInboundKind::Slack { .. } => return None,
     };
     Some(row)
 }
@@ -613,12 +792,15 @@ pub(crate) fn outbound_kind_row(kind: &PeerOutboundKind) -> (&'static str, &'sta
     }
 }
 
-/// The body text a leaf row previews, per envelope kind.
+/// The body text a leaf row previews, per envelope kind. The external-event
+/// arms - `Gotify`, `Cron` and `Slack` - are unreachable: `inbound_kind_row`
+/// returns `None` for all three, so none ever becomes a leaf.
 pub(crate) fn inbound_body(kind: &PeerInboundKind) -> &str {
     match kind {
         PeerInboundKind::Message { body, .. }
         | PeerInboundKind::Question { body, .. }
-        | PeerInboundKind::Reply { body, .. } => body,
+        | PeerInboundKind::Reply { body, .. }
+        | PeerInboundKind::Slack { body, .. } => body,
         PeerInboundKind::DeliveryFailure { reason, .. }
         | PeerInboundKind::WorkerSpawnFailed { reason, .. } => reason,
         PeerInboundKind::Gotify { message, .. } => message,
@@ -708,6 +890,17 @@ fn push_tree_body_lines(
 }
 
 // ---------- parsing helpers ----------
+
+/// True for a raw Slack id (`C0C0T5E6RM1`, `U9ABCD`) rather than a name: an
+/// uppercase first character followed by uppercase letters and digits only.
+/// Both `message.user` and a DM's conversation label reach the prose as one
+/// until the producer resolves a handle. The shape is a heuristic, not a
+/// guarantee: an all-caps channel name matches it and loses its `#`.
+fn is_slack_id(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|first| first.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
 
 /// Split `s` at the first occurrence of `marker`. Returns
 /// `(before, after_marker)` - the marker itself is consumed.
@@ -874,6 +1067,17 @@ mod tests {
         assert!(detect_inbound("plain user message").is_none());
         assert!(detect_inbound("[not-a-peer-prefix]").is_none());
         assert!(detect_inbound("[Question id=q-bad").is_none());
+        // The Slack header alone is not an envelope: the body line is what
+        // carries the author and the message.
+        assert!(
+            detect_inbound("[Slack - workspace 'W', chan] id C1 ts 1.2").is_none(),
+            "a Slack header with no body line is not an envelope",
+        );
+        assert!(
+            detect_inbound("[Slack - workspace 'W', chan] id C1 ts 1.2\nno author prefix")
+                .is_none(),
+            "nor is a Slack body with no `<author>: ` separator",
+        );
     }
 
     fn render_lines_to_strings(lines: &[Line<'static>]) -> Vec<String> {
@@ -1154,6 +1358,308 @@ mod tests {
         // never merges into a peer messaging group (mirrors Gotify).
         let kind = PeerInboundKind::Cron { prompt: "x".into() };
         assert_eq!(kind.peer_sender_identity(), None);
+    }
+
+    /// The shipped prose exactly as `slack_message_to_prose` emits it: the
+    /// bracketed part carries the workspace and conversation, the line under
+    /// it is `<author>: <text>`, and a bot message arrives with no author at
+    /// all - which reaches the prose as the literal `unknown`.
+    #[test]
+    fn detect_slack_inbound_parses_header_and_drops_the_unknown_author() {
+        let text = "[Slack - workspace 'Trust Machines', granite-staging-alerts] id C0AE0CBJ77G ts 1789182982.499299\nunknown: _Large STX Transfer_\nAmount: 233468.293536 STX (~$60434.82 USD)";
+        match detect_inbound(text).expect("slack") {
+            PeerInboundKind::Slack { workspace, channel, author, body } => {
+                assert_eq!(workspace, "Trust Machines", "workspace off the header");
+                assert_eq!(channel, "granite-staging-alerts", "channel off the header");
+                assert_eq!(author, None, "`unknown` is not an author to print");
+                assert_eq!(
+                    body,
+                    "_Large STX Transfer_\nAmount: 233468.293536 STX (~$60434.82 USD)",
+                );
+            }
+            other => panic!("expected Slack, got {other:?}"),
+        }
+    }
+
+    /// A resolved handle is kept, lowercase or title-cased. `alert-bot` is the
+    /// shape a handle takes; today's producer emits raw ids, which the id case
+    /// below covers.
+    #[test]
+    fn detect_slack_inbound_keeps_a_real_author() {
+        let text = "[Slack - workspace 'Subspace', mainnet-chain-alerts] id C0AE1 ts 1789.5\nalert-bot: Slow slot: 57296338 took 1s";
+        match detect_inbound(text).expect("slack") {
+            PeerInboundKind::Slack { workspace, channel, author, body } => {
+                assert_eq!(workspace, "Subspace");
+                assert_eq!(channel, "mainnet-chain-alerts");
+                assert_eq!(author.as_deref(), Some("alert-bot"));
+                assert_eq!(body, "Slow slot: 57296338 took 1s");
+            }
+            other => panic!("expected Slack, got {other:?}"),
+        }
+
+        // Only an id is dropped: an uppercase first letter alone is a name.
+        let titled = "[Slack - workspace 'Subspace', mainnet-chain-alerts] id C0AE1 ts 1789.5\nGranite-Bot: Slow slot: 57296338 took 1s";
+        match detect_inbound(titled).expect("slack") {
+            PeerInboundKind::Slack { author, .. } => {
+                assert_eq!(
+                    author.as_deref(),
+                    Some("Granite-Bot"),
+                    "a title-cased handle names someone"
+                );
+            }
+            other => panic!("expected Slack, got {other:?}"),
+        }
+    }
+
+    /// The producer appends ` in thread <ts>` after the ts for a threaded
+    /// reply, so the detector skips everything past the closing bracket up to
+    /// the newline rather than assuming the body starts after the ts.
+    #[test]
+    fn detect_slack_inbound_drops_the_thread_suffix_with_the_header() {
+        let text = "[Slack - workspace 'W', chan] id C1 ts 1789.5 in thread 1789.4\nalert-bot: hi";
+        match detect_inbound(text).expect("slack") {
+            PeerInboundKind::Slack { channel, author, body, .. } => {
+                assert_eq!(channel, "chan");
+                assert_eq!(author.as_deref(), Some("alert-bot"));
+                assert_eq!(body, "hi");
+            }
+            other => panic!("expected Slack, got {other:?}"),
+        }
+    }
+
+    /// A matcher widened to catch Slack must leave the neighbouring external
+    /// sources alone: Gotify keeps its own kind, and peer traffic is still a
+    /// peer envelope rather than being swallowed as Slack.
+    #[test]
+    fn slack_detection_leaves_gotify_and_peer_prose_alone() {
+        let gotify = "[Gotify - app 'Backups', priority 3]\nNightly backup\nAll volumes done";
+        assert!(
+            matches!(detect_inbound(gotify), Some(PeerInboundKind::Gotify { .. })),
+            "a Gotify notice still detects as Gotify",
+        );
+        let peer = "[Message id=t-1a2b from agent 'lead' (org 'forge')]\n\nbody";
+        assert!(
+            matches!(detect_inbound(peer), Some(PeerInboundKind::Message { .. })),
+            "a peer wrapper still detects as a peer envelope",
+        );
+    }
+
+    #[test]
+    fn slack_has_no_peer_sender_identity() {
+        // Grouping keys off peer_sender_identity; Slack returns None so it
+        // never merges into a peer messaging group (mirrors Gotify).
+        let kind = PeerInboundKind::Slack {
+            workspace: "W".into(),
+            channel: "c".into(),
+            author: None,
+            body: "x".into(),
+        };
+        assert_eq!(kind.peer_sender_identity(), None);
+    }
+
+    /// The block's shape: one header row carrying the glyph, the bold channel,
+    /// then the dim workspace and author, with the body under the standard
+    /// tree.
+    ///
+    /// ```text
+    /// Slack
+    ///   ◇ #granite-staging-alerts · Trust Machines · granite-bot
+    ///   └─ Large STX Transfer: 233468.293536 STX (~$60434.82 USD)
+    /// ```
+    ///
+    /// `granite-bot` is a resolved handle, which today's producer does not
+    /// emit: `message.user` arrives as a raw id and the block drops it.
+    #[test]
+    fn render_slack_notification_header_carries_the_channel_workspace_and_author() {
+        let kind = PeerInboundKind::Slack {
+            workspace: "Trust Machines".into(),
+            channel: "granite-staging-alerts".into(),
+            author: Some("granite-bot".into()),
+            body: "Large STX Transfer: 233468.293536 STX (~$60434.82 USD)".into(),
+        };
+        let lines = render_inbound(&kind, false, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(s[0].contains('\u{25C7}'), "◇ slack glyph in header: {:?}", s[0]);
+        assert!(s[0].contains("#granite-staging-alerts"), "channel in header: {:?}", s[0]);
+        assert!(s[0].contains("Trust Machines"), "workspace in header: {:?}", s[0]);
+        assert!(s[0].contains("granite-bot"), "author in header: {:?}", s[0]);
+        assert!(!s[0].contains('\u{25B6}'), "no peer row glyph: {:?}", s[0]);
+        assert!(s.last().unwrap().contains("Large STX Transfer"), "body: {:?}", s.last());
+        let channel_span = lines[0]
+            .spans
+            .iter()
+            .find(|sp| sp.content.contains("#granite-staging-alerts"))
+            .expect("the channel span");
+        assert!(
+            channel_span.style.add_modifier.contains(Modifier::BOLD),
+            "the channel reads bold on the header",
+        );
+        let glyph_span =
+            lines[0].spans.iter().find(|sp| sp.content.contains('\u{25C7}')).expect("glyph span");
+        assert_eq!(
+            glyph_span.style.fg,
+            Some(theme::SLACK),
+            "the ◇ glyph wears the Slack accent, not the neighbouring gotify one",
+        );
+    }
+
+    /// A DM's label is the partner's user id, and an id is never dressed as a
+    /// channel: `#U0AE0CBJ77G` reads as a channel that does not exist. A name
+    /// that merely starts uppercase still is one.
+    #[test]
+    fn render_slack_notification_prefixes_a_name_but_not_an_id() {
+        let id_label = PeerInboundKind::Slack {
+            workspace: "Trust Machines".into(),
+            channel: "U0AE0CBJ77G".into(),
+            author: None,
+            body: "ping".into(),
+        };
+        let s = render_lines_to_strings(&render_inbound(&id_label, false, false));
+        assert!(s[0].contains("U0AE0CBJ77G"), "the label is still named: {:?}", s[0]);
+        assert!(!s[0].contains('#'), "and never prefixed as a channel: {:?}", s[0]);
+
+        let name_label = PeerInboundKind::Slack {
+            workspace: "Trust Machines".into(),
+            channel: "General".into(),
+            author: None,
+            body: "ping".into(),
+        };
+        let s = render_lines_to_strings(&render_inbound(&name_label, false, false));
+        assert!(s[0].contains("#General"), "an uppercase first letter is not an id: {:?}", s[0]);
+    }
+
+    /// The collapsed block keeps the header and shows one tidied line of the
+    /// body with the expand hint, the same summary every other block collapses
+    /// to.
+    #[test]
+    fn render_slack_collapsed_shows_a_tidied_body_summary() {
+        let kind = PeerInboundKind::Slack {
+            workspace: "Trust Machines".into(),
+            channel: "granite-staging-alerts".into(),
+            author: None,
+            body: "_Large STX Transfer_\nAmount: 233468.293536 STX (~$60434.82 USD)".into(),
+        };
+        let s = render_lines_to_strings(&render_inbound(&kind, false, true));
+        assert!(s[0].contains('\u{25C7}'), "header still renders when collapsed: {:?}", s[0]);
+        assert!(
+            s.iter().any(|line| line.contains("Large STX Transfer")),
+            "the tidied first body line is the summary: {s:?}",
+        );
+        assert!(!s.iter().any(|line| line.contains('_')), "markers gone collapsed: {s:?}");
+        assert!(
+            !s.iter().any(|line| line.contains("Amount:")),
+            "the second body line stays hidden: {s:?}",
+        );
+        assert!(s.iter().any(|line| line.contains("click or ctrl+x to expand")));
+    }
+
+    /// A raw user id is not a name, so production drops the author clause on
+    /// every real delivery until the producer resolves a handle.
+    #[test]
+    fn detect_slack_inbound_drops_an_id_shaped_author() {
+        let text = "[Slack - workspace 'Trust Machines', granite-staging-alerts] id C0AE ts 1789.5\nU0AE0CBJ77G: Large STX Transfer";
+        match detect_inbound(text).expect("slack") {
+            PeerInboundKind::Slack { author, body, .. } => {
+                assert_eq!(author, None, "a `U…` id names nobody to print");
+                assert_eq!(body, "Large STX Transfer");
+            }
+            other => panic!("expected Slack, got {other:?}"),
+        }
+    }
+
+    /// A bot message has no author, and the header drops the whole clause
+    /// rather than printing `unknown` at the reader.
+    #[test]
+    fn render_slack_notification_omits_an_absent_author() {
+        let kind = PeerInboundKind::Slack {
+            workspace: "Trust Machines".into(),
+            channel: "granite-staging-alerts".into(),
+            author: None,
+            body: "Large STX Transfer".into(),
+        };
+        let s = render_lines_to_strings(&render_inbound(&kind, false, false));
+        assert!(s[0].contains("#granite-staging-alerts"), "channel in header: {:?}", s[0]);
+        assert!(s[0].contains("Trust Machines"), "workspace in header: {:?}", s[0]);
+        assert_eq!(
+            s[0].matches('\u{b7}').count(),
+            1,
+            "only the channel/workspace separator: {:?}",
+            s[0]
+        );
+    }
+
+    /// The block shows the tidied body, so the markers never reach the reader.
+    #[test]
+    fn render_slack_notification_tidies_the_body() {
+        let kind = PeerInboundKind::Slack {
+            workspace: "W".into(),
+            channel: "c".into(),
+            author: None,
+            body: "_Large STX Transfer_".into(),
+        };
+        let s = render_lines_to_strings(&render_inbound(&kind, false, false));
+        assert!(s.last().unwrap().contains("Large STX Transfer"), "body: {:?}", s.last());
+        assert!(!s.iter().any(|l| l.contains('_')), "no markers survive: {s:?}");
+    }
+
+    #[test]
+    fn tidy_mrkdwn_strips_emphasis_markers() {
+        assert_eq!(tidy_mrkdwn("_Large STX Transfer_"), "Large STX Transfer");
+        assert_eq!(tidy_mrkdwn("*build failed*"), "build failed");
+    }
+
+    #[test]
+    fn tidy_mrkdwn_turns_a_labelled_link_into_label_colon_url() {
+        assert_eq!(
+            tidy_mrkdwn("View <https://explorer.hiro.so/txid/0x37599daf|Transaction>"),
+            "View Transaction: https://explorer.hiro.so/txid/0x37599daf",
+        );
+    }
+
+    #[test]
+    fn tidy_mrkdwn_leaves_a_plain_string_untouched() {
+        let plain = "Amount: 233468.293536 STX (~$60434.82 USD)";
+        assert_eq!(tidy_mrkdwn(plain), plain);
+    }
+
+    #[test]
+    fn tidy_mrkdwn_decodes_slack_entities() {
+        assert_eq!(tidy_mrkdwn("AT&amp;T &lt;ok&gt;"), "AT&T <ok>");
+        // A doubly-escaped `&amp;lt;` was a literal `<` the author typed, so
+        // it must survive as one rather than decoding twice.
+        assert_eq!(tidy_mrkdwn("&amp;lt;"), "&lt;");
+    }
+
+    /// Marker characters inside a link belong to the link: the URL is emitted
+    /// whole rather than having its `_` read as emphasis.
+    #[test]
+    fn tidy_mrkdwn_leaves_a_link_url_whole() {
+        assert_eq!(
+            tidy_mrkdwn("<https://example.com/a_b|log_file>"),
+            "log_file: https://example.com/a_b",
+        );
+    }
+
+    /// A marker is emphasis only at a word boundary with a single marker at
+    /// each end. An identifier, an unpaired marker and a doubled one are all
+    /// literal - alert text and file paths are full of every shape.
+    #[test]
+    fn tidy_mrkdwn_leaves_a_marker_that_is_not_emphasis() {
+        assert_eq!(tidy_mrkdwn("set some_var_name here"), "set some_var_name here");
+        assert_eq!(tidy_mrkdwn("the _bold_suffix here"), "the _bold_suffix here");
+        assert_eq!(tidy_mrkdwn("**bold**"), "**bold**");
+        assert_eq!(tidy_mrkdwn("__init__"), "__init__");
+        assert_eq!(tidy_mrkdwn("src/**/*.rs"), "src/**/*.rs");
+        assert_eq!(tidy_mrkdwn("src/*.rs and tests/*.rs"), "src/*.rs and tests/*.rs");
+    }
+
+    /// Only a labelled span is a link: a mention token and a bare URL carry no
+    /// `|`, and an unmatched `<` has no `>` to close it, so all three go out
+    /// as they came.
+    #[test]
+    fn tidy_mrkdwn_leaves_an_angle_span_that_is_not_a_link() {
+        assert_eq!(tidy_mrkdwn("ping <@U123> at <https://x>"), "ping <@U123> at <https://x>");
+        assert_eq!(tidy_mrkdwn("a < b"), "a < b");
     }
 
     #[test]
