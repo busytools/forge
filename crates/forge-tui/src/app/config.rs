@@ -474,10 +474,17 @@ pub(crate) fn store_workspace_bridge(app: &App) -> Option<store::WorkspaceBridge
 /// local document is then not read at all rather than falling back to
 /// a path derived from the process working directory (hard rule 14).
 fn project_root(app: &App) -> Option<std::path::PathBuf> {
-    app.cwd_raw()
+    let root = app
+        .cwd_raw()
         .filter(|cwd| !cwd.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| app.startup_project_root.clone())
+        .or_else(|| app.startup_project_root.clone());
+    // An empty root is not a root: joining one would put the
+    // local-settings read back on the process working directory (hard
+    // rule 14). The launch project's path is a bare string out of
+    // `forge.toml`, so the check lives here rather than being trusted
+    // from the producer.
+    root.filter(|root| !root.as_os_str().is_empty())
 }
 
 const LANGUAGE_MIN_CHARS: usize = 2;
@@ -540,6 +547,12 @@ mod tests {
             Some(std::path::PathBuf::from("/forge-toml/project")),
             "with no session the launch project's forge.toml path is the root",
         );
+
+        // `forge.toml`'s project path is a bare string, so an empty one
+        // is expressible and must not become a root: it would join into
+        // a relative local-settings path.
+        app.startup_project_root = Some(std::path::PathBuf::new());
+        assert_eq!(project_root(&app), None, "an empty launch root is no root, not a relative one");
 
         app.startup_project_root = None;
         assert_eq!(project_root(&app), None, "a launchpad boot has no project root");

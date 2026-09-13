@@ -516,6 +516,49 @@ mod tests {
         assert_eq!(loaded.paths.preferences, dir.path().join(".claude.json"));
     }
 
+    /// The bridge arm - the one a live session takes - reads the root the
+    /// caller passed and not one of its own. No other test reaches this
+    /// arm; without this, dropping or replacing that argument leaves the
+    /// suite green.
+    ///
+    /// The second half asserts the intended no-root reading, but it is
+    /// not what catches a substituted relative path: that would be
+    /// relative to this test's process cwd, so only a fixture written
+    /// into the source tree could catch it. The producer side pins
+    /// that, in `app::config`.
+    #[test]
+    fn the_bridge_arm_reads_the_root_it_is_given() {
+        let (workspace, _updates) = forge_workspace::Workspace::testing_stub();
+        let key = forge_workspace::SessionKey::from_str_for_test("bridge-arm-key");
+        let _rx = workspace.install_testing_stub(&key);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let local = dir.path().join(".claude");
+        std::fs::create_dir_all(&local).expect("mkdir");
+        std::fs::write(local.join("settings.local.json"), r#"{"prefersReducedMotion":true}"#)
+            .expect("write");
+
+        let with_root = load(
+            None,
+            Some(dir.path()),
+            Some(WorkspaceBridge { workspace: &workspace, key: &key }),
+        )
+        .expect("load with a root");
+        assert_eq!(
+            prefers_reduced_motion(&with_root.local_settings_document),
+            Ok(true),
+            "the root the caller passed is the one read",
+        );
+
+        let without_root =
+            load(None, None, Some(WorkspaceBridge { workspace: &workspace, key: &key }))
+                .expect("load without a root");
+        assert_eq!(
+            without_root.local_settings_document,
+            Value::Object(Map::new()),
+            "no root reads no project-local document",
+        );
+    }
+
     /// The documents the loader reads from disk itself: a valid
     /// project-local document parses, and a malformed preferences file
     /// becomes an empty one rather than an error.

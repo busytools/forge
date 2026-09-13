@@ -123,17 +123,15 @@ mod tests {
         assert!(docs.preferences.is_none());
     }
 
-    /// No project root reads no project-local document. Joining an empty
-    /// root would open a path relative to the process working directory,
-    /// so a `settings.local.json` in the launch directory could shape
-    /// forge (hard rule 14).
+    /// A `None` root yields no project-local document, and nothing
+    /// falls back to the config dir for one. It does not pin the
+    /// rule-14 property: a cwd-relative read here would be relative to
+    /// this test's process working directory, so the only fixture that
+    /// could catch it is a file written into the source tree. The
+    /// producer side is what pins that, in `app::config`.
     #[test]
     fn settings_documents_reads_no_project_local_without_a_root() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let local = dir.path().join(".claude");
-        std::fs::create_dir_all(&local).expect("mkdir");
-        std::fs::write(local.join("settings.local.json"), r#"{"alwaysThinkingEnabled":true}"#)
-            .expect("write");
 
         let docs = settings_documents(dir.path(), None);
 
