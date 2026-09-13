@@ -1150,7 +1150,7 @@ mod tests {
     fn border_targets_follow_the_take_state() {
         let mut bucket = UiSession {
             dictate: Some(DictateIndicator::recording(-50.0, 1)),
-            ..UiSession::default()
+            ..UiSession::blank(None, "test-project".to_owned())
         };
         let quiet = border_target(&bucket);
         bucket.dictate.as_mut().expect("live").push_level(-6.0);
@@ -1210,7 +1210,7 @@ mod tests {
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         let other = forge_workspace::SessionKey::from_session_id("other-project");
-        app.sessions.insert(other.clone(), UiSession::new(other.clone()));
+        app.sessions.insert(other.clone(), UiSession::new(other.clone(), "other-project"));
         {
             let bucket = app.sessions.get_mut(&other).expect("bucket");
             bucket.dictate = Some(DictateIndicator::recording(-50.0, 1));

@@ -1032,8 +1032,11 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
-        let rx = app.install_testing_stub();
+        // Re-key first: the id rename mints a fresh bucket, so the stub
+        // has to be installed after it or the conn lands on the fixture
+        // bucket the rename abandons.
         app.set_session_id(Some(model::SessionId::new("session-1")));
+        let rx = app.install_testing_stub();
         (app, rx)
     }
 
@@ -1632,7 +1635,7 @@ mod tests {
         app.sessions.clear();
 
         let key = forge_workspace::SessionKey::from_session_id("bg-gate");
-        let mut session = UiSession::new(key.clone());
+        let mut session = UiSession::new(key.clone(), "test-project");
         session.lifecycle_state = SessionLifecycleState::Idle;
         app.sessions.insert(key.clone(), session);
 
@@ -1674,7 +1677,7 @@ mod tests {
         app.sessions.clear();
 
         let key = forge_workspace::SessionKey::from_session_id("gate-match");
-        let mut session = UiSession::new(key.clone());
+        let mut session = UiSession::new(key.clone(), "test-project");
         session.lifecycle_state = SessionLifecycleState::Attention;
         session.background_tasks.push(crate::app::BackgroundTask {
             task_id: "t1".to_owned(),
@@ -1727,7 +1730,7 @@ mod tests {
         assert!(!app.shows_activity(), "focused session idle, nothing else running");
 
         let other = forge_workspace::SessionKey::from_session_id("other-project");
-        let mut session = UiSession::new(other.clone());
+        let mut session = UiSession::new(other.clone(), "other-project");
         session.lifecycle_state = SessionLifecycleState::Running;
         app.sessions.insert(other.clone(), session);
 

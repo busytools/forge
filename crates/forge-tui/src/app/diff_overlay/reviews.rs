@@ -96,7 +96,7 @@ pub(super) fn toggle_reviews_list(app: &mut App) {
         app.needs_redraw = true;
         return;
     }
-    let project = app.active_session().and_then(|s| s.project.clone());
+    let project = app.active_session().map(|s| s.project.clone());
     let workspace = app.workspace.clone();
     let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
     let threads = match (project, branch, workspace) {
@@ -218,7 +218,7 @@ fn authored_threads(app: &App) -> Vec<ReviewThread> {
     let answered: Option<Vec<ReviewThread>> = overlay
         .branch
         .as_ref()
-        .zip(app.active_session().and_then(|s| s.project.clone()))
+        .zip(app.active_session().map(|s| s.project.clone()))
         .zip(app.workspace.as_ref())
         .and_then(|((branch, project), ws)| ws.load_review_threads(&project, branch).ok());
     let mut out: Vec<ReviewThread> = Vec::new();
@@ -331,7 +331,7 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
         .active_session_key
         .clone()
         .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(String::new()));
-    let project = app.active_session().and_then(|s| s.project.clone());
+    let project = app.active_session().map(|s| s.project.clone()).filter(|name| !name.is_empty());
     let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
     let workspace = app.workspace.clone();
     let review_number = if seal_ids.is_empty() {
@@ -665,12 +665,12 @@ mod tests {
         forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat")
             .expect("corrupt row");
         workspace.install_db_for_test(db);
-        let mut rx = app.install_testing_stub();
         app.set_session_id(Some(crate::agent::model::SessionId::new("review-session")));
+        let mut rx = app.install_testing_stub();
         if let Some(key) = app.active_session_key.clone()
             && let Some(session) = app.sessions.get_mut(&key)
         {
-            session.project = Some("forge".to_owned());
+            session.project = "forge".to_owned();
             session.cwd_raw = "/tmp/repo".into();
         }
 
@@ -761,7 +761,7 @@ mod tests {
         if let Some(key) = app.active_session_key.clone()
             && let Some(session) = app.sessions.get_mut(&key)
         {
-            session.project = None;
+            session.project = String::new();
         }
         let mut overlay =
             DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), Vec::new());
@@ -1136,8 +1136,7 @@ mod tests {
             .expect("corrupt row");
         workspace.install_db_for_test(db);
         let key = forge_workspace::SessionKey::from_session_id("review-session");
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some("forge".to_owned());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = "/tmp/repo".into();
         app.sessions.insert(key.clone(), session);
         app.active_session_key = Some(key);
@@ -1329,7 +1328,7 @@ mod tests {
         if let Some(key) = app.active_session_key.clone()
             && let Some(session) = app.sessions.get_mut(&key)
         {
-            session.project = Some("forge".to_owned());
+            session.project = "forge".to_owned();
         }
         let files = vec![single_hunk_file("src/x.rs", vec![added_line("let a = 1;", 5)])];
         let mut overlay =

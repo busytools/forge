@@ -523,14 +523,20 @@ fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
     set_command_pending(app, "Starting new session...", None);
 
     if let Err(e) = start_new_session(app, SessionStartReason::NewSession) {
-        let session_key = app
-            .active_session_key
-            .clone()
-            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
-            key: session_key,
-            message: format!("Failed to run /new: {e}"),
-        });
+        if let Some(session_key) = app.active_session_key.clone() {
+            let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+                key: session_key,
+                message: format!("Failed to run /new: {e}"),
+            });
+        } else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_COMMAND,
+                event_name = "slash_error_without_session",
+                message = "start_new_session failed with no session to report it against",
+                outcome = "skipped",
+                error_message = %e,
+            );
+        }
     }
     true
 }
@@ -554,14 +560,20 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     set_command_pending(app, &format!("Resuming session {session_id}..."), None);
     let session_id = session_id.to_owned();
     if let Err(e) = begin_resume_session(app, session_id) {
-        let session_key = app
-            .active_session_key
-            .clone()
-            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
-            key: session_key,
-            message: format!("Failed to run /resume: {e}"),
-        });
+        if let Some(session_key) = app.active_session_key.clone() {
+            let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+                key: session_key,
+                message: format!("Failed to run /resume: {e}"),
+            });
+        } else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_COMMAND,
+                event_name = "slash_error_without_session",
+                message = "begin_resume_session failed with no session to report it against",
+                outcome = "skipped",
+                error_message = %e,
+            );
+        }
     }
     true
 }

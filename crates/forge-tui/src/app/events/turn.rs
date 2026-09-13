@@ -966,8 +966,7 @@ mod tests {
 
     fn seed_bucket(app: &mut App, id: &str, project: &str) -> SessionKey {
         let key = SessionKey::from_str_for_test(id);
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
-        bucket.project = Some(project.to_owned());
+        let bucket = crate::app::session::UiSession::new(key.clone(), project);
         app.sessions.insert(key.clone(), bucket);
         key
     }
@@ -1009,7 +1008,7 @@ mod tests {
             vec![(
                 crate::app::notify::NotifyEvent::TurnComplete,
                 crate::app::notify::NotifyContext {
-                    project: Some("beta".to_owned()),
+                    project: "beta".to_owned(),
                     worker_label: Some("egen-lead".to_owned()),
                 },
             )],
@@ -1038,7 +1037,7 @@ mod tests {
             vec![(
                 crate::app::notify::NotifyEvent::TurnComplete,
                 crate::app::notify::NotifyContext {
-                    project: Some("beta".to_owned()),
+                    project: "beta".to_owned(),
                     worker_label: None,
                 },
             )],
@@ -1069,7 +1068,7 @@ mod tests {
         let mut app = app_with_connection();
         let key = active_session_key(&app);
         if let Some(bucket) = app.sessions.get_mut(&key) {
-            bucket.project = Some("companies".to_owned());
+            bucket.project = "companies".to_owned();
         }
 
         app.status = AppStatus::Ready;
@@ -1098,7 +1097,7 @@ mod tests {
             vec![(
                 crate::app::notify::NotifyEvent::TurnComplete,
                 crate::app::notify::NotifyContext {
-                    project: Some("companies".to_owned()),
+                    project: "companies".to_owned(),
                     worker_label: None,
                 },
             )],
@@ -1122,9 +1121,8 @@ mod tests {
         use forge_workspace::SessionUpdate;
         let mut app = App::test_default();
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let mut bg = UiSession::new(bg_key.clone());
+        let mut bg = UiSession::new(bg_key.clone(), "beta");
         bg.lifecycle_state = crate::app::session::SessionLifecycleState::Running;
-        bg.project = Some("beta".to_owned());
         app.sessions.insert(bg_key.clone(), bg);
 
         // The workspace's mid-turn dispatch signal precedes the Result
@@ -1148,7 +1146,7 @@ mod tests {
             vec![(
                 crate::app::notify::NotifyEvent::TurnComplete,
                 crate::app::notify::NotifyContext {
-                    project: Some("beta".to_owned()),
+                    project: "beta".to_owned(),
                     worker_label: None,
                 },
             )],
@@ -1273,7 +1271,7 @@ mod tests {
         let active_messages_before = app.messages().expect("active session").len();
 
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let mut bg_session = UiSession::new(bg_key.clone());
+        let mut bg_session = UiSession::new(bg_key.clone(), "test-project");
         bg_session.messages.push(user_message("bg hello"));
         bg_session.messages.push(empty_assistant_message());
         app.sessions.insert(bg_key.clone(), bg_session);
@@ -1295,7 +1293,7 @@ mod tests {
         use crate::app::session::UiSession;
         let mut app = App::test_default();
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let bg_session = UiSession::new(bg_key.clone());
+        let bg_session = UiSession::new(bg_key.clone(), "test-project");
         app.sessions.insert(bg_key.clone(), bg_session);
 
         // Active session has no pending cancel origin set.
@@ -1316,7 +1314,7 @@ mod tests {
         use crate::app::session::UiSession;
         let mut app = App::test_default();
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let bg_session = UiSession::new(bg_key.clone());
+        let bg_session = UiSession::new(bg_key.clone(), "test-project");
         app.sessions.insert(bg_key.clone(), bg_session);
 
         // Auth-required class would normally set should_quit=true when
@@ -1378,7 +1376,7 @@ mod tests {
 
         let mut app = App::test_default();
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let mut bg_session = UiSession::new(bg_key.clone());
+        let mut bg_session = UiSession::new(bg_key.clone(), "test-project");
         bg_session.messages.push(bg_tool_message("tu-bg", model::ToolCallStatus::InProgress));
         bg_session.messages.push(bg_tool_message("tu-ord", model::ToolCallStatus::InProgress));
         bg_session.session_task_tool_use_ids.insert(

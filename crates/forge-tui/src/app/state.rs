@@ -744,10 +744,10 @@ impl App {
         &mut self,
     ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         if self.active_session_key.is_none() {
-            let key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
-            self.sessions
-                .entry(key.clone())
-                .or_insert_with(|| super::session::UiSession::new(key.clone()));
+            let key = forge_workspace::SessionKey::from_session_id(Self::TEST_SESSION_KEY);
+            self.sessions.entry(key.clone()).or_insert_with(|| {
+                super::session::UiSession::new(key.clone(), Self::TEST_SESSION_PROJECT)
+            });
             self.active_session_key = Some(key);
         }
         let key = self.active_session_key.clone().expect("active_session_key was just set above");
@@ -911,8 +911,8 @@ impl App {
     ///
     /// Wires a `Workspace::testing_stub()` so any code path that
     /// reaches `Workspace::dispatch` / `Workspace::refresh_*` finds
-    /// a registered `forge_workspace::DomainSession` keyed by the
-    /// `__conn_pending__` synthetic. The underlying `AgentHandle`
+    /// a registered `forge_workspace::DomainSession` keyed by
+    /// the `TEST_SESSION_KEY` seeded session. The underlying `AgentHandle`
     /// is the `Agent::testing_stub` no-op bridge; commands sent
     /// through it are silently dropped. Behind the `testing` Cargo
     /// feature so production builds don't pull in the stub helpers.
@@ -927,8 +927,9 @@ impl App {
         let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
         let (diff_overlay_tx, diff_overlay_rx) = std_mpsc::channel();
         let (usage_overlay_tx, usage_overlay_rx) = std_mpsc::channel();
-        let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
-        let mut pending_session = super::session::UiSession::new(pending_key.clone());
+        let pending_key = forge_workspace::SessionKey::from_session_id(Self::TEST_SESSION_KEY);
+        let mut pending_session =
+            super::session::UiSession::new(pending_key.clone(), Self::TEST_SESSION_PROJECT);
         // Seed a synthetic `current_model` so tests that depend on
         // model-resolution UI paths see a stable value.
         pending_session.current_model = Some(

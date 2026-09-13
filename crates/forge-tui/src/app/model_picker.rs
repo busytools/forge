@@ -160,11 +160,12 @@ mod tests {
 
     fn app_with_rows(rows: Vec<model::AvailableModel>) -> App {
         let mut app = App::test_default();
+        // A connected shape: the commit path gates on the session id the
+        // same way `/model <id>` does. Re-key before seeding the models,
+        // since the id rename mints a fresh bucket.
+        app.set_session_id(Some(model::SessionId::new("picker-session")));
         app.active_bucket_mut().expect("test_default seeds an active bucket").available_models =
             rows;
-        // A connected shape: the commit path gates on the session id the
-        // same way `/model <id>` does.
-        app.set_session_id(Some(model::SessionId::new("picker-session")));
         app
     }
 
@@ -348,7 +349,7 @@ mod tests {
         assert!(open(&mut app));
 
         let other = forge_workspace::SessionKey::from_session_id("other-session");
-        let mut bucket = crate::app::session::UiSession::new(other.clone());
+        let mut bucket = crate::app::session::UiSession::new(other.clone(), "test-project");
         bucket.session_id = Some(forge_primitives::SessionId::new("other-session"));
         app.sessions.insert(other.clone(), bucket);
         app.switch_active_session(other);

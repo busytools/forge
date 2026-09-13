@@ -2048,11 +2048,18 @@ fn apply_result_finalize(
     // a background frame's own bucket before dispatching. Cloning
     // the active session_key here threads it through to the
     // lifecycle handlers without leaking the multiplexer's routing
-    // concern into every sub-handler.
-    let active_key = app
-        .active_session_key
-        .clone()
-        .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
+    // concern into every sub-handler. Without one there is no turn to
+    // settle, so the frame stops here.
+    let Some(active_key) = app.active_session_key.clone() else {
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_SDK,
+            event_name = "result_without_session",
+            message = "result frame arrived with no active session; no turn to settle",
+            outcome = "skipped",
+            is_error,
+        );
+        return;
+    };
     if is_success_result(is_error, subtype) {
         let _: () = app.with_turn_state_mut(|ts| ts.last_assistant_error = None);
         finalize_open_tool_calls(app, forge_primitives::ToolCallStatus::Completed);
@@ -3711,7 +3718,7 @@ mod inbound_message_surfacing_tests {
     fn seed_background_bucket(app: &mut App, session_id: &str) -> forge_workspace::SessionKey {
         use crate::app::session::UiSession;
         let key = forge_workspace::SessionKey::from_session_id(session_id.to_owned());
-        let mut bucket = UiSession::new(key.clone());
+        let mut bucket = UiSession::new(key.clone(), "test-project");
         bucket.session_id = Some(crate::agent::model::SessionId::new(session_id.to_owned()));
         app.sessions.insert(key.clone(), bucket);
         key

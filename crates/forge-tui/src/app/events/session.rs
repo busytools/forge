@@ -527,7 +527,7 @@ fn handle_session_replaced_event(
     // (via `set_session_id`), so grab the outgoing tab's project name to
     // carry across the swap (same project, new UUID). Read it before
     // that call orphans the outgoing bucket.
-    let carried_project = app.sessions.get(previous_key).and_then(|b| b.project.clone());
+    let carried_project = app.sessions.get(previous_key).map(|b| b.project.clone());
 
     if let Some(models) = app.available_models_mut() {
         *models = available_models;
@@ -551,10 +551,10 @@ fn handle_session_replaced_event(
     match carried_project {
         Some(name) => {
             if let Some(bucket) = app.sessions.get_mut(session_key) {
-                bucket.project = Some(name);
+                bucket.project = name;
             }
         }
-        None => stamp_bucket_project_from_cwd(app, session_key, true),
+        None => restamp_bucket_project_from_cwd(app, session_key),
     }
     app.sync_welcome_snapshot();
     if !history_messages.is_empty() {
@@ -724,21 +724,17 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     }
 }
 
-/// Stamp the bucket for `key` with the forge.toml project name that
-/// owns its `cwd_raw`, resolved once via the workspace. `force`
-/// re-stamps even when a name is already set; otherwise only fills an
-/// empty slot so a name a preceding `Spawning` stamped survives. No-op
-/// when the cwd maps to no configured project - the slot is left as-is
-/// rather than cleared.
-fn stamp_bucket_project_from_cwd(app: &mut App, key: &SessionKey, force: bool) {
+/// Re-derive the bucket's project from its `cwd_raw` after the cwd
+/// moved, which is the one case the name it was minted with no longer
+/// holds. No-op when the cwd maps to no configured project - the
+/// existing name stands rather than being cleared.
+fn restamp_bucket_project_from_cwd(app: &mut App, key: &SessionKey) {
     let cwd = app.sessions.get(key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
     let Some(name) = app.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd)) else {
         return;
     };
-    if let Some(bucket) = app.sessions.get_mut(key)
-        && (force || bucket.project.is_none())
-    {
-        bucket.project = Some(name);
+    if let Some(bucket) = app.sessions.get_mut(key) {
+        bucket.project = name;
     }
 }
 
@@ -795,10 +791,27 @@ pub(super) fn apply_session_update_connected(
                 workspace.rekey_domain_session(synth_key, key.clone());
             }
         }
-    } else {
-        app.sessions
-            .entry(key.clone())
-            .or_insert_with(|| crate::app::session::UiSession::new(key.clone()));
+    } else if !app.sessions.contains_key(key) {
+        // Nothing seeded this key: the boot project and workers reach
+        // Connected without a preceding Spawning, so the project comes
+        // from the session's own cwd here. A cwd that maps to no
+        // configured project leaves the key unbucketed, because a
+        // session the TUI cannot name is not one this model holds.
+        let Some(project) = app.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd))
+        else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "connected_project_unresolved",
+                message = "no configured project matches the session cwd; no bucket minted",
+                outcome = "skipped",
+                key = %key.as_str(),
+                cwd = %cwd,
+            );
+            return;
+        };
+        app.sessions.insert(key.clone(), crate::app::session::UiSession::new(key.clone(), project));
+    }
+    {
         // Ensure a workspace-side DomainSession exists for `key`. In
         // production, `SessionTask` already registered one before
         // emitting `Connected`; this branch covers tests that
@@ -835,11 +848,6 @@ pub(super) fn apply_session_update_connected(
     // assigns a whole default `SessionUsageState`, so a seed set earlier
     // is wiped.
     seed_compaction_count(app, key, compaction_count);
-    // Resolve the tab's project identity from its (now-applied) cwd,
-    // unless a preceding `Spawning` already named it. The boot project
-    // and workers reach Connected without a Spawning, so this is where
-    // their SCHEDULES / GOTIFY scope gets stamped.
-    stamp_bucket_project_from_cwd(app, key, false);
 }
 
 /// Sentinel-pattern check: synthetic keys (`__conn_pending__`,
@@ -886,6 +894,26 @@ pub(super) fn apply_session_update_session_replaced(
     // background chain `Connected` uses, leaving every App-global
     // surface (focus, input, status, terminals, overlays) untouched.
     super::client::apply_session_update_key_renamed(app, previous_key, key.clone());
+    if !app.sessions.contains_key(key) {
+        // No bucket to carry across, so the replacement's project comes
+        // from the cwd it resumed into. Without one there is nothing to
+        // file the session under, and the chain below would address
+        // nothing.
+        let Some(project) = app.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd))
+        else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "session_replaced_project_unresolved",
+                message = "no bucket to carry and no project matches the new cwd; replacement skipped",
+                outcome = "skipped",
+                session_key = %key.as_str(),
+                previous_session_key = %previous_key.as_str(),
+                cwd = %cwd,
+            );
+            return;
+        };
+        app.sessions.insert(key.clone(), crate::app::session::UiSession::new(key.clone(), project));
+    }
     // The old chat is replaced below, and the roster and its recorded cards
     // described it: left set, the row spins for work no Inspector section can
     // show. Only here, never on `Connected` - `task_started` is not re-emitted
@@ -927,10 +955,6 @@ pub(super) fn apply_session_update_session_replaced(
         bucket.pending_compact_clear = false;
     }
     seed_compaction_count(app, key, compaction_count);
-    // Nothing on this arm passes through `Connected`, which is where a
-    // bucket would otherwise pick its project up; `false` keeps a name
-    // a preceding `Spawning` already stamped.
-    stamp_bucket_project_from_cwd(app, key, false);
 }
 
 /// Set a session's compaction count from what its transcript records.
@@ -1084,70 +1108,60 @@ pub(super) fn apply_session_update_fatal_error(app: &mut App, error: AppError) {
 }
 
 #[cfg(test)]
-mod stamp_project_tests {
-    use super::stamp_bucket_project_from_cwd;
+mod restamp_project_tests {
+    use super::restamp_bucket_project_from_cwd;
     use crate::app::App;
 
-    /// The Connected stamp resolves the bucket's project from its cwd:
-    /// a project-root cwd and a worktree-worker cwd both land on the
-    /// parent project name. This is the boot-project / worker path that
-    /// reaches Connected without a naming `Spawning`.
+    /// A cwd move re-derives the bucket's project: a project-root cwd
+    /// and a worktree-worker cwd both land on the parent project name.
     #[test]
-    fn stamp_resolves_project_root_and_worktree_cwd() {
+    fn restamp_resolves_project_root_and_worktree_cwd() {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/tmp/stamp-proj";
         ws.seed_test_project("stampproj", path);
 
         let lead = forge_workspace::SessionKey::from_session_id("lead-uuid");
-        let mut bucket = crate::app::session::UiSession::new(lead.clone());
+        let mut bucket = crate::app::session::UiSession::new(lead.clone(), "test-project");
         bucket.cwd_raw = path.to_owned();
         app.sessions.insert(lead.clone(), bucket);
-        stamp_bucket_project_from_cwd(&mut app, &lead, false);
+        restamp_bucket_project_from_cwd(&mut app, &lead);
         assert_eq!(
-            app.sessions.get(&lead).and_then(|b| b.project.clone()).as_deref(),
+            app.sessions.get(&lead).map(|b| b.project.as_str()),
             Some("stampproj"),
-            "a project-root cwd stamps the project name",
+            "a project-root cwd re-derives the project name",
         );
 
         let worker = forge_workspace::SessionKey::from_session_id("worker-uuid");
-        let mut bucket = crate::app::session::UiSession::new(worker.clone());
+        let mut bucket = crate::app::session::UiSession::new(worker.clone(), "test-project");
         bucket.cwd_raw = format!("{path}/.claude/worktrees/reviewer");
         app.sessions.insert(worker.clone(), bucket);
-        stamp_bucket_project_from_cwd(&mut app, &worker, false);
+        restamp_bucket_project_from_cwd(&mut app, &worker);
         assert_eq!(
-            app.sessions.get(&worker).and_then(|b| b.project.clone()).as_deref(),
+            app.sessions.get(&worker).map(|b| b.project.as_str()),
             Some("stampproj"),
-            "a worktree worker's cwd stamps its parent project name",
+            "a worktree worker's cwd re-derives its parent project name",
         );
     }
 
-    /// `force = false` leaves an already-stamped name intact (a Spawning
-    /// name survives Connect); `force = true` re-stamps (SessionReplaced).
+    /// A cwd that maps to no configured project leaves the minted name
+    /// standing rather than clearing it.
     #[test]
-    fn stamp_respects_force_flag() {
+    fn restamp_keeps_the_minted_name_when_the_cwd_maps_to_no_project() {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         ws.seed_test_project("stampproj", "/tmp/stamp-force-proj");
 
         let key = forge_workspace::SessionKey::from_session_id("k");
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
-        bucket.cwd_raw = "/tmp/stamp-force-proj".to_owned();
-        bucket.project = Some("preset".to_owned());
+        let mut bucket = crate::app::session::UiSession::new(key.clone(), "preset");
+        bucket.cwd_raw = "/tmp/somewhere-else".to_owned();
         app.sessions.insert(key.clone(), bucket);
 
-        stamp_bucket_project_from_cwd(&mut app, &key, false);
+        restamp_bucket_project_from_cwd(&mut app, &key);
         assert_eq!(
-            app.sessions.get(&key).and_then(|b| b.project.clone()).as_deref(),
+            app.sessions.get(&key).map(|b| b.project.as_str()),
             Some("preset"),
-            "force = false keeps the preceding name",
-        );
-
-        stamp_bucket_project_from_cwd(&mut app, &key, true);
-        assert_eq!(
-            app.sessions.get(&key).and_then(|b| b.project.clone()).as_deref(),
-            Some("stampproj"),
-            "force = true re-stamps from the cwd",
+            "an unresolvable cwd keeps the name the bucket was minted with",
         );
     }
 }
@@ -1169,7 +1183,7 @@ mod seed_compaction_count_tests {
     fn seeding_replaces_a_live_count_rather_than_adding_to_it() {
         let mut app = App::test_default();
         let key = SessionKey::from_session_id("seeded".to_owned());
-        let mut bucket = UiSession::new(key.clone());
+        let mut bucket = UiSession::new(key.clone(), "test-project");
         bucket.session_usage.compaction_count = 3;
         app.sessions.insert(key.clone(), bucket);
 
@@ -1213,7 +1227,7 @@ mod teardown_clears_background_registry_tests {
     fn background_connection_failure_clears_background_registry() {
         let mut app = App::test_default();
         let key = SessionKey::from_session_id("bg-fail");
-        let mut bucket = UiSession::new(key.clone());
+        let mut bucket = UiSession::new(key.clone(), "test-project");
         seed_task(&mut bucket);
         app.sessions.insert(key.clone(), bucket);
         assert_ne!(
@@ -1250,7 +1264,7 @@ mod teardown_clears_background_registry_tests {
     fn background_auth_required_clears_background_registry() {
         let mut app = App::test_default();
         let key = SessionKey::from_session_id("bg-auth");
-        let mut bucket = UiSession::new(key.clone());
+        let mut bucket = UiSession::new(key.clone(), "test-project");
         seed_task(&mut bucket);
         app.sessions.insert(key.clone(), bucket);
         assert_ne!(
@@ -1277,7 +1291,7 @@ mod teardown_clears_background_registry_tests {
 
         let mut app = App::test_default();
         let previous = SessionKey::from_session_id("replaced-uuid");
-        let mut bucket = UiSession::new(previous.clone());
+        let mut bucket = UiSession::new(previous.clone(), "test-project");
         seed_task(&mut bucket);
         app.sessions.insert(previous.clone(), bucket);
         assert_ne!(
@@ -1336,7 +1350,7 @@ mod connected_log_tests {
     fn background_connect_logs_the_event_cwd_not_the_focused_cwd() {
         let mut app = App::test_default();
         let focused = SessionKey::from_session_id("focused-uuid");
-        let mut focused_bucket = UiSession::new(focused.clone());
+        let mut focused_bucket = UiSession::new(focused.clone(), "test-project");
         focused_bucket.cwd_raw = "/Users/vedhavyas/Projects/granite-backend".to_owned();
         app.sessions.insert(focused.clone(), focused_bucket);
         app.active_session_key = Some(focused);
@@ -1376,13 +1390,13 @@ mod connected_log_tests {
     fn empty_event_cwd_falls_back_to_the_buckets_seeded_cwd() {
         let mut app = App::test_default();
         let focused = SessionKey::from_session_id("focused-uuid");
-        let mut focused_bucket = UiSession::new(focused.clone());
+        let mut focused_bucket = UiSession::new(focused.clone(), "test-project");
         focused_bucket.cwd_raw = "/Users/vedhavyas/Projects/granite-backend".to_owned();
         app.sessions.insert(focused.clone(), focused_bucket);
         app.active_session_key = Some(focused);
 
         let worker = SessionKey::from_session_id("worker-uuid");
-        let mut worker_bucket = UiSession::new(worker.clone());
+        let mut worker_bucket = UiSession::new(worker.clone(), "test-project");
         worker_bucket.cwd_raw =
             "/Users/vedhavyas/Projects/forge/.claude/worktrees/reviewer".to_owned();
         app.sessions.insert(worker.clone(), worker_bucket);
@@ -1451,7 +1465,7 @@ mod process_scan_generation_tests {
     fn changed_cwd_bumps_process_scan_generation_and_clears_the_snapshot() {
         let mut app = App::test_default();
         let key = SessionKey::from_session_id("swap-uuid");
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        let mut bucket = crate::app::session::UiSession::new(key.clone(), "test-project");
         bucket.cwd_raw = "/tmp/old-cwd".to_owned();
         bucket.process_snapshot = Some(forge_workspace::env::processes::ProcessSnapshot {
             processes: Vec::new(),
@@ -1480,7 +1494,7 @@ mod process_scan_generation_tests {
     fn same_cwd_keeps_the_generation() {
         let mut app = App::test_default();
         let key = SessionKey::from_session_id("steady-uuid");
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        let mut bucket = crate::app::session::UiSession::new(key.clone(), "test-project");
         bucket.cwd_raw = "/tmp/steady-cwd".to_owned();
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key.clone());

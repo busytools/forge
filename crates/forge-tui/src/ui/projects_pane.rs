@@ -2191,7 +2191,7 @@ mod tests {
         workspace.insert_live_worker(&project_key, entry);
         // Seed the worker's UiSession with peer_badges so the renderer
         // has a non-default stats value to surface.
-        let mut worker_session = UiSession::new(worker_session_key.clone());
+        let mut worker_session = UiSession::new(worker_session_key.clone(), "alice-project");
         worker_session.peer_badges =
             PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 0 };
         app.sessions.insert(worker_session_key.clone(), worker_session);
@@ -2859,7 +2859,10 @@ mod tests {
         use forge_primitives::permission_ui::{
             PermissionAction, PermissionOption, PermissionOptionKind, PermissionRequest,
         };
-        let bucket = app.sessions.entry(key.clone()).or_insert_with(|| UiSession::new(key.clone()));
+        let bucket = app
+            .sessions
+            .entry(key.clone())
+            .or_insert_with(|| UiSession::new(key.clone(), "test-project"));
         let request = PermissionRequest {
             tool_call: ToolCall {
                 tool_call_id: "tc-test".into(),
@@ -3072,7 +3075,7 @@ mod tests {
         let build = |active: &forge_workspace::SessionKey| {
             let mut app = App::test_default();
             for key in [&first_key, &second_key] {
-                let mut bucket = UiSession::new(key.clone());
+                let mut bucket = UiSession::new(key.clone(), "resume-tie-project");
                 bucket.cwd_raw = project_path.to_owned();
                 app.sessions.insert(key.clone(), bucket);
             }
@@ -3157,7 +3160,7 @@ mod tests {
         let lead_bucket = app
             .sessions
             .entry(lead_session_key.clone())
-            .or_insert_with(|| UiSession::new(lead_session_key.clone()));
+            .or_insert_with(|| UiSession::new(lead_session_key.clone(), "forge"));
         lead_bucket.cwd_raw = "~/Projects/forge".to_owned();
 
         // Active session IS the worker, NOT the lead; mirrors the
@@ -3168,7 +3171,7 @@ mod tests {
         let worker_bucket = app
             .sessions
             .entry(worker_session_key.clone())
-            .or_insert_with(|| UiSession::new(worker_session_key.clone()));
+            .or_insert_with(|| UiSession::new(worker_session_key.clone(), "forge"));
         worker_bucket.cwd_raw = "/Users/test/Projects/forge/.claude/worktrees/reviewer".to_owned();
         app.active_session_key = Some(worker_session_key.clone());
 
@@ -3401,7 +3404,7 @@ mod tests {
 
         let mut app = App::test_default();
         let lead_key = SessionKey::from_session_id("lead-bg");
-        let mut lead = UiSession::new(lead_key.clone());
+        let mut lead = UiSession::new(lead_key.clone(), "bg-activity-project");
         lead.cwd_raw = project_path.to_owned();
         lead.lifecycle_state = lifecycle;
         app.sessions.insert(lead_key.clone(), lead);
@@ -3698,7 +3701,7 @@ mod tests {
         };
         workspace.insert_live_worker(&project_key, entry);
 
-        let mut worker_session = UiSession::new(worker_session_key.clone());
+        let mut worker_session = UiSession::new(worker_session_key.clone(), "bg-worker-project");
         worker_session.lifecycle_state = SessionLifecycleState::Idle;
         worker_session.background_tasks.push(BackgroundTask {
             task_id: "t1".to_owned(),

@@ -145,7 +145,7 @@ pub(crate) fn app_with_target_snapshot(
 ) -> App {
     let mut app = App::test_default();
     let key = forge_workspace::SessionKey::from_session_id("diff-target-test");
-    let mut session = crate::app::session::UiSession::new(key.clone());
+    let mut session = crate::app::session::UiSession::new(key.clone(), "test-project");
     session.git_diff_snapshot = snapshot;
     app.sessions.insert(key.clone(), session);
     app.active_session_key = Some(key);
@@ -335,8 +335,7 @@ pub(crate) fn review_app() -> (App, tempfile::TempDir) {
         forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
     );
     let key = forge_workspace::SessionKey::from_session_id("review-session");
-    let mut session = crate::app::session::UiSession::new(key.clone());
-    session.project = Some("forge".to_owned());
+    let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
     session.cwd_raw = "/tmp/repo".into();
     app.sessions.insert(key.clone(), session);
     app.active_session_key = Some(key);
@@ -381,12 +380,15 @@ pub(crate) fn review_app_with_agent()
     workspace.install_db_for_test(
         forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
     );
-    let rx = app.install_testing_stub();
+    // Re-key first: `set_session_id` mints the bucket under the real key,
+    // so the stub has to be installed after it or the conn lands on the
+    // fixture bucket the id migration abandons.
     app.set_session_id(Some(crate::agent::model::SessionId::new("review-session")));
+    let rx = app.install_testing_stub();
     if let Some(key) = app.active_session_key.clone()
         && let Some(session) = app.sessions.get_mut(&key)
     {
-        session.project = Some("forge".to_owned());
+        session.project = "forge".to_owned();
         session.cwd_raw = "/tmp/repo".into();
     }
     (app, rx, dir)

@@ -1761,7 +1761,7 @@ mod tests {
         let project_name = "forge";
         let spawn_synth =
             forge_workspace::SessionKey::from_session_id(format!("__spawn_{project_name}__"));
-        let mut bucket = UiSession::new(spawn_synth.clone());
+        let mut bucket = UiSession::new(spawn_synth.clone(), project_name);
         bucket.lifecycle_state = SessionLifecycleState::Spawning;
         app.sessions.insert(spawn_synth.clone(), bucket);
 
@@ -1785,7 +1785,7 @@ mod tests {
         let project_name = "forge";
         let spawn_synth =
             forge_workspace::SessionKey::from_session_id(format!("__spawn_{project_name}__"));
-        let mut bucket = UiSession::new(spawn_synth.clone());
+        let mut bucket = UiSession::new(spawn_synth.clone(), project_name);
         bucket.lifecycle_state = SessionLifecycleState::Idle;
         app.sessions.insert(spawn_synth.clone(), bucket);
 
@@ -1899,7 +1899,7 @@ mod tests {
         assert!(!body_columns.is_empty(), "the cold row must be clickable somewhere");
 
         // Frame 2: the spawn landed. Same App, same pane, same pointer.
-        let mut bucket = UiSession::new(lead.clone());
+        let mut bucket = UiSession::new(lead.clone(), "hub-modules");
         bucket.lifecycle_state = SessionLifecycleState::Idle;
         bucket.cwd_raw = PROJECT_PATH.to_owned();
         app.sessions.insert(lead.clone(), bucket);
@@ -1917,7 +1917,7 @@ mod tests {
         // Every column that meant "wake it" one frame ago must still
         // not close the session it just woke.
         for column in body_columns {
-            let mut bucket = UiSession::new(lead.clone());
+            let mut bucket = UiSession::new(lead.clone(), "hub-modules");
             bucket.lifecycle_state = SessionLifecycleState::Idle;
             bucket.cwd_raw = PROJECT_PATH.to_owned();
             app.sessions.insert(lead.clone(), bucket);
@@ -2031,13 +2031,13 @@ mod tests {
         let project_key = ProjectKey::new_for_test(CLOSE_ROW_PROJECT);
 
         let lead = SessionKey::from_session_id("hub-modules-lead");
-        let mut bucket = UiSession::new(lead.clone());
+        let mut bucket = UiSession::new(lead.clone(), CLOSE_ROW_PROJECT);
         bucket.lifecycle_state = SessionLifecycleState::Idle;
         bucket.cwd_raw = PROJECT_PATH.to_owned();
         app.sessions.insert(lead.clone(), bucket);
 
         let worker = SessionKey::from_session_id("hub-modules-steward");
-        app.sessions.insert(worker.clone(), UiSession::new(worker.clone()));
+        app.sessions.insert(worker.clone(), UiSession::new(worker.clone(), CLOSE_ROW_PROJECT));
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
@@ -2137,7 +2137,7 @@ mod tests {
     fn switch_to_worker_swaps_active_session_when_bucket_exists() {
         let mut app = App::test_default();
         let worker_key = forge_workspace::SessionKey::from_session_id("worker-uuid");
-        let bucket = UiSession::new(worker_key.clone());
+        let bucket = UiSession::new(worker_key.clone(), "test-project");
         app.sessions.insert(worker_key.clone(), bucket);
 
         switch_to_worker(&mut app, worker_key.clone());
@@ -2844,7 +2844,7 @@ mod tests {
             for (name, session_id) in seeded {
                 ws.seed_test_project(name, &format!("/tmp/{name}"));
                 let key = forge_workspace::SessionKey::from_session_id(session_id);
-                let mut bucket = UiSession::new(key.clone());
+                let mut bucket = UiSession::new(key.clone(), name);
                 // The anchor the pane resolves a project row's lead by.
                 bucket.cwd_raw = format!("/tmp/{name}");
                 app.sessions.insert(key, bucket);
@@ -2871,7 +2871,7 @@ mod tests {
         let mut app = App::test_default();
         let prior = app.active_session_key.clone().expect("test_default has an active session");
         let worker_key = forge_workspace::SessionKey::from_session_id("worker-uuid");
-        app.sessions.insert(worker_key.clone(), UiSession::new(worker_key.clone()));
+        app.sessions.insert(worker_key.clone(), UiSession::new(worker_key.clone(), "test-project"));
         app.pane_hit_targets.push(PaneHitTarget::WorkerRow {
             project_key: forge_workspace::ProjectKey::new_for_test("p"),
             label: "steward".to_owned(),

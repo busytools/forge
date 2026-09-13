@@ -27,7 +27,10 @@ use ratatui::layout::Rect;
 /// `lifecycle_state`. The Projects pane reads lifecycle directly off
 /// the bucket; no workspace lookup needed.
 fn register_lifecycle_for_test(app: &mut App, key: &SessionKey, state: SessionLifecycleState) {
-    let bucket = app.sessions.entry(key.clone()).or_insert_with(|| UiSession::new(key.clone()));
+    let bucket = app
+        .sessions
+        .entry(key.clone())
+        .or_insert_with(|| UiSession::new(key.clone(), "test-project"));
     bucket.lifecycle_state = state;
 }
 
@@ -77,7 +80,7 @@ fn renders_banner_and_project_row_under_org_header() {
     // Insert a Session bucket for the lead so the pane treats `forge`
     // as a live project (gets the close-affordance + active glyph).
     let lead_key = SessionKey::from_str_for_test("session-a");
-    let lead_session = UiSession::new(lead_key.clone());
+    let lead_session = UiSession::new(lead_key.clone(), "forge");
     app.sessions.insert(lead_key.clone(), lead_session);
     app.active_session_key = Some(lead_key.clone());
     register_lifecycle_for_test(&mut app, &lead_key, SessionLifecycleState::Idle);
@@ -125,7 +128,7 @@ fn live_and_idle_projects_render_under_same_org_with_distinct_glyphs() {
     ];
 
     let alpha_key = SessionKey::from_str_for_test("alpha-1");
-    app.sessions.insert(alpha_key.clone(), UiSession::new(alpha_key.clone()));
+    app.sessions.insert(alpha_key.clone(), UiSession::new(alpha_key.clone(), "alpha"));
     app.active_session_key = Some(alpha_key.clone());
 
     let lines = render_to_lines(&mut app, &projects, 26, 14);
@@ -160,7 +163,7 @@ fn medium_tier_truncates_long_project_labels() {
     let projects = vec![project_view("stargate-chain-pulse", vec![long_session.clone()])];
 
     let lead_key = SessionKey::from_str_for_test("really-long-session-id");
-    app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone()));
+    app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone(), "stargate-chain-pulse"));
     app.active_session_key = Some(lead_key);
 
     // Medium tier renders in a 24ch-wide pane (PANE_WIDTH_MEDIUM).
@@ -240,7 +243,7 @@ fn render_top_bar_to_lines(app: &mut App, width: u16) -> Vec<String> {
 fn narrow_top_bar_renders_icon_and_stamps_target() {
     let mut app = App::test_default();
     let key_a = SessionKey::from_str_for_test("session-a");
-    app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone()));
+    app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone(), "test-project"));
     app.active_session_key = Some(key_a);
 
     let lines = render_top_bar_to_lines(&mut app, 100);
@@ -265,7 +268,7 @@ fn narrow_overlay_banner_includes_close_glyph_and_target() {
     let mut app = App::test_default();
     let projects = vec![project_view("forge", vec![session_view("session-a", "main")])];
     let lead_key = SessionKey::from_str_for_test("session-a");
-    app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone()));
+    app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone(), "forge"));
     app.active_session_key = Some(lead_key);
 
     let lines = render_overlay_to_lines(&mut app, &projects, 100, 12);
@@ -307,7 +310,8 @@ fn narrow_overlay_keeps_full_unmodified_project_key_in_targets() {
         vec![session_view("really-long-session-id", "lead")],
     )];
     let lead_key = SessionKey::from_str_for_test("really-long-session-id");
-    app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone()));
+    app.sessions
+        .insert(lead_key.clone(), UiSession::new(lead_key.clone(), "really-long-project-name"));
     app.active_session_key = Some(lead_key);
 
     let _lines = render_overlay_to_lines(&mut app, &projects, 60, 20);
@@ -698,7 +702,7 @@ fn worker_selection_highlights_only_the_worker_row() {
     let worker_bucket = app
         .sessions
         .entry(worker_key.clone())
-        .or_insert_with(|| UiSession::new(worker_key.clone()));
+        .or_insert_with(|| UiSession::new(worker_key.clone(), "forge"));
     worker_bucket.cwd_raw = "~/Projects/forge".to_owned();
     app.active_session_key = Some(worker_key.clone());
 

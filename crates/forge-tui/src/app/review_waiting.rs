@@ -101,13 +101,13 @@ pub fn hydrate_pending(app: &mut App) {
                 && session.session_id.is_some()
                 && !session.cwd_raw.is_empty()
         })
-        .filter_map(|(key, session)| {
-            Some((
+        .map(|(key, session)| {
+            (
                 key.clone(),
-                session.project.clone()?,
+                session.project.clone(),
                 PathBuf::from(&session.cwd_raw),
                 Arc::clone(&session.review_waiting_in_flight),
-            ))
+            )
         })
         .collect();
     for (key, project, cwd_raw, in_flight) in pending {
@@ -174,7 +174,7 @@ pub fn drain_events(app: &mut App) {
         // reports a read failure as `None` too, and a transient one must
         // not retire a live signal.
         let parked = app.sessions.get(&event.key).and_then(|s| {
-            Some((s.review_replies_waiting.as_ref()?.branch.clone(), s.project.clone()?))
+            Some((s.review_replies_waiting.as_ref()?.branch.clone(), s.project.clone()))
         });
         if let Some((branch, project)) = parked
             && let Some(ws) = workspace.as_ref()
@@ -298,8 +298,7 @@ mod tests {
             forge_workspace::store::Db::open(&db_dir.join("db.redb")).expect("open db"),
         );
         let key = SessionKey::from_session_id("restored-session");
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some("forge".to_owned());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = repo.to_string_lossy().into_owned();
         session.session_id = Some(crate::agent::model::SessionId::new("restored-session"));
         app.sessions.insert(key.clone(), session);
@@ -413,8 +412,7 @@ mod tests {
         let workspace = app.workspace.clone().expect("test workspace");
         workspace.install_db_for_test(db);
         let key = SessionKey::from_session_id("restored-session");
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some("forge".to_owned());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = repo.path().to_string_lossy().into_owned();
         session.session_id = Some(crate::agent::model::SessionId::new("restored-session"));
         app.sessions.insert(key.clone(), session);

@@ -28,7 +28,7 @@ use forge_primitives::{AccountInfo, PeerInflightStats, SessionId};
 /// Per-session runtime state. Initialised when a session connects;
 /// dropped when the session is closed or forge-tui exits.
 ///
-/// `Default` is hand-rolled (rather than derived) because
+/// `blank` is hand-rolled (rather than derived) because
 /// `next_paste_session_id` seeds to 1, not 0. Every other field falls
 /// through to its type's `Default::default()`; if a field needs a
 /// non-default initializer, factor it through [`UiSession::new`]
@@ -63,12 +63,18 @@ pub struct UiSession {
     /// reconstruction.
     pub cwd_raw: String,
     /// forge.toml project NAME this tab belongs to (equals
-    /// `CronEntry.project_name` / `ProjectView.name`), stamped once the
-    /// bucket resolves to a project and `None` pre-Connect. Scopes the
-    /// Inspector SCHEDULES + GOTIFY snapshots by name rather than
-    /// re-deriving the project from `cwd_raw` (fragile for empty /
-    /// synthetic / tilde / worktree cwd forms).
-    pub project: Option<String>,
+    /// `CronEntry.project_name` / `ProjectView.name`), stamped when the
+    /// bucket is minted. Scopes the Inspector SCHEDULES + GOTIFY
+    /// snapshots by name rather than re-deriving the project from
+    /// `cwd_raw` (fragile for empty / synthetic / tilde / worktree cwd
+    /// forms).
+    pub project: String,
+    /// The live-worker label this session was spawned as; `None` for a
+    /// lead. Stamped from the synthetic worker spawn key while the
+    /// bucket is still keyed by it, and carried across the rename onto
+    /// the real uuid, so nothing has to infer worker-ness from a
+    /// registry lookup that can miss.
+    pub worker_label: Option<String>,
     /// Monotonic session authority epoch - bumped on each session
     /// reset (`/new`, login, logout) so stale async view data can be
     /// ignored.
@@ -534,8 +540,8 @@ pub struct UiSession {
 }
 
 impl UiSession {
-    pub fn new(key: SessionKey) -> Self {
-        Self { key: Some(key), ..Self::default() }
+    pub fn new(key: SessionKey, project: impl Into<String>) -> Self {
+        Self::blank(Some(key), project.into())
     }
 
     /// Stamp a post-take notice against the current draft version, so
@@ -823,19 +829,23 @@ impl UiSession {
     }
 }
 
-impl Default for UiSession {
-    fn default() -> Self {
-        // Hand-rolled because `next_paste_session_id` seeds to 1;
-        // every other field takes its type default, so a new field
-        // lands here without further thought.
+impl UiSession {
+    /// Every field at its type default, except the two a session cannot
+    /// exist without: the key it is filed under, and the forge.toml
+    /// project it belongs to. Hand-rolled because `next_paste_session_id`
+    /// seeds to 1; every other field takes its type default, so a new
+    /// field lands here without further thought. A new non-defaulted
+    /// field belongs on [`Self::new`] instead.
+    pub(crate) fn blank(key: Option<SessionKey>, project: String) -> Self {
         Self {
-            key: Option::default(),
+            key,
+            project,
+            worker_label: Option::default(),
             dictate_overrides: forge_workspace::DictateOverrides::default(),
             backgrounded_roots: HashSet::new(),
             session_id: Option::default(),
             lifecycle_state: SessionLifecycleState::default(),
             cwd_raw: String::default(),
-            project: Option::default(),
             session_scope_epoch: u64::default(),
             turn_state: SessionTurnState::default(),
             account_info: Option::default(),
@@ -959,7 +969,7 @@ mod tests {
     fn clear_runtime_identity_clears_observed_assistant_model() {
         let mut session = UiSession {
             observed_assistant_model: Some("claude-observed".to_owned()),
-            ..UiSession::default()
+            ..UiSession::blank(None, "test-project".to_owned())
         };
 
         session.clear_runtime_identity();
@@ -976,7 +986,7 @@ mod tests {
                 styling: Some(forge_workspace::Styling::Formal),
                 ..Default::default()
             },
-            ..UiSession::default()
+            ..UiSession::blank(None, "test-project".to_owned())
         };
 
         session.clear_runtime_identity();
@@ -984,26 +994,28 @@ mod tests {
         assert_eq!(session.dictate_overrides, forge_workspace::DictateOverrides::default());
     }
 
-    /// Pre-Connect bucket state (cwd, files_accessed, …) accumulated
-    /// before the first `Connected` event must survive the
-    /// synthetic-key → real-key migration that happens when
-    /// `set_session_id` finally lands. Without the migration the
-    /// welcome card / status panel would lose state on connect.
+    /// Bucket state (cwd, files_accessed, …) accumulated before the
+    /// claude-issued id lands must survive the boot id-adoption: the
+    /// bucket is rekeyed onto the real uuid earlier (at KeyRenamed), so
+    /// `set_session_id` finds it already there and must not reset it.
     #[test]
-    fn set_session_id_migrates_pre_connect_bucket_state_onto_real_key() {
+    fn set_session_id_preserves_the_real_key_bucket_state() {
         let mut app = App::test_default();
-        // Pre-connect bucket holds welcome state.
+        let real = forge_workspace::SessionKey::from_session_id("real-uuid");
+        app.sessions
+            .insert(real.clone(), super::UiSession::new(real.clone(), App::TEST_SESSION_PROJECT));
+        app.active_session_key = Some(real.clone());
         app.set_cwd("/work/foo");
         app.set_files_accessed(3);
 
-        let pre = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-        assert!(app.sessions.contains_key(&pre));
-
         app.set_session_id(Some(crate::agent::model::SessionId::new("real-uuid")));
 
-        let real = forge_workspace::SessionKey::from_session_id("real-uuid");
-        assert!(!app.sessions.contains_key(&pre), "synthetic bucket removed");
-        assert!(app.sessions.contains_key(&real), "real bucket exists");
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&real),
+            "the adopt keeps focus on the real key"
+        );
+        assert!(app.sessions.contains_key(&real), "real bucket still filed");
         assert_eq!(app.cwd(), Some("/work/foo"));
         assert_eq!(app.files_accessed(), 3);
     }
@@ -1028,7 +1040,10 @@ mod tests {
             card_seen: true,
             command: command.map(str::to_owned),
         };
-        let mut session = super::UiSession::new(forge_workspace::SessionKey::from_session_id("bg"));
+        let mut session = super::UiSession::new(
+            forge_workspace::SessionKey::from_session_id("bg"),
+            "test-project",
+        );
         assert!(!session.has_live_background_work(), "empty registry is not live work");
 
         session.background_tasks.push(task("t1", "local_bash"));
@@ -1088,7 +1103,10 @@ mod tests {
     fn backgrounded_alive_tool_use_ids_resolves_all_task_types() {
         use crate::app::state::types::BackgroundTask;
 
-        let mut session = super::UiSession::new(forge_workspace::SessionKey::from_session_id("bg"));
+        let mut session = super::UiSession::new(
+            forge_workspace::SessionKey::from_session_id("bg"),
+            "test-project",
+        );
         for (task_id, task_type) in
             [("task-bash", "local_bash"), ("task-agent", "agent"), ("task-wf", "local_workflow")]
         {

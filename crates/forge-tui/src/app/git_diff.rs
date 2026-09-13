@@ -350,7 +350,10 @@ mod tests {
     }
 
     fn session_with_generation(generation: u64) -> UiSession {
-        UiSession { git_diff_generation: generation, ..UiSession::default() }
+        UiSession {
+            git_diff_generation: generation,
+            ..UiSession::blank(None, "test-project".to_owned())
+        }
     }
 
     /// `apply_snapshot_ready` writes the snapshot when the carried
@@ -464,7 +467,7 @@ mod tests {
     /// unconditionally.
     #[test]
     fn should_refresh_flags_missing_snapshot() {
-        let session = UiSession::default();
+        let session = UiSession::blank(None, "test-project".to_owned());
         assert!(should_refresh(&session));
     }
 
@@ -475,7 +478,7 @@ mod tests {
         let session = UiSession {
             git_diff_snapshot: Some(snapshot()),
             git_diff_last_refreshed_at: Some(Instant::now()),
-            ..UiSession::default()
+            ..UiSession::blank(None, "test-project".to_owned())
         };
         assert!(!should_refresh(&session));
     }
@@ -493,7 +496,7 @@ mod tests {
         let session = UiSession {
             git_diff_snapshot: Some(snapshot()),
             git_diff_last_refreshed_at: Some(past),
-            ..UiSession::default()
+            ..UiSession::blank(None, "test-project".to_owned())
         };
         assert!(should_refresh(&session));
     }

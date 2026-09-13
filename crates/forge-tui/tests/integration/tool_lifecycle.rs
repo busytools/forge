@@ -1232,7 +1232,7 @@ fn seed_active_backgrounded_bash(app: &mut App) {
 
 /// A non-active bucket carrying a mapped, still-open backgrounded bash card.
 fn bg_bucket_with_backgrounded_bash(key: &SessionKey) -> UiSession {
-    let mut session = UiSession::new(key.clone());
+    let mut session = UiSession::new(key.clone(), "test-project");
     session.messages.push(ChatMessage::new(
         MessageRole::Assistant,
         vec![MessageBlock::ToolCall(Box::new(backgrounded_bash_card("toolu_bash")))],
@@ -1710,7 +1710,7 @@ async fn the_background_sweep_spares_a_live_backgrounded_subagents_children() {
     send_msg(&mut app, assistant_message(vec![text_block("active")]));
 
     let bg_key = SessionKey::from_str_for_test("bg-subagent");
-    let mut bg = UiSession::new(bg_key.clone());
+    let mut bg = UiSession::new(bg_key.clone(), "test-project");
     let mut root = backgrounded_bash_card("toolu_root");
     root.sdk_tool_name = "Agent".to_owned();
     let child = backgrounded_bash_card("toolu_child");

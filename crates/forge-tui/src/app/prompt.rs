@@ -892,7 +892,7 @@ pub(crate) mod tests {
 
     #[test]
     fn enqueue_appends_to_session_queue() {
-        let mut session = crate::app::session::UiSession::default();
+        let mut session = crate::app::session::UiSession::blank(None, "test-project".to_owned());
         enqueue_prompt(
             &mut session,
             PromptState::from_permission("tc-1".into(), make_permission_request()),
@@ -1491,8 +1491,10 @@ pub(crate) mod tests {
         app.input_mut().expect("active session").set_text("half-typed message");
 
         let background = forge_workspace::SessionKey::from_session_id("bg");
-        app.sessions
-            .insert(background.clone(), crate::app::session::UiSession::new(background.clone()));
+        app.sessions.insert(
+            background.clone(),
+            crate::app::session::UiSession::new(background.clone(), "test-project"),
+        );
 
         crate::app::events::apply_session_update(
             &mut app,
@@ -1515,7 +1517,8 @@ pub(crate) mod tests {
         app.input_mut().expect("active session").set_text("session A draft");
 
         let b = forge_workspace::SessionKey::from_session_id("session-b");
-        app.sessions.insert(b.clone(), crate::app::session::UiSession::new(b.clone()));
+        app.sessions
+            .insert(b.clone(), crate::app::session::UiSession::new(b.clone(), "test-project"));
 
         crate::app::events::apply_session_update(
             &mut app,

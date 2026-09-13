@@ -555,20 +555,19 @@ mod tests {
 
     use std::time::{Duration, Instant};
 
-    /// Helper: synthetic [`forge_workspace::SessionKey`] used to
-    /// tag `ClientEvent`s emitted by tests. Tests built around
+    /// Helper: the [`forge_workspace::SessionKey`] used to tag
+    /// `ClientEvent`s emitted by tests. Tests built around
     /// `App::test_default` always have one bucket keyed by
-    /// `App::PRE_CONNECT_KEY`, and tests that swap session ids in
-    /// (via `App::set_session_id`) migrate the bucket onto the new
-    /// key - but for tagging synthetic events both forms route
-    /// through the active-session matcher in
-    /// [`super::handle_client_event`], so the pre-Connected key is
-    /// what the multiplexer expects when no real
+    /// [`App::TEST_SESSION_KEY`], and tests that swap session ids in
+    /// (via `App::set_session_id`) file the bucket under the new key -
+    /// but for tagging synthetic events both forms route through the
+    /// active-session matcher in [`super::handle_client_event`], so the
+    /// seeded key is what the multiplexer expects when no real
     /// Connect/SessionReplaced has flowed through yet.
     fn active_session_key(app: &App) -> forge_workspace::SessionKey {
         app.active_session_key
             .clone()
-            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY))
+            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY))
     }
 
     // Helper: build a minimal ToolCallInfo with given id + status
@@ -1896,6 +1895,10 @@ mod tests {
     #[test]
     fn connected_updates_cwd_and_clears_resuming_marker() {
         let mut app = make_test_app();
+        // This Connected arrives for a key with no bucket, so the
+        // session is filed under the project its cwd names - which is
+        // what a session's cwd is in production.
+        app.workspace.as_ref().expect("workspace").seed_test_project("cwd-proj", "/changed");
         app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
@@ -2468,8 +2471,10 @@ mod tests {
         let mut app = make_test_app();
         let key_a = forge_workspace::SessionKey::from_str_for_test("project-a");
         let key_b = forge_workspace::SessionKey::from_str_for_test("project-b");
-        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
-        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
+        app.sessions
+            .insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone(), "project-a"));
+        app.sessions
+            .insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone(), "project-b"));
         app.active_session_key = Some(key_a.clone());
 
         // Seed A's list directly so we have an observable baseline.
@@ -3959,7 +3964,7 @@ mod tests {
             forge_workspace::SessionKey::from_session_id("background-old".to_owned());
         app.sessions.insert(
             background_key.clone(),
-            crate::app::session::UiSession::new(background_key.clone()),
+            crate::app::session::UiSession::new(background_key.clone(), "test-project"),
         );
         let replacement = forge_workspace::SessionKey::from_session_id("background-new".to_owned());
         apply_session_update(
@@ -5376,7 +5381,8 @@ mod tests {
     fn background_turn_error_records_failed_turn_from_last_retry() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
             Some((forge_primitives::ApiRetryError::BillingError, Some(402)));
 
@@ -5403,7 +5409,8 @@ mod tests {
     fn background_turn_error_without_retries_records_unknown_failure() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
 
         apply_session_update(
             &mut app,
@@ -5428,7 +5435,8 @@ mod tests {
     fn server_error_turn_error_arms_a_continuation_instead_of_an_attention_row() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
             Some((forge_primitives::ApiRetryError::ServerError, Some(529)));
 
@@ -5456,7 +5464,8 @@ mod tests {
     fn server_error_turn_error_falls_through_to_attention_once_the_cap_is_spent() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         let bucket = app.sessions.get_mut(&bg).expect("bucket");
         bucket.last_api_retry = Some((forge_primitives::ApiRetryError::ServerError, Some(529)));
         bucket.auto_continue_attempts = super::auto_continue::MAX_ATTEMPTS;
@@ -5484,7 +5493,8 @@ mod tests {
     fn rate_limit_turn_error_goes_straight_to_the_attention_row() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
             Some((forge_primitives::ApiRetryError::RateLimit, Some(429)));
 
@@ -5509,7 +5519,7 @@ mod tests {
     fn cancelled_background_turn_records_no_failure() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        let mut bucket = crate::app::session::UiSession::new(bg.clone());
+        let mut bucket = crate::app::session::UiSession::new(bg.clone(), "test-project");
         bucket.pending_cancel = true;
         app.sessions.insert(bg.clone(), bucket);
 
@@ -5537,7 +5547,8 @@ mod tests {
         let mut app = make_test_app();
         // A second bucket, never selected: a background session.
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
 
         apply_session_update(
             &mut app,
@@ -5554,10 +5565,14 @@ mod tests {
     fn switch_active_session_clears_unseen_completion() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         // A second background session whose turn also wrapped unseen.
         let other = forge_workspace::SessionKey::from_session_id("bg-session-2");
-        app.sessions.insert(other.clone(), crate::app::session::UiSession::new(other.clone()));
+        app.sessions.insert(
+            other.clone(),
+            crate::app::session::UiSession::new(other.clone(), "test-project"),
+        );
 
         apply_session_update(
             &mut app,

@@ -1518,7 +1518,7 @@ mod tests {
             worker_entry("unbucketed", "worker-unbucketed", WorkerLiveness::Running),
         ];
         let settled_key = SessionKey::from_session_id("worker-settled".to_owned());
-        let mut bucket = UiSession::new(settled_key.clone());
+        let mut bucket = UiSession::new(settled_key.clone(), "test-project");
         bucket.lifecycle_state = SessionLifecycleState::Running;
         app.sessions.insert(settled_key, bucket);
 

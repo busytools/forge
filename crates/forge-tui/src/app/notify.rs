@@ -21,8 +21,9 @@ pub enum NotifyEvent {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NotifyContext {
     /// The session's forge.toml project name (`UiSession.project`).
-    /// `None` before Connect.
-    pub project: Option<String>,
+    /// Every session carries one; there is no pre-Connect window in
+    /// which a bucket exists without it.
+    pub project: String,
     /// The session's live-worker label. `None` for a lead session.
     /// Resolved from the live-worker registry, never the sessions
     /// catalog - workers are deliberately absent from it.
@@ -143,8 +144,7 @@ impl NotificationManager {
         if self.terminal_focused {
             return;
         }
-        let text =
-            notification_text(event, context.project.as_deref(), context.worker_label.as_deref());
+        let text = notification_text(event, &context.project, context.worker_label.as_deref());
         let plan =
             notification_plan(channel, detect_terminal_capabilities(), self.osc9_mode, &text);
         if let Some(line) = &plan.osc9_text {
@@ -198,13 +198,23 @@ impl crate::app::App {
     /// terminal-focus check decides that. The notification text comes
     /// from the event session's project + worker label.
     pub(crate) fn notify(&self, event: NotifyEvent, session_key: &SessionKey) {
+        // A session with no bucket has nothing to notify about, so this
+        // is where an event for a closed or never-spawned key stops.
+        let Some(context) = self.notification_context(session_key) else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_NOTIFY,
+                event_name = "notification_session_missing",
+                message = "no session bucket for the event's key; nothing to notify about",
+                outcome = "skipped",
+                session_key = %session_key.as_str(),
+                event = ?event,
+            );
+            return;
+        };
         // The test capture drains regardless of focus (tests run
-        // focused); production skips the lookup entirely while focused.
+        // focused); production skips the delivery while focused.
         #[cfg(feature = "testing")]
-        {
-            let context = self.notification_context(session_key);
-            self.test_notifications.borrow_mut().push((event, context));
-        }
+        self.test_notifications.borrow_mut().push((event, context.clone()));
         if self.notifications.is_focused() {
             tracing::info!(
                 target: crate::logging::targets::APP_NOTIFY,
@@ -216,7 +226,6 @@ impl crate::app::App {
             );
             return;
         }
-        let context = self.notification_context(session_key);
         self.notifications.notify(
             self.config.preferred_notification_channel_effective(),
             event,
@@ -225,29 +234,22 @@ impl crate::app::App {
         );
     }
 
-    /// The event session's project name + worker label, read at notify
-    /// time. An unresolved project means the delivered line cannot name
-    /// one, so it is logged rather than papered over with a name that
-    /// would read as plausible.
-    fn notification_context(&self, session_key: &SessionKey) -> NotifyContext {
-        let project = self.sessions.get(session_key).and_then(|bucket| bucket.project.clone());
-        if project.is_none() {
-            tracing::warn!(
-                target: crate::logging::targets::APP_NOTIFY,
-                event_name = "notification_project_unresolved",
-                message = "notification session has no project; the delivered line cannot name one",
-                outcome = "degraded",
-                session_key = %session_key.as_str(),
-            );
-        }
-        NotifyContext {
-            project,
-            worker_label: self
-                .workspace
-                .as_ref()
-                .and_then(|ws| ws.worker_lookup_for_session(session_key))
-                .map(|(_, label, _)| label),
-        }
+    /// The event session's project + worker label, read at notify time.
+    /// `None` when the key has no bucket, which is the only way a
+    /// notification has nothing to name. The worker label prefers the
+    /// one stamped on the bucket at spawn and falls back to the live
+    /// registry, which is the only source for a resumed worker.
+    fn notification_context(&self, session_key: &SessionKey) -> Option<NotifyContext> {
+        let bucket = self.sessions.get(session_key)?;
+        Some(NotifyContext {
+            project: bucket.project.clone(),
+            worker_label: bucket.worker_label.clone().or_else(|| {
+                self.workspace
+                    .as_ref()
+                    .and_then(|ws| ws.worker_lookup_for_session(session_key))
+                    .map(|(_, label, _)| label)
+            }),
+        })
     }
 }
 
@@ -363,11 +365,6 @@ where
     TerminalCapabilities { osc9_notifications }
 }
 
-/// The title an unresolved project renders as. A missing project means
-/// the session bucket is unstamped, which is a bug: naming it loudly
-/// beats substituting a plausible string that hides the bug.
-const UNKNOWN_PROJECT: &str = "unknown project";
-
 /// Build the delivered strings for one event from the session's
 /// project + worker label. The title is the project; the detail names
 /// the session's kind and the event, because on the OSC 9 path this
@@ -375,10 +372,10 @@ const UNKNOWN_PROJECT: &str = "unknown project";
 /// rest of the banner.
 fn notification_text(
     event: NotifyEvent,
-    project: Option<&str>,
+    project: &str,
     worker_label: Option<&str>,
 ) -> NotificationText {
-    let title = project.unwrap_or(UNKNOWN_PROJECT).to_owned();
+    let title = project.to_owned();
     let kind = match worker_label {
         Some(label) => format!("worker {label}"),
         None => "lead".to_owned(),
@@ -671,15 +668,14 @@ mod tests {
 
     #[test]
     fn turn_complete_text_names_the_project_and_the_session_kind() {
-        let worker =
-            notification_text(NotifyEvent::TurnComplete, Some("forge"), Some("chat-stutter"));
+        let worker = notification_text(NotifyEvent::TurnComplete, "forge", Some("chat-stutter"));
         assert_eq!(
             worker.osc9_line(),
             "forge - worker chat-stutter - turn complete",
             "the line carries project, kind, label and event on its own",
         );
 
-        let lead = notification_text(NotifyEvent::TurnComplete, Some("forge"), None);
+        let lead = notification_text(NotifyEvent::TurnComplete, "forge", None);
         assert_eq!(lead.osc9_line(), "forge - lead - turn complete");
 
         assert_ne!(
@@ -691,42 +687,45 @@ mod tests {
 
     #[test]
     fn permission_text_names_the_project_and_the_session_kind() {
-        let worker = notification_text(
-            NotifyEvent::PermissionRequired,
-            Some("busymail"),
-            Some("demo-route"),
-        );
+        let worker =
+            notification_text(NotifyEvent::PermissionRequired, "busymail", Some("demo-route"));
         assert_eq!(worker.osc9_line(), "busymail - worker demo-route - needs input");
 
-        let lead = notification_text(NotifyEvent::PermissionRequired, Some("busymail"), None);
+        let lead = notification_text(NotifyEvent::PermissionRequired, "busymail", None);
         assert_eq!(lead.osc9_line(), "busymail - lead - needs input");
     }
 
     #[test]
     fn question_text_names_the_project_and_the_session_kind() {
         let worker =
-            notification_text(NotifyEvent::QuestionRequired, Some("busymail"), Some("demo-route"));
+            notification_text(NotifyEvent::QuestionRequired, "busymail", Some("demo-route"));
         assert_eq!(worker.osc9_line(), "busymail - worker demo-route - needs your answer");
 
-        let lead = notification_text(NotifyEvent::QuestionRequired, Some("busymail"), None);
+        let lead = notification_text(NotifyEvent::QuestionRequired, "busymail", None);
         assert_eq!(lead.osc9_line(), "busymail - lead - needs your answer");
     }
 
+    /// A key with no bucket is where an "unresolved project" now lands:
+    /// `notify` returns early, so nothing is delivered and nothing reads
+    /// as the app name.
     #[test]
-    fn an_unresolved_project_does_not_render_as_the_app_name() {
-        let text = notification_text(NotifyEvent::TurnComplete, None, None);
+    fn an_unresolved_project_delivers_nothing_rather_than_the_app_name() {
+        let mut app = App::test_default();
+        app.notifications = NotificationManager::new(Osc9NotificationMode::On);
+        app.notifications.on_focus_lost();
+        let unknown = forge_workspace::SessionKey::from_session_id("no-such-session");
 
-        assert_eq!(
-            text.osc9_line(),
-            "unknown project - lead - turn complete",
-            "an unstamped bucket must read as missing, not as the app name",
+        app.notify(NotifyEvent::TurnComplete, &unknown);
+
+        assert!(
+            app.notifications.take_delivered().is_empty(),
+            "an event with no bucket must deliver nothing, never a line reading as the app name",
         );
     }
 
     fn seed_bucket(app: &mut App, id: &str, project: &str) -> forge_workspace::SessionKey {
         let key = forge_workspace::SessionKey::from_str_for_test(id);
-        let mut bucket = UiSession::new(key.clone());
-        bucket.project = Some(project.to_owned());
+        let bucket = UiSession::new(key.clone(), project);
         app.sessions.insert(key.clone(), bucket);
         key
     }
@@ -770,24 +769,24 @@ mod tests {
 
         assert_eq!(
             app.notification_context(&worker),
-            NotifyContext {
-                project: Some("beta".to_owned()),
+            Some(NotifyContext {
+                project: "beta".to_owned(),
                 worker_label: Some("egen-lead".to_owned()),
-            },
+            }),
             "the event session's project + worker label, never the active tab's",
         );
         assert_eq!(
             app.notification_context(&active),
-            NotifyContext { project: Some("alpha".to_owned()), worker_label: None },
+            Some(NotifyContext { project: "alpha".to_owned(), worker_label: None }),
             "a lead session resolves no worker label",
         );
     }
 
     #[test]
-    fn notification_context_is_empty_for_an_unknown_session() {
+    fn notification_context_is_none_for_an_unknown_session() {
         let app = App::test_default();
         let unknown = forge_workspace::SessionKey::from_session_id("no-such-session");
-        assert_eq!(app.notification_context(&unknown), NotifyContext::default());
+        assert_eq!(app.notification_context(&unknown), None);
     }
 
     /// A focused terminal (the manager's default) delivers nothing.

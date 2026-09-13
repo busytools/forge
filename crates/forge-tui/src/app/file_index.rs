@@ -471,7 +471,7 @@ mod tests {
         let key = forge_workspace::SessionKey::from_str_for_test("a");
         app.sessions
             .entry(key.clone())
-            .or_insert_with(|| crate::app::session::UiSession::new(key.clone()));
+            .or_insert_with(|| crate::app::session::UiSession::new(key.clone(), "test-project"));
         app.active_session_key = Some(key.clone());
         let generation = app.sessions[&key].file_index.generation;
 
@@ -537,10 +537,10 @@ mod tests {
         let key_b = forge_workspace::SessionKey::from_str_for_test("b");
         app.sessions
             .entry(key_a.clone())
-            .or_insert_with(|| crate::app::session::UiSession::new(key_a.clone()));
+            .or_insert_with(|| crate::app::session::UiSession::new(key_a.clone(), "test-project"));
         app.sessions
             .entry(key_b.clone())
-            .or_insert_with(|| crate::app::session::UiSession::new(key_b.clone()));
+            .or_insert_with(|| crate::app::session::UiSession::new(key_b.clone(), "test-project"));
         // Active bucket is A.
         app.active_session_key = Some(key_a.clone());
         // Bucket B's scanner emits a batch.

@@ -4657,7 +4657,7 @@ mod tests {
     fn app_with_git_gate(repo_gate: RepoGate) -> App {
         let mut app = App::test_default();
         let key = forge_workspace::SessionKey::from_session_id("inspector-git-test");
-        let mut session = crate::app::session::UiSession::new(key.clone());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "test-project");
         session.git_diff_snapshot = Some(forge_primitives::git_diff::GitDiffSnapshot {
             branch: forge_primitives::git::GitBranch::NoRepo,
             default_branch: None,
@@ -5447,8 +5447,7 @@ mod tests {
     fn app_with_waiting_session(name: &str) -> App {
         let mut app = App::test_default();
         let key = forge_workspace::SessionKey::from_session_id(name);
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some(name.to_owned());
+        let mut session = crate::app::session::UiSession::new(key.clone(), name);
         let prompt = crate::app::prompt::PromptState::from_permission(
             format!("tc-{name}"),
             crate::app::prompt::tests::make_permission_request(),
@@ -5488,8 +5487,7 @@ mod tests {
     fn attention_band_renders_a_waiting_review_replies_row() {
         let mut app = App::test_default();
         let key = forge_workspace::SessionKey::from_session_id("reviewer");
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some("forge".to_owned());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.review_replies_waiting = crate::app::ReviewRepliesWaiting::merge(None, "feat", 2);
         app.sessions.insert(key, session);
 
@@ -5731,8 +5729,7 @@ mod tests {
         let mut app = App::test_default();
         for name in names {
             let key = forge_workspace::SessionKey::from_session_id(name);
-            let mut session = crate::app::session::UiSession::new(key.clone());
-            session.project = Some(name.to_owned());
+            let mut session = crate::app::session::UiSession::new(key.clone(), name);
             let prompt = crate::app::prompt::PromptState::from_permission(
                 format!("tc-{name}"),
                 crate::app::prompt::tests::make_permission_request(),
@@ -5823,8 +5820,7 @@ mod tests {
         let mut app = App::test_default();
         for i in 0..6 {
             let key = forge_workspace::SessionKey::from_session_id(format!("bg-{i}"));
-            let mut session = crate::app::session::UiSession::new(key.clone());
-            session.project = Some(format!("proj-{i}"));
+            let mut session = crate::app::session::UiSession::new(key.clone(), format!("proj-{i}"));
             let prompt = crate::app::prompt::PromptState::from_permission(
                 format!("tc-{i}"),
                 crate::app::prompt::tests::make_permission_request(),
