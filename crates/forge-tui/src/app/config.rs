@@ -374,7 +374,7 @@ impl ConfigState {
     }
 
     fn apply_loaded(&mut self, loaded: store::LoadedSettingsDocuments, preserve_status: bool) {
-        self.settings_path = Some(loaded.paths.settings);
+        self.settings_path = loaded.paths.settings;
         self.committed_settings_document = loaded.settings_document;
         self.committed_local_settings_document = loaded.local_settings_document;
         self.committed_preferences_document = loaded.preferences_document;

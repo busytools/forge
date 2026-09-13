@@ -15,7 +15,12 @@ const ANTHROPIC_DEFAULT_OPUS_MODEL_ENV: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsPaths {
-    pub settings: PathBuf,
+    /// `None` when no session is bound. The file lives in the session's
+    /// per-account config dir, and nothing can name that before a
+    /// spawn; the default dir's file is a different account's. There is
+    /// deliberately no fallback: this path is also what a saved setting
+    /// is written back to.
+    pub settings: Option<PathBuf>,
     /// `None` when no project root resolved, which is the launchpad
     /// boot. There is deliberately no fallback path: a cwd-derived one
     /// would make the launch directory shape forge's settings.
@@ -70,7 +75,10 @@ pub fn load(
             )
         }
         _ => (
-            read_json_or_empty(&paths.settings),
+            // The user settings document has no path without a session,
+            // and with one the agent reader above is its only reader -
+            // so nothing is read from disk here either way.
+            empty_object(),
             paths.local_settings.as_deref().map_or_else(empty_object, read_json_or_empty),
             read_json_or_empty(&paths.preferences),
         ),
@@ -307,13 +315,13 @@ fn resolve_paths(
     // $CLAUDE_CONFIG_DIR - delegate to the workspace facade so the
     // env var is resolved in exactly one place. The home_override
     // case (used by tests) and the no-bridge case (early init /
-    // disconnected) both bypass the workspace.
+    // disconnected) both bypass the workspace, and neither can name
+    // the session's config dir, so neither produces a path.
     let settings = match (home_override, bridge) {
-        (None, Some(bridge)) => bridge.workspace.config_dir_for(bridge.key).map_or_else(
-            || home.join(CLAUDE_DIR).join(SETTINGS_FILENAME),
-            |dir| dir.join(SETTINGS_FILENAME),
-        ),
-        (Some(_), _) | (None, None) => home.join(CLAUDE_DIR).join(SETTINGS_FILENAME),
+        (None, Some(bridge)) => {
+            bridge.workspace.config_dir_for(bridge.key).map(|dir| dir.join(SETTINGS_FILENAME))
+        }
+        (Some(_), _) | (None, None) => None,
     };
 
     Ok(SettingsPaths {
@@ -501,7 +509,7 @@ mod tests {
         assert_eq!(loaded.settings_document, Value::Object(Map::new()));
         assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
         assert_eq!(loaded.preferences_document, Value::Object(Map::new()));
-        assert_eq!(loaded.paths.settings, dir.path().join(".claude").join("settings.json"));
+        assert_eq!(loaded.paths.settings, None, "no session to name a config dir");
         assert_eq!(
             loaded.paths.local_settings,
             Some(dir.path().join(".claude").join("settings.local.json"))
@@ -509,20 +517,20 @@ mod tests {
         assert_eq!(loaded.paths.preferences, dir.path().join(".claude.json"));
     }
 
+    /// The documents the loader reads from disk itself: a valid
+    /// project-local document parses, and a malformed preferences file
+    /// becomes an empty one rather than an error.
     #[test]
     fn load_malformed_files_returns_empty_objects_silently() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let settings_path = dir.path().join(".claude").join("settings.json");
-        let preferences_path = dir.path().join(".claude.json");
-        std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
-            .expect("create settings dir");
-        std::fs::write(&settings_path, r#"{"alwaysThinkingEnabled":true}"#)
-            .expect("write settings");
-        std::fs::write(&preferences_path, "{ not-json").expect("write malformed");
+        let local_path = dir.path().join(".claude").join("settings.local.json");
+        std::fs::create_dir_all(local_path.parent().expect("local parent")).expect("create dir");
+        std::fs::write(&local_path, r#"{"prefersReducedMotion":true}"#).expect("write local");
+        std::fs::write(dir.path().join(".claude.json"), "{ not-json").expect("write malformed");
 
         let loaded = load(Some(dir.path()), Some(dir.path()), None).expect("load");
 
-        assert_eq!(always_thinking_enabled(&loaded.settings_document), Ok(true));
+        assert_eq!(prefers_reduced_motion(&loaded.local_settings_document), Ok(true));
         assert_eq!(loaded.preferences_document, Value::Object(Map::new()));
     }
 
@@ -716,5 +724,27 @@ mod tests {
 
         assert!(loaded.paths.local_settings.is_none(), "no root, no local path");
         assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
+    }
+
+    /// `settings.json` lives in the session's config dir, which is
+    /// per-account. Nothing can name it before a spawn, so a boot with
+    /// no session applies no user settings document rather than reading
+    /// the default config dir's, which belongs to another account. The
+    /// path goes with it: nothing may write that file back either.
+    #[test]
+    fn load_without_a_session_applies_no_user_settings_document() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = dir.path().join(".claude").join("settings.json");
+        std::fs::create_dir_all(settings.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&settings, r#"{"alwaysThinkingEnabled":true}"#).expect("write");
+
+        let loaded = load(Some(dir.path()), None, None).expect("load");
+
+        assert_eq!(
+            loaded.settings_document,
+            Value::Object(Map::new()),
+            "no session, no user settings document",
+        );
+        assert!(loaded.paths.settings.is_none(), "and no path to write one back to");
     }
 }
