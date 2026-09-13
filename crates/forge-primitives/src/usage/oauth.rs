@@ -1,6 +1,6 @@
 //! Anthropic OAuth usage API response shapes.
 //!
-//! Type-only - the HTTP fetcher lives in the forge-providers
+//! Type-only - the HTTP fetcher lives in the forge-gateway
 //! backends. These are the JSON wire shapes; the fetcher
 //! deserializes into them.
 

@@ -1,4 +1,4 @@
-//! `forge-providers` - one backend per `forge.toml` `provider`
+//! `forge-gateway` - one backend per `forge.toml` `provider`
 //! token.
 //!
 //! Each [`ProviderBackend`] owns credential resolution, the probe
@@ -193,7 +193,7 @@ pub trait ProviderBackend: Send + Sync {
 /// indefinitely with nothing anywhere saying why.
 fn warn_unusable_snapshot(account: &str, provider: Provider, source: UsageSourceKind) {
     tracing::warn!(
-        target: "forge_providers",
+        target: "forge_gateway",
         account = %account,
         provider = ?provider,
         source = source.label(),

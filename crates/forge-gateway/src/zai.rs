@@ -128,7 +128,7 @@ async fn monitor_probe(
 
     if status == 200 {
         tracing::trace!(
-            target: "forge_providers::zai",
+            target: "forge_gateway::zai",
             event_name = "zai_monitor_response",
             status,
             outcome = "ok",
@@ -136,7 +136,7 @@ async fn monitor_probe(
         );
     } else {
         tracing::warn!(
-            target: "forge_providers::zai",
+            target: "forge_gateway::zai",
             event_name = "zai_monitor_response",
             status,
             outcome = "non_ok",
@@ -199,7 +199,7 @@ fn quota_from_body(body: &[u8]) -> Result<QuotaLimitData, OauthUsageError> {
 /// `nextResetTime`, the steady state before the first successful
 /// request, maps to a window with no reset moment.
 ///
-/// Fallible like the forge-providers spend and window mappers: a
+/// Fallible like the forge-gateway spend and window mappers: a
 /// payload with no mappable window entries is a response forge cannot
 /// read rather than a bill of zero.
 fn snapshot_from_zai_quota(payload: QuotaLimitData) -> Result<UsageSnapshot, ProbeError> {

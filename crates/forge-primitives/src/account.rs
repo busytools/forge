@@ -37,7 +37,7 @@ impl Provider {
     /// beside an `ANTHROPIC_BASE_URL` in `[accounts.env]`. Both the probe
     /// and preflight's repair copy branch on this rather than on the
     /// provider itself. The billing model lives on the provider's
-    /// forge-providers backend instead.
+    /// forge-gateway backend instead.
     pub const fn uses_base_url(self) -> bool {
         matches!(self, Self::Codex | Self::Openrouter | Self::Zai)
     }

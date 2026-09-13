@@ -220,7 +220,7 @@ pub async fn anthropic_windowed_probe(
     // with no body.
     if status == 200 {
         tracing::trace!(
-            target: "forge_providers::anthropic",
+            target: "forge_gateway::anthropic",
             event_name = "oauth_usage_response",
             status,
             outcome = "ok",
@@ -230,7 +230,7 @@ pub async fn anthropic_windowed_probe(
         // The verdict on a valid setup token, not a failure: warn here
         // would fire every 60 s per healthy token account.
         tracing::debug!(
-            target: "forge_providers::anthropic",
+            target: "forge_gateway::anthropic",
             event_name = "oauth_usage_scope_refusal",
             status,
             outcome = "scope_refused",
@@ -238,7 +238,7 @@ pub async fn anthropic_windowed_probe(
         );
     } else {
         tracing::warn!(
-            target: "forge_providers::anthropic",
+            target: "forge_gateway::anthropic",
             event_name = "oauth_usage_response",
             status,
             outcome = "non_ok",
