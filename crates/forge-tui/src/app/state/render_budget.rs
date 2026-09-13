@@ -1043,11 +1043,8 @@ mod tests {
         app.status = AppStatus::Ready;
 
         for i in 0..8 {
-            let mut msg = assistant_bash_tool_message(
-                &format!("t{i}"),
-                model::ToolCallStatus::Completed,
-                &format!("term{i}"),
-            );
+            let mut msg =
+                assistant_bash_tool_message(&format!("t{i}"), model::ToolCallStatus::Completed);
             if let MessageBlock::ToolCall(tc) = &mut msg.blocks[0] {
                 tc.cache.store(vec![Line::from("x".repeat(2048))]);
             }
@@ -1084,11 +1081,8 @@ mod tests {
             }
             app.push_message_tracked(text);
 
-            let mut tool = assistant_bash_tool_message(
-                &format!("done{i}"),
-                model::ToolCallStatus::Completed,
-                &format!("term{i}"),
-            );
+            let mut tool =
+                assistant_bash_tool_message(&format!("done{i}"), model::ToolCallStatus::Completed);
             if let MessageBlock::ToolCall(tc) = &mut tool.blocks[0] {
                 tc.cache.store(vec![Line::from("o".repeat(2200 + i * 100))]);
             }

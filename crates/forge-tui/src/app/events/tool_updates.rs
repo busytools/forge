@@ -1,8 +1,8 @@
 use super::super::{App, AppStatus, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_calls::{
-    current_session_id, has_in_progress_tool_calls, json_value_size, log_terminal_spawned,
-    parent_tool_use_id_from_meta, raw_input_carries_content, sdk_tool_name_from_meta,
-    should_jump_on_large_write, tool_scope_name,
+    current_session_id, has_in_progress_tool_calls, json_value_size, parent_tool_use_id_from_meta,
+    raw_input_carries_content, sdk_tool_name_from_meta, should_jump_on_large_write,
+    tool_scope_name,
 };
 use crate::agent::model;
 use crate::app::todos::{
@@ -39,14 +39,6 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::Render
             MessageBlock::ToolCall(tc) => Some(tc.status),
             _ => None,
         });
-    let previous_terminal_id = app
-        .messages()
-        .and_then(|messages| messages.get(mi))
-        .and_then(|message| message.blocks.get(bi))
-        .and_then(|block| match block {
-            MessageBlock::ToolCall(tc) => tc.terminal_id.clone(),
-            _ => None,
-        });
     apply_tool_scope_status_update(app, &id_str, tool_scope.as_ref(), tcu.fields.status);
 
     let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, tcu);
@@ -62,7 +54,7 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::Render
         previous_status,
         &update_outcome,
     );
-    log_command_update_applied(app, &id_str, previous_status, previous_terminal_id.as_deref());
+    log_command_update_applied(app, &id_str, previous_status);
     // #268: TaskCreate / TaskUpdate apply directly to `app.todos_mut()`
     // - they're append / mutate / remove deltas, not full-list
     // replacements, so they bypass any "all-completed clears" cascade.
@@ -760,7 +752,6 @@ fn log_command_update_applied(
     app: &App,
     id_str: &str,
     previous_status: Option<model::ToolCallStatus>,
-    previous_terminal_id: Option<&str>,
 ) {
     let Some(tc) = app
         .lookup_tool_call(id_str)
@@ -779,10 +770,6 @@ fn log_command_update_applied(
 
     if !tc.is_execute_tool() {
         return;
-    }
-
-    if previous_terminal_id.is_none() && tc.terminal_id.is_some() {
-        log_terminal_spawned(app, tc, "update");
     }
 
     let transitioned_to_final = matches!(
@@ -816,12 +803,10 @@ fn log_command_update_applied(
                 outcome = "success",
                 session_id = %current_session_id(app),
                 tool_call_id = %tc.id,
-                terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
                 tool_name = %tc.sdk_tool_name,
                 terminal_output_bytes =
                     u64::try_from(tc.terminal_output.as_deref().map_or(0, str::len))
                         .unwrap_or_default(),
-                has_terminal = tc.terminal_id.is_some(),
                 assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
             );
         }
@@ -840,12 +825,10 @@ fn log_command_update_applied(
             outcome = "failure",
             session_id = %current_session_id(app),
             tool_call_id = %tc.id,
-            terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
             tool_name = %tc.sdk_tool_name,
             error_kind = failure_kind,
             terminal_output_bytes = u64::try_from(tc.terminal_output.as_deref().map_or(0, str::len))
                 .unwrap_or_default(),
-            has_terminal = tc.terminal_id.is_some(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
         ),
         model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {}
@@ -874,11 +857,7 @@ mod tests {
     use crate::ui::tool_call::measure_tool_call_height_cached_with_tools_collapsed;
     use pretty_assertions::assert_eq;
 
-    fn make_bash_tool_call(
-        id: &str,
-        status: model::ToolCallStatus,
-        terminal_id: Option<&str>,
-    ) -> ToolCallInfo {
+    fn make_bash_tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
         ToolCallInfo {
             id: id.to_owned(),
             title: format!("tool {id}"),
@@ -890,7 +869,6 @@ mod tests {
             status,
             content: Vec::new(),
             hidden: false,
-            terminal_id: terminal_id.map(str::to_owned),
             terminal_output: None,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
@@ -920,7 +898,6 @@ mod tests {
             status,
             content: Vec::new(),
             hidden: false,
-            terminal_id: None,
             terminal_output: None,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
@@ -973,12 +950,11 @@ mod tests {
     /// Push one tool call with a live body into a fresh app.
     fn app_with_tool(id: &str, fixture: Fixture, status: model::ToolCallStatus) -> App {
         let mut app = App::test_default();
-        let mut tc = make_bash_tool_call(id, status, Some("term-1"));
+        let mut tc = make_bash_tool_call(id, status);
         match fixture {
             Fixture::Execute => tc.terminal_output = Some("alpha\nbeta\ngamma\n".to_owned()),
             Fixture::Content => {
                 tc.sdk_tool_name = "Read".to_owned();
-                tc.terminal_id = None;
                 tc.content = vec![model::RenderToolCallContent::Content(model::ContentChunk::new(
                     model::RenderContentBlock::Text(model::TextContent::new("fn main() {}\n")),
                 ))];
@@ -1291,7 +1267,7 @@ mod tests {
 
     #[test]
     fn repeated_completed_status_update_does_not_log_a_second_completion() {
-        let tc = make_bash_tool_call("tool-1", model::ToolCallStatus::Completed, None);
+        let tc = make_bash_tool_call("tool-1", model::ToolCallStatus::Completed);
         let update =
             model::RenderToolCallUpdate::new("tool-1", model::RenderToolCallUpdateFields::new());
 
@@ -1304,7 +1280,7 @@ mod tests {
 
     #[test]
     fn first_completed_status_update_logs_completion() {
-        let tc = make_bash_tool_call("tool-1", model::ToolCallStatus::Completed, None);
+        let tc = make_bash_tool_call("tool-1", model::ToolCallStatus::Completed);
         let update = model::RenderToolCallUpdate::new(
             "tool-1",
             model::RenderToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),

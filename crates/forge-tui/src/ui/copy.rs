@@ -331,7 +331,6 @@ mod tests {
             status: crate::agent::model::ToolCallStatus::Completed,
             content: vec![crate::agent::model::RenderToolCallContent::from(text.to_owned())],
             hidden: false,
-            terminal_id: None,
             terminal_output: None,
             monitor_output_tail: Vec::default(),
             monitor_status: None,

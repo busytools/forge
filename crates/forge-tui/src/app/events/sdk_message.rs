@@ -4218,7 +4218,6 @@ mod subagent_sentinel_tests {
             status,
             content: Vec::new(),
             hidden,
-            terminal_id: None,
             terminal_output: None,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
