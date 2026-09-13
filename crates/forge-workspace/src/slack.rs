@@ -1078,7 +1078,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut config = crate::config::LoadedConfig::empty_for_test();
         config.slack = vec![cfg(label, "xoxp-test")];
-        let (ws, rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config);
+        let (ws, rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
         (ws, dir, rx)
     }
 
