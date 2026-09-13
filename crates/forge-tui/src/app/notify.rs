@@ -25,8 +25,9 @@ pub struct NotifyContext {
     /// which a bucket exists without it.
     pub project: String,
     /// The session's live-worker label. `None` for a lead session.
-    /// Resolved from the live-worker registry, never the sessions
-    /// catalog - workers are deliberately absent from it.
+    /// Taken from the bucket, which carries it from the spawn key, and
+    /// only then from the live-worker registry - a worker the registry
+    /// has forgotten is still a worker.
     pub worker_label: Option<String>,
 }
 
@@ -833,6 +834,33 @@ mod tests {
             lines,
             vec!["beta - lead - turn complete", "beta - worker chat-stutter - turn complete"],
             "the two turn-completes are told apart on the line alone",
+        );
+    }
+
+    /// The label is stamped on the bucket when the session is spawned,
+    /// so a worker the live registry no longer knows is still named as
+    /// one rather than reading as the lead.
+    #[test]
+    fn a_bucket_carried_worker_label_names_the_worker_without_the_registry() {
+        let mut app = App::test_default();
+        let worker_key = seed_bucket(&mut app, "session-worker", "beta");
+        app.sessions.get_mut(&worker_key).expect("bucket").worker_label =
+            Some("chat-stutter".to_owned());
+        app.notifications = NotificationManager::new(Osc9NotificationMode::On);
+        app.notifications.on_focus_lost();
+
+        app.notify(NotifyEvent::TurnComplete, &worker_key);
+
+        let lines: Vec<_> = app
+            .notifications
+            .take_delivered()
+            .into_iter()
+            .filter_map(|delivered| delivered.osc9_line)
+            .collect();
+        assert_eq!(
+            lines,
+            vec!["beta - worker chat-stutter - turn complete"],
+            "the bucket's own label is enough; the registry is only a fallback",
         );
     }
 
