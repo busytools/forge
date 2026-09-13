@@ -246,9 +246,9 @@ fn apply_timer_tick(app: &mut App) {
     let Some(session) = app.sessions.get(&active_key) else {
         return;
     };
-    // Only poll truly-connected sessions with a real cwd. Synthetic
-    // spawn buckets (`__spawn_<name>__`) have empty cwd_raw; a bucket
-    // minted ahead of `Connected` has no session_id.
+    // Only poll truly-connected sessions: a bucket minted ahead of
+    // `Connected` has no session_id, and one without a cwd has nowhere
+    // to scan.
     if session.cwd_raw.is_empty() || session.session_id.is_none() {
         return;
     }
