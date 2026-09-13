@@ -483,12 +483,14 @@ inspected.
     the manager does not say what it forwards.
 
     #778 is the worked example, and it is a good one because forge
-    already has the right path and skips it. `notification_plan`
-    (`crates/forge-tui/src/app/notify.rs`) sets `send_desktop:
-    osc9_text.is_none()`, so believing the terminal speaks OSC 9
-    suppresses the `notify-rust` desktop notification, which reaches
-    the OS without crossing the terminal at all. That belief comes
-    from `terminal_capabilities_from_env` reading `TERM_PROGRAM`,
+    already had the right path and skipped it: believing the terminal
+    spoke OSC 9 used to suppress the `notify-rust` desktop
+    notification, which reached the OS without crossing the terminal
+    at all. That path is gone (2026-09-13) - it was suppressed in
+    every setup the maintainer uses, so nothing ever crossed without
+    the terminal and the escape is now the only channel, with `off`
+    as plain silence. The belief that decides it still comes from
+    `terminal_capabilities_from_env` reading `TERM_PROGRAM`,
     `ITERM_SESSION_ID` and `TERM` - the last because shpool does not
     carry `TERM_PROGRAM` into the pane, so `TERM` is the signal that
     survives shpool. Measured 2026-08-29: `TERM_PROGRAM` and

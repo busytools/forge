@@ -1034,11 +1034,7 @@ mod tests {
         );
         assert_eq!(
             app.notifications.take_delivered(),
-            vec![crate::app::notify::DeliveredNotification {
-                osc9_line: None,
-                bell: true,
-                desktop: Some(("beta".to_owned(), "lead - turn complete".to_owned())),
-            }],
+            vec![crate::app::notify::DeliveredNotification { osc9_line: None, bell: true }],
             "the unfocused manager delivered the completion ping",
         );
     }

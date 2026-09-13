@@ -30,7 +30,7 @@ pub struct NotifyContext {
 }
 
 /// The strings one notification delivers: a short title (the project)
-/// and the detail line (event phrase + worker label).
+/// and the detail line (session kind + event phrase).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NotificationText {
     pub title: String,
@@ -45,14 +45,13 @@ impl NotificationText {
 }
 
 /// What one unfocused notify() delivered, recorded instead of sent
-/// when the `testing` feature is on: the OSC 9 line, the bell, and
-/// the desktop (title, body) in delivery order.
+/// when the `testing` feature is on: the OSC 9 line and the bell, in
+/// delivery order.
 #[cfg(feature = "testing")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveredNotification {
     pub osc9_line: Option<String>,
     pub bell: bool,
-    pub desktop: Option<(String, String)>,
 }
 
 /// Central notification manager.
@@ -61,19 +60,16 @@ pub struct DeliveredNotification {
 /// `FocusGained`/`FocusLost` events backed by DECSET 1004) and dispatches
 /// notifications only when the window is **not** focused.
 ///
-/// Three notification layers exist; the channel decides which run:
+/// Two notification layers exist; the channel decides which run:
 /// 1. **Terminal bell** (`BEL \x07`) -- causes a taskbar flash / dock bounce
 ///    on virtually every terminal emulator.
-/// 2. **Desktop notification** via `notify-rust` -- OS-native toast popup
-///    (Windows Toast, macOS Notification Center, Linux freedesktop D-Bus).
-///    Spawned on a background thread so it never blocks the TUI event loop.
-/// 3. **OSC 9 escape** -- while the terminal is believed to support it,
-///    channels that can emit it suppress the desktop notification (and the
-///    bell too, except on `iterm2_with_bell`), so a multiplexer that strips
-///    the escape silently leaves nothing. The `[ui] notifications_osc9`
-///    forge.toml key forces that belief either way: `off` gives the Iterm2
-///    channel bell + desktop and Ghostty desktop only, `on` sends the
-///    escape regardless of detection.
+/// 2. **OSC 9 escape** -- while the terminal is believed to support it,
+///    channels that can emit it suppress the bell (except on
+///    `iterm2_with_bell`), so a multiplexer that strips the escape silently
+///    leaves nothing. The `[ui] notifications_osc9` forge.toml key forces
+///    that belief either way: `off` leaves the Iterm2 channel the bell alone
+///    and Ghostty nothing at all, `on` sends the escape regardless of
+///    detection.
 #[derive(Debug)]
 pub struct NotificationManager {
     terminal_focused: bool,
@@ -91,7 +87,6 @@ impl Default for NotificationManager {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NotificationPlan {
     ring_bell: bool,
-    send_desktop: bool,
     osc9_text: Option<String>,
 }
 
@@ -152,18 +147,13 @@ impl NotificationManager {
             notification_text(event, context.project.as_deref(), context.worker_label.as_deref());
         let plan =
             notification_plan(channel, detect_terminal_capabilities(), self.osc9_mode, &text);
-        // Built once: the record cannot diverge from the send.
-        let desktop = plan.send_desktop.then(|| (text.title.clone(), text.detail.clone()));
         if let Some(line) = &plan.osc9_text {
             send_osc9_notification(line);
         }
         if plan.ring_bell {
             ring_bell();
         }
-        if let Some((title, body)) = &desktop {
-            send_desktop_notification(title.clone(), body.clone());
-        }
-        let dispatched = plan.ring_bell || plan.send_desktop || plan.osc9_text.is_some();
+        let dispatched = plan.ring_bell || plan.osc9_text.is_some();
         tracing::info!(
             target: crate::logging::targets::APP_NOTIFY,
             event_name = if dispatched { "notification_fired" } else { "notification_planned_no_channels" },
@@ -181,7 +171,6 @@ impl NotificationManager {
             title = %text.title,
             detail = %text.detail,
             ring_bell = plan.ring_bell,
-            send_desktop = plan.send_desktop,
             osc9 = plan.osc9_text.is_some(),
         );
         // The `testing` feature records what was delivered so tests
@@ -190,7 +179,6 @@ impl NotificationManager {
         self.delivered.borrow_mut().push(DeliveredNotification {
             osc9_line: plan.osc9_text.clone(),
             bell: plan.ring_bell,
-            desktop,
         });
     }
 
@@ -297,25 +285,6 @@ fn ring_bell() {
     }
 }
 
-/// Spawn a background thread that sends an OS-native desktop notification.
-///
-/// Runs on `std::thread::spawn` rather than tokio because `notify-rust`'s
-/// `show()` may block on a D-Bus round-trip (Linux) or COM call (Windows).
-/// Failures log at warn with the reason - the old debug-level log is how
-/// a failing poster stayed invisible while the bell kept firing.
-fn send_desktop_notification(title: String, body: String) {
-    std::thread::spawn(move || {
-        if let Err(error) = notify_rust::Notification::new().summary(&title).body(&body).show() {
-            tracing::warn!(
-                target: crate::logging::targets::APP_LIFECYCLE,
-                error = %error,
-                title,
-                "desktop notification failed",
-            );
-        }
-    });
-}
-
 fn send_osc9_notification(message: &str) {
     use std::io::Write;
 
@@ -347,24 +316,18 @@ fn notification_plan(
     let osc9_text = osc9_available.then(|| text.osc9_line());
     match channel {
         PreferredNotifChannel::NotificationsDisabled => {
-            NotificationPlan { ring_bell: false, send_desktop: false, osc9_text: None }
+            NotificationPlan { ring_bell: false, osc9_text: None }
         }
         PreferredNotifChannel::TerminalBell => {
-            NotificationPlan { ring_bell: true, send_desktop: false, osc9_text: None }
+            NotificationPlan { ring_bell: true, osc9_text: None }
         }
-        // "Auto / iTerm2" replaced the original always-bell-plus-desktop behavior.
+        // "Auto / iTerm2" replaced the original always-bell behavior.
         // Preserve that reliable fallback whenever OSC 9 is unavailable.
-        PreferredNotifChannel::Iterm2 => NotificationPlan {
-            ring_bell: osc9_text.is_none(),
-            send_desktop: osc9_text.is_none(),
-            osc9_text,
-        },
-        PreferredNotifChannel::Ghostty => {
-            NotificationPlan { ring_bell: false, send_desktop: osc9_text.is_none(), osc9_text }
+        PreferredNotifChannel::Iterm2 => {
+            NotificationPlan { ring_bell: osc9_text.is_none(), osc9_text }
         }
-        PreferredNotifChannel::Iterm2WithBell => {
-            NotificationPlan { ring_bell: true, send_desktop: osc9_text.is_none(), osc9_text }
-        }
+        PreferredNotifChannel::Ghostty => NotificationPlan { ring_bell: false, osc9_text },
+        PreferredNotifChannel::Iterm2WithBell => NotificationPlan { ring_bell: true, osc9_text },
     }
 }
 
@@ -485,7 +448,10 @@ mod tests {
     // Fixed text for the plan tests: channel gating is what they pin,
     // not wording.
     fn fixture_text() -> NotificationText {
-        NotificationText { title: "companies".to_owned(), detail: "turn complete".to_owned() }
+        NotificationText {
+            title: "companies".to_owned(),
+            detail: "lead - turn complete".to_owned(),
+        }
     }
 
     #[test]
@@ -497,12 +463,12 @@ mod tests {
                 Osc9NotificationMode::Auto,
                 &fixture_text(),
             ),
-            NotificationPlan { ring_bell: false, send_desktop: false, osc9_text: None }
+            NotificationPlan { ring_bell: false, osc9_text: None }
         );
     }
 
     #[test]
-    fn terminal_bell_plan_skips_desktop_notification() {
+    fn terminal_bell_plan_rings_only_the_bell() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::TerminalBell,
@@ -510,7 +476,7 @@ mod tests {
                 Osc9NotificationMode::Auto,
                 &fixture_text(),
             ),
-            NotificationPlan { ring_bell: true, send_desktop: false, osc9_text: None }
+            NotificationPlan { ring_bell: true, osc9_text: None }
         );
     }
 
@@ -525,14 +491,13 @@ mod tests {
             ),
             NotificationPlan {
                 ring_bell: false,
-                send_desktop: false,
-                osc9_text: Some("companies - turn complete".to_owned()),
+                osc9_text: Some("companies - lead - turn complete".to_owned()),
             }
         );
     }
 
     #[test]
-    fn iterm2_auto_preserves_bell_and_desktop_fallback_when_osc9_is_unavailable() {
+    fn iterm2_auto_falls_back_to_the_bell_when_osc9_is_unavailable() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2,
@@ -540,7 +505,7 @@ mod tests {
                 Osc9NotificationMode::Auto,
                 &fixture_text(),
             ),
-            NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
+            NotificationPlan { ring_bell: true, osc9_text: None }
         );
     }
 
@@ -555,14 +520,13 @@ mod tests {
             ),
             NotificationPlan {
                 ring_bell: true,
-                send_desktop: false,
-                osc9_text: Some("companies - turn complete".to_owned()),
+                osc9_text: Some("companies - lead - turn complete".to_owned()),
             }
         );
     }
 
     #[test]
-    fn iterm2_with_bell_falls_back_to_desktop_and_bell() {
+    fn iterm2_with_bell_keeps_the_bell_when_osc9_is_unavailable() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2WithBell,
@@ -570,7 +534,7 @@ mod tests {
                 Osc9NotificationMode::Auto,
                 &fixture_text(),
             ),
-            NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
+            NotificationPlan { ring_bell: true, osc9_text: None }
         );
     }
 
@@ -585,8 +549,7 @@ mod tests {
             ),
             NotificationPlan {
                 ring_bell: false,
-                send_desktop: false,
-                osc9_text: Some("companies - turn complete".to_owned()),
+                osc9_text: Some("companies - lead - turn complete".to_owned()),
             }
         );
     }
@@ -646,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn osc9_override_off_forces_iterm2_to_bell_and_desktop() {
+    fn osc9_override_off_forces_iterm2_to_the_bell() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2,
@@ -654,12 +617,12 @@ mod tests {
                 Osc9NotificationMode::Off,
                 &fixture_text(),
             ),
-            NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
+            NotificationPlan { ring_bell: true, osc9_text: None }
         );
     }
 
     #[test]
-    fn osc9_override_off_leaves_ghostty_with_desktop_only() {
+    fn osc9_override_off_leaves_ghostty_with_no_channel() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Ghostty,
@@ -667,7 +630,8 @@ mod tests {
                 Osc9NotificationMode::Off,
                 &fixture_text(),
             ),
-            NotificationPlan { ring_bell: false, send_desktop: true, osc9_text: None }
+            NotificationPlan { ring_bell: false, osc9_text: None },
+            "Ghostty has no fallback once the escape is off",
         );
     }
 
@@ -682,10 +646,9 @@ mod tests {
             ),
             NotificationPlan {
                 ring_bell: false,
-                send_desktop: false,
-                osc9_text: Some("companies - turn complete".to_owned()),
+                osc9_text: Some("companies - lead - turn complete".to_owned()),
             },
-            "On forces OSC 9 and suppresses both fallback channels, detection notwithstanding",
+            "On forces OSC 9 and suppresses the bell, detection notwithstanding",
         );
     }
 
@@ -700,10 +663,9 @@ mod tests {
             ),
             NotificationPlan {
                 ring_bell: false,
-                send_desktop: false,
-                osc9_text: Some("companies - turn complete".to_owned()),
+                osc9_text: Some("companies - lead - turn complete".to_owned()),
             },
-            "On forces OSC 9 and suppresses the desktop toast, detection notwithstanding",
+            "On forces OSC 9 for a terminal that does not announce itself",
         );
     }
 
@@ -875,11 +837,11 @@ mod tests {
         );
     }
 
-    /// The desktop toast receives (title, body) = (project, event
-    /// detail) in that order; OSC 9 mode Off pins the plan to bell +
-    /// desktop regardless of the test process's environment.
+    /// With the escape unavailable the Iterm2 channel falls back to the
+    /// bell alone; OSC 9 mode Off pins that regardless of the test
+    /// process's environment.
     #[test]
-    fn unfocused_terminal_delivers_desktop_title_and_body_in_order() {
+    fn unfocused_terminal_delivers_only_the_bell_when_osc9_is_unavailable() {
         let mut app = App::test_default();
         let key = seed_bucket(&mut app, "session-a", "companies");
         app.notifications = NotificationManager::new(Osc9NotificationMode::Off);
@@ -889,11 +851,7 @@ mod tests {
 
         assert_eq!(
             app.notifications.take_delivered(),
-            vec![DeliveredNotification {
-                osc9_line: None,
-                bell: true,
-                desktop: Some(("companies".to_owned(), "lead - turn complete".to_owned())),
-            }],
+            vec![DeliveredNotification { osc9_line: None, bell: true }],
         );
     }
 

@@ -661,7 +661,7 @@ pub struct App {
     // active bucket. See `App::usage` / `App::usage_mut`.
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
-    /// Central notification manager (bell + desktop toast when unfocused).
+    /// Central notification manager (bell + OSC 9 escape when unfocused).
     pub notifications: super::notify::NotificationManager,
     /// Performance logger. Present only when built with `--features perf`.
     /// Taken out (`Option::take`) during render, used, then put back to avoid
