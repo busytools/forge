@@ -286,14 +286,15 @@ fn notification_escape_sequence<'a>(title: &'a str, body: &'a str) -> Cow<'a, st
     Cow::Owned(sequence)
 }
 
-/// One OSC 777 field, made safe to embed. `;` is dropped rather than
-/// replaced: it is the protocol's delimiter, so it is not content.
+/// One OSC 777 field, made safe to embed. `;` becomes a space the way
+/// CR and LF do: it is content this encoding cannot carry, not a
+/// control character.
 fn sanitize_notification_field(field: &str) -> String {
     let mut sanitized = String::with_capacity(field.len());
     for ch in field.chars() {
         match ch {
-            '\u{07}' | '\u{1b}' | '\u{9c}' | ';' => {}
-            '\r' | '\n' => sanitized.push(' '),
+            '\u{07}' | '\u{1b}' | '\u{9c}' => {}
+            '\r' | '\n' | ';' => sanitized.push(' '),
             _ => sanitized.push(ch),
         }
     }
@@ -640,7 +641,7 @@ mod tests {
             .collect();
         assert_eq!(
             fields,
-            vec!["notify", "ab", "cd"],
+            vec!["notify", "a b", "c d"],
             "a delimiter inside a field must not add a field",
         );
     }
