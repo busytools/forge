@@ -23,8 +23,9 @@ test-helpers = ["forge-primitives/test-helpers"]
 # `Workspace::test_default`). Replaces forge-tui's prior
 # `forge_agent::Agent::testing_stub` so the TUI's unit + integration
 # tests can construct a fully-wired `Workspace` without a real
-# `forge.toml`. Forwards to `forge-agent/testing` so the stub
-# `Agent::testing_stub()` factory is visible cross-crate.
+# `forge.toml`. Forwards to `forge-agent/testing` and
+# `forge-gateway/testing` so their test-only constructors are visible
+# cross-crate.
 # Production builds never see this code.
 testing = ["forge-agent/testing", "forge-gateway/testing"]
 
