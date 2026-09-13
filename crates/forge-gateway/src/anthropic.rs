@@ -62,7 +62,7 @@ impl ProviderBackend for Anthropic {
         let headers =
             messages_probe(&client, &ua, None, bearer).await.map_err(ProbeError::Fetch)?;
         tracing::info!(
-            target: "forge_providers::anthropic",
+            target: "forge_gateway::anthropic",
             event_name = "unified_usage_probe_settled",
             outcome = "ok",
             "token account unified usage probe settled",
@@ -146,7 +146,7 @@ async fn messages_probe(
 
     if status == 200 {
         tracing::debug!(
-            target: "forge_providers::anthropic",
+            target: "forge_gateway::anthropic",
             event_name = "unified_usage_response",
             status,
             outcome = "ok",
@@ -159,7 +159,7 @@ async fn messages_probe(
         );
     } else {
         tracing::warn!(
-            target: "forge_providers::anthropic",
+            target: "forge_gateway::anthropic",
             event_name = "unified_usage_response",
             status,
             outcome = "non_ok",

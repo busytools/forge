@@ -2633,7 +2633,7 @@ impl Workspace {
                     self.record_usage_success(&key, snapshot);
                     any_success = true;
                 }
-                Err(forge_providers::ProbeError::Unmappable(message)) => {
+                Err(forge_gateway::ProbeError::Unmappable(message)) => {
                     self.accounts.lock().set_last_error(
                         &key,
                         crate::account::UsageFetchStatus::Other,
@@ -2653,7 +2653,7 @@ impl Workspace {
                     // Anthropic's actual reset time rather than our
                     // local guess.
                     let retry_after = match &err {
-                        forge_providers::ProbeError::Fetch(
+                        forge_gateway::ProbeError::Fetch(
                             forge_primitives::usage::oauth::OauthUsageError::RateLimited {
                                 retry_after,
                             },
@@ -4546,7 +4546,7 @@ impl Workspace {
         account_display_name: &str,
         discovered: Vec<forge_primitives::runtime::AvailableModel>,
     ) -> Vec<forge_primitives::runtime::AvailableModel> {
-        use forge_providers::model_catalog::CatalogDecision;
+        use forge_gateway::model_catalog::CatalogDecision;
 
         let key = AccountKey(account_display_name.to_owned());
         let (provider, base_url) = {
@@ -4558,8 +4558,8 @@ impl Workspace {
                 .unwrap_or_default();
             (accounts.provider_or_anthropic(&key), base_url)
         };
-        let Some(catalog) = forge_providers::backend(provider)
-            .and_then(forge_providers::ProviderBackend::model_catalog)
+        let Some(catalog) = forge_gateway::backend(provider)
+            .and_then(forge_gateway::ProviderBackend::model_catalog)
         else {
             return discovered;
         };
@@ -4619,8 +4619,8 @@ impl Workspace {
     /// Curated rows for `models`, or `discovered` when the merge yields
     /// nothing (a catalog with no curated slug must not empty the picker).
     fn curated_or_discovered(
-        catalog: &dyn forge_providers::ModelCatalog,
-        models: &[forge_providers::model_catalog::CatalogModel],
+        catalog: &dyn forge_gateway::ModelCatalog,
+        models: &[forge_gateway::model_catalog::CatalogModel],
         discovered: Vec<forge_primitives::runtime::AvailableModel>,
     ) -> Vec<forge_primitives::runtime::AvailableModel> {
         let rows = catalog.curated(models);
@@ -4632,16 +4632,16 @@ impl Workspace {
     /// session event loop.
     async fn refresh_model_catalog(
         self: &Arc<Self>,
-        catalog: &dyn forge_providers::ModelCatalog,
+        catalog: &dyn forge_gateway::ModelCatalog,
         base_url: &str,
     ) -> Result<
-        Vec<forge_providers::model_catalog::CatalogModel>,
-        forge_providers::model_catalog::ModelCatalogError,
+        Vec<forge_gateway::model_catalog::CatalogModel>,
+        forge_gateway::model_catalog::ModelCatalogError,
     > {
         let models = catalog.fetch(base_url, &forge_agent::cloud::AgentHost).await?;
         let workspace = Arc::clone(self);
         let base = base_url.to_owned();
-        let entry = forge_providers::model_catalog::CachedCatalog {
+        let entry = forge_gateway::model_catalog::CachedCatalog {
             fetched_at: SystemTime::now(),
             models: models.clone(),
         };
@@ -4670,7 +4670,7 @@ impl Workspace {
     fn load_model_catalog(
         &self,
         base_url: &str,
-    ) -> Option<forge_providers::model_catalog::CachedCatalog> {
+    ) -> Option<forge_gateway::model_catalog::CachedCatalog> {
         let guard = self.db.lock();
         let db = guard.as_ref()?;
         crate::store::model_catalog::load(db, base_url).unwrap_or_else(|error| {
@@ -4686,7 +4686,7 @@ impl Workspace {
     fn store_model_catalog(
         &self,
         base_url: &str,
-        entry: &forge_providers::model_catalog::CachedCatalog,
+        entry: &forge_gateway::model_catalog::CachedCatalog,
     ) -> bool {
         if let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::model_catalog::store(db, base_url, entry)
@@ -4702,15 +4702,15 @@ impl Workspace {
     }
 
     /// Record that a fetch just failed by writing an empty-catalog row,
-    /// the failure marker [`forge_providers::ModelCatalog::decision`]
+    /// the failure marker [`forge_gateway::ModelCatalog::decision`]
     /// reads. Converts a recurring inline-fetch stall on every connect
     /// into one inline fetch per base url, with retries afterwards
     /// happening in the background at most once per
-    /// [`forge_providers::model_catalog::CATALOG_FAILURE_TTL`].
+    /// [`forge_gateway::model_catalog::CATALOG_FAILURE_TTL`].
     async fn mark_catalog_fetch_failed(self: &Arc<Self>, base_url: &str) {
         let workspace = Arc::clone(self);
         let base = base_url.to_owned();
-        let entry = forge_providers::model_catalog::CachedCatalog {
+        let entry = forge_gateway::model_catalog::CachedCatalog {
             fetched_at: SystemTime::now(),
             models: Vec::new(),
         };
@@ -5669,14 +5669,14 @@ fn auth_repair_hint(provider: forge_primitives::account::Provider) -> &'static s
 }
 
 /// The [`crate::views::AccountBudget`] shape for an account, resolved
-/// through its provider's forge-providers backend. The stale-cache
+/// through its provider's forge-gateway backend. The stale-cache
 /// refusal and its warn live on the backend's `budget`.
 fn account_budget(
     account: &str,
     provider: forge_primitives::account::Provider,
     snapshot: Option<&forge_primitives::usage::UsageSnapshot>,
 ) -> crate::views::AccountBudget {
-    let Some(backend) = forge_providers::backend(provider) else {
+    let Some(backend) = forge_gateway::backend(provider) else {
         debug_assert!(false, "no backend registered for {provider:?}");
         return crate::views::AccountBudget::Unknown { spend_billed: false };
     };
@@ -5692,14 +5692,14 @@ fn account_budget(
 /// "fetch error". `Unmappable` never reaches the classifiers - both
 /// callers handle a 200 that maps to nothing before classifying.
 pub(crate) fn classify_oauth_usage_error(
-    err: &forge_providers::ProbeError,
+    err: &forge_gateway::ProbeError,
 ) -> account::UsageFetchStatus {
     use account::UsageFetchStatus;
     use forge_primitives::usage::oauth::OauthUsageError;
     match err {
-        forge_providers::ProbeError::NoCredentials => UsageFetchStatus::Expired,
-        forge_providers::ProbeError::Unmappable(_) => UsageFetchStatus::Other,
-        forge_providers::ProbeError::Fetch(err) => match err {
+        forge_gateway::ProbeError::NoCredentials => UsageFetchStatus::Expired,
+        forge_gateway::ProbeError::Unmappable(_) => UsageFetchStatus::Other,
+        forge_gateway::ProbeError::Fetch(err) => match err {
             OauthUsageError::RateLimited { .. } | OauthUsageError::HttpStatus(429, _) => {
                 UsageFetchStatus::RateLimited
             }
@@ -7062,17 +7062,17 @@ mod tests {
 
     // -- /model catalog merge (openrouter sessions) ------------------
 
-    /// The trimmed live capture beside forge-providers' module.
-    fn fixture_catalog_models() -> Vec<forge_providers::model_catalog::CatalogModel> {
+    /// The trimmed live capture beside forge-gateway's module.
+    fn fixture_catalog_models() -> Vec<forge_gateway::model_catalog::CatalogModel> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../forge-providers/fixtures/model_catalog.json");
+            .join("../forge-gateway/fixtures/model_catalog.json");
         let body = std::fs::read_to_string(path).expect("fixture readable");
-        forge_providers::model_catalog::parse_catalog(body.as_bytes()).expect("fixture parses")
+        forge_gateway::model_catalog::parse_catalog(body.as_bytes()).expect("fixture parses")
     }
 
-    fn openrouter_catalog() -> &'static dyn forge_providers::ModelCatalog {
-        forge_providers::backend(forge_primitives::account::Provider::Openrouter)
-            .and_then(forge_providers::ProviderBackend::model_catalog)
+    fn openrouter_catalog() -> &'static dyn forge_gateway::ModelCatalog {
+        forge_gateway::backend(forge_primitives::account::Provider::Openrouter)
+            .and_then(forge_gateway::ProviderBackend::model_catalog)
             .expect("the openrouter backend carries the model catalog")
     }
 
@@ -7226,7 +7226,7 @@ mod tests {
     /// fetch and its failure is remembered, so connects within the
     /// failure window serve the discovered list without touching the
     /// endpoint again. (The window's expiry is covered by the
-    /// decision-boundary test in forge-providers.)
+    /// decision-boundary test in forge-gateway.)
     #[tokio::test]
     async fn failed_fetch_is_negatively_cached_for_the_failure_window() {
         let (base_url, hits) = counting_error_server();
@@ -9343,8 +9343,8 @@ provider = "anthropic"
     #[test]
     fn classify_oauth_usage_error_buckets_known_variants() {
         use crate::account::UsageFetchStatus;
+        use forge_gateway::ProbeError;
         use forge_primitives::usage::oauth::OauthUsageError;
-        use forge_providers::ProbeError;
 
         let fetch = |err| ProbeError::Fetch(err);
         assert_eq!(

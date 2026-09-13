@@ -1,6 +1,6 @@
 //! Anthropic plan-usage snapshot data shapes.
 //!
-//! Type-only - the fetcher impls live in the forge-providers
+//! Type-only - the fetcher impls live in the forge-gateway
 //! backends. These are the wire shapes consumers see.
 //!
 //! Serde derived so the workspace can persist the latest snapshot per
@@ -111,7 +111,7 @@ pub struct ExtraUsage {
 }
 
 /// Snapshot of the user's Anthropic plan utilization at a point in time.
-/// Composed by the forge-providers backends and rendered by
+/// Composed by the forge-gateway backends and rendered by
 /// forge-tui's usage view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageSnapshot {

@@ -1,15 +1,15 @@
 //! Workspace-side routing of account probes through the
-//! forge-providers backends, shared by the boot loader and the 60 s
+//! forge-gateway backends, shared by the boot loader and the 60 s
 //! usage poller.
 
 use std::collections::HashMap;
 
 use forge_agent::cloud::AgentHost;
+use forge_gateway::{AccountEnv, ProbeError, ProviderBackend, UsageSnapshot};
 use forge_primitives::account::Provider;
-use forge_providers::{AccountEnv, ProbeError, ProviderBackend, UsageSnapshot};
 
 pub(crate) fn backend_for(provider: Provider) -> Result<&'static dyn ProviderBackend, ProbeError> {
-    if let Some(backend) = forge_providers::backend(provider) {
+    if let Some(backend) = forge_gateway::backend(provider) {
         return Ok(backend);
     }
     debug_assert!(

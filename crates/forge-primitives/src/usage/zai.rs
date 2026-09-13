@@ -1,6 +1,6 @@
 //! Z.ai GLM coding plan monitor response shapes.
 //!
-//! Type-only - the HTTP fetcher lives in the forge-providers Zai
+//! Type-only - the HTTP fetcher lives in the forge-gateway Zai
 //! backend. These are the JSON wire shapes; the fetcher deserializes
 //! into them.
 //!

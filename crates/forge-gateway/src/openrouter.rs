@@ -146,7 +146,7 @@ async fn credits_balance(client: &reqwest::Client, base_url: &str, bearer: &str)
             let balance = balance_from_credits(payload);
             if balance.is_none() {
                 tracing::warn!(
-                    target: "forge_providers::openrouter",
+                    target: "forge_gateway::openrouter",
                     event_name = "openrouter_credits_no_envelope",
                     body_suffix = %truncated_body_suffix(&body),
                     "200 from the credits endpoint carried no data envelope; balance stays absent",
@@ -156,7 +156,7 @@ async fn credits_balance(client: &reqwest::Client, base_url: &str, bearer: &str)
         }
         Err(error) => {
             tracing::warn!(
-                target: "forge_providers::openrouter",
+                target: "forge_gateway::openrouter",
                 event_name = "openrouter_credits_skipped",
                 error = %error,
                 "balance stays absent; the credits fetch failed but the key data stands",
@@ -213,7 +213,7 @@ async fn fetch_json<T: DeserializeOwned>(
     // the key itself.
     if status == 200 {
         tracing::trace!(
-            target: "forge_providers::openrouter",
+            target: "forge_gateway::openrouter",
             event_name = "openrouter_get_response",
             url,
             status,
@@ -222,7 +222,7 @@ async fn fetch_json<T: DeserializeOwned>(
         );
     } else {
         tracing::warn!(
-            target: "forge_providers::openrouter",
+            target: "forge_gateway::openrouter",
             event_name = "openrouter_get_response",
             url,
             status,
@@ -240,7 +240,7 @@ async fn fetch_json<T: DeserializeOwned>(
                 // the URL and show the body, or the only evidence is a byte
                 // count on a trace line nobody has enabled.
                 tracing::warn!(
-                    target: "forge_providers::openrouter",
+                    target: "forge_gateway::openrouter",
                     event_name = "openrouter_get_decode_failed",
                     url,
                     error = %error,

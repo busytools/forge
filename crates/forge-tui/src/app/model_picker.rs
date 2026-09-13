@@ -139,7 +139,7 @@ mod tests {
     }
 
     /// The ten curated OpenRouter rows, shaped the way the
-    /// forge-providers curated merge produces them.
+    /// forge-gateway curated merge produces them.
     fn curated_rows() -> Vec<model::AvailableModel> {
         [
             ("z-ai/glm-5.3", "Z.ai: GLM 5.3 (Opus-class)"),

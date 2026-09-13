@@ -211,7 +211,7 @@ pub(crate) async fn fetch_catalog(
             // A 200 that will not parse is the shape a wrong base url
             // takes: the bare host answers 200 with an HTML page.
             tracing::warn!(
-                target: "forge_providers::model_catalog",
+                target: "forge_gateway::model_catalog",
                 url = %models_url(base_url),
                 error = %error,
                 body_suffix = %truncated_body_suffix(&body),

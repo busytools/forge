@@ -1,6 +1,6 @@
 //! OpenRouter `/api/v1/key` and `/api/v1/credits` response shapes.
 //!
-//! Type-only - the HTTP fetcher lives in the forge-providers
+//! Type-only - the HTTP fetcher lives in the forge-gateway
 //! OpenRouter backend. These are the JSON wire shapes; the fetcher
 //! deserializes into them.
 
