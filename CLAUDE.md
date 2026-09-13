@@ -514,8 +514,9 @@ inspected.
     user-facing "notifications completely gone" report was this
     suppression plus forge's text carrying no context - not a dead
     delivery path. The channel seam `notifications_osc9` remains as
-    the user's override, and its "off" arm is still the honest choice
-    for a setup where the escape genuinely does not survive.
+    the user's override. Its "off" arm has no fallback left to retreat
+    to: with the desktop path gone, `off` under Ghostty is silence and
+    `off` on the Iterm2 channels is the bell.
 
     What crosses is decided per sequence by the thing in the middle,
     and no one capability answers it for every sequence. tmux
