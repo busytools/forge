@@ -832,22 +832,19 @@ fn apply_dictate_outcome(
 /// `cwd_raw`/`cwd` from the project's path, and (conditionally)
 /// switch active focus.
 ///
-/// **Focus rule:** auto-focus the new spawn ONLY when
-/// `active_session_key` is `None`, or when a click recorded this key
-/// in [`App::pending_spawn_focus`]. Production boots with nothing
-/// focused, so the first `auto_start` project's `Spawning` takes the
-/// tab; every later one arrives while a session is focused and must
-/// not steal it.
+/// **Focus rule:** a spawn moves focus only when a person asked for
+/// that session, or when it belongs to the project the CLI named and
+/// nothing is focused. A click records its key in
+/// [`App::pending_spawn_focus`], so the reducer completes that move
+/// when the bucket appears; an `auto_start` spawn arrives unasked and
+/// registers in the background, which is what keeps a launchpad boot
+/// on its picker.
 ///
-/// Both branches share one gate, because a person asking for THIS
-/// session is the only thing that may move focus: either the click
-/// recorded its key in [`App::pending_spawn_focus`] (a cold project
-/// has no bucket yet, so the reducer completes the move when the
-/// bucket appears), or nothing is focused at all. An existing bucket
-/// whose wake nobody asked for - a cron, peer, gotify or slack repeat hitting the
-/// stub an earlier failed spawn left behind - registers silently.
-/// A click on a stub row never reaches this reducer at all: the
-/// click handler switches or refuses directly.
+/// Both branches share one gate: [`App::arriving_session_takes_the_tab`].
+/// An existing bucket whose wake nobody asked for - a cron, peer,
+/// gotify or slack repeat hitting the stub an earlier failed spawn left
+/// behind - registers silently. A click on a stub row never reaches
+/// this reducer at all: the click handler switches or refuses directly.
 fn apply_session_update_spawning(
     app: &mut App,
     key: SessionKey,
@@ -856,21 +853,21 @@ fn apply_session_update_spawning(
     display_name: &str,
 ) {
     if app.sessions.contains_key(&key) {
-        // Same focus rule as the fresh-bucket path below: only a
-        // click that asked for THIS wake moves focus. A background
-        // SpawnProject (cron, peer prompt, gotify or slack delivery) hitting a stale synthetic
-        // stub left by an earlier failed spawn must not yank the tab
-        // away from the spawn the user is waiting on.
+        // Same gate as the fresh-bucket path below: only a click that
+        // asked for THIS wake moves focus. A background SpawnProject
+        // (cron, peer prompt, gotify or slack delivery) hitting a stale
+        // synthetic stub left by an earlier failed spawn must not yank
+        // the tab away from whatever holds it.
         let user_asked_for_this = app.pending_spawn_focus.as_ref() == Some(&key);
         if user_asked_for_this {
             app.pending_spawn_focus = None;
         }
-        if user_asked_for_this || app.active_session_key.is_none() {
+        if user_asked_for_this || app.arriving_session_takes_the_tab(project_name) {
             tracing::info!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "spawn_wake_focus",
                 outcome = "focused",
-                reason = if user_asked_for_this { "user_asked" } else { "no_active_session" },
+                reason = if user_asked_for_this { "user_asked" } else { "boot_project" },
                 key = %key.as_str(),
             );
             app.switch_active_session(key);
@@ -3299,6 +3296,36 @@ mod tests {
         assert!(
             app.active_session_key.is_none(),
             "the picker keeps the screen until the user picks a project",
+        );
+    }
+
+    /// The same rule on the arm that finds a bucket already there: a
+    /// wake reusing the stub an earlier failed spawn left behind must
+    /// not take the tab either, or the picker loses its screen to
+    /// whatever `auto_start` project the scheduler runs first.
+    #[test]
+    fn a_launchpad_boot_leaves_a_stub_wake_in_the_background() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+        app.active_session_key = None;
+        app.startup_project = None;
+        let key = SessionKey::from_session_id("__spawn_autostart__".to_owned());
+        app.sessions
+            .insert(key.clone(), crate::app::session::UiSession::new(key.clone(), "autostart"));
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Spawning {
+                key: key.clone(),
+                project_name: "autostart".to_owned(),
+                cwd: "/p/autostart".to_owned(),
+                display_name: "autostart".to_owned(),
+            },
+        );
+
+        assert!(
+            app.active_session_key.is_none(),
+            "a wake reusing a stale stub must not take the picker's screen",
         );
     }
 
