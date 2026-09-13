@@ -552,8 +552,9 @@ inspected.
     harmless, not degraded, so the failure this rule exists to
     prevent - a feature that quietly does nothing - is not the one the
     user meets. This is a case the binary test below resolves to
-    silence on purpose, because there is no explanation available to
-    give.
+    silence on purpose: the explanation lives in `configuration.md`
+    rather than in a runtime message, since nothing the middle reports
+    could inform one.
 
     **The keyboard-enhancement negotiation is the example to copy.**
     `resume_terminal` (`crates/forge-tui/src/app.rs`) pushes the
