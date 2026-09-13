@@ -15,7 +15,7 @@ pub use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 pub fn session_oauth_credentials<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
 ) -> Option<OauthCredentials> {
-    forge_providers::token_bearer(env)
+    forge_gateway::token_bearer(env)
         .map(|token| OauthCredentials { access_token: token.to_owned(), expires_at: None })
 }
 

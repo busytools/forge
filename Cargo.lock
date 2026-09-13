@@ -1047,8 +1047,8 @@ version = "1.0.71"
 dependencies = [
  "anyhow",
  "async-trait",
+ "forge-gateway",
  "forge-primitives",
- "forge-providers",
  "forge-sdk",
  "futures",
  "iana-time-zone",
@@ -1113,19 +1113,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "forge-primitives"
-version = "1.0.71"
-dependencies = [
- "base64",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "forge-providers"
+name = "forge-gateway"
 version = "1.0.71"
 dependencies = [
  "async-trait",
@@ -1137,6 +1125,18 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "forge-primitives"
+version = "1.0.71"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1230,8 +1230,8 @@ dependencies = [
  "forge-agent",
  "forge-connectors",
  "forge-dictate",
+ "forge-gateway",
  "forge-primitives",
- "forge-providers",
  "forge-sdk",
  "forge-workspace",
  "parking_lot",

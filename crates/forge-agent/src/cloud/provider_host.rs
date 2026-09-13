@@ -1,14 +1,14 @@
 //! forge-agent's implementation of the
-//! [`forge_providers::ProviderHost`] port. The extra-roots HTTP client
+//! [`forge_gateway::ProviderHost`] port. The extra-roots HTTP client
 //! and the `claude --version` UA cache stay on this side of the port
-//! so forge-providers carries no process plumbing of its own.
+//! so forge-gateway carries no process plumbing of its own.
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
-use forge_providers::ProviderHost;
+use forge_gateway::ProviderHost;
 
 /// The host every workspace-side backend probe runs against.
 pub struct AgentHost;

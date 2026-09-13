@@ -25,9 +25,9 @@
 
 use std::sync::Weak;
 
+use forge_gateway::ProbeError;
 use forge_primitives::usage::UsageSnapshot;
 use forge_primitives::usage::oauth::OauthUsageError;
-use forge_providers::ProbeError;
 
 use crate::account::{AccountKey, LoadingState};
 use crate::workspace::Workspace;
@@ -114,9 +114,9 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
 mod tests {
     use super::*;
     use crate::account::{AccountStateMap, UsageFetchStatus};
+    use forge_gateway::ProbeError;
     use forge_primitives::usage::oauth::OauthUsageError;
     use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
-    use forge_providers::ProbeError;
     use std::time::{Duration, Instant};
 
     // Mirrors the `make_account` helper idiom in `account::tests`.

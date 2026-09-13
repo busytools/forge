@@ -574,7 +574,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
 /// both read these maps verbatim, so a padded value would authenticate
 /// one and fail the other.
 fn trim_setup_token<S: std::hash::BuildHasher>(env: &mut HashMap<String, String, S>) {
-    if let Some(token) = env.get_mut(forge_providers::CLAUDE_CODE_OAUTH_TOKEN_ENV) {
+    if let Some(token) = env.get_mut(forge_gateway::CLAUDE_CODE_OAUTH_TOKEN_ENV) {
         *token = token.trim().to_owned();
     }
 }
@@ -1155,7 +1155,7 @@ CLAUDE_CODE_OAUTH_TOKEN = "  sk-ant-oat01-project  "
             "the setup token is trimmed where it enters the config",
         );
         assert_eq!(
-            forge_providers::token_bearer(&account.env),
+            forge_gateway::token_bearer(&account.env),
             Some("sk-ant-oat01-stargate"),
             "the probe reads the same trimmed credential the child gets",
         );

@@ -513,7 +513,7 @@ impl AccountStateMap {
         }
         let usage = self
             .provider(key)
-            .and_then(forge_providers::backend)
+            .and_then(forge_gateway::backend)
             .and_then(|backend| self.usage(key).filter(|s| s.source == backend.source()));
         unusable_reason(usage, self.usage_error(key))
     }
