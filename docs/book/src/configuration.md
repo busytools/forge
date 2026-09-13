@@ -252,23 +252,31 @@ forge booting. A `spinner` name forge does not recognise resolves to
 the default. An `fps` outside the range is clamped and warned about,
 and a non-integer `fps` resolves to the default.
 
-Forge writes an OSC 9 desktop-notification escape every time it raises
-a notification, and asks nothing about the terminal first. A terminal
-that ignores the escape is harmless, so nothing is planned around the
-answer. Notifications are raised only while forge reads the terminal
-window as unfocused, and that focus signal is relayed and can lag the
-actual frontmost state.
+Forge writes an OSC 777 desktop-notification escape every time it
+raises a notification, and asks nothing about the terminal first. A
+terminal that ignores the escape is harmless, so nothing is planned
+around the answer. Notifications are raised only while forge reads the
+terminal window as unfocused, and that focus signal is relayed and can
+lag the actual frontmost state.
+
+The escape carries the project as its title field and the session kind
+with the event as its body, so the banner's bold line names the project
+instead of the app. The line under it is the terminal's own window
+title, which forge sets separately as the tab title.
 
 What crosses is decided by whatever sits between forge and the
 terminal, and no setting changes it. Ghostty with no multiplexer
 renders the banner, and so does Ghostty through shpool: shpool does
-not carry `TERM_PROGRAM` into the pane but forwards OSC 9 (measured
-2026-09-12 on shpool 0.11.0). Under zellij and GNU screen an OSC 9
-emitted inside does not reach the outer pty (measured 2026-08-29), so
-the banner does not appear there. tmux drops the OSC 9 notification
-form and substitutes `TERM_PROGRAM` and `TERM` with its own values.
-When the banner does arrive it shows while Ghostty is not the
-frontmost app, and is downgraded to a dock bounce when it is.
+not carry `TERM_PROGRAM` into the pane but forwards the escape
+(measured 2026-09-13, with both the `ST` and `BEL` terminators). Under
+zellij and GNU screen an escape emitted inside
+does not reach the outer pty (measured 2026-08-29 against OSC 9), so
+the banner does not appear there. tmux re-emits only the forms its
+terminfo carries - OSC 8 and the OSC 9;4 progress bar - so an OSC 777
+notification is not forwarded, and tmux substitutes `TERM_PROGRAM` and
+`TERM` with its own values besides. When the banner does arrive it
+shows while Ghostty is not the frontmost app, and is downgraded to a
+dock bounce when it is.
 
 `launchpad_spinner` is accepted as an alias for `spinner`.
 

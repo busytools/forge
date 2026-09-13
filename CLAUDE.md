@@ -524,15 +524,20 @@ inspected.
     when the outer terminal carries `Hls`, and since 3.7 the OSC 9;4
     progress bar via `Spb`. The OSC 9 NOTIFICATION form is not among
     them - `input_osc_9` returns on any payload not starting `4` -
-    and that is the form forge emits. Carrying an arbitrary sequence
-    out takes a DCS envelope, and the price differs per multiplexer:
-    tmux wants a `tmux;` prefix, `allow-passthrough` at `on` for a
-    visible pane or `all` for any (tri-state since 3.4, default
-    `off`), and every ESC in the payload doubled, the doubling being
-    the one requirement `tmux.1` never states. screen forwards a bare
-    DCS-wrapped OSC 9 with no opt-in and no doubling. The screen half
-    is measured; the tmux half is read from source, at 3.7c except
-    where an earlier tag is named.
+    and `9;4` is the one shape that would arrive as something else,
+    which is the collision a notification escape used to be exposed
+    to. forge emits `777;notify`: `777` is not a number tmux
+    re-emits from terminfo, so the escape has no form to be mistaken
+    for. Carrying an arbitrary sequence out takes a DCS envelope, and
+    the price differs per multiplexer: tmux wants a `tmux;` prefix,
+    `allow-passthrough` at `on` for a visible pane or `all` for any
+    (tri-state since 3.4, default `off`), and every ESC in the
+    payload doubled, the doubling being the one requirement `tmux.1`
+    never states. screen forwards a bare DCS-wrapped OSC 9 with no
+    opt-in and no doubling; that was measured with OSC 9, and the
+    777 form is unmeasured there. The screen half is measured; the
+    tmux half is read from source, at 3.7c except where an earlier
+    tag is named.
 
     **Where no multiplexer-independent path exists, state the
     requirement and detect its absence.** Depending on a sequence is
@@ -541,7 +546,7 @@ inspected.
     the multiplexer eating it.
 
     **The notification escape is a deliberate exception to that, and
-    the reason is the sentence above it.** forge writes OSC 9
+    the reason is the sentence above it.** forge writes OSC 777
     unconditionally (2026-09-13) and detects nothing about whether it
     will cross. Nothing in the middle reports what it forwarded, so
     there is no absence to detect and no true requirement to state:

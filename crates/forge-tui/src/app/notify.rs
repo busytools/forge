@@ -248,9 +248,9 @@ fn send_notification_escape(title: &str, body: &str) -> std::io::Result<()> {
 
 /// Build the delivered strings for one event from the session's
 /// project + worker label. The title is the project; the detail names
-/// the session's kind and the event, because on the OSC 9 path this
-/// line is the only thing forge controls - the terminal supplies the
-/// rest of the banner.
+/// the session's kind and the event. OSC 777 carries them as separate
+/// fields, so the project reaches the banner's bold line instead of
+/// the app name.
 fn notification_text(
     event: NotifyEvent,
     project: &str,
