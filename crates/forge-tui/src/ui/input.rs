@@ -2,7 +2,7 @@
 // terminal size and truncated to u16 here. The cast is inherent.
 #![allow(clippy::cast_possible_truncation)]
 
-use crate::app::input::parse_paste_placeholder_ranges;
+use crate::app::input::{InputState, parse_paste_placeholder_ranges};
 use crate::app::mention;
 use crate::app::subagent;
 use crate::app::{App, AppStatus, FocusOwner};
@@ -68,7 +68,7 @@ pub(crate) struct InputRenderGeometry {
 }
 
 fn has_prompt_suggestion_hint(app: &App) -> bool {
-    app.input().is_empty()
+    app.input().is_none_or(InputState::is_empty)
         && app.focus_owner() == FocusOwner::Input
         && app.prompt_suggestion().is_some_and(|suggestion| !suggestion.trim().is_empty())
 }
@@ -139,7 +139,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     {
         let queue_depth = session.prompt_queue.len();
         let prompt = prompt.clone();
-        let notes_text = app.input().text();
+        let notes_text = app.input().map_or_else(String::new, InputState::text);
         crate::ui::prompt::render(
             geometry.box_area,
             frame.buffer_mut(),
@@ -291,7 +291,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.selection().is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
         refresh_selection_snapshot(app);
     }
-    frame.render_widget(app.input().editor(), text_rect);
+    let Some(input) = app.input() else {
+        return;
+    };
+    frame.render_widget(input.editor(), text_rect);
 
     if let Some(sel) = app.selection().copied()
         && sel.kind == crate::app::SelectionKind::Input
@@ -312,7 +315,13 @@ pub(super) fn refresh_selection_snapshot(app: &mut App) {
     }
 
     configure_input_textarea(app);
-    app.rendered_input_lines = render_lines_from_textarea(app.input().editor(), area);
+    let rendered = {
+        let Some(input) = app.input() else {
+            return;
+        };
+        render_lines_from_textarea(input.editor(), area)
+    };
+    app.rendered_input_lines = rendered;
 }
 
 /// The rect the draft's textarea renders into, shifted down when the
@@ -333,10 +342,14 @@ pub(crate) fn draft_text_area(area: Rect, app: &App) -> Rect {
 }
 
 fn configure_input_textarea(app: &mut App) {
-    let needs_highlight_update = app.input().highlight_version != app.input().content_version;
+    let Some(session_input) = app.input() else {
+        return;
+    };
+    let content_version = session_input.content_version;
+    let needs_highlight_update = session_input.highlight_version != content_version;
 
-    {
-        let textarea = app.input_mut().editor_mut();
+    if let Some(input) = app.input_mut() {
+        let textarea = input.editor_mut();
         textarea.set_placeholder_text(crate::ui::composer::ComposerChrome::chat().placeholder);
         textarea.set_placeholder_style(crate::ui::composer::ComposerChrome::placeholder_style());
         textarea.set_cursor_line_style(Style::default());
@@ -344,12 +357,15 @@ fn configure_input_textarea(app: &mut App) {
     }
 
     if needs_highlight_update {
-        let lines = app.input().lines().to_vec();
-        let content_version = app.input().content_version;
-        let textarea = app.input_mut().editor_mut();
-        textarea.clear_custom_highlight();
-        apply_textarea_highlights(textarea, &lines);
-        app.input_mut().highlight_version = content_version;
+        let lines = app.input().map_or_else(Vec::new, |input| input.lines().to_vec());
+        if let Some(input) = app.input_mut() {
+            let textarea = input.editor_mut();
+            textarea.clear_custom_highlight();
+            apply_textarea_highlights(textarea, &lines);
+        }
+        if let Some(input) = app.input_mut() {
+            input.highlight_version = content_version;
+        }
     }
 }
 
@@ -481,7 +497,7 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     {
         let queue_depth = session.prompt_queue.len();
         let prompt = prompt.clone();
-        let notes_text = app.input().text();
+        let notes_text = app.input().map_or_else(String::new, InputState::text);
         return hint
             + crate::ui::prompt::prompt_required_lines(
                 &prompt,
@@ -495,7 +511,7 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let content_width = area_width.saturating_sub(2).saturating_sub(PROMPT_WIDTH);
     let input_lines = app
         .input_mut()
-        .measure_visual_lines(content_width, MAX_INPUT_HEIGHT)
+        .map_or(0, |input| input.measure_visual_lines(content_width, MAX_INPUT_HEIGHT))
         .max(MIN_INPUT_INTERIOR_LINES);
     let notice_row = u16::from(crate::app::dictate::dictate_row_visible(app));
     hint + input_lines + notice_row + INPUT_BORDER_LINES
@@ -537,7 +553,7 @@ mod tests {
     #[test]
     fn compacting_locks_the_box_with_a_line_saying_so() {
         let mut app = App::test_default();
-        app.input_mut().set_text("a draft that must not paint");
+        app.input_mut().expect("active session").set_text("a draft that must not paint");
         app.set_is_compacting(true);
 
         let rows = render_input(&mut app, 80, 4);
@@ -601,14 +617,14 @@ mod tests {
     #[test]
     fn visual_line_count_uses_textarea_max_rows() {
         let mut app = App::test_default();
-        app.input_mut().set_text(&"x".repeat(500));
+        app.input_mut().expect("active session").set_text(&"x".repeat(500));
         assert_eq!(visual_line_count(&mut app, 8), MAX_INPUT_HEIGHT + INPUT_BORDER_LINES);
     }
 
     #[test]
     fn visual_line_count_includes_login_hint_rows() {
         let mut app = App::test_default();
-        *app.login_hint_mut() = Some(LoginHint {
+        *app.login_hint_mut().expect("active session") = Some(LoginHint {
             method_name: "oauth".to_owned(),
             method_description: "Sign in".to_owned(),
         });
@@ -642,7 +658,7 @@ mod tests {
     fn visual_line_count_hides_prompt_suggestion_hint_when_input_not_empty() {
         let mut app = App::test_default();
         app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
-        app.input_mut().set_text("draft");
+        app.input_mut().expect("active session").set_text("draft");
         assert_eq!(visual_line_count(&mut app, 80), MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES);
     }
 
@@ -955,8 +971,8 @@ mod tests {
                 &mut app,
                 SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
             );
-            app.input_mut().set_text("hello world");
-            app.input_mut().set_cursor_col(11);
+            app.input_mut().expect("active session").set_text("hello world");
+            app.input_mut().expect("active session").set_cursor_col(11);
 
             let mut terminal = Terminal::new(TestBackend::new(80, 4)).expect("terminal");
             terminal.draw(|frame| render(frame, frame.area(), &mut app)).expect("draw");
@@ -1006,7 +1022,7 @@ mod tests {
                 "the notice row is the one row that grows the box"
             );
 
-            app.input_mut().insert_str("k");
+            app.input_mut().expect("active session").insert_str("k");
             let rows = render_input(&mut app, 80, 5);
             assert!(
                 !rows[1].contains("try again"),

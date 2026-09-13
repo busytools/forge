@@ -704,7 +704,10 @@ mod tests {
             "a failed seal has no review number, so nothing is nudged to the agent",
         );
         assert!(
-            app.messages().iter().any(|m| matches!(m.role, crate::app::MessageRole::System(None))),
+            app.messages()
+                .expect("active session")
+                .iter()
+                .any(|m| matches!(m.role, crate::app::MessageRole::System(None))),
             "a system message warns that the review wasn't saved locally",
         );
     }

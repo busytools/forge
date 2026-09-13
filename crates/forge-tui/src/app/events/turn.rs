@@ -347,10 +347,9 @@ pub(super) fn finalize_background_tool_calls(
 
 fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnExitState {
     let state = TurnExitState {
-        tail_assistant_idx: app
-            .messages()
-            .iter()
-            .rposition(|m| matches!(m.role, MessageRole::Assistant)),
+        tail_assistant_idx: app.messages().and_then(|messages| {
+            messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant))
+        }),
         turn_was_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
         cancelled_requested: app.pending_cancel(),
         show_interrupted_hint: app.pending_cancel(),
@@ -538,12 +537,13 @@ fn apply_turn_complete_presentation(
 /// placeholder was empty + got removed (degenerate turn) and there
 /// were no mid-turn submits - don't anticipate.
 fn anticipate_buffered_next_turn(app: &mut App, tail_assistant_idx_before: Option<usize>) {
-    let Some(last_idx) = app.messages().len().checked_sub(1) else {
+    let Some(last_idx) = app.messages().map_or(0, <[crate::app::ChatMessage]>::len).checked_sub(1)
+    else {
         return;
     };
     let last_is_user = app
         .messages()
-        .get(last_idx)
+        .and_then(|messages| messages.get(last_idx))
         .is_some_and(|m| matches!(m.role, crate::app::MessageRole::User));
     if !last_is_user {
         return;
@@ -697,7 +697,9 @@ fn apply_turn_error_presentation(
             error_preview = %summary,
             terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
         );
-        *app.pending_submit_mut() = None;
+        if let Some(submit) = app.pending_submit_mut() {
+            *submit = None;
+        }
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         // Lifecycle: cancelled turn - back to Idle, reset turn_state.
         if let Some(key) = app.active_session_key.clone() {
@@ -768,8 +770,12 @@ fn apply_turn_error_presentation(
         TurnErrorClass::Other => {}
     }
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.input_mut().clear();
-    *app.pending_submit_mut() = None;
+    if let Some(input) = app.input_mut() {
+        input.clear();
+    }
+    if let Some(submit) = app.pending_submit_mut() {
+        *submit = None;
+    }
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
         app.last_rate_limit_update()
@@ -860,14 +866,16 @@ fn push_interrupted_hint(app: &mut App) {
         vec![MessageBlock::Text(TextBlock::from_complete(CONVERSATION_INTERRUPTED_HINT))],
     ));
     app.enforce_history_retention_tracked();
-    app.active_viewport_mut().engage_auto_scroll();
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.engage_auto_scroll();
+    }
 }
 
 fn remove_empty_tail_assistant(app: &mut App, idx: Option<usize>) -> Option<usize> {
     let idx = idx?;
     let should_remove = app
         .messages()
-        .get(idx)
+        .and_then(|messages| messages.get(idx))
         .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
     if !should_remove {
         return None;
@@ -880,7 +888,11 @@ fn mark_turn_exit_assistant_layout_dirty(app: &mut App, idx: Option<usize>) {
     let Some(idx) = idx else {
         return;
     };
-    if app.messages().get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant)) {
+    if app
+        .messages()
+        .and_then(|messages| messages.get(idx))
+        .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
+    {
         app.invalidate_layout(InvalidationLevel::MessageChanged(idx));
     }
 }
@@ -987,8 +999,8 @@ mod tests {
             );
         }
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_message("hello"));
-        app.active_messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().expect("active session").push(user_message("hello"));
+        app.active_messages_mut().expect("active session").push(empty_assistant_message());
 
         apply_session_update_turn_complete(&mut app, &worker_key, None);
 
@@ -1061,11 +1073,11 @@ mod tests {
         }
 
         app.status = AppStatus::Ready;
-        app.input_mut().set_text("first");
+        app.input_mut().expect("active session").set_text("first");
         crate::app::input_submit::submit_input(&mut app);
         assert!(matches!(app.status, AppStatus::Thinking));
 
-        app.input_mut().set_text("second");
+        app.input_mut().expect("active session").set_text("second");
         crate::app::input_submit::submit_input(&mut app);
 
         apply_session_update_turn_complete(&mut app, &key, None);
@@ -1092,7 +1104,7 @@ mod tests {
             )],
             "the completion notification names the session's project even with a queued send",
         );
-        let last = app.messages().last().expect("messages present");
+        let last = app.messages().expect("active session").last().expect("messages present");
         assert!(
             !matches!(last.role, MessageRole::Assistant) || !last.blocks.is_empty(),
             "no placeholder may be pushed for a turn that has not started",
@@ -1163,14 +1175,14 @@ mod tests {
     fn turn_complete_removes_empty_tail_assistant() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_message("hello"));
-        app.active_messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().expect("active session").push(user_message("hello"));
+        app.active_messages_mut().expect("active session").push(empty_assistant_message());
 
         let key = active_session_key(&app);
         apply_session_update_turn_complete(&mut app, &key, None);
 
-        assert_eq!(app.messages().len(), 1);
-        assert!(matches!(app.messages()[0].role, MessageRole::User));
+        assert_eq!(app.messages().expect("active session").len(), 1);
+        assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::User));
     }
 
     #[test]
@@ -1178,30 +1190,36 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
         app.set_pending_cancel(true);
-        app.active_messages_mut().push(user_message("hello"));
-        app.active_messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().expect("active session").push(user_message("hello"));
+        app.active_messages_mut().expect("active session").push(empty_assistant_message());
 
         let key = active_session_key(&app);
         apply_session_update_turn_error(&mut app, &key, "cancelled", None, None);
 
-        assert_eq!(app.messages().len(), 2);
-        assert!(matches!(app.messages()[0].role, MessageRole::User));
-        assert!(matches!(app.messages()[1].role, MessageRole::System(Some(SystemSeverity::Info))));
+        assert_eq!(app.messages().expect("active session").len(), 2);
+        assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::User));
+        assert!(matches!(
+            app.messages().expect("active session")[1].role,
+            MessageRole::System(Some(SystemSeverity::Info))
+        ));
     }
 
     #[test]
     fn turn_error_removes_empty_tail_assistant_before_error_message() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_message("hello"));
-        app.active_messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().expect("active session").push(user_message("hello"));
+        app.active_messages_mut().expect("active session").push(empty_assistant_message());
 
         let key = active_session_key(&app);
         apply_session_update_turn_error(&mut app, &key, "boom", None, None);
 
-        assert_eq!(app.messages().len(), 2);
-        assert!(matches!(app.messages()[0].role, MessageRole::User));
-        assert!(matches!(app.messages()[1].role, MessageRole::System(None)));
+        assert_eq!(app.messages().expect("active session").len(), 2);
+        assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::User));
+        assert!(matches!(
+            app.messages().expect("active session")[1].role,
+            MessageRole::System(None)
+        ));
     }
 
     /// A turn that dies without a Result (transport death routes
@@ -1211,24 +1229,26 @@ mod tests {
     fn turn_error_sweeps_every_unsettled_row() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_message("hello"));
-        app.active_messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().expect("active session").push(user_message("hello"));
+        app.active_messages_mut().expect("active session").push(empty_assistant_message());
         app.start_live_turn(std::time::Instant::now());
-        app.active_messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().expect("active session").push(empty_assistant_message());
         app.start_live_turn(std::time::Instant::now());
-        for msg in app.active_messages_mut().iter_mut().skip(1) {
+        for msg in app.active_messages_mut().expect("active session").iter_mut().skip(1) {
             msg.blocks.push(MessageBlock::Text(TextBlock::from_complete("turn output")));
         }
         // An older row counting from a turn that never got its own
         // Result. No public flow reaches two counting rows once a
         // fresh start sweeps its orphans; the error path owns the
         // invariant over every row regardless.
-        app.active_messages_mut()[1].turn_info = crate::app::state::messages::TurnInfo {
-            started_at: Some(std::time::Instant::now()),
-            ..crate::app::state::messages::TurnInfo::default()
-        };
+        app.active_messages_mut().expect("active session")[1].turn_info =
+            crate::app::state::messages::TurnInfo {
+                started_at: Some(std::time::Instant::now()),
+                ..crate::app::state::messages::TurnInfo::default()
+            };
         let counting = |app: &App| {
             app.messages()
+                .expect("active session")
                 .iter()
                 .filter(|m| matches!(m.role, MessageRole::Assistant))
                 .filter(|m| !m.turn_info.is_settled() && !m.turn_info.is_empty())
@@ -1248,9 +1268,9 @@ mod tests {
         use crate::app::session::UiSession;
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_message("active hello"));
-        app.active_messages_mut().push(empty_assistant_message());
-        let active_messages_before = app.messages().len();
+        app.active_messages_mut().expect("active session").push(user_message("active hello"));
+        app.active_messages_mut().expect("active session").push(empty_assistant_message());
+        let active_messages_before = app.messages().expect("active session").len();
 
         let bg_key = SessionKey::from_str_for_test("background-session");
         let mut bg_session = UiSession::new(bg_key.clone());
@@ -1261,7 +1281,7 @@ mod tests {
         apply_session_update_turn_complete(&mut app, &bg_key, None);
 
         // Active session messages untouched.
-        assert_eq!(app.messages().len(), active_messages_before);
+        assert_eq!(app.messages().expect("active session").len(), active_messages_before);
         // Active app status unchanged (still Thinking) - background
         // turn-complete must not flip the active session to Ready.
         assert!(matches!(app.status, AppStatus::Thinking));

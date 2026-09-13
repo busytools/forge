@@ -32,14 +32,14 @@ fn dispatch_if_cwd_matches(
     event_name: &str,
     f: impl FnOnce(&mut App),
 ) -> bool {
-    if app.cwd_raw() == cwd_raw {
+    if app.cwd_raw().unwrap_or_default() == cwd_raw {
         f(app);
         true
     } else {
         tracing::debug!(
             target: crate::logging::targets::APP_CONFIG,
             event_name,
-            expected_cwd = %app.cwd_raw(),
+            expected_cwd = %app.cwd_raw().unwrap_or_default(),
             received_cwd = %cwd_raw,
             "stale-cwd plugin event dropped"
         );
@@ -774,7 +774,7 @@ fn dictate_destination<'a>(
         return None;
     }
     match app.input_focus() {
-        crate::app::InputFocus::Chat => Some(app.input_mut()),
+        crate::app::InputFocus::Chat => app.input_mut(),
         crate::app::InputFocus::DiffComment => {
             app.diff_overlay.as_mut()?.active_input.as_mut().map(|input| &mut input.editor)
         }
@@ -1200,8 +1200,7 @@ fn apply_mcp_snapshot_presentation(
     let server_count = servers.len();
     let error_present = error.is_some();
     let changed = if is_active {
-        {
-            let mcp = app.mcp_mut();
+        if let Some(mcp) = app.mcp_mut() {
             let changed = mcp.servers != servers || mcp.in_flight || error.is_some();
             mcp.servers = servers;
             mcp.in_flight = false;
@@ -1214,6 +1213,8 @@ fn apply_mcp_snapshot_presentation(
                 mcp.last_error = error;
             }
             changed
+        } else {
+            false
         }
     } else if let Some(session) = app.session_mut(&session_key) {
         session.mcp.servers = servers;
@@ -1236,8 +1237,9 @@ fn apply_mcp_snapshot_presentation(
         return false;
     };
     if changed && is_active {
+        let server_len = app.mcp().map_or(0, |mcp| mcp.servers.len());
         app.config.mcp_selected_server_index =
-            app.config.mcp_selected_server_index.min(app.mcp().servers.len().saturating_sub(1));
+            app.config.mcp_selected_server_index.min(server_len.saturating_sub(1));
     }
     tracing::info!(
         target: crate::logging::targets::APP_CONFIG,
@@ -1512,8 +1514,9 @@ fn apply_hook_observation_presentation(
         }
         if let (Some(tool_use_id), Some(_agent_id), Some(agent_type)) =
             (tool_use_id, agent_id, agent_type)
+            && let Some(attribution) = app.subagent_attribution_mut()
         {
-            app.subagent_attribution_mut().insert(tool_use_id.to_owned(), agent_type.to_owned());
+            attribution.insert(tool_use_id.to_owned(), agent_type.to_owned());
         }
     } else if let Some(session) = app.session_mut(&session_key) {
         if let Some(mode) = parsed_permission_mode {
@@ -2050,7 +2053,7 @@ mod tests {
             Some(key_a.as_str()),
             "A keeps its own session id",
         );
-        assert_eq!(app.cwd_raw(), "/proj-a", "A keeps its own cwd");
+        assert_eq!(app.cwd_raw().as_deref(), Some("/proj-a"), "A keeps its own cwd");
         assert!(!app.sessions.contains_key(&key_b), "B's outgoing bucket is gone");
         let bucket_b = app.sessions.get(&replacement).expect("B migrated onto the replacement key");
         assert_eq!(bucket_b.cwd_raw, "/proj-b");
@@ -2097,7 +2100,7 @@ mod tests {
         assert_eq!(app.active_session_key.as_ref(), Some(&replacement), "focus follows A");
         assert!(!app.sessions.contains_key(&key_a), "A's outgoing bucket is dropped");
         assert!(app.sessions.contains_key(&key_b), "background B is untouched");
-        assert_eq!(app.cwd_raw(), "/proj-a");
+        assert_eq!(app.cwd_raw().as_deref(), Some("/proj-a"));
     }
 
     #[test]
@@ -2154,6 +2157,7 @@ mod tests {
         // flagged as a cron envelope (drives the distinct `Cron` label).
         let cron_msg = app
             .messages()
+            .expect("active session")
             .iter()
             .find(|m| matches!(m.role, MessageRole::User) && m.is_cron_envelope)
             .expect("a cron-envelope user turn was appended");
@@ -2166,10 +2170,10 @@ mod tests {
 
         // The delivered-turn spinner opens: a fresh empty assistant
         // placeholder at the tail with the active-turn pointer bound to it.
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
         assert!(
-            matches!(app.messages()[tail].role, MessageRole::Assistant)
-                && app.messages()[tail].blocks.is_empty(),
+            matches!(app.messages().expect("active session")[tail].role, MessageRole::Assistant)
+                && app.messages().expect("active session")[tail].blocks.is_empty(),
             "a fresh empty assistant placeholder opens at the tail for the spinner",
         );
         assert_eq!(
@@ -2208,6 +2212,7 @@ mod tests {
 
         let slack_msg = app
             .messages()
+            .expect("active session")
             .iter()
             .find(|m| matches!(m.role, MessageRole::User) && m.is_slack_envelope)
             .expect("a Slack-envelope user turn was appended");
@@ -3553,9 +3558,10 @@ mod tests {
         let canonical = dir.path().canonicalize().expect("canonicalize");
         let mut app = App::test_default();
         // Seed stale file_index state to verify the restart wipes it.
-        app.file_index_mut().generation = 3;
-        app.file_index_mut().root = Some(std::path::PathBuf::from("/old/path"));
-        app.file_index_mut().entries.insert(
+        app.file_index_mut().expect("active session").generation = 3;
+        app.file_index_mut().expect("active session").root =
+            Some(std::path::PathBuf::from("/old/path"));
+        app.file_index_mut().expect("active session").entries.insert(
             "stale.rs".to_owned(),
             crate::app::file_index::FileCandidate {
                 rel_path: "stale.rs".to_owned(),
@@ -3564,7 +3570,7 @@ mod tests {
                 depth: 0,
             },
         );
-        app.file_index_mut().scan_finished = true;
+        app.file_index_mut().expect("active session").scan_finished = true;
 
         let pending_key = app.active_session_key.clone().expect("pending active key");
         let new_cwd = canonical.to_string_lossy().into_owned();
@@ -3584,16 +3590,22 @@ mod tests {
         );
 
         assert_eq!(
-            app.file_index_mut().root.as_deref(),
+            app.file_index_mut().expect("active session").root.as_deref(),
             Some(canonical.as_path()),
             "file_index root must follow the Connected cwd",
         );
         assert!(
-            app.file_index_mut().generation > 3,
+            app.file_index_mut().expect("active session").generation > 3,
             "file_index generation must advance on restart"
         );
-        assert!(app.file_index_mut().entries.is_empty(), "stale entries cleared on restart");
-        assert!(!app.file_index_mut().scan_finished, "scan_finished reset on restart");
+        assert!(
+            app.file_index_mut().expect("active session").entries.is_empty(),
+            "stale entries cleared on restart"
+        );
+        assert!(
+            !app.file_index_mut().expect("active session").scan_finished,
+            "scan_finished reset on restart"
+        );
     }
 
     /// `SessionUpdate::SessionReplaced` shares the
@@ -3607,9 +3619,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let canonical = dir.path().canonicalize().expect("canonicalize");
         let mut app = App::test_default();
-        app.file_index_mut().generation = 8;
-        app.file_index_mut().root = Some(std::path::PathBuf::from("/before"));
-        app.file_index_mut().entries.insert(
+        app.file_index_mut().expect("active session").generation = 8;
+        app.file_index_mut().expect("active session").root =
+            Some(std::path::PathBuf::from("/before"));
+        app.file_index_mut().expect("active session").entries.insert(
             "before.rs".to_owned(),
             crate::app::file_index::FileCandidate {
                 rel_path: "before.rs".to_owned(),
@@ -3618,7 +3631,7 @@ mod tests {
                 depth: 0,
             },
         );
-        app.file_index_mut().scan_finished = true;
+        app.file_index_mut().expect("active session").scan_finished = true;
 
         let pending_key = app.active_session_key.clone().expect("pending active key");
         let replaced_cwd = canonical.to_string_lossy().into_owned();
@@ -3639,16 +3652,22 @@ mod tests {
         );
 
         assert_eq!(
-            app.file_index_mut().root.as_deref(),
+            app.file_index_mut().expect("active session").root.as_deref(),
             Some(canonical.as_path()),
             "file_index root must follow the SessionReplaced cwd",
         );
         assert!(
-            app.file_index_mut().generation > 8,
+            app.file_index_mut().expect("active session").generation > 8,
             "file_index generation must advance on restart"
         );
-        assert!(app.file_index_mut().entries.is_empty(), "stale entries cleared on restart");
-        assert!(!app.file_index_mut().scan_finished, "scan_finished reset on restart");
+        assert!(
+            app.file_index_mut().expect("active session").entries.is_empty(),
+            "stale entries cleared on restart"
+        );
+        assert!(
+            !app.file_index_mut().expect("active session").scan_finished,
+            "scan_finished reset on restart"
+        );
     }
 
     /// A replaced session that is not the one on screen takes the
@@ -4590,7 +4609,7 @@ mod focus_seam_tests {
     fn click_spawn_keeps_focus_through_rename_and_connect() {
         let (mut app, stub, _worker) = app_with_worker_and_focused_stub();
         let real = SessionKey::from_session_id("real-uuid");
-        *app.resuming_session_id_mut() = Some("resume-1".to_owned());
+        *app.resuming_session_id_mut().expect("active session") = Some("resume-1".to_owned());
 
         apply_session_update_chat_appended(&mut app, "worker-uuid", user_frame("worker-uuid"));
         apply_session_update(

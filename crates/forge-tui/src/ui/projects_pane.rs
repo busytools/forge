@@ -1420,23 +1420,24 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // duration. ` - ` when the upstream probe hasn't reported a size
     // yet so the panel's row count stays constant.
     let bar_cells = bar_cells_for(width);
-    let ctx_pct = app.session_usage().context_usage_percent.map_or(0.0, f64::from);
-    let ctx_pct_str = format!("{:>3}%", app.session_usage().context_usage_percent.unwrap_or(0));
+    let session_usage = app.session_usage();
+    let ctx_pct_opt = session_usage.and_then(|u| u.context_usage_percent);
+    let ctx_pct = ctx_pct_opt.map_or(0.0, f64::from);
+    let ctx_pct_str = format!("{:>3}%", ctx_pct_opt.unwrap_or(0));
     let mut ctx_line = vec![Span::raw(" "), label_span("Ctx", 3), Span::raw("  ")];
     ctx_line.extend(bar_spans(ctx_pct, bar_cells));
     ctx_line.push(Span::raw("  "));
     ctx_line.push(Span::raw(ctx_pct_str));
     lines.push(Line::from(ctx_line));
 
-    let ctx_size_text = app
-        .session_usage()
-        .context_max_tokens
+    let ctx_size_text = session_usage
+        .and_then(|u| u.context_max_tokens)
         .map_or_else(|| "\u{2014}".to_owned(), format_token_count);
     let ctx_size_chars = ctx_size_text.chars().count();
     let ctx_size_budget = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
     // Shares this row's otherwise-blank left half so the panel's fixed
     // height holds.
-    let compactions = app.session_usage().compaction_count;
+    let compactions = session_usage.map_or(0, |u| u.compaction_count);
     let compaction_text = match compactions {
         0 => String::new(),
         1 => " 1 compaction".to_owned(),
@@ -1484,8 +1485,11 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // a stale 100% reading from rendering "7d cap" forever after
     // the window has actually reset - matching the resets_at-driven
     // classification used by the account picker.
-    let seven_day_at_cap =
-        app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()).is_some_and(|w| {
+    let usage = app.usage();
+    let seven_day_at_cap = usage
+        .and_then(|u| u.snapshot.as_ref())
+        .and_then(|s| s.seven_day.as_ref())
+        .is_some_and(|w| {
             w.utilization >= 99.0
                 && w.resets_at.is_some_and(|when| when > std::time::SystemTime::now())
         });
@@ -1495,10 +1499,8 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // one gets its periods, balance and cap in the same six rows,
     // because `ACCOUNT_PANEL_HEIGHT` is fixed and a differing row
     // count would move the project list above.
-    let openrouter_snapshot = app
-        .usage()
-        .snapshot
-        .as_ref()
+    let openrouter_snapshot = usage
+        .and_then(|u| u.snapshot.as_ref())
         .filter(|s| s.source == crate::app::UsageSourceKind::OpenRouterKey);
     let balance = openrouter_snapshot.and_then(|s| s.balance);
     let spend = openrouter_snapshot.map(|s| s.spend.as_ref());
@@ -1509,7 +1511,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         push_usage_window_lines(
             &mut lines,
             "5h",
-            app.usage().snapshot.as_ref().and_then(|s| s.five_hour.as_ref()),
+            usage.and_then(|u| u.snapshot.as_ref()).and_then(|s| s.five_hour.as_ref()),
             width,
             usage_error,
             seven_day_at_cap,
@@ -1528,7 +1530,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         push_usage_window_lines(
             &mut lines,
             "7d",
-            app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
+            usage.and_then(|u| u.snapshot.as_ref()).and_then(|s| s.seven_day.as_ref()),
             width,
             usage_error,
             false,
@@ -2239,7 +2241,7 @@ mod tests {
     #[test]
     fn the_ctx_size_row_carries_the_compaction_count() {
         let mut app = App::test_default();
-        app.session_usage_mut().compaction_count = 54;
+        app.session_usage_mut().expect("active session").compaction_count = 54;
         let rendered = build_account_panel_lines(&app, 32)
             .iter()
             .map(line_text)
@@ -2251,7 +2253,7 @@ mod tests {
     #[test]
     fn one_compaction_reads_singular() {
         let mut app = App::test_default();
-        app.session_usage_mut().compaction_count = 1;
+        app.session_usage_mut().expect("active session").compaction_count = 1;
         let rendered = build_account_panel_lines(&app, 32)
             .iter()
             .map(line_text)
@@ -2386,8 +2388,8 @@ mod tests {
     fn the_shared_ctx_size_row_stays_within_the_pane_width() {
         for width in [24_u16, 32] {
             let mut app = App::test_default();
-            app.session_usage_mut().compaction_count = 54;
-            app.session_usage_mut().context_max_tokens = Some(1_000_000);
+            app.session_usage_mut().expect("active session").compaction_count = 54;
+            app.session_usage_mut().expect("active session").context_max_tokens = Some(1_000_000);
             let row = build_account_panel_lines(&app, width)
                 .iter()
                 .map(line_text)
@@ -2479,7 +2481,7 @@ mod tests {
             ("unprobed", None),
         ] {
             let mut app = App::test_default();
-            app.usage_mut().snapshot = Some(spend_snapshot(spend, None));
+            app.usage_mut().expect("active session").snapshot = Some(spend_snapshot(spend, None));
             assert_eq!(
                 build_account_panel_lines(&app, 32).len(),
                 expected,
@@ -2505,7 +2507,8 @@ mod tests {
     #[test]
     fn the_cap_row_draws_a_bar_only_when_a_cap_exists() {
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(Some(capped(12.40, 20.0, 7.60)), None));
+        app.usage_mut().expect("active session").snapshot =
+            Some(spend_snapshot(Some(capped(12.40, 20.0, 7.60)), None));
         let row = cap_row(&app);
         assert!(row.contains('\u{2593}'), "a cap gives the bar something to fill: {row}");
         assert!(row.contains("62%"), "the bar reports usage against the cap: {row}");
@@ -2518,7 +2521,8 @@ mod tests {
         assert!(panel.contains("$7.60 left"), "what is left is the useful number: {panel}");
 
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(Some(uncapped()), None));
+        app.usage_mut().expect("active session").snapshot =
+            Some(spend_snapshot(Some(uncapped()), None));
         let row = cap_row(&app);
         assert!(row.contains("not set"), "an uncapped key says so: {row}");
         assert!(!row.contains('\u{2593}'), "no cap means no bar to fill: {row}");
@@ -2530,7 +2534,7 @@ mod tests {
     #[test]
     fn an_unprobed_spend_account_shows_dashes_not_zeroes() {
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(None, None));
+        app.usage_mut().expect("active session").snapshot = Some(spend_snapshot(None, None));
         let rendered = build_account_panel_lines(&app, 32)
             .iter()
             .map(line_text)
@@ -2557,7 +2561,8 @@ mod tests {
     #[test]
     fn the_balance_row_renders_the_remaining_pool() {
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(Some(uncapped()), Some(64.40)));
+        app.usage_mut().expect("active session").snapshot =
+            Some(spend_snapshot(Some(uncapped()), Some(64.40)));
         let rows: Vec<String> = build_account_panel_lines(&app, 32).iter().map(line_text).collect();
         let balance_idx =
             rows.iter().position(|l| l.starts_with(" balance")).expect("the balance row renders");
@@ -2582,7 +2587,8 @@ mod tests {
     #[test]
     fn an_absent_balance_renders_a_dash_not_a_zero() {
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(Some(uncapped()), None));
+        app.usage_mut().expect("active session").snapshot =
+            Some(spend_snapshot(Some(uncapped()), None));
         let row = build_account_panel_lines(&app, 32)
             .iter()
             .map(line_text)
@@ -2599,7 +2605,8 @@ mod tests {
     #[test]
     fn an_overdrawn_balance_renders_the_negative() {
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(Some(uncapped()), Some(-12.34)));
+        app.usage_mut().expect("active session").snapshot =
+            Some(spend_snapshot(Some(uncapped()), Some(-12.34)));
         let row = build_account_panel_lines(&app, 32)
             .iter()
             .map(line_text)
@@ -2617,7 +2624,8 @@ mod tests {
     #[test]
     fn the_spend_periods_are_spelled_out() {
         let mut app = App::test_default();
-        app.usage_mut().snapshot = Some(spend_snapshot(Some(capped(0.04, 20.0, 19.96)), None));
+        app.usage_mut().expect("active session").snapshot =
+            Some(spend_snapshot(Some(capped(0.04, 20.0, 19.96)), None));
         let rendered =
             build_account_panel_lines(&app, 32).iter().map(line_text).collect::<Vec<_>>();
 

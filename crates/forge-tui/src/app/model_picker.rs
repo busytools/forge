@@ -33,6 +33,7 @@ pub struct ModelPickerState {
 /// switch to directly (the same filter the argument autocomplete uses).
 fn rows(app: &App) -> Vec<model::AvailableModel> {
     app.available_models()
+        .unwrap_or_default()
         .iter()
         .filter(|row| !crate::app::slash::is_sdk_default_model_option(row))
         .cloned()
@@ -159,9 +160,8 @@ mod tests {
 
     fn app_with_rows(rows: Vec<model::AvailableModel>) -> App {
         let mut app = App::test_default();
-        app.try_active_bucket_mut()
-            .expect("test_default seeds an active bucket")
-            .available_models = rows;
+        app.active_bucket_mut().expect("test_default seeds an active bucket").available_models =
+            rows;
         // A connected shape: the commit path gates on the session id the
         // same way `/model <id>` does.
         app.set_session_id(Some(model::SessionId::new("picker-session")));
@@ -208,7 +208,8 @@ mod tests {
 
         assert!(handled);
         assert!(app.model_picker.is_none(), "no picker without models");
-        let last = app.messages().last().expect("the info line still shows");
+        let last =
+            app.messages().expect("active session").last().expect("the info line still shows");
         let text: String = last
             .blocks
             .iter()
@@ -362,7 +363,7 @@ mod tests {
             dispatched.is_empty(),
             "a stale snapshot must not reach the switched session, got: {dispatched:?}",
         );
-        let last = app.messages().last().expect("a visible refusal");
+        let last = app.messages().expect("active session").last().expect("a visible refusal");
         let text: String = last
             .blocks
             .iter()
@@ -405,7 +406,7 @@ mod tests {
         rows[0].description = Some("Use the default model".to_owned());
         let mut app = app_with_rows(rows);
 
-        app.input_mut().set_text("/model ");
+        app.input_mut().expect("active session").set_text("/model ");
         crate::app::slash::activate(&mut app);
         let autocomplete: Vec<String> = app
             .slash()

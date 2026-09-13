@@ -96,6 +96,7 @@ pub use error::WorkspaceError;
 pub use forge_dictate::Device;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
 pub use protocol::{Command, DictateOutcome, DispatchError, SessionUpdate, TurnErrorClass};
+pub use session_task::worker_label_for_spawn_key;
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use ui::{Osc9NotificationMode, RepaintCadence, SpinnerStyle};
 pub use views::{

@@ -136,12 +136,14 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 return;
             }
             if let Some(pt) = mouse_point_to_selection(app, mouse) {
-                *app.selection_mut() = Some(super::super::SelectionState {
-                    kind: pt.kind,
-                    start: pt.point,
-                    end: pt.point,
-                    dragging: true,
-                });
+                if let Some(selection) = app.selection_mut() {
+                    *selection = Some(super::super::SelectionState {
+                        kind: pt.kind,
+                        start: pt.point,
+                        end: pt.point,
+                        dragging: true,
+                    });
+                }
             } else {
                 clear_selection(app);
             }
@@ -151,13 +153,14 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 return;
             }
             let pt = mouse_point_to_selection(app, mouse);
-            if let (Some(sel), Some(pt)) = (app.selection_mut().as_mut(), pt) {
+            if let (Some(sel), Some(pt)) = (app.selection_mut().and_then(|slot| slot.as_mut()), pt)
+            {
                 sel.end = pt.point;
             }
         }
         MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
             app.scrollbar_drag = None;
-            if let Some(sel) = app.selection_mut().as_mut() {
+            if let Some(sel) = app.selection_mut().and_then(|slot| slot.as_mut()) {
                 sel.dragging = false;
             }
         }
@@ -200,7 +203,9 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             if app.selection().is_some() {
                 clear_selection(app);
             }
-            app.active_viewport_mut().scroll_up(MOUSE_SCROLL_LINES);
+            if let Some(viewport) = app.active_viewport_mut() {
+                viewport.scroll_up(MOUSE_SCROLL_LINES);
+            }
         }
         MouseEventKind::ScrollDown => {
             if mouse_in_inspector_body(app, mouse) {
@@ -220,7 +225,9 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             if app.selection().is_some() {
                 clear_selection(app);
             }
-            app.active_viewport_mut().scroll_down(MOUSE_SCROLL_LINES);
+            if let Some(viewport) = app.active_viewport_mut() {
+                viewport.scroll_down(MOUSE_SCROLL_LINES);
+            }
         }
         _ => {}
     }
@@ -271,7 +278,7 @@ fn mouse_in_inspector_body(app: &App, mouse: MouseEvent) -> bool {
 /// = increment (clamped at u16::MAX - the actual upper bound is
 /// re-clamped against the body's total line count on the next render).
 fn scroll_inspector(app: &mut App, lines: usize, up: bool) {
-    let Some(session) = app.try_active_bucket_mut() else { return };
+    let Some(session) = app.active_bucket_mut() else { return };
     let delta = u16::try_from(lines).unwrap_or(u16::MAX);
     session.inspector_scroll_offset = if up {
         session.inspector_scroll_offset.saturating_sub(delta)
@@ -351,23 +358,26 @@ fn scrollbar_metrics(app: &App) -> Option<ScrollbarMetrics> {
     }
 
     let viewport_height = area.height as usize;
-    let content_height = app.viewport().total_message_height();
+    let viewport = app.viewport();
+    let content_height = viewport.map_or(0, crate::app::ChatViewport::total_message_height);
     let target = crate::app::compute_scrollbar_geometry(
         content_height,
         viewport_height,
-        app.viewport().scroll_pos,
+        viewport.map_or(0.0, |vp| vp.scroll_pos),
     )?;
     Some(ScrollbarMetrics { viewport_height, target })
 }
 
 fn current_thumb_geometry(app: &App, metrics: ScrollbarMetrics) -> ScrollbarGeometry {
-    let mut thumb_size = app.viewport().scrollbar_thumb_size.round() as usize;
+    let mut thumb_size = app.viewport().map_or(0.0, |vp| vp.scrollbar_thumb_size).round() as usize;
     if thumb_size == 0 {
         thumb_size = metrics.target.thumb_size;
     }
     thumb_size = thumb_size.max(1).min(metrics.viewport_height);
     let max_top = metrics.viewport_height.saturating_sub(thumb_size);
-    let thumb_top = app.viewport().scrollbar_thumb_top.round().clamp(0.0, max_top as f32) as usize;
+    let thumb_top =
+        app.viewport().map_or(0.0, |vp| vp.scrollbar_thumb_top).round().clamp(0.0, max_top as f32)
+            as usize;
     ScrollbarGeometry {
         thumb_top,
         thumb_size,
@@ -390,12 +400,13 @@ fn set_scroll_from_thumb_top(
     }
     .min(max_scroll);
 
-    let vp = app.active_viewport_mut();
-    vp.auto_scroll = false;
-    vp.scroll_target = target;
-    // Keep content movement responsive while dragging the thumb.
-    vp.scroll_pos = target as f32;
-    vp.scroll_offset = target;
+    if let Some(vp) = app.active_viewport_mut() {
+        vp.auto_scroll = false;
+        vp.scroll_target = target;
+        // Keep content movement responsive while dragging the thumb.
+        vp.scroll_pos = target as f32;
+        vp.scroll_offset = target;
+    }
 }
 
 fn mouse_on_scrollbar_rail(app: &App, mouse: MouseEvent) -> bool {
@@ -459,12 +470,13 @@ fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelecti
 /// parse falls through to the standard tool card, and that card needs
 /// its normal click behaviour back.
 fn lifecycle_block_at(app: &App, msg_idx: usize, block_idx: usize) -> bool {
-    app.messages().get(msg_idx).and_then(|m| m.blocks.get(block_idx)).is_some_and(|block| {
-        match block {
+    app.messages()
+        .and_then(|messages| messages.get(msg_idx))
+        .and_then(|m| m.blocks.get(block_idx))
+        .is_some_and(|block| match block {
             MessageBlock::ToolCall(tc) => crate::ui::message::renders_as_lifecycle_block(tc),
             _ => false,
-        }
-    })
+        })
 }
 
 /// If the click landed on a tool-call's rendered area inside the chat
@@ -540,8 +552,10 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
         return false;
     }
     let global_default = app.tools_collapsed;
-    let Some(MessageBlock::ToolCall(tc)) =
-        app.active_messages_mut()[msg_idx].blocks.get_mut(block_idx)
+    let Some(MessageBlock::ToolCall(tc)) = app
+        .active_messages_mut()
+        .and_then(|messages| messages.get_mut(msg_idx))
+        .and_then(|msg| msg.blocks.get_mut(block_idx))
     else {
         return false;
     };
@@ -574,7 +588,7 @@ fn group_hit_match(
     msg_idx: usize,
     block_idx: usize,
 ) -> Option<crate::ui::message::grouping::GroupHit> {
-    let msg = app.messages().get(msg_idx)?;
+    let msg = app.messages()?.get(msg_idx)?;
     crate::ui::message::grouping::group_hit_at(&msg.blocks, block_idx)
 }
 
@@ -586,7 +600,11 @@ fn messaging_group_hit_match(
     msg_idx: usize,
     block_idx: usize,
 ) -> Option<crate::ui::message::grouping::MessagingGroupHit> {
-    crate::ui::message::grouping::messaging_group_hit_at(app.messages(), msg_idx, block_idx)
+    crate::ui::message::grouping::messaging_group_hit_at(
+        app.messages().unwrap_or_default(),
+        msg_idx,
+        block_idx,
+    )
 }
 
 /// True when the group renders as its summary tree, so every block but
@@ -618,22 +636,25 @@ fn trace_hit_test_miss(app: &App, mouse: MouseEvent, event_name: &'static str) {
         return;
     }
     let local_row = (mouse.row - chat_area.y) as usize;
-    let absolute_row = local_row.saturating_add(app.viewport().scroll_offset);
-    let msg_idx = app.viewport().find_first_visible(absolute_row);
-    let msg_start = app.viewport().cumulative_height_before(msg_idx);
+    let Some(viewport) = app.viewport() else {
+        return;
+    };
+    let absolute_row = local_row.saturating_add(viewport.scroll_offset);
+    let msg_idx = viewport.find_first_visible(absolute_row);
+    let msg_start = viewport.cumulative_height_before(msg_idx);
     tracing::debug!(
         target: crate::logging::targets::APP_INPUT,
         event_name,
         outcome = "no_hit",
         mouse_row = mouse.row,
         mouse_column = mouse.column,
-        scroll_offset = app.viewport().scroll_offset,
+        scroll_offset = viewport.scroll_offset,
         absolute_row,
         msg_idx,
-        msg_count = app.messages().len(),
+        msg_count = app.messages().map_or(0, <[crate::app::ChatMessage]>::len),
         msg_start,
         row_within_msg = absolute_row.saturating_sub(msg_start),
-        msg_height = app.viewport().message_height(msg_idx),
+        msg_height = viewport.message_height(msg_idx),
         "click did not resolve to a block",
     );
 }
@@ -674,23 +695,25 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
 
     // Absolute content-row of the click (== local row + scroll offset).
     let local_row = (mouse.row - chat_area.y) as usize;
-    let absolute_row = local_row.checked_add(app.viewport().scroll_offset)?;
+    let viewport = app.viewport()?;
+    let absolute_row = local_row.checked_add(viewport.scroll_offset)?;
 
     // Find the message that owns this row via the existing prefix-sum
     // index, then walk only that message's tool-call blocks. Each tool
     // stores its own y-offset within the message and its measured
     // height, so the inclusion test is just an interval check.
-    if app.messages().is_empty() {
+    let messages = app.messages()?;
+    if messages.is_empty() {
         return None;
     }
-    let msg_idx = app.viewport().find_first_visible(absolute_row);
-    if msg_idx >= app.messages().len() {
+    let msg_idx = viewport.find_first_visible(absolute_row);
+    if msg_idx >= messages.len() {
         return None;
     }
-    let msg_start = app.viewport().cumulative_height_before(msg_idx);
+    let msg_start = viewport.cumulative_height_before(msg_idx);
     let row_within_msg = absolute_row.checked_sub(msg_start)?;
     let width = chat_area.width;
-    for (block_idx, block) in app.messages()[msg_idx].blocks.iter().enumerate() {
+    for (block_idx, block) in messages[msg_idx].blocks.iter().enumerate() {
         let MessageBlock::ToolCall(tc) = block else {
             continue;
         };
@@ -743,8 +766,10 @@ fn try_toggle_peer_user_block_at_click(app: &mut App, mouse: MouseEvent) -> bool
         }
     }
     let global_default = app.tools_collapsed;
-    let Some(MessageBlock::Text(text_block)) =
-        app.active_messages_mut()[msg_idx].blocks.get_mut(block_idx)
+    let Some(MessageBlock::Text(text_block)) = app
+        .active_messages_mut()
+        .and_then(|messages| messages.get_mut(msg_idx))
+        .and_then(|msg| msg.blocks.get_mut(block_idx))
     else {
         return false;
     };
@@ -790,7 +815,7 @@ fn try_toggle_turn_info_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     let Some(msg_idx) = locate_turn_info_at_click(app, mouse) else {
         return false;
     };
-    if let Some(msg) = app.active_messages_mut().get_mut(msg_idx) {
+    if let Some(msg) = app.active_messages_mut().and_then(|messages| messages.get_mut(msg_idx)) {
         msg.turn_info.expanded = !msg.turn_info.expanded;
         msg.invalidate_render_cache();
     }
@@ -824,17 +849,19 @@ fn locate_turn_info_at_click(app: &App, mouse: MouseEvent) -> Option<usize> {
         return None;
     }
     let local_row = (mouse.row - chat_area.y) as usize;
-    let absolute_row = local_row.checked_add(app.viewport().scroll_offset)?;
-    if app.messages().is_empty() {
+    let viewport = app.viewport()?;
+    let absolute_row = local_row.checked_add(viewport.scroll_offset)?;
+    let messages = app.messages()?;
+    if messages.is_empty() {
         return None;
     }
-    let msg_idx = app.viewport().find_first_visible(absolute_row);
-    if msg_idx >= app.messages().len() {
+    let msg_idx = viewport.find_first_visible(absolute_row);
+    if msg_idx >= messages.len() {
         return None;
     }
-    let msg_start = app.viewport().cumulative_height_before(msg_idx);
+    let msg_start = viewport.cumulative_height_before(msg_idx);
     let row_within_msg = absolute_row.checked_sub(msg_start)?;
-    let msg = &app.messages()[msg_idx];
+    let msg = &messages[msg_idx];
     if msg.turn_info_height == 0 || msg.turn_info_width != chat_area.width {
         return None;
     }
@@ -861,17 +888,19 @@ fn locate_stop_hook_summary_at_click(app: &App, mouse: MouseEvent) -> Option<usi
         return None;
     }
     let local_row = (mouse.row - chat_area.y) as usize;
-    let absolute_row = local_row.checked_add(app.viewport().scroll_offset)?;
-    if app.messages().is_empty() {
+    let viewport = app.viewport()?;
+    let absolute_row = local_row.checked_add(viewport.scroll_offset)?;
+    let messages = app.messages()?;
+    if messages.is_empty() {
         return None;
     }
-    let msg_idx = app.viewport().find_first_visible(absolute_row);
-    if msg_idx >= app.messages().len() {
+    let msg_idx = viewport.find_first_visible(absolute_row);
+    if msg_idx >= messages.len() {
         return None;
     }
-    let msg_start = app.viewport().cumulative_height_before(msg_idx);
+    let msg_start = viewport.cumulative_height_before(msg_idx);
     let row_within_msg = absolute_row.checked_sub(msg_start)?;
-    let msg = &app.messages()[msg_idx];
+    let msg = &messages[msg_idx];
     if msg.stop_hook_summary_height == 0 {
         return None;
     }
@@ -898,18 +927,20 @@ fn locate_peer_user_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
         return None;
     }
     let local_row = (mouse.row - chat_area.y) as usize;
-    let absolute_row = local_row.checked_add(app.viewport().scroll_offset)?;
-    if app.messages().is_empty() {
+    let viewport = app.viewport()?;
+    let absolute_row = local_row.checked_add(viewport.scroll_offset)?;
+    let messages = app.messages()?;
+    if messages.is_empty() {
         return None;
     }
-    let msg_idx = app.viewport().find_first_visible(absolute_row);
-    if msg_idx >= app.messages().len() {
+    let msg_idx = viewport.find_first_visible(absolute_row);
+    if msg_idx >= messages.len() {
         return None;
     }
-    let msg_start = app.viewport().cumulative_height_before(msg_idx);
+    let msg_start = viewport.cumulative_height_before(msg_idx);
     let row_within_msg = absolute_row.checked_sub(msg_start)?;
     let width = chat_area.width;
-    for (block_idx, block) in app.messages()[msg_idx].blocks.iter().enumerate() {
+    for (block_idx, block) in messages[msg_idx].blocks.iter().enumerate() {
         let MessageBlock::Text(text_block) = block else {
             continue;
         };
@@ -1454,7 +1485,7 @@ mod tests {
                 // Re-arm per column so each one is an independent probe
                 // rather than a running total that bottoms out at 0.
                 let before = 30;
-                let vp = app.active_viewport_mut();
+                let vp = app.active_viewport_mut().expect("active session");
                 vp.scroll_target = before;
                 vp.scroll_offset = before;
                 vp.scroll_pos = before as f32;
@@ -1468,7 +1499,7 @@ mod tests {
                     },
                 );
                 assert_eq!(
-                    app.viewport().scroll_target,
+                    app.viewport().expect("active session").scroll_target,
                     before - MOUSE_SCROLL_LINES,
                     "{label}: wheel at column {column} of the chat did not scroll it",
                 );
@@ -1550,10 +1581,10 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc))],
         ));
-        let _ = app.active_viewport_mut().on_frame(80, 20);
-        app.active_viewport_mut().set_message_height(0, 1);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 20);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 1);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
         GroupId::from_leader_id(tool_id)
     }
@@ -1675,7 +1706,7 @@ mod tests {
         let mut app = App::test_default();
         app.rendered_input_area = Rect { x: 0, y: 21, width: 80, height: 3 };
         app.pointer_shape = PointerShape::Hand;
-        *app.selection_mut() = Some(crate::app::SelectionState {
+        *app.selection_mut().expect("active session") = Some(crate::app::SelectionState {
             kind: SelectionKind::Input,
             start: SelectionPoint { row: 0, col: 0 },
             end: SelectionPoint { row: 0, col: 1 },
@@ -2050,7 +2081,7 @@ mod tests {
         let mut app = App::test_default();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
-        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers = vec![forge_primitives::McpServerStatus {
             name: "context7".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             ..Default::default()
@@ -2198,13 +2229,13 @@ mod tests {
         };
         app.push_message_tracked(message);
 
-        let _ = app.active_viewport_mut().on_frame(80, 20);
-        app.active_viewport_mut().set_message_height(0, 4);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 20);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 4);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
 
-        partition_blocks_into_render_units(&app.messages()[0].blocks)
+        partition_blocks_into_render_units(&app.messages().expect("active session")[0].blocks)
             .iter()
             .find_map(|unit| match unit {
                 RenderUnit::MessagingGroup { group_leader_id, .. } => Some(group_leader_id.clone()),
@@ -2289,10 +2320,10 @@ mod tests {
                 MessageBlock::ToolCall(Box::new(read_tool("tu-b", 1))),
             ],
         ));
-        let _ = app.active_viewport_mut().on_frame(80, 20);
-        app.active_viewport_mut().set_message_height(0, 2);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 20);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 2);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
 
         let mouse = MouseEvent {
@@ -2303,7 +2334,10 @@ mod tests {
         };
         let consumed = try_toggle_tool_call_at_click(&mut app, mouse);
 
-        let MessageBlock::ToolCall(hidden) = &app.messages()[0].blocks[1] else { unreachable!() };
+        let MessageBlock::ToolCall(hidden) = &app.messages().expect("active session")[0].blocks[1]
+        else {
+            unreachable!()
+        };
         assert_eq!(
             hidden.collapsed_override, None,
             "a tool behind the group summary must not have its body toggled",
@@ -2357,10 +2391,10 @@ mod tests {
                 MessageBlock::ToolCall(Box::new(peer_tool("toolu_b", "debugger", 1, 1))),
             ],
         ));
-        let _ = app.active_viewport_mut().on_frame(80, 20);
-        app.active_viewport_mut().set_message_height(0, 2);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 20);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 2);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
 
         let mouse = MouseEvent {
@@ -2371,7 +2405,10 @@ mod tests {
         };
         let consumed = try_toggle_tool_call_at_click(&mut app, mouse);
 
-        let MessageBlock::ToolCall(hidden) = &app.messages()[0].blocks[1] else { unreachable!() };
+        let MessageBlock::ToolCall(hidden) = &app.messages().expect("active session")[0].blocks[1]
+        else {
+            unreachable!()
+        };
         assert_eq!(
             hidden.collapsed_override, None,
             "a block behind the summary must not have its body toggled",
@@ -2535,10 +2572,10 @@ mod tests {
                 MessageBlock::ToolCall(Box::new(read_tool("tu-b", 0))),
             ],
         ));
-        let _ = app.active_viewport_mut().on_frame(80, 20);
-        app.active_viewport_mut().set_message_height(0, 1);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 20);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 1);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
 
         let leader_id = GroupId::from_leader_id("tu-a");
@@ -2650,10 +2687,10 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc))],
         ));
-        let _ = app.active_viewport_mut().on_frame(80, 20);
-        app.active_viewport_mut().set_message_height(0, 1);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 20);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 1);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
 
         let leader_id = {
@@ -2862,7 +2899,7 @@ mod tests {
         );
 
         app.switch_active_session(prior.clone());
-        app.try_active_bucket_mut().expect("active bucket").available_models =
+        app.active_bucket_mut().expect("active bucket").available_models =
             vec![crate::agent::model::AvailableModel::new("a", "A")];
         assert!(crate::app::model_picker::open(&mut app), "the picker opens on the active session");
 

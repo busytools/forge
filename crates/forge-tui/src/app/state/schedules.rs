@@ -10,10 +10,12 @@ impl super::App {
         self.active_session().map_or(&[], |s| s.schedules.as_slice())
     }
 
-    /// Mutable accessor for the active session's SCHEDULES list.
-    /// Auto-creates the pre-Connect bucket if missing.
-    pub(crate) fn schedules_mut(&mut self) -> &mut Vec<crate::app::state::types::ScheduleEntry> {
-        &mut self.active_bucket_mut().schedules
+    /// Mutable accessor for the active session's SCHEDULES list, or
+    /// `None` when no session is focused.
+    pub(crate) fn schedules_mut(
+        &mut self,
+    ) -> Option<&mut Vec<crate::app::state::types::ScheduleEntry>> {
+        self.active_bucket_mut().map(|bucket| &mut bucket.schedules)
     }
 
     /// Insert/replace the session's single pending wakeup. The /loop
@@ -41,7 +43,9 @@ impl super::App {
             return;
         }
         let now = std::time::SystemTime::now();
-        let schedules = self.schedules_mut();
+        let Some(schedules) = self.schedules_mut() else {
+            return;
+        };
         schedules.retain(|e| !matches!(e.kind, crate::app::state::types::ScheduleKind::Wakeup));
         schedules.push(crate::app::state::types::ScheduleEntry {
             key: tool_use_id.to_owned(),
@@ -97,7 +101,9 @@ impl super::App {
             })
             .flatten();
         let label = crate::ui::inspector_pane::first_line(prompt);
-        let schedules = self.schedules_mut();
+        let Some(schedules) = self.schedules_mut() else {
+            return;
+        };
         if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id) {
             e.schedule = schedule;
             e.kind = crate::app::state::types::ScheduleKind::Cron { recurring };
@@ -121,7 +127,10 @@ impl super::App {
     /// matching entry so a later `CronDelete` can find it. No-op when
     /// the entry has already been stamped or doesn't exist.
     pub fn stamp_cron_id_from_result(&mut self, tool_use_id: &str, job_id: &str) {
-        if let Some(e) = self.schedules_mut().iter_mut().find(|e| e.key == tool_use_id)
+        let Some(schedules) = self.schedules_mut() else {
+            return;
+        };
+        if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id)
             && e.cron_id.is_none()
         {
             e.cron_id = Some(job_id.to_owned());
@@ -131,7 +140,9 @@ impl super::App {
     /// Remove a cron entry whose stamped job id matches `job_id`
     /// (`CronDelete`). No-op when none matches.
     pub fn remove_cron_by_id(&mut self, job_id: &str) {
-        self.schedules_mut().retain(|e| e.cron_id.as_deref() != Some(job_id));
+        if let Some(schedules) = self.schedules_mut() {
+            schedules.retain(|e| e.cron_id.as_deref() != Some(job_id));
+        }
     }
 
     /// Drop schedule entries that are no longer valid at `now`
@@ -141,7 +152,9 @@ impl super::App {
         if self.active_session().is_none_or(|s| s.schedules.is_empty()) {
             return;
         }
-        self.schedules_mut().retain(|e| !e.is_expired(now));
+        if let Some(schedules) = self.schedules_mut() {
+            schedules.retain(|e| !e.is_expired(now));
+        }
     }
 
     /// Recompute the active session's own durable forge-cron snapshot

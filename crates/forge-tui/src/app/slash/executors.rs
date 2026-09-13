@@ -387,11 +387,9 @@ pub(crate) fn switch_model(
     session_key: forge_workspace::SessionKey,
     model_name: &str,
 ) {
-    if !app.available_models().is_empty()
-        && !app
-            .available_models()
-            .iter()
-            .any(|candidate| candidate.id.eq_ignore_ascii_case(model_name))
+    let models = app.available_models().unwrap_or_default();
+    if !models.is_empty()
+        && !models.iter().any(|candidate| candidate.id.eq_ignore_ascii_case(model_name))
     {
         push_system_message(app, format!("Unknown model: {model_name}"));
         return;

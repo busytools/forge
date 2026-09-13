@@ -23,7 +23,7 @@ impl super::App {
     }
 
     /// Mutable accessor for the active session bucket.
-    pub fn try_active_bucket_mut(&mut self) -> Option<&mut crate::app::session::UiSession> {
+    pub fn active_bucket_mut(&mut self) -> Option<&mut crate::app::session::UiSession> {
         let key = self.active_session_key.clone()?;
         self.sessions.get_mut(&key)
     }
@@ -158,7 +158,7 @@ impl super::App {
         crate::app::tab_title::update_tab_title(
             self.shows_activity(),
             self.spinner_frame,
-            self.cwd(),
+            self.cwd().unwrap_or(""),
         );
         // Ensure the file index for `@`-mention autocomplete is
         // started for the incoming bucket. Each bucket owns its own
@@ -195,35 +195,6 @@ impl super::App {
         self.sync_welcome_snapshot();
         self.force_redraw = true;
         self.needs_redraw = true;
-    }
-
-    /// Internal helper: yield a `&mut Session` for the active bucket,
-    /// auto-creating a pre-Connect synthetic bucket if no active
-    /// session exists. Used by the `_mut` accessors so call sites
-    /// can stay infallible.
-    ///
-    /// Hot path: chat render and ~50 other `_mut` accessors hit this
-    /// per frame. Uses the `HashMap::entry` API to avoid the extra
-    /// `SessionKey` clone an `if !contains { insert }` shape would
-    /// need.
-    pub(super) fn active_bucket_mut(&mut self) -> &mut crate::app::session::UiSession {
-        use std::collections::hash_map::Entry;
-        // The active key is normally already set; the synthetic
-        // fallback is the cold first-touch path.
-        let key = if let Some(key) = self.active_session_key.clone() {
-            key
-        } else {
-            let synthetic = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
-            self.active_session_key = Some(synthetic.clone());
-            synthetic
-        };
-        match self.sessions.entry(key) {
-            Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(e) => {
-                let new = crate::app::session::UiSession::new(e.key().clone());
-                e.insert(new)
-            }
-        }
     }
 
     /// Active session's claude session id, or `None` in the
@@ -351,7 +322,7 @@ impl super::App {
             // (failed tool calls, system messages - see doc
             // comment above). Also clear the workspace's
             // DomainSession session_id so readers observe `None`.
-            if let Some(s) = self.try_active_bucket_mut() {
+            if let Some(s) = self.active_bucket_mut() {
                 s.key = None;
                 s.session_id = None;
             }
@@ -373,9 +344,12 @@ impl super::App {
         self.set_observed_effort(None);
         self.set_pending_mode_rollback(None);
         self.set_pending_model_rollback(None);
-        *self.session_usage_mut() = SessionUsageState::default();
-        let bucket = self.active_bucket_mut();
-        bucket.dictate_overrides = forge_workspace::DictateOverrides::default();
+        if let Some(session_usage) = self.session_usage_mut() {
+            *session_usage = SessionUsageState::default();
+        }
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.dictate_overrides = forge_workspace::DictateOverrides::default();
+        }
     }
 
     /// The active tab's forge.toml project name, backing the Inspector
@@ -512,7 +486,9 @@ impl super::App {
 
     /// Set the active session's files-accessed counter.
     pub fn set_files_accessed(&mut self, value: usize) {
-        self.active_bucket_mut().files_accessed = value;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.files_accessed = value;
+        }
     }
 
     /// Retain the classification of the active session's latest
@@ -522,13 +498,16 @@ impl super::App {
         &mut self,
         retry: Option<(forge_primitives::ApiRetryError, Option<u16>)>,
     ) {
-        self.active_bucket_mut().last_api_retry = retry;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.last_api_retry = retry;
+        }
     }
 
     /// Increment the active session's files-accessed counter by one.
     pub fn increment_files_accessed(&mut self) {
-        let s = self.active_bucket_mut();
-        s.files_accessed = s.files_accessed.saturating_add(1);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.files_accessed = bucket.files_accessed.saturating_add(1);
+        }
     }
 }
 
@@ -1039,7 +1018,7 @@ mod tests {
         assert_eq!(app.active_session_key.as_ref(), Some(&key));
         assert!(app.active_session().is_some());
         assert_eq!(app.active_session().and_then(|s| s.key.as_ref()), Some(&key));
-        assert!(app.try_active_bucket_mut().is_some());
+        assert!(app.active_bucket_mut().is_some());
         assert!(app.session_mut(&key).is_some());
     }
 
@@ -1218,13 +1197,13 @@ mod tests {
             current_mode_name: "Plan".to_owned(),
             available_modes: Vec::new(),
         }));
-        let usage = app.session_usage_mut();
+        let usage = app.session_usage_mut().expect("active session");
         usage.context_usage_percent = Some(62);
         usage.context_usage_in_flight = true;
         usage.context_usage_refresh_pending = Some(crate::app::state::types::RefreshPending::Auto);
         usage.last_compaction_pre_tokens = Some(123_456);
         {
-            let bucket = app.active_bucket_mut();
+            let bucket = app.active_bucket_mut().expect("active session");
             bucket.dictate_overrides.styling = Some(forge_workspace::Styling::Formal);
         }
         app.dictate_device_pin = Some(forge_workspace::DictateDeviceChoice::System);
@@ -1234,8 +1213,11 @@ mod tests {
         assert!(app.session_id().is_none());
         assert!(app.current_model().is_none());
         assert!(app.mode().is_none());
-        assert_eq!(*app.session_usage(), crate::app::state::types::SessionUsageState::default());
-        let bucket = app.active_bucket_mut();
+        assert_eq!(
+            *app.session_usage().expect("active session"),
+            crate::app::state::types::SessionUsageState::default()
+        );
+        let bucket = app.active_bucket_mut().expect("active session");
         assert_eq!(
             bucket.dictate_overrides,
             forge_workspace::DictateOverrides::default(),

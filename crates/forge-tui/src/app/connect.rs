@@ -557,7 +557,7 @@ mod tests {
             .await;
 
         assert!(
-            app.cwd_raw().is_empty(),
+            app.cwd_raw().is_none_or(|cwd| cwd.is_empty()),
             "launchpad-mode pre-connect should leave cwd_raw empty, got {:?}",
             app.cwd_raw(),
         );
@@ -586,7 +586,7 @@ mod tests {
 
         assert_eq!(
             app.cwd_raw(),
-            project_dir.path().to_string_lossy(),
+            Some(project_dir.path().to_string_lossy().into_owned()),
             "chat-direct pre-connect should carry the project's path from forge.toml",
         );
         assert!(app.workspace.is_some(), "workspace should be wired");

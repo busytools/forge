@@ -728,7 +728,7 @@ mod tests {
         let mut app = App::test_default();
         assert!(crate::app::slash::try_handle_submit(&mut app, "/dictate extra"));
         assert!(app.dictate_picker.is_none(), "arguments are not part of the command");
-        let last = app.messages().last().expect("a usage notice");
+        let last = app.messages().expect("active session").last().expect("a usage notice");
         assert!(matches!(last.role, crate::app::MessageRole::System(_)));
     }
 

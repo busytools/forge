@@ -11,7 +11,9 @@ pub(crate) fn request_refresh_if_needed(app: &mut App) {
     let Some(workspace) = app.workspace.as_ref() else { return };
     let Some(name) = app.active_account_display_name() else { return };
     let snapshot = workspace.usage_for(&name);
-    let slot = app.usage_mut();
+    let Some(slot) = app.usage_mut() else {
+        return;
+    };
     let changed = !same_snapshot(slot.snapshot.as_ref(), snapshot.as_ref());
     slot.snapshot = snapshot;
     slot.in_flight = false;
@@ -52,10 +54,11 @@ fn window_eq(a: Option<&UsageWindow>, b: Option<&UsageWindow>) -> bool {
 }
 
 pub(crate) fn reset_for_session_change(app: &mut App) {
-    let slot = app.usage_mut();
-    slot.snapshot = None;
-    slot.in_flight = false;
-    slot.last_error = None;
+    if let Some(slot) = app.usage_mut() {
+        slot.snapshot = None;
+        slot.in_flight = false;
+        slot.last_error = None;
+    }
 }
 
 pub(crate) fn format_window_reset(window: &UsageWindow) -> Option<String> {

@@ -88,8 +88,10 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::RenderToolCall) {
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");
-    if should_jump_on_large_write(&tool_info) {
-        app.active_viewport_mut().engage_auto_scroll();
+    if should_jump_on_large_write(&tool_info)
+        && let Some(viewport) = app.active_viewport_mut()
+    {
+        viewport.engage_auto_scroll();
     }
     // The root is the MAIN agent invoking Task, so it owns its turn like
     // any other call; only a child is another agent's work.
@@ -224,7 +226,7 @@ fn build_tool_info_from_tool_call(
     let monitor_status = app.monitor_status_for_tool_use(&tc.tool_call_id);
     let mut tool_info = ToolCallInfo {
         id: tc.tool_call_id,
-        title: shorten_tool_title(&tc.title, &app.cwd_raw()),
+        title: shorten_tool_title(&tc.title, app.cwd_raw().as_deref().unwrap_or("")),
         sdk_tool_name,
         raw_input: tc.raw_input,
         raw_input_bytes: 0,
@@ -280,7 +282,8 @@ pub(super) fn upsert_tool_call_into_assistant_message(
     // placement independent of whatever sits at the tail.
     if let Some(parent) = subagent_parent
         && let Some((root_msg_idx, _)) = app.lookup_tool_call(parent)
-        && let Some(owner) = app.active_messages_mut().get_mut(root_msg_idx)
+        && let Some(owner) =
+            app.active_messages_mut().and_then(|messages| messages.get_mut(root_msg_idx))
     {
         let block_idx = owner.blocks.len();
         let tc_id = tool_info.id.clone();
@@ -296,10 +299,14 @@ pub(super) fn upsert_tool_call_into_assistant_message(
     // the last assistant rather than the tail - after one push a last
     // assistant always exists, so this stops pushing.
     if subagent_parent.is_some() {
-        let target = app.messages().iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
+        let target = app.messages().and_then(|messages| {
+            messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant))
+        });
         let tc_id = tool_info.id.clone();
         let (msg_idx, block_idx) = if let Some(msg_idx) = target {
-            let Some(owner) = app.active_messages_mut().get_mut(msg_idx) else {
+            let Some(owner) =
+                app.active_messages_mut().and_then(|messages| messages.get_mut(msg_idx))
+            else {
                 return;
             };
             let block_idx = owner.blocks.len();
@@ -307,7 +314,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(
             app.sync_after_message_tail_changed(msg_idx);
             (msg_idx, block_idx)
         } else {
-            let new_idx = app.messages().len();
+            let new_idx = app.messages().map_or(0, <[ChatMessage]>::len);
             app.push_message_tracked(ChatMessage::new(
                 MessageRole::Assistant,
                 vec![MessageBlock::ToolCall(Box::new(tool_info))],
@@ -319,7 +326,8 @@ pub(super) fn upsert_tool_call_into_assistant_message(
     }
 
     if let Some(msg_idx) = app.active_turn_assistant_idx()
-        && let Some(owner) = app.active_messages_mut().get_mut(msg_idx)
+        && let Some(owner) =
+            app.active_messages_mut().and_then(|messages| messages.get_mut(msg_idx))
     {
         let block_idx = owner.blocks.len();
         let tc_id = tool_info.id.clone();
@@ -333,15 +341,15 @@ pub(super) fn upsert_tool_call_into_assistant_message(
     // on a message whose turn already ended; "unsettled" alone is not
     // that test, since a resumed or failed turn leaves a tail that
     // never Resulted.
-    let append_to_tail = app.messages().last().is_some_and(|m| {
+    let append_to_tail = app.messages().and_then(|messages| messages.last()).is_some_and(|m| {
         matches!(m.role, MessageRole::Assistant)
             && !m.turn_info.is_settled()
             && !m.turn_info.is_empty()
     });
 
     if append_to_tail {
-        let msg_idx = app.messages().len().saturating_sub(1);
-        let Some(last) = app.active_messages_mut().last_mut() else {
+        let msg_idx = app.messages().map_or(0, <[ChatMessage]>::len).saturating_sub(1);
+        let Some(last) = app.active_messages_mut().and_then(|messages| messages.last_mut()) else {
             return;
         };
         let block_idx = last.blocks.len();
@@ -354,7 +362,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(
     }
 
     let tc_id = tool_info.id.clone();
-    let new_idx = app.messages().len();
+    let new_idx = app.messages().map_or(0, <[ChatMessage]>::len);
     app.push_message_tracked(ChatMessage::new(
         MessageRole::Assistant,
         vec![MessageBlock::ToolCall(Box::new(tool_info))],
@@ -371,8 +379,10 @@ pub(super) fn raw_input_carries_content(v: &serde_json::Value) -> bool {
 
 fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &ToolCallInfo) {
     let mut layout_dirty = false;
-    if let Some(MessageBlock::ToolCall(existing)) =
-        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    if let Some(MessageBlock::ToolCall(existing)) = app
+        .active_messages_mut()
+        .and_then(|messages| messages.get_mut(mi))
+        .and_then(|m| m.blocks.get_mut(bi))
     {
         let existing = existing.as_mut();
         let mut changed = false;
@@ -512,7 +522,7 @@ pub(super) fn should_jump_on_large_write(tc: &ToolCallInfo) -> bool {
 /// Check if any tool call in the current assistant message is still in-progress.
 pub(super) fn has_in_progress_tool_calls(app: &App) -> bool {
     if let Some(owner_idx) = app.active_turn_assistant_idx()
-        && let Some(owner) = app.messages().get(owner_idx)
+        && let Some(owner) = app.messages().and_then(|messages| messages.get(owner_idx))
     {
         return owner.blocks.iter().any(|block| {
             matches!(
@@ -711,7 +721,8 @@ mod tests {
         upsert_tool_call_into_assistant_message(&mut app, subagent_root(id, None), None);
 
         let (mi, bi) = app.lookup_tool_call(id).expect("root stays indexed");
-        let MessageBlock::ToolCall(root) = &app.messages()[mi].blocks[bi] else {
+        let MessageBlock::ToolCall(root) = &app.messages().expect("active session")[mi].blocks[bi]
+        else {
             panic!("expected ToolCall block");
         };
         assert_eq!(
@@ -751,7 +762,8 @@ mod tests {
         );
 
         let (mi, bi) = app.lookup_tool_call(id).expect("root stays indexed");
-        let MessageBlock::ToolCall(root) = &app.messages()[mi].blocks[bi] else {
+        let MessageBlock::ToolCall(root) = &app.messages().expect("active session")[mi].blocks[bi]
+        else {
             panic!("expected ToolCall block");
         };
         assert_eq!(
@@ -870,24 +882,24 @@ mod tests {
     #[test]
     fn main_agent_call_pushes_fresh_for_resumed_completed_tail() {
         let mut app = App::test_default();
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("q1"))],
         ));
-        app.active_messages_mut().push(assistant_tail("prior answer"));
+        app.active_messages_mut().expect("active session").push(assistant_tail("prior answer"));
         app.clear_active_turn_assistant();
         app.status = AppStatus::Running;
-        let completed_idx = app.messages().len() - 1;
+        let completed_idx = app.messages().expect("active session").len() - 1;
 
         upsert_tool_call_into_assistant_message(&mut app, subagent_root("toolu_next", None), None);
 
         assert_eq!(
-            app.messages().len(),
+            app.messages().expect("active session").len(),
             completed_idx + 2,
             "a fresh bubble opened past the historical one",
         );
         assert_eq!(
-            app.messages()[completed_idx].blocks.len(),
+            app.messages().expect("active session")[completed_idx].blocks.len(),
             1,
             "the historical bubble must not receive the next turn's tool call",
         );
@@ -904,16 +916,25 @@ mod tests {
     #[test]
     fn main_agent_call_still_appends_to_a_live_turn_tail() {
         let mut app = App::test_default();
-        app.active_messages_mut().push(assistant_tail("streaming"));
-        app.active_messages_mut()[0].turn_info.started_at = Some(std::time::Instant::now());
+        app.active_messages_mut().expect("active session").push(assistant_tail("streaming"));
+        app.active_messages_mut().expect("active session")[0].turn_info.started_at =
+            Some(std::time::Instant::now());
         app.clear_active_turn_assistant();
         app.status = AppStatus::Running;
-        let tail_idx = app.messages().len() - 1;
+        let tail_idx = app.messages().expect("active session").len() - 1;
 
         upsert_tool_call_into_assistant_message(&mut app, subagent_root("toolu_live", None), None);
 
-        assert_eq!(app.messages().len(), tail_idx + 1, "no new bubble for a live tail");
-        assert_eq!(app.messages()[tail_idx].blocks.len(), 2, "the call lands on the live tail");
+        assert_eq!(
+            app.messages().expect("active session").len(),
+            tail_idx + 1,
+            "no new bubble for a live tail"
+        );
+        assert_eq!(
+            app.messages().expect("active session")[tail_idx].blocks.len(),
+            2,
+            "the call lands on the live tail"
+        );
         assert_eq!(
             app.active_turn_assistant_idx(),
             Some(tail_idx),

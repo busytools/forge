@@ -150,14 +150,18 @@ pub(super) fn detect_slash_at_cursor(
 }
 
 fn advertised_commands(app: &App) -> Vec<String> {
-    app.available_commands().iter().map(|cmd| normalize_slash_name(&cmd.name)).collect()
+    app.available_commands()
+        .unwrap_or_default()
+        .iter()
+        .map(|cmd| normalize_slash_name(&cmd.name))
+        .collect()
 }
 
 pub(super) fn find_advertised_command<'a>(
     app: &'a App,
     command_name: &str,
 ) -> Option<&'a crate::agent::model::AvailableCommand> {
-    app.available_commands().iter().find(|cmd| normalize_slash_name(&cmd.name) == command_name)
+    app.available_commands()?.iter().find(|cmd| normalize_slash_name(&cmd.name) == command_name)
 }
 
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
@@ -221,7 +225,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     // Claude group: commands advertised by the upstream claude CLI that
     // forge doesn't have its own handler for - forwarded as-is.
     let mut claude: BTreeMap<String, String> = BTreeMap::new();
-    for cmd in app.available_commands() {
+    for cmd in app.available_commands().unwrap_or_default() {
         let name = normalize_slash_name(&cmd.name);
         if forge.contains_key(&name) {
             continue;
@@ -372,6 +376,7 @@ pub(super) fn argument_candidates(
     match command_name {
         "/resume" => app
             .recent_sessions()
+            .unwrap_or_default()
             .iter()
             .map(|session| {
                 let summary = session.summary.trim();
@@ -399,6 +404,7 @@ pub(super) fn argument_candidates(
             .unwrap_or_default(),
         "/model" => app
             .available_models()
+            .unwrap_or_default()
             .iter()
             .filter(|model| !is_sdk_default_model_option(model))
             .map(|model| SlashCandidate {
@@ -430,11 +436,8 @@ pub(super) fn argument_candidates(
 }
 
 pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
-    let detection = detect_slash_at_cursor(
-        app.input().lines(),
-        app.input().cursor_row(),
-        app.input().cursor_col(),
-    )?;
+    let input = app.input()?;
+    let detection = detect_slash_at_cursor(input.lines(), input.cursor_row(), input.cursor_col())?;
 
     let candidates = match &detection.context {
         SlashContext::CommandName => {

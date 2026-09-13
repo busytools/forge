@@ -10,8 +10,8 @@ use crate::app::{
 
 fn busy_view_test_app() -> App {
     let mut app = App::test_default();
-    app.input_mut().set_text("draft");
-    *app.selection_mut() = Some(SelectionState {
+    app.input_mut().expect("active session").set_text("draft");
+    *app.selection_mut().expect("active session") = Some(SelectionState {
         kind: SelectionKind::Chat,
         start: SelectionPoint { row: 0, col: 0 },
         end: SelectionPoint { row: 0, col: 4 },
@@ -19,21 +19,22 @@ fn busy_view_test_app() -> App {
     });
     app.scrollbar_drag =
         Some(ScrollbarDragState { thumb_grab_offset: 1, track_space: 4, max_scroll: 12 });
-    *app.pending_submit_mut() = Some(app.input().snapshot());
-    *app.pending_paste_text_mut() = "blocked".to_owned();
-    *app.pending_paste_session_mut() = Some(PasteSessionState {
+    *app.pending_submit_mut().expect("active session") =
+        Some(app.input().expect("active session").snapshot());
+    *app.pending_paste_text_mut().expect("active session") = "blocked".to_owned();
+    *app.pending_paste_session_mut().expect("active session") = Some(PasteSessionState {
         id: 1,
         start: SelectionPoint { row: 0, col: 0 },
         placeholder_index: Some(0),
     });
-    *app.active_paste_session_mut() = Some(PasteSessionState {
+    *app.active_paste_session_mut().expect("active session") = Some(PasteSessionState {
         id: 2,
         start: SelectionPoint { row: 0, col: 0 },
         placeholder_index: Some(1),
     });
-    *app.mention_mut() =
+    *app.mention_mut().expect("active session") =
         Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
-    *app.slash_mut() = Some(SlashState {
+    *app.slash_mut().expect("active session") = Some(SlashState {
         trigger_row: 0,
         trigger_col: 0,
         query: "/co".to_owned(),
@@ -41,14 +42,14 @@ fn busy_view_test_app() -> App {
         candidates: vec![],
         dialog: DialogState::default(),
     });
-    *app.subagent_mut() = Some(SubagentState {
+    *app.subagent_mut().expect("active session") = Some(SubagentState {
         trigger_row: 0,
         trigger_col: 0,
         query: "plan".to_owned(),
         candidates: vec![],
         dialog: DialogState::default(),
     });
-    *app.todos_mut() = vec![TodoItem {
+    *app.todos_mut().expect("active session") = vec![TodoItem {
         id: "1".to_owned(),
         content: "todo".to_owned(),
         status: TodoStatus::Pending,
@@ -64,13 +65,13 @@ fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
     set_active_view(&mut app, ActiveView::Extensions);
 
     assert_eq!(app.active_view, ActiveView::Extensions);
-    assert_eq!(app.input().text(), "draft");
+    assert_eq!(app.input().expect("active session").text(), "draft");
     assert!(app.selection().is_none());
     assert!(app.scrollbar_drag.is_none());
     assert!(app.mention().is_none());
     assert!(app.slash().is_none());
     assert!(app.subagent().is_none());
-    assert!(app.pending_paste_text().is_empty());
+    assert!(app.pending_paste_text().is_none_or(str::is_empty));
     assert!(app.pending_paste_session().is_none());
     assert!(app.active_paste_session().is_none());
     assert!(app.pending_submit().is_none());
@@ -86,7 +87,7 @@ fn set_active_view_same_view_is_noop() {
     assert_eq!(app.active_view, ActiveView::Chat);
     assert!(app.selection().is_some());
     assert!(app.mention().is_some());
-    assert!(!app.pending_paste_text().is_empty());
+    assert!(app.pending_paste_text().is_some_and(|text| !text.is_empty()));
     assert!(app.pending_submit().is_some());
     assert!(!app.needs_redraw);
 }
@@ -112,19 +113,19 @@ fn set_active_view_keeps_permission_unfocused_when_returning_to_chat_with_draft(
 #[test]
 fn set_active_view_closes_help_without_clearing_question_mark_draft() {
     let mut app = App::test_default();
-    app.input_mut().set_text("?");
+    app.input_mut().expect("active session").set_text("?");
     app.help_open = true;
     app.help_view = crate::app::HelpView::Subagents;
     app.help_visible_count = 7;
 
     set_active_view(&mut app, ActiveView::Extensions);
-    assert_eq!(app.input().text(), "?");
+    assert_eq!(app.input().expect("active session").text(), "?");
     assert!(!app.is_help_active());
     assert_eq!(app.help_view, crate::app::HelpView::Keys);
     assert_eq!(app.help_visible_count, 0);
 
     set_active_view(&mut app, ActiveView::Chat);
-    assert_eq!(app.input().text(), "?");
+    assert_eq!(app.input().expect("active session").text(), "?");
     assert!(!app.is_help_active());
 }
 

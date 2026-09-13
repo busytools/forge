@@ -94,6 +94,7 @@ pub(crate) fn type_text(app: &mut App, token: &str) {
 /// notice's wording rather than only its existence.
 pub(crate) fn system_notice_text(app: &App) -> Option<String> {
     app.messages()
+        .expect("active session")
         .iter()
         .rev()
         .find(|m| matches!(m.role, crate::app::MessageRole::System(None)))

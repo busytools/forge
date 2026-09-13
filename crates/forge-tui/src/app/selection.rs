@@ -10,7 +10,9 @@ pub(crate) fn normalize_selection(
 }
 
 pub(super) fn clear_selection(app: &mut App) {
-    *app.selection_mut() = None;
+    if let Some(slot) = app.selection_mut() {
+        *slot = None;
+    }
     app.rendered_input_lines.clear();
 }
 

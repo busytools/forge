@@ -44,7 +44,7 @@ async fn full_turn_lifecycle_text_only() {
         SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.messages().len(), 1);
+    assert_eq!(app.messages().expect("active session").len(), 1);
 }
 
 #[tokio::test]
@@ -123,21 +123,25 @@ async fn chunks_across_turns_open_a_new_assistant_message() {
         &mut app,
         SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
-    assert_eq!(app.messages().len(), 1);
+    assert_eq!(app.messages().expect("active session").len(), 1);
 
     // Second turn (no user message between turns). Should open a
     // fresh assistant ChatMessage rather than appending to "Turn 1".
     send_msg(&mut app, assistant_message(vec![text_block("Turn 2")]));
 
-    assert_eq!(app.messages().len(), 2, "second turn must NOT merge into the first");
-    let first = app.messages().first().expect("first turn message");
+    assert_eq!(
+        app.messages().expect("active session").len(),
+        2,
+        "second turn must NOT merge into the first"
+    );
+    let first = app.messages().expect("active session").first().expect("first turn message");
     let MessageBlock::Text(first_block) = first.blocks.last().expect("first block") else {
         panic!("expected first turn text block");
     };
     assert!(first_block.text.contains("Turn 1"));
     assert!(!first_block.text.contains("Turn 2"), "Turn 2 must not have been merged in");
 
-    let second = app.messages().last().expect("second turn message");
+    let second = app.messages().expect("active session").last().expect("second turn message");
     assert!(matches!(second.role, MessageRole::Assistant));
     let MessageBlock::Text(second_block) = second.blocks.last().expect("second block") else {
         panic!("expected second turn text block");
@@ -168,7 +172,7 @@ async fn tool_call_content_update() {
     );
 
     let (mi, bi) = app.lookup_tool_call("tc-content").expect("missing tool index");
-    if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
+    if let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[mi].blocks[bi] {
         assert!(!tc.content.is_empty(), "content should be set");
     } else {
         panic!("expected ToolCall block");
@@ -180,13 +184,16 @@ async fn tool_call_content_update() {
 #[tokio::test]
 async fn auto_scroll_maintained_during_streaming() {
     let mut app = test_app();
-    assert!(app.viewport().auto_scroll);
+    assert!(app.viewport().expect("active session").auto_scroll);
 
     for _ in 0..20 {
         send_msg(&mut app, assistant_message(vec![text_block("More text. ")]));
     }
 
-    assert!(app.viewport().auto_scroll, "auto_scroll should stay true during streaming");
+    assert!(
+        app.viewport().expect("active session").auto_scroll,
+        "auto_scroll should stay true during streaming"
+    );
 }
 
 // --- Stress: many tool calls in one turn ---
@@ -207,7 +214,7 @@ async fn stress_many_tool_calls_in_one_turn() {
         );
     }
 
-    assert_eq!(app.tool_call_index().len(), 50);
+    assert_eq!(app.tool_call_index().expect("active session").len(), 50);
 
     // Complete all (tool result envelopes finalise each tool_use_id).
     for i in 0..50 {
@@ -275,13 +282,14 @@ async fn text_between_tool_calls_creates_separate_blocks() {
     send_msg(&mut app, assistant_message(vec![text_block("Final text")]));
 
     // Should be: Text, ToolCall, Text, ToolCall, Text = 5 blocks
-    assert_eq!(app.messages().len(), 1);
-    assert_eq!(app.messages()[0].blocks.len(), 5);
-    assert!(matches!(app.messages()[0].blocks[0], MessageBlock::Text(..)));
-    assert!(matches!(app.messages()[0].blocks[1], MessageBlock::ToolCall(_)));
-    assert!(matches!(app.messages()[0].blocks[2], MessageBlock::Text(..)));
-    assert!(matches!(app.messages()[0].blocks[3], MessageBlock::ToolCall(_)));
-    assert!(matches!(app.messages()[0].blocks[4], MessageBlock::Text(..)));
+    let messages = app.messages().expect("active session");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].blocks.len(), 5);
+    assert!(matches!(messages[0].blocks[0], MessageBlock::Text(..)));
+    assert!(matches!(messages[0].blocks[1], MessageBlock::ToolCall(_)));
+    assert!(matches!(messages[0].blocks[2], MessageBlock::Text(..)));
+    assert!(matches!(messages[0].blocks[3], MessageBlock::ToolCall(_)));
+    assert!(matches!(messages[0].blocks[4], MessageBlock::Text(..)));
 }
 
 #[tokio::test]
@@ -332,11 +340,15 @@ async fn available_commands_update_replaces_previous() {
         &mut app,
         system_message("init", serde_json::json!({"slash_commands": ["/help", "/clear"]})),
     );
-    assert_eq!(app.available_commands().len(), 2);
+    assert_eq!(app.available_commands().expect("active session").len(), 2);
 
     // New update replaces, not appends
     send_msg(&mut app, system_message("init", serde_json::json!({"slash_commands": ["/commit"]})));
-    assert_eq!(app.available_commands().len(), 1, "replaced, not appended");
+    assert_eq!(
+        app.available_commands().expect("active session").len(),
+        1,
+        "replaced, not appended"
+    );
 }
 
 #[tokio::test]
@@ -367,18 +379,19 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
 
     assert!(matches!(app.status, AppStatus::Error));
     // Tool call should remain indexed and preserved in the original assistant message.
-    assert!(app.tool_call_index().contains_key("tc-err"));
-    assert_eq!(app.messages().len(), 2, "assistant message + system error message");
-    assert!(matches!(app.messages()[0].role, MessageRole::Assistant));
-    assert_eq!(app.messages()[0].blocks.len(), 2, "text + tool call preserved");
-    let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.get(1) else {
+    assert!(app.tool_call_index().expect("active session").contains_key("tc-err"));
+    let messages = app.messages().expect("active session");
+    assert_eq!(messages.len(), 2, "assistant message + system error message");
+    assert!(matches!(messages[0].role, MessageRole::Assistant));
+    assert_eq!(messages[0].blocks.len(), 2, "text + tool call preserved");
+    let Some(MessageBlock::ToolCall(tc)) = messages[0].blocks.get(1) else {
         panic!("expected preserved tool call block");
     };
     assert_eq!(tc.id, "tc-err");
     assert_eq!(tc.status, model::ToolCallStatus::Failed, "in-progress tool should be failed");
 
-    assert!(matches!(app.messages()[1].role, MessageRole::System(_)));
-    let Some(MessageBlock::Text(block)) = app.messages()[1].blocks.first() else {
+    assert!(matches!(messages[1].role, MessageRole::System(_)));
+    let Some(MessageBlock::Text(block)) = messages[1].blocks.first() else {
         panic!("expected system error text block");
     };
     assert!(block.text.contains("Turn failed: crashed"));
@@ -425,6 +438,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     // Empty assistant message slot, mimicking what `submit_input`
     // creates right before the first chunk arrives.
     app.active_messages_mut()
+        .expect("active session")
         .push(forge_tui::app::ChatMessage::new(MessageRole::Assistant, Vec::new()));
     app.bind_active_turn_assistant_to_tail();
 
@@ -459,6 +473,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     );
     let assistant = app
         .messages()
+        .expect("active session")
         .iter()
         .rfind(|m| matches!(m.role, MessageRole::Assistant))
         .expect("assistant message present");
@@ -479,7 +494,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
 async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
     let mut app = test_app();
     app.set_session_id(Some(model::SessionId::new("real-session-abc")));
-    let initial_message_count = app.messages().len();
+    let initial_message_count = app.messages().expect("active session").len();
 
     let wire_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
         "type": "assistant",
@@ -506,7 +521,7 @@ async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
         "session id must not change on stale envelope",
     );
     assert_eq!(
-        app.messages().len(),
+        app.messages().expect("active session").len(),
         initial_message_count,
         "stale envelope must not append to chat",
     );

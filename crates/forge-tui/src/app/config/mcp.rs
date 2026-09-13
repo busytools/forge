@@ -77,7 +77,7 @@ pub(crate) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Down, KeyModifiers::NONE) => {
-            let last_index = app.mcp().servers.len().saturating_sub(1);
+            let last_index = app.mcp().map_or(0, |mcp| mcp.servers.len().saturating_sub(1));
             app.config.mcp_selected_server_index =
                 (app.config.mcp_selected_server_index + 1).min(last_index);
             true
@@ -87,8 +87,10 @@ pub(crate) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 pub(crate) fn refresh_mcp_snapshot(app: &mut App) {
-    app.mcp_mut().servers.clear();
-    app.mcp_mut().last_error = None;
+    if let Some(mcp) = app.mcp_mut() {
+        mcp.servers.clear();
+        mcp.last_error = None;
+    }
     request_mcp_snapshot(app);
 }
 
@@ -111,17 +113,18 @@ const MCP_SETTLED_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// Reads the active bucket only, so a background session's rows stay as
 /// its connect-time snapshot left them until the user focuses it.
 pub(crate) fn request_mcp_snapshot_if_needed(app: &mut App, now: Instant) {
-    let interval = if app
-        .mcp()
-        .servers
-        .iter()
-        .any(|server| server.status == forge_primitives::McpServerConnectionStatus::Pending)
-    {
+    let interval = if app.mcp().is_some_and(|mcp| {
+        mcp.servers
+            .iter()
+            .any(|server| server.status == forge_primitives::McpServerConnectionStatus::Pending)
+    }) {
         MCP_PENDING_REFRESH_INTERVAL
     } else {
         MCP_SETTLED_REFRESH_INTERVAL
     };
-    if app.mcp().last_refresh_requested.is_some_and(|last| now.duration_since(last) < interval) {
+    if app.mcp().is_some_and(|mcp| {
+        mcp.last_refresh_requested.is_some_and(|last| now.duration_since(last) < interval)
+    }) {
         return;
     }
     dispatch_mcp_snapshot_request(app, now, false);
@@ -131,6 +134,12 @@ pub(crate) fn request_mcp_snapshot(app: &mut App) {
     dispatch_mcp_snapshot_request(app, Instant::now(), true);
 }
 
+fn clear_mcp_in_flight(app: &mut App, mark_in_flight: bool) {
+    if mark_in_flight && let Some(mcp) = app.mcp_mut() {
+        mcp.in_flight = false;
+    }
+}
+
 /// Ask the workspace for a fresh snapshot. `mark_in_flight` drives the
 /// user-facing loading state, which only a user-initiated refresh owns.
 fn dispatch_mcp_snapshot_request(app: &mut App, now: Instant, mark_in_flight: bool) {
@@ -138,27 +147,23 @@ fn dispatch_mcp_snapshot_request(app: &mut App, now: Instant, mark_in_flight: bo
     // background poll reaches here on every 4ms loop tick, so the clones
     // below must not run just to be dropped.
     let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
-        if mark_in_flight {
-            app.mcp_mut().in_flight = false;
-        }
+        clear_mcp_in_flight(app, mark_in_flight);
         return;
     };
     let Some(workspace) = app.workspace.clone() else {
-        if mark_in_flight {
-            app.mcp_mut().in_flight = false;
-        }
+        clear_mcp_in_flight(app, mark_in_flight);
         return;
     };
     let Some(key) = app.active_session_key.clone() else {
-        if mark_in_flight {
-            app.mcp_mut().in_flight = false;
-        }
+        clear_mcp_in_flight(app, mark_in_flight);
         return;
     };
-    app.mcp_mut().last_refresh_requested = Some(now);
-    if mark_in_flight {
-        app.mcp_mut().in_flight = true;
-        app.mcp_mut().last_error = None;
+    if let Some(mcp) = app.mcp_mut() {
+        mcp.last_refresh_requested = Some(now);
+        if mark_in_flight {
+            mcp.in_flight = true;
+            mcp.last_error = None;
+        }
     }
     match workspace.refresh_mcp_snapshot(&key) {
         Ok(()) => tracing::debug!(
@@ -169,9 +174,9 @@ fn dispatch_mcp_snapshot_request(app: &mut App, now: Instant, mark_in_flight: bo
             session_id = %session_id,
         ),
         Err(err) => {
-            if mark_in_flight {
-                app.mcp_mut().in_flight = false;
-                app.mcp_mut().last_error = Some(err.to_string());
+            if mark_in_flight && let Some(mcp) = app.mcp_mut() {
+                mcp.in_flight = false;
+                mcp.last_error = Some(err.to_string());
             }
             tracing::warn!(
                 target: crate::logging::targets::APP_CONFIG,
@@ -263,8 +268,7 @@ pub(crate) fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: 
 fn open_selected_mcp_server_details(app: &mut App) {
     let Some(server_name) = app
         .mcp()
-        .servers
-        .get(app.config.mcp_selected_server_index)
+        .and_then(|mcp| mcp.servers.get(app.config.mcp_selected_server_index))
         .map(|server| server.name.clone())
     else {
         return;
@@ -277,8 +281,10 @@ pub(crate) fn open_mcp_server_details(
     server_name: String,
     preferred_action: Option<McpServerActionKind>,
 ) {
-    let selected_index =
-        app.mcp().servers.iter().find(|server| server.name == server_name).map_or(0, |server| {
+    let selected_index = app
+        .mcp()
+        .and_then(|mcp| mcp.servers.iter().find(|server| server.name == server_name))
+        .map_or(0, |server| {
             preferred_action
                 .and_then(|action| {
                     available_mcp_actions(server).iter().position(|candidate| *candidate == action)
@@ -324,8 +330,10 @@ pub(crate) fn handle_mcp_operation_error(
     // writes its own bucket so it surfaces when the user switches to it.
     let is_active = app.active_session_key.as_ref() == Some(key);
     if is_active {
-        app.mcp_mut().in_flight = false;
-        app.mcp_mut().last_error = Some(formatted.clone());
+        if let Some(mcp) = app.mcp_mut() {
+            mcp.in_flight = false;
+            mcp.last_error = Some(formatted.clone());
+        }
         app.config.last_error = Some(formatted);
         app.config.status_message = None;
     } else if let Some(session) = app.session_mut(key) {

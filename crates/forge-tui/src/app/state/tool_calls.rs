@@ -12,20 +12,26 @@ use crate::agent::model;
 impl super::App {
     /// Track a Task/Agent tool call as active (in-progress subagent).
     pub fn insert_active_task(&mut self, id: String) {
-        self.active_task_ids_mut().insert(id);
+        if let Some(active_task_ids) = self.active_task_ids_mut() {
+            active_task_ids.insert(id);
+        }
     }
 
     /// Remove a Task/Agent tool call from the active set (completed/failed).
     pub fn remove_active_task(&mut self, id: &str) {
-        self.active_task_ids_mut().remove(id);
+        if let Some(active_task_ids) = self.active_task_ids_mut() {
+            active_task_ids.remove(id);
+        }
     }
 
     pub fn register_tool_call_scope(&mut self, id: String, scope: ToolCallScope) {
-        self.tool_call_scopes_mut().insert(id, scope);
+        if let Some(scopes) = self.tool_call_scopes_mut() {
+            scopes.insert(id, scope);
+        }
     }
 
     pub fn tool_call_scope(&self, id: &str) -> Option<ToolCallScope> {
-        self.tool_call_scopes().get(id).cloned()
+        self.tool_call_scopes().and_then(|scopes| scopes.get(id)).cloned()
     }
 
     /// Whether a tool call's card is still non-terminal. Independent
@@ -33,7 +39,7 @@ impl super::App {
     /// the roster has not caught up.
     fn tool_call_is_open(&self, id: &str) -> bool {
         self.lookup_tool_call(id)
-            .and_then(|(mi, bi)| self.messages().get(mi)?.blocks.get(bi))
+            .and_then(|(mi, bi)| self.messages()?.get(mi)?.blocks.get(bi))
             .is_some_and(|block| match block {
                 MessageBlock::ToolCall(tc) => matches!(
                     tc.status,
@@ -48,7 +54,7 @@ impl super::App {
     /// either way and reads as not settled (#791).
     fn tool_call_is_settled(&self, id: &str) -> bool {
         self.lookup_tool_call(id)
-            .and_then(|(mi, bi)| self.messages().get(mi)?.blocks.get(bi))
+            .and_then(|(mi, bi)| self.messages()?.get(mi)?.blocks.get(bi))
             .is_some_and(|block| match block {
                 MessageBlock::ToolCall(tc) => !matches!(
                     tc.status,
@@ -71,14 +77,20 @@ impl super::App {
             .active_session()
             .map(crate::app::session::UiSession::backgrounded_alive_with_children)
             .unwrap_or_default();
+        let no_scopes: std::collections::HashMap<String, ToolCallScope> =
+            std::collections::HashMap::new();
         let open_roots: HashSet<String> = self
             .tool_call_scopes()
+            .unwrap_or(&no_scopes)
             .iter()
             .filter(|(_, scope)| {
                 matches!(scope, crate::app::state::types::ToolCallScope::SubagentRoot)
             })
             .map(|(id, _)| id.clone())
-            .filter(|id| self.active_task_ids().contains(id) || self.tool_call_is_open(id))
+            .filter(|id| {
+                self.active_task_ids().is_some_and(|ids| ids.contains(id))
+                    || self.tool_call_is_open(id)
+            })
             .collect();
         let dropped_while_open: Vec<String> =
             open_roots.iter().filter(|id| !alive.contains(id.as_str())).map(Clone::clone).collect();
@@ -98,6 +110,7 @@ impl super::App {
         // roster row and is a live root in `alive` itself.
         let settled_children: HashSet<String> = self
             .tool_call_scopes()
+            .unwrap_or(&no_scopes)
             .iter()
             .filter(|(id, scope)| {
                 matches!(scope, crate::app::state::types::ToolCallScope::SubagentChild { .. })
@@ -105,19 +118,25 @@ impl super::App {
             })
             .map(|(id, _)| id.clone())
             .collect();
-        self.tool_call_scopes_mut().retain(|id, scope| match scope {
-            crate::app::state::types::ToolCallScope::SubagentRoot => alive.contains(id.as_str()),
-            crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } => {
-                alive.contains(parent_tool_use_id.as_str()) && !settled_children.contains(id)
-            }
-            crate::app::state::types::ToolCallScope::MainAgent => false,
-        });
-        self.active_task_ids_mut().clear();
+        if let Some(scopes) = self.tool_call_scopes_mut() {
+            scopes.retain(|id, scope| match scope {
+                crate::app::state::types::ToolCallScope::SubagentRoot => {
+                    alive.contains(id.as_str())
+                }
+                crate::app::state::types::ToolCallScope::SubagentChild { parent_tool_use_id } => {
+                    alive.contains(parent_tool_use_id.as_str()) && !settled_children.contains(id)
+                }
+                crate::app::state::types::ToolCallScope::MainAgent => false,
+            });
+        }
+        if let Some(active_task_ids) = self.active_task_ids_mut() {
+            active_task_ids.clear();
+        }
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
     pub fn lookup_tool_call(&self, id: &str) -> Option<(usize, usize)> {
-        self.tool_call_index().get(id).copied()
+        self.tool_call_index().and_then(|index| index.get(id)).copied()
     }
 
     /// Stamp a resolved answer onto an AskUserQuestion tool call: append
@@ -129,8 +148,10 @@ impl super::App {
         let Some((mi, bi)) = self.lookup_tool_call(tool_id) else {
             return;
         };
-        if let Some(MessageBlock::ToolCall(tc)) =
-            self.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        if let Some(MessageBlock::ToolCall(tc)) = self
+            .active_messages_mut()
+            .and_then(|messages| messages.get_mut(mi))
+            .and_then(|m| m.blocks.get_mut(bi))
         {
             let tc = tc.as_mut();
             tc.answered_questions.push(answered);
@@ -142,7 +163,9 @@ impl super::App {
 
     /// Register a tool call's position in the message/block arrays.
     pub fn index_tool_call(&mut self, id: String, msg_idx: usize, block_idx: usize) {
-        self.active_tool_call_index_mut().insert(id, (msg_idx, block_idx));
+        if let Some(index) = self.active_tool_call_index_mut() {
+            index.insert(id, (msg_idx, block_idx));
+        }
     }
 
     /// Force-finish any lingering in-progress tool calls.
@@ -159,6 +182,7 @@ impl super::App {
         // scope map (#793).
         let open_ids: Vec<String> = self
             .messages()
+            .unwrap_or_default()
             .iter()
             .flat_map(|msg| &msg.blocks)
             .filter_map(|block| match block {
@@ -182,27 +206,29 @@ impl super::App {
             .map(String::as_str)
             .collect();
 
-        for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {
-            for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
-                if let MessageBlock::ToolCall(tc) = block {
-                    let tc = tc.as_mut();
-                    if matches!(
-                        tc.status,
-                        model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
-                    ) && !exempt.contains(tc.id.as_str())
-                    {
-                        tc.status = new_status;
-                        tc.mark_tool_call_layout_dirty();
-                        changed_slots.push((msg_idx, block_idx));
-                        // A completed execute's captured terminal id no
-                        // longer means anything to the renderer.
-                        if tc.is_execute_tool() {
-                            tc.terminal_id = None;
+        if let Some(messages) = self.active_messages_mut() {
+            for (msg_idx, msg) in messages.iter_mut().enumerate() {
+                for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
+                    if let MessageBlock::ToolCall(tc) = block {
+                        let tc = tc.as_mut();
+                        if matches!(
+                            tc.status,
+                            model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                        ) && !exempt.contains(tc.id.as_str())
+                        {
+                            tc.status = new_status;
+                            tc.mark_tool_call_layout_dirty();
+                            changed_slots.push((msg_idx, block_idx));
+                            // A completed execute's captured terminal id no
+                            // longer means anything to the renderer.
+                            if tc.is_execute_tool() {
+                                tc.terminal_id = None;
+                            }
+                            if changed_message_indices.last().copied() != Some(msg_idx) {
+                                changed_message_indices.push(msg_idx);
+                            }
+                            changed += 1;
                         }
-                        if changed_message_indices.last().copied() != Some(msg_idx) {
-                            changed_message_indices.push(msg_idx);
-                        }
-                        changed += 1;
                     }
                 }
             }
@@ -255,14 +281,16 @@ impl super::App {
     }
 
     /// Advance the group's collapse level one step (L2 -> L1 -> L0 -> L2).
-    /// Returns the new level. Auto-creates the active bucket if missing.
+    /// Returns the new level. No-op when no session is focused.
     pub fn cycle_group_collapse_level(
         &mut self,
         id: &crate::ui::message::grouping::GroupId,
     ) -> crate::ui::message::grouping::GroupCollapseLevel {
         let current = self.group_collapse_level(id);
         let next = current.next();
-        self.active_bucket_mut().group_collapse_levels.insert(id.clone(), next);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.group_collapse_levels.insert(id.clone(), next);
+        }
         next
     }
 
@@ -282,24 +310,26 @@ impl super::App {
     }
 
     /// Advance the messaging-group's collapse level one step
-    /// (L2 -> L1 -> L0 -> L2). Returns the new level. Auto-creates
-    /// the active bucket if missing.
+    /// (L2 -> L1 -> L0 -> L2). Returns the new level. No-op when no
+    /// session is focused.
     pub fn cycle_messaging_group_collapse_level(
         &mut self,
         id: &crate::ui::message::grouping::GroupId,
     ) -> crate::ui::message::grouping::GroupCollapseLevel {
         let current = self.messaging_group_collapse_level(id);
         let next = current.next();
-        self.active_bucket_mut().messaging_group_collapse_levels.insert(id.clone(), next);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.messaging_group_collapse_levels.insert(id.clone(), next);
+        }
         next
     }
 
     /// Mutable accessor for the active session's background-task
-    /// snapshot. Auto-creates the pre-Connect bucket if missing.
+    /// snapshot, or `None` when no session is focused.
     pub(crate) fn background_tasks_mut(
         &mut self,
-    ) -> &mut Vec<crate::app::state::types::BackgroundTask> {
-        &mut self.active_bucket_mut().background_tasks
+    ) -> Option<&mut Vec<crate::app::state::types::BackgroundTask>> {
+        self.active_bucket_mut().map(|bucket| &mut bucket.background_tasks)
     }
 
     /// Record a session-scoped mapping at `task_started`, capturing what the
@@ -312,20 +342,27 @@ impl super::App {
             Some(session) => crate::app::processes::card_facts(session, &tool_use_id),
             None => crate::app::state::types::SessionTaskCard::unseen(tool_use_id),
         };
-        self.active_bucket_mut().session_task_tool_use_ids.insert(task_id, card);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.session_task_tool_use_ids.insert(task_id, card);
+        }
     }
 
     /// Drop a session-scoped task mapping when the task reaches a
     /// terminal state. No-op when absent.
     pub(crate) fn remove_session_task_mapping(&mut self, task_id: &str) {
-        self.active_bucket_mut().session_task_tool_use_ids.remove(task_id);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.session_task_tool_use_ids.remove(task_id);
+        }
     }
 
     /// Settle the open descendants of a backgrounded root that just left
     /// the roster on the active session. See
     /// [`UiSession::settle_children_of`].
     pub(crate) fn settle_departed_root_children(&mut self, root_id: &str) {
-        let settled = self.active_bucket_mut().settle_children_of(root_id);
+        let Some(bucket) = self.active_bucket_mut() else {
+            return;
+        };
+        let settled = bucket.settle_children_of(root_id);
         if settled.is_empty() {
             return;
         }
@@ -346,19 +383,25 @@ impl super::App {
     /// task-id mirror) on teardown. See
     /// [`UiSession::clear_background_task_registry`].
     pub(crate) fn clear_active_session_background_task_registry(&mut self) {
-        self.active_bucket_mut().clear_background_task_registry();
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.clear_background_task_registry();
+        }
     }
 
     /// Mark a tool-use id as a backgrounded agent root on the active
     /// session. See [`UiSession::backgrounded_roots`].
     pub(crate) fn mark_backgrounded_root(&mut self, tool_use_id: String) {
-        self.active_bucket_mut().backgrounded_roots.insert(tool_use_id);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.backgrounded_roots.insert(tool_use_id);
+        }
     }
 
     /// Clear one sticky backgrounded root - the terminal
     /// `task_updated` / `task_notification` path.
     pub(crate) fn clear_backgrounded_root(&mut self, tool_use_id: &str) {
-        self.active_bucket_mut().backgrounded_roots.remove(tool_use_id);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.backgrounded_roots.remove(tool_use_id);
+        }
     }
 
     /// Whether `subagents_view` would return anything, without building it.
@@ -667,7 +710,7 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc_info))],
         ));
-        let msg_idx = app.messages().len() - 1;
+        let msg_idx = app.messages().expect("active session").len() - 1;
         app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
 
         app.record_answered_question(
@@ -680,7 +723,8 @@ mod tests {
         );
 
         let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
-        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[mi].blocks[bi]
+        else {
             panic!("expected ToolCall block");
         };
         assert!(!tc.hidden, "answered question must un-hide so the card renders");
@@ -712,7 +756,7 @@ mod tests {
     }
 
     fn head_tool(app: &App) -> &ToolCallInfo {
-        match &app.messages()[0].blocks[0] {
+        match &app.messages().expect("active session")[0].blocks[0] {
             MessageBlock::ToolCall(tc) => tc,
             _ => panic!("expected a tool call"),
         }
@@ -763,7 +807,7 @@ mod tests {
         let collapsed_height = head_tool(&app).last_measured_height;
         let epoch_before = head_tool(&app).layout_epoch;
         let width_before = head_tool(&app).last_measured_width;
-        let generation_before = app.viewport().layout_generation;
+        let generation_before = app.viewport().expect("active session").layout_generation;
 
         // The flip happens while A is focused.
         app.switch_active_session(a_key);
@@ -775,7 +819,7 @@ mod tests {
         render_chat_frame(&mut app, W, H);
         assert_eq!(
             generation_before,
-            app.viewport().layout_generation,
+            app.viewport().expect("active session").layout_generation,
             "no resize, so B's generation must not move",
         );
         assert_eq!(epoch_before, head_tool(&app).layout_epoch, "and its layout epoch must not");
@@ -785,7 +829,8 @@ mod tests {
         // What the same tool measures from cold under the new preference.
         let mut cold = make_test_app();
         cold.tools_collapsed = false;
-        *cold.active_messages_mut() = vec![ungrouped_tool_message("cross-session")];
+        *cold.active_messages_mut().expect("active session") =
+            vec![ungrouped_tool_message("cross-session")];
         render_chat_frame(&mut cold, W, H);
         let correct_height = head_tool(&cold).last_measured_height;
 
@@ -813,13 +858,14 @@ mod tests {
         const H: u16 = 40;
 
         fn head_height(app: &App) -> usize {
-            app.viewport().message_height(0)
+            app.viewport().expect("active session").message_height(0)
         }
 
         let mut app = make_test_app();
         app.tools_collapsed = true;
         let a_key = app.active_session_key.clone().expect("an active session");
-        *app.active_messages_mut() = vec![ungrouped_tool_message("cross-session")];
+        *app.active_messages_mut().expect("active session") =
+            vec![ungrouped_tool_message("cross-session")];
 
         let b_key = forge_workspace::SessionKey::from_str_for_test("collapse-background-height");
         let mut b_bucket = crate::app::session::UiSession::new(b_key.clone());
@@ -847,7 +893,8 @@ mod tests {
         // What the same message measures from cold under the new preference.
         let mut cold = make_test_app();
         cold.tools_collapsed = false;
-        *cold.active_messages_mut() = vec![ungrouped_tool_message("cross-session")];
+        *cold.active_messages_mut().expect("active session") =
+            vec![ungrouped_tool_message("cross-session")];
         render_chat_frame(&mut cold, W, H);
         let expanded_height = head_height(&cold);
 
@@ -926,16 +973,16 @@ mod tests {
     fn active_task_insert_remove() {
         let mut app = make_test_app();
         app.insert_active_task("task-1".into());
-        assert!(app.active_task_ids().contains("task-1"));
+        assert!(app.active_task_ids().expect("active session").contains("task-1"));
         app.remove_active_task("task-1");
-        assert!(!app.active_task_ids().contains("task-1"));
+        assert!(!app.active_task_ids().expect("active session").contains("task-1"));
     }
 
     #[test]
     fn remove_nonexistent_task_is_noop() {
         let mut app = make_test_app();
         app.remove_active_task("does-not-exist");
-        assert!(app.active_task_ids().is_empty());
+        assert!(app.active_task_ids().expect("active session").is_empty());
     }
 
     /// Insert same ID twice - set deduplicates; one remove clears it.
@@ -944,9 +991,9 @@ mod tests {
         let mut app = make_test_app();
         app.insert_active_task("task-1".into());
         app.insert_active_task("task-1".into());
-        assert_eq!(app.active_task_ids().len(), 1);
+        assert_eq!(app.active_task_ids().expect("active session").len(), 1);
         app.remove_active_task("task-1");
-        assert!(app.active_task_ids().is_empty());
+        assert!(app.active_task_ids().expect("active session").is_empty());
     }
 
     /// Insert many tasks, remove in different order.
@@ -956,12 +1003,12 @@ mod tests {
         for i in 0..100 {
             app.insert_active_task(format!("task-{i}"));
         }
-        assert_eq!(app.active_task_ids().len(), 100);
+        assert_eq!(app.active_task_ids().expect("active session").len(), 100);
         // Remove in reverse order
         for i in (0..100).rev() {
             app.remove_active_task(&format!("task-{i}"));
         }
-        assert!(app.active_task_ids().is_empty());
+        assert!(app.active_task_ids().expect("active session").is_empty());
     }
 
     /// Mixed insert/remove interleaving.
@@ -972,10 +1019,10 @@ mod tests {
         app.insert_active_task("b".into());
         app.remove_active_task("a");
         app.insert_active_task("c".into());
-        assert!(!app.active_task_ids().contains("a"));
-        assert!(app.active_task_ids().contains("b"));
-        assert!(app.active_task_ids().contains("c"));
-        assert_eq!(app.active_task_ids().len(), 2);
+        assert!(!app.active_task_ids().expect("active session").contains("a"));
+        assert!(app.active_task_ids().expect("active session").contains("b"));
+        assert!(app.active_task_ids().expect("active session").contains("c"));
+        assert_eq!(app.active_task_ids().expect("active session").len(), 2);
     }
 
     /// Remove from empty set multiple times - no panic.
@@ -985,7 +1032,7 @@ mod tests {
         for i in 0..100 {
             app.remove_active_task(&format!("ghost-{i}"));
         }
-        assert!(app.active_task_ids().is_empty());
+        assert!(app.active_task_ids().expect("active session").is_empty());
     }
 
     /// `clear_tool_scope_tracking` must also clear `active_task_ids`;
@@ -996,9 +1043,12 @@ mod tests {
     fn clear_tool_scope_tracking_also_clears_active_task_ids() {
         let mut app = make_test_app();
         app.insert_active_task("task-leaked".into());
-        assert!(!app.active_task_ids().is_empty());
+        assert!(!app.active_task_ids().expect("active session").is_empty());
         app.clear_tool_scope_tracking();
-        assert!(app.active_task_ids().is_empty(), "active_task_ids must be cleared at turn end");
+        assert!(
+            app.active_task_ids().expect("active session").is_empty(),
+            "active_task_ids must be cleared at turn end"
+        );
     }
 
     /// Identity-layer sibling of the finalize exemption: a still-running
@@ -1009,18 +1059,23 @@ mod tests {
     #[test]
     fn clear_tool_scope_tracking_retains_live_backgrounded_scopes_then_drops_them() {
         let mut app = make_test_app();
-        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
-        app.tool_call_scopes_mut().insert(
+        app.tool_call_scopes_mut()
+            .expect("active session")
+            .insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        app.tool_call_scopes_mut().expect("active session").insert(
             "toolu_child".to_owned(),
             ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
         );
-        app.tool_call_scopes_mut().insert("toolu_main".to_owned(), ToolCallScope::MainAgent);
+        app.tool_call_scopes_mut()
+            .expect("active session")
+            .insert("toolu_main".to_owned(), ToolCallScope::MainAgent);
         app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
-        *app.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
-            task_id: "task-root".to_owned(),
-            task_type: "local_agent".to_owned(),
-            description: String::new(),
-        }];
+        *app.background_tasks_mut().expect("active session") =
+            vec![crate::app::state::types::BackgroundTask {
+                task_id: "task-root".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: String::new(),
+            }];
 
         // Turn-complete while the agent is still backgrounded.
         app.clear_tool_scope_tracking();
@@ -1045,12 +1100,16 @@ mod tests {
     fn terminal_children_drop_their_scope_at_the_turn_boundary() {
         let mut app = make_test_app();
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("toolu_root", model::ToolCallStatus::Completed));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("toolu_open_child", model::ToolCallStatus::InProgress));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("toolu_done_child", model::ToolCallStatus::Completed));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("toolu_dead_child", model::ToolCallStatus::Failed));
         for (idx, id) in ["toolu_root", "toolu_open_child", "toolu_done_child", "toolu_dead_child"]
             .into_iter()
@@ -1058,19 +1117,22 @@ mod tests {
         {
             app.index_tool_call(id.to_owned(), idx, 0);
         }
-        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        app.tool_call_scopes_mut()
+            .expect("active session")
+            .insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
         for id in ["toolu_open_child", "toolu_done_child", "toolu_dead_child"] {
-            app.tool_call_scopes_mut().insert(
+            app.tool_call_scopes_mut().expect("active session").insert(
                 id.to_owned(),
                 ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
             );
         }
         app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
-        *app.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
-            task_id: "task-root".to_owned(),
-            task_type: "local_agent".to_owned(),
-            description: String::new(),
-        }];
+        *app.background_tasks_mut().expect("active session") =
+            vec![crate::app::state::types::BackgroundTask {
+                task_id: "task-root".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: String::new(),
+            }];
 
         app.clear_tool_scope_tracking();
 
@@ -1098,26 +1160,31 @@ mod tests {
     fn a_live_grandchild_is_not_stranded_behind_its_terminal_nested_parent() {
         let mut app = make_test_app();
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("toolu_root", model::ToolCallStatus::Completed));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("toolu_nested", model::ToolCallStatus::Completed));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("toolu_gchild", model::ToolCallStatus::InProgress));
         for (idx, id) in ["toolu_root", "toolu_nested", "toolu_gchild"].into_iter().enumerate() {
             app.index_tool_call(id.to_owned(), idx, 0);
         }
-        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
-        app.tool_call_scopes_mut().insert(
+        app.tool_call_scopes_mut()
+            .expect("active session")
+            .insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        app.tool_call_scopes_mut().expect("active session").insert(
             "toolu_nested".to_owned(),
             ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
         );
-        app.tool_call_scopes_mut().insert(
+        app.tool_call_scopes_mut().expect("active session").insert(
             "toolu_gchild".to_owned(),
             ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_nested".to_owned() },
         );
         app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
         app.insert_session_task_mapping("task-nested".to_owned(), "toolu_nested".to_owned());
-        *app.background_tasks_mut() = vec![
+        *app.background_tasks_mut().expect("active session") = vec![
             crate::app::state::types::BackgroundTask {
                 task_id: "task-root".to_owned(),
                 task_type: "local_agent".to_owned(),
@@ -1186,25 +1253,31 @@ mod tests {
         let names = EventNames::default();
         let mut app = make_test_app();
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("toolu_root", model::ToolCallStatus::Completed));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("toolu_child", model::ToolCallStatus::InProgress));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("toolu_plain_bash", model::ToolCallStatus::InProgress));
         for (idx, id) in ["toolu_root", "toolu_child", "toolu_plain_bash"].into_iter().enumerate() {
             app.index_tool_call(id.to_owned(), idx, 0);
         }
-        app.tool_call_scopes_mut().insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
-        app.tool_call_scopes_mut().insert(
+        app.tool_call_scopes_mut()
+            .expect("active session")
+            .insert("toolu_root".to_owned(), ToolCallScope::SubagentRoot);
+        app.tool_call_scopes_mut().expect("active session").insert(
             "toolu_child".to_owned(),
             ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() },
         );
         app.insert_session_task_mapping("task-root".to_owned(), "toolu_root".to_owned());
-        *app.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
-            task_id: "task-root".to_owned(),
-            task_type: "local_agent".to_owned(),
-            description: String::new(),
-        }];
+        *app.background_tasks_mut().expect("active session") =
+            vec![crate::app::state::types::BackgroundTask {
+                task_id: "task-root".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: String::new(),
+            }];
 
         let subscriber = tracing_subscriber::registry().with(names.clone());
         tracing::subscriber::with_default(subscriber, || {
@@ -1229,7 +1302,7 @@ mod tests {
     #[test]
     fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_bash_tool_message(
+        app.active_messages_mut().expect("active session").push(assistant_bash_tool_message(
             "bash-1",
             model::ToolCallStatus::InProgress,
             "term-1",
@@ -1239,7 +1312,8 @@ mod tests {
         let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
         assert_eq!(changed, 1);
-        let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[0].blocks[0]
+        else {
             panic!("expected tool call");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Completed);
@@ -1250,23 +1324,28 @@ mod tests {
     fn finalize_in_progress_tool_calls_invalidates_all_changed_messages() {
         let mut app = make_test_app();
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("tool-1", model::ToolCallStatus::InProgress));
-        app.active_messages_mut().push(user_text_message("gap"));
+        app.active_messages_mut().expect("active session").push(user_text_message("gap"));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_tool_message("tool-2", model::ToolCallStatus::InProgress));
 
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().sync_message_count(3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").sync_message_count(3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
         assert_eq!(changed, 2);
-        assert!(!app.active_viewport_mut().message_height_is_current(0));
-        assert!(app.active_viewport_mut().message_height_is_current(1));
-        assert!(!app.active_viewport_mut().message_height_is_current(2));
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
+        assert!(!app.active_viewport_mut().expect("active session").message_height_is_current(0));
+        assert!(app.active_viewport_mut().expect("active session").message_height_is_current(1));
+        assert!(!app.active_viewport_mut().expect("active session").message_height_is_current(2));
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(0)
+        );
     }
 
     #[test]
@@ -1303,7 +1382,7 @@ mod tests {
     fn cmd_x_clears_collapsed_override_on_all_tool_calls() {
         let mut app = App::test_default();
         let push_tool = |app: &mut App, id: &str, override_val: bool| {
-            app.active_messages_mut().push(ChatMessage::new(
+            app.active_messages_mut().expect("active session").push(ChatMessage::new(
                 MessageRole::Assistant,
                 vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                     id: id.to_owned(),
@@ -1379,10 +1458,9 @@ mod tests {
                 format!("[Message id=t-12345678 from agent '{sender}' (org 'Personal')]\n\nhi");
             let mut block = TextBlock::from_complete(&text);
             block.peer_collapsed_override = Some(override_val);
-            app.active_messages_mut().push(ChatMessage::new_peer_envelope(
-                MessageRole::User,
-                vec![MessageBlock::Text(block)],
-            ));
+            app.active_messages_mut().expect("active session").push(
+                ChatMessage::new_peer_envelope(MessageRole::User, vec![MessageBlock::Text(block)]),
+            );
         };
         push_peer(&mut app, "peer-a", true);
         push_peer(&mut app, "peer-b", false);
@@ -1460,7 +1538,7 @@ mod tests {
                 .expect("tool found")
         }
         fn set_override(app: &mut App, value: Option<bool>) {
-            for msg in app.active_messages_mut() {
+            for msg in app.active_messages_mut().expect("active session") {
                 for b in &mut msg.blocks {
                     if let MessageBlock::ToolCall(tc) = b
                         && tc.id == "tu-a"
@@ -1473,7 +1551,7 @@ mod tests {
             panic!("tool not found");
         }
         let mut app = App::test_default();
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: "tu-a".to_owned(),
@@ -1799,7 +1877,7 @@ mod tests {
             let mut app = App::test_default();
             let mut child = make_subagent_child_tc("tu-resumed-c", "Bash", "sleep");
             child.status = child_status;
-            app.active_messages_mut().push(ChatMessage::new(
+            app.active_messages_mut().expect("active session").push(ChatMessage::new(
                 MessageRole::Assistant,
                 vec![MessageBlock::ToolCall(Box::new(make_subagent_root_tc(
                     "tu-resumed",
@@ -1812,7 +1890,7 @@ mod tests {
                 "tu-resumed-c".to_owned(),
                 ToolCallScope::SubagentChild { parent_tool_use_id: "tu-resumed".to_owned() },
             );
-            app.active_messages_mut().push(ChatMessage::new(
+            app.active_messages_mut().expect("active session").push(ChatMessage::new(
                 MessageRole::Assistant,
                 vec![MessageBlock::ToolCall(Box::new(child))],
             ));
@@ -1865,11 +1943,12 @@ mod tests {
             Vec::new(),
         );
         backgrounded.insert_session_task_mapping("task-bg".to_owned(), "tu-bg".to_owned());
-        *backgrounded.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
-            task_id: "task-bg".to_owned(),
-            task_type: "local_agent".to_owned(),
-            description: "bg scan".to_owned(),
-        }];
+        *backgrounded.background_tasks_mut().expect("active session") =
+            vec![crate::app::state::types::BackgroundTask {
+                task_id: "task-bg".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: "bg scan".to_owned(),
+            }];
         check("terminal root still alive in the session roster", &backgrounded);
 
         let mut orphan_child = App::test_default();
@@ -1958,11 +2037,12 @@ mod tests {
         // registry lists it as live; no terminal task_updated has drained
         // it yet.
         app.insert_session_task_mapping("task-bg".to_owned(), "tu-root-bg".to_owned());
-        *app.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
-            task_id: "task-bg".to_owned(),
-            task_type: "local_agent".to_owned(),
-            description: "long-running background scan".to_owned(),
-        }];
+        *app.background_tasks_mut().expect("active session") =
+            vec![crate::app::state::types::BackgroundTask {
+                task_id: "task-bg".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: "long-running background scan".to_owned(),
+            }];
 
         let view = app.subagents_view();
         assert_eq!(
@@ -2002,11 +2082,12 @@ mod tests {
         }
         push_subagent_session(&mut app, root, children);
         app.insert_session_task_mapping("task-bg2".to_owned(), "tu-root-bg2".to_owned());
-        *app.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
-            task_id: "task-bg2".to_owned(),
-            task_type: "local_agent".to_owned(),
-            description: "long-running background scan".to_owned(),
-        }];
+        *app.background_tasks_mut().expect("active session") =
+            vec![crate::app::state::types::BackgroundTask {
+                task_id: "task-bg2".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: "long-running background scan".to_owned(),
+            }];
 
         let view = app.subagents_view();
         assert_eq!(view.len(), 1, "alive backgrounded root stays; got {view:?}");
@@ -2050,11 +2131,12 @@ mod tests {
         // task_started recorded the session-scoped mapping (survives reset).
         app.insert_session_task_mapping("task-bg-agent".to_owned(), "tu-root-bg-agent".to_owned());
         // The CLI registry still lists it as a live backgrounded agent.
-        *app.background_tasks_mut() = vec![crate::app::state::types::BackgroundTask {
-            task_id: "task-bg-agent".to_owned(),
-            task_type: "local_agent".to_owned(),
-            description: "long-running background agent".to_owned(),
-        }];
+        *app.background_tasks_mut().expect("active session") =
+            vec![crate::app::state::types::BackgroundTask {
+                task_id: "task-bg-agent".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: "long-running background agent".to_owned(),
+            }];
         // Turn finalisation wiped the turn-scoped liveness.
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.clear();

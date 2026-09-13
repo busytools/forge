@@ -11,10 +11,12 @@ impl super::App {
         self.active_session().map_or(&[], |s| s.monitors.as_slice())
     }
 
-    /// Mutable accessor for the active session's
-    /// MONITORS list. Auto-creates the pre-Connect bucket if missing.
-    pub(crate) fn monitors_mut(&mut self) -> &mut Vec<crate::app::state::types::MonitorEntry> {
-        &mut self.active_bucket_mut().monitors
+    /// Mutable accessor for the active session's MONITORS list, or
+    /// `None` when no session is focused.
+    pub(crate) fn monitors_mut(
+        &mut self,
+    ) -> Option<&mut Vec<crate::app::state::types::MonitorEntry>> {
+        self.active_bucket_mut().map(|bucket| &mut bucket.monitors)
     }
 
     /// Insert / update a `MonitorEntry` based on a fresh
@@ -63,7 +65,9 @@ impl super::App {
         } else {
             crate::app::state::types::MonitorStatus::Running
         };
-        let monitors = self.monitors_mut();
+        let Some(monitors) = self.monitors_mut() else {
+            return false;
+        };
         if let Some(existing) = monitors.iter_mut().find(|m| m.tool_use_id == tool_use_id) {
             existing.description = description;
             existing.command = command;
@@ -90,7 +94,10 @@ impl super::App {
     /// `tool_use_result` (or from `TaskStarted` mapping). No-op when
     /// no matching entry exists or the entry already has a task_id.
     pub fn stamp_monitor_task_id(&mut self, tool_use_id: &str, task_id: String) {
-        if let Some(entry) = self.monitors_mut().iter_mut().find(|m| m.tool_use_id == tool_use_id)
+        let Some(monitors) = self.monitors_mut() else {
+            return;
+        };
+        if let Some(entry) = monitors.iter_mut().find(|m| m.tool_use_id == tool_use_id)
             && entry.task_id.is_none()
         {
             entry.task_id = Some(task_id);
@@ -113,13 +120,17 @@ impl super::App {
         task_id: &str,
         status: crate::app::state::types::MonitorStatus,
     ) {
-        let Some(entry) =
-            self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
-        else {
-            return;
+        let tool_use_id = {
+            let Some(monitors) = self.monitors_mut() else {
+                return;
+            };
+            let Some(entry) = monitors.iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
+            else {
+                return;
+            };
+            entry.status = status;
+            entry.tool_use_id.clone()
         };
-        entry.status = status;
-        let tool_use_id = entry.tool_use_id.clone();
         self.stamp_monitor_status_on_tool_call(&tool_use_id, status);
     }
 
@@ -134,8 +145,10 @@ impl super::App {
         let Some((msg_idx, block_idx)) = self.lookup_tool_call(tool_use_id) else {
             return;
         };
-        let Some(MessageBlock::ToolCall(tc)) =
-            self.active_messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
+        let Some(MessageBlock::ToolCall(tc)) = self
+            .active_messages_mut()
+            .and_then(|messages| messages.get_mut(msg_idx))
+            .and_then(|m| m.blocks.get_mut(block_idx))
         else {
             return;
         };
@@ -173,9 +186,10 @@ impl super::App {
     /// overwrites cleanly so repeated `task_notification` events
     /// don't drift the entry's source-of-truth.
     pub fn set_monitor_output_file_by_task_id(&mut self, task_id: &str, path: std::path::PathBuf) {
-        if let Some(entry) =
-            self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
-        {
+        let Some(monitors) = self.monitors_mut() else {
+            return;
+        };
+        if let Some(entry) = monitors.iter_mut().find(|m| m.task_id.as_deref() == Some(task_id)) {
             entry.output_file = Some(path);
         }
     }
@@ -199,8 +213,10 @@ impl super::App {
         // tool_use_id so the chat-tail stamp below can find the
         // matching ToolCallInfo through `tool_call_index`.
         let tool_use_id = {
-            let Some(entry) =
-                self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
+            let Some(monitors) = self.monitors_mut() else {
+                return;
+            };
+            let Some(entry) = monitors.iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
             else {
                 return;
             };
@@ -220,8 +236,10 @@ impl super::App {
         let Some((msg_idx, block_idx)) = self.lookup_tool_call(&tool_use_id) else {
             return;
         };
-        let Some(MessageBlock::ToolCall(tc)) =
-            self.active_messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
+        let Some(MessageBlock::ToolCall(tc)) = self
+            .active_messages_mut()
+            .and_then(|messages| messages.get_mut(msg_idx))
+            .and_then(|m| m.blocks.get_mut(block_idx))
         else {
             return;
         };
@@ -271,8 +289,10 @@ impl super::App {
     /// `task_updated terminal -> task_notification with output_file`
     /// wire ordering can stamp the tail before the entry gets drained.
     pub fn clear_monitors_if_all_terminal(&mut self) {
-        let monitors = self.monitors_mut();
-        if !monitors.is_empty() && monitors.iter().all(|m| !m.is_running()) {
+        if let Some(monitors) = self.monitors_mut()
+            && !monitors.is_empty()
+            && monitors.iter().all(|m| !m.is_running())
+        {
             monitors.clear();
         }
     }
@@ -295,7 +315,7 @@ mod tests {
         let task_id = "task-mon-1";
 
         // Seed the active session's MonitorEntry.
-        app.monitors_mut().push(MonitorEntry {
+        app.monitors_mut().expect("active session").push(MonitorEntry {
             tool_use_id: tool_use_id.to_owned(),
             task_id: Some(task_id.to_owned()),
             description: "demo".to_owned(),
@@ -341,11 +361,13 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc_info))],
         ));
-        let msg_idx = app.messages().len() - 1;
+        let msg_idx = app.messages().expect("active session").len() - 1;
         app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
         let initial_layout_epoch = {
             let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
-            let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+            let MessageBlock::ToolCall(tc) =
+                &app.messages().expect("active session")[mi].blocks[bi]
+            else {
                 panic!("expected ToolCall block");
             };
             tc.layout_epoch
@@ -357,7 +379,8 @@ mod tests {
 
         // Assert: monitor_output_tail carries the LAST 5 lines.
         let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
-        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[mi].blocks[bi]
+        else {
             panic!("expected ToolCall block");
         };
         assert_eq!(
@@ -385,7 +408,7 @@ mod tests {
         let mut app = App::test_default();
         let tool_use_id = "tu-mon-2";
         let task_id = "task-mon-2";
-        app.monitors_mut().push(MonitorEntry {
+        app.monitors_mut().expect("active session").push(MonitorEntry {
             tool_use_id: tool_use_id.to_owned(),
             task_id: Some(task_id.to_owned()),
             description: "demo".to_owned(),
@@ -428,7 +451,7 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc_info))],
         ));
-        let msg_idx = app.messages().len() - 1;
+        let msg_idx = app.messages().expect("active session").len() - 1;
         app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
 
         app.replace_monitor_output_tail_by_task_id(
@@ -437,7 +460,8 @@ mod tests {
         );
 
         let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
-        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[mi].blocks[bi]
+        else {
             panic!("expected ToolCall block");
         };
         assert_eq!(
@@ -456,7 +480,7 @@ mod tests {
         let mut app = App::test_default();
         let tool_use_id = "tu-mon-3";
         let task_id = "task-mon-3";
-        app.monitors_mut().push(MonitorEntry {
+        app.monitors_mut().expect("active session").push(MonitorEntry {
             tool_use_id: tool_use_id.to_owned(),
             task_id: Some(task_id.to_owned()),
             description: "demo".to_owned(),
@@ -499,7 +523,7 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc_info))],
         ));
-        let msg_idx = app.messages().len() - 1;
+        let msg_idx = app.messages().expect("active session").len() - 1;
         app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
 
         let lines = vec!["alpha".to_owned(), "beta".to_owned()];
@@ -508,7 +532,9 @@ mod tests {
         app.replace_monitor_output_tail_by_task_id(task_id, &lines);
         let epoch_after_first = {
             let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
-            let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+            let MessageBlock::ToolCall(tc) =
+                &app.messages().expect("active session")[mi].blocks[bi]
+            else {
                 panic!("expected ToolCall block");
             };
             assert_eq!(tc.monitor_output_tail, lines);
@@ -519,7 +545,9 @@ mod tests {
         app.replace_monitor_output_tail_by_task_id(task_id, &lines);
         let epoch_after_unchanged = {
             let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
-            let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+            let MessageBlock::ToolCall(tc) =
+                &app.messages().expect("active session")[mi].blocks[bi]
+            else {
                 panic!("expected ToolCall block");
             };
             tc.layout_epoch
@@ -533,7 +561,8 @@ mod tests {
         let changed = vec!["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()];
         app.replace_monitor_output_tail_by_task_id(task_id, &changed);
         let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
-        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[mi].blocks[bi]
+        else {
             panic!("expected ToolCall block");
         };
         assert_eq!(tc.monitor_output_tail, changed, "a changed tail must re-stamp");

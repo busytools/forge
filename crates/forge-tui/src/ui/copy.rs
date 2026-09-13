@@ -283,15 +283,18 @@ mod tests {
             .draw(|frame| {
                 let spinner = idle_spinner();
                 let content_area = chat_content_area(Rect::new(0, 0, width, height));
-                let _ = app.active_viewport_mut().on_frame(content_area.width, content_area.height);
+                let _ = app
+                    .active_viewport_mut()
+                    .expect("active session")
+                    .on_frame(content_area.width, content_area.height);
                 update_visual_heights(
                     app,
                     &spinner,
                     content_area.width,
                     usize::from(content_area.height),
                 );
-                app.active_viewport_mut().rebuild_prefix_sums();
-                let total_h = app.viewport().total_message_height();
+                app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+                let total_h = app.viewport().expect("active session").total_message_height();
                 render_scrolled(
                     frame,
                     content_area,
@@ -356,7 +359,7 @@ mod tests {
     #[test]
     fn a_wrapped_user_paragraph_copies_as_one_line() {
         let mut app = App::test_default();
-        *app.active_messages_mut() =
+        *app.active_messages_mut().expect("active session") =
             vec![chat_message(MessageRole::User, "the quick brown fox jumps over the lazy dog")];
         draw_chat(&mut app, 31, 12);
 
@@ -371,7 +374,8 @@ mod tests {
     #[test]
     fn a_user_newline_survives_copy() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(MessageRole::User, "one\ntwo")];
+        *app.active_messages_mut().expect("active session") =
+            vec![chat_message(MessageRole::User, "one\ntwo")];
         draw_chat(&mut app, 31, 12);
 
         assert_eq!(copy_all(&mut app, 12), Some("one\ntwo".to_owned()));
@@ -383,7 +387,7 @@ mod tests {
     #[test]
     fn a_code_block_copies_verbatim() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(
+        *app.active_messages_mut().expect("active session") = vec![chat_message(
             MessageRole::User,
             "look:\n```rust\nlet value = some_function(argument_one, argument_two);\n\nlet b = 2;\n```",
         )];
@@ -404,7 +408,7 @@ mod tests {
     #[test]
     fn a_wrapped_indented_code_line_keeps_its_indent_once() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(
+        *app.active_messages_mut().expect("active session") = vec![chat_message(
             MessageRole::User,
             "```rust\n    let value = some_function(argument_one, argument_two);\n```",
         )];
@@ -422,7 +426,7 @@ mod tests {
     #[test]
     fn a_wrapped_list_item_copies_as_its_source_line() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(
+        *app.active_messages_mut().expect("active session") = vec![chat_message(
             MessageRole::User,
             "- top level item\n  - nested child entry with a long text that wraps here",
         )];
@@ -442,7 +446,8 @@ mod tests {
     #[test]
     fn the_user_label_does_not_copy() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(MessageRole::User, "hello")];
+        *app.active_messages_mut().expect("active session") =
+            vec![chat_message(MessageRole::User, "hello")];
         draw_chat(&mut app, 31, 12);
 
         assert_eq!(copy_all(&mut app, 12), Some("hello".to_owned()));
@@ -453,7 +458,7 @@ mod tests {
     #[test]
     fn a_wrapped_assistant_paragraph_copies_as_one_line() {
         let mut app = App::test_default();
-        *app.active_messages_mut() =
+        *app.active_messages_mut().expect("active session") =
             vec![chat_message(MessageRole::Assistant, "alpha beta gamma delta")];
         draw_chat(&mut app, 13, 12);
 
@@ -465,7 +470,8 @@ mod tests {
     #[test]
     fn assistant_paragraphs_copy_as_separate_lines() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(MessageRole::Assistant, "one\n\ntwo")];
+        *app.active_messages_mut().expect("active session") =
+            vec![chat_message(MessageRole::Assistant, "one\n\ntwo")];
         draw_chat(&mut app, 31, 12);
 
         assert_eq!(copy_all(&mut app, 12), Some("one\ntwo".to_owned()));
@@ -477,7 +483,7 @@ mod tests {
     fn tool_body_prefixes_do_not_copy() {
         let mut app = App::test_default();
         app.tools_collapsed = false;
-        *app.active_messages_mut() =
+        *app.active_messages_mut().expect("active session") =
             vec![tool_call_message("first output line\nsecond output line")];
         draw_chat(&mut app, 41, 12);
 
@@ -493,7 +499,8 @@ mod tests {
     #[test]
     fn a_partial_row_selection_slices_past_the_chrome() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(MessageRole::User, "hello world")];
+        *app.active_messages_mut().expect("active session") =
+            vec![chat_message(MessageRole::User, "hello world")];
         draw_chat(&mut app, 31, 12);
 
         let selection = SelectionState {
@@ -510,7 +517,8 @@ mod tests {
     #[test]
     fn a_selection_starting_in_the_gutter_takes_the_whole_text() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(MessageRole::User, "hello")];
+        *app.active_messages_mut().expect("active session") =
+            vec![chat_message(MessageRole::User, "hello")];
         draw_chat(&mut app, 31, 12);
 
         let selection = SelectionState {
@@ -528,7 +536,7 @@ mod tests {
     #[test]
     fn a_selection_stopped_on_a_continuation_row_takes_just_that_row() {
         let mut app = App::test_default();
-        *app.active_messages_mut() =
+        *app.active_messages_mut().expect("active session") =
             vec![chat_message(MessageRole::User, "the quick brown fox jumps over the lazy dog")];
         draw_chat(&mut app, 31, 12);
 
@@ -548,7 +556,7 @@ mod tests {
     #[test]
     fn a_scrolled_selection_copies_the_rows_it_covers() {
         let mut app = App::test_default();
-        *app.active_messages_mut() =
+        *app.active_messages_mut().expect("active session") =
             (0..20).map(|i| chat_message(MessageRole::User, &format!("body{i:02}"))).collect();
         draw_chat(&mut app, 31, 7);
 
@@ -569,7 +577,7 @@ mod tests {
     #[test]
     fn two_turns_copy_as_their_bodies() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             chat_message(MessageRole::User, "first"),
             chat_message(MessageRole::User, "second"),
         ];
@@ -585,7 +593,8 @@ mod tests {
     fn an_over_wide_token_copies_back_intact() {
         let text = format!("see https://example.com/{}x/end for details", "a".repeat(120));
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(MessageRole::User, &text)];
+        *app.active_messages_mut().expect("active session") =
+            vec![chat_message(MessageRole::User, &text)];
         draw_chat(&mut app, 31, 24);
 
         assert_eq!(copy_all(&mut app, 24), Some(text));
@@ -597,7 +606,8 @@ mod tests {
     fn a_wrapped_accented_paragraph_copies_as_one_line() {
         let text = "héllo wörld foo bar and several more words to force a wrap somewhere";
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(MessageRole::User, text)];
+        *app.active_messages_mut().expect("active session") =
+            vec![chat_message(MessageRole::User, text)];
         draw_chat(&mut app, 31, 12);
 
         assert_eq!(copy_all(&mut app, 12), Some(text.to_owned()));
@@ -611,7 +621,7 @@ mod tests {
         let body = "let value = some_function(argument_one, argument_two);";
         let mut app = App::test_default();
         app.tools_collapsed = false;
-        *app.active_messages_mut() = vec![tool_call_message(body)];
+        *app.active_messages_mut().expect("active session") = vec![tool_call_message(body)];
         draw_chat(&mut app, 41, 12);
 
         assert_eq!(copy_all(&mut app, 12), Some(body.to_owned()));
@@ -622,7 +632,8 @@ mod tests {
     #[test]
     fn degenerate_selections_copy_nothing() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![chat_message(MessageRole::User, "hello")];
+        *app.active_messages_mut().expect("active session") =
+            vec![chat_message(MessageRole::User, "hello")];
         draw_chat(&mut app, 31, 12);
 
         let collapsed = SelectionState {
@@ -645,7 +656,7 @@ mod tests {
     #[test]
     fn an_empty_chat_copies_nothing() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![crate::app::ChatMessage::new(
+        *app.active_messages_mut().expect("active session") = vec![crate::app::ChatMessage::new(
             MessageRole::System(Some(SystemSeverity::Info)),
             Vec::new(),
         )];

@@ -762,8 +762,9 @@ impl App {
 
     /// Increment the active session's scope epoch.
     pub fn bump_session_scope_epoch(&mut self) {
-        let bucket = self.active_bucket_mut();
-        bucket.session_scope_epoch = bucket.session_scope_epoch.saturating_add(1);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.session_scope_epoch = bucket.session_scope_epoch.saturating_add(1);
+        }
     }
 
     /// Mark one presented frame at `now`, updating smoothed FPS.
@@ -787,7 +788,9 @@ impl App {
     }
 
     pub(crate) fn sync_after_message_tail_changed(&mut self, msg_idx: usize) {
-        if let Some(message) = self.active_messages_mut().get_mut(msg_idx) {
+        if let Some(message) =
+            self.active_messages_mut().and_then(|messages| messages.get_mut(msg_idx))
+        {
             message.invalidate_render_cache();
         }
         self.sync_render_cache_message_tail(msg_idx);
@@ -804,17 +807,23 @@ impl App {
         self.last_invalidation_level.set(Some(level));
         match level {
             LayoutInvalidation::MessageChanged(idx) => {
-                self.active_viewport_mut().invalidate_message(idx);
+                if let Some(viewport) = self.active_viewport_mut() {
+                    viewport.invalidate_message(idx);
+                }
             }
             LayoutInvalidation::MessagesFrom(idx) => {
-                self.active_viewport_mut().invalidate_messages_from(idx);
+                if let Some(viewport) = self.active_viewport_mut() {
+                    viewport.invalidate_messages_from(idx);
+                }
             }
             LayoutInvalidation::Global => {
-                if self.messages().is_empty() {
+                if self.messages().is_none_or(<[ChatMessage]>::is_empty) {
                     return;
                 }
-                self.active_viewport_mut().invalidate_all_messages(LayoutRemeasureReason::Global);
-                self.active_viewport_mut().bump_layout_generation();
+                if let Some(viewport) = self.active_viewport_mut() {
+                    viewport.invalidate_all_messages(LayoutRemeasureReason::Global);
+                    viewport.bump_layout_generation();
+                }
             }
             LayoutInvalidation::Resize => {
                 // Resize is handled by viewport.on_frame(). This arm exists
@@ -855,10 +864,12 @@ impl App {
     where
         I: IntoIterator<Item = usize>,
     {
-        let unique: BTreeSet<_> =
-            indices.into_iter().filter(|&idx| idx < self.messages().len()).collect();
+        let message_count = self.messages().map_or(0, <[ChatMessage]>::len);
+        let unique: BTreeSet<_> = indices.into_iter().filter(|&idx| idx < message_count).collect();
         for idx in unique {
-            self.active_viewport_mut().invalidate_message(idx);
+            if let Some(viewport) = self.active_viewport_mut() {
+                viewport.invalidate_message(idx);
+            }
         }
     }
 
@@ -869,15 +880,23 @@ impl App {
     /// instead of `enforce_history_retention()` at all non-test call sites.
     pub fn enforce_history_retention_tracked(&mut self) {
         let stats = self.enforce_history_retention();
-        let policy = self.history_retention();
-        let should_log = self.cache_metrics_mut().record_history_enforcement(&stats, policy);
-        if should_log {
+        let Some(policy) = self.history_retention() else {
+            return;
+        };
+        let Some(cache_metrics) = self.cache_metrics_mut() else {
+            return;
+        };
+        let should_log = cache_metrics.record_history_enforcement(&stats, policy);
+        if should_log
+            && let (Some(retention_stats), Some(metrics), Some(viewport)) =
+                (self.history_retention_stats(), self.cache_metrics(), self.viewport())
+        {
             let snap = cache_metrics::build_snapshot(
                 &self.render_cache_budget,
-                self.history_retention_stats(),
+                retention_stats,
                 policy,
-                self.cache_metrics(),
-                self.viewport(),
+                metrics,
+                viewport,
                 0, // entry_count not needed for history-only log
                 0,
                 stats.dropped_messages,
@@ -1052,7 +1071,7 @@ impl App {
         &mut self,
         snapshot: forge_workspace::env::processes::ProcessSnapshot,
     ) {
-        self.active_bucket_mut().process_snapshot = Some(snapshot);
+        self.active_bucket_mut().expect("active session").process_snapshot = Some(snapshot);
     }
 }
 
@@ -1150,103 +1169,118 @@ mod tests {
     #[test]
     fn invalidate_single_tail_preserves_prefix_sums() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
-        app.active_messages_mut().push(user_text_message("b"));
-        app.active_messages_mut().push(user_text_message("c"));
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().set_message_height(0, 5);
-        app.active_viewport_mut().set_message_height(1, 10);
-        app.active_viewport_mut().set_message_height(2, 3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("b"));
+        app.active_messages_mut().expect("active session").push(user_text_message("c"));
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 5);
+        app.active_viewport_mut().expect("active session").set_message_height(1, 10);
+        app.active_viewport_mut().expect("active session").set_message_height(2, 3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(2)); // tail
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(2));
-        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(2));
-        assert_eq!(app.viewport().prefix_sums_width, 0);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(2)
+        );
+        assert_eq!(app.active_viewport_mut().expect("active session").prefix_dirty_from(), Some(2));
+        assert_eq!(app.viewport().expect("active session").prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_single_nontail_invalidates_prefix_sums() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
-        app.active_messages_mut().push(user_text_message("b"));
-        app.active_messages_mut().push(user_text_message("c"));
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().set_message_height(0, 5);
-        app.active_viewport_mut().set_message_height(1, 10);
-        app.active_viewport_mut().set_message_height(2, 3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("b"));
+        app.active_messages_mut().expect("active session").push(user_text_message("c"));
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 5);
+        app.active_viewport_mut().expect("active session").set_message_height(1, 10);
+        app.active_viewport_mut().expect("active session").set_message_height(2, 3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(1)); // non-tail
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(1));
-        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(1));
-        assert_eq!(app.viewport().prefix_sums_width, 0);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(1)
+        );
+        assert_eq!(app.active_viewport_mut().expect("active session").prefix_dirty_from(), Some(1));
+        assert_eq!(app.viewport().expect("active session").prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_from_always_invalidates_prefix_sums() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
-        app.active_messages_mut().push(user_text_message("b"));
-        app.active_messages_mut().push(user_text_message("c"));
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().set_message_height(0, 5);
-        app.active_viewport_mut().set_message_height(1, 10);
-        app.active_viewport_mut().set_message_height(2, 3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
-        assert_ne!(app.viewport().prefix_sums_width, 0);
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("b"));
+        app.active_messages_mut().expect("active session").push(user_text_message("c"));
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 5);
+        app.active_viewport_mut().expect("active session").set_message_height(1, 10);
+        app.active_viewport_mut().expect("active session").set_message_height(2, 3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        assert_ne!(app.viewport().expect("active session").prefix_sums_width, 0);
 
         // From at tail index still invalidates prefix sums (unlike Single).
         app.invalidate_layout(InvalidationLevel::MessagesFrom(2));
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(2));
-        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(2));
-        assert_eq!(app.viewport().prefix_sums_width, 0);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(2)
+        );
+        assert_eq!(app.active_viewport_mut().expect("active session").prefix_dirty_from(), Some(2));
+        assert_eq!(app.viewport().expect("active session").prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_from_zero_matches_old_mark_all() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
-        app.active_messages_mut().push(user_text_message("b"));
-        app.active_messages_mut().push(user_text_message("c"));
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().set_message_height(0, 5);
-        app.active_viewport_mut().set_message_height(1, 10);
-        app.active_viewport_mut().set_message_height(2, 3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("b"));
+        app.active_messages_mut().expect("active session").push(user_text_message("c"));
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 5);
+        app.active_viewport_mut().expect("active session").set_message_height(1, 10);
+        app.active_viewport_mut().expect("active session").set_message_height(2, 3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
-        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(0));
-        assert_eq!(app.viewport().prefix_sums_width, 0);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(0)
+        );
+        assert_eq!(app.active_viewport_mut().expect("active session").prefix_dirty_from(), Some(0));
+        assert_eq!(app.viewport().expect("active session").prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_global_bumps_generation() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
-        app.active_messages_mut().push(user_text_message("b"));
-        app.active_messages_mut().push(user_text_message("c"));
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().sync_message_count(3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
-        let gen_before = app.viewport().layout_generation;
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("b"));
+        app.active_messages_mut().expect("active session").push(user_text_message("c"));
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").sync_message_count(3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        let gen_before = app.viewport().expect("active session").layout_generation;
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
-        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(0));
-        assert_eq!(app.viewport().prefix_sums_width, 0);
-        assert_eq!(app.viewport().layout_generation, gen_before + 1);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(0)
+        );
+        assert_eq!(app.active_viewport_mut().expect("active session").prefix_dirty_from(), Some(0));
+        assert_eq!(app.viewport().expect("active session").prefix_sums_width, 0);
+        assert_eq!(app.viewport().expect("active session").layout_generation, gen_before + 1);
     }
 
     /// #310 architectural-fix regression-lock: `invalidate_layout`
@@ -1260,7 +1294,7 @@ mod tests {
     #[test]
     fn invalidate_layout_sets_needs_redraw_for_message_changed() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
         app.needs_redraw = false;
         app.invalidate_layout(InvalidationLevel::MessageChanged(0));
         assert!(
@@ -1272,7 +1306,7 @@ mod tests {
     #[test]
     fn invalidate_layout_sets_needs_redraw_for_messages_from() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
         app.needs_redraw = false;
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
         assert!(app.needs_redraw, "invalidate_layout(MessagesFrom) must set needs_redraw");
@@ -1281,7 +1315,7 @@ mod tests {
     #[test]
     fn invalidate_layout_sets_needs_redraw_for_global() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
         app.needs_redraw = false;
         app.invalidate_layout(InvalidationLevel::Global);
         assert!(app.needs_redraw, "invalidate_layout(Global) must set needs_redraw");
@@ -1290,13 +1324,13 @@ mod tests {
     #[test]
     fn invalidate_global_noop_on_empty() {
         let mut app = make_test_app();
-        assert!(app.messages().is_empty());
-        let gen_before = app.viewport().layout_generation;
+        assert!(app.messages().expect("active session").is_empty());
+        let gen_before = app.viewport().expect("active session").layout_generation;
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert!(app.active_viewport_mut().oldest_stale_index().is_none());
-        assert_eq!(app.viewport().layout_generation, gen_before);
+        assert!(app.active_viewport_mut().expect("active session").oldest_stale_index().is_none());
+        assert_eq!(app.viewport().expect("active session").layout_generation, gen_before);
     }
 
     #[test]
@@ -1304,16 +1338,19 @@ mod tests {
         let mut app = make_test_app();
         // Need enough messages so all indices are non-tail for consistent behavior.
         for _ in 0..10 {
-            app.active_messages_mut().push(user_text_message("x"));
+            app.active_messages_mut().expect("active session").push(user_text_message("x"));
         }
-        app.active_viewport_mut().sync_message_count(10);
-        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().expect("active session").sync_message_count(10);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(5));
         app.invalidate_layout(InvalidationLevel::MessageChanged(2));
         app.invalidate_layout(InvalidationLevel::MessageChanged(7));
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(2));
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(2)
+        );
     }
 
     #[test]

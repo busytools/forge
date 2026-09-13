@@ -356,7 +356,7 @@ pub(super) fn hydrate_threads(app: &mut App) {
 /// render from a field instead of querying the store per frame.
 fn park_replies_waiting(app: &mut App, branch: &str, threads: &[ReviewThread]) {
     let count = threads.iter().filter(|t| t.awaits_reviewer()).count();
-    if let Some(session) = app.try_active_bucket_mut() {
+    if let Some(session) = app.active_bucket_mut() {
         session.review_replies_waiting = crate::app::ReviewRepliesWaiting::merge(
             session.review_replies_waiting.as_ref(),
             branch,

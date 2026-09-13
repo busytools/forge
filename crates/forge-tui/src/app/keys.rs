@@ -311,10 +311,14 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Char('?'), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             if app.is_help_active() {
                 app.help_open = false;
-                app.input_mut().clear();
+                if let Some(input) = app.input_mut() {
+                    input.clear();
+                }
             } else {
                 app.help_open = true;
-                app.input_mut().set_text("?");
+                if let Some(input) = app.input_mut() {
+                    input.set_text("?");
+                }
             }
             true
         }
@@ -327,11 +331,15 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Up, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
-            app.active_viewport_mut().scroll_up(1);
+            if let Some(viewport) = app.active_viewport_mut() {
+                viewport.scroll_up(1);
+            }
             true
         }
         (KeyCode::Down, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
-            app.active_viewport_mut().scroll_down(1);
+            if let Some(viewport) = app.active_viewport_mut() {
+                viewport.scroll_down(1);
+            }
             true
         }
         _ => false,
@@ -395,11 +403,15 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Up, m) if m == KeyModifiers::CONTROL => {
-            app.active_viewport_mut().scroll_up(1);
+            if let Some(viewport) = app.active_viewport_mut() {
+                viewport.scroll_up(1);
+            }
             true
         }
         (KeyCode::Down, m) if m == KeyModifiers::CONTROL => {
-            app.active_viewport_mut().scroll_down(1);
+            if let Some(viewport) = app.active_viewport_mut() {
+                viewport.scroll_down(1);
+            }
             true
         }
         _ => false,
@@ -415,19 +427,20 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
 
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
     sync_help_focus(app);
-    let input_version_before = app.input().version;
+    let input_version_before = app.input().map(|input| input.version);
 
     if should_ignore_key_during_paste(app, key) {
         return false;
     }
 
     let changed = handle_normal_key_actions(app, key);
+    let input_version_after = app.input().map(|input| input.version);
 
-    if app.input().version != input_version_before {
+    if input_version_after != input_version_before {
         app.sync_help_open_with_input();
     }
 
-    if app.input().version != input_version_before && should_sync_autocomplete_after_key(app, key) {
+    if input_version_after != input_version_before && should_sync_autocomplete_after_key(app, key) {
         mention::sync_with_cursor(app);
         slash::sync_with_cursor(app);
         subagent::sync_with_cursor(app);
@@ -443,10 +456,13 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
 /// followed by a trailing newline, which would otherwise read as a
 /// submit (chat) or a comment save (/diff) instead of pasted text.
 pub(super) fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
-    if app.pending_submit().is_some() && is_editing_like_key(key) {
-        *app.pending_submit_mut() = None;
+    if app.pending_submit().is_some()
+        && is_editing_like_key(key)
+        && let Some(slot) = app.pending_submit_mut()
+    {
+        *slot = None;
     }
-    !app.pending_paste_text().is_empty() && is_editing_like_key(key)
+    app.pending_paste_text().is_some_and(|text| !text.is_empty()) && is_editing_like_key(key)
 }
 
 fn is_editing_like_key(key: KeyEvent) -> bool {
@@ -505,10 +521,14 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
     if crate::app::dictate::abandon_take(app) {
         return true;
     }
-    *app.pending_submit_mut() = None;
+    if let Some(slot) = app.pending_submit_mut() {
+        *slot = None;
+    }
     // Clear any pending image attachments on Escape.
-    if !app.pending_images().is_empty() {
-        app.pending_images_mut().clear();
+    if app.pending_images().is_some_and(|images| !images.is_empty()) {
+        if let Some(images) = app.pending_images_mut() {
+            images.clear();
+        }
         app.needs_redraw = true;
     }
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
@@ -547,7 +567,12 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
     if !key.modifiers.contains(KeyModifiers::SHIFT)
         && !key.modifiers.contains(KeyModifiers::CONTROL)
     {
-        *app.pending_submit_mut() = Some(app.input().snapshot());
+        let Some(snapshot) = app.input().map(super::input::InputState::snapshot) else {
+            return false;
+        };
+        if let Some(slot) = app.pending_submit_mut() {
+            *slot = Some(snapshot);
+        }
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "deferred_submit_armed",
@@ -556,14 +581,16 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
         );
         return false;
     }
-    *app.pending_submit_mut() = None;
+    if let Some(slot) = app.pending_submit_mut() {
+        *slot = None;
+    }
     tracing::debug!(
         target: crate::logging::targets::APP_INPUT,
         event_name = "explicit_newline_inserted",
         message = "explicit newline inserted instead of submit",
         outcome = "success",
     );
-    app.input_mut().textarea_insert_newline()
+    app.input_mut().is_some_and(super::input::InputState::textarea_insert_newline)
 }
 
 fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
@@ -579,17 +606,21 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
             if m.contains(KeyModifiers::SHIFT)
                 && is_cmd_shortcut(m.difference(KeyModifiers::SHIFT)) =>
         {
-            app.input_mut().textarea_redo()
+            app.input_mut().is_some_and(super::input::InputState::textarea_redo)
         }
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('Z'), m) if is_cmd_shortcut(m) => app.input_mut().textarea_redo(),
+        (KeyCode::Char('Z'), m) if is_cmd_shortcut(m) => {
+            app.input_mut().is_some_and(super::input::InputState::textarea_redo)
+        }
         // macOS: Cmd+Z undo. Linux/Windows: Ctrl+Z undo.
         (KeyCode::Char('z'), m) if is_cmd_shortcut(m) && !m.contains(KeyModifiers::SHIFT) => {
-            app.input_mut().textarea_undo()
+            app.input_mut().is_some_and(super::input::InputState::textarea_undo)
         }
         // Linux/Windows: Ctrl+Y redo.
         #[cfg(not(target_os = "macos"))]
-        (KeyCode::Char('y'), m) if is_cmd_shortcut(m) => app.input_mut().textarea_redo(),
+        (KeyCode::Char('y'), m) if is_cmd_shortcut(m) => {
+            app.input_mut().is_some_and(super::input::InputState::textarea_redo)
+        }
         _ => false,
     }
 }
@@ -598,11 +629,11 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         // Word left: Alt+Left on every platform (WORD_NAV_MOD).
         (KeyCode::Left, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
-            app.input_mut().textarea_move_word_left()
+            app.input_mut().is_some_and(super::input::InputState::textarea_move_word_left)
         }
         // Word right: Alt+Right on every platform.
         (KeyCode::Right, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
-            app.input_mut().textarea_move_word_right()
+            app.input_mut().is_some_and(super::input::InputState::textarea_move_word_right)
         }
         // macOS readline-style fallbacks: many terminals (Ghostty,
         // iTerm2, Terminal.app) send Option+Left as ESC+b and
@@ -610,28 +641,40 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
         // Crossterm decodes those as Char('b')/Char('f') with ALT.
         #[cfg(target_os = "macos")]
         (KeyCode::Char('b'), m) if m == KeyModifiers::ALT => {
-            app.input_mut().textarea_move_word_left()
+            app.input_mut().is_some_and(super::input::InputState::textarea_move_word_left)
         }
         #[cfg(target_os = "macos")]
         (KeyCode::Char('f'), m) if m == KeyModifiers::ALT => {
-            app.input_mut().textarea_move_word_right()
+            app.input_mut().is_some_and(super::input::InputState::textarea_move_word_right)
         }
-        (KeyCode::Left, _) => app.input_mut().textarea_move_left(),
-        (KeyCode::Right, _) => app.input_mut().textarea_move_right(),
+        (KeyCode::Left, _) => {
+            app.input_mut().is_some_and(super::input::InputState::textarea_move_left)
+        }
+        (KeyCode::Right, _) => {
+            app.input_mut().is_some_and(super::input::InputState::textarea_move_right)
+        }
         (KeyCode::Up, _) => {
-            if !try_move_input_cursor_up(app) {
-                app.active_viewport_mut().scroll_up(1);
+            if !try_move_input_cursor_up(app)
+                && let Some(viewport) = app.active_viewport_mut()
+            {
+                viewport.scroll_up(1);
             }
             true
         }
         (KeyCode::Down, _) => {
-            if !try_move_input_cursor_down(app) {
-                app.active_viewport_mut().scroll_down(1);
+            if !try_move_input_cursor_down(app)
+                && let Some(viewport) = app.active_viewport_mut()
+            {
+                viewport.scroll_down(1);
             }
             true
         }
-        (KeyCode::Home, _) => app.input_mut().textarea_move_home(),
-        (KeyCode::End, _) => app.input_mut().textarea_move_end(),
+        (KeyCode::Home, _) => {
+            app.input_mut().is_some_and(super::input::InputState::textarea_move_home)
+        }
+        (KeyCode::End, _) => {
+            app.input_mut().is_some_and(super::input::InputState::textarea_move_end)
+        }
         _ => false,
     }
 }
@@ -653,7 +696,7 @@ fn handle_prompt_suggestion_key(app: &mut App, key: KeyEvent) -> bool {
     if !matches!(key.code, KeyCode::Tab)
         || !key.modifiers.is_empty()
         || app.focus_owner() != FocusOwner::Input
-        || !app.input().is_empty()
+        || app.input().is_some_and(|input| !input.is_empty())
     {
         return false;
     }
@@ -665,7 +708,9 @@ fn handle_prompt_suggestion_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     app.set_prompt_suggestion(None);
-    app.input_mut().set_text(&suggestion);
+    if let Some(input) = app.input_mut() {
+        input.set_text(&suggestion);
+    }
     app.sync_help_open_with_input();
     true
 }
@@ -767,7 +812,9 @@ fn handle_clipboard_paste_key(#[allow(unused_variables)] app: &mut App, key: Key
                 Some(SystemSeverity::Warning),
                 "Failed to access the system clipboard.",
             );
-            app.active_viewport_mut().engage_auto_scroll();
+            if let Some(viewport) = app.active_viewport_mut() {
+                viewport.engage_auto_scroll();
+            }
             app.needs_redraw = true;
             tracing::warn!("clipboard_paste: failed to access system clipboard");
             return true;
@@ -777,15 +824,22 @@ fn handle_clipboard_paste_key(#[allow(unused_variables)] app: &mut App, key: Key
         if let Ok(img_data) = clipboard.get_image() {
             match super::clipboard_image::encode_clipboard_image(img_data) {
                 Ok(attachment) => {
-                    app.pending_images_mut().push(attachment);
+                    if let Some(images) = app.pending_images_mut() {
+                        images.push(attachment);
+                    }
                     // Insert badge text at the cursor position so the user (and
                     // the model) can see where images are relative to text.
-                    let idx = app.pending_images().len();
+                    let idx =
+                        app.pending_images().map_or(0, <[forge_primitives::ImageAttachment]>::len);
                     let badge = format!("[Image #{idx}]");
-                    app.input_mut().insert_str(&badge);
+                    if let Some(input) = app.input_mut() {
+                        input.insert_str(&badge);
+                    }
                     app.needs_redraw = true;
                     tracing::debug!(
-                        count = app.pending_images().len(),
+                        count = app
+                            .pending_images()
+                            .map_or(0, <[forge_primitives::ImageAttachment]>::len),
                         "clipboard_paste: attached image from clipboard"
                     );
                     return true;
@@ -796,7 +850,9 @@ fn handle_clipboard_paste_key(#[allow(unused_variables)] app: &mut App, key: Key
                         Some(SystemSeverity::Warning),
                         error.user_message(),
                     );
-                    app.active_viewport_mut().engage_auto_scroll();
+                    if let Some(viewport) = app.active_viewport_mut() {
+                        viewport.engage_auto_scroll();
+                    }
                     app.needs_redraw = true;
                     tracing::warn!("clipboard_paste: image attachment failed: {error:?}");
                     return true;
@@ -821,7 +877,7 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
             if try_delete_image_badge(app, "before") {
                 return true;
             }
-            app.input_mut().textarea_delete_word_before()
+            app.input_mut().is_some_and(super::input::InputState::textarea_delete_word_before)
         }
         // Delete word forward: Alt+Delete on every platform.
         (KeyCode::Delete, m)
@@ -830,19 +886,19 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
             if try_delete_image_badge(app, "after") {
                 return true;
             }
-            app.input_mut().textarea_delete_word_after()
+            app.input_mut().is_some_and(super::input::InputState::textarea_delete_word_after)
         }
         (KeyCode::Backspace, _) => {
             if try_delete_image_badge(app, "before") {
                 return true;
             }
-            app.input_mut().textarea_delete_char_before()
+            app.input_mut().is_some_and(super::input::InputState::textarea_delete_char_before)
         }
         (KeyCode::Delete, _) => {
             if try_delete_image_badge(app, "after") {
                 return true;
             }
-            app.input_mut().textarea_delete_char_after()
+            app.input_mut().is_some_and(super::input::InputState::textarea_delete_char_after)
         }
         _ => false,
     }
@@ -852,14 +908,19 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
 /// entire badge, remove the associated image from `pending_images`, and
 /// renumber remaining badges. Returns `true` if a badge was deleted.
 fn try_delete_image_badge(app: &mut App, direction: &str) -> bool {
-    let Some(one_based_idx) = app.input_mut().delete_image_badge(direction) else {
+    let Some(one_based_idx) = app.input_mut().and_then(|input| input.delete_image_badge(direction))
+    else {
         return false;
     };
     let array_idx = one_based_idx.saturating_sub(1);
-    if array_idx < app.pending_images().len() {
-        app.pending_images_mut().remove(array_idx);
+    if app.pending_images().is_some_and(|images| array_idx < images.len())
+        && let Some(images) = app.pending_images_mut()
+    {
+        images.remove(array_idx);
     }
-    app.input_mut().renumber_image_badges();
+    if let Some(input) = app.input_mut() {
+        input.renumber_image_badges();
+    }
     app.needs_redraw = true;
     true
 }
@@ -880,7 +941,7 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         TypedChar::Inserted => {}
     }
 
-    if c == '?' && app.input().text().trim() == "?" {
+    if c == '?' && app.input().is_some_and(|input| input.text().trim() == "?") {
         app.help_open = true;
     }
 
@@ -897,15 +958,19 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn try_move_input_cursor_up(app: &mut App) -> bool {
-    let before = (app.input().cursor_row(), app.input().cursor_col());
-    let _ = app.input_mut().textarea_move_up();
-    (app.input().cursor_row(), app.input().cursor_col()) != before
+    let Some(before) = app.input().map(|input| (input.cursor_row(), input.cursor_col())) else {
+        return false;
+    };
+    let _ = app.input_mut().is_some_and(super::input::InputState::textarea_move_up);
+    app.input().map(|input| (input.cursor_row(), input.cursor_col())) != Some(before)
 }
 
 fn try_move_input_cursor_down(app: &mut App) -> bool {
-    let before = (app.input().cursor_row(), app.input().cursor_col());
-    let _ = app.input_mut().textarea_move_down();
-    (app.input().cursor_row(), app.input().cursor_col()) != before
+    let Some(before) = app.input().map(|input| (input.cursor_row(), input.cursor_col())) else {
+        return false;
+    };
+    let _ = app.input_mut().is_some_and(super::input::InputState::textarea_move_down);
+    app.input().map(|input| (input.cursor_row(), input.cursor_col())) != Some(before)
 }
 
 fn should_sync_autocomplete_after_key(_app: &App, key: KeyEvent) -> bool {
@@ -1095,12 +1160,13 @@ pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Backspace, _) => {
-            let changed = app.input_mut().textarea_delete_char_before();
+            let changed =
+                app.input_mut().is_some_and(super::input::InputState::textarea_delete_char_before);
             mention::update_query(app);
             changed
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            let changed = app.input_mut().textarea_insert_char(c);
+            let changed = app.input_mut().is_some_and(|input| input.textarea_insert_char(c));
             if c.is_whitespace() {
                 mention::deactivate(app);
             } else {
@@ -1136,12 +1202,13 @@ fn handle_slash_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Backspace, _) => {
-            let changed = app.input_mut().textarea_delete_char_before();
+            let changed =
+                app.input_mut().is_some_and(super::input::InputState::textarea_delete_char_before);
             slash::update_query(app);
             changed
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            let changed = app.input_mut().textarea_insert_char(c);
+            let changed = app.input_mut().is_some_and(|input| input.textarea_insert_char(c));
             slash::update_query(app);
             changed
         }
@@ -1172,12 +1239,13 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Backspace, _) => {
-            let changed = app.input_mut().textarea_delete_char_before();
+            let changed =
+                app.input_mut().is_some_and(super::input::InputState::textarea_delete_char_before);
             subagent::update_query(app);
             changed
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            let changed = app.input_mut().textarea_insert_char(c);
+            let changed = app.input_mut().is_some_and(|input| input.textarea_insert_char(c));
             subagent::update_query(app);
             changed
         }
@@ -1201,7 +1269,7 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
 /// the keyboard shortcut is the global toggle, always.
 pub(super) fn toggle_all_tool_calls(app: &mut App) {
     use crate::app::MessageBlock;
-    if let Some(bucket) = app.try_active_bucket_mut() {
+    if let Some(bucket) = app.active_bucket_mut() {
         for msg in &mut bucket.messages {
             msg.turn_info.expanded = false;
             for block in &mut msg.blocks {
@@ -1316,12 +1384,12 @@ mod tests {
         let mut app = App::test_default();
         let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new());
         msg.turn_info.expanded = true;
-        *app.active_messages_mut() = vec![msg];
+        *app.active_messages_mut().expect("active session") = vec![msg];
 
         toggle_all_tool_calls(&mut app);
 
         assert!(
-            !app.messages()[0].turn_info.expanded,
+            !app.messages().expect("active session")[0].turn_info.expanded,
             "the expanded flag is per-row state like a tool call's own, so collapse-all takes \
              it with the rest rather than leaving one row open",
         );
@@ -1374,9 +1442,7 @@ mod tests {
     #[test]
     fn the_model_picker_captures_its_keys_through_the_modal_dispatch() {
         let mut app = App::test_default();
-        app.try_active_bucket_mut()
-            .expect("test_default seeds an active bucket")
-            .available_models = vec![
+        app.active_bucket_mut().expect("test_default seeds an active bucket").available_models = vec![
             crate::agent::model::AvailableModel::new("a", "A"),
             crate::agent::model::AvailableModel::new("b", "B"),
         ];
@@ -1390,12 +1456,12 @@ mod tests {
             "the navigation key reached the picker",
         );
 
-        app.input_mut().set_text("draft");
+        app.input_mut().expect("active session").set_text("draft");
         let x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
         assert!(dispatch_key_by_focus(&mut app, x), "an unhandled key is still swallowed");
         assert!(app.model_picker.is_some(), "the picker stays open");
         assert_eq!(
-            app.input().text(),
+            app.input().expect("active session").text(),
             "draft",
             "the composer does not receive keys while the modal is open",
         );
@@ -1430,19 +1496,19 @@ mod tests {
         // macOS-only: Linux/Windows redo via Ctrl+Y, not Ctrl+Shift+Z,
         // so the regression class doesn't exist there.
         let mut app = App::test_default();
-        app.input_mut().set_text("a");
+        app.input_mut().expect("active session").set_text("a");
         // Make a delete so we have something to undo, then make
         // another action so we have something to redo.
-        app.input_mut().textarea_insert_char('b');
-        app.input_mut().textarea_undo();
-        let after_undo = app.input().text();
+        app.input_mut().expect("active session").textarea_insert_char('b');
+        app.input_mut().expect("active session").textarea_undo();
+        let after_undo = app.input().expect("active session").text();
 
         // Cmd+Shift+Z should redo, not undo again.
         let cmd_shift_z = KeyEvent::new(KeyCode::Char('z'), CMD_MOD | KeyModifiers::SHIFT);
         let consumed = handle_history_key(&mut app, cmd_shift_z);
         assert!(consumed, "Cmd+Shift+Z must be consumed by history handler");
         assert_ne!(
-            app.input().text(),
+            app.input().expect("active session").text(),
             after_undo,
             "Cmd+Shift+Z must redo (text changes from the post-undo state), not undo again"
         );
@@ -1453,10 +1519,10 @@ mod tests {
         // Same as above but with Ctrl modifier - exercises the
         // Ctrl-as-Cmd alias on macOS (SSH/Termux clients).
         let mut app = App::test_default();
-        app.input_mut().set_text("a");
-        app.input_mut().textarea_insert_char('b');
-        app.input_mut().textarea_undo();
-        let after_undo = app.input().text();
+        app.input_mut().expect("active session").set_text("a");
+        app.input_mut().expect("active session").textarea_insert_char('b');
+        app.input_mut().expect("active session").textarea_undo();
+        let after_undo = app.input().expect("active session").text();
 
         let ctrl_shift_z =
             KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
@@ -1467,7 +1533,7 @@ mod tests {
         {
             assert!(consumed, "Ctrl+Shift+Z must be consumed by history handler on macOS");
             assert_ne!(
-                app.input().text(),
+                app.input().expect("active session").text(),
                 after_undo,
                 "Ctrl+Shift+Z must redo on macOS, not undo again"
             );
@@ -1482,7 +1548,7 @@ mod tests {
     #[test]
     fn queued_paste_still_blocks_overlapping_key_text() {
         let mut app = App::test_default();
-        *app.pending_paste_text_mut() = "clipboard".to_owned();
+        *app.pending_paste_text_mut().expect("active session") = "clipboard".to_owned();
 
         let blocked = should_ignore_key_during_paste(
             &mut app,
@@ -1514,21 +1580,24 @@ mod tests {
     fn selection_text_for_copy_refreshes_chat_snapshot_before_redraw() {
         let mut app = App::test_default();
         app.status = AppStatus::Running;
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
         ));
         app.bind_active_turn_assistant(0);
         app.rendered_chat_area = Rect::new(0, 0, 20, 6);
-        *app.selection_mut() = Some(SelectionState {
+        *app.selection_mut().expect("active session") = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },
             end: SelectionPoint { row: 0, col: 11 },
             dragging: false,
         });
 
-        if let Some(MessageBlock::Text(block)) =
-            app.active_messages_mut().get_mut(0).and_then(|message| message.blocks.get_mut(0))
+        if let Some(MessageBlock::Text(block)) = app
+            .active_messages_mut()
+            .expect("active session")
+            .get_mut(0)
+            .and_then(|message| message.blocks.get_mut(0))
         {
             block.text.push_str(" world");
             block.markdown.append(" world");
@@ -1542,17 +1611,17 @@ mod tests {
     #[test]
     fn selection_text_for_copy_refreshes_input_snapshot_before_redraw() {
         let mut app = App::test_default();
-        app.input_mut().set_text("hello");
+        app.input_mut().expect("active session").set_text("hello");
         app.rendered_input_area = Rect::new(0, 0, 20, 4);
         app.rendered_input_lines = vec!["hello".to_owned()];
-        *app.selection_mut() = Some(SelectionState {
+        *app.selection_mut().expect("active session") = Some(SelectionState {
             kind: SelectionKind::Input,
             start: SelectionPoint { row: 0, col: 0 },
             end: SelectionPoint { row: 0, col: 11 },
             dragging: false,
         });
 
-        app.input_mut().set_text("hello world");
+        app.input_mut().expect("active session").set_text("hello world");
 
         assert_eq!(selection_text_for_copy(&mut app), Some("hello world".to_owned()));
     }

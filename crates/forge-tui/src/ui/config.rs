@@ -773,7 +773,7 @@ mod tests {
 
         // Switch render below from `render_plugins` to `render_mcp`
         // - this test exercises the MCP detail overlay.
-        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers = vec![forge_primitives::McpServerStatus {
             name: "filesystem".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: Some(forge_primitives::McpServerInfo {
@@ -886,7 +886,7 @@ mod tests {
         // no-session notice.
         app.install_testing_stub();
         app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
-        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers = vec![forge_primitives::McpServerStatus {
             name: "plugin:context7:context7".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: Some(forge_primitives::McpServerInfo {

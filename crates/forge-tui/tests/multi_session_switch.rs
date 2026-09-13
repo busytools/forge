@@ -34,7 +34,7 @@ fn two_sessions_maintain_isolated_state() {
 
     // Renderer reads A.
     assert_eq!(app.active_session_key.as_ref(), Some(&key_a));
-    assert_eq!(app.cwd(), "");
+    assert_eq!(app.cwd().expect("active session"), "");
 
     // Reset needs_redraw so the post-switch assertion is meaningful
     // (test_default seeds it `true`).
@@ -43,7 +43,7 @@ fn two_sessions_maintain_isolated_state() {
     // Switch active to B.
     app.switch_active_session(key_b.clone());
     assert_eq!(app.active_session_key.as_ref(), Some(&key_b));
-    assert_eq!(app.cwd(), "/path/to/project-b");
+    assert_eq!(app.cwd().expect("active session"), "/path/to/project-b");
     assert_eq!(app.files_accessed(), 42);
     assert!(app.needs_redraw, "switch should set needs_redraw");
 }
@@ -103,10 +103,10 @@ fn switch_round_trip_preserves_state() {
 
     // A → B: B's bucket is now rendered.
     app.switch_active_session(key_b.clone());
-    assert_eq!(app.cwd(), "/from/b");
+    assert_eq!(app.cwd().expect("active session"), "/from/b");
 
     // B → A: A's bucket survives the round trip.
     app.switch_active_session(key_a);
-    assert_eq!(app.cwd(), "/from/a", "A's cwd survives the round trip");
+    assert_eq!(app.cwd().expect("active session"), "/from/a", "A's cwd survives the round trip");
     assert_eq!(app.files_accessed(), 5, "A's files_accessed survives the round trip");
 }

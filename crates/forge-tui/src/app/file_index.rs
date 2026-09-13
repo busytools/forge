@@ -69,14 +69,18 @@ struct ScanOverrides {
 }
 
 pub fn reset(app: &mut App) {
-    app.file_index_mut().generation = app.file_index_mut().generation.saturating_add(1);
-    app.file_index_mut().root = None;
-    app.file_index_mut().respect_gitignore = app.config.respect_gitignore_effective();
-    app.file_index_mut().entries.clear();
-    app.file_index_mut().scan_finished = false;
-    app.file_index_mut().scan_overrides = ScanOverrides::default();
-    app.file_index_mut().scan = None;
-    app.file_index_mut().watch = None;
+    let respect_gitignore = app.config.respect_gitignore_effective();
+    let Some(index) = app.file_index_mut() else {
+        return;
+    };
+    index.generation = index.generation.saturating_add(1);
+    index.root = None;
+    index.respect_gitignore = respect_gitignore;
+    index.entries.clear();
+    index.scan_finished = false;
+    index.scan_overrides = ScanOverrides::default();
+    index.scan = None;
+    index.watch = None;
 }
 
 pub fn restart(app: &mut App) {
@@ -84,35 +88,35 @@ pub fn restart(app: &mut App) {
     let Some(key) = app.active_session_key.clone() else {
         return;
     };
-    let root = PathBuf::from(app.cwd_raw());
-    let generation = app.file_index_mut().generation;
+    let root = PathBuf::from(app.cwd_raw().unwrap_or_default());
     let respect_gitignore = app.config.respect_gitignore_effective();
-    app.file_index_mut().root = Some(root.clone());
-    app.file_index_mut().respect_gitignore = respect_gitignore;
-    app.file_index_mut().scan_finished = false;
-    app.file_index_mut().scan_overrides = ScanOverrides::default();
-    app.file_index_mut().scan = Some(spawn_scan(
+    let event_tx = app.file_index_event_tx.clone();
+    let Some(index) = app.file_index_mut() else {
+        return;
+    };
+    let generation = index.generation;
+    index.root = Some(root.clone());
+    index.respect_gitignore = respect_gitignore;
+    index.scan_finished = false;
+    index.scan_overrides = ScanOverrides::default();
+    index.scan = Some(spawn_scan(
         key.clone(),
         root.clone(),
         generation,
         respect_gitignore,
-        app.file_index_event_tx.clone(),
+        event_tx.clone(),
     ));
-    app.file_index_mut().watch = Some(spawn_watch(
-        key,
-        root,
-        generation,
-        respect_gitignore,
-        app.file_index_event_tx.clone(),
-    ));
+    index.watch = Some(spawn_watch(key, root, generation, respect_gitignore, event_tx));
 }
 
 pub fn ensure_started(app: &mut App) {
     let respect_gitignore = app.config.respect_gitignore_effective();
-    let current_root = PathBuf::from(app.cwd_raw());
-    let needs_restart = app.file_index_mut().root.as_ref() != Some(&current_root)
-        || app.file_index_mut().respect_gitignore != respect_gitignore
-        || (!app.file_index_mut().scan_finished && app.file_index_mut().scan.is_none());
+    let current_root = PathBuf::from(app.cwd_raw().unwrap_or_default());
+    let needs_restart = app.file_index().is_none_or(|index| {
+        index.root.as_ref() != Some(&current_root)
+            || index.respect_gitignore != respect_gitignore
+            || (!index.scan_finished && index.scan.is_none())
+    });
     if needs_restart {
         restart(app);
     }
@@ -228,7 +232,9 @@ fn apply_event(app: &mut App, event: FileIndexEvent) {
             if active_key.as_ref() != Some(&key) {
                 return;
             }
-            let active_generation = app.file_index().generation;
+            let Some(active_generation) = app.file_index().map(|index| index.generation) else {
+                return;
+            };
             if generation != active_generation {
                 return;
             }
@@ -502,21 +508,22 @@ mod tests {
     #[test]
     fn reopening_mention_reuses_existing_generation() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        app.input_mut().set_text("@rs");
-        let _ = app.input_mut().set_cursor(0, 3);
+        app.input_mut().expect("active session").set_text("@rs");
+        let _ = app.input_mut().expect("active session").set_cursor(0, 3);
 
         mention::activate(&mut app);
         wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index().scan_finished && !app.file_index().entries.is_empty()
+            let index = app.file_index().expect("active session");
+            index.scan_finished && !index.entries.is_empty()
         });
-        let generation = app.file_index().generation;
+        let generation = app.file_index().expect("active session").generation;
 
         mention::deactivate(&mut app);
-        app.input_mut().set_text("@src");
-        let _ = app.input_mut().set_cursor(0, 4);
+        app.input_mut().expect("active session").set_text("@src");
+        let _ = app.input_mut().expect("active session").set_cursor(0, 4);
         mention::activate(&mut app);
 
-        assert_eq!(app.file_index().generation, generation);
+        assert_eq!(app.file_index().expect("active session").generation, generation);
     }
 
     /// Regression for the `@`-mention wrong-project bug. Each bucket

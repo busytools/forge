@@ -1004,7 +1004,7 @@ mod tests {
         let real = forge_workspace::SessionKey::from_session_id("real-uuid");
         assert!(!app.sessions.contains_key(&pre), "synthetic bucket removed");
         assert!(app.sessions.contains_key(&real), "real bucket exists");
-        assert_eq!(app.cwd(), "/work/foo");
+        assert_eq!(app.cwd(), Some("/work/foo"));
         assert_eq!(app.files_accessed(), 3);
     }
 

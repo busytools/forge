@@ -305,6 +305,7 @@ mod tests {
 
         let text: String = app
             .messages()
+            .expect("active session")
             .iter()
             .flat_map(|m| m.blocks.iter())
             .filter_map(|b| match b {

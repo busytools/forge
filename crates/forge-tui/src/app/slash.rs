@@ -95,7 +95,9 @@ pub(crate) fn push_system_message(app: &mut App, text: impl Into<String>) {
         vec![MessageBlock::Text(TextBlock::from_complete(&text))],
     ));
     app.enforce_history_retention_tracked();
-    app.active_viewport_mut().engage_auto_scroll();
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.engage_auto_scroll();
+    }
 }
 
 /// Push an info-severity system message - the success / status
@@ -110,7 +112,9 @@ pub(super) fn push_system_info(app: &mut App, text: impl Into<String>) {
         vec![MessageBlock::Text(TextBlock::from_complete(&text))],
     ));
     app.enforce_history_retention_tracked();
-    app.active_viewport_mut().engage_auto_scroll();
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.engage_auto_scroll();
+    }
 }
 
 fn push_user_message(app: &mut App, text: impl Into<String>) {
@@ -120,7 +124,9 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
         vec![MessageBlock::Text(TextBlock::from_complete(&text))],
     ));
     app.enforce_history_retention_tracked();
-    app.active_viewport_mut().engage_auto_scroll();
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.engage_auto_scroll();
+    }
 }
 
 fn require_connection(app: &mut App, not_connected_msg: &'static str) -> bool {
@@ -149,8 +155,12 @@ pub(crate) fn require_active_session(
 /// Block the input field while a slash command is in flight.
 fn set_command_pending(app: &mut App, label: &str, ack: Option<super::PendingCommandAck>) {
     app.status = AppStatus::CommandPending;
-    *app.pending_command_label_mut() = Some(label.to_owned());
-    *app.pending_command_ack_mut() = ack;
+    if let Some(slot) = app.pending_command_label_mut() {
+        *slot = Some(label.to_owned());
+    }
+    if let Some(slot) = app.pending_command_ack_mut() {
+        *slot = ack;
+    }
 }
 
 #[cfg(test)]
@@ -181,7 +191,7 @@ mod tests {
         let mut app = App::test_default();
         let consumed = try_handle_submit(&mut app, "/definitely-unknown");
         assert!(consumed);
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -197,7 +207,7 @@ mod tests {
 
         assert!(consumed, "/account is handled locally");
         assert!(app.account_picker.is_none(), "no picker opens while a turn is in flight");
-        let last = app.messages().last().expect("a system notice");
+        let last = app.messages().and_then(|messages| messages.last()).expect("a system notice");
         assert!(matches!(last.role, MessageRole::System(_)));
         let text: String = last
             .blocks
@@ -227,7 +237,7 @@ mod tests {
         // session hits - proving the gate distinguishes Idle from Running.
         let text: String = app
             .messages()
-            .last()
+            .and_then(|messages| messages.last())
             .map(|m| {
                 m.blocks
                     .iter()
@@ -258,7 +268,7 @@ mod tests {
         assert!(consumed);
         let text: String = app
             .messages()
-            .last()
+            .and_then(|messages| messages.last())
             .map(|m| {
                 m.blocks
                     .iter()
@@ -278,7 +288,7 @@ mod tests {
     #[test]
     fn advertised_command_is_forwarded() {
         let mut app = App::test_default();
-        app.try_active_bucket_mut().unwrap().available_commands =
+        app.active_bucket_mut().unwrap().available_commands =
             vec![model::AvailableCommand::new("/help", "Help")];
         let consumed = try_handle_submit(&mut app, "/help");
         assert!(!consumed);
@@ -326,7 +336,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/extensions extra");
 
         assert!(consumed);
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -405,7 +415,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_are_dynamic() {
         let mut app = App::test_default();
-        app.try_active_bucket_mut().unwrap().available_models = vec![
+        app.active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
                 .description("Balanced coding model"),
             crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
@@ -420,7 +430,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_hide_sdk_default_option() {
         let mut app = App::test_default();
-        app.try_active_bucket_mut().unwrap().available_models = vec![
+        app.active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("default", "Default")
                 .description("Default (recommended)"),
             crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet"),
@@ -443,7 +453,7 @@ mod tests {
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
             }
         });
-        app.try_active_bucket_mut().unwrap().available_models = vec![
+        app.active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7 · Most capable for complex work"),
         ];
@@ -461,7 +471,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_keep_sdk_opus_description_when_unpinned() {
         let mut app = App::test_default();
-        app.try_active_bucket_mut().unwrap().available_models = vec![
+        app.active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7 · Most capable for complex work"),
         ];
@@ -479,8 +489,9 @@ mod tests {
     #[test]
     fn non_variable_command_argument_mode_is_disabled() {
         let mut app = App::test_default();
-        app.input_mut().set_text("/compact now");
-        let _ = app.input_mut().set_cursor(0, "/compact now".chars().count());
+        app.input_mut().expect("active session").set_text("/compact now");
+        let _ =
+            app.input_mut().expect("active session").set_cursor(0, "/compact now".chars().count());
         sync_with_cursor(&mut app);
         assert!(app.slash().is_none());
     }
@@ -497,8 +508,8 @@ mod tests {
                 description: None,
             }],
         }));
-        app.input_mut().set_text("/mode xyz");
-        let _ = app.input_mut().set_cursor(0, "/mode xyz".chars().count());
+        app.input_mut().expect("active session").set_text("/mode xyz");
+        let _ = app.input_mut().expect("active session").set_cursor(0, "/mode xyz".chars().count());
         sync_with_cursor(&mut app);
         assert!(app.slash().is_none());
     }
@@ -506,9 +517,12 @@ mod tests {
     #[test]
     fn confirm_selection_replaces_only_active_argument_token() {
         let mut app = App::test_default();
-        app.input_mut().set_text("/resume old-id trailing");
-        let _ = app.input_mut().set_cursor(0, "/resume old-id".chars().count());
-        *app.slash_mut() = Some(SlashState {
+        app.input_mut().expect("active session").set_text("/resume old-id trailing");
+        let _ = app
+            .input_mut()
+            .expect("active session")
+            .set_cursor(0, "/resume old-id".chars().count());
+        *app.slash_mut().expect("active session") = Some(SlashState {
             trigger_row: 0,
             trigger_col: 8,
             query: "old-id".to_owned(),
@@ -527,7 +541,7 @@ mod tests {
 
         confirm_selection(&mut app);
 
-        assert_eq!(app.input().text(), "/resume new-id trailing");
+        assert_eq!(app.input().expect("active session").text(), "/resume new-id trailing");
     }
 
     #[test]
@@ -535,7 +549,7 @@ mod tests {
         let mut app = App::test_default();
         let consumed = try_handle_submit(&mut app, "/resume");
         assert!(consumed);
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -549,7 +563,7 @@ mod tests {
         let mut app = App::test_default();
         let consumed = try_handle_submit(&mut app, "/resume abc-123 extra");
         assert!(consumed);
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -564,9 +578,9 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/resume abc-123");
         assert!(consumed);
-        assert!(app.messages().len() >= 2);
+        assert!(app.messages().expect("active session").len() >= 2);
 
-        let Some(first) = app.messages().first() else {
+        let Some(first) = app.messages().and_then(|messages| messages.first()) else {
             panic!("expected user message");
         };
         assert!(matches!(first.role, MessageRole::User));
@@ -767,7 +781,10 @@ mod tests {
                     seeded_supported,
                     "rejection must restore the pre-apply supported-mode list",
                 );
-                let last = app.messages().last().expect("rejection message pushed");
+                let last = app
+                    .messages()
+                    .and_then(|messages| messages.last())
+                    .expect("rejection message pushed");
                 assert!(
                     matches!(last.role, MessageRole::System(None)),
                     "rejection surfaces as a system message, got {:?}",
@@ -790,7 +807,7 @@ mod tests {
                 let mut app = App::test_default();
                 let mut rx = app.install_testing_stub();
                 seed_ask_session(&mut app);
-                let messages_before = app.messages().len();
+                let messages_before = app.messages().expect("active session").len();
 
                 let consumed = try_handle_submit(&mut app, "/mode plan");
                 assert!(consumed);
@@ -805,7 +822,7 @@ mod tests {
                     "success still dispatches SetMode",
                 );
                 assert_eq!(
-                    app.messages().len(),
+                    app.messages().expect("active session").len(),
                     messages_before,
                     "no rejection message on the success path",
                 );
@@ -946,7 +963,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/compact");
         assert!(consumed);
         assert!(!app.pending_compact_clear());
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -979,15 +996,15 @@ mod tests {
     #[test]
     fn compact_with_args_returns_usage_message() {
         let mut app = App::test_default();
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
         ));
 
         let consumed = try_handle_submit(&mut app, "/compact now");
         assert!(consumed);
-        assert!(app.messages().len() >= 2);
-        let Some(last) = app.messages().last() else {
+        assert!(app.messages().expect("active session").len() >= 2);
+        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
             panic!("expected system usage message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -1003,7 +1020,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/mode plan extra");
         assert!(consumed);
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
             panic!("expected system usage message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -1022,7 +1039,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/model");
         assert!(consumed);
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
             panic!("expected system message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1038,7 +1055,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/model sonnet extra");
         assert!(consumed);
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
             panic!("expected system usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1050,8 +1067,8 @@ mod tests {
     #[test]
     fn confirm_selection_with_invalid_trigger_row_is_noop() {
         let mut app = App::test_default();
-        app.input_mut().set_text("/mode");
-        *app.slash_mut() = Some(SlashState {
+        app.input_mut().expect("active session").set_text("/mode");
+        *app.slash_mut().expect("active session") = Some(SlashState {
             trigger_row: 99,
             trigger_col: 0,
             query: "m".into(),
@@ -1066,7 +1083,7 @@ mod tests {
 
         confirm_selection(&mut app);
 
-        assert_eq!(app.input().text(), "/mode");
+        assert_eq!(app.input().expect("active session").text(), "/mode");
     }
 
     #[test]

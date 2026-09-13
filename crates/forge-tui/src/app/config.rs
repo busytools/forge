@@ -468,7 +468,7 @@ pub(crate) fn store_workspace_bridge(app: &App) -> Option<store::WorkspaceBridge
 }
 
 fn project_root(app: &App) -> std::path::PathBuf {
-    std::path::PathBuf::from(app.cwd_raw())
+    std::path::PathBuf::from(app.cwd_raw().unwrap_or_default())
 }
 
 const LANGUAGE_MIN_CHARS: usize = 2;

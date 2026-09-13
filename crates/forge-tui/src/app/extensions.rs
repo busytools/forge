@@ -351,7 +351,7 @@ fn request_disk_refresh_with(
     app.plugins.loading = true;
     app.needs_redraw = true;
     let event_tx = app.update_tx.clone();
-    let cwd_context = app.cwd_raw();
+    let cwd_context = app.cwd_raw().unwrap_or_default();
     let cached_claude_path = app.plugins.claude_path.clone();
     let disk_span = info_span!(
         target: crate::logging::targets::APP_CONFIG,
@@ -405,8 +405,8 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
     app.config.status_message = Some("Refreshing plugin inventory...".to_owned());
     app.needs_redraw = true;
     let event_tx = app.update_tx.clone();
-    let cwd_context = app.cwd_raw();
-    let cwd_raw = app.cwd_raw();
+    let cwd_context = app.cwd_raw().unwrap_or_default();
+    let cwd_raw = app.cwd_raw().unwrap_or_default();
     let cached_claude_path = app.plugins.claude_path.clone();
     // Plugins whose token cost is missing or stale under their current
     // version; the cache means a steady-state refresh fetches nothing.
@@ -682,7 +682,7 @@ pub(crate) fn clamp_selection(app: &mut App) {
 /// add row - each already filtered.
 pub(crate) fn visible_row_count(app: &App, tab: ExtensionsTab) -> usize {
     match tab {
-        ExtensionsTab::Mcps => app.mcp().servers.len(),
+        ExtensionsTab::Mcps => app.mcp().map_or(0, |mcp| mcp.servers.len()),
         ExtensionsTab::Marketplaces => app.plugins.marketplaces.len().saturating_add(1),
         _ => visible_rows(app, tab).len(),
     }
@@ -1007,7 +1007,7 @@ pub(crate) fn execute_selected_installed_overlay_action(app: &mut App) {
     app.plugins.last_inventory_refresh_at = None;
     app.needs_redraw = true;
     let event_tx = app.update_tx.clone();
-    let cwd_context = app.cwd_raw();
+    let cwd_context = app.cwd_raw().unwrap_or_default();
     let cached_claude_path = app.plugins.claude_path.clone();
     let span = info_span!(
         target: crate::logging::targets::APP_CONFIG,
@@ -1077,8 +1077,8 @@ fn execute_selected_plugin_install_action(app: &mut App) {
     app.plugins.last_inventory_refresh_at = None;
     app.needs_redraw = true;
     let event_tx = app.update_tx.clone();
-    let cwd_raw = app.cwd_raw();
-    let cwd_context = app.cwd_raw();
+    let cwd_raw = app.cwd_raw().unwrap_or_default();
+    let cwd_context = app.cwd_raw().unwrap_or_default();
     let cached_claude_path = app.plugins.claude_path.clone();
     let span = info_span!(
         target: crate::logging::targets::APP_CONFIG,
@@ -1157,8 +1157,8 @@ fn execute_selected_marketplace_action(app: &mut App) {
         app.plugins.last_inventory_refresh_at = None;
         app.needs_redraw = true;
         let event_tx = app.update_tx.clone();
-        let cwd_raw = app.cwd_raw();
-        let cwd_context = app.cwd_raw();
+        let cwd_raw = app.cwd_raw().unwrap_or_default();
+        let cwd_context = app.cwd_raw().unwrap_or_default();
         let cached_claude_path = app.plugins.claude_path.clone();
         let title = overlay.title.clone();
         // The repair steps run through the same injectable seam the
@@ -1254,8 +1254,8 @@ fn execute_selected_marketplace_action(app: &mut App) {
     app.plugins.last_inventory_refresh_at = None;
     app.needs_redraw = true;
     let event_tx = app.update_tx.clone();
-    let cwd_raw = app.cwd_raw();
-    let cwd_context = app.cwd_raw();
+    let cwd_raw = app.cwd_raw().unwrap_or_default();
+    let cwd_context = app.cwd_raw().unwrap_or_default();
     let cached_claude_path = app.plugins.claude_path.clone();
     let span = info_span!(
         target: crate::logging::targets::APP_CONFIG,
@@ -1317,8 +1317,8 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
     app.plugins.last_inventory_refresh_at = None;
     app.needs_redraw = true;
     let event_tx = app.update_tx.clone();
-    let cwd_raw = app.cwd_raw();
-    let cwd_context = app.cwd_raw();
+    let cwd_raw = app.cwd_raw().unwrap_or_default();
+    let cwd_context = app.cwd_raw().unwrap_or_default();
     let cached_claude_path = app.plugins.claude_path.clone();
     let span = info_span!(
         target: crate::logging::targets::APP_CONFIG,
@@ -1464,7 +1464,7 @@ fn build_rows_from_entries(
 }
 
 fn build_update_rows(app: &App, trigger: PluginUpdateTrigger) -> Vec<PluginUpdateRunRow> {
-    let cwd = app.cwd_raw();
+    let cwd = app.cwd_raw().unwrap_or_default();
     if trigger == PluginUpdateTrigger::Manual {
         // Update all queues exactly the stale set - the rows wearing
         // the Update action - not every installed plugin.
@@ -1599,7 +1599,7 @@ pub(crate) fn start_update_run(app: &mut App, trigger: PluginUpdateTrigger) {
     app.config.status_message = Some(format!("Updating {runnable} plugin(s)..."));
     app.needs_redraw = true;
     let plan = UpdateRunPlan {
-        cwd_context: app.cwd_raw(),
+        cwd_context: app.cwd_raw().unwrap_or_default(),
         claude_path: app.plugins.claude_path.clone(),
         marketplaces: app.plugins.marketplaces.clone(),
         run,
@@ -1631,8 +1631,8 @@ pub(crate) fn start_check_run(app: &mut App) {
     app.config.status_message = Some("Checking for plugin updates...".to_owned());
     app.needs_redraw = true;
     let update_tx = app.update_tx.clone();
-    let cwd_context = app.cwd_raw();
-    let cwd_raw = app.cwd_raw();
+    let cwd_context = app.cwd_raw().unwrap_or_default();
+    let cwd_raw = app.cwd_raw().unwrap_or_default();
     let cached_claude_path = app.plugins.claude_path.clone();
     let cli = app.plugins.update_cli.clone().unwrap_or_else(UpdateCli::real);
     let span = info_span!(
@@ -1875,11 +1875,15 @@ pub(crate) fn start_rollback(app: &mut App, plugin_id: String, scope: String) {
     app.config.status_message = Some(format!("Rolling back {label} to {to_version}..."));
     app.needs_redraw = true;
     let update_tx = app.update_tx.clone();
-    let cwd_context = app.cwd_raw();
+    let cwd_context = app.cwd_raw().unwrap_or_default();
     // A project/local entry updates from its own project; the rollback
     // and its verification must run there too, or they would inspect
     // the wrong install.
-    let cwd_raw = if record.cwd_raw.is_empty() { app.cwd_raw() } else { record.cwd_raw.clone() };
+    let cwd_raw = if record.cwd_raw.is_empty() {
+        app.cwd_raw().unwrap_or_default()
+    } else {
+        record.cwd_raw.clone()
+    };
     let cached_claude_path = app.plugins.claude_path.clone();
     let cli = app.plugins.update_cli.clone().unwrap_or_else(UpdateCli::real);
     let span = info_span!(
@@ -2219,7 +2223,7 @@ fn installed_action_command(
         // builder runs; the empty plan is unreachable.
         InstalledPluginActionKind::Rollback => (cwd_raw, Vec::new(), String::new()),
         InstalledPluginActionKind::InstallInCurrentProject => (
-            app.cwd_raw(),
+            app.cwd_raw().unwrap_or_default(),
             vec![
                 "plugin".to_owned(),
                 "install".to_owned(),
@@ -2337,8 +2341,10 @@ fn marketplace_action_success_message(title: &str, action: MarketplaceActionKind
 
 fn action_cwd(app: &App, overlay: &InstalledPluginActionOverlayState) -> String {
     match overlay.scope.as_str() {
-        "local" | "project" => overlay.project_path.clone().unwrap_or_else(|| app.cwd_raw()),
-        _ => app.cwd_raw(),
+        "local" | "project" => {
+            overlay.project_path.clone().unwrap_or_else(|| app.cwd_raw().unwrap_or_default())
+        }
+        _ => app.cwd_raw().unwrap_or_default(),
     }
 }
 
@@ -2386,7 +2392,7 @@ fn installed_overlay_description(app: &App, entry: &InstalledPluginEntry) -> Str
 }
 
 fn can_install_in_current_project(app: &App, entry: &InstalledPluginEntry) -> bool {
-    let current_project = normalize_project_path(&app.cwd_raw());
+    let current_project = normalize_project_path(&app.cwd_raw().unwrap_or_default());
     let selected_project = entry.project_path.as_deref().map(normalize_project_path);
     if matches!(entry.scope.as_str(), "local" | "project")
         && selected_project.as_deref() == Some(current_project.as_str())
@@ -2510,7 +2516,10 @@ mod tests {
             },
         );
         assert_eq!(app.plugins.search_query_for(ExtensionsTab::Installed), "retry guard");
-        assert!(app.input().text().is_empty(), "the chat draft keeps nothing");
+        assert!(
+            app.input().expect("active session").text().is_empty(),
+            "the chat draft keeps nothing"
+        );
 
         apply_session_update(
             &mut app,
@@ -4283,7 +4292,7 @@ mod tests {
             rows: vec![PluginUpdateRunRow::queued(
                 "supabase@claude-plugins-official".to_owned(),
                 "user".to_owned(),
-                app.cwd_raw(),
+                app.cwd_raw().expect("active session"),
                 Some("1.0.0".to_owned()),
             )],
         };
@@ -4694,7 +4703,7 @@ mod tests {
             rows: vec![PluginUpdateRunRow {
                 plugin_id: "pensive@claude-night-market".to_owned(),
                 scope: "user".to_owned(),
-                cwd_raw: app.cwd_raw(),
+                cwd_raw: app.cwd_raw().expect("active session"),
                 marketplace: "claude-night-market".to_owned(),
                 status: PluginRunRowStatus::Updated,
                 installed_version: Some("2.0.0".to_owned()),
@@ -4836,7 +4845,7 @@ mod tests {
             rows: vec![PluginUpdateRunRow {
                 plugin_id: "supabase@claude-plugins-official".to_owned(),
                 scope: "user".to_owned(),
-                cwd_raw: app.cwd_raw(),
+                cwd_raw: app.cwd_raw().expect("active session"),
                 marketplace: "claude-plugins-official".to_owned(),
                 status: PluginRunRowStatus::Updated,
                 installed_version: Some("1.1.0".to_owned()),
@@ -4871,7 +4880,7 @@ mod tests {
             rows: vec![PluginUpdateRunRow {
                 plugin_id: "supabase@claude-plugins-official".to_owned(),
                 scope: "user".to_owned(),
-                cwd_raw: app.cwd_raw(),
+                cwd_raw: app.cwd_raw().expect("active session"),
                 marketplace: "claude-plugins-official".to_owned(),
                 status: PluginRunRowStatus::AlreadyCurrent,
                 installed_version: Some("1.1.0".to_owned()),

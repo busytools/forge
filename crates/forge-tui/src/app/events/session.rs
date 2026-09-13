@@ -68,17 +68,25 @@ fn apply_connected_presentation(
         app.active_session_key = Some(session_key.clone());
         apply_session_cwd(app, cwd);
         reset_for_new_session(app, session_id, current_model, mode, true);
-        *app.available_models_mut() = available_models;
+        if let Some(models) = app.available_models_mut() {
+            *models = available_models;
+        }
         app.sync_welcome_snapshot();
         if !history_messages.is_empty() {
             load_resume_history(app, history_messages);
         }
         clear_pending_command(app);
-        *app.resuming_session_id_mut() = None;
+        if let Some(resuming) = app.resuming_session_id_mut() {
+            *resuming = None;
+        }
         crate::app::file_index::restart(app);
         app.rebuild_chat_focus_from_state();
         crate::app::config::refresh_runtime_tabs_for_session_change(app);
-        crate::app::tab_title::update_tab_title(app.shows_activity(), app.spinner_frame, app.cwd());
+        crate::app::tab_title::update_tab_title(
+            app.shows_activity(),
+            app.spinner_frame,
+            app.cwd().unwrap_or_default(),
+        );
     } else {
         // Background path: temp-swap `active_session_key` so the
         // App-level message + viewport accessors land on the migrated
@@ -121,7 +129,9 @@ fn apply_connected_presentation(
             let welcome = app.build_welcome_message();
             app.push_message_tracked(welcome);
             app.sync_welcome_snapshot();
-            *app.active_viewport_mut() = super::super::ChatViewport::new();
+            if let Some(viewport) = app.active_viewport_mut() {
+                *viewport = super::super::ChatViewport::new();
+            }
             if !history_messages.is_empty() {
                 load_resume_history(app, history_messages);
             }
@@ -234,8 +244,12 @@ pub(super) fn handle_auth_required_event(
     }
     let method_name_for_log = method_name.clone();
     clear_pending_command(app);
-    *app.resuming_session_id_mut() = None;
-    *app.login_hint_mut() = Some(LoginHint { method_name, method_description });
+    if let Some(resuming) = app.resuming_session_id_mut() {
+        *resuming = None;
+    }
+    if let Some(hint) = app.login_hint_mut() {
+        *hint = Some(LoginHint { method_name, method_description });
+    }
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
@@ -243,7 +257,9 @@ pub(super) fn handle_auth_required_event(
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel(false);
     app.set_account_info(None);
-    *app.mcp_mut() = super::super::McpState::default();
+    if let Some(mcp) = app.mcp_mut() {
+        *mcp = super::super::McpState::default();
+    }
     crate::app::usage::reset_for_session_change(app);
     // Teardown is a hard terminal - clear the roster first so the sweep
     // has nothing to exempt and every open card fails.
@@ -358,17 +374,29 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     app.set_pending_cancel(false);
     app.set_last_rate_limit_update(None);
     app.set_account_info(None);
-    *app.mcp_mut() = super::super::McpState::default();
+    if let Some(mcp) = app.mcp_mut() {
+        *mcp = super::super::McpState::default();
+    }
     crate::app::usage::reset_for_session_change(app);
-    *app.resuming_session_id_mut() = None;
-    *app.pending_command_label_mut() = None;
-    *app.pending_command_ack_mut() = None;
+    if let Some(resuming) = app.resuming_session_id_mut() {
+        *resuming = None;
+    }
+    if let Some(label) = app.pending_command_label_mut() {
+        *label = None;
+    }
+    if let Some(ack) = app.pending_command_ack_mut() {
+        *ack = None;
+    }
     // Teardown is a hard terminal - clear the roster first so the sweep
     // has nothing to exempt and every open card fails.
     app.clear_active_session_background_task_registry();
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.input_mut().clear();
-    *app.pending_submit_mut() = None;
+    if let Some(input) = app.input_mut() {
+        input.clear();
+    }
+    if let Some(submit) = app.pending_submit_mut() {
+        *submit = None;
+    }
     app.status = AppStatus::Error;
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
@@ -465,9 +493,13 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
         vec![MessageBlock::Text(TextBlock::from_complete(msg))],
     ));
     app.enforce_history_retention_tracked();
-    app.active_viewport_mut().engage_auto_scroll();
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.engage_auto_scroll();
+    }
     clear_pending_command(app);
-    *app.resuming_session_id_mut() = None;
+    if let Some(resuming) = app.resuming_session_id_mut() {
+        *resuming = None;
+    }
 }
 
 /// Foreground arm: the replaced session is the one on screen, so the
@@ -497,7 +529,9 @@ fn handle_session_replaced_event(
     // that call orphans the outgoing bucket.
     let carried_project = app.sessions.get(previous_key).and_then(|b| b.project.clone());
 
-    *app.available_models_mut() = available_models;
+    if let Some(models) = app.available_models_mut() {
+        *models = available_models;
+    }
     reset_for_new_session(app, session_id, current_model, mode, false);
 
     // The AgentHandle binding lives on the workspace's `DomainSession`
@@ -527,7 +561,9 @@ fn handle_session_replaced_event(
         load_resume_history(app, history_messages);
     }
     clear_pending_command(app);
-    *app.resuming_session_id_mut() = None;
+    if let Some(resuming) = app.resuming_session_id_mut() {
+        *resuming = None;
+    }
     crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
 
@@ -559,7 +595,7 @@ fn handle_session_replaced_event(
         message = "replacement session applied",
         outcome = "success",
         session_id = %session_id_for_log,
-        cwd = %app.cwd_raw(),
+        cwd = %app.cwd_raw().unwrap_or_default(),
         current_model = ?app.current_model().map(|model| model.resolved_id.clone()),
         history_message_count,
         available_model_count,
@@ -598,15 +634,25 @@ pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
     app.exit_error = Some(error);
     app.should_quit = true;
     app.status = AppStatus::Error;
-    *app.pending_submit_mut() = None;
-    *app.pending_command_label_mut() = None;
-    *app.pending_command_ack_mut() = None;
+    if let Some(submit) = app.pending_submit_mut() {
+        *submit = None;
+    }
+    if let Some(label) = app.pending_command_label_mut() {
+        *label = None;
+    }
+    if let Some(ack) = app.pending_command_ack_mut() {
+        *ack = None;
+    }
 }
 
 /// Clear the `CommandPending` state and restore `Ready`.
 pub(super) fn clear_pending_command(app: &mut App) {
-    *app.pending_command_label_mut() = None;
-    *app.pending_command_ack_mut() = None;
+    if let Some(label) = app.pending_command_label_mut() {
+        *label = None;
+    }
+    if let Some(ack) = app.pending_command_ack_mut() {
+        *ack = None;
+    }
     app.status = AppStatus::Ready;
 }
 
@@ -641,7 +687,7 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     if cwd_raw.is_empty() {
         return;
     }
-    let cwd_changed = app.cwd_raw() != cwd_raw;
+    let cwd_changed = app.cwd_raw().unwrap_or_default() != cwd_raw;
     let display = shorten_cwd_display(&cwd_raw);
     app.set_cwd_raw(cwd_raw);
     app.set_cwd(display);

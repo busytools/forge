@@ -124,12 +124,12 @@ fn handle_thinking_tokens(app: &mut App, estimated_tokens_delta: i64) {
 /// Write the turn's running estimate onto the message the row renders
 /// from, skipping a settled one exactly as the live usage stamp does.
 fn mirror_thinking_tokens_onto_turn(app: &mut App, total: u64) {
-    let Some(idx) =
-        app.messages().iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
-    else {
+    let Some(idx) = app.messages().and_then(|messages| {
+        messages.iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+    }) else {
         return;
     };
-    if let Some(msg) = app.active_messages_mut().get_mut(idx) {
+    if let Some(msg) = app.active_messages_mut().and_then(|messages| messages.get_mut(idx)) {
         if msg.turn_info.is_settled() {
             return;
         }
@@ -459,11 +459,16 @@ fn append_or_push_envelope(app: &mut App, kind: EnvelopeKind, text: &str) {
     // `is_messaging_block` needs a `peer_sender_identity` and all three return
     // None - so merging buys them nothing, while costing them one role
     // label for N alerts and one retention unit for N drops.
-    if kind == EnvelopeKind::Peer
-        && let Some(tail) = app.messages().len().checked_sub(1)
-        && EnvelopeKind::of_message(&app.messages()[tail]) == Some(kind)
+    let envelope_tail_matches = kind == EnvelopeKind::Peer
+        && app
+            .messages()
+            .and_then(|messages| messages.last())
+            .is_some_and(|m| EnvelopeKind::of_message(m) == Some(kind));
+    if envelope_tail_matches
+        && let Some(tail) = app.messages().and_then(|messages| messages.len().checked_sub(1))
+        && let Some(messages) = app.active_messages_mut()
     {
-        app.active_messages_mut()[tail].blocks.push(block);
+        messages[tail].blocks.push(block);
         // Appending bypasses `push_message_tracked`, so the retained-byte
         // accounting and the layout invalidation have to be driven here.
         app.sync_after_message_tail_changed(tail);
@@ -1019,8 +1024,9 @@ fn handle_system(app: &mut App, msg: Message) {
 /// shapes have to reach this - otherwise a metadata quirk makes the
 /// number jump the next time a resume re-reads the file.
 fn count_compaction(app: &mut App) {
-    let usage = app.session_usage_mut();
-    usage.compaction_count = usage.compaction_count.saturating_add(1);
+    if let Some(usage) = app.session_usage_mut() {
+        usage.compaction_count = usage.compaction_count.saturating_add(1);
+    }
 }
 
 /// Count a `Message::CompactBoundary` and apply its metadata. An
@@ -1132,27 +1138,31 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
     // once on init.
     let available_models: Vec<wire::AvailableModel> = app
         .available_models()
-        .iter()
-        .map(|m| wire::AvailableModel {
-            id: m.id.clone(),
-            display_name: m.display_name.clone(),
-            description: m.description.clone(),
-            supports_effort: m.supports_effort,
-            supported_effort_levels: m
-                .supported_effort_levels
+        .map(|models| {
+            models
                 .iter()
-                .map(|level| match level {
-                    crate::agent::model::EffortLevel::Low => wire::EffortLevel::Low,
-                    crate::agent::model::EffortLevel::Medium => wire::EffortLevel::Medium,
-                    crate::agent::model::EffortLevel::High => wire::EffortLevel::High,
-                    crate::agent::model::EffortLevel::Xhigh => wire::EffortLevel::Xhigh,
-                    crate::agent::model::EffortLevel::Max => wire::EffortLevel::Max,
+                .map(|m| wire::AvailableModel {
+                    id: m.id.clone(),
+                    display_name: m.display_name.clone(),
+                    description: m.description.clone(),
+                    supports_effort: m.supports_effort,
+                    supported_effort_levels: m
+                        .supported_effort_levels
+                        .iter()
+                        .map(|level| match level {
+                            crate::agent::model::EffortLevel::Low => wire::EffortLevel::Low,
+                            crate::agent::model::EffortLevel::Medium => wire::EffortLevel::Medium,
+                            crate::agent::model::EffortLevel::High => wire::EffortLevel::High,
+                            crate::agent::model::EffortLevel::Xhigh => wire::EffortLevel::Xhigh,
+                            crate::agent::model::EffortLevel::Max => wire::EffortLevel::Max,
+                        })
+                        .collect(),
+                    supports_adaptive_thinking: m.supports_adaptive_thinking,
+                    supports_auto_mode: m.supports_auto_mode,
                 })
-                .collect(),
-            supports_adaptive_thinking: m.supports_adaptive_thinking,
-            supports_auto_mode: m.supports_auto_mode,
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
 
     let next_wire =
         resolve_current_model_from_inputs(model_id, requested, resolved_runtime, &available_models);
@@ -1555,7 +1565,7 @@ fn handle_task_notification(app: &mut App, msg: Message) {
 fn readopted_turn_state_entry(app: &App, tool_use_id: &str) -> Option<forge_primitives::ToolCall> {
     let (msg_idx, block_idx) = app.lookup_tool_call(tool_use_id)?;
     let crate::app::MessageBlock::ToolCall(tc) =
-        app.messages().get(msg_idx)?.blocks.get(block_idx)?
+        app.messages()?.get(msg_idx)?.blocks.get(block_idx)?
     else {
         return None;
     };
@@ -1768,7 +1778,9 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
             })
         })
         .collect();
-    *app.background_tasks_mut() = parsed;
+    if let Some(tasks) = app.background_tasks_mut() {
+        *tasks = parsed;
+    }
     for root_id in seeded_roots {
         app.mark_backgrounded_root(root_id);
     }
@@ -1873,30 +1885,35 @@ fn stamp_turn_info_on_latest_assistant(
     usage: Option<forge_primitives::Usage>,
     total_cost_usd: Option<f64>,
 ) {
-    let Some(tail_idx) =
-        app.messages().iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
-    else {
-        return;
-    };
-    // A submit reparents the live bar onto a fresh tail placeholder, and
-    // turn exit strips that placeholder if still empty - so a Result
-    // racing the submit settles on the body row the bar was shed from.
-    let idx = if app.messages().get(tail_idx).is_some_and(|msg| msg.blocks.is_empty()) {
-        app.messages()[..tail_idx]
-            .iter()
-            .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
-            .filter(|&earlier| {
-                let msg = &app.messages()[earlier];
-                !msg.blocks.is_empty() && !msg.turn_info.is_settled()
-            })
-            .unwrap_or(tail_idx)
-    } else {
-        tail_idx
+    let idx = {
+        let Some(messages) = app.messages() else {
+            return;
+        };
+        let Some(tail_idx) =
+            messages.iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+        else {
+            return;
+        };
+        // A submit reparents the live bar onto a fresh tail placeholder, and
+        // turn exit strips that placeholder if still empty - so a Result
+        // racing the submit settles on the body row the bar was shed from.
+        if messages.get(tail_idx).is_some_and(|msg| msg.blocks.is_empty()) {
+            messages[..tail_idx]
+                .iter()
+                .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+                .filter(|&earlier| {
+                    let msg = &messages[earlier];
+                    !msg.blocks.is_empty() && !msg.turn_info.is_settled()
+                })
+                .unwrap_or(tail_idx)
+        } else {
+            tail_idx
+        }
     };
     let model = app.observed_assistant_model().map(ToOwned::to_owned);
     let usage = usage.filter(|u| !is_unattributed_usage(*u));
     let thinking_tokens = app.latest_thinking_tokens();
-    if let Some(msg) = app.active_messages_mut().get_mut(idx) {
+    if let Some(msg) = app.active_messages_mut().and_then(|messages| messages.get_mut(idx)) {
         let info = &mut msg.turn_info;
         // A Result with no usable token counts cannot replace the ones
         // already on a settled row, so writing its clock there would
@@ -1979,16 +1996,16 @@ fn record_live_turn_usage(
             cache_written_tokens: usage.cache_creation_input_tokens,
         },
     );
-    let Some(idx) =
-        app.messages().iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
-    else {
+    let Some(idx) = app.messages().and_then(|messages| {
+        messages.iter().rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+    }) else {
         return;
     };
     let model = (!message.model.is_empty()).then(|| message.model.clone());
     // The turn's first thinking events land before it has a message to
     // hold them, so the first frame that gives it one back-fills them.
     let thinking_tokens = app.latest_thinking_tokens();
-    if let Some(msg) = app.active_messages_mut().get_mut(idx) {
+    if let Some(msg) = app.active_messages_mut().and_then(|messages| messages.get_mut(idx)) {
         let info = &mut msg.turn_info;
         if info.is_settled() {
             return;
@@ -2420,6 +2437,7 @@ mod stamp_turn_info_tests {
         );
         let first = app
             .messages()
+            .expect("active session")
             .iter()
             .find(|m| matches!(m.role, MessageRole::Assistant))
             .expect("turn one's row");
@@ -2432,6 +2450,7 @@ mod stamp_turn_info_tests {
 
     fn latest_turn_info(app: &App) -> TurnInfo {
         app.messages()
+            .expect("active session")
             .iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::Assistant))
@@ -2581,7 +2600,7 @@ mod stamp_turn_info_tests {
     #[test]
     fn a_usage_bearing_result_falls_back_to_the_placeholder_over_a_settled_row() {
         let mut app = app_with_assistant();
-        app.active_messages_mut()[0]
+        app.active_messages_mut().expect("active session")[0]
             .blocks
             .push(crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete("body")));
         stamp(&mut app, 4_675, Some(3_807), Some(usage(2, 5, 15_262, 62_706)), None);
@@ -2591,6 +2610,7 @@ mod stamp_turn_info_tests {
 
         let rows: Vec<Option<u64>> = app
             .messages()
+            .expect("active session")
             .iter()
             .filter(|m| matches!(m.role, MessageRole::Assistant))
             .map(|m| m.turn_info.duration_ms)
@@ -2641,6 +2661,7 @@ mod stamp_turn_info_tests {
 
         let latest = app
             .messages()
+            .expect("active session")
             .iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::Assistant))
@@ -2659,7 +2680,7 @@ mod stamp_turn_info_tests {
         // None and the stamp call is a no-op. Verifying no panic +
         // no spurious mutation is the contract.
         stamp_turn_info_on_latest_assistant(&mut app, 99, None, None, None);
-        assert!(app.messages().is_empty());
+        assert!(app.messages().expect("active session").is_empty());
     }
 
     #[test]
@@ -2675,6 +2696,7 @@ mod stamp_turn_info_tests {
         // Latest (idx 2) Assistant gets the stamp; earlier (idx 0) stays None.
         let assistants: Vec<Option<u64>> = app
             .messages()
+            .expect("active session")
             .iter()
             .filter(|m| matches!(m.role, MessageRole::Assistant))
             .map(|m| m.turn_info.duration_ms)
@@ -2699,11 +2721,11 @@ mod stamp_turn_info_tests {
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
         ));
-        let _ = app.active_viewport_mut().on_frame(40, 8);
-        app.active_viewport_mut().set_message_height(0, 1);
-        app.active_viewport_mut().mark_heights_valid();
+        let _ = app.active_viewport_mut().expect("active session").on_frame(40, 8);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 1);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
         assert_eq!(
-            app.active_viewport_mut().oldest_stale_index(),
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
             None,
             "fixture guard: heights start valid, so a stale index can only come from the stamp",
         );
@@ -2711,7 +2733,7 @@ mod stamp_turn_info_tests {
         stamp_turn_info_on_latest_assistant(&mut app, 12_400, None, None, None);
 
         assert_eq!(
-            app.active_viewport_mut().oldest_stale_index(),
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
             Some(0),
             "the stamp must invalidate the layout itself, not lean on turn exit doing it",
         );
@@ -2877,7 +2899,7 @@ mod task_updated_section_routing_tests {
             output_tail: std::collections::VecDeque::new(),
             expanded_in_inspector: false,
         };
-        app.monitors_mut().push(entry);
+        app.monitors_mut().expect("active session").push(entry);
     }
 
     fn task_updated(task_id: &str, status: &str) -> Message {
@@ -3014,7 +3036,7 @@ mod monitor_output_file_wiring_tests {
             output_tail: std::collections::VecDeque::new(),
             expanded_in_inspector: false,
         };
-        app.monitors_mut().push(entry);
+        app.monitors_mut().expect("active session").push(entry);
     }
 
     fn write_tmp(contents: &str) -> std::path::PathBuf {
@@ -3085,7 +3107,9 @@ mod monitor_output_file_wiring_tests {
         let mut app = App::test_default();
         push_monitor(&mut app, "task_late");
         // Pre-populate tail to verify it survives the missing-file path.
-        app.monitors_mut()[0].output_tail.push_back("prior tail line".to_owned());
+        app.monitors_mut().expect("active session")[0]
+            .output_tail
+            .push_back("prior tail line".to_owned());
         handle_task_notification(
             &mut app,
             notification(
@@ -3328,7 +3352,7 @@ mod inbound_message_surfacing_tests {
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SECOND)]);
 
         let envelopes: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_peer_envelope).collect();
+            app.messages().expect("active session").iter().filter(|m| m.is_peer_envelope).collect();
         assert_eq!(
             envelopes.len(),
             1,
@@ -3349,7 +3373,7 @@ mod inbound_message_surfacing_tests {
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SECOND)]);
 
         let envelopes: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_peer_envelope).collect();
+            app.messages().expect("active session").iter().filter(|m| m.is_peer_envelope).collect();
         assert_eq!(
             envelopes.len(),
             1,
@@ -3367,10 +3391,14 @@ mod inbound_message_surfacing_tests {
     fn appending_an_envelope_announces_the_block_change() {
         let mut app = App::test_default();
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(FIRST)]);
-        let tail = app.messages().len() - 1;
-        let envelope_idx =
-            app.messages().iter().position(|m| m.is_peer_envelope).expect("envelope");
-        let bytes_before = app.message_retained_bytes()[envelope_idx];
+        let tail = app.messages().expect("active session").len() - 1;
+        let envelope_idx = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .position(|m| m.is_peer_envelope)
+            .expect("envelope");
+        let bytes_before = app.message_retained_bytes().expect("active session")[envelope_idx];
         app.last_invalidation_level.set(None);
 
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SECOND)]);
@@ -3381,7 +3409,7 @@ mod inbound_message_surfacing_tests {
             "the appended-to message must be invalidated",
         );
         assert!(
-            app.message_retained_bytes()[envelope_idx] > bytes_before,
+            app.message_retained_bytes().expect("active session")[envelope_idx] > bytes_before,
             "retained bytes must grow with the appended block",
         );
         let _ = tail;
@@ -3397,9 +3425,13 @@ mod inbound_message_surfacing_tests {
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(GOTIFY)]);
 
         let peer: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_peer_envelope).collect();
-        let gotify: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_gotify_envelope).collect();
+            app.messages().expect("active session").iter().filter(|m| m.is_peer_envelope).collect();
+        let gotify: Vec<&crate::app::ChatMessage> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| m.is_gotify_envelope)
+            .collect();
         assert_eq!(peer.len(), 1, "the peer envelope keeps its own message");
         assert_eq!(peer[0].blocks.len(), 1, "the notification must NOT be appended to it");
         assert_eq!(gotify.len(), 1, "the notification gets its own message");
@@ -3415,9 +3447,13 @@ mod inbound_message_surfacing_tests {
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SLACK)]);
 
         let peer: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_peer_envelope).collect();
-        let slack: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_slack_envelope).collect();
+            app.messages().expect("active session").iter().filter(|m| m.is_peer_envelope).collect();
+        let slack: Vec<&crate::app::ChatMessage> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| m.is_slack_envelope)
+            .collect();
         assert_eq!(peer.len(), 1, "the peer envelope keeps its own message");
         assert_eq!(peer[0].blocks.len(), 1, "the Slack delivery must NOT be appended to it");
         assert_eq!(slack.len(), 1, "the Slack delivery gets its own message");
@@ -3467,22 +3503,30 @@ mod inbound_message_surfacing_tests {
         let mut app = App::test_default();
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(GOTIFY)]);
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(GOTIFY_2)]);
-        let gotify: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_gotify_envelope).collect();
+        let gotify: Vec<&crate::app::ChatMessage> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| m.is_gotify_envelope)
+            .collect();
         assert_eq!(gotify.len(), 2, "each notification keeps its own message");
 
         let mut app = App::test_default();
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(CRON_1)]);
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(CRON_2)]);
         let cron: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_cron_envelope).collect();
+            app.messages().expect("active session").iter().filter(|m| m.is_cron_envelope).collect();
         assert_eq!(cron.len(), 2, "each fired cron keeps its own message");
 
         let mut app = App::test_default();
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SLACK)]);
         push_peer_envelope_user_turn_if_present(&mut app, &[envelope(SLACK_2)]);
-        let slack: Vec<&crate::app::ChatMessage> =
-            app.messages().iter().filter(|m| m.is_slack_envelope).collect();
+        let slack: Vec<&crate::app::ChatMessage> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| m.is_slack_envelope)
+            .collect();
         assert_eq!(slack.len(), 2, "each Slack message keeps its own message");
     }
 
@@ -3538,12 +3582,12 @@ mod inbound_message_surfacing_tests {
     #[test]
     fn peer_reply_appends_at_tail_not_above_in_flight_send() {
         let mut app = App::test_default();
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("orchestrate the workers"))],
         ));
         // The assistant turn holding the outbound ask is still active.
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("asking planner..."))],
         ));
@@ -3552,19 +3596,26 @@ mod inbound_message_surfacing_tests {
         handle_user(&mut app, delivered_user_turn(PEER_REPLY));
 
         // user(0), in-flight asst(1), reply(2), fresh placeholder(3).
-        assert_eq!(app.messages().len(), 4, "user + in-flight asst + reply + fresh placeholder");
+        assert_eq!(
+            app.messages().expect("active session").len(),
+            4,
+            "user + in-flight asst + reply + fresh placeholder"
+        );
         assert!(
-            matches!(app.messages()[1].role, MessageRole::Assistant),
+            matches!(app.messages().expect("active session")[1].role, MessageRole::Assistant),
             "the in-flight assistant send stays at idx 1 - the reply is NOT inserted above it",
         );
         assert!(
-            app.messages()[2].is_peer_envelope,
+            app.messages().expect("active session")[2].is_peer_envelope,
             "the peer reply lands below the in-flight send (idx 2) in arrival order",
         );
-        assert!(block_text(&app.messages()[2]).contains("Done."), "reply body on the peer turn");
         assert!(
-            matches!(app.messages()[3].role, MessageRole::Assistant)
-                && app.messages()[3].blocks.is_empty(),
+            block_text(&app.messages().expect("active session")[2]).contains("Done."),
+            "reply body on the peer turn"
+        );
+        assert!(
+            matches!(app.messages().expect("active session")[3].role, MessageRole::Assistant)
+                && app.messages().expect("active session")[3].blocks.is_empty(),
             "a fresh empty assistant placeholder opens at the tail for the spinner",
         );
         assert_eq!(
@@ -3579,7 +3630,7 @@ mod inbound_message_surfacing_tests {
     #[test]
     fn gotify_notification_appends_at_tail_not_above_in_flight_turn() {
         let mut app = App::test_default();
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("mid response..."))],
         ));
@@ -3588,18 +3639,22 @@ mod inbound_message_surfacing_tests {
         handle_user(&mut app, delivered_user_turn(GOTIFY_NOTE));
 
         // in-flight asst(0), gotify note(1), fresh placeholder(2).
-        assert_eq!(app.messages().len(), 3, "in-flight asst + gotify note + fresh placeholder");
+        assert_eq!(
+            app.messages().expect("active session").len(),
+            3,
+            "in-flight asst + gotify note + fresh placeholder"
+        );
         assert!(
-            matches!(app.messages()[0].role, MessageRole::Assistant),
+            matches!(app.messages().expect("active session")[0].role, MessageRole::Assistant),
             "assistant turn stays at idx 0",
         );
         assert!(
-            app.messages()[1].is_gotify_envelope,
+            app.messages().expect("active session")[1].is_gotify_envelope,
             "gotify note appends below the in-flight turn (idx 1) in arrival order",
         );
         assert!(
-            matches!(app.messages()[2].role, MessageRole::Assistant)
-                && app.messages()[2].blocks.is_empty(),
+            matches!(app.messages().expect("active session")[2].role, MessageRole::Assistant)
+                && app.messages().expect("active session")[2].blocks.is_empty(),
             "a fresh empty assistant placeholder opens at the tail for the spinner",
         );
         assert_eq!(app.active_turn_assistant_message_idx(), Some(2));
@@ -3642,6 +3697,7 @@ mod inbound_message_surfacing_tests {
 
         let placeholder = app
             .messages()
+            .expect("active session")
             .iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::Assistant))
@@ -3867,11 +3923,11 @@ mod inbound_message_surfacing_tests {
         let mut app = App::test_default();
         idle_active_bucket(&mut app);
         app.status = AppStatus::Ready;
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("prior prompt"))],
         ));
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("prior reply"))],
         ));
@@ -3880,10 +3936,10 @@ mod inbound_message_surfacing_tests {
 
         handle_user(&mut app, delivered_user_turn(PEER_REPLY));
 
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
         assert!(
-            matches!(app.messages()[tail].role, MessageRole::Assistant)
-                && app.messages()[tail].blocks.is_empty(),
+            matches!(app.messages().expect("active session")[tail].role, MessageRole::Assistant)
+                && app.messages().expect("active session")[tail].blocks.is_empty(),
             "delivered turn opens a fresh empty assistant placeholder at the tail",
         );
         assert_eq!(
@@ -3905,10 +3961,10 @@ mod inbound_message_surfacing_tests {
 
         handle_user(&mut app, delivered_user_turn(GOTIFY_NOTE));
 
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
         assert!(
-            matches!(app.messages()[tail].role, MessageRole::Assistant)
-                && app.messages()[tail].blocks.is_empty(),
+            matches!(app.messages().expect("active session")[tail].role, MessageRole::Assistant)
+                && app.messages().expect("active session")[tail].blocks.is_empty(),
             "gotify delivery opens a fresh empty assistant placeholder at the tail",
         );
         assert_eq!(app.active_turn_assistant_message_idx(), Some(tail));
@@ -3922,7 +3978,7 @@ mod inbound_message_surfacing_tests {
     #[test]
     fn delivered_prompt_reparents_spinner_off_in_flight_assistant() {
         let mut app = App::test_default();
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("asking planner..."))],
         ));
@@ -3930,7 +3986,7 @@ mod inbound_message_surfacing_tests {
 
         handle_user(&mut app, delivered_user_turn(PEER_REPLY));
 
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
         assert_ne!(
             app.active_turn_assistant_message_idx(),
             Some(0),
@@ -3942,8 +3998,8 @@ mod inbound_message_surfacing_tests {
             "pointer reparented onto the fresh tail placeholder",
         );
         assert!(
-            matches!(app.messages()[tail].role, MessageRole::Assistant)
-                && app.messages()[tail].blocks.is_empty(),
+            matches!(app.messages().expect("active session")[tail].role, MessageRole::Assistant)
+                && app.messages().expect("active session")[tail].blocks.is_empty(),
         );
     }
 
@@ -3966,12 +4022,22 @@ mod inbound_message_surfacing_tests {
 
         // placeholder1 stripped -> [gotify1, reply2, placeholder2]; no
         // blank bubble stranded between the two delivered turns.
-        assert_eq!(app.messages().len(), 3, "stranded empty placeholder stripped");
-        assert!(app.messages()[0].is_gotify_envelope, "first delivered turn");
-        assert!(app.messages()[1].is_peer_envelope, "second delivered turn, adjacent");
+        assert_eq!(
+            app.messages().expect("active session").len(),
+            3,
+            "stranded empty placeholder stripped"
+        );
         assert!(
-            matches!(app.messages()[2].role, MessageRole::Assistant)
-                && app.messages()[2].blocks.is_empty(),
+            app.messages().expect("active session")[0].is_gotify_envelope,
+            "first delivered turn"
+        );
+        assert!(
+            app.messages().expect("active session")[1].is_peer_envelope,
+            "second delivered turn, adjacent"
+        );
+        assert!(
+            matches!(app.messages().expect("active session")[2].role, MessageRole::Assistant)
+                && app.messages().expect("active session")[2].blocks.is_empty(),
             "exactly one empty placeholder, at the tail",
         );
         assert_eq!(
@@ -4200,7 +4266,7 @@ mod subagent_sentinel_tests {
         ));
         // Indexed so the TaskStarted below re-adopts the terminal card
         // instead of synthesizing over it.
-        let root_msg = app.messages().len() - 1;
+        let root_msg = app.messages().expect("active session").len() - 1;
         app.index_tool_call(root_id.to_owned(), root_msg, 0);
         app.index_tool_call(child_block, root_msg, 1);
         // The real producer, sticky marker and all - the map entry alone
@@ -4346,7 +4412,7 @@ mod subagent_sentinel_tests {
 
     fn card_status(app: &App, id: &str) -> ToolCallStatus {
         let (mi, bi) = app.lookup_tool_call(id).expect("indexed");
-        match app.messages().get(mi).and_then(|m| m.blocks.get(bi)) {
+        match app.messages().expect("active session").get(mi).and_then(|m| m.blocks.get(bi)) {
             Some(MessageBlock::ToolCall(tc)) => tc.status,
             _ => panic!("expected ToolCall block for {id}"),
         }
@@ -4364,7 +4430,12 @@ mod subagent_sentinel_tests {
         // Reopen the child: the shape where the notification is the only
         // settle signal left.
         let (mi, bi) = app.lookup_tool_call("tu-child-1").expect("child indexed");
-        match app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi)) {
+        match app
+            .active_messages_mut()
+            .expect("active session")
+            .get_mut(mi)
+            .and_then(|m| m.blocks.get_mut(bi))
+        {
             Some(MessageBlock::ToolCall(tc)) => tc.as_mut().status = ToolCallStatus::InProgress,
             _ => panic!("expected ToolCall block for tu-child-1"),
         }
@@ -4404,7 +4475,8 @@ mod commands_changed_tests {
     #[test]
     fn refresh_replaces_the_command_list() {
         let mut app = App::test_default();
-        *app.available_commands_mut() = vec![AvailableCommand::new("stale", "")];
+        *app.available_commands_mut().expect("active session") =
+            vec![AvailableCommand::new("stale", "")];
 
         handle_sdk_message(
             &mut app,
@@ -4414,14 +4486,27 @@ mod commands_changed_tests {
             ]),
         );
 
-        let names: Vec<&str> = app.available_commands().iter().map(|c| c.name.as_str()).collect();
+        let names: Vec<&str> = app
+            .available_commands()
+            .expect("active session")
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
         assert_eq!(names, vec!["gateway-upgrade", "greptile"], "list replaced, not appended");
         // argumentHint parses into input_hint; an empty hint drops to None.
-        let greptile =
-            app.available_commands().iter().find(|c| c.name == "greptile").expect("greptile");
+        let greptile = app
+            .available_commands()
+            .expect("active session")
+            .iter()
+            .find(|c| c.name == "greptile")
+            .expect("greptile");
         assert_eq!(greptile.input_hint.as_deref(), Some("<query>"));
-        let gateway =
-            app.available_commands().iter().find(|c| c.name == "gateway-upgrade").expect("gateway");
+        let gateway = app
+            .available_commands()
+            .expect("active session")
+            .iter()
+            .find(|c| c.name == "gateway-upgrade")
+            .expect("gateway");
         assert_eq!(gateway.input_hint, None, "empty argumentHint collapses to None");
     }
 
@@ -4463,9 +4548,15 @@ mod commands_changed_tests {
         // applying it would wipe the dropdown + /help. Keep the prior
         // list instead.
         let mut app = App::test_default();
-        *app.available_commands_mut() = vec![AvailableCommand::new("keep", "")];
+        *app.available_commands_mut().expect("active session") =
+            vec![AvailableCommand::new("keep", "")];
         handle_sdk_message(&mut app, commands_event(vec![json!({"no_name": "x"}), json!(7)]));
-        let names: Vec<&str> = app.available_commands().iter().map(|c| c.name.as_str()).collect();
+        let names: Vec<&str> = app
+            .available_commands()
+            .expect("active session")
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
         assert_eq!(names, vec!["keep"], "drift guard keeps the prior list intact");
     }
 
@@ -4474,9 +4565,13 @@ mod commands_changed_tests {
         // A genuinely empty `commands: []` (e.g. plugin uninstall) is
         // an intended clear, distinct from the drift case above.
         let mut app = App::test_default();
-        *app.available_commands_mut() = vec![AvailableCommand::new("gone", "")];
+        *app.available_commands_mut().expect("active session") =
+            vec![AvailableCommand::new("gone", "")];
         handle_sdk_message(&mut app, commands_event(Vec::new()));
-        assert!(app.available_commands().is_empty(), "empty commands_changed clears the list");
+        assert!(
+            app.available_commands().expect("active session").is_empty(),
+            "empty commands_changed clears the list"
+        );
     }
 }
 
@@ -4493,18 +4588,20 @@ mod error_message_tests {
     fn error_message_surfaces_and_drops_the_stuck_spinner() {
         let mut app = App::test_default();
         app.status = crate::app::AppStatus::Thinking;
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("hi"))],
         ));
-        app.active_messages_mut().push(ChatMessage::new(MessageRole::Assistant, Vec::new()));
+        app.active_messages_mut()
+            .expect("active session")
+            .push(ChatMessage::new(MessageRole::Assistant, Vec::new()));
 
         handle_sdk_message(&mut app, Message::Error { error: "read loop died".to_owned() });
 
         // The empty tail assistant is replaced by a surfaced system
         // error - proof the frame took the turn-error path, not the
         // old no-op arm that left it stuck.
-        let last = app.messages().last().expect("a message remains");
+        let last = app.messages().expect("active session").last().expect("a message remains");
         assert!(
             matches!(last.role, MessageRole::System(None)),
             "fatal error surfaces as a system message, got {:?}",
@@ -4585,7 +4682,7 @@ mod turn_end_context_usage_tests {
     fn result_above_the_token_gate_sends_no_poll() {
         let (mut app, mut rx) = app_with_connection();
         {
-            let usage = app.session_usage_mut();
+            let usage = app.session_usage_mut().expect("active session");
             usage.context_usage_percent = Some(60);
             usage.context_max_tokens = Some(1_000_000);
         }
@@ -4675,6 +4772,7 @@ mod submit_result_race_tests {
 
     fn row_of<'a>(app: &'a App, marker: &str) -> &'a crate::app::TurnInfo {
         app.messages()
+            .expect("active session")
             .iter()
             .find(|m| {
                 matches!(m.role, MessageRole::Assistant)
@@ -4697,7 +4795,7 @@ mod submit_result_race_tests {
 
         // Turn A: idle submit, then a streamed body.
         app.status = crate::app::AppStatus::Ready;
-        app.input_mut().set_text("first");
+        app.input_mut().expect("active session").set_text("first");
         crate::app::input_submit::submit_input(&mut app);
         let _ = rx.try_recv();
         handle_sdk_message(
@@ -4706,7 +4804,7 @@ mod submit_result_race_tests {
         );
 
         // Turn B submitted while Result(A) sits unapplied.
-        app.input_mut().set_text("second");
+        app.input_mut().expect("active session").set_text("second");
         crate::app::input_submit::submit_input(&mut app);
         let _ = rx.try_recv();
 
@@ -4797,7 +4895,7 @@ mod finalize_open_tool_calls_tests {
         // resolves each task_id back to its tool_use_id.
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
         app.insert_session_task_mapping("task-agent".to_owned(), "tu-agent".to_owned());
-        *app.background_tasks_mut() = vec![
+        *app.background_tasks_mut().expect("active session") = vec![
             BackgroundTask {
                 task_id: "task-bash".to_owned(),
                 task_type: "local_bash".to_owned(),
@@ -4908,7 +5006,7 @@ mod monitor_chat_block_tests {
                 tc.status = forge_primitives::ToolCallStatus::Completed;
             }
         });
-        for msg in app.active_messages_mut() {
+        for msg in app.active_messages_mut().expect("active session") {
             for block in &mut msg.blocks {
                 if let MessageBlock::ToolCall(tc) = block {
                     tc.status = model::ToolCallStatus::Completed;
@@ -4960,7 +5058,8 @@ mod monitor_chat_block_tests {
 
     fn with_tool_call<T>(app: &App, f: impl FnOnce(&crate::app::ToolCallInfo) -> T) -> T {
         let (mi, bi) = app.lookup_tool_call(TOOL_USE_ID).expect("Monitor stays indexed");
-        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[mi].blocks[bi]
+        else {
             panic!("expected a ToolCall block");
         };
         f(tc)
@@ -4981,9 +5080,11 @@ mod monitor_chat_block_tests {
             live_turn_running: false,
         };
         let mut out = String::new();
-        for idx in 0..app.messages().len() {
+        for idx in 0..app.messages().expect("active session").len() {
             let mut lines = Vec::new();
-            let Some(msg) = app.active_messages_mut().get_mut(idx) else { continue };
+            let Some(msg) = app.active_messages_mut().expect("active session").get_mut(idx) else {
+                continue;
+            };
             crate::ui::message::render_message(
                 msg,
                 &spinner,
@@ -5098,10 +5199,10 @@ mod monitor_chat_block_tests {
         // Settle THIS message's height so later staleness is ours.
         // `set_message_height` sizes + stores but leaves the stale bit,
         // so clear it explicitly to establish the precondition.
-        app.active_viewport_mut().set_message_height(msg_idx, 4);
-        app.active_viewport_mut().stale_message_heights[msg_idx] = false;
+        app.active_viewport_mut().expect("active session").set_message_height(msg_idx, 4);
+        app.active_viewport_mut().expect("active session").stale_message_heights[msg_idx] = false;
         assert!(
-            !app.active_viewport_mut().stale_message_heights[msg_idx],
+            !app.active_viewport_mut().expect("active session").stale_message_heights[msg_idx],
             "precondition: this message is not awaiting remeasure",
         );
 
@@ -5109,27 +5210,36 @@ mod monitor_chat_block_tests {
         // `handle_task_notification` also runs the summary update,
         // which invalidates on its own - the assertion would then pass
         // with this fix removed entirely.
-        let bytes_before = app.message_retained_bytes().get(msg_idx).copied().unwrap_or(0);
+        let bytes_before = app
+            .message_retained_bytes()
+            .expect("active session")
+            .get(msg_idx)
+            .copied()
+            .unwrap_or(0);
         app.replace_monitor_output_tail_by_task_id(TASK_ID, &["one".to_owned(), "two".to_owned()]);
         assert!(
-            app.active_viewport_mut().stale_message_heights[msg_idx],
+            app.active_viewport_mut().expect("active session").stale_message_heights[msg_idx],
             "the tail stamp changed the block's height and must schedule a remeasure",
         );
         // The retained-bytes cache feeds history trimming, so it has to
         // track the tail growing and shrinking too - the same set
         // `terminal.rs` does for a backgrounded Bash stream.
         assert_ne!(
-            app.message_retained_bytes().get(msg_idx).copied().unwrap_or(0),
+            app.message_retained_bytes()
+                .expect("active session")
+                .get(msg_idx)
+                .copied()
+                .unwrap_or(0),
             bytes_before,
             "the tail stamp changed the message's retained size",
         );
 
         // Same for the liveness stamp: the block collapses from the
         // tail tree back to a single row.
-        app.active_viewport_mut().stale_message_heights[msg_idx] = false;
+        app.active_viewport_mut().expect("active session").stale_message_heights[msg_idx] = false;
         app.set_monitor_status_by_task_id(TASK_ID, crate::app::MonitorStatus::Stopped);
         assert!(
-            app.active_viewport_mut().stale_message_heights[msg_idx],
+            app.active_viewport_mut().expect("active session").stale_message_heights[msg_idx],
             "collapsing to the summary row changed the height and must schedule a remeasure",
         );
 
@@ -5138,10 +5248,10 @@ mod monitor_chat_block_tests {
         // unconditional invalidate would remeasure the message forever
         // for a block whose shape never changed. The tail stamp already
         // guards this; the liveness stamp has to as well.
-        app.active_viewport_mut().stale_message_heights[msg_idx] = false;
+        app.active_viewport_mut().expect("active session").stale_message_heights[msg_idx] = false;
         app.set_monitor_status_by_task_id(TASK_ID, crate::app::MonitorStatus::Stopped);
         assert!(
-            !app.active_viewport_mut().stale_message_heights[msg_idx],
+            !app.active_viewport_mut().expect("active session").stale_message_heights[msg_idx],
             "an unchanged status is a no-op, not a remeasure",
         );
     }

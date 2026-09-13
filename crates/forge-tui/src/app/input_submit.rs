@@ -16,11 +16,19 @@ pub(super) fn submit_input(app: &mut App) {
     }
 
     // Dismiss any open autocomplete dropdown.
-    *app.mention_mut() = None;
-    *app.slash_mut() = None;
-    *app.subagent_mut() = None;
+    if let Some(slot) = app.mention_mut() {
+        *slot = None;
+    }
+    if let Some(slot) = app.slash_mut() {
+        *slot = None;
+    }
+    if let Some(slot) = app.subagent_mut() {
+        *slot = None;
+    }
 
-    let text = app.input().text();
+    let Some(text) = app.input().map(super::input::InputState::text) else {
+        return;
+    };
     if text.trim().is_empty() {
         return;
     }
@@ -32,12 +40,16 @@ pub(super) fn submit_input(app: &mut App) {
     // input; `false` falls through to the regular prompt path
     // (e.g. `/compact` passes through as a real user prompt).
     if slash::try_handle_submit(app, &text) {
-        app.input_mut().clear();
+        if let Some(input) = app.input_mut() {
+            input.clear();
+        }
         app.sync_help_open_with_input();
         return;
     }
 
-    app.input_mut().clear();
+    if let Some(input) = app.input_mut() {
+        input.clear();
+    }
     app.sync_help_open_with_input();
     dispatch_prompt(app, text);
 }
@@ -157,7 +169,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
         return;
     };
 
-    let images = std::mem::take(app.pending_images_mut());
+    let images = app.pending_images_mut().map(std::mem::take).unwrap_or_default();
 
     // If the tail is an empty assistant placeholder (the one a
     // previous submit pushed that claude never had a chance to
@@ -201,7 +213,9 @@ fn dispatch_prompt(app: &mut App, text: String) {
         );
     }
     app.enforce_history_retention_tracked();
-    app.active_viewport_mut().engage_auto_scroll();
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.engage_auto_scroll();
+    }
 
     let session_id = sid.to_string();
     let input_chars = text.chars().count();
@@ -252,14 +266,14 @@ mod tests {
     fn submit_input_while_idle_dispatches_prompt() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Ready;
-        app.input_mut().set_text("hello");
+        app.input_mut().expect("active session").set_text("hello");
 
         submit_input(&mut app);
 
-        assert!(app.input().text().is_empty());
+        assert!(app.input().expect("active session").text().is_empty());
         assert!(matches!(app.status, AppStatus::Thinking));
         // user bubble + empty assistant placeholder
-        assert_eq!(app.messages().len(), 2);
+        assert_eq!(app.messages().expect("active session").len(), 2);
         let prompt = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             prompt,
@@ -276,7 +290,7 @@ mod tests {
     fn idle_submit_sends_no_context_usage_poll() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Ready;
-        app.input_mut().set_text("hello");
+        app.input_mut().expect("active session").set_text("hello");
 
         submit_input(&mut app);
 
@@ -308,15 +322,16 @@ mod tests {
         app.start_live_turn(t0);
         // claude streamed a body into the placeholder before the user
         // typed again.
-        if let Some(msg) = app.active_messages_mut().last_mut() {
+        if let Some(msg) = app.active_messages_mut().expect("active session").last_mut() {
             msg.blocks.push(MessageBlock::Text(TextBlock::from_complete("streamed so far")));
         }
 
-        app.input_mut().set_text("second");
+        app.input_mut().expect("active session").set_text("second");
         submit_input(&mut app);
 
         let live_bars: Vec<_> = app
             .messages()
+            .expect("active session")
             .iter()
             .filter(|m| matches!(m.role, MessageRole::Assistant))
             .filter(|m| !m.turn_info.is_empty() && !m.turn_info.is_settled())
@@ -355,13 +370,14 @@ mod tests {
         ));
         app.push_active_turn_assistant_placeholder();
 
-        app.input_mut().set_text("next");
+        app.input_mut().expect("active session").set_text("next");
         submit_input(&mut app);
 
         let bucket_clock = app.active_session().and_then(|s| s.live_turn.started_at);
         assert!(bucket_clock.is_some(), "the continue fallback starts the bucket clock");
         let row_clock = app
             .messages()
+            .expect("active session")
             .iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::Assistant))
@@ -395,11 +411,12 @@ mod tests {
         app.set_latest_thinking_tokens(Some(50));
         app.set_pending_cancel(true);
 
-        app.input_mut().set_text("second");
+        app.input_mut().expect("active session").set_text("second");
         submit_input(&mut app);
 
         let live_bars: Vec<_> = app
             .messages()
+            .expect("active session")
             .iter()
             .filter(|m| matches!(m.role, MessageRole::Assistant))
             .filter(|m| !m.turn_info.is_empty() && !m.turn_info.is_settled())
@@ -438,16 +455,20 @@ mod tests {
         // it into the next user→model envelope.
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input_mut().set_text("mid-turn prompt");
+        app.input_mut().expect("active session").set_text("mid-turn prompt");
 
         submit_input(&mut app);
 
-        assert!(app.input().text().is_empty());
+        assert!(app.input().expect("active session").text().is_empty());
         assert!(matches!(app.status, AppStatus::Thinking), "status flipped back to Thinking");
         // user bubble + freshly-pushed empty asst placeholder
-        assert_eq!(app.messages().len(), 2, "user bubble + asst placeholder");
-        let user_msg = &app.messages()[0];
-        let asst_msg = &app.messages()[1];
+        assert_eq!(
+            app.messages().expect("active session").len(),
+            2,
+            "user bubble + asst placeholder"
+        );
+        let user_msg = &app.messages().expect("active session")[0];
+        let asst_msg = &app.messages().expect("active session")[1];
         assert!(matches!(user_msg.role, MessageRole::User));
         assert!(matches!(asst_msg.role, MessageRole::Assistant));
         assert!(asst_msg.blocks.is_empty(), "asst placeholder is empty until claude streams");
@@ -473,27 +494,29 @@ mod tests {
     fn cancel_then_type_settles_the_interrupted_row() {
         let (mut app, _rx) = app_with_connection();
         app.status = AppStatus::Ready;
-        app.input_mut().set_text("first");
+        app.input_mut().expect("active session").set_text("first");
         submit_input(&mut app);
         // Turn 1 streamed tokens into its placeholder, so it is a
         // content-bearing row with a live clock.
-        if let Some(msg) = app.active_messages_mut().last_mut() {
+        if let Some(msg) = app.active_messages_mut().expect("active session").last_mut() {
             msg.blocks.push(MessageBlock::Text(TextBlock::from_complete("turn one output")));
         }
-        let interrupted_idx = app.messages().len() - 1;
-        assert!(app.messages()[interrupted_idx].turn_info.started_at.is_some());
+        let interrupted_idx = app.messages().expect("active session").len() - 1;
+        assert!(
+            app.messages().expect("active session")[interrupted_idx].turn_info.started_at.is_some()
+        );
 
         request_cancel(&mut app).expect("cancel dispatches");
-        app.input_mut().set_text("second");
+        app.input_mut().expect("active session").set_text("second");
         submit_input(&mut app);
 
-        let interrupted = &app.messages()[interrupted_idx];
+        let interrupted = &app.messages().expect("active session")[interrupted_idx];
         assert!(
             interrupted.turn_info.is_settled(),
             "the interrupted turn's row must settle at its elapsed time, got {:?}",
             interrupted.turn_info.duration_ms,
         );
-        let tail = app.messages().last().expect("fresh placeholder");
+        let tail = app.messages().expect("active session").last().expect("fresh placeholder");
         assert!(matches!(tail.role, MessageRole::Assistant) && tail.blocks.is_empty());
         assert!(!tail.turn_info.is_settled(), "the fresh turn's own row counts from now");
     }
@@ -509,19 +532,23 @@ mod tests {
         // claude's next token).
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input_mut().set_text("first");
+        app.input_mut().expect("active session").set_text("first");
         submit_input(&mut app);
-        app.input_mut().set_text("second");
+        app.input_mut().expect("active session").set_text("second");
         submit_input(&mut app);
 
         // [user-first, user-second, asst empty] - the empty
         // placeholder from the first submit got dropped.
-        assert_eq!(app.messages().len(), 3, "stripped the in-between empty placeholder");
-        assert!(matches!(app.messages()[0].role, MessageRole::User));
-        assert!(matches!(app.messages()[1].role, MessageRole::User));
-        assert!(matches!(app.messages()[2].role, MessageRole::Assistant));
+        assert_eq!(
+            app.messages().expect("active session").len(),
+            3,
+            "stripped the in-between empty placeholder"
+        );
+        assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::User));
+        assert!(matches!(app.messages().expect("active session")[1].role, MessageRole::User));
+        assert!(matches!(app.messages().expect("active session")[2].role, MessageRole::Assistant));
         assert!(
-            app.messages()[2].blocks.is_empty(),
+            app.messages().expect("active session")[2].blocks.is_empty(),
             "tail asst placeholder still empty until claude streams",
         );
         assert_eq!(
@@ -553,36 +580,42 @@ mod tests {
         let (mut app, _rx) = app_with_connection();
         app.status = AppStatus::Running;
         // Seed a prior turn + non-empty asst at the tail.
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("earlier"))],
         ));
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("partial..."))],
         ));
         app.bind_active_turn_assistant_to_tail();
-        app.input_mut().set_text("follow-up");
+        app.input_mut().expect("active session").set_text("follow-up");
         submit_input(&mut app);
 
         // [user-earlier, asst-partial (KEPT), user-follow-up, asst empty]
-        assert_eq!(app.messages().len(), 4);
-        assert!(matches!(app.messages()[1].role, MessageRole::Assistant));
-        assert!(!app.messages()[1].blocks.is_empty(), "non-empty asst preserved");
-        assert!(matches!(app.messages()[2].role, MessageRole::User));
-        assert!(matches!(app.messages()[3].role, MessageRole::Assistant));
-        assert!(app.messages()[3].blocks.is_empty(), "tail asst is the new empty placeholder");
+        assert_eq!(app.messages().expect("active session").len(), 4);
+        assert!(matches!(app.messages().expect("active session")[1].role, MessageRole::Assistant));
+        assert!(
+            !app.messages().expect("active session")[1].blocks.is_empty(),
+            "non-empty asst preserved"
+        );
+        assert!(matches!(app.messages().expect("active session")[2].role, MessageRole::User));
+        assert!(matches!(app.messages().expect("active session")[3].role, MessageRole::Assistant));
+        assert!(
+            app.messages().expect("active session")[3].blocks.is_empty(),
+            "tail asst is the new empty placeholder"
+        );
     }
 
     #[test]
     fn submit_input_with_empty_text_is_noop() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input_mut().set_text("   ");
+        app.input_mut().expect("active session").set_text("   ");
 
         submit_input(&mut app);
 
-        assert!(app.messages().is_empty());
+        assert!(app.messages().expect("active session").is_empty());
         assert!(rx.try_recv().is_err());
     }
 
@@ -613,7 +646,7 @@ mod tests {
 
         // No agent → submit is ignored: no bubble pushed, no status
         // flip, no dispatch.
-        assert!(app.messages().is_empty());
+        assert!(app.messages().expect("active session").is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
     }
 
@@ -626,12 +659,12 @@ mod tests {
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
         app.status = AppStatus::Running;
-        app.input_mut().set_text("/extensions");
+        app.input_mut().expect("active session").set_text("/extensions");
 
         submit_input(&mut app);
 
         assert_eq!(app.active_view, ActiveView::Extensions);
-        assert!(app.input().text().is_empty());
+        assert!(app.input().expect("active session").text().is_empty());
         assert!(!app.pending_cancel());
         assert!(rx.try_recv().is_err());
     }
