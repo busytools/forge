@@ -784,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn notification_context_falls_back_without_bucket_or_worker() {
+    fn notification_context_is_empty_for_an_unknown_session() {
         let app = App::test_default();
         let unknown = forge_workspace::SessionKey::from_session_id("no-such-session");
         assert_eq!(app.notification_context(&unknown), NotifyContext::default());
@@ -834,6 +834,39 @@ mod tests {
             lines,
             vec!["beta - lead - turn complete", "beta - worker chat-stutter - turn complete"],
             "the two turn-completes are told apart on the line alone",
+        );
+    }
+
+    /// Permission and question events reach the line through the same
+    /// path a turn complete does, worker label included.
+    #[test]
+    fn unfocused_worker_prompts_name_the_worker_on_the_line() {
+        let mut app = App::test_default();
+        let worker_key = seed_bucket(&mut app, "session-worker", "busymail");
+        seed_worker(
+            &app,
+            &forge_workspace::ProjectKey::new_for_test("p-busymail"),
+            &worker_key,
+            "demo-route",
+        );
+        app.notifications = NotificationManager::new(Osc9NotificationMode::On);
+        app.notifications.on_focus_lost();
+
+        app.notify(NotifyEvent::PermissionRequired, &worker_key);
+        app.notify(NotifyEvent::QuestionRequired, &worker_key);
+
+        let lines: Vec<_> = app
+            .notifications
+            .take_delivered()
+            .into_iter()
+            .filter_map(|delivered| delivered.osc9_line)
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "busymail - worker demo-route - needs input",
+                "busymail - worker demo-route - needs your answer",
+            ],
         );
     }
 
