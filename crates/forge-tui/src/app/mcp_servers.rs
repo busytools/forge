@@ -68,13 +68,9 @@ pub fn collect_mcp_servers(app: &App) -> McpServerSection {
     let mut process_of: HashMap<String, (&ProcessEntry, u64)> = HashMap::new();
     let mut claimed_pids: HashSet<u32> = HashSet::new();
     if let Some(snapshot) = session.process_snapshot.as_ref() {
-        join_processes_to_servers(
-            snapshot,
-            servers,
-            &crate::app::processes::wire_alive_tool_calls(session),
-            &mut process_of,
-            &mut claimed_pids,
-        );
+        let wire_alive = crate::app::processes::wire_alive_tool_calls(session);
+        let matcher = crate::app::processes::WireMatcher::new(&wire_alive);
+        join_processes_to_servers(snapshot, servers, &matcher, &mut process_of, &mut claimed_pids);
     }
 
     let mut rows: Vec<McpServerRow> = servers
@@ -106,7 +102,7 @@ pub fn collect_mcp_servers(app: &App) -> McpServerSection {
 fn join_processes_to_servers<'a>(
     snapshot: &'a ProcessSnapshot,
     servers: &[McpServerStatus],
-    wire_alive: &[&crate::app::state::tool_call_info::ToolCallInfo],
+    matcher: &crate::app::processes::WireMatcher<'a>,
     process_of: &mut HashMap<String, (&'a ProcessEntry, u64)>,
     claimed_pids: &mut HashSet<u32>,
 ) {
@@ -125,7 +121,7 @@ fn join_processes_to_servers<'a>(
     // construction. Unclaimed processes keep rendering in PROCESSES.
     let mut candidates: HashMap<String, Vec<u32>> = HashMap::new();
     for entry in &snapshot.processes {
-        if crate::app::processes::wire_match(entry, wire_alive).is_some() {
+        if matcher.matched(&entry.command).is_some() {
             continue;
         }
         if let Some(server) = configured_text_match(&entry.command, &configured) {
@@ -146,7 +142,7 @@ fn join_processes_to_servers<'a>(
         .map(|root| RootProcess {
             pid: root.pid,
             cmdline: root.command.as_str(),
-            wire_matched: crate::app::processes::wire_match(root, wire_alive).is_some(),
+            wire_matched: matcher.matched(&root.command).is_some(),
         })
         .collect();
     if let Some((pid, name)) = elect_unmatched_server(servers, &configured, &roots) {

@@ -26,8 +26,8 @@
 use std::collections::{HashMap, HashSet};
 
 use forge_workspace::env::processes::{
-    ProcessEntry, ProcessSnapshot, basename_exe, extract_inner_command,
-    process_cmdline_matches_tool_input,
+    ProcessEntry, ProcessSnapshot, basename_exe, cmdline_haystack, cmdline_needle,
+    extract_inner_command, process_cmdline_matches_tool_input,
 };
 use serde_json::Value;
 
@@ -374,6 +374,7 @@ fn rows_from_os_snapshot<'a>(
     wire_alive: &'a [&'a ToolCallInfo],
     claimed_pids: &HashSet<u32>,
 ) -> Vec<ProcessRow> {
+    let matcher = WireMatcher::new(wire_alive);
     // Index by pid + build a parent → children adjacency list. The
     // children list excludes claimed pids: the walk never descends into
     // a claimed subtree, and its subtree-memory totals must not count
@@ -407,9 +408,20 @@ fn rows_from_os_snapshot<'a>(
             (r.pid, subtree_memory(r, &children_of, &mut visited))
         })
         .collect();
-    sort_siblings_inplace(&mut roots, wire_alive, Some(&root_subtree));
+    // One match pass for the whole snapshot. The sibling sort, the row
+    // builder and the tier all read this instead of re-testing every
+    // process against every live call.
+    let matched_by_pid: HashMap<u32, Option<&ToolCallInfo>> = snapshot
+        .processes
+        .iter()
+        .map(|entry| (entry.pid, matcher.matched(&entry.command)))
+        .collect();
+    let tier_of: HashMap<u32, u8> =
+        matched_by_pid.iter().map(|(pid, m)| (*pid, render_tier(*m))).collect();
+    sort_siblings_inplace(&mut roots, &tier_of, Some(&root_subtree));
 
-    let walk = Walk { children_of: &children_of, wire_alive };
+    let walk =
+        Walk { children_of: &children_of, matched: &matched_by_pid, tier_of: &tier_of };
     let mut rows = Vec::new();
     let n_roots = roots.len();
     for (idx, root) in roots.iter().enumerate() {
@@ -422,7 +434,8 @@ fn rows_from_os_snapshot<'a>(
 /// node, unlike the per-node tree position.
 struct Walk<'a> {
     children_of: &'a HashMap<u32, Vec<&'a ProcessEntry>>,
-    wire_alive: &'a [&'a ToolCallInfo],
+    matched: &'a HashMap<u32, Option<&'a ToolCallInfo>>,
+    tier_of: &'a HashMap<u32, u8>,
 }
 
 /// Emit `entry` + DFS its children, sorted siblings-first. Each
@@ -437,8 +450,8 @@ fn emit_with_descendants<'a>(
     walk: &Walk<'a>,
     out: &mut Vec<ProcessRow>,
 ) {
-    let Walk { children_of, wire_alive } = *walk;
-    let mut row = build_row_for_entry(entry, wire_alive);
+    let Walk { children_of, matched, tier_of } = *walk;
+    let mut row = build_row_for_entry(entry, matched.get(&entry.pid).copied().flatten());
     row.depth = depth;
     let mut visited = HashSet::new();
     let subtree_bytes = subtree_memory(entry, children_of, &mut visited);
@@ -454,7 +467,7 @@ fn emit_with_descendants<'a>(
 
     let mut kids: Vec<&ProcessEntry> =
         children_of.get(&entry.pid).map_or_else(Vec::new, Clone::clone);
-    sort_siblings_inplace(&mut kids, wire_alive, None);
+    sort_siblings_inplace(&mut kids, tier_of, None);
 
     // The next level's ancestor_has_more appends THIS row's
     // "more-siblings-below" bit so a deep descendant knows whether
@@ -545,22 +558,56 @@ fn overflow_row(hidden: usize, depth: u8, ancestor_has_more: Vec<bool>) -> Proce
 /// cmdline, if any. Shared by [`build_row_for_entry`], the tier in
 /// `sort_siblings_inplace`, and the `MCP SERVERS` join (a wire-matched
 /// process is tracked work, never a server's backing process).
-pub(crate) fn wire_match<'a>(
-    entry: &ProcessEntry,
-    wire_alive: &[&'a ToolCallInfo],
-) -> Option<&'a ToolCallInfo> {
-    wire_alive.iter().copied().find(|tc| {
-        let cmd = read_str_field(tc.raw_input.as_ref(), "command");
-        !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
-    })
+/// Live wire tool calls prepared for cmdline matching: each command is
+/// normalized once, so a scan over N processes and M calls pays M
+/// normalizations instead of N x M.
+///
+/// Name-blind on purpose. The match is taken on the `command` alone
+/// whatever `sdk_tool_name` the call carries, because the callers read
+/// the name afterwards: the `MCP SERVERS` join counts any wire match as
+/// tracked work rather than a server's backing process, and
+/// [`render_tier`] picks the row kind from the matched call.
+pub(crate) struct WireMatcher<'a> {
+    needles: Vec<(&'a ToolCallInfo, String)>,
+}
+
+impl<'a> WireMatcher<'a> {
+    pub(crate) fn new(wire_alive: &[&'a ToolCallInfo]) -> Self {
+        let needles = wire_alive
+            .iter()
+            .map(|tc| (*tc, cmdline_needle(read_str_field(tc.raw_input.as_ref(), "command"))))
+            .filter(|(_, needle)| !needle.is_empty())
+            .collect();
+        Self { needles }
+    }
+
+    /// The first prepared call whose command appears in `process_cmd`, in
+    /// `wire_alive` order.
+    pub(crate) fn matched(&self, process_cmd: &str) -> Option<&'a ToolCallInfo> {
+        let haystack = cmdline_haystack(process_cmd);
+        self.needles
+            .iter()
+            .find(|(_, needle)| haystack.contains(needle.as_str()))
+            .map(|(tc, _)| *tc)
+    }
+}
+
+/// Render tier for a matched process: matched Bash leads, a matched
+/// Monitor renders generic (its authoritative surface is MONITORS).
+fn render_tier(matched: Option<&ToolCallInfo>) -> u8 {
+    match matched {
+        Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => 1,
+        Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => 0,
+        _ => 1,
+    }
 }
 
 /// Build a row for a single OS entry, doing the wire-match check
 /// against the alive tool calls. Tree position (`depth`,
 /// `is_last_sibling`, `ancestor_has_more`) is initialised to
 /// defaults; the DFS walker overwrites them.
-fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> ProcessRow {
-    match wire_match(entry, wire_alive) {
+fn build_row_for_entry(entry: &ProcessEntry, matched: Option<&ToolCallInfo>) -> ProcessRow {
+    match matched {
         // Monitor's authoritative surface is the
         // dedicated MONITORS Inspector section. The PROCESSES row
         // no longer overlays the Monitor description on top of a
@@ -587,22 +634,18 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
 /// by their own RSS, which is also what they display.
 fn sort_siblings_inplace(
     entries: &mut [&ProcessEntry],
-    wire_alive: &[&ToolCallInfo],
+    tier_of: &std::collections::HashMap<u32, u8>,
     subtree_totals: Option<&std::collections::HashMap<u32, u64>>,
 ) {
     let sort_mem = |e: &ProcessEntry| -> u64 {
         subtree_totals.and_then(|m| m.get(&e.pid).copied()).unwrap_or(e.memory_bytes)
     };
-    // Mirror build_row_for_entry's kind arms so sort tier and render kind never
-    // disagree: matched Bash renders BashBackgrounded (0); a matched Monitor
-    // renders generic (1 - its authoritative surface is the MONITORS section).
-    let tier = |e: &ProcessEntry| -> u8 {
-        match wire_match(e, wire_alive) {
-            Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => 1,
-            Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => 0,
-            _ => 1,
-        }
-    };
+    // `tier_of` is precomputed from the same arms as `build_row_for_entry`'s
+    // kind, so sort tier and render kind cannot disagree: matched Bash renders
+    // BashBackgrounded (0); a matched Monitor renders generic (1 - its
+    // authoritative surface is the MONITORS section). Reading it here keeps a
+    // comparison O(1) instead of re-matching both sides.
+    let tier = |e: &ProcessEntry| -> u8 { tier_of.get(&e.pid).copied().unwrap_or(1) };
     entries.sort_by(|a, b| {
         tier(a)
             .cmp(&tier(b))
@@ -745,6 +788,73 @@ mod tests {
     /// Build a minimal `ToolCallInfo` carrying just the fields the
     /// collector reads (id, sdk_tool_name, raw_input). All other
     /// fields stay at zero / default so the helper is short.
+    /// The pre-change one-shot match, kept verbatim from the production
+/// function it replaced so the prepared matcher is compared against the
+/// old expression rather than against itself. Its guard reads the RAW
+/// command string, which is the detail the helpers alone do not express.
+    fn wire_match_before<'a>(
+        entry: &ProcessEntry,
+        wire_alive: &[&'a ToolCallInfo],
+    ) -> Option<&'a ToolCallInfo> {
+        wire_alive.iter().copied().find(|tc| {
+            let cmd = read_str_field(tc.raw_input.as_ref(), "command");
+            !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
+        })
+    }
+
+    #[test]
+    fn the_prepared_matcher_keeps_the_recorded_match_order_and_names() {
+        // wire_alive order, as the CLI handed it to us. tu-4's command is
+        // whitespace-only and tu-5 carries no command at all: neither can ever
+        // win, but neither may be dropped in a way that reorders the rest.
+        let blank = fake_tool_call_info("tu-4", "Bash", json!({ "command": "   " }));
+        let no_command = fake_tool_call_info("tu-5", "Bash", json!({ "description": "none" }));
+        let first = fake_tool_call_info("tu-1", "Bash", json!({ "command": "cargo nextest run" }));
+        let second = fake_tool_call_info("tu-2", "Bash", json!({ "command": "cargo nextest" }));
+        let monitor = fake_tool_call_info("tu-3", "Monitor", json!({ "command": "cargo build" }));
+        let wire: Vec<&ToolCallInfo> = vec![&blank, &no_command, &first, &second, &monitor];
+        let matcher = WireMatcher::new(&wire);
+
+        // Expected column captured from wire_match before the change.
+        let cases: [(&str, Option<&str>); 6] = [
+            // First match in order wins, not the most specific one.
+            ("cargo nextest run --no-fail-fast", Some("tu-1")),
+            // tu-1's command is not a substring here, so the scan reaches tu-2.
+            ("cargo nextest", Some("tu-2")),
+            // No tool-name filter: a Monitor-named call matches like any other.
+            ("cargo build --workspace", Some("tu-3")),
+            ("rustc --crate-name forge_tui", None),
+            ("", None),
+            // The whitespace-only command never wins, and does not shift order.
+            ("   ", None),
+        ];
+        for (cmd, expected) in cases {
+            assert_eq!(
+                matcher.matched(cmd).map(|tc| tc.id.as_str()),
+                expected,
+                "prepared matcher drifted from the recorded match for {cmd:?}",
+            );
+            let entry = fake_entry(1, "zsh", cmd, 0);
+            assert_eq!(
+                wire_match_before(&entry, &wire).map(|tc| tc.id.as_str()),
+                expected,
+                "the pre-change form drifted from its own recorded match for {cmd:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_tier_follows_the_matched_call_name() {
+        // render_tier is lifted verbatim out of sort_siblings_inplace, where it
+        // shared the closure with the sort key. Both arms, plus the unmatched
+        // fallback.
+        let bash = fake_tool_call_info("tu-1", "Bash", json!({ "command": "cargo build" }));
+        let monitor = fake_tool_call_info("tu-2", "Monitor", json!({ "command": "cargo build" }));
+        assert_eq!(render_tier(Some(&bash)), 0, "matched Bash leads");
+        assert_eq!(render_tier(Some(&monitor)), 1, "a matched Monitor renders generic");
+        assert_eq!(render_tier(None), 1, "unmatched processes render generic");
+    }
+
     fn fake_tool_call_info(id: &str, sdk_tool_name: &str, raw_input: Value) -> ToolCallInfo {
         ToolCallInfo {
             id: id.to_owned(),
