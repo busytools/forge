@@ -246,65 +246,29 @@ as all defaults.
 |---|---|---|---|
 | `spinner` | string | `braille` | `braille`, `phase_of_moon`, `ember`, `bars_v`, `star`, `sparkle` |
 | `fps` | integer | `120` | 30 to 240 |
-| `notifications_osc9` | string | `auto` | `auto`, `on`, `off` |
 
 `spinner` and `fps` are lenient, so a hand-edited typo does not stop
 forge booting. A `spinner` name forge does not recognise resolves to
 the default. An `fps` outside the range is clamped and warned about,
 and a non-integer `fps` resolves to the default.
 
-`notifications_osc9` is parsed strictly: an unknown value fails the
-load, naming the key and the value.
+Forge writes an OSC 9 desktop-notification escape every time it raises
+a notification, and asks nothing about the terminal first. A terminal
+that ignores the escape is harmless, so nothing is planned around the
+answer. Notifications are raised only while forge reads the terminal
+window as unfocused, and that focus signal is relayed and can lag the
+actual frontmost state.
 
-`notifications_osc9` governs whether forge sends OSC 9
-desktop-notification escapes. Those are raised only while forge
-believes the terminal window is unfocused; a window it reads as
-focused gets none. Detection reads
-`TERM_PROGRAM`, `ITERM_SESSION_ID` and `TERM` - three signals because
-a multiplexer between forge and the terminal can drop some while
-forwarding others. `TERM` counts only when it reads `xterm-ghostty`.
-`TERM_PROGRAM` and `ITERM_SESSION_ID` describe the terminal at the far
-end of the pipe; `TERM` is the one that can survive a multiplexer
-which drops them. None of the three says what forwards the escape, so
-a setup where it is stripped ends up with the default notification
-channel silent rather than degraded. When the escape does arrive, its
-banner shows while Ghostty is not the frontmost app and is downgraded
-to a dock bounce when it is. The focus signal is relayed and can lag
-the actual frontmost state, so an escape can land while Ghostty is
-frontmost and still take that dock-bounce form.
-
-`auto` trusts that detection. `off` makes forge treat OSC 9 as
-unavailable and fall back to what does not cross the terminal: the
-Iterm2 channel rings the bell instead, and Ghostty is left with no
-channel at all, so `off` under Ghostty is how to ask for nothing.
-`on` is the converse, for a terminal that speaks OSC 9 without
-announcing itself: the escape is sent regardless of detection, and it
-suppresses the bell exactly as a true detection does. Between them the
-key covers a setup where the escape is emitted but stripped, or
-supported but undetected, however that happens; it is config, not
-per-multiplexer code.
-
-Ghostty with no multiplexer sets `TERM_PROGRAM=ghostty`, so detection
-is true and the banner renders. Ghostty through shpool is why `TERM`
-is read at all: shpool does not carry `TERM_PROGRAM` into the pane,
-and it forwards OSC 9 (measured 2026-09-12 on shpool 0.11.0), so the
-banner renders there too.
-
-Under zellij and GNU screen, `TERM_PROGRAM` reaches the pane, so
-detection was already true, but an OSC 9 emitted inside does not reach
-the outer pty (measured 2026-08-29). The banner does not appear there
-and never did, which is what `off` is for. tmux drops the OSC 9
-notification form and substitutes both `TERM_PROGRAM` and `TERM` with
-its own values, so a tmux started from Ghostty is neither detected nor
-rendered. A tmux started from iTerm2 is the exception:
-`ITERM_SESSION_ID` is inherited into every pane, so detection reads
-true, the escape is emitted and dropped, and `off` is the remedy.
-
-Detection can also read true from a `TERM` that no longer describes
-the attached terminal, so the escape is sent to whatever is actually
-attached: a `TERM=xterm-ghostty` exported by a shell profile, or a
-session manager that freezes `TERM` so a reattach from another
-terminal keeps it. `off` is the remedy.
+What crosses is decided by whatever sits between forge and the
+terminal, and no setting changes it. Ghostty with no multiplexer
+renders the banner, and so does Ghostty through shpool: shpool does
+not carry `TERM_PROGRAM` into the pane but forwards OSC 9 (measured
+2026-09-12 on shpool 0.11.0). Under zellij and GNU screen an OSC 9
+emitted inside does not reach the outer pty (measured 2026-08-29), so
+the banner does not appear there. tmux drops the OSC 9 notification
+form and substitutes `TERM_PROGRAM` and `TERM` with its own values.
+When the banner does arrive it shows while Ghostty is not the
+frontmost app, and is downgraded to a dock bounce when it is.
 
 `launchpad_spinner` is accepted as an alias for `spinner`.
 

@@ -488,16 +488,16 @@ inspected.
     notification, which reached the OS without crossing the terminal
     at all. That path is gone (2026-09-13) - it was suppressed in
     every setup the maintainer uses, so nothing ever crossed without
-    the terminal and the escape is now the only channel, with `off`
-    as plain silence. The belief that decides it still comes from
-    `terminal_capabilities_from_env` reading `TERM_PROGRAM`,
-    `ITERM_SESSION_ID` and `TERM` - the last because shpool does not
-    carry `TERM_PROGRAM` into the pane, so `TERM` is the signal that
-    survives shpool. Measured 2026-08-29: `TERM_PROGRAM` and
-    `ITERM_SESSION_ID` both reach a pane under zellij 0.44.3 and under
-    GNU screen 4.00.03 unchanged, while an OSC 9 emitted inside either
-    does not reach the outer pty, with plain text written on both sides
-    of it arriving normally.
+    the terminal and the escape is now the only channel. The
+    capability detection that gated the escape is gone too (deleted
+    2026-09-13, with `notifications_osc9`): no terminal's
+    self-description decides whether a notification is emitted, so the
+    escape is written whether or not anything is known to render it.
+    Measured 2026-08-29: `TERM_PROGRAM` and `ITERM_SESSION_ID` both
+    reach a pane under zellij 0.44.3 and under GNU screen 4.00.03
+    unchanged, while an OSC 9 emitted inside either does not reach the
+    outer pty, with plain text written on both sides of it arriving
+    normally.
 
     Corrected 2026-09-07 by a live three-probe matrix on the user's
     mac-studio (Ghostty + ws/shpool 0.9.8, one probe at a time, the
@@ -513,10 +513,10 @@ inspected.
     (upstream discussion #10691 proposes options; none shipped). The
     user-facing "notifications completely gone" report was this
     suppression plus forge's text carrying no context - not a dead
-    delivery path. The channel seam `notifications_osc9` remains as
-    the user's override. Its "off" arm has no fallback left to retreat
-    to: with the desktop path gone, `off` under Ghostty is silence and
-    `off` on the Iterm2 channels is the bell.
+    delivery path. There is no seam left to retreat to: with the
+    desktop path gone and `notifications_osc9` removed, forge writes
+    the escape unconditionally and whatever sits in the middle decides
+    whether it crosses.
 
     What crosses is decided per sequence by the thing in the middle,
     and no one capability answers it for every sequence. tmux
@@ -539,6 +539,22 @@ inspected.
     allowed. Depending on it silently is not, because a feature that
     quietly does nothing reads as forge being broken rather than as
     the multiplexer eating it.
+
+    **The notification escape is a deliberate exception to that, and
+    the reason is the sentence above it.** forge writes OSC 9
+    unconditionally (2026-09-13) and detects nothing about whether it
+    will cross. Nothing in the middle reports what it forwarded, so
+    there is no absence to detect and no true requirement to state:
+    reading `ZELLIJ`, `STY` or `SHPOOL_SESSION_NAME` names the
+    manager and still does not say whether that manager passes the
+    escape, and the same reads guessed wrong in both directions when
+    detection existed. A terminal that ignores the sequence is
+    harmless, not degraded, so the failure this rule exists to
+    prevent - a feature that quietly does nothing - is not the one the
+    user meets. This is a case the binary test below resolves to
+    silence on purpose: the explanation lives in `configuration.md`
+    rather than in a runtime message, since nothing the middle reports
+    could inform one.
 
     **The keyboard-enhancement negotiation is the example to copy.**
     `resume_terminal` (`crates/forge-tui/src/app.rs`) pushes the

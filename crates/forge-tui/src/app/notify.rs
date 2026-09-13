@@ -1,5 +1,3 @@
-use super::config::PreferredNotifChannel;
-use forge_workspace::Osc9NotificationMode;
 use forge_workspace::SessionKey;
 use std::borrow::Cow;
 
@@ -46,13 +44,15 @@ impl NotificationText {
 }
 
 /// What one unfocused notify() delivered, recorded instead of sent
-/// when the `testing` feature is on: the OSC 9 line and the bell, in
-/// delivery order.
+/// when the `testing` feature is on: the OSC 9 line and whether the
+/// bytes reached stdout, in delivery order. `written` is what makes the
+/// emission observable; without it a guard around the write is
+/// invisible to every assertion here.
 #[cfg(feature = "testing")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveredNotification {
-    pub osc9_line: Option<String>,
-    pub bell: bool,
+    pub osc9_line: String,
+    pub written: bool,
 }
 
 /// Central notification manager.
@@ -61,48 +61,28 @@ pub struct DeliveredNotification {
 /// `FocusGained`/`FocusLost` events backed by DECSET 1004) and dispatches
 /// notifications only when the window is **not** focused.
 ///
-/// Two notification layers exist; the channel decides which run:
-/// 1. **Terminal bell** (`BEL \x07`) -- causes a taskbar flash / dock bounce
-///    on virtually every terminal emulator.
-/// 2. **OSC 9 escape** -- while the terminal is believed to support it,
-///    channels that can emit it suppress the bell (except on
-///    `iterm2_with_bell`), so a multiplexer that strips the escape silently
-///    leaves nothing. The `[ui] notifications_osc9` forge.toml key forces
-///    that belief either way: `off` leaves the Iterm2 channel the bell alone
-///    and Ghostty nothing at all, `on` sends the escape regardless of
-///    detection.
+/// One delivery: the OSC 9 escape, always written, whether or not the
+/// host terminal renders it. A terminal that ignores the sequence is
+/// harmless, so nothing is planned around the answer.
 #[derive(Debug)]
 pub struct NotificationManager {
     terminal_focused: bool,
-    osc9_mode: Osc9NotificationMode,
     #[cfg(feature = "testing")]
     delivered: std::cell::RefCell<Vec<DeliveredNotification>>,
 }
 
 impl Default for NotificationManager {
     fn default() -> Self {
-        Self::new(Osc9NotificationMode::default())
+        Self::new()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NotificationPlan {
-    ring_bell: bool,
-    osc9_text: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TerminalCapabilities {
-    osc9_notifications: bool,
-}
-
 impl NotificationManager {
-    pub const fn new(osc9_mode: Osc9NotificationMode) -> Self {
+    pub const fn new() -> Self {
         // Default to `true` (focused) so that terminals which do not support
         // DECSET 1004 never fire spurious notifications.
         Self {
             terminal_focused: true,
-            osc9_mode,
             #[cfg(feature = "testing")]
             delivered: std::cell::RefCell::new(Vec::new()),
         }
@@ -123,63 +103,36 @@ impl NotificationManager {
         self.terminal_focused
     }
 
-    #[cfg(test)]
-    pub(crate) const fn osc9_mode(&self) -> Osc9NotificationMode {
-        self.osc9_mode
-    }
-
     /// Send a notification if the terminal is not focused.
     ///
     /// This is the single entry-point that all event handlers should call.
     /// It is intentionally cheap when focused (just a bool check).
     /// `session_key` is the event's own session, logged beside the
     /// resolved context so a wrong title is diagnosable from the log.
-    pub fn notify(
-        &self,
-        channel: PreferredNotifChannel,
-        event: NotifyEvent,
-        session_key: &SessionKey,
-        context: &NotifyContext,
-    ) {
+    pub fn notify(&self, event: NotifyEvent, session_key: &SessionKey, context: &NotifyContext) {
         if self.terminal_focused {
             return;
         }
         let text = notification_text(event, &context.project, context.worker_label.as_deref());
-        let plan =
-            notification_plan(channel, detect_terminal_capabilities(), self.osc9_mode, &text);
-        if let Some(line) = &plan.osc9_text {
-            send_osc9_notification(line);
-        }
-        if plan.ring_bell {
-            ring_bell();
-        }
-        let dispatched = plan.ring_bell || plan.osc9_text.is_some();
+        let line = text.osc9_line();
+        let written = send_osc9_notification(&line).is_ok();
         tracing::info!(
             target: crate::logging::targets::APP_NOTIFY,
-            event_name = if dispatched { "notification_fired" } else { "notification_planned_no_channels" },
-            message = if dispatched {
-                "unfocused notification dispatched"
-            } else {
-                "notification channel disabled; nothing dispatched"
-            },
-            outcome = if dispatched { "success" } else { "skipped" },
+            event_name = "notification_fired",
+            message = "unfocused notification dispatched",
+            outcome = "success",
             session_key = %session_key.as_str(),
             resolved_project = ?context.project,
             resolved_worker_label = ?context.worker_label,
             event = ?event,
-            channel = ?channel,
             title = %text.title,
             detail = %text.detail,
-            ring_bell = plan.ring_bell,
-            osc9 = plan.osc9_text.is_some(),
+            osc9_written = written,
         );
         // The `testing` feature records what was delivered so tests
-        // can assert it; the sends above still run.
+        // can assert it; the write above still runs.
         #[cfg(feature = "testing")]
-        self.delivered.borrow_mut().push(DeliveredNotification {
-            osc9_line: plan.osc9_text.clone(),
-            bell: plan.ring_bell,
-        });
+        self.delivered.borrow_mut().push(DeliveredNotification { osc9_line: line, written });
     }
 
     /// Test-only: drain what the unfocused notify()s delivered, in
@@ -192,11 +145,11 @@ impl NotificationManager {
 
 impl crate::app::App {
     /// Raise `event` for `session_key`'s session through this app's
-    /// notification manager, using the app's configured channel. The
-    /// single call site for every notification, so nothing grows a
-    /// second policy about when to notify: the manager's own
-    /// terminal-focus check decides that. The notification text comes
-    /// from the event session's project + worker label.
+    /// notification manager. The single call site for every
+    /// notification, so nothing grows a second policy about when to
+    /// notify: the manager's own terminal-focus check decides that.
+    /// The notification text comes from the event session's project +
+    /// worker label.
     pub(crate) fn notify(&self, event: NotifyEvent, session_key: &SessionKey) {
         // A session with no bucket has nothing to notify about, so this
         // is where an event for a closed or never-spawned key stops.
@@ -226,12 +179,7 @@ impl crate::app::App {
             );
             return;
         }
-        self.notifications.notify(
-            self.config.preferred_notification_channel_effective(),
-            event,
-            session_key,
-            &context,
-        );
+        self.notifications.notify(event, session_key, &context);
     }
 
     /// The event session's project + worker label, read at notify time.
@@ -271,29 +219,16 @@ pub(crate) mod test_capture {
 // Private helpers
 // ---------------------------------------------------------------------------
 
-/// Write the ASCII BEL character to stdout, causing a taskbar flash / dock
-/// bounce in most terminal emulators.
-fn ring_bell() {
-    use std::io::Write;
-    let result = std::io::stdout().write_all(b"\x07").and_then(|()| std::io::stdout().flush());
-    if let Err(error) = result {
-        tracing::warn!(
-            target: crate::logging::targets::APP_NOTIFY,
-            event_name = "bell_send_failed",
-            message = "could not write the terminal bell",
-            outcome = "failure",
-            error_message = %error,
-        );
-    }
-}
-
-fn send_osc9_notification(message: &str) {
+/// Write the OSC 9 notification sequence to stdout. The outcome is
+/// returned as well as logged, and `io::Result` is `must_use`, so a
+/// caller cannot drop the write out of the delivery path unnoticed.
+fn send_osc9_notification(message: &str) -> std::io::Result<()> {
     use std::io::Write;
 
     let sequence = osc9_escape_sequence(message);
     let result =
         std::io::stdout().write_all(sequence.as_bytes()).and_then(|()| std::io::stdout().flush());
-    if let Err(error) = result {
+    if let Err(error) = &result {
         tracing::warn!(
             target: crate::logging::targets::APP_NOTIFY,
             event_name = "osc9_send_failed",
@@ -302,67 +237,7 @@ fn send_osc9_notification(message: &str) {
             error_message = %error,
         );
     }
-}
-
-fn notification_plan(
-    channel: PreferredNotifChannel,
-    capabilities: TerminalCapabilities,
-    osc9_mode: Osc9NotificationMode,
-    text: &NotificationText,
-) -> NotificationPlan {
-    let osc9_available = match osc9_mode {
-        Osc9NotificationMode::Auto => capabilities.osc9_notifications,
-        Osc9NotificationMode::On => true,
-        Osc9NotificationMode::Off => false,
-    };
-    let osc9_text = osc9_available.then(|| text.osc9_line());
-    match channel {
-        PreferredNotifChannel::NotificationsDisabled => {
-            NotificationPlan { ring_bell: false, osc9_text: None }
-        }
-        PreferredNotifChannel::TerminalBell => {
-            NotificationPlan { ring_bell: true, osc9_text: None }
-        }
-        // "Auto / iTerm2" replaced the original always-bell behavior.
-        // Preserve that reliable fallback whenever OSC 9 is unavailable.
-        PreferredNotifChannel::Iterm2 => {
-            NotificationPlan { ring_bell: osc9_text.is_none(), osc9_text }
-        }
-        PreferredNotifChannel::Ghostty => NotificationPlan { ring_bell: false, osc9_text },
-        PreferredNotifChannel::Iterm2WithBell => NotificationPlan { ring_bell: true, osc9_text },
-    }
-}
-
-fn detect_terminal_capabilities() -> TerminalCapabilities {
-    terminal_capabilities_from_env(
-        std::env::vars_os()
-            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?))),
-    )
-}
-
-fn terminal_capabilities_from_env<I>(vars: I) -> TerminalCapabilities
-where
-    I: IntoIterator<Item = (String, String)>,
-{
-    let mut term_program = None::<String>;
-    let mut term = None::<String>;
-    let mut iterm_session = false;
-
-    for (key, value) in vars {
-        match key.as_str() {
-            "TERM_PROGRAM" => term_program = Some(value),
-            "TERM" => term = Some(value),
-            "ITERM_SESSION_ID" if !value.is_empty() => iterm_session = true,
-            _ => {}
-        }
-    }
-
-    // `TERM` is read because a multiplexer can drop `TERM_PROGRAM` while
-    // forwarding `TERM` unchanged, which is how shpool reaches Ghostty.
-    let osc9_notifications = matches!(term_program.as_deref(), Some("iTerm.app" | "ghostty"))
-        || matches!(term.as_deref(), Some("xterm-ghostty"))
-        || iterm_session;
-    TerminalCapabilities { osc9_notifications }
+    result
 }
 
 /// Build the delivered strings for one event from the session's
@@ -423,247 +298,23 @@ mod tests {
 
     #[test]
     fn defaults_to_focused() {
-        let mgr = NotificationManager::new(Osc9NotificationMode::default());
+        let mgr = NotificationManager::new();
         assert!(mgr.is_focused(), "should default to focused to suppress spurious notifications");
     }
 
     #[test]
     fn focus_lost_sets_unfocused() {
-        let mut mgr = NotificationManager::new(Osc9NotificationMode::default());
+        let mut mgr = NotificationManager::new();
         mgr.on_focus_lost();
         assert!(!mgr.is_focused());
     }
 
     #[test]
     fn focus_gained_restores_focused() {
-        let mut mgr = NotificationManager::new(Osc9NotificationMode::default());
+        let mut mgr = NotificationManager::new();
         mgr.on_focus_lost();
         mgr.on_focus_gained();
         assert!(mgr.is_focused());
-    }
-
-    // Fixed text for the plan tests: channel gating is what they pin,
-    // not wording.
-    fn fixture_text() -> NotificationText {
-        NotificationText {
-            title: "companies".to_owned(),
-            detail: "lead - turn complete".to_owned(),
-        }
-    }
-
-    #[test]
-    fn disabled_notifications_plan_is_silent() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::NotificationsDisabled,
-                TerminalCapabilities { osc9_notifications: true },
-                Osc9NotificationMode::Auto,
-                &fixture_text(),
-            ),
-            NotificationPlan { ring_bell: false, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn terminal_bell_plan_rings_only_the_bell() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::TerminalBell,
-                TerminalCapabilities { osc9_notifications: true },
-                Osc9NotificationMode::Auto,
-                &fixture_text(),
-            ),
-            NotificationPlan { ring_bell: true, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn iterm2_uses_osc9_when_supported() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: true },
-                Osc9NotificationMode::Auto,
-                &fixture_text(),
-            ),
-            NotificationPlan {
-                ring_bell: false,
-                osc9_text: Some("companies - lead - turn complete".to_owned()),
-            }
-        );
-    }
-
-    #[test]
-    fn iterm2_auto_falls_back_to_the_bell_when_osc9_is_unavailable() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: false },
-                Osc9NotificationMode::Auto,
-                &fixture_text(),
-            ),
-            NotificationPlan { ring_bell: true, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn iterm2_with_bell_uses_osc9_and_bell_when_supported() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2WithBell,
-                TerminalCapabilities { osc9_notifications: true },
-                Osc9NotificationMode::Auto,
-                &fixture_text(),
-            ),
-            NotificationPlan {
-                ring_bell: true,
-                osc9_text: Some("companies - lead - turn complete".to_owned()),
-            }
-        );
-    }
-
-    #[test]
-    fn iterm2_with_bell_keeps_the_bell_when_osc9_is_unavailable() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2WithBell,
-                TerminalCapabilities { osc9_notifications: false },
-                Osc9NotificationMode::Auto,
-                &fixture_text(),
-            ),
-            NotificationPlan { ring_bell: true, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn ghostty_uses_osc9_when_supported() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Ghostty,
-                TerminalCapabilities { osc9_notifications: true },
-                Osc9NotificationMode::Auto,
-                &fixture_text(),
-            ),
-            NotificationPlan {
-                ring_bell: false,
-                osc9_text: Some("companies - lead - turn complete".to_owned()),
-            }
-        );
-    }
-
-    #[test]
-    fn detects_iterm2_via_term_program() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "iTerm.app".to_owned())]);
-
-        assert!(capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn detects_iterm2_via_session_id() {
-        let capabilities =
-            terminal_capabilities_from_env([("ITERM_SESSION_ID".to_owned(), "w0t1p0".to_owned())]);
-
-        assert!(capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn detects_ghostty_via_term_program() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "ghostty".to_owned())]);
-
-        assert!(capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn detects_ghostty_via_term_when_term_program_is_absent() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM".to_owned(), "xterm-ghostty".to_owned())]);
-
-        assert!(
-            capabilities.osc9_notifications,
-            "TERM survives a multiplexer that drops TERM_PROGRAM",
-        );
-    }
-
-    #[test]
-    fn a_term_that_is_not_ghostty_does_not_advertise_osc9() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM".to_owned(), "xterm-256color".to_owned())]);
-
-        assert!(
-            !capabilities.osc9_notifications,
-            "only ghostty's TERM value counts, so this branch is not matching every TERM",
-        );
-    }
-
-    #[test]
-    fn unsupported_term_does_not_advertise_osc9() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "wezterm".to_owned())]);
-
-        assert!(!capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn osc9_override_off_forces_iterm2_to_the_bell() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: true },
-                Osc9NotificationMode::Off,
-                &fixture_text(),
-            ),
-            NotificationPlan { ring_bell: true, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn osc9_override_off_leaves_ghostty_with_no_channel() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Ghostty,
-                TerminalCapabilities { osc9_notifications: true },
-                Osc9NotificationMode::Off,
-                &fixture_text(),
-            ),
-            NotificationPlan { ring_bell: false, osc9_text: None },
-            "Ghostty has no fallback once the escape is off",
-        );
-    }
-
-    #[test]
-    fn osc9_override_on_sends_osc9_from_iterm2_despite_negative_detection() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: false },
-                Osc9NotificationMode::On,
-                &fixture_text(),
-            ),
-            NotificationPlan {
-                ring_bell: false,
-                osc9_text: Some("companies - lead - turn complete".to_owned()),
-            },
-            "On forces OSC 9 and suppresses the bell, detection notwithstanding",
-        );
-    }
-
-    #[test]
-    fn osc9_override_on_sends_osc9_from_ghostty_despite_negative_detection() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Ghostty,
-                TerminalCapabilities { osc9_notifications: false },
-                Osc9NotificationMode::On,
-                &fixture_text(),
-            ),
-            NotificationPlan {
-                ring_bell: false,
-                osc9_text: Some("companies - lead - turn complete".to_owned()),
-            },
-            "On forces OSC 9 for a terminal that does not announce itself",
-        );
     }
 
     #[test]
@@ -711,7 +362,7 @@ mod tests {
     #[test]
     fn an_unresolved_project_delivers_nothing_rather_than_the_app_name() {
         let mut app = App::test_default();
-        app.notifications = NotificationManager::new(Osc9NotificationMode::On);
+        app.notifications = NotificationManager::new();
         app.notifications.on_focus_lost();
         let unknown = forge_workspace::SessionKey::from_session_id("no-such-session");
 
@@ -817,7 +468,7 @@ mod tests {
             &worker_key,
             "chat-stutter",
         );
-        app.notifications = NotificationManager::new(Osc9NotificationMode::On);
+        app.notifications = NotificationManager::new();
         app.notifications.on_focus_lost();
 
         app.notify(NotifyEvent::TurnComplete, &lead_key);
@@ -827,7 +478,7 @@ mod tests {
             .notifications
             .take_delivered()
             .into_iter()
-            .filter_map(|delivered| delivered.osc9_line)
+            .map(|delivered| delivered.osc9_line)
             .collect();
         assert_eq!(
             lines,
@@ -848,7 +499,7 @@ mod tests {
             &worker_key,
             "demo-route",
         );
-        app.notifications = NotificationManager::new(Osc9NotificationMode::On);
+        app.notifications = NotificationManager::new();
         app.notifications.on_focus_lost();
 
         app.notify(NotifyEvent::PermissionRequired, &worker_key);
@@ -858,7 +509,7 @@ mod tests {
             .notifications
             .take_delivered()
             .into_iter()
-            .filter_map(|delivered| delivered.osc9_line)
+            .map(|delivered| delivered.osc9_line)
             .collect();
         assert_eq!(
             lines,
@@ -869,21 +520,50 @@ mod tests {
         );
     }
 
-    /// With the escape unavailable the Iterm2 channel falls back to the
-    /// bell alone; OSC 9 mode Off pins that regardless of the test
-    /// process's environment.
+    /// Nothing persisted can turn a notification off. A stored channel
+    /// preference that used to select "no notification" has no reader
+    /// left, so the escape is written regardless.
     #[test]
-    fn unfocused_terminal_delivers_only_the_bell_when_osc9_is_unavailable() {
+    fn a_stored_channel_preference_cannot_suppress_the_escape() {
         let mut app = App::test_default();
         let key = seed_bucket(&mut app, "session-a", "companies");
-        app.notifications = NotificationManager::new(Osc9NotificationMode::Off);
+        app.config.committed_preferences_document =
+            serde_json::json!({ "preferredNotifChannel": "notifications_disabled" });
+        app.notifications.on_focus_lost();
+
+        app.notify(NotifyEvent::TurnComplete, &key);
+
+        let lines: Vec<_> = app
+            .notifications
+            .take_delivered()
+            .into_iter()
+            .map(|delivered| delivered.osc9_line)
+            .collect();
+        assert_eq!(
+            lines,
+            vec!["companies - lead - turn complete"],
+            "a stored channel preference must not change what is delivered",
+        );
+    }
+
+    /// The escape reaches stdout. `written` comes back from the write
+    /// itself, so a guard put around the send fails here rather than
+    /// passing on the recorded line alone.
+    #[test]
+    fn an_unfocused_notification_writes_the_escape() {
+        let mut app = App::test_default();
+        let key = seed_bucket(&mut app, "session-a", "companies");
         app.notifications.on_focus_lost();
 
         app.notify(NotifyEvent::TurnComplete, &key);
 
         assert_eq!(
             app.notifications.take_delivered(),
-            vec![DeliveredNotification { osc9_line: None, bell: true }],
+            vec![DeliveredNotification {
+                osc9_line: "companies - lead - turn complete".to_owned(),
+                written: true,
+            }],
+            "the escape is written, not merely planned",
         );
     }
 

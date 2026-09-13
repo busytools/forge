@@ -661,7 +661,7 @@ pub struct App {
     // active bucket. See `App::usage` / `App::usage_mut`.
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
-    /// Central notification manager (bell + OSC 9 escape when unfocused).
+    /// Central notification manager (OSC 9 escape when unfocused).
     pub notifications: super::notify::NotificationManager,
     /// Performance logger. Present only when built with `--features perf`.
     /// Taken out (`Option::take`) during render, used, then put back to avoid
@@ -1055,9 +1055,7 @@ impl App {
             rendered_projects_pane_body_area: ratatui::layout::Rect::default(),
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             needs_redraw: true,
-            notifications: super::notify::NotificationManager::new(
-                forge_workspace::Osc9NotificationMode::default(),
-            ),
+            notifications: super::notify::NotificationManager::new(),
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
             fps_ema: None,

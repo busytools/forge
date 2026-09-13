@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{DefaultPermissionMode, OutputStyle, PreferredNotifChannel};
+use super::{DefaultPermissionMode, OutputStyle};
 use crate::agent::model::EffortLevel;
 
 const SETTINGS_FILENAME: &str = "settings.json";
@@ -278,13 +278,6 @@ pub fn opus_version_pin(document: &Value) -> Result<Option<String>, ()> {
 
 pub fn respect_gitignore(document: &Value) -> Result<bool, ()> {
     Ok(read_bool(document, &["respectGitignore"])?.unwrap_or(true))
-}
-
-pub fn preferred_notification_channel(document: &Value) -> Result<PreferredNotifChannel, ()> {
-    match read_string(document, &["preferredNotifChannel"])? {
-        None => Ok(PreferredNotifChannel::default()),
-        Some(value) => PreferredNotifChannel::from_stored(&value).ok_or(()),
-    }
 }
 
 pub fn language(document: &Value) -> Result<Option<String>, ()> {
@@ -585,12 +578,10 @@ mod tests {
         assert_eq!(respect_gitignore(&document), Ok(true));
         assert_eq!(output_style(&document), Ok(OutputStyle::Default));
         assert_eq!(model(&document), Ok(None));
-        assert_eq!(preferred_notification_channel(&document), Ok(PreferredNotifChannel::Iterm2));
     }
 
     #[test]
     fn persisted_setting_readers_reject_invalid_values() {
-        let invalid_notification = serde_json::json!({ "preferredNotifChannel": "not-a-channel" });
         let invalid_output_style = serde_json::json!({ "outputStyle": "Verbose" });
         let invalid_gitignore = serde_json::json!({ "respectGitignore": "yes" });
         let invalid_model = serde_json::json!({ "model": true });
@@ -598,7 +589,6 @@ mod tests {
             "permissions": { "defaultMode": "not-a-mode" }
         });
 
-        assert_eq!(preferred_notification_channel(&invalid_notification), Err(()));
         assert_eq!(output_style(&invalid_output_style), Err(()));
         assert_eq!(respect_gitignore(&invalid_gitignore), Err(()));
         assert_eq!(model(&invalid_model), Err(()));
