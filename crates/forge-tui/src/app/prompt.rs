@@ -373,7 +373,7 @@ pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
     if matches!(focused_kind, Some(Kind::Notes)) {
         match key.code {
             KeyCode::Up | KeyCode::Down => {
-                let Some(session) = app.try_active_bucket_mut() else { return false };
+                let Some(session) = app.active_bucket_mut() else { return false };
                 let Some(prompt) = session.prompt_queue.front_mut() else { return false };
                 handle_key_option_picker(prompt, key);
                 return true;
@@ -398,7 +398,9 @@ pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
                     let _ = app.type_char(c, std::time::Instant::now());
                 } else {
                     app.paste_burst.on_non_char_key(std::time::Instant::now());
-                    let _ = app.input_mut().editor_mut().input(crossterm::event::Event::Key(key));
+                    if let Some(input) = app.input_mut() {
+                        let _ = input.editor_mut().input(crossterm::event::Event::Key(key));
+                    }
                 }
                 return true;
             }
@@ -406,7 +408,7 @@ pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
     }
 
     // Non-Notes options: existing keymap.
-    let Some(session) = app.try_active_bucket_mut() else { return false };
+    let Some(session) = app.active_bucket_mut() else { return false };
     let Some(prompt) = session.prompt_queue.front_mut() else { return false };
     let outcome = match prompt.mode {
         PromptMode::OptionPicker => handle_key_option_picker(prompt, key),
@@ -442,11 +444,12 @@ pub fn submit_prompt(app: &mut crate::app::App) {
     // editor (App.input). Notes are read BEFORE clearing the editor so
     // we don't lose the user's typed feedback.
     let notes_text = {
-        let trimmed = app.input().text().trim().to_owned();
+        let trimmed =
+            app.input().map(super::input::InputState::text).unwrap_or_default().trim().to_owned();
         if trimmed.is_empty() { None } else { Some(trimmed) }
     };
 
-    let Some(session) = app.try_active_bucket_mut() else {
+    let Some(session) = app.active_bucket_mut() else {
         return;
     };
     let Some(prompt) = session.prompt_queue.pop_front() else {
@@ -455,7 +458,9 @@ pub fn submit_prompt(app: &mut crate::app::App) {
 
     // Clear the input editor so the chat-input slot is fresh for the
     // next prompt (or for the restored draft when queue empties).
-    app.input_mut().clear();
+    if let Some(input) = app.input_mut() {
+        input.clear();
+    }
 
     match &prompt.source {
         PromptSource::Permission { .. } => {
@@ -558,7 +563,7 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
     let Some(key) = app.active_session_key.clone() else {
         return;
     };
-    let Some(session) = app.try_active_bucket_mut() else {
+    let Some(session) = app.active_bucket_mut() else {
         return;
     };
     let Some(prompt) = session.prompt_queue.pop_front() else {
@@ -567,7 +572,9 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
 
     // Clear the canonical input editor - any user-typed notes shouldn't
     // leak across the cancel boundary into the next prompt or chat draft.
-    app.input_mut().clear();
+    if let Some(input) = app.input_mut() {
+        input.clear();
+    }
 
     match prompt.source {
         PromptSource::Permission { .. } => {
@@ -626,7 +633,7 @@ pub fn snapshot_draft_if_needed(app: &mut crate::app::App, key: &forge_workspace
 /// [`submit_prompt`] / [`cancel_prompt`] AFTER popping. No-op when
 /// there's no snapshot or the queue still has prompts pending.
 pub fn restore_draft_if_empty_queue(app: &mut crate::app::App) {
-    let Some(session) = app.try_active_bucket_mut() else {
+    let Some(session) = app.active_bucket_mut() else {
         return;
     };
     if session.prompt_queue.is_empty()
@@ -885,7 +892,7 @@ pub(crate) mod tests {
 
     #[test]
     fn enqueue_appends_to_session_queue() {
-        let mut session = crate::app::session::UiSession::default();
+        let mut session = crate::app::session::UiSession::blank(None, "test-project".to_owned());
         enqueue_prompt(
             &mut session,
             PromptState::from_permission("tc-1".into(), make_permission_request()),
@@ -1129,7 +1136,7 @@ pub(crate) mod tests {
     #[test]
     fn notes_field_still_takes_editing_keys() {
         let mut app = app_with_focused_notes();
-        app.input_mut().set_text("abd");
+        app.input_mut().expect("active session").set_text("abd");
 
         for code in [KeyCode::Backspace, KeyCode::Left, KeyCode::Char('X')] {
             assert!(
@@ -1139,7 +1146,7 @@ pub(crate) mod tests {
         }
 
         assert_eq!(
-            app.input().text(),
+            app.input().expect("active session").text(),
             "aXb",
             "Backspace, Left and a typed character all still reach the notes editor"
         );
@@ -1287,7 +1294,7 @@ pub(crate) mod tests {
         // Load notes text into the canonical App.input editor (the
         // notes editor surface), then enqueue the prompt focused on
         // the notes-option.
-        app.input_mut().set_text("use the other option");
+        app.input_mut().expect("active session").set_text("use the other option");
         if let Some(session) = app.session_mut(&key) {
             let mut prompt =
                 PromptState::from_question("tc-q".into(), make_question_request(false));
@@ -1321,7 +1328,7 @@ pub(crate) mod tests {
     fn submit_question_multi_select_uses_toggled_indices_and_filters_notes() {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("session");
-        app.input_mut().set_text("extra context");
+        app.input_mut().expect("active session").set_text("extra context");
         if let Some(session) = app.session_mut(&key) {
             let mut prompt = PromptState::from_question("tc-q".into(), make_question_request(true));
             // Toggle q0, q1, AND the notes option.
@@ -1375,7 +1382,7 @@ pub(crate) mod tests {
     fn submit_permission_with_notes_text_attaches_to_outcome() {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("session");
-        app.input_mut().set_text("don't push to main");
+        app.input_mut().expect("active session").set_text("don't push to main");
         if let Some(session) = app.session_mut(&key) {
             let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
             // Focus the notes-option (last); App.input carries the notes text.
@@ -1404,7 +1411,7 @@ pub(crate) mod tests {
     #[test]
     fn draft_preserved_across_morph_and_restored_when_queue_empties() {
         let mut app = crate::app::App::test_default();
-        app.input_mut().set_text("draft message I was typing");
+        app.input_mut().expect("active session").set_text("draft message I was typing");
         let key = app.active_session_key.clone().expect("session");
         if let Some(session) = app.session_mut(&key) {
             enqueue_prompt(
@@ -1413,11 +1420,15 @@ pub(crate) mod tests {
             );
         }
         snapshot_draft_if_needed(&mut app, &key);
-        assert_eq!(app.input().text(), "", "input cleared while prompt active");
+        assert_eq!(
+            app.input().expect("active session").text(),
+            "",
+            "input cleared while prompt active"
+        );
         // User responds; prompt is popped.
         submit_prompt(&mut app);
         // Draft restored.
-        assert_eq!(app.input().text(), "draft message I was typing");
+        assert_eq!(app.input().expect("active session").text(), "draft message I was typing");
     }
 
     #[test]
@@ -1438,13 +1449,13 @@ pub(crate) mod tests {
             "no draft to snapshot",
         );
         submit_prompt(&mut app);
-        assert_eq!(app.input().text(), "");
+        assert_eq!(app.input().expect("active session").text(), "");
     }
 
     #[test]
     fn snapshot_is_idempotent_across_multiple_prompts() {
         let mut app = crate::app::App::test_default();
-        app.input_mut().set_text("first draft");
+        app.input_mut().expect("active session").set_text("first draft");
         let key = app.active_session_key.clone().expect("session");
         if let Some(session) = app.session_mut(&key) {
             enqueue_prompt(
@@ -1463,21 +1474,27 @@ pub(crate) mod tests {
         snapshot_draft_if_needed(&mut app, &key);
         // Resolve first prompt - queue still has tc-2, draft NOT restored.
         submit_prompt(&mut app);
-        assert_eq!(app.input().text(), "", "queue non-empty, draft not yet restored");
+        assert_eq!(
+            app.input().expect("active session").text(),
+            "",
+            "queue non-empty, draft not yet restored"
+        );
         // Resolve second prompt - queue empty, draft restored.
         submit_prompt(&mut app);
-        assert_eq!(app.input().text(), "first draft");
+        assert_eq!(app.input().expect("active session").text(), "first draft");
     }
 
     #[test]
     fn background_prompt_leaves_the_focused_draft_alone() {
         let mut app = crate::app::App::test_default();
         let active = app.active_session_key.clone().expect("session");
-        app.input_mut().set_text("half-typed message");
+        app.input_mut().expect("active session").set_text("half-typed message");
 
         let background = forge_workspace::SessionKey::from_session_id("bg");
-        app.sessions
-            .insert(background.clone(), crate::app::session::UiSession::new(background.clone()));
+        app.sessions.insert(
+            background.clone(),
+            crate::app::session::UiSession::new(background.clone(), "test-project"),
+        );
 
         crate::app::events::apply_session_update(
             &mut app,
@@ -1488,7 +1505,7 @@ pub(crate) mod tests {
             },
         );
 
-        assert_eq!(app.input().text(), "half-typed message");
+        assert_eq!(app.input().expect("active session").text(), "half-typed message");
         assert_eq!(app.sessions.get(&background).expect("bg bucket").prompt_queue.len(), 1);
         assert!(app.sessions.get(&active).expect("active bucket").prompt_queue.is_empty());
     }
@@ -1497,10 +1514,11 @@ pub(crate) mod tests {
     fn a_parked_draft_never_lands_in_another_session() {
         let mut app = crate::app::App::test_default();
         let a = app.active_session_key.clone().expect("session");
-        app.input_mut().set_text("session A draft");
+        app.input_mut().expect("active session").set_text("session A draft");
 
         let b = forge_workspace::SessionKey::from_session_id("session-b");
-        app.sessions.insert(b.clone(), crate::app::session::UiSession::new(b.clone()));
+        app.sessions
+            .insert(b.clone(), crate::app::session::UiSession::new(b.clone(), "test-project"));
 
         crate::app::events::apply_session_update(
             &mut app,
@@ -1510,11 +1528,15 @@ pub(crate) mod tests {
                 request: make_permission_request(),
             },
         );
-        assert_eq!(app.input().text(), "", "A's dock morphed, so its editor is a fresh slate");
+        assert_eq!(
+            app.input().expect("active session").text(),
+            "",
+            "A's dock morphed, so its editor is a fresh slate"
+        );
 
         // The user switches to B, types there, then answers a prompt in B.
         app.active_session_key = Some(b.clone());
-        app.input_mut().set_text("session B draft");
+        app.input_mut().expect("active session").set_text("session B draft");
         crate::app::events::apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::PermissionRequest {
@@ -1525,13 +1547,13 @@ pub(crate) mod tests {
         );
         submit_prompt(&mut app);
 
-        assert_eq!(app.input().text(), "session B draft");
+        assert_eq!(app.input().expect("active session").text(), "session B draft");
     }
 
     #[test]
     fn cancel_restores_draft_when_queue_drains() {
         let mut app = crate::app::App::test_default();
-        app.input_mut().set_text("partial thought");
+        app.input_mut().expect("active session").set_text("partial thought");
         let key = app.active_session_key.clone().expect("session");
         if let Some(session) = app.session_mut(&key) {
             enqueue_prompt(
@@ -1541,6 +1563,6 @@ pub(crate) mod tests {
         }
         snapshot_draft_if_needed(&mut app, &key);
         cancel_prompt(&mut app);
-        assert_eq!(app.input().text(), "partial thought");
+        assert_eq!(app.input().expect("active session").text(), "partial thought");
     }
 }

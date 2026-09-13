@@ -40,7 +40,7 @@ impl super::App {
     }
 
     fn welcome_cwd_display(&self) -> &str {
-        let cwd = self.cwd().trim();
+        let cwd = self.cwd().unwrap_or("").trim();
         if cwd.is_empty() { "-" } else { cwd }
     }
 
@@ -70,7 +70,7 @@ impl super::App {
     }
 
     pub(crate) fn current_welcome_tip_seed(&self) -> Option<u64> {
-        let first = self.messages().first()?;
+        let first = self.messages()?.first()?;
         let MessageBlock::Welcome(welcome) = first.blocks.first()? else {
             return None;
         };
@@ -97,7 +97,8 @@ impl super::App {
         let (label, value) = self.welcome_account_display();
         let cwd = self.welcome_cwd_display().to_owned();
         let session_id = self.welcome_session_id_display();
-        let Some(first) = self.active_messages_mut().first_mut() else {
+        let Some(first) = self.active_messages_mut().and_then(|messages| messages.first_mut())
+        else {
             return;
         };
         if !matches!(first.role, MessageRole::Welcome) {

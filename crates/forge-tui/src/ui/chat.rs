@@ -5,7 +5,8 @@
 
 use crate::app::cache_metrics;
 use crate::app::{
-    App, AppStatus, MessageBlock, MessageRole, ScrollbarGeometry, SelectionKind, SelectionState,
+    App, AppStatus, ChatMessage, ChatViewport, MessageBlock, MessageRole, ScrollbarGeometry,
+    SelectionKind, SelectionState,
 };
 use crate::ui::message::{self, SpinnerState};
 use crate::ui::theme;
@@ -131,9 +132,11 @@ pub(super) fn update_visual_heights(
     viewport_height: usize,
 ) -> HeightUpdateStats {
     app.ensure_running_turn_spinner_anchor();
-    let msg_count = app.messages().len();
+    let msg_count = app.messages().map_or(0, <[ChatMessage]>::len);
     let _t = app.perf.as_ref().map(|p| p.start_with("chat::update_heights", "msgs", msg_count));
-    app.active_viewport_mut().sync_message_count(msg_count);
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.sync_message_count(msg_count);
+    }
 
     let is_streaming = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
     let active_turn_assistant = app.active_turn_assistant_idx();
@@ -141,7 +144,9 @@ pub(super) fn update_visual_heights(
     let mut stats = HeightUpdateStats::default();
 
     if msg_count == 0 {
-        app.active_viewport_mut().finalize_remeasure_if_clean();
+        if let Some(viewport) = app.active_viewport_mut() {
+            viewport.finalize_remeasure_if_clean();
+        }
         return stats;
     }
 
@@ -153,9 +158,9 @@ pub(super) fn update_visual_heights(
     let mode_id = mode_id_owned.as_deref();
     // Hoisted once (like `mode_id`) so the remeasure loops don't clone
     // the session cwd per message - the read-path relativization base.
-    let cwd_raw_owned = app.cwd_raw();
+    let cwd_raw_owned = app.cwd_raw().unwrap_or_default();
     let project_root = (!cwd_raw_owned.is_empty()).then_some(cwd_raw_owned.as_str());
-    let layout_generation = app.viewport().layout_generation;
+    let layout_generation = app.viewport().map_or(0, |viewport| viewport.layout_generation);
     let tools_collapsed = app.tools_collapsed;
     let invariants =
         MeasureInvariants { mode_id, project_root, layout_generation, tools_collapsed };
@@ -176,28 +181,34 @@ pub(super) fn update_visual_heights(
     // converge the rest upward over later frames. Only fall back to the TOP
     // when the user is not pinned to the bottom. Stays bounded to one
     // viewport-worth either way.
-    let bootstrap = app.viewport().total_message_height() == 0 && msg_count > 0;
+    let bootstrap =
+        app.viewport().is_none_or(|viewport| viewport.total_message_height() == 0) && msg_count > 0;
     let (visible_start, visible_end) = if bootstrap {
         let last = msg_count.saturating_sub(1);
-        if app.viewport().auto_scroll {
+        if app.viewport().is_some_and(|viewport| viewport.auto_scroll) {
             (msg_count.saturating_sub(viewport_height.max(1)), last)
         } else {
             (0_usize, viewport_height.saturating_sub(1).min(last))
         }
     } else {
         app.active_viewport_mut()
-            .current_visible_window(viewport_height)
-            .or_else(|| app.active_viewport_mut().remeasure_anchor_window(viewport_height))
+            .and_then(|viewport| viewport.current_visible_window(viewport_height))
+            .or_else(|| {
+                app.active_viewport_mut()
+                    .and_then(|viewport| viewport.remeasure_anchor_window(viewport_height))
+            })
             .unwrap_or((0, 0))
     };
-    app.active_viewport_mut().ensure_remeasure_anchor(visible_start, visible_end, msg_count);
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.ensure_remeasure_anchor(visible_start, visible_end, msg_count);
+    }
 
     // Priority loop: drain queued urgent indices, but only MEASURE
     // those that are currently visible. Off-screen entries keep
     // their stale bit set (we never call `mark_message_height_measured`
     // here) and re-measure lazily when they scroll into view via
     // the visible loop. This is half of the off-screen-laziness fix.
-    while let Some(i) = app.active_viewport_mut().next_priority_remeasure() {
+    while let Some(i) = app.active_viewport_mut().and_then(ChatViewport::next_priority_remeasure) {
         if !(visible_start..=visible_end).contains(&i) {
             continue;
         }
@@ -266,10 +277,16 @@ pub(super) fn update_visual_heights(
     // when scrolled into view. Also skipped on the bootstrap frame
     // (visible loop already covered a viewport-worth; we don't want
     // to double the cost off-screen on the very first frame).
-    let run_resize_loop = !bootstrap && app.viewport().background_convergence_pending;
+    let run_resize_loop = !bootstrap
+        && app.viewport().is_some_and(|viewport| viewport.background_convergence_pending);
     let mut budget = RemeasureBudget::new(viewport_height);
-    while run_resize_loop && app.active_viewport_mut().remeasure_active() && !budget.exhausted() {
-        let Some(i) = app.active_viewport_mut().next_remeasure_index(msg_count) else {
+    while run_resize_loop
+        && app.active_viewport_mut().is_some_and(|viewport| viewport.remeasure_active())
+        && !budget.exhausted()
+    {
+        let Some(i) =
+            app.active_viewport_mut().and_then(|viewport| viewport.next_remeasure_index(msg_count))
+        else {
             break;
         };
         if (visible_start..=visible_end).contains(&i) {
@@ -296,11 +313,13 @@ pub(super) fn update_visual_heights(
     // Fresh open: seed a running-average estimate into the still-unmeasured
     // off-screen messages so the scroll geometry is approximately right on
     // frame 1 and converges to exact as the background loop measures them.
-    if bootstrap {
-        app.active_viewport_mut().seed_unmeasured_height_estimates();
+    if bootstrap && let Some(viewport) = app.active_viewport_mut() {
+        viewport.seed_unmeasured_height_estimates();
     }
 
-    app.active_viewport_mut().finalize_remeasure_if_clean();
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.finalize_remeasure_if_clean();
+    }
     stats
 }
 
@@ -312,7 +331,7 @@ fn needs_height_measure(
     is_streaming: bool,
 ) -> bool {
     let _ = (is_last, active_turn_assistant, is_streaming);
-    !app.viewport().message_height_is_current(idx)
+    !app.viewport().is_some_and(|viewport| viewport.message_height_is_current(idx))
 }
 
 fn sync_active_turn_height_state(
@@ -321,7 +340,7 @@ fn sync_active_turn_height_state(
     active_turn_assistant: Option<usize>,
 ) {
     let next = active_turn_assistant.and_then(|idx| {
-        let message = app.messages().get(idx)?;
+        let message = app.messages().and_then(|messages| messages.get(idx))?;
         let spinner = msg_spinner(base, idx, active_turn_assistant, message);
         let empty_indicator_visible =
             message.blocks.is_empty() && (spinner.show_compacting || spinner.show_empty_thinking);
@@ -371,9 +390,12 @@ fn measure_message_height_at(
     invariants: &MeasureInvariants<'_>,
     stats: &mut HeightUpdateStats,
 ) {
-    let msg_count = app.messages().len();
+    let msg_count = app.messages().map_or(0, <[ChatMessage]>::len);
     let is_last_message = idx + 1 == msg_count;
-    let sp = msg_spinner(base, idx, active_turn_assistant, &app.messages()[idx]);
+    let Some(msg) = app.messages().and_then(|messages| messages.get(idx)) else {
+        return;
+    };
+    let sp = msg_spinner(base, idx, active_turn_assistant, msg);
     // #273: read the snapshot up-front so the immutable borrow of
     // `app` releases before the `active_messages_mut()` mutable
     // borrow further down. Owned clone of the hooks list keeps the
@@ -407,7 +429,9 @@ fn measure_message_height_at(
     // Scope the perf span to the measure call only - the cache-sync +
     // viewport writes below are not part of the measure timing.
     let (h, rendered_lines) = {
-        let msg = &mut app.active_messages_mut()[idx];
+        let Some(msg) = app.active_messages_mut().and_then(|messages| messages.get_mut(idx)) else {
+            return;
+        };
         let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
         let measured =
             message::measure_message_height_cached_with_context(msg, &sp, render_context);
@@ -417,9 +441,10 @@ fn measure_message_height_at(
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
     stats.measured_lines += rendered_lines;
-    let vp = app.active_viewport_mut();
-    vp.set_message_height(idx, h);
-    vp.mark_message_height_measured(idx);
+    if let Some(vp) = app.active_viewport_mut() {
+        vp.set_message_height(idx, h);
+        vp.mark_message_height_measured(idx);
+    }
 }
 
 /// #273: Snapshot of the per-message stop_hook_summary for the
@@ -473,8 +498,11 @@ pub(super) fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &Spinner
 
     {
         let _t = app.perf.as_ref().map(|p| p.start("chat::on_frame"));
-        if app.active_viewport_mut().on_frame(width, area.height).resized() {
-            app.cache_metrics_mut().record_resize();
+        let resized = app
+            .active_viewport_mut()
+            .is_some_and(|viewport| viewport.on_frame(width, area.height).resized());
+        if resized && let Some(metrics) = app.cache_metrics_mut() {
+            metrics.record_resize();
         }
     }
     let height_stats = update_visual_heights(app, base_spinner, width, viewport_height);
@@ -492,16 +520,18 @@ pub(super) fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &Spinner
 
     {
         let _t = app.perf.as_ref().map(|p| p.start("chat::prefix_sums"));
-        app.active_viewport_mut().rebuild_prefix_sums();
-    }
-    {
-        let vp = app.active_viewport_mut();
-        if let Some((anchor_idx, anchor_offset)) = vp.take_ready_scroll_anchor() {
-            vp.restore_scroll_anchor(anchor_idx, anchor_offset);
+        if let Some(viewport) = app.active_viewport_mut() {
+            viewport.rebuild_prefix_sums();
         }
     }
+    if let Some(vp) = app.active_viewport_mut()
+        && let Some((anchor_idx, anchor_offset)) = vp.take_ready_scroll_anchor()
+    {
+        vp.restore_scroll_anchor(anchor_idx, anchor_offset);
+    }
 
-    let content_height = app.active_viewport_mut().total_message_height();
+    let content_height =
+        app.active_viewport_mut().map_or(0, |viewport| viewport.total_message_height());
     crate::perf::mark_with("chat::content_height", "rows", content_height);
     crate::perf::mark_with("chat::viewport_height", "rows", viewport_height);
     crate::perf::mark_with(
@@ -530,7 +560,14 @@ pub(super) fn assemble_scrolled_window(
     viewport_height: usize,
 ) -> ScrolledWindow {
     let reduced_motion = app.config.prefers_reduced_motion_effective();
-    let vp = app.active_viewport_mut();
+    let Some(vp) = app.active_viewport_mut() else {
+        return ScrolledWindow {
+            all_lines: Vec::new(),
+            stats: CulledRenderStats::default(),
+            max_scroll: content_height.saturating_sub(viewport_height),
+            scroll_offset: 0,
+        };
+    };
     let max_scroll = content_height.saturating_sub(viewport_height);
     if vp.auto_scroll {
         vp.scroll_target = max_scroll;
@@ -556,12 +593,15 @@ pub(super) fn assemble_scrolled_window(
     crate::perf::mark_with("chat::scroll_offset", "rows", scroll_offset);
 
     let mut all_lines = Vec::new();
-    let auto_scroll = app.viewport().auto_scroll;
+    let auto_scroll = app.viewport().is_some_and(|viewport| viewport.auto_scroll);
     let stats = {
-        let _t = app
-            .perf
-            .as_ref()
-            .map(|p| p.start_with("chat::render_msgs", "msgs", app.messages().len()));
+        let _t = app.perf.as_ref().map(|p| {
+            p.start_with(
+                "chat::render_msgs",
+                "msgs",
+                app.messages().map_or(0, <[ChatMessage]>::len),
+            )
+        });
         if auto_scroll {
             render_tail_anchored(app, base, width, viewport_height, &mut all_lines)
         } else {
@@ -834,8 +874,11 @@ fn render_culled_messages(
     out: &mut Vec<Line<'static>>,
 ) -> CulledRenderStats {
     // O(log n) binary search via prefix sums to find first visible message.
-    let render_start = app.active_viewport_mut().find_first_visible(scroll);
-    let height_before_start = app.active_viewport_mut().cumulative_height_before(render_start);
+    let render_start =
+        app.active_viewport_mut().map_or(0, |viewport| viewport.find_first_visible(scroll));
+    let height_before_start = app
+        .active_viewport_mut()
+        .map_or(0, |viewport| viewport.cumulative_height_before(render_start));
     let structural_skip = scroll.saturating_sub(height_before_start);
     render_message_range(
         app,
@@ -864,12 +907,14 @@ fn render_tail_anchored(
     viewport_height: usize,
     out: &mut Vec<Line<'static>>,
 ) -> CulledRenderStats {
-    let msg_count = app.messages().len();
+    let msg_count = app.messages().map_or(0, <[ChatMessage]>::len);
     if msg_count == 0 {
         return CulledRenderStats::default();
     }
     let (render_start, structural_skip) = {
-        let vp = app.viewport();
+        let Some(vp) = app.viewport() else {
+            return CulledRenderStats::default();
+        };
         let mut covered = 0usize;
         let mut start = msg_count - 1;
         loop {
@@ -923,7 +968,7 @@ fn render_message_range(
         overscan,
         cap_messages,
     } = window;
-    let msg_count = app.messages().len();
+    let msg_count = app.messages().map_or(0, <[ChatMessage]>::len);
     let active_turn_assistant = app.active_turn_assistant_idx();
     let rows_needed = initial_structural_skip + viewport_height + overscan;
     // Even at one row per message this many messages cover `rows_needed`, so
@@ -941,17 +986,20 @@ fn render_message_range(
     // String allocations on remeasure-heavy frames.
     let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
     let mode_id = mode_id_owned.as_deref();
-    let layout_generation = app.viewport().layout_generation;
+    let layout_generation = app.viewport().map_or(0, |viewport| viewport.layout_generation);
     let tools_collapsed = app.tools_collapsed;
     let group_collapse_levels =
         app.active_session().map(|s| s.group_collapse_levels.clone()).unwrap_or_default();
     let messaging_group_collapse_levels =
         app.active_session().map(|s| s.messaging_group_collapse_levels.clone()).unwrap_or_default();
-    let cwd_raw = app.cwd_raw();
+    let cwd_raw = app.cwd_raw().unwrap_or_default();
     for i in render_start..msg_count {
-        let sp = msg_spinner(base, i, active_turn_assistant, &app.messages()[i]);
+        let Some(msg) = app.messages().and_then(|messages| messages.get(i)) else {
+            break;
+        };
+        let sp = msg_spinner(base, i, active_turn_assistant, msg);
         let before = out.len();
-        let message_height = app.viewport().message_height(i);
+        let message_height = app.viewport().map_or(0, |viewport| viewport.message_height(i));
         let stop_hook = stop_hook_summary_for(app, i);
         let options = message::MessageRenderOptions {
             tools_collapsed,
@@ -966,8 +1014,12 @@ fn render_message_range(
             .with_project_root(&cwd_raw);
         if structural_skip > 0 {
             let mut msg_copy_rows = Vec::new();
+            let Some(msg_mut) = app.active_messages_mut().and_then(|messages| messages.get_mut(i))
+            else {
+                break;
+            };
             let remaining_skip = message::render_message_from_offset_with_copy_rows(
-                &mut app.active_messages_mut()[i],
+                msg_mut,
                 &sp,
                 ctx,
                 structural_skip,
@@ -975,12 +1027,11 @@ fn render_message_range(
                 &mut msg_copy_rows,
             );
             let structural_rows_skipped = structural_skip.saturating_sub(remaining_skip);
-            record_gutter_rows(
-                &mut gutter_rows,
-                app.messages()[i].render_cache.gutter_rows(),
-                rendered_rows,
-                structural_rows_skipped,
-            );
+            let gutter: &[std::ops::Range<usize>] = app
+                .messages()
+                .and_then(|messages| messages.get(i))
+                .map_or(&[], |message| message.render_cache.gutter_rows());
+            record_gutter_rows(&mut gutter_rows, gutter, rendered_rows, structural_rows_skipped);
             record_copy_rows(&mut copy_rows, &msg_copy_rows);
             rendered_rows = rendered_rows
                 .saturating_add(message_height.saturating_sub(structural_rows_skipped));
@@ -988,19 +1039,16 @@ fn render_message_range(
             structural_skip = 0;
         } else {
             let mut msg_copy_rows = Vec::new();
-            message::render_message_with_copy_rows(
-                &mut app.active_messages_mut()[i],
-                &sp,
-                ctx,
-                out,
-                &mut msg_copy_rows,
-            );
-            record_gutter_rows(
-                &mut gutter_rows,
-                app.messages()[i].render_cache.gutter_rows(),
-                rendered_rows,
-                0,
-            );
+            let Some(msg_mut) = app.active_messages_mut().and_then(|messages| messages.get_mut(i))
+            else {
+                break;
+            };
+            message::render_message_with_copy_rows(msg_mut, &sp, ctx, out, &mut msg_copy_rows);
+            let gutter: &[std::ops::Range<usize>] = app
+                .messages()
+                .and_then(|messages| messages.get(i))
+                .map_or(&[], |message| message.render_cache.gutter_rows());
+            record_gutter_rows(&mut gutter_rows, gutter, rendered_rows, 0);
             record_copy_rows(&mut copy_rows, &msg_copy_rows);
             rendered_rows = rendered_rows.saturating_add(message_height);
         }
@@ -1090,7 +1138,11 @@ fn paint_user_gutter(
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let _t = app.perf.as_ref().map(|p| p.start("chat::render"));
-    crate::perf::mark_with("chat::message_count", "msgs", app.messages().len());
+    crate::perf::mark_with(
+        "chat::message_count",
+        "msgs",
+        app.messages().map_or(0, <[ChatMessage]>::len),
+    );
     let content_area = chat_content_area(area);
     let width = content_area.width;
     let viewport_height = content_area.height as usize;
@@ -1121,14 +1173,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if let Some(scrollbar_area) = chat_scrollbar_area(area) {
         let reduced_motion = app.config.prefers_reduced_motion_effective();
-        render_scrollbar_overlay(
-            frame,
-            app.active_viewport_mut(),
-            reduced_motion,
-            scrollbar_area,
-            content_height,
-            viewport_height,
-        );
+        if let Some(viewport) = app.active_viewport_mut() {
+            render_scrollbar_overlay(
+                frame,
+                viewport,
+                reduced_motion,
+                scrollbar_area,
+                content_height,
+                viewport_height,
+            );
+        }
     }
 
     enforce_and_emit_cache_metrics(app);
@@ -1142,16 +1196,16 @@ fn emit_render_summary(
     pinned_to_bottom: bool,
     render_data: &ScrolledRenderData,
 ) {
-    let last_message_idx = app.messages().len().checked_sub(1);
-    let last_message_height =
-        last_message_idx.map(|idx| app.active_viewport_mut().message_height(idx));
+    let last_message_idx = app.messages().map_or(0, <[ChatMessage]>::len).checked_sub(1);
+    let last_message_height = last_message_idx
+        .map(|idx| app.active_viewport_mut().map_or(0, |viewport| viewport.message_height(idx)));
     let trace_state = crate::app::ChatRenderTraceState {
         width,
         content_height,
         viewport_height,
-        auto_scroll: app.viewport().auto_scroll,
+        auto_scroll: app.viewport().is_some_and(|viewport| viewport.auto_scroll),
         pinned_to_bottom,
-        scroll_target: app.viewport().scroll_target,
+        scroll_target: app.viewport().map_or(0, |viewport| viewport.scroll_target),
         scroll_offset: render_data.scroll_offset,
         max_scroll: render_data.max_scroll,
         render_start: render_data.stats.render_start,
@@ -1176,8 +1230,8 @@ fn emit_render_summary(
         viewport_height,
         auto_scroll = trace_state.auto_scroll,
         pinned_to_bottom = trace_state.pinned_to_bottom,
-        scroll_target = ?app.viewport().scroll_target,
-        scroll_pos = app.viewport().scroll_pos,
+        scroll_target = app.viewport().map_or(0, |viewport| viewport.scroll_target),
+        scroll_pos = app.viewport().map_or(0.0, |viewport| viewport.scroll_pos),
         scroll_offset = trace_state.scroll_offset,
         max_scroll = trace_state.max_scroll,
         render_start = trace_state.render_start,
@@ -1213,51 +1267,66 @@ fn enforce_and_emit_cache_metrics(app: &mut App) {
     // -- Accumulate and conditionally log render cache metrics --
     let render_cache_budget = app.render_cache_budget;
     let history_policy = app.history_retention();
-    let should_log =
-        app.cache_metrics_mut().record_render_enforcement(&budget_stats, &render_cache_budget);
+    let should_log = app.cache_metrics_mut().is_some_and(|metrics| {
+        metrics.record_render_enforcement(&budget_stats, &render_cache_budget)
+    });
 
     let render_utilization_pct = if render_cache_budget.max_bytes > 0 {
         (render_cache_budget.last_total_bytes as f32 / render_cache_budget.max_bytes as f32) * 100.0
     } else {
         0.0
     };
-    let history_utilization_pct = if history_policy.max_bytes > 0 {
-        (app.history_retention_stats().total_after_bytes as f32 / history_policy.max_bytes as f32)
-            * 100.0
-    } else {
-        0.0
+    let history_utilization_pct = match (history_policy.as_ref(), app.history_retention_stats()) {
+        (Some(policy), Some(stats)) if policy.max_bytes > 0 => {
+            (stats.total_after_bytes as f32 / policy.max_bytes as f32) * 100.0
+        }
+        _ => 0.0,
     };
 
-    if let Some(warn_kind) = app.cache_metrics_mut().check_warn_condition(
-        render_utilization_pct,
-        history_utilization_pct,
-        budget_stats.evicted_blocks,
-    ) {
+    if let Some(warn_kind) = app.cache_metrics_mut().and_then(|metrics| {
+        metrics.check_warn_condition(
+            render_utilization_pct,
+            history_utilization_pct,
+            budget_stats.evicted_blocks,
+        )
+    }) {
         cache_metrics::emit_cache_warning(&warn_kind);
     }
 
     if should_log {
-        let entry_count = count_populated_cache_slots(app.messages());
-        let snap = cache_metrics::build_snapshot(
-            &render_cache_budget,
+        let entry_count = count_populated_cache_slots(app.messages().unwrap_or_default());
+        let snap = match (
+            app.history_retention(),
             app.history_retention_stats(),
-            history_policy,
             app.cache_metrics(),
             app.viewport(),
-            entry_count,
-            budget_stats.evicted_blocks,
-            0,
-            budget_stats.protected_bytes,
-        );
-        cache_metrics::emit_render_metrics(&snap);
+        ) {
+            (Some(policy), Some(stats), Some(metrics), Some(viewport)) => {
+                Some(cache_metrics::build_snapshot(
+                    &render_cache_budget,
+                    stats,
+                    policy,
+                    metrics,
+                    viewport,
+                    entry_count,
+                    budget_stats.evicted_blocks,
+                    0,
+                    budget_stats.protected_bytes,
+                ))
+            }
+            _ => None,
+        };
+        if let Some(snap) = snap {
+            cache_metrics::emit_render_metrics(&snap);
 
-        crate::perf::mark_with("cache::entry_count", "count", entry_count);
-        crate::perf::mark_with(
-            "cache::utilization_pct_x10",
-            "pct",
-            (snap.render_utilization_pct * 10.0) as usize,
-        );
-        crate::perf::mark_with("cache::peak_bytes", "bytes", snap.render_peak_bytes);
+            crate::perf::mark_with("cache::entry_count", "count", entry_count);
+            crate::perf::mark_with(
+                "cache::utilization_pct_x10",
+                "pct",
+                (snap.render_utilization_pct * 10.0) as usize,
+            );
+            crate::perf::mark_with("cache::peak_bytes", "bytes", snap.render_peak_bytes);
+        }
     }
 }
 
@@ -1405,15 +1474,18 @@ mod tests {
             .draw(|frame| {
                 let spinner = idle_spinner();
                 let content_area = chat_content_area(Rect::new(0, 0, width, height));
-                let _ = app.active_viewport_mut().on_frame(content_area.width, content_area.height);
+                let _ = app
+                    .active_viewport_mut()
+                    .expect("active session")
+                    .on_frame(content_area.width, content_area.height);
                 update_visual_heights(
                     app,
                     &spinner,
                     content_area.width,
                     usize::from(content_area.height),
                 );
-                app.active_viewport_mut().rebuild_prefix_sums();
-                let total_h = app.viewport().total_message_height();
+                app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+                let total_h = app.viewport().expect("active session").total_message_height();
                 render_scrolled(
                     frame,
                     content_area,
@@ -1453,7 +1525,7 @@ mod tests {
     fn the_user_turn_rule_runs_unbroken_through_the_turn() {
         let long = "word ".repeat(20);
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             user_message(&format!("{long}\n\n```rust\nfn main() {{}}\n```\n")),
             assistant_text_message("assistant prose after"),
         ];
@@ -1504,13 +1576,13 @@ mod tests {
     fn the_rule_stays_on_the_turn_when_the_chat_is_scrolled() {
         let long = "word ".repeat(60);
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             assistant_text_message("top prose"),
             user_message(&format!("{long}\n")),
             assistant_text_message("bottom prose"),
         ];
         {
-            let viewport = app.active_viewport_mut();
+            let viewport = app.active_viewport_mut().expect("active session");
             viewport.auto_scroll = false;
             viewport.scroll_target = 4;
             viewport.scroll_pos = 4.0;
@@ -1592,13 +1664,13 @@ mod tests {
     #[test]
     fn the_rule_tracks_the_turn_under_a_nonzero_local_scroll() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             assistant_text_message(&"alpha ".repeat(30)),
             user_message(&format!("{}\n", "word ".repeat(24))),
             assistant_text_message("tail prose"),
         ];
         {
-            let viewport = app.active_viewport_mut();
+            let viewport = app.active_viewport_mut().expect("active session");
             viewport.auto_scroll = false;
             viewport.scroll_target = 1;
             viewport.scroll_pos = 1.0;
@@ -1636,13 +1708,13 @@ mod tests {
     #[test]
     fn the_rule_tracks_the_turn_when_the_window_opens_inside_it() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             assistant_text_message("top prose"),
             user_message(&format!("{}\n", "word ".repeat(140))),
             assistant_text_message(&"tail ".repeat(120)),
         ];
         {
-            let viewport = app.active_viewport_mut();
+            let viewport = app.active_viewport_mut().expect("active session");
             viewport.auto_scroll = false;
             viewport.scroll_target = 5;
             viewport.scroll_pos = 5.0;
@@ -1712,7 +1784,7 @@ mod tests {
         const ROUNDS: usize = 7;
         let (w, h) = (240u16, 65u16);
         let mut app = App::test_default();
-        *app.active_messages_mut() = peer_dense_session(msg_count);
+        *app.active_messages_mut().expect("active session") = peer_dense_session(msg_count);
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let spinner = idle_spinner();
@@ -1723,21 +1795,25 @@ mod tests {
         // re-measure loop to convergence: that would take one frame per
         // viewport-worth of messages, which is most of a minute at the
         // larger size and adds nothing the timed frames need.
-        let _ = app.active_viewport_mut().on_frame(cw, content_area.height);
+        let _ =
+            app.active_viewport_mut().expect("active session").on_frame(cw, content_area.height);
         for i in 0..msg_count {
-            app.active_viewport_mut().set_message_height(i, 4);
+            app.active_viewport_mut().expect("active session").set_message_height(i, 4);
         }
-        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
 
         let mut frame = |cost: Option<&mut f64>| {
             terminal
                 .draw(|frame| {
-                    let _ = app.active_viewport_mut().on_frame(cw, content_area.height);
+                    let _ = app
+                        .active_viewport_mut()
+                        .expect("active session")
+                        .on_frame(cw, content_area.height);
                     // Prefix sums are rebuilt outside the timed span:
                     // they are O(session) by construction and are not
                     // rebuilt every frame in production.
-                    app.active_viewport_mut().rebuild_prefix_sums();
-                    let total_h = app.viewport().total_message_height();
+                    app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+                    let total_h = app.viewport().expect("active session").total_message_height();
                     let start = std::time::Instant::now();
                     update_visual_heights(&mut app, &spinner, cw, ch);
                     render_scrolled(frame, content_area, &mut app, &spinner, cw, total_h, ch);
@@ -1849,7 +1925,7 @@ mod tests {
             last_measured_y_in_msg: 0,
             answered_questions: Vec::new(),
         };
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(root))],
         ));
@@ -1859,7 +1935,9 @@ mod tests {
         app.clear_active_turn_assistant();
         // Post-turn text then re-binds the anchor and flips status back
         // to Running (the streaming fallback).
-        app.active_messages_mut().push(assistant_text_message("Monitor closed cleanly."));
+        app.active_messages_mut()
+            .expect("active session")
+            .push(assistant_text_message("Monitor closed cleanly."));
         app.bind_active_turn_assistant_to_tail();
         app.status = AppStatus::Running;
 
@@ -1868,9 +1946,13 @@ mod tests {
             !base.live_turn_running,
             "no Result is owed for post-turn text, so no turn is in flight"
         );
-        let tail = app.messages().len() - 1;
-        let spinner =
-            super::msg_spinner(&base, tail, app.active_turn_assistant_idx(), &app.messages()[tail]);
+        let tail = app.messages().expect("active session").len() - 1;
+        let spinner = super::msg_spinner(
+            &base,
+            tail,
+            app.active_turn_assistant_idx(),
+            &app.messages().expect("active session")[tail],
+        );
         assert!(
             spinner.is_active_turn_assistant && !spinner.live_turn_running,
             "the anchored post-turn message must not paint turn indicators",
@@ -1885,11 +1967,11 @@ mod tests {
     #[test]
     fn running_turn_binds_empty_in_flight_placeholder() {
         let mut app = App::test_default();
-        app.active_messages_mut().push(user_message("prompt"));
+        app.active_messages_mut().expect("active session").push(user_message("prompt"));
         app.push_active_turn_assistant_placeholder();
         app.clear_active_turn_assistant();
         app.status = AppStatus::Running;
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
 
         assert!(
             app.active_turn_assistant_idx().is_none(),
@@ -1897,7 +1979,7 @@ mod tests {
         );
 
         let base = super::build_base_spinner(&app);
-        let _ = app.active_viewport_mut().on_frame(80, 24);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
         update_visual_heights(&mut app, &base, 80, 24);
 
         assert_eq!(
@@ -1905,8 +1987,12 @@ mod tests {
             Some(tail),
             "re-binds onto the empty in-flight placeholder while running",
         );
-        let spinner =
-            super::msg_spinner(&base, tail, app.active_turn_assistant_idx(), &app.messages()[tail]);
+        let spinner = super::msg_spinner(
+            &base,
+            tail,
+            app.active_turn_assistant_idx(),
+            &app.messages().expect("active session")[tail],
+        );
         assert!(spinner.is_active_turn_assistant, "placeholder wears the spinner");
         assert!(spinner.show_empty_thinking, "spinner is visibly thinking");
     }
@@ -1918,20 +2004,22 @@ mod tests {
     #[test]
     fn running_turn_with_completed_tail_opens_fresh_placeholder() {
         let mut app = App::test_default();
-        app.active_messages_mut().push(user_message("q"));
-        app.active_messages_mut().push(assistant_text_message("prior answer"));
+        app.active_messages_mut().expect("active session").push(user_message("q"));
+        app.active_messages_mut()
+            .expect("active session")
+            .push(assistant_text_message("prior answer"));
         app.clear_active_turn_assistant();
         app.status = AppStatus::Running;
-        let completed = app.messages().len() - 1;
+        let completed = app.messages().expect("active session").len() - 1;
 
         let base = super::build_base_spinner(&app);
-        let _ = app.active_viewport_mut().on_frame(80, 24);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
         update_visual_heights(&mut app, &base, 80, 24);
 
         let anchor = app.active_turn_assistant_idx().expect("anchor bound");
         assert_ne!(anchor, completed, "did not re-bind onto the completed bubble");
         assert!(
-            anchor > completed && app.messages()[anchor].blocks.is_empty(),
+            anchor > completed && app.messages().expect("active session")[anchor].blocks.is_empty(),
             "opened a fresh placeholder past the completed bubble",
         );
     }
@@ -1943,18 +2031,18 @@ mod tests {
     #[test]
     fn running_turn_with_non_assistant_tail_opens_placeholder() {
         let mut app = App::test_default();
-        app.active_messages_mut().push(user_message("delivered prompt"));
+        app.active_messages_mut().expect("active session").push(user_message("delivered prompt"));
         app.clear_active_turn_assistant();
         app.status = AppStatus::Thinking;
 
         let base = super::build_base_spinner(&app);
-        let _ = app.active_viewport_mut().on_frame(80, 24);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
         update_visual_heights(&mut app, &base, 80, 24);
 
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
         assert!(
-            matches!(app.messages()[tail].role, MessageRole::Assistant)
-                && app.messages()[tail].blocks.is_empty(),
+            matches!(app.messages().expect("active session")[tail].role, MessageRole::Assistant)
+                && app.messages().expect("active session")[tail].blocks.is_empty(),
             "a tail placeholder was opened so the spinner has an anchor",
         );
         assert_eq!(app.active_turn_assistant_idx(), Some(tail));
@@ -1975,24 +2063,28 @@ mod tests {
         let text = "assistant reply that wraps over a line or two for height\n\
                     so heights vary between consecutive messages";
         let history: Vec<ChatMessage> = (0..200).map(|_| assistant_text_message(text)).collect();
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
 
-        let _ = app.active_viewport_mut().on_frame(80, 8);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 8);
         let spinner = idle_spinner();
         for _ in 0..64 {
             update_visual_heights(&mut app, &spinner, 80, 8);
-            app.active_viewport_mut().rebuild_prefix_sums();
-            if !app.active_viewport_mut().remeasure_active() {
+            app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
         assert!(
-            !app.active_viewport_mut().remeasure_active(),
+            !app.active_viewport_mut().expect("active session").remeasure_active(),
             "setup must fully converge so background_convergence_pending is clear before the test fires",
         );
 
-        let max_scroll = app.active_viewport_mut().total_message_height().saturating_sub(8);
-        let vp = app.active_viewport_mut();
+        let max_scroll = app
+            .active_viewport_mut()
+            .expect("active session")
+            .total_message_height()
+            .saturating_sub(8);
+        let vp = app.active_viewport_mut().expect("active session");
         vp.scroll_target = max_scroll;
         vp.scroll_pos = max_scroll as f32;
         vp.scroll_offset = max_scroll;
@@ -2008,7 +2100,9 @@ mod tests {
             frame.measured_msgs, frame.reused_msgs,
         );
         assert!(
-            !app.active_viewport_mut().message_height_is_current(off_screen_idx),
+            !app.active_viewport_mut()
+                .expect("active session")
+                .message_height_is_current(off_screen_idx),
             "the off-screen target stays stale (re-measures lazily when scrolled in)",
         );
     }
@@ -2025,25 +2119,27 @@ mod tests {
         app.status = AppStatus::Ready;
         let history: Vec<ChatMessage> =
             (0..80).map(|i| assistant_text_message(&format!("msg {i}\nsecond line"))).collect();
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
 
-        let _ = app.active_viewport_mut().on_frame(80, 24);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
         let spinner = idle_spinner();
         for _ in 0..32 {
             update_visual_heights(&mut app, &spinner, 80, 24);
-            app.active_viewport_mut().rebuild_prefix_sums();
-            if !app.active_viewport_mut().remeasure_active() {
+            app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
-        let total_before = app.active_viewport_mut().total_message_height();
+        let total_before =
+            app.active_viewport_mut().expect("active session").total_message_height();
         let off_screen_idx = 5;
-        let height_before = app.active_viewport_mut().message_height(off_screen_idx);
+        let height_before =
+            app.active_viewport_mut().expect("active session").message_height(off_screen_idx);
         assert!(height_before > 0, "setup must populate the off-screen target's height");
 
         let max_scroll = total_before.saturating_sub(24);
         {
-            let vp = app.active_viewport_mut();
+            let vp = app.active_viewport_mut().expect("active session");
             vp.auto_scroll = true;
             vp.scroll_target = max_scroll;
             vp.scroll_pos = max_scroll as f32;
@@ -2052,25 +2148,27 @@ mod tests {
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(off_screen_idx));
         let _ = update_visual_heights(&mut app, &spinner, 80, 24);
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         assert_eq!(
-            app.active_viewport_mut().message_height(off_screen_idx),
+            app.active_viewport_mut().expect("active session").message_height(off_screen_idx),
             height_before,
             "stale off-screen target keeps its last-known height so the scrollbar stays stable",
         );
         assert_eq!(
-            app.active_viewport_mut().total_message_height(),
+            app.active_viewport_mut().expect("active session").total_message_height(),
             total_before,
             "scrollbar geometry must not jump while the off-screen height is still stale",
         );
         assert!(
-            !app.active_viewport_mut().message_height_is_current(off_screen_idx),
+            !app.active_viewport_mut()
+                .expect("active session")
+                .message_height_is_current(off_screen_idx),
             "off-screen MessageChanged must leave the target stale (lazy measure on scroll-in)",
         );
 
         {
-            let vp = app.active_viewport_mut();
+            let vp = app.active_viewport_mut().expect("active session");
             vp.auto_scroll = false;
             vp.scroll_target = 0;
             vp.scroll_pos = 0.0;
@@ -2085,7 +2183,9 @@ mod tests {
             frame.reused_msgs,
         );
         assert!(
-            app.active_viewport_mut().message_height_is_current(off_screen_idx),
+            app.active_viewport_mut()
+                .expect("active session")
+                .message_height_is_current(off_screen_idx),
             "after entering the visible window the height becomes current again",
         );
     }
@@ -2102,25 +2202,25 @@ mod tests {
         app.status = AppStatus::Ready;
         let history: Vec<ChatMessage> =
             (0..80).map(|i| assistant_text_message(&format!("msg {i}\nsecond line"))).collect();
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
 
         converge(&mut app, 80, 24);
         assert!(
-            !app.active_viewport_mut().remeasure_active(),
+            !app.active_viewport_mut().expect("active session").remeasure_active(),
             "setup must converge before the invalidation under test",
         );
 
-        app.active_viewport_mut().scroll_up(30);
-        let last = app.messages().len() - 1;
+        app.active_viewport_mut().expect("active session").scroll_up(30);
+        let last = app.messages().expect("active session").len() - 1;
         app.invalidate_layout(InvalidationLevel::MessageChanged(last));
         let _ = first_frame_render(&mut app, 80, 24);
 
-        let before = app.viewport().scroll_offset;
-        app.active_viewport_mut().scroll_up(5);
+        let before = app.viewport().expect("active session").scroll_offset;
+        app.active_viewport_mut().expect("active session").scroll_up(5);
         let _ = first_frame_render(&mut app, 80, 24);
 
         assert!(
-            app.viewport().scroll_offset < before,
+            app.viewport().expect("active session").scroll_offset < before,
             "scroll must still move; stayed at {before}",
         );
     }
@@ -2142,24 +2242,32 @@ mod tests {
         let history: Vec<ChatMessage> = (0..120)
             .map(|i| assistant_text_message(&format!("msg {i} {filler}\nsecond {filler}")))
             .collect();
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
 
         converge(&mut app, 80, 24);
-        app.active_viewport_mut().scroll_up(30);
+        app.active_viewport_mut().expect("active session").scroll_up(30);
         let _ = first_frame_render(&mut app, 80, 24);
-        let top_before = app.viewport().find_first_visible(app.viewport().scroll_offset);
-        let rows_above_before = app.viewport().cumulative_height_before(top_before);
+        let top_before = app
+            .viewport()
+            .expect("active session")
+            .find_first_visible(app.viewport().expect("active session").scroll_offset);
+        let rows_above_before =
+            app.viewport().expect("active session").cumulative_height_before(top_before);
 
         converge(&mut app, 40, 24);
 
-        let rows_above_after = app.viewport().cumulative_height_before(top_before);
+        let rows_above_after =
+            app.viewport().expect("active session").cumulative_height_before(top_before);
         assert_ne!(
             rows_above_before, rows_above_after,
             "fixture must re-wrap at 40 so the anchor has real drift to correct; \
              message {top_before} sat at row {rows_above_before} at both widths",
         );
 
-        let top_after = app.viewport().find_first_visible(app.viewport().scroll_offset);
+        let top_after = app
+            .viewport()
+            .expect("active session")
+            .find_first_visible(app.viewport().expect("active session").scroll_offset);
         assert_eq!(
             top_after, top_before,
             "resize must keep the same message at the top; jumped {top_before} -> {top_after}",
@@ -2181,9 +2289,9 @@ mod tests {
                 "msg {i}: some content that wraps a bit so heights are non-trivial\nsecond line of content",
             ))
         }).collect();
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
 
-        let _ = app.active_viewport_mut().on_frame(80, 24);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
         let spinner = idle_spinner();
         let stats = update_visual_heights(&mut app, &spinner, 80, 24);
         assert!(stats.measured_msgs > 0, "must measure at least one message");
@@ -2248,7 +2356,7 @@ mod tests {
                 content_height,
                 usize::from(viewport_height),
             );
-            if !app.active_viewport_mut().remeasure_active() {
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
@@ -2268,13 +2376,16 @@ mod tests {
         let history: Vec<ChatMessage> = (0..200)
             .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
             .collect();
-        *app.active_messages_mut() = history;
-        assert!(app.viewport().auto_scroll, "resumed session opens pinned to the bottom");
+        *app.active_messages_mut().expect("active session") = history;
+        assert!(
+            app.viewport().expect("active session").auto_scroll,
+            "resumed session opens pinned to the bottom"
+        );
 
         let viewport_height = 8usize;
         let render_data = first_frame_render(&mut app, 80, 8);
         let stats = render_data.stats;
-        let msg_count = app.messages().len();
+        let msg_count = app.messages().expect("active session").len();
 
         assert_eq!(
             stats.last_rendered_idx,
@@ -2299,12 +2410,12 @@ mod tests {
     fn empty_placeholder_measures_to_zero_rows() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
-        *app.active_messages_mut() =
+        *app.active_messages_mut().expect("active session") =
             vec![assistant_text_message("anchor"), empty_placeholder_message()];
         let spinner = idle_spinner();
-        let _ = app.active_viewport_mut().on_frame(80, 8);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 8);
         update_visual_heights(&mut app, &spinner, 80, 8);
-        assert_eq!(app.active_viewport_mut().message_height(1), 0);
+        assert_eq!(app.active_viewport_mut().expect("active session").message_height(1), 0);
     }
 
     /// Bug guard (coupled with the seed fix): a run of genuinely-0-height
@@ -2320,25 +2431,25 @@ mod tests {
             (0..10).map(|i| assistant_text_message(&format!("visible {i}\nsecond line"))).collect();
         history.extend((0..10).map(|_| empty_placeholder_message()));
         history.push(assistant_text_message("newest visible\nsecond line"));
-        *app.active_messages_mut() = history;
-        let msg_count = app.messages().len();
+        *app.active_messages_mut().expect("active session") = history;
+        let msg_count = app.messages().expect("active session").len();
 
         let spinner = idle_spinner();
         let area = Rect::new(0, 0, 80, 8);
         for _ in 0..64 {
             let content_height = sync_chat_layout(&mut app, area, &spinner);
             let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
-            if !app.active_viewport_mut().remeasure_active() {
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
         assert_eq!(
-            app.active_viewport_mut().message_height(15),
+            app.active_viewport_mut().expect("active session").message_height(15),
             0,
             "the run must measure to a real 0, not an estimate",
         );
 
-        app.active_viewport_mut().auto_scroll = true;
+        app.active_viewport_mut().expect("active session").auto_scroll = true;
         let content_height = sync_chat_layout(&mut app, area, &spinner);
         let render_data = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
         assert_eq!(
@@ -2359,19 +2470,19 @@ mod tests {
         let mut history: Vec<ChatMessage> =
             (0..40).map(|i| assistant_text_message(&format!("visible {i}\nsecond line"))).collect();
         history.extend((0..4).map(|_| empty_placeholder_message()));
-        *app.active_messages_mut() = history;
-        let zero_idx = app.messages().len() - 1;
+        *app.active_messages_mut().expect("active session") = history;
+        let zero_idx = app.messages().expect("active session").len() - 1;
 
         let spinner = idle_spinner();
         let area = Rect::new(0, 0, 80, 8);
         let _ = sync_chat_layout(&mut app, area, &spinner);
 
         assert!(
-            app.active_viewport_mut().message_height_is_current(zero_idx),
+            app.active_viewport_mut().expect("active session").message_height_is_current(zero_idx),
             "a 0-height tail message is measured on the bootstrap frame",
         );
         assert_eq!(
-            app.active_viewport_mut().message_height(zero_idx),
+            app.active_viewport_mut().expect("active session").message_height(zero_idx),
             0,
             "the seed must leave a genuinely-measured 0-height message untouched",
         );
@@ -2387,12 +2498,15 @@ mod tests {
         let history: Vec<ChatMessage> = (0..40)
             .map(|i| assistant_text_message(&format!("message {i}\nwith a second line of body")))
             .collect();
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
 
         let (width, vh) = (80u16, 8u16);
         converge(&mut app, width, vh);
-        let max_scroll =
-            app.active_viewport_mut().total_message_height().saturating_sub(usize::from(vh));
+        let max_scroll = app
+            .active_viewport_mut()
+            .expect("active session")
+            .total_message_height()
+            .saturating_sub(usize::from(vh));
         let reference = full_render_visible(&mut app, width, vh, max_scroll);
 
         let spinner = idle_spinner();
@@ -2417,12 +2531,15 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
         let body = (0..80).map(|i| format!("line {i:02}")).collect::<Vec<_>>().join("\n");
-        *app.active_messages_mut() = vec![assistant_text_message(&body)];
+        *app.active_messages_mut().expect("active session") = vec![assistant_text_message(&body)];
 
         let (width, vh) = (40u16, 8u16);
         converge(&mut app, width, vh);
-        let max_scroll =
-            app.active_viewport_mut().total_message_height().saturating_sub(usize::from(vh));
+        let max_scroll = app
+            .active_viewport_mut()
+            .expect("active session")
+            .total_message_height()
+            .saturating_sub(usize::from(vh));
         let reference = full_render_visible(&mut app, width, vh, max_scroll);
 
         let spinner = idle_spinner();
@@ -2451,14 +2568,15 @@ mod tests {
         let history: Vec<ChatMessage> = (0..60)
             .map(|i| assistant_text_message(&format!("message {i}\nwith a second line of body")))
             .collect();
-        *app.active_messages_mut() = history;
-        let msg_count = app.messages().len();
+        *app.active_messages_mut().expect("active session") = history;
+        let msg_count = app.messages().expect("active session").len();
 
         let (width, vh) = (80u16, 8u16);
         converge(&mut app, width, vh);
-        let mid_scroll = app.active_viewport_mut().total_message_height() / 2;
+        let mid_scroll =
+            app.active_viewport_mut().expect("active session").total_message_height() / 2;
         {
-            let vp = app.active_viewport_mut();
+            let vp = app.active_viewport_mut().expect("active session");
             vp.auto_scroll = false;
             vp.scroll_offset = mid_scroll;
             vp.scroll_target = mid_scroll;
@@ -2500,8 +2618,8 @@ mod tests {
         let history: Vec<ChatMessage> = (0..200)
             .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
             .collect();
-        *app.active_messages_mut() = history;
-        let msg_count = app.messages().len();
+        *app.active_messages_mut().expect("active session") = history;
+        let msg_count = app.messages().expect("active session").len();
 
         let viewport_height = 8usize;
         let spinner = idle_spinner();
@@ -2514,7 +2632,7 @@ mod tests {
                 "convergence frames must render ~a viewport-worth; rendered_msgs={} of {msg_count}",
                 render_data.stats.rendered_msgs,
             );
-            if !app.active_viewport_mut().remeasure_active() {
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
@@ -2537,21 +2655,21 @@ mod tests {
         let history: Vec<ChatMessage> = (0..120)
             .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
             .collect();
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
 
         let spinner = idle_spinner();
         let area = Rect::new(0, 0, 80, 24);
         for _ in 0..64 {
             let content_height = sync_chat_layout(&mut app, area, &spinner);
             let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 24);
-            if !app.active_viewport_mut().remeasure_active() {
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
 
         for scroll in [1_usize, 17, 80, 200] {
             {
-                let vp = app.active_viewport_mut();
+                let vp = app.active_viewport_mut().expect("active session");
                 vp.auto_scroll = false;
                 vp.scroll_target = scroll;
                 vp.scroll_pos = scroll as f32;
@@ -2561,8 +2679,9 @@ mod tests {
             let data = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 24);
             let start = data.stats.render_start;
             let offset = data.scroll_offset;
-            let above = app.active_viewport_mut().cumulative_height_before(start);
-            let own = app.active_viewport_mut().message_height(start);
+            let above =
+                app.active_viewport_mut().expect("active session").cumulative_height_before(start);
+            let own = app.active_viewport_mut().expect("active session").message_height(start);
             assert!(
                 above <= offset,
                 "at scroll {scroll}: message {start} starts at row {above}, below the \
@@ -2594,22 +2713,22 @@ mod tests {
                 content_height,
                 usize::from(area.height),
             );
-            if !app.active_viewport_mut().remeasure_active() {
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
-        app.active_viewport_mut().auto_scroll = true;
+        app.active_viewport_mut().expect("active session").auto_scroll = true;
         let content_height = sync_chat_layout(app, area, &spinner);
         let data =
             build_scrolled_render_data(app, &spinner, area.width, content_height, viewport_height);
-        assert!(app.viewport().auto_scroll, "must be on the tail path");
-        (data, app.messages().len())
+        assert!(app.viewport().expect("active session").auto_scroll, "must be on the tail path");
+        (data, app.messages().expect("active session").len())
     }
 
     fn app_with(history: Vec<ChatMessage>) -> App {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
         app
     }
 
@@ -2666,19 +2785,23 @@ mod tests {
             let start = data.stats.render_start;
             if diverges_from_first_visible {
                 assert_eq!(
-                    app.active_viewport_mut().message_height(0),
+                    app.active_viewport_mut().expect("active session").message_height(0),
                     0,
                     "{label}: the case needs message 0 to render no rows",
                 );
                 assert_ne!(
-                    app.active_viewport_mut().find_first_visible(data.scroll_offset),
+                    app.active_viewport_mut()
+                        .expect("active session")
+                        .find_first_visible(data.scroll_offset),
                     start,
                     "{label}: the tail path must report a message the binary search does not, \
                      or this case pins nothing the second one does not",
                 );
             }
             let tail_from = |from: usize, app: &mut App| -> usize {
-                (from..msg_count).map(|i| app.active_viewport_mut().message_height(i)).sum()
+                (from..msg_count)
+                    .map(|i| app.active_viewport_mut().expect("active session").message_height(i))
+                    .sum()
             };
             let covered = tail_from(start, &mut app);
             assert!(
@@ -2707,8 +2830,9 @@ mod tests {
         );
         let (_, msg_count) = tail_render(&mut app, area, viewport_height);
         let boundary_start = msg_count - 6;
-        let exact: usize =
-            (boundary_start..msg_count).map(|i| app.active_viewport_mut().message_height(i)).sum();
+        let exact: usize = (boundary_start..msg_count)
+            .map(|i| app.active_viewport_mut().expect("active session").message_height(i))
+            .sum();
         assert!(exact > 0, "the boundary case needs measured heights");
         let (data, _) = tail_render(&mut app, area, exact);
         assert_eq!(
@@ -2728,22 +2852,22 @@ mod tests {
         let history: Vec<ChatMessage> = (0..200)
             .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
             .collect();
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
 
         let spinner = idle_spinner();
         let area = Rect::new(0, 0, 80, 8);
         let _ = sync_chat_layout(&mut app, area, &spinner);
 
         assert!(
-            !app.active_viewport_mut().message_height_is_current(0),
+            !app.active_viewport_mut().expect("active session").message_height_is_current(0),
             "off-screen top stays stale on frame one",
         );
         assert!(
-            app.active_viewport_mut().message_height(0) > 0,
+            app.active_viewport_mut().expect("active session").message_height(0) > 0,
             "off-screen top carries a seeded height estimate on frame one",
         );
         assert!(
-            app.active_viewport_mut().total_message_height() > 100,
+            app.active_viewport_mut().expect("active session").total_message_height() > 100,
             "total height reflects the seeded estimates, not just the measured tail",
         );
     }
@@ -2758,7 +2882,7 @@ mod tests {
         let history: Vec<ChatMessage> = (0..200)
             .map(|i| assistant_text_message(&format!("msg {i}\nsecond line for height")))
             .collect();
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
 
         let frame1 = first_frame_render(&mut app, 80, 8);
 
@@ -2767,7 +2891,7 @@ mod tests {
         for _ in 0..64 {
             let content_height = sync_chat_layout(&mut app, area, &spinner);
             let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
-            if !app.active_viewport_mut().remeasure_active() {
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
@@ -2802,25 +2926,25 @@ mod tests {
                 assistant_text_message(&format!("msg {i}\n{body}"))
             })
             .collect();
-        *app.active_messages_mut() = history;
+        *app.active_messages_mut().expect("active session") = history;
 
         let spinner = idle_spinner();
         let area = Rect::new(0, 0, 80, 8);
         for _ in 0..200 {
             let content_height = sync_chat_layout(&mut app, area, &spinner);
             let _ = build_scrolled_render_data(&mut app, &spinner, 80, content_height, 8);
-            if !app.active_viewport_mut().remeasure_active() {
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
 
         assert!(
-            !app.active_viewport_mut().remeasure_active(),
+            !app.active_viewport_mut().expect("active session").remeasure_active(),
             "the background loop must finish converging",
         );
-        for i in 0..app.messages().len() {
+        for i in 0..app.messages().expect("active session").len() {
             assert!(
-                app.active_viewport_mut().message_height_is_current(i),
+                app.active_viewport_mut().expect("active session").message_height_is_current(i),
                 "message {i} must be measured exactly after convergence (no residual estimate)",
             );
         }
@@ -2830,10 +2954,11 @@ mod tests {
     fn spinner_only_frames_do_not_remeasure_active_assistant_height() {
         let mut app = App::test_default();
         app.status = AppStatus::Running;
-        *app.active_messages_mut() = vec![assistant_text_message("streaming body")];
+        *app.active_messages_mut().expect("active session") =
+            vec![assistant_text_message("streaming body")];
         app.bind_active_turn_assistant(0);
 
-        let _ = app.active_viewport_mut().on_frame(40, 8);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(40, 8);
         let first_spinner =
             SpinnerState { glyph: '\u{280B}', show_thinking: true, ..idle_spinner() };
         let first = update_visual_heights(&mut app, &first_spinner, 40, 8);
@@ -2908,7 +3033,7 @@ mod tests {
     fn the_rail_repaint_clears_a_foreign_cell_within_two_frames() {
         let long = "word ".repeat(60);
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             user_message(&format!("{long}\n\n```rust\nfn main() {{}}\n```\n")),
             assistant_text_message("assistant prose after"),
             user_message("one more turn so the content overflows the viewport"),
@@ -2956,18 +3081,21 @@ mod tests {
     fn update_visual_heights_remeasures_dirty_non_tail_message() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
-        *app.active_messages_mut() =
+        *app.active_messages_mut().expect("active session") =
             vec![assistant_text_message("short"), assistant_text_message("tail stays unchanged")];
 
-        let _ = app.active_viewport_mut().on_frame(12, 8);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(12, 8);
         let spinner = idle_spinner();
 
         update_visual_heights(&mut app, &spinner, 12, 8);
-        let base_h = app.active_viewport_mut().message_height(0);
+        let base_h = app.active_viewport_mut().expect("active session").message_height(0);
         assert!(base_h > 0);
 
-        if let Some(MessageBlock::Text(block)) =
-            app.active_messages_mut().get_mut(0).and_then(|m| m.blocks.get_mut(0))
+        if let Some(MessageBlock::Text(block)) = app
+            .active_messages_mut()
+            .expect("active session")
+            .get_mut(0)
+            .and_then(|m| m.blocks.get_mut(0))
         {
             let extra = " this now wraps across multiple lines";
             block.text.push_str(extra);
@@ -2978,7 +3106,7 @@ mod tests {
 
         update_visual_heights(&mut app, &spinner, 12, 8);
         assert!(
-            app.active_viewport_mut().message_height(0) > base_h,
+            app.active_viewport_mut().expect("active session").message_height(0) > base_h,
             "dirty non-tail message should be remeasured"
         );
     }
@@ -2992,7 +3120,7 @@ mod tests {
     fn measured_total_matches_full_render_across_varied_block_counts() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             multi_block_assistant_message(&["alpha one\nalpha two", "beta only"]),
             user_message("short user turn"),
             assistant_text_message("gamma one\ngamma two\ngamma three"),
@@ -3002,10 +3130,10 @@ mod tests {
         let width = 80u16;
         let height = 60u16;
         let spinner = idle_spinner();
-        let _ = app.active_viewport_mut().on_frame(width, height);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(width, height);
         update_visual_heights(&mut app, &spinner, width, usize::from(height));
-        app.active_viewport_mut().rebuild_prefix_sums();
-        let measured_total = app.viewport().total_message_height();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        let measured_total = app.viewport().expect("active session").total_message_height();
         assert!(measured_total > 0, "the session must measure to a non-zero height");
 
         let mut lines = Vec::new();
@@ -3034,23 +3162,23 @@ mod tests {
     fn last_message_height_omits_trailing_separator() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
-        *app.active_messages_mut() = vec![assistant_text_message("hello")];
+        *app.active_messages_mut().expect("active session") = vec![assistant_text_message("hello")];
 
-        let _ = app.active_viewport_mut().on_frame(40, 8);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(40, 8);
         let spinner = idle_spinner();
 
         update_visual_heights(&mut app, &spinner, 40, 8);
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
-        assert_eq!(app.active_viewport_mut().message_height(0), 1);
-        assert_eq!(app.active_viewport_mut().total_message_height(), 1);
+        assert_eq!(app.active_viewport_mut().expect("active session").message_height(0), 1);
+        assert_eq!(app.active_viewport_mut().expect("active session").total_message_height(), 1);
     }
 
     #[test]
     fn active_turn_assistant_owns_thinking_when_system_message_trails() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             assistant_text_message("older reply"),
             user_message("next prompt"),
             ChatMessage::new(MessageRole::Assistant, Vec::new()),
@@ -3060,15 +3188,15 @@ mod tests {
 
         assert_eq!(app.active_turn_assistant_idx(), Some(2));
 
-        let _ = app.active_viewport_mut().on_frame(40, 8);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(40, 8);
         let spinner =
             SpinnerState { show_empty_thinking: true, live_turn_running: true, ..idle_spinner() };
 
         update_visual_heights(&mut app, &spinner, 40, 8);
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         assert_eq!(
-            app.active_viewport_mut().message_height(2),
+            app.active_viewport_mut().expect("active session").message_height(2),
             2,
             "active assistant should render thinking + separator even when a system row trails"
         );
@@ -3078,7 +3206,7 @@ mod tests {
     fn active_turn_assistant_uses_explicit_owner_without_user_anchor() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             assistant_text_message("older reply"),
             ChatMessage::new(MessageRole::Assistant, Vec::new()),
             system_message("status"),
@@ -3094,21 +3222,21 @@ mod tests {
         app.status = AppStatus::Ready;
         app.push_message_tracked(assistant_text_message("first reply"));
 
-        let _ = app.active_viewport_mut().on_frame(40, 8);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(40, 8);
         let spinner = idle_spinner();
 
         update_visual_heights(&mut app, &spinner, 40, 8);
-        app.active_viewport_mut().rebuild_prefix_sums();
-        assert_eq!(app.active_viewport_mut().message_height(0), 1);
-        assert_eq!(app.active_viewport_mut().total_message_height(), 1);
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        assert_eq!(app.active_viewport_mut().expect("active session").message_height(0), 1);
+        assert_eq!(app.active_viewport_mut().expect("active session").total_message_height(), 1);
 
         app.push_message_tracked(user_message("follow-up"));
 
         update_visual_heights(&mut app, &spinner, 40, 8);
-        app.active_viewport_mut().rebuild_prefix_sums();
-        assert_eq!(app.active_viewport_mut().message_height(0), 2);
-        assert_eq!(app.active_viewport_mut().message_height(1), 2);
-        assert_eq!(app.active_viewport_mut().total_message_height(), 4);
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        assert_eq!(app.active_viewport_mut().expect("active session").message_height(0), 2);
+        assert_eq!(app.active_viewport_mut().expect("active session").message_height(1), 2);
+        assert_eq!(app.active_viewport_mut().expect("active session").total_message_height(), 4);
     }
 
     #[test]
@@ -3118,21 +3246,21 @@ mod tests {
         app.push_message_tracked(assistant_text_message("first reply"));
         app.push_message_tracked(user_message("follow-up"));
 
-        let _ = app.active_viewport_mut().on_frame(40, 8);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(40, 8);
         let spinner = idle_spinner();
 
         update_visual_heights(&mut app, &spinner, 40, 8);
-        app.active_viewport_mut().rebuild_prefix_sums();
-        assert_eq!(app.active_viewport_mut().message_height(0), 2);
-        assert_eq!(app.active_viewport_mut().message_height(1), 2);
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        assert_eq!(app.active_viewport_mut().expect("active session").message_height(0), 2);
+        assert_eq!(app.active_viewport_mut().expect("active session").message_height(1), 2);
 
         let removed = app.remove_message_tracked(1);
         assert!(removed.is_some());
 
         update_visual_heights(&mut app, &spinner, 40, 8);
-        app.active_viewport_mut().rebuild_prefix_sums();
-        assert_eq!(app.active_viewport_mut().message_height(0), 1);
-        assert_eq!(app.active_viewport_mut().total_message_height(), 1);
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        assert_eq!(app.active_viewport_mut().expect("active session").message_height(0), 1);
+        assert_eq!(app.active_viewport_mut().expect("active session").total_message_height(), 1);
     }
 
     #[test]
@@ -3140,38 +3268,42 @@ mod tests {
         let mut app = App::test_default();
         let text = "This message should wrap after resize and stay expensive enough to measure. "
             .repeat(6);
-        *app.active_messages_mut() = (0..32).map(|_| assistant_text_message(&text)).collect();
+        *app.active_messages_mut().expect("active session") =
+            (0..32).map(|_| assistant_text_message(&text)).collect();
 
         let spinner = idle_spinner();
 
-        let _ = app.active_viewport_mut().on_frame(48, 12);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(48, 12);
         for _ in 0..16 {
             update_visual_heights(&mut app, &spinner, 48, 12);
-            app.active_viewport_mut().rebuild_prefix_sums();
-            if !app.active_viewport_mut().remeasure_active() {
+            app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
         assert!(
-            !app.active_viewport_mut().remeasure_active(),
+            !app.active_viewport_mut().expect("active session").remeasure_active(),
             "frame-1 setup must fully measure the initial scrollback before mid-scroll resize",
         );
-        let per_message_height = app.active_viewport_mut().message_height(0);
+        let per_message_height =
+            app.active_viewport_mut().expect("active session").message_height(0);
         assert!(per_message_height > 0);
 
         let visible_rows = per_message_height * 2;
-        app.active_viewport_mut().scroll_offset = per_message_height * 15;
-        app.active_viewport_mut().scroll_target = app.viewport().scroll_offset;
-        app.active_viewport_mut().scroll_pos = app.viewport().scroll_offset as f32;
+        app.active_viewport_mut().expect("active session").scroll_offset = per_message_height * 15;
+        app.active_viewport_mut().expect("active session").scroll_target =
+            app.viewport().expect("active session").scroll_offset;
+        app.active_viewport_mut().expect("active session").scroll_pos =
+            app.viewport().expect("active session").scroll_offset as f32;
 
-        assert!(app.active_viewport_mut().on_frame(18, 12).width_changed);
+        assert!(app.active_viewport_mut().expect("active session").on_frame(18, 12).width_changed);
         update_visual_heights(&mut app, &spinner, 18, visible_rows);
 
-        assert_eq!(app.viewport().message_heights_width, 0);
-        assert!(app.active_viewport_mut().remeasure_active());
-        assert!(app.active_viewport_mut().message_height_is_current(15));
-        assert!(app.active_viewport_mut().message_height_is_current(16));
-        assert!(!app.active_viewport_mut().message_height_is_current(31));
+        assert_eq!(app.viewport().expect("active session").message_heights_width, 0);
+        assert!(app.active_viewport_mut().expect("active session").remeasure_active());
+        assert!(app.active_viewport_mut().expect("active session").message_height_is_current(15));
+        assert!(app.active_viewport_mut().expect("active session").message_height_is_current(16));
+        assert!(!app.active_viewport_mut().expect("active session").message_height_is_current(31));
     }
 
     #[test]
@@ -3179,31 +3311,35 @@ mod tests {
         let mut app = App::test_default();
         let text = "This message should wrap after resize and stay expensive enough to measure. "
             .repeat(6);
-        *app.active_messages_mut() = (0..40).map(|_| assistant_text_message(&text)).collect();
+        *app.active_messages_mut().expect("active session") =
+            (0..40).map(|_| assistant_text_message(&text)).collect();
 
         let spinner = idle_spinner();
 
-        let _ = app.active_viewport_mut().on_frame(48, 12);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(48, 12);
         update_visual_heights(&mut app, &spinner, 48, 12);
-        app.active_viewport_mut().rebuild_prefix_sums();
-        let per_message_height = app.active_viewport_mut().message_height(0);
-        app.active_viewport_mut().scroll_offset = per_message_height * 12;
-        app.active_viewport_mut().scroll_target = app.viewport().scroll_offset;
-        app.active_viewport_mut().scroll_pos = app.viewport().scroll_offset as f32;
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        let per_message_height =
+            app.active_viewport_mut().expect("active session").message_height(0);
+        app.active_viewport_mut().expect("active session").scroll_offset = per_message_height * 12;
+        app.active_viewport_mut().expect("active session").scroll_target =
+            app.viewport().expect("active session").scroll_offset;
+        app.active_viewport_mut().expect("active session").scroll_pos =
+            app.viewport().expect("active session").scroll_offset as f32;
 
-        assert!(app.active_viewport_mut().on_frame(18, 12).width_changed);
+        assert!(app.active_viewport_mut().expect("active session").on_frame(18, 12).width_changed);
         for _ in 0..8 {
             update_visual_heights(&mut app, &spinner, 18, per_message_height * 2);
-            app.active_viewport_mut().rebuild_prefix_sums();
-            if !app.active_viewport_mut().remeasure_active() {
+            app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+            if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
             }
         }
 
-        assert_eq!(app.viewport().message_heights_width, 18);
-        assert!(!app.active_viewport_mut().remeasure_active());
-        assert!(app.active_viewport_mut().message_height_is_current(0));
-        assert!(app.active_viewport_mut().message_height_is_current(39));
+        assert_eq!(app.viewport().expect("active session").message_heights_width, 18);
+        assert!(!app.active_viewport_mut().expect("active session").remeasure_active());
+        assert!(app.active_viewport_mut().expect("active session").message_height_is_current(0));
+        assert!(app.active_viewport_mut().expect("active session").message_height_is_current(39));
     }
 
     #[test]
@@ -3211,28 +3347,32 @@ mod tests {
         let mut app = App::test_default();
         let text = "This message should wrap after resize and stay expensive enough to measure. "
             .repeat(6);
-        *app.active_messages_mut() = (0..8).map(|_| assistant_text_message(&text)).collect();
+        *app.active_messages_mut().expect("active session") =
+            (0..8).map(|_| assistant_text_message(&text)).collect();
 
         let spinner = idle_spinner();
 
-        let _ = app.active_viewport_mut().on_frame(48, 12);
+        let _ = app.active_viewport_mut().expect("active session").on_frame(48, 12);
         update_visual_heights(&mut app, &spinner, 48, 12);
-        app.active_viewport_mut().rebuild_prefix_sums();
-        let per_message_height = app.active_viewport_mut().message_height(0);
-        app.active_viewport_mut().scroll_offset = per_message_height * 2;
-        app.active_viewport_mut().scroll_target = app.viewport().scroll_offset;
-        app.active_viewport_mut().scroll_pos = app.viewport().scroll_offset as f32;
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        let per_message_height =
+            app.active_viewport_mut().expect("active session").message_height(0);
+        app.active_viewport_mut().expect("active session").scroll_offset = per_message_height * 2;
+        app.active_viewport_mut().expect("active session").scroll_target =
+            app.viewport().expect("active session").scroll_offset;
+        app.active_viewport_mut().expect("active session").scroll_pos =
+            app.viewport().expect("active session").scroll_offset as f32;
 
-        assert!(app.active_viewport_mut().on_frame(18, 12).width_changed);
+        assert!(app.active_viewport_mut().expect("active session").on_frame(18, 12).width_changed);
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
         let first = update_visual_heights(&mut app, &spinner, 18, per_message_height * 2);
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         let second = update_visual_heights(&mut app, &spinner, 18, per_message_height * 2);
 
-        assert!(first.measured_msgs >= app.messages().len());
+        assert!(first.measured_msgs >= app.messages().expect("active session").len());
         assert_eq!(second.measured_msgs, 0);
-        assert_eq!(app.viewport().message_heights_width, 18);
+        assert_eq!(app.viewport().expect("active session").message_heights_width, 18);
     }
 
     #[test]
@@ -3249,7 +3389,7 @@ mod tests {
                     .join("\n"),
             ))
         };
-        *app.active_messages_mut() =
+        *app.active_messages_mut().expect("active session") =
             vec![ChatMessage::new(MessageRole::Assistant, vec![para(0, 40), para(40, 120)])];
         let width = 24u16;
         let viewport_height_u16 = 8u16;
@@ -3257,15 +3397,16 @@ mod tests {
         let area = Rect::new(0, 0, width, viewport_height_u16);
         let spinner = idle_spinner();
 
-        let _ = app.active_viewport_mut().on_frame(width, viewport_height_u16);
+        let _ =
+            app.active_viewport_mut().expect("active session").on_frame(width, viewport_height_u16);
         update_visual_heights(&mut app, &spinner, width, viewport_height);
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         let scroll = 60;
         let mut full_lines = Vec::new();
         let tools_collapsed = app.tools_collapsed;
         message::render_message(
-            &mut app.active_messages_mut()[0],
+            &mut app.active_messages_mut().expect("active session")[0],
             &spinner,
             message::MessageRenderContext::new(
                 None,
@@ -3309,24 +3450,25 @@ mod tests {
     #[test]
     fn render_culled_messages_matches_full_render_when_scrolled_inside_wrapped_role_label() {
         let mut app = App::test_default();
-        *app.active_messages_mut() = vec![user_message("ok")];
+        *app.active_messages_mut().expect("active session") = vec![user_message("ok")];
         let width = 2u16;
         let viewport_height_u16 = 4u16;
         let viewport_height = usize::from(viewport_height_u16);
         let area = Rect::new(0, 0, width, viewport_height_u16);
         let spinner = idle_spinner();
 
-        let _ = app.active_viewport_mut().on_frame(width, viewport_height_u16);
+        let _ =
+            app.active_viewport_mut().expect("active session").on_frame(width, viewport_height_u16);
         update_visual_heights(&mut app, &spinner, width, viewport_height);
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
-        assert!(app.active_viewport_mut().message_height(0) >= 3);
+        assert!(app.active_viewport_mut().expect("active session").message_height(0) >= 3);
 
         let scroll = 1;
         let mut full_lines = Vec::new();
         let tools_collapsed = app.tools_collapsed;
         message::render_message(
-            &mut app.active_messages_mut()[0],
+            &mut app.active_messages_mut().expect("active session")[0],
             &spinner,
             message::MessageRenderContext::new(
                 None,
@@ -3371,7 +3513,7 @@ mod tests {
     fn render_culled_messages_stops_after_first_wrapped_message_when_viewport_is_covered() {
         let mut app = App::test_default();
         let huge_wrapped = "wrap ".repeat(2_000);
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             assistant_text_message(&huge_wrapped),
             assistant_text_message("this should remain offscreen"),
         ];
@@ -3380,11 +3522,12 @@ mod tests {
         let viewport_height = usize::from(viewport_height_u16);
         let spinner = idle_spinner();
 
-        let _ = app.active_viewport_mut().on_frame(width, viewport_height_u16);
+        let _ =
+            app.active_viewport_mut().expect("active session").on_frame(width, viewport_height_u16);
         update_visual_heights(&mut app, &spinner, width, viewport_height);
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
-        assert!(app.active_viewport_mut().message_height(0) > 200);
+        assert!(app.active_viewport_mut().expect("active session").message_height(0) > 200);
 
         let mut culled_lines = Vec::new();
         let stats = render_culled_messages(

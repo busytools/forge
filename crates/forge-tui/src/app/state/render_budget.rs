@@ -24,7 +24,9 @@ impl super::App {
     }
 
     fn is_message_render_cache_slot(&self, msg_idx: usize, slot_idx: usize) -> bool {
-        self.messages().get(msg_idx).is_some_and(|msg| slot_idx == msg.blocks.len())
+        self.messages()
+            .and_then(|messages| messages.get(msg_idx))
+            .is_some_and(|msg| slot_idx == msg.blocks.len())
     }
 
     fn is_render_cache_message_protected(&self, msg_idx: usize) -> bool {
@@ -32,7 +34,7 @@ impl super::App {
         if tail_protected {
             return true;
         }
-        self.messages().get(msg_idx).is_some_and(|msg| {
+        self.messages().and_then(|messages| messages.get(msg_idx)).is_some_and(|msg| {
             msg.blocks
                 .iter()
                 .any(|block| Self::block_is_render_cache_protected(tail_protected, Some(block)))
@@ -47,7 +49,8 @@ impl super::App {
         if !self.is_streaming_tail_protected() {
             return None;
         }
-        self.active_turn_assistant_idx().or_else(|| self.messages().len().checked_sub(1))
+        self.active_turn_assistant_idx()
+            .or_else(|| self.messages().map_or(0, <[super::ChatMessage]>::len).checked_sub(1))
     }
 
     fn block_cache(block: &MessageBlock) -> &super::BlockCache {
@@ -80,7 +83,7 @@ impl super::App {
 
     fn is_render_cache_block_protected(&self, msg_idx: usize, block_idx: usize) -> bool {
         let tail_protected = self.protected_streaming_message_idx() == Some(msg_idx);
-        self.messages().get(msg_idx).is_some_and(|msg| {
+        self.messages().and_then(|messages| messages.get(msg_idx)).is_some_and(|msg| {
             Self::block_is_render_cache_protected(tail_protected, msg.blocks.get(block_idx))
         })
     }
@@ -108,26 +111,33 @@ impl super::App {
     // A same-count in-place byte change must go through
     // sync_render_cache_slot; it is not caught by this guard.
     fn render_cache_slots_match_messages(&self) -> bool {
-        self.render_cache_slots().len() == self.messages().len()
+        self.render_cache_slots().map_or(0, <[Vec<RenderCacheSlotState>]>::len)
+            == self.messages().map_or(0, <[super::ChatMessage]>::len)
     }
 
     pub(crate) fn rebuild_render_cache_accounting(&mut self) {
-        let msg_count = self.messages().len();
-        {
-            let slots = self.render_cache_slots_mut();
+        let msg_count = self.messages().map_or(0, <[super::ChatMessage]>::len);
+        if let Some(slots) = self.render_cache_slots_mut() {
             slots.clear();
             slots.reserve(msg_count);
         }
-        *self.render_cache_total_bytes_mut() = 0;
-        *self.render_cache_protected_bytes_mut() = 0;
-        self.render_cache_evictable_mut().clear();
+        if let Some(total) = self.render_cache_total_bytes_mut() {
+            *total = 0;
+        }
+        if let Some(protected) = self.render_cache_protected_bytes_mut() {
+            *protected = 0;
+        }
+        if let Some(evictable) = self.render_cache_evictable_mut() {
+            evictable.clear();
+        }
 
         let protected_tail = self.protected_streaming_message_idx();
         let mut all_slots: Vec<Vec<RenderCacheSlotState>> = Vec::with_capacity(msg_count);
         let mut total_bytes: usize = 0;
         let mut protected_bytes: usize = 0;
         let mut evictable_keys: Vec<RenderCacheEvictionKey> = Vec::new();
-        for (msg_idx, msg) in self.messages().iter().enumerate() {
+        let messages = self.messages().unwrap_or_default();
+        for (msg_idx, msg) in messages.iter().enumerate() {
             let mut slots = Vec::with_capacity(Self::render_cache_slot_count_for_message(msg));
             let tail_protected = protected_tail == Some(msg_idx);
             for (block_idx, block) in msg.blocks.iter().enumerate() {
@@ -163,11 +173,16 @@ impl super::App {
             slots.push(message_slot);
             all_slots.push(slots);
         }
-        *self.render_cache_slots_mut() = all_slots;
-        *self.render_cache_total_bytes_mut() = total_bytes;
-        *self.render_cache_protected_bytes_mut() = protected_bytes;
-        {
-            let evictable = self.render_cache_evictable_mut();
+        if let Some(slots) = self.render_cache_slots_mut() {
+            *slots = all_slots;
+        }
+        if let Some(total) = self.render_cache_total_bytes_mut() {
+            *total = total_bytes;
+        }
+        if let Some(protected) = self.render_cache_protected_bytes_mut() {
+            *protected = protected_bytes;
+        }
+        if let Some(evictable) = self.render_cache_evictable_mut() {
             for key in evictable_keys {
                 evictable.insert(key);
             }
@@ -198,26 +213,34 @@ impl super::App {
             self.rebuild_render_cache_accounting();
             return false;
         }
-        if msg_idx >= self.messages().len() {
+        let message_count = self.messages().map_or(0, <[super::ChatMessage]>::len);
+        if msg_idx >= message_count {
             // A caller naming a message that does not exist.
             tracing::warn!(
                 target: crate::logging::targets::APP_RENDER,
                 event_name = "render_cache_row_resize_bad_index",
                 msg_idx,
-                message_count = self.messages().len(),
+                message_count,
                 outcome = "full_rebuild",
             );
             crate::perf::mark("rc::row_fallback_bad_index");
             self.rebuild_render_cache_accounting();
             return false;
         }
-        let Some(want) =
-            self.messages().get(msg_idx).map(Self::render_cache_slot_count_for_message)
+        let Some(want) = self
+            .messages()
+            .and_then(|messages| messages.get(msg_idx))
+            .map(Self::render_cache_slot_count_for_message)
         else {
             self.rebuild_render_cache_accounting();
             return false;
         };
-        let have = self.render_cache_slots()[msg_idx].len();
+        let Some(have) =
+            self.render_cache_slots().and_then(|slots| slots.get(msg_idx)).map(Vec::len)
+        else {
+            self.rebuild_render_cache_accounting();
+            return false;
+        };
         if have == want {
             return true;
         }
@@ -226,34 +249,65 @@ impl super::App {
             self.rebuild_render_cache_accounting();
             return false;
         };
-        let message_slot = self.render_cache_slots()[msg_idx][old_msg_slot_idx];
-        if let Some(key) = Self::render_cache_slot_key(msg_idx, old_msg_slot_idx, &message_slot) {
-            self.render_cache_evictable_mut().remove(&key);
+        let Some(message_slot) = self
+            .render_cache_slots()
+            .and_then(|slots| slots.get(msg_idx))
+            .and_then(|row| row.get(old_msg_slot_idx))
+            .copied()
+        else {
+            self.rebuild_render_cache_accounting();
+            return false;
+        };
+        if let Some(key) = Self::render_cache_slot_key(msg_idx, old_msg_slot_idx, &message_slot)
+            && let Some(evictable) = self.render_cache_evictable_mut()
+        {
+            evictable.remove(&key);
         }
 
         if want > have {
             // Fresh slots carry no bytes and no key; the per-slot sync
             // below fills them from the blocks.
-            let row = &mut self.render_cache_slots_mut()[msg_idx];
+            let Some(row) = self.render_cache_slots_mut().and_then(|slots| slots.get_mut(msg_idx))
+            else {
+                self.rebuild_render_cache_accounting();
+                return false;
+            };
             row.pop();
             row.resize(want - 1, RenderCacheSlotState::default());
             row.push(message_slot);
         } else {
-            let dropped: Vec<RenderCacheSlotState> =
-                self.render_cache_slots()[msg_idx][want - 1..old_msg_slot_idx].to_vec();
+            let dropped: Vec<RenderCacheSlotState> = self
+                .render_cache_slots()
+                .and_then(|slots| slots.get(msg_idx))
+                .map(|row| row[want - 1..old_msg_slot_idx].to_vec())
+                .unwrap_or_default();
             for (offset, slot) in dropped.iter().enumerate() {
                 let block_idx = want - 1 + offset;
-                if let Some(key) = Self::render_cache_slot_key(msg_idx, block_idx, slot) {
-                    self.render_cache_evictable_mut().remove(&key);
+                if let Some(key) = Self::render_cache_slot_key(msg_idx, block_idx, slot)
+                    && let Some(evictable) = self.render_cache_evictable_mut()
+                {
+                    evictable.remove(&key);
                 }
-                let total = self.render_cache_total_bytes().saturating_sub(slot.cached_bytes);
-                *self.render_cache_total_bytes_mut() = total;
+                let total = self
+                    .render_cache_total_bytes()
+                    .map_or(0, |bytes| bytes.saturating_sub(slot.cached_bytes));
+                if let Some(total_ref) = self.render_cache_total_bytes_mut() {
+                    *total_ref = total;
+                }
                 if slot.protected {
-                    let p = self.render_cache_protected_bytes().saturating_sub(slot.cached_bytes);
-                    *self.render_cache_protected_bytes_mut() = p;
+                    let p = self
+                        .render_cache_protected_bytes()
+                        .map_or(0, |bytes| bytes.saturating_sub(slot.cached_bytes));
+                    if let Some(protected_ref) = self.render_cache_protected_bytes_mut() {
+                        *protected_ref = p;
+                    }
                 }
             }
-            let row = &mut self.render_cache_slots_mut()[msg_idx];
+            let Some(row) = self.render_cache_slots_mut().and_then(|slots| slots.get_mut(msg_idx))
+            else {
+                self.rebuild_render_cache_accounting();
+                return false;
+            };
             row.truncate(want - 1);
             row.push(message_slot);
         }
@@ -262,8 +316,10 @@ impl super::App {
         // self-consistent here is the point - a function that needs its
         // caller to finish the job is what turned a transient
         // inconsistency into a permanent one when the caller changed.
-        if let Some(key) = Self::render_cache_slot_key(msg_idx, want - 1, &message_slot) {
-            self.render_cache_evictable_mut().insert(key);
+        if let Some(key) = Self::render_cache_slot_key(msg_idx, want - 1, &message_slot)
+            && let Some(evictable) = self.render_cache_evictable_mut()
+        {
+            evictable.insert(key);
         }
         true
     }
@@ -281,12 +337,16 @@ impl super::App {
         if self.render_cache_accounting_suspended() {
             return;
         }
-        let previous_blocks =
-            self.render_cache_slots().get(msg_idx).map(|row| row.len().saturating_sub(1));
+        let previous_blocks = self
+            .render_cache_slots()
+            .and_then(|slots| slots.get(msg_idx))
+            .map(|row| row.len().saturating_sub(1));
         if !self.resize_render_cache_row(msg_idx) {
             return;
         }
-        let Some(block_count) = self.messages().get(msg_idx).map(|msg| msg.blocks.len()) else {
+        let Some(block_count) =
+            self.messages().and_then(|messages| messages.get(msg_idx)).map(|msg| msg.blocks.len())
+        else {
             return;
         };
         // Start at the previously-last block: an in-place extend leaves
@@ -324,31 +384,46 @@ impl super::App {
         // Catches a block-count change that never announced itself,
         // including a shrink (where indexing the row would still
         // succeed against a stale slot).
-        if self.render_cache_slots().get(msg_idx).map(Vec::len)
-            != self.messages().get(msg_idx).map(Self::render_cache_slot_count_for_message)
+        if self.render_cache_slots().and_then(|slots| slots.get(msg_idx)).map(Vec::len)
+            != self
+                .messages()
+                .and_then(|messages| messages.get(msg_idx))
+                .map(Self::render_cache_slot_count_for_message)
         {
             self.rebuild_render_cache_accounting();
         }
-        let Some(old_slot) =
-            self.render_cache_slots().get(msg_idx).and_then(|slots| slots.get(block_idx)).copied()
+        let Some(old_slot) = self
+            .render_cache_slots()
+            .and_then(|slots| slots.get(msg_idx))
+            .and_then(|slots| slots.get(block_idx))
+            .copied()
         else {
             self.rebuild_render_cache_accounting();
             return;
         };
 
-        if let Some(old_key) = Self::render_cache_slot_key(msg_idx, block_idx, &old_slot) {
-            self.render_cache_evictable_mut().remove(&old_key);
+        if let Some(old_key) = Self::render_cache_slot_key(msg_idx, block_idx, &old_slot)
+            && let Some(evictable) = self.render_cache_evictable_mut()
+        {
+            evictable.remove(&old_key);
         }
-        let new_total = self.render_cache_total_bytes().saturating_sub(old_slot.cached_bytes);
-        *self.render_cache_total_bytes_mut() = new_total;
+        let new_total = self
+            .render_cache_total_bytes()
+            .map_or(0, |bytes| bytes.saturating_sub(old_slot.cached_bytes));
+        if let Some(total) = self.render_cache_total_bytes_mut() {
+            *total = new_total;
+        }
         if old_slot.protected {
-            let new_protected =
-                self.render_cache_protected_bytes().saturating_sub(old_slot.cached_bytes);
-            *self.render_cache_protected_bytes_mut() = new_protected;
+            let new_protected = self
+                .render_cache_protected_bytes()
+                .map_or(0, |bytes| bytes.saturating_sub(old_slot.cached_bytes));
+            if let Some(protected) = self.render_cache_protected_bytes_mut() {
+                *protected = new_protected;
+            }
         }
 
         let new_slot = if self.is_message_render_cache_slot(msg_idx, block_idx) {
-            let Some(msg) = self.messages().get(msg_idx) else {
+            let Some(msg) = self.messages().and_then(|messages| messages.get(msg_idx)) else {
                 self.rebuild_render_cache_accounting();
                 return;
             };
@@ -358,8 +433,10 @@ impl super::App {
                 protected: self.is_render_cache_message_protected(msg_idx),
             }
         } else {
-            let Some(block) =
-                self.messages().get(msg_idx).and_then(|msg| msg.blocks.get(block_idx))
+            let Some(block) = self
+                .messages()
+                .and_then(|messages| messages.get(msg_idx))
+                .and_then(|msg| msg.blocks.get(block_idx))
             else {
                 self.rebuild_render_cache_accounting();
                 return;
@@ -372,7 +449,8 @@ impl super::App {
             }
         };
         let mut needs_full_rebuild = false;
-        if let Some(slots) = self.render_cache_slots_mut().get_mut(msg_idx) {
+        if let Some(slots) = self.render_cache_slots_mut().and_then(|slots| slots.get_mut(msg_idx))
+        {
             if let Some(slot) = slots.get_mut(block_idx) {
                 *slot = new_slot;
             } else {
@@ -386,14 +464,23 @@ impl super::App {
             return;
         }
 
-        let new_total = self.render_cache_total_bytes().saturating_add(new_slot.cached_bytes);
-        *self.render_cache_total_bytes_mut() = new_total;
+        let new_total = self
+            .render_cache_total_bytes()
+            .map_or(0, |bytes| bytes.saturating_add(new_slot.cached_bytes));
+        if let Some(total) = self.render_cache_total_bytes_mut() {
+            *total = new_total;
+        }
         if new_slot.protected {
-            let new_protected =
-                self.render_cache_protected_bytes().saturating_add(new_slot.cached_bytes);
-            *self.render_cache_protected_bytes_mut() = new_protected;
-        } else if let Some(new_key) = Self::render_cache_slot_key(msg_idx, block_idx, &new_slot) {
-            self.render_cache_evictable_mut().insert(new_key);
+            let new_protected = self
+                .render_cache_protected_bytes()
+                .map_or(0, |bytes| bytes.saturating_add(new_slot.cached_bytes));
+            if let Some(protected) = self.render_cache_protected_bytes_mut() {
+                *protected = new_protected;
+            }
+        } else if let Some(new_key) = Self::render_cache_slot_key(msg_idx, block_idx, &new_slot)
+            && let Some(evictable) = self.render_cache_evictable_mut()
+        {
+            evictable.insert(new_key);
         }
 
         // The message slot's `protected` is derived from its blocks, so
@@ -403,7 +490,8 @@ impl super::App {
         // slot is not a block slot, so it takes the other arm.
         if old_slot.protected != new_slot.protected
             && !self.is_message_render_cache_slot(msg_idx, block_idx)
-            && let Some(message_slot_idx) = self.messages().get(msg_idx).map(|m| m.blocks.len())
+            && let Some(message_slot_idx) =
+                self.messages().and_then(|messages| messages.get(msg_idx)).map(|m| m.blocks.len())
         {
             self.sync_render_cache_slot(msg_idx, message_slot_idx);
         }
@@ -414,13 +502,18 @@ impl super::App {
             return;
         }
         self.ensure_render_cache_accounting();
-        let Some(msg) = self.messages().get(msg_idx) else {
+        let Some(msg) = self.messages().and_then(|messages| messages.get(msg_idx)) else {
             self.rebuild_render_cache_accounting();
             return;
         };
         let block_count = msg.blocks.len();
         let slot_count = Self::render_cache_slot_count_for_message(msg);
-        if self.render_cache_slots().get(msg_idx).map_or(usize::MAX, Vec::len) != slot_count {
+        if self
+            .render_cache_slots()
+            .and_then(|slots| slots.get(msg_idx))
+            .map_or(usize::MAX, Vec::len)
+            != slot_count
+        {
             self.rebuild_render_cache_accounting();
             return;
         }
@@ -457,9 +550,12 @@ impl super::App {
     /// shared guard only compares list lengths, so a block-count change
     /// that never announced itself leaves one row stale.
     fn render_cache_rows_match_messages(&self) -> bool {
-        self.render_cache_slots()
+        let (Some(slots), Some(messages)) = (self.render_cache_slots(), self.messages()) else {
+            return true;
+        };
+        slots
             .iter()
-            .zip(self.messages().iter())
+            .zip(messages.iter())
             .all(|(slots, msg)| slots.len() == Self::render_cache_slot_count_for_message(msg))
     }
 
@@ -490,20 +586,22 @@ impl super::App {
         }
 
         self.ensure_render_cache_accounting();
-        self.render_cache_evictable_mut().clear();
+        if let Some(evictable) = self.render_cache_evictable_mut() {
+            evictable.clear();
+        }
 
         // Snapshot every slot's new state into a Vec so we never
         // have an immutable borrow on `self.messages()` while
         // mutating `self.render_cache_slots` /
         // `self.render_cache_evictable`.
         let mut updates: Vec<SlotUpdate> = Vec::new();
-        let msg_count = self.messages().len();
+        let msg_count = self.messages().map_or(0, <[super::ChatMessage]>::len);
         let protected_tail = self.protected_streaming_message_idx();
         let mut block_protections: Vec<Vec<bool>> = Vec::with_capacity(msg_count);
         let mut message_protections: Vec<bool> = Vec::with_capacity(msg_count);
         for msg_idx in 0..msg_count {
             let tail_protected = protected_tail == Some(msg_idx);
-            let Some(msg) = self.messages().get(msg_idx) else {
+            let Some(msg) = self.messages().and_then(|messages| messages.get(msg_idx)) else {
                 block_protections.push(Vec::new());
                 message_protections.push(false);
                 continue;
@@ -520,7 +618,7 @@ impl super::App {
             block_protections.push(row);
             message_protections.push(message_protected);
         }
-        for (msg_idx, msg) in self.messages().iter().enumerate() {
+        for (msg_idx, msg) in self.messages().unwrap_or_default().iter().enumerate() {
             for (block_idx, block) in msg.blocks.iter().enumerate() {
                 let cache = Self::block_cache(block);
                 let protected = block_protections[msg_idx][block_idx];
@@ -548,7 +646,8 @@ impl super::App {
         let mut total_bytes: usize = 0;
         let mut protected_bytes: usize = 0;
         for SlotUpdate { msg_idx, block_idx, slot } in updates {
-            if let Some(slots) = self.render_cache_slots_mut().get_mut(msg_idx)
+            if let Some(slots) =
+                self.render_cache_slots_mut().and_then(|slots| slots.get_mut(msg_idx))
                 && let Some(existing) = slots.get_mut(block_idx)
             {
                 *existing = slot;
@@ -557,12 +656,18 @@ impl super::App {
             if slot.protected {
                 protected_bytes = protected_bytes.saturating_add(slot.cached_bytes);
             }
-            if let Some(key) = Self::render_cache_slot_key(msg_idx, block_idx, &slot) {
-                self.render_cache_evictable_mut().insert(key);
+            if let Some(key) = Self::render_cache_slot_key(msg_idx, block_idx, &slot)
+                && let Some(evictable) = self.render_cache_evictable_mut()
+            {
+                evictable.insert(key);
             }
         }
-        *self.render_cache_total_bytes_mut() = total_bytes;
-        *self.render_cache_protected_bytes_mut() = protected_bytes;
+        if let Some(total) = self.render_cache_total_bytes_mut() {
+            *total = total_bytes;
+        }
+        if let Some(protected) = self.render_cache_protected_bytes_mut() {
+            *protected = protected_bytes;
+        }
     }
 
     pub fn enforce_render_cache_budget(&mut self) -> CacheBudgetEnforceStats {
@@ -574,8 +679,8 @@ impl super::App {
         // should not. Once per frame rather than once per rendered
         // message.
         self.repair_render_cache_accounting_drift();
-        stats.total_before_bytes = self.render_cache_total_bytes();
-        stats.protected_bytes = self.render_cache_protected_bytes();
+        stats.total_before_bytes = self.render_cache_total_bytes().unwrap_or(0);
+        stats.protected_bytes = self.render_cache_protected_bytes().unwrap_or(0);
 
         // Budget comparison uses only non-protected (evictable) bytes.
         let budgeted_bytes = stats.total_before_bytes.saturating_sub(stats.protected_bytes);
@@ -594,7 +699,9 @@ impl super::App {
             if current_budgeted <= self.render_cache_budget.max_bytes {
                 break;
             }
-            self.render_cache_evictable_mut().remove(&slot);
+            if let Some(evictable) = self.render_cache_evictable_mut() {
+                evictable.remove(&slot);
+            }
             let removed = self.evict_cache_slot(slot.msg_idx, slot.block_idx);
             if removed == 0 {
                 continue;
@@ -613,7 +720,8 @@ impl super::App {
     }
 
     fn evict_cache_slot(&mut self, msg_idx: usize, block_idx: usize) -> usize {
-        let Some(msg) = self.active_messages_mut().get_mut(msg_idx) else {
+        let Some(msg) = self.active_messages_mut().and_then(|messages| messages.get_mut(msg_idx))
+        else {
             return 0;
         };
         if block_idx == msg.blocks.len() {
@@ -657,19 +765,21 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_evicts_lru_block() {
         let mut app = make_test_app();
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("a")]),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("b")]),
         ];
 
-        let bytes_a = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0]
+        let bytes_a = if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[0].blocks[0]
         {
             block.cache.store(vec![Line::from("x".repeat(2200))]);
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[1].blocks[0]
+        let bytes_b = if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[1].blocks[0]
         {
             block.cache.store(vec![Line::from("y".repeat(2200))]);
             let _ = block.cache.get();
@@ -685,12 +795,12 @@ mod tests {
         assert!(stats.total_after_bytes <= app.render_cache_budget.max_bytes);
         assert_eq!(stats.protected_bytes, 0);
 
-        if let MessageBlock::Text(block) = &app.messages()[0].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages().expect("active session")[0].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), 0);
         } else {
             panic!("expected text block");
         }
-        if let MessageBlock::Text(block) = &app.messages()[1].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages().expect("active session")[1].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), bytes_b);
         } else {
             panic!("expected text block");
@@ -701,12 +811,13 @@ mod tests {
     fn enforce_render_cache_budget_protects_streaming_tail_message() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        *app.active_messages_mut() = vec![ChatMessage::new(
+        *app.active_messages_mut().expect("active session") = vec![ChatMessage::new(
             MessageRole::Assistant,
             vec![assistant_text_block("streaming tail")],
         )];
 
-        let before = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0]
+        let before = if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[0].blocks[0]
         {
             block.cache.store(vec![Line::from("z".repeat(4096))]);
             block.cache.cached_bytes()
@@ -719,7 +830,7 @@ mod tests {
         assert_eq!(stats.evicted_bytes, 0);
         assert_eq!(stats.protected_bytes, before);
 
-        if let MessageBlock::Text(block) = &app.messages()[0].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages().expect("active session")[0].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), before);
         } else {
             panic!("expected text block");
@@ -730,19 +841,21 @@ mod tests {
     fn enforce_render_cache_budget_excludes_protected_from_budget() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old message")]),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming tail")]),
         ];
 
-        let bytes_a = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0]
+        let bytes_a = if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[0].blocks[0]
         {
             block.cache.store(vec![Line::from("x".repeat(2200))]);
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[1].blocks[0]
+        let bytes_b = if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[1].blocks[0]
         {
             block.cache.store(vec![Line::from("y".repeat(5000))]);
             block.cache.cached_bytes()
@@ -762,7 +875,7 @@ mod tests {
         assert_eq!(stats.evicted_blocks, 0);
         assert_eq!(stats.evicted_bytes, 0);
         // Old message cache intact.
-        if let MessageBlock::Text(block) = &app.messages()[0].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages().expect("active session")[0].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), bytes_a);
         } else {
             panic!("expected text block");
@@ -773,7 +886,7 @@ mod tests {
     fn enforce_render_cache_budget_protects_active_streaming_owner_not_physical_tail() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old message")]),
             ChatMessage::new(
                 MessageRole::Assistant,
@@ -786,17 +899,22 @@ mod tests {
         ];
         app.bind_active_turn_assistant(1);
 
-        if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0] {
+        if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[0].blocks[0]
+        {
             block.cache.store(vec![Line::from("x".repeat(2000))]);
         }
-        let protected_bytes =
-            if let MessageBlock::Text(block) = &mut app.active_messages_mut()[1].blocks[0] {
-                block.cache.store(vec![Line::from("y".repeat(4000))]);
-                block.cache.cached_bytes()
-            } else {
-                0
-            };
-        if let MessageBlock::Text(block) = &mut app.active_messages_mut()[2].blocks[0] {
+        let protected_bytes = if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[1].blocks[0]
+        {
+            block.cache.store(vec![Line::from("y".repeat(4000))]);
+            block.cache.cached_bytes()
+        } else {
+            0
+        };
+        if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[2].blocks[0]
+        {
             block.cache.store(vec![Line::from("z".repeat(5000))]);
         }
 
@@ -810,17 +928,20 @@ mod tests {
     fn enforce_render_cache_budget_evicts_when_budgeted_over_limit() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-a")]),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-b")]),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming")]),
         ];
 
         // Populate caches: messages 0 and 1 evictable, message 2 protected.
-        if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0] {
+        if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[0].blocks[0]
+        {
             block.cache.store(vec![Line::from("x".repeat(3000))]);
         }
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[1].blocks[0]
+        let bytes_b = if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[1].blocks[0]
         {
             block.cache.store(vec![Line::from("y".repeat(3000))]);
             let _ = block.cache.get(); // touch to make more recently accessed
@@ -828,7 +949,8 @@ mod tests {
         } else {
             0
         };
-        let bytes_c = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[2].blocks[0]
+        let bytes_c = if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[2].blocks[0]
         {
             block.cache.store(vec![Line::from("z".repeat(5000))]);
             block.cache.cached_bytes()
@@ -844,7 +966,7 @@ mod tests {
         assert_eq!(stats.protected_bytes, bytes_c);
         assert!(stats.evicted_blocks >= 1); // message A evicted (older access)
         // Message B should survive (more recent access).
-        if let MessageBlock::Text(block) = &app.messages()[1].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages().expect("active session")[1].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), bytes_b);
         } else {
             panic!("expected text block");
@@ -855,10 +977,12 @@ mod tests {
     fn enforce_render_cache_budget_protected_bytes_zero_when_not_streaming() {
         let mut app = make_test_app();
         app.status = AppStatus::Ready;
-        *app.active_messages_mut() =
+        *app.active_messages_mut().expect("active session") =
             vec![ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("done")])];
 
-        if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0] {
+        if let MessageBlock::Text(block) =
+            &mut app.active_messages_mut().expect("active session")[0].blocks[0]
+        {
             block.cache.store(vec![Line::from("x".repeat(2000))]);
         }
         app.render_cache_budget.max_bytes = usize::MAX;
@@ -870,7 +994,7 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_accounts_for_message_render_cache() {
         let mut app = make_test_app();
-        *app.active_messages_mut() = vec![
+        *app.active_messages_mut().expect("active session") = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block(&"a".repeat(4000))]),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block(&"b".repeat(4000))]),
         ];
@@ -885,20 +1009,20 @@ mod tests {
         };
 
         let _ = crate::ui::measure_message_height_cached(
-            &mut app.active_messages_mut()[0],
+            &mut app.active_messages_mut().expect("active session")[0],
             &spinner,
             80,
             1,
         );
         let _ = crate::ui::measure_message_height_cached(
-            &mut app.active_messages_mut()[1],
+            &mut app.active_messages_mut().expect("active session")[1],
             &spinner,
             80,
             1,
         );
 
-        let bytes_a = app.messages()[0].render_cache.cached_bytes();
-        let bytes_b = app.messages()[1].render_cache.cached_bytes();
+        let bytes_a = app.messages().expect("active session")[0].render_cache.cached_bytes();
+        let bytes_b = app.messages().expect("active session")[1].render_cache.cached_bytes();
         assert!(bytes_a > 0);
         assert!(bytes_b > 0);
 
@@ -908,8 +1032,8 @@ mod tests {
 
         assert!(stats.evicted_bytes >= bytes_a);
         assert!(
-            app.messages()[0].render_cache.cached_bytes() == 0
-                || app.messages()[1].render_cache.cached_bytes() == 0
+            app.messages().expect("active session")[0].render_cache.cached_bytes() == 0
+                || app.messages().expect("active session")[1].render_cache.cached_bytes() == 0
         );
     }
 
@@ -929,11 +1053,14 @@ mod tests {
 
         // Deferred to the lazy guard, the append path never rebuilds, so an
         // empty slot grid after 8 appends proves no per-append rebuild fired.
-        assert_eq!(app.messages().len(), 8);
-        assert_eq!(app.render_cache_slots().len(), 0);
+        assert_eq!(app.messages().expect("active session").len(), 8);
+        assert_eq!(app.render_cache_slots().expect("active session").len(), 0);
 
         app.ensure_render_cache_accounting();
-        assert_eq!(app.render_cache_slots().len(), app.messages().len());
+        assert_eq!(
+            app.render_cache_slots().expect("active session").len(),
+            app.messages().expect("active session").len()
+        );
     }
 
     #[test]
@@ -969,9 +1096,9 @@ mod tests {
         app.push_message_tracked(trailing);
 
         app.ensure_render_cache_accounting();
-        let slots = app.render_cache_slots().to_vec();
-        let total = app.render_cache_total_bytes();
-        let protected = app.render_cache_protected_bytes();
+        let slots = app.render_cache_slots().expect("active session").to_vec();
+        let total = app.render_cache_total_bytes().expect("active session");
+        let protected = app.render_cache_protected_bytes().expect("active session");
         let evictable = app.render_cache_evictable().cloned().unwrap_or_default();
         let tail = app.render_cache_tail_msg_idx();
 
@@ -980,9 +1107,9 @@ mod tests {
         assert!(!evictable.is_empty());
 
         app.rebuild_render_cache_accounting();
-        assert_eq!(app.render_cache_slots().to_vec(), slots);
-        assert_eq!(app.render_cache_total_bytes(), total);
-        assert_eq!(app.render_cache_protected_bytes(), protected);
+        assert_eq!(app.render_cache_slots().expect("active session").to_vec(), slots);
+        assert_eq!(app.render_cache_total_bytes().expect("active session"), total);
+        assert_eq!(app.render_cache_protected_bytes().expect("active session"), protected);
         assert_eq!(app.render_cache_evictable().cloned().unwrap_or_default(), evictable);
         assert_eq!(app.render_cache_tail_msg_idx(), tail);
     }
@@ -1010,7 +1137,7 @@ mod tests {
         // zero and the tail at None, so byte-equality assertions on it
         // compare zero against zero.
         app.status = AppStatus::Running;
-        let tail = app.messages().len().saturating_sub(1);
+        let tail = app.messages().expect("active session").len().saturating_sub(1);
         app.bind_active_turn_assistant(tail);
         app.ensure_render_cache_accounting();
         app.ensure_history_retention_accounting();
@@ -1068,15 +1195,16 @@ mod tests {
 
         // Inject drift directly: a protected-byte count that no slot
         // justifies, which is what an unrepaired derived flag leaves.
-        *app.render_cache_protected_bytes_mut() = app.render_cache_protected_bytes() + 1_000;
+        *app.render_cache_protected_bytes_mut().expect("active session") =
+            app.render_cache_protected_bytes().expect("active session") + 1_000;
         app.render_cache_budget.max_bytes = 64;
         let _ = app.enforce_render_cache_budget();
 
-        let after = app.render_cache_protected_bytes();
+        let after = app.render_cache_protected_bytes().expect("active session");
         app.rebuild_render_cache_accounting();
         assert_eq!(
             after,
-            app.render_cache_protected_bytes(),
+            app.render_cache_protected_bytes().expect("active session"),
             "enforcement must re-derive the totals it decides on, not carry drift forward",
         );
     }
@@ -1088,23 +1216,25 @@ mod tests {
     #[test]
     fn appending_does_not_absorb_an_unrelated_messages_growth() {
         let mut app = app_with_backlog(6);
-        let tail = app.messages().len() - 1;
-        let before = app.render_cache_total_bytes();
+        let tail = app.messages().expect("active session").len() - 1;
+        let before = app.render_cache_total_bytes().expect("active session");
 
         // Grow a NON-target message without announcing it.
         let mut stowaway = assistant_text_block("grown out of band");
         if let MessageBlock::Text(block) = &mut stowaway {
             block.cache.store(vec![Line::from("g".repeat(8192))]);
         }
-        app.active_messages_mut()[1].blocks.push(stowaway);
+        app.active_messages_mut().expect("active session")[1].blocks.push(stowaway);
 
         // Append to the tail and sync it.
-        app.active_messages_mut()[tail].blocks.push(assistant_text_block("chunk"));
+        app.active_messages_mut().expect("active session")[tail]
+            .blocks
+            .push(assistant_text_block("chunk"));
         app.sync_after_message_tail_changed(tail);
-        let after_append = app.render_cache_total_bytes();
+        let after_append = app.render_cache_total_bytes().expect("active session");
 
         app.rebuild_render_cache_accounting();
-        let truth = app.render_cache_total_bytes();
+        let truth = app.render_cache_total_bytes().expect("active session");
         assert!(
             truth > before,
             "fixture must actually grow the unrelated message, or this test proves nothing",
@@ -1142,7 +1272,7 @@ mod tests {
         app.bind_active_turn_assistant(0);
         app.ensure_render_cache_accounting();
         assert!(
-            app.render_cache_slots()[0].iter().all(|s| s.protected),
+            app.render_cache_slots().expect("active session")[0].iter().all(|s| s.protected),
             "the streaming tail protects every slot in the message",
         );
 
@@ -1151,13 +1281,17 @@ mod tests {
         app.status = AppStatus::Ready;
         app.refresh_tail_message_cache_protection();
         assert!(
-            app.render_cache_slots()[0].iter().all(|s| !s.protected),
+            app.render_cache_slots().expect("active session")[0].iter().all(|s| !s.protected),
             "every slot must lose protection when the tail moves off the message; the tail-only \
              sync leaves the earlier slots protected",
         );
-        let after = app.render_cache_protected_bytes();
+        let after = app.render_cache_protected_bytes().expect("active session");
         app.rebuild_render_cache_accounting();
-        assert_eq!(after, app.render_cache_protected_bytes(), "protected bytes diverged");
+        assert_eq!(
+            after,
+            app.render_cache_protected_bytes().expect("active session"),
+            "protected bytes diverged"
+        );
     }
 
     /// The resize fallback for a MOVED protected tail. A moved tail flips
@@ -1166,7 +1300,7 @@ mod tests {
     #[test]
     fn append_after_the_protected_tail_moved_falls_back_to_a_full_rebuild() {
         let mut app = app_with_backlog(4);
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
         // Enough blocks that the tail sync leaves earlier slots alone:
         // with one block every slot gets re-synced and any stale
         // protection is repaired incidentally.
@@ -1175,7 +1309,7 @@ mod tests {
             if let MessageBlock::Text(block) = &mut b {
                 block.cache.store(vec![Line::from("p".repeat(512))]);
             }
-            app.active_messages_mut()[tail].blocks.push(b);
+            app.active_messages_mut().expect("active session")[tail].blocks.push(b);
         }
         app.rebuild_render_cache_accounting();
 
@@ -1184,14 +1318,24 @@ mod tests {
         // tail would mix two protection regimes in one table.
         app.bind_active_turn_assistant(tail - 1);
 
-        app.active_messages_mut()[tail].blocks.push(assistant_text_block("chunk"));
+        app.active_messages_mut().expect("active session")[tail]
+            .blocks
+            .push(assistant_text_block("chunk"));
         app.sync_after_message_tail_changed(tail);
 
-        let after = app.render_cache_protected_bytes();
-        let total = app.render_cache_total_bytes();
+        let after = app.render_cache_protected_bytes().expect("active session");
+        let total = app.render_cache_total_bytes().expect("active session");
         app.rebuild_render_cache_accounting();
-        assert_eq!(after, app.render_cache_protected_bytes(), "protected bytes diverged");
-        assert_eq!(total, app.render_cache_total_bytes(), "totals diverged");
+        assert_eq!(
+            after,
+            app.render_cache_protected_bytes().expect("active session"),
+            "protected bytes diverged"
+        );
+        assert_eq!(
+            total,
+            app.render_cache_total_bytes().expect("active session"),
+            "totals diverged"
+        );
     }
 
     /// Everything else here syncs the streaming TAIL, whose slots are
@@ -1207,11 +1351,13 @@ mod tests {
         let mut app = app_with_backlog(6);
         let target = 1usize; // not the tail, so its slots are evictable
         assert!(
-            app.render_cache_slots()[target].iter().all(|s| !s.protected),
+            app.render_cache_slots().expect("active session")[target].iter().all(|s| !s.protected),
             "fixture must leave a non-tail message unprotected, or its slots carry no keys",
         );
         assert!(
-            app.render_cache_slots()[target].last().is_some_and(|s| s.cached_bytes > 0),
+            app.render_cache_slots().expect("active session")[target]
+                .last()
+                .is_some_and(|s| s.cached_bytes > 0),
             "the message slot must carry bytes, or its key does not exist to be moved",
         );
 
@@ -1219,17 +1365,29 @@ mod tests {
         if let MessageBlock::Text(block) = &mut extra {
             block.cache.store(vec![Line::from("k".repeat(1500))]);
         }
-        app.active_messages_mut()[target].blocks.push(extra);
+        app.active_messages_mut().expect("active session")[target].blocks.push(extra);
         app.sync_after_message_tail_changed(target);
 
-        let slots = app.render_cache_slots().to_vec();
-        let total = app.render_cache_total_bytes();
-        let protected = app.render_cache_protected_bytes();
+        let slots = app.render_cache_slots().expect("active session").to_vec();
+        let total = app.render_cache_total_bytes().expect("active session");
+        let protected = app.render_cache_protected_bytes().expect("active session");
         let evictable = app.render_cache_evictable().cloned().unwrap_or_default();
         app.rebuild_render_cache_accounting();
-        assert_eq!(slots, app.render_cache_slots().to_vec(), "slot rows diverged");
-        assert_eq!(total, app.render_cache_total_bytes(), "totals diverged");
-        assert_eq!(protected, app.render_cache_protected_bytes(), "protected bytes diverged");
+        assert_eq!(
+            slots,
+            app.render_cache_slots().expect("active session").to_vec(),
+            "slot rows diverged"
+        );
+        assert_eq!(
+            total,
+            app.render_cache_total_bytes().expect("active session"),
+            "totals diverged"
+        );
+        assert_eq!(
+            protected,
+            app.render_cache_protected_bytes().expect("active session"),
+            "protected bytes diverged"
+        );
         assert_eq!(
             evictable,
             app.render_cache_evictable().cloned().unwrap_or_default(),
@@ -1249,27 +1407,41 @@ mod tests {
             if let MessageBlock::Text(block) = &mut extra {
                 block.cache.store(vec![Line::from("d".repeat(900 + i * 100))]);
             }
-            app.active_messages_mut()[target].blocks.push(extra);
+            app.active_messages_mut().expect("active session")[target].blocks.push(extra);
         }
         app.sync_after_message_tail_changed(target);
         assert!(
-            app.render_cache_slots()[target].iter().any(|s| s.cached_bytes > 0 && !s.protected),
+            app.render_cache_slots().expect("active session")[target]
+                .iter()
+                .any(|s| s.cached_bytes > 0 && !s.protected),
             "the dropped slots must be evictable, or there is no key to drop",
         );
 
         for _ in 0..3 {
-            app.active_messages_mut()[target].blocks.pop();
+            app.active_messages_mut().expect("active session")[target].blocks.pop();
         }
         app.sync_after_message_tail_changed(target);
 
-        let slots = app.render_cache_slots().to_vec();
-        let total = app.render_cache_total_bytes();
-        let protected = app.render_cache_protected_bytes();
+        let slots = app.render_cache_slots().expect("active session").to_vec();
+        let total = app.render_cache_total_bytes().expect("active session");
+        let protected = app.render_cache_protected_bytes().expect("active session");
         let evictable = app.render_cache_evictable().cloned().unwrap_or_default();
         app.rebuild_render_cache_accounting();
-        assert_eq!(slots, app.render_cache_slots().to_vec(), "slot rows diverged");
-        assert_eq!(total, app.render_cache_total_bytes(), "totals diverged");
-        assert_eq!(protected, app.render_cache_protected_bytes(), "protected bytes diverged");
+        assert_eq!(
+            slots,
+            app.render_cache_slots().expect("active session").to_vec(),
+            "slot rows diverged"
+        );
+        assert_eq!(
+            total,
+            app.render_cache_total_bytes().expect("active session"),
+            "totals diverged"
+        );
+        assert_eq!(
+            protected,
+            app.render_cache_protected_bytes().expect("active session"),
+            "protected bytes diverged"
+        );
         assert_eq!(
             evictable,
             app.render_cache_evictable().cloned().unwrap_or_default(),
@@ -1304,24 +1476,29 @@ mod tests {
             vec![assistant_text_block("later message")],
         ));
         app.ensure_render_cache_accounting();
-        assert!(app.render_cache_protected_bytes() > 0, "the in-flight call protects the message");
+        assert!(
+            app.render_cache_protected_bytes().expect("active session") > 0,
+            "the in-flight call protects the message"
+        );
 
         // The background task settles. This is what the three writers do:
         // flip the status, sync the BLOCK slot.
-        if let Some(MessageBlock::ToolCall(tc)) = app.active_messages_mut()[0].blocks.get_mut(0) {
+        if let Some(MessageBlock::ToolCall(tc)) =
+            app.active_messages_mut().expect("active session")[0].blocks.get_mut(0)
+        {
             tc.status = model::ToolCallStatus::Completed;
         }
         app.sync_render_cache_slot(0, 0);
 
-        let stale = app.render_cache_protected_bytes();
+        let stale = app.render_cache_protected_bytes().expect("active session");
         app.rebuild_render_cache_accounting();
         assert_eq!(
             stale,
-            app.render_cache_protected_bytes(),
+            app.render_cache_protected_bytes().expect("active session"),
             "protected bytes drifted (stale {stale} vs truth {}); the message slot kept a \
              protection its blocks no longer justify, so those bytes are permanently excluded \
              from the eviction budget",
-            app.render_cache_protected_bytes(),
+            app.render_cache_protected_bytes().expect("active session"),
         );
     }
 
@@ -1339,13 +1516,13 @@ mod tests {
     #[test]
     fn appending_resyncs_only_the_tail_slots() {
         let mut app = app_with_backlog(6);
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
         for i in 1..8 {
             let mut b = assistant_text_block(&format!("block {i}"));
             if let MessageBlock::Text(block) = &mut b {
                 block.cache.store(vec![Line::from("z".repeat(256))]);
             }
-            app.active_messages_mut()[tail].blocks.push(b);
+            app.active_messages_mut().expect("active session")[tail].blocks.push(b);
         }
         app.rebuild_render_cache_accounting();
 
@@ -1353,14 +1530,16 @@ mod tests {
         // its tick back up from the block's cache, an untouched one keeps
         // the sentinel.
         let sentinel = u64::MAX;
-        for slot in &mut app.render_cache_slots_mut()[tail] {
+        for slot in &mut app.render_cache_slots_mut().expect("active session")[tail] {
             slot.last_access_tick = sentinel;
         }
 
-        app.active_messages_mut()[tail].blocks.push(assistant_text_block("appended"));
+        app.active_messages_mut().expect("active session")[tail]
+            .blocks
+            .push(assistant_text_block("appended"));
         app.sync_after_message_tail_changed(tail);
 
-        let row = &app.render_cache_slots()[tail];
+        let row = &app.render_cache_slots().expect("active session")[tail];
         let previously_last = 7usize;
         let untouched =
             (0..previously_last).filter(|&i| row[i].last_access_tick == sentinel).count();
@@ -1386,26 +1565,41 @@ mod tests {
     #[test]
     fn appending_a_block_leaves_accounting_matching_a_full_rebuild() {
         let mut app = app_with_backlog(6);
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
 
         let mut extra = assistant_text_block("appended chunk");
         if let MessageBlock::Text(block) = &mut extra {
             block.cache.store(vec![Line::from("z".repeat(1024))]);
         }
-        app.active_messages_mut()[tail].blocks.push(extra);
+        app.active_messages_mut().expect("active session")[tail].blocks.push(extra);
         app.sync_after_message_tail_changed(tail);
 
-        let slots = app.render_cache_slots().to_vec();
-        let total = app.render_cache_total_bytes();
-        let protected = app.render_cache_protected_bytes();
+        let slots = app.render_cache_slots().expect("active session").to_vec();
+        let total = app.render_cache_total_bytes().expect("active session");
+        let protected = app.render_cache_protected_bytes().expect("active session");
         let evictable = app.render_cache_evictable().cloned().unwrap_or_default();
         let tail_idx = app.render_cache_tail_msg_idx();
-        assert_eq!(slots[tail].len(), app.messages()[tail].blocks.len() + 1);
+        assert_eq!(
+            slots[tail].len(),
+            app.messages().expect("active session")[tail].blocks.len() + 1
+        );
 
         app.rebuild_render_cache_accounting();
-        assert_eq!(slots, app.render_cache_slots().to_vec(), "slot rows diverged");
-        assert_eq!(total, app.render_cache_total_bytes(), "total bytes diverged");
-        assert_eq!(protected, app.render_cache_protected_bytes(), "protected bytes diverged");
+        assert_eq!(
+            slots,
+            app.render_cache_slots().expect("active session").to_vec(),
+            "slot rows diverged"
+        );
+        assert_eq!(
+            total,
+            app.render_cache_total_bytes().expect("active session"),
+            "total bytes diverged"
+        );
+        assert_eq!(
+            protected,
+            app.render_cache_protected_bytes().expect("active session"),
+            "protected bytes diverged"
+        );
         assert_eq!(
             evictable,
             app.render_cache_evictable().cloned().unwrap_or_default(),
@@ -1420,25 +1614,37 @@ mod tests {
     #[test]
     fn removing_a_block_leaves_accounting_matching_a_full_rebuild() {
         let mut app = app_with_backlog(6);
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
         let mut extra = assistant_text_block("doomed");
         if let MessageBlock::Text(block) = &mut extra {
             block.cache.store(vec![Line::from("q".repeat(2048))]);
         }
-        app.active_messages_mut()[tail].blocks.push(extra);
+        app.active_messages_mut().expect("active session")[tail].blocks.push(extra);
         app.sync_after_message_tail_changed(tail);
 
-        app.active_messages_mut()[tail].blocks.pop();
+        app.active_messages_mut().expect("active session")[tail].blocks.pop();
         app.sync_after_message_tail_changed(tail);
 
-        let slots = app.render_cache_slots().to_vec();
-        let total = app.render_cache_total_bytes();
-        let protected = app.render_cache_protected_bytes();
+        let slots = app.render_cache_slots().expect("active session").to_vec();
+        let total = app.render_cache_total_bytes().expect("active session");
+        let protected = app.render_cache_protected_bytes().expect("active session");
         let evictable = app.render_cache_evictable().cloned().unwrap_or_default();
         app.rebuild_render_cache_accounting();
-        assert_eq!(slots, app.render_cache_slots().to_vec(), "slot rows diverged");
-        assert_eq!(total, app.render_cache_total_bytes(), "removed block's bytes not dropped");
-        assert_eq!(protected, app.render_cache_protected_bytes(), "protected bytes diverged");
+        assert_eq!(
+            slots,
+            app.render_cache_slots().expect("active session").to_vec(),
+            "slot rows diverged"
+        );
+        assert_eq!(
+            total,
+            app.render_cache_total_bytes().expect("active session"),
+            "removed block's bytes not dropped"
+        );
+        assert_eq!(
+            protected,
+            app.render_cache_protected_bytes().expect("active session"),
+            "protected bytes diverged"
+        );
         assert_eq!(
             evictable,
             app.render_cache_evictable().cloned().unwrap_or_default(),
@@ -1466,8 +1672,10 @@ mod tests {
 
         fn best_us(n: usize) -> f64 {
             let mut app = app_with_backlog(n);
-            let tail = app.messages().len() - 1;
-            app.active_messages_mut()[tail].blocks.push(assistant_text_block("chunk"));
+            let tail = app.messages().expect("active session").len() - 1;
+            app.active_messages_mut().expect("active session")[tail]
+                .blocks
+                .push(assistant_text_block("chunk"));
             let sync = |app: &mut App| {
                 app.sync_render_cache_message_tail(tail);
                 app.recompute_message_retained_bytes(tail);
@@ -1518,14 +1726,14 @@ mod tests {
         if let MessageBlock::Text(block) = &mut extra {
             block.cache.store(vec![Line::from("y".repeat(4096))]);
         }
-        app.active_messages_mut()[msg_idx].blocks.push(extra);
+        app.active_messages_mut().expect("active session")[msg_idx].blocks.push(extra);
     }
 
     /// The same unannounced block-count change, carrying no bytes, so
     /// the row drift lands without moving the total. Lets a test move
     /// `protected` on its own.
     fn append_uncached_block_out_of_band(app: &mut App, msg_idx: usize) {
-        app.active_messages_mut()[msg_idx]
+        app.active_messages_mut().expect("active session")[msg_idx]
             .blocks
             .push(assistant_text_block("appended out of band"));
     }
@@ -1543,14 +1751,17 @@ mod tests {
 
         app.sync_render_cache_slot(1, 0);
 
-        let after_sync = app.render_cache_total_bytes();
+        let after_sync = app.render_cache_total_bytes().expect("active session");
         app.rebuild_render_cache_accounting();
         assert_eq!(
             after_sync,
-            app.render_cache_total_bytes(),
+            app.render_cache_total_bytes().expect("active session"),
             "syncing a slot in the changed message must leave the totals a rebuild produces",
         );
-        assert_eq!(app.render_cache_slots()[1].len(), app.messages()[1].blocks.len() + 1);
+        assert_eq!(
+            app.render_cache_slots().expect("active session")[1].len(),
+            app.messages().expect("active session")[1].blocks.len() + 1
+        );
     }
 
     /// What the narrowed guard gives up, pinned rather than left
@@ -1565,10 +1776,10 @@ mod tests {
 
         app.sync_render_cache_slot(3, 0);
 
-        let drifted = app.render_cache_total_bytes();
+        let drifted = app.render_cache_total_bytes().expect("active session");
         app.rebuild_render_cache_accounting();
         assert!(
-            drifted < app.render_cache_total_bytes(),
+            drifted < app.render_cache_total_bytes().expect("active session"),
             "documents the narrowing: an unrelated sync leaves the new block uncounted",
         );
     }
@@ -1587,18 +1798,18 @@ mod tests {
         append_block_out_of_band(&mut app, 1);
         app.sync_render_cache_slot(3, 0);
 
-        let drifted = app.render_cache_total_bytes();
+        let drifted = app.render_cache_total_bytes().expect("active session");
         let stats = app.enforce_render_cache_budget();
 
         assert!(
             stats.total_before_bytes > drifted,
             "the totals the budget compares against must be re-derived, not the drifted ones",
         );
-        let after = app.render_cache_total_bytes();
+        let after = app.render_cache_total_bytes().expect("active session");
         app.rebuild_render_cache_accounting();
         assert_eq!(
             after,
-            app.render_cache_total_bytes(),
+            app.render_cache_total_bytes().expect("active session"),
             "the totals enforcement acted on match a full rebuild",
         );
     }
@@ -1625,7 +1836,7 @@ mod tests {
         app.push_message_tracked(tool);
         app.rebuild_render_cache_accounting();
 
-        let protected_recorded = app.render_cache_protected_bytes();
+        let protected_recorded = app.render_cache_protected_bytes().expect("active session");
         assert!(
             protected_recorded > 0,
             "the fixture has to protect real bytes, or the subtraction under test is zero",
@@ -1634,15 +1845,19 @@ mod tests {
         // Out of band, so nothing re-derives. The completion is what
         // makes `protected` wrong; the append is what the repair
         // notices, since it compares block counts.
-        if let MessageBlock::ToolCall(tc) = &mut app.active_messages_mut()[2].blocks[0] {
+        if let MessageBlock::ToolCall(tc) =
+            &mut app.active_messages_mut().expect("active session")[2].blocks[0]
+        {
             tc.status = model::ToolCallStatus::Completed;
         }
         append_uncached_block_out_of_band(&mut app, 0);
 
         // Sits between the drifted reading and the true one, so the two
         // disagree about whether anything needs evicting.
-        let drifted_budgeted =
-            app.render_cache_total_bytes().saturating_sub(app.render_cache_protected_bytes());
+        let drifted_budgeted = app
+            .render_cache_total_bytes()
+            .expect("active session")
+            .saturating_sub(app.render_cache_protected_bytes().expect("active session"));
         app.render_cache_budget.max_bytes = drifted_budgeted + 1;
 
         let stats = app.enforce_render_cache_budget();

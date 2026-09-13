@@ -16,18 +16,6 @@ use crate::Cli;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-/// Shorten a path for display: substitute `~` for the home directory prefix.
-fn shorten_cwd_for_display(cwd: &std::path::Path) -> String {
-    let cwd_str = cwd.to_string_lossy().to_string();
-    if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy().to_string();
-        if cwd_str.starts_with(&home_str) {
-            return format!("~{}", &cwd_str[home_str.len()..]);
-        }
-    }
-    cwd_str
-}
-
 pub(crate) use session_start::{SessionStartReason, begin_resume_session, start_new_session};
 
 /// Build `SessionLaunchSettings` for the startup spawn path.
@@ -64,10 +52,10 @@ fn create_app_impl(
     workspace: Arc<forge_workspace::Workspace>,
     perf_log: Option<std::path::PathBuf>,
 ) -> App {
-    // Resolve the pre-Connect seed cwd from `forge.toml`:
+    // Resolve the boot cwd from `forge.toml`:
     //
     // - `forge <project>` (chat-direct): look up `project.path`.
-    // - `forge` (launchpad): no project picked, leave both empty.
+    // - `forge` (launchpad): no project picked, leave it empty.
     //   Trust + file_index init handle an empty cwd cleanly; the
     //   first per-project Connected event populates the real
     //   bucket's `cwd_raw` from the agent's reported cwd.
@@ -76,7 +64,6 @@ fn create_app_impl(
         .as_deref()
         .and_then(|name| workspace.list_projects().into_iter().find(|p| p.name == name))
         .map(|p| p.path);
-    let cwd_display = project_path.as_ref().map(|p| shorten_cwd_for_display(p)).unwrap_or_default();
     let cwd_raw =
         project_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
 
@@ -170,20 +157,12 @@ fn create_app_impl(
     });
     let update_tx = workspace.update_sender();
 
-    let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-    let mut pre_connect_session = super::session::UiSession::new(pre_connect_key.clone());
-    pre_connect_session.messages =
-        vec![super::ChatMessage::welcome(crate::FORGE_VERSION, "", &cwd_display, "-")];
-    pre_connect_session.cwd = cwd_display;
-    pre_connect_session.cwd_raw = cwd_raw;
-    // Pre-register a handle-less DomainSession for the pre-Connect
-    // key. The spawn handler later stamps the live `Arc<AgentHandle>`
-    // onto this same domain entry when
-    // `get_agent_handle_with_spawn_key` runs.
-    let pre_connect_domain = workspace.register_domain_session(pre_connect_key.clone(), None);
-    drop(pre_connect_domain);
-    let mut sessions = std::collections::HashMap::new();
-    sessions.insert(pre_connect_key.clone(), pre_connect_session);
+    // No session is focused until a spawn lands, so the boot render is
+    // the preflight handing over to the launchpad (or, on the
+    // chat-direct route, straight to the first spawn's chat). Each
+    // bucket is minted by the wake event with the project it belongs
+    // to; nothing exists here to carry a projectless placeholder.
+    let sessions = std::collections::HashMap::new();
     // Tier-based default for side panes: visible at Wide, hidden
     // elsewhere. Both panes use the same threshold (Wide tier) so
     // narrow / medium terminals start with a chat-only layout the
@@ -228,7 +207,7 @@ fn create_app_impl(
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_notifications: std::cell::RefCell::new(Vec::new()),
         sessions,
-        active_session_key: Some(pre_connect_key),
+        active_session_key: None,
         active_session_pivoted: false,
         pending_spawn_focus: None,
         forge_crons: Vec::new(),
@@ -312,6 +291,7 @@ fn create_app_impl(
         last_frame_at: None,
         connection_started: false,
         startup_project: cli.project.clone(),
+        startup_project_root: project_path.clone(),
         replay_in_progress: false,
     };
 
@@ -538,10 +518,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn create_app_launchpad_mode_leaves_cwd_raw_empty() {
-        // No argv → launchpad mode → no project picked → pre-connect
-        // bucket carries an empty `cwd_raw`. This is the invariant
-        // the `find_running_bucket_for_path` simplification depends
-        // on: pre-connect can never collide with a real project's
+        // No argv → launchpad mode → no project picked → nothing is
+        // focused, so `cwd_raw()` is `None`. This is the invariant the
+        // `find_running_bucket_for_path` lookup depends on: a boot
+        // with no session can never collide with a real project's
         // `path` because there's nothing to compare against.
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
@@ -557,20 +537,22 @@ mod tests {
             .await;
 
         assert!(
-            app.cwd_raw().is_empty(),
-            "launchpad-mode pre-connect should leave cwd_raw empty, got {:?}",
+            app.cwd_raw().is_none_or(|cwd| cwd.is_empty()),
+            "a launchpad-mode boot should leave cwd_raw empty, got {:?}",
             app.cwd_raw(),
         );
         assert!(app.workspace.is_some(), "workspace should be wired");
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn create_app_chat_direct_mode_seeds_cwd_raw_from_forge_toml() {
-        // `forge <project>` → chat-direct mode → pre-connect bucket
-        // carries the project's `path` from `forge.toml`, NOT the
-        // process working directory. That's the architectural fix:
-        // forge.toml is the source of truth for project paths;
-        // `std::env::current_dir()` is intentionally not consulted.
+    async fn create_app_chat_direct_mode_boots_without_a_session() {
+        // `forge <project>` → chat-direct mode. The project's `path`
+        // comes from `forge.toml`, NOT the process working directory
+        // (forge.toml is the source of truth for project paths;
+        // `std::env::current_dir()` is deliberately not consulted). No
+        // session carries it at boot: the bucket is minted by the spawn
+        // that resolves the project, so there is no cwd at boot to read
+        // here at all.
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
@@ -585,11 +567,21 @@ mod tests {
             .await;
 
         assert_eq!(
-            app.cwd_raw(),
-            project_dir.path().to_string_lossy(),
-            "chat-direct pre-connect should carry the project's path from forge.toml",
+            app.startup_project.as_deref(),
+            Some("forge-test"),
+            "chat-direct boot focuses the project the CLI named",
         );
-        assert!(app.workspace.is_some(), "workspace should be wired");
+        assert!(app.active_session_key.is_none(), "no session is focused until the spawn lands");
+        assert!(
+            app.cwd_raw().is_none(),
+            "a boot with no session carries no cwd, so none can have come from the process cwd",
+        );
+        let projects = app.workspace.as_ref().expect("workspace").list_projects();
+        assert_eq!(
+            projects.first().map(|view| view.path.clone()),
+            Some(project_dir.path().to_owned()),
+            "the project path is forge.toml's",
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

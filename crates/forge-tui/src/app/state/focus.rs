@@ -31,7 +31,7 @@ impl super::App {
     }
 
     pub fn sync_help_open_with_input(&mut self) {
-        if self.help_open && self.input().text().trim() != "?" {
+        if self.help_open && self.input().is_none_or(|input| input.text().trim() != "?") {
             self.help_open = false;
             self.release_focus_target(FocusTarget::Help);
         }
@@ -116,7 +116,7 @@ mod tests {
 
     fn focus_test_app_with_available_targets() -> App {
         let mut app = make_test_app();
-        *app.slash_mut() = Some(SlashState {
+        *app.slash_mut().expect("active session") = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
             query: String::new(),

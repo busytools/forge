@@ -275,11 +275,11 @@ frontmost and still take that dock-bounce form.
 
 `auto` trusts that detection. `off` makes forge treat OSC 9 as
 unavailable and fall back to what does not cross the terminal: the
-Iterm2 channel gains the bell plus the OS-native desktop
-notification, Ghostty keeps the desktop notification only. `on` is
-the converse, for a terminal that speaks OSC 9 without announcing
-itself: the escape is sent regardless of detection, and it suppresses
-the fallbacks exactly as a true detection does. Between them the
+Iterm2 channel rings the bell instead, and Ghostty is left with no
+channel at all, so `off` under Ghostty is how to ask for nothing.
+`on` is the converse, for a terminal that speaks OSC 9 without
+announcing itself: the escape is sent regardless of detection, and it
+suppresses the bell exactly as a true detection does. Between them the
 key covers a setup where the escape is emitted but stripped, or
 supported but undetected, however that happens; it is config, not
 per-multiplexer code.

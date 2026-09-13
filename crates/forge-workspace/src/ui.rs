@@ -30,11 +30,10 @@ pub struct UiSettings {
     pub fps: RepaintCadence,
     /// Whether forge may send OSC 9 desktop-notification escapes:
     /// `auto` (default) trusts the detected capability, `on` forces the
-    /// escape on and suppresses the fallbacks as a true detection does,
+    /// escape on and suppresses the bell as a true detection does,
     /// `off` treats OSC 9 as unavailable and falls back to what does
-    /// not cross the terminal: the Iterm2 channel gains the bell plus
-    /// the OS-native desktop notification, Ghostty keeps the desktop
-    /// notification only.
+    /// not cross the terminal: the Iterm2 channel rings the bell, and
+    /// Ghostty is left with no channel.
     ///
     /// Detection reads `TERM_PROGRAM`, `ITERM_SESSION_ID` and `TERM`
     /// (`TERM` only when it reads `xterm-ghostty`). The first two
@@ -61,8 +60,8 @@ pub enum Osc9NotificationMode {
     Auto,
     /// Always send OSC 9, regardless of the detected capability.
     On,
-    /// Never send OSC 9; the plan falls back to the bell and desktop,
-    /// or desktop only on the Ghostty channel.
+    /// Never send OSC 9; the plan falls back to the bell, and the
+    /// Ghostty channel is left with nothing.
     Off,
 }
 

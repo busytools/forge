@@ -258,9 +258,10 @@ pub(crate) fn handle_compaction_boundary_update(
     if matches!(boundary.trigger, model::CompactionTrigger::Manual) {
         app.set_pending_compact_clear(true);
     }
-    let usage = app.session_usage_mut();
-    usage.last_compaction_trigger = Some(boundary.trigger);
-    usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
+    if let Some(usage) = app.session_usage_mut() {
+        usage.last_compaction_trigger = Some(boundary.trigger);
+        usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
+    }
     tracing::debug!(
         "CompactionBoundary: trigger={:?} pre_tokens={}",
         boundary.trigger,
@@ -397,6 +398,7 @@ mod tests {
     /// standalone `System(Some(severity))` message.
     fn system_severities(app: &App) -> Vec<SystemSeverity> {
         app.messages()
+            .expect("active session")
             .iter()
             .filter_map(|m| match m.role {
                 MessageRole::System(sev) => sev,

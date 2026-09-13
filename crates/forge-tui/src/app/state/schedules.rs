@@ -10,10 +10,12 @@ impl super::App {
         self.active_session().map_or(&[], |s| s.schedules.as_slice())
     }
 
-    /// Mutable accessor for the active session's SCHEDULES list.
-    /// Auto-creates the pre-Connect bucket if missing.
-    pub(crate) fn schedules_mut(&mut self) -> &mut Vec<crate::app::state::types::ScheduleEntry> {
-        &mut self.active_bucket_mut().schedules
+    /// Mutable accessor for the active session's SCHEDULES list, or
+    /// `None` when no session is focused.
+    pub(crate) fn schedules_mut(
+        &mut self,
+    ) -> Option<&mut Vec<crate::app::state::types::ScheduleEntry>> {
+        self.active_bucket_mut().map(|bucket| &mut bucket.schedules)
     }
 
     /// Insert/replace the session's single pending wakeup. The /loop
@@ -41,7 +43,9 @@ impl super::App {
             return;
         }
         let now = std::time::SystemTime::now();
-        let schedules = self.schedules_mut();
+        let Some(schedules) = self.schedules_mut() else {
+            return;
+        };
         schedules.retain(|e| !matches!(e.kind, crate::app::state::types::ScheduleKind::Wakeup));
         schedules.push(crate::app::state::types::ScheduleEntry {
             key: tool_use_id.to_owned(),
@@ -97,7 +101,9 @@ impl super::App {
             })
             .flatten();
         let label = crate::ui::inspector_pane::first_line(prompt);
-        let schedules = self.schedules_mut();
+        let Some(schedules) = self.schedules_mut() else {
+            return;
+        };
         if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id) {
             e.schedule = schedule;
             e.kind = crate::app::state::types::ScheduleKind::Cron { recurring };
@@ -121,7 +127,10 @@ impl super::App {
     /// matching entry so a later `CronDelete` can find it. No-op when
     /// the entry has already been stamped or doesn't exist.
     pub fn stamp_cron_id_from_result(&mut self, tool_use_id: &str, job_id: &str) {
-        if let Some(e) = self.schedules_mut().iter_mut().find(|e| e.key == tool_use_id)
+        let Some(schedules) = self.schedules_mut() else {
+            return;
+        };
+        if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id)
             && e.cron_id.is_none()
         {
             e.cron_id = Some(job_id.to_owned());
@@ -131,7 +140,9 @@ impl super::App {
     /// Remove a cron entry whose stamped job id matches `job_id`
     /// (`CronDelete`). No-op when none matches.
     pub fn remove_cron_by_id(&mut self, job_id: &str) {
-        self.schedules_mut().retain(|e| e.cron_id.as_deref() != Some(job_id));
+        if let Some(schedules) = self.schedules_mut() {
+            schedules.retain(|e| e.cron_id.as_deref() != Some(job_id));
+        }
     }
 
     /// Drop schedule entries that are no longer valid at `now`
@@ -141,20 +152,22 @@ impl super::App {
         if self.active_session().is_none_or(|s| s.schedules.is_empty()) {
             return;
         }
-        self.schedules_mut().retain(|e| !e.is_expired(now));
+        if let Some(schedules) = self.schedules_mut() {
+            schedules.retain(|e| !e.is_expired(now));
+        }
     }
 
     /// Recompute the active session's own durable forge-cron snapshot
     /// from the workspace, sorted soonest-first. Called on the ~1s ticker so
     /// the Inspector reads a cheap cached `Vec` instead of resolving the
     /// project + locking the workspace every render. Scopes by the active
-    /// tab's stamped project NAME ([`Self::active_project_name`]): the
-    /// bucket resolves its project once at Connect, so the per-tick read
-    /// never re-derives it from a stale / synthetic / pre-Connect cwd.
+    /// tab's stamped project NAME ([`Self::active_project_name`]): every
+    /// bucket carries its project from the moment it is minted, so the
+    /// per-tick read never re-derives it from a stale / synthetic cwd.
     /// Then narrows to the session's own `team_role`, so a lead and its
     /// workers each see only what they can act on.
-    /// Empty when the active bucket has no project yet or the session
-    /// created no cron. Also humanizes the crons into `forge_schedule_rows`
+    /// Empty when no session is focused or the session created no cron.
+    /// Also humanizes the crons into `forge_schedule_rows`
     /// here (resolving the local timezone once) so the render never pays
     /// that per frame.
     pub fn refresh_forge_crons(&mut self) {
@@ -354,14 +367,14 @@ mod tests {
     /// FIX (4th attempt): the reported bug state is an active web-api
     /// tab where GIT / PROCESSES render and the projects pane + top bar
     /// highlight web-api, yet SCHEDULES is blank - because the
-    /// per-bucket project STAMP is `None`. The fix resolves the active
-    /// project through the SAME `resolve_active_project_view` the pane +
-    /// top bar use (a catalog match on the real session UUID), so
-    /// SCHEDULES populates despite the missing stamp AND a blanked
+    /// per-bucket project STAMP does not resolve. The fix resolves the
+    /// active project through the SAME `resolve_active_project_view` the
+    /// pane + top bar use (a catalog match on the real session UUID), so
+    /// SCHEDULES populates despite an unresolvable stamp AND a blanked
     /// cwd_raw. This isolates the primary chain link: neither the stamp
-    /// nor the cwd can resolve here, only the key/catalog resolver.
+    /// nor the cwd resolves here, only the key/catalog resolver.
     #[test]
-    fn refresh_forge_crons_resolves_via_pane_resolver_when_stamp_none() {
+    fn refresh_forge_crons_resolves_via_pane_resolver_when_stamp_unresolvable() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
 
         let mut app = App::test_default();
@@ -386,11 +399,10 @@ mod tests {
         };
         ws.seed_test_cron(cron.clone());
 
-        // Active tab is the real web-api session, but the stamp is None
+        // Active tab is the real web-api session, but the stamp is empty
         // AND cwd_raw is blank - only the catalog resolver can succeed.
         let key = forge_workspace::SessionKey::from_session_id(uuid);
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
-        bucket.project = None;
+        let mut bucket = crate::app::session::UiSession::new(key.clone(), "");
         bucket.cwd_raw = String::new();
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key);
@@ -399,7 +411,7 @@ mod tests {
         assert_eq!(
             app.active_project_name().as_deref(),
             Some("web-api"),
-            "resolves via the pane/top-bar resolver despite a None stamp + blank cwd",
+            "resolves via the pane/top-bar resolver despite an empty stamp + blank cwd",
         );
         assert_eq!(app.forge_crons, vec![cron], "SCHEDULES populates via the robust chain");
     }
@@ -426,8 +438,7 @@ mod tests {
             team_role: None,
         });
         let key = forge_workspace::SessionKey::from_session_id(uuid);
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
-        bucket.project = Some("web-api".to_owned());
+        let bucket = crate::app::session::UiSession::new(key.clone(), "web-api");
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key);
 
@@ -448,12 +459,12 @@ mod tests {
         );
     }
 
-    /// Last-resort chain link: when the stamp is None AND the catalog has
-    /// no entry for the active UUID (resolve_active_project_view misses),
-    /// the active project still resolves from the bucket's cwd_raw - the
-    /// same value GIT/PROCESSES read successfully.
+    /// Chain link: when the catalog has no entry for the active UUID
+    /// (resolve_active_project_view misses), the active project still
+    /// resolves from the bucket's stamp - which is minted from the
+    /// cwd at Connect, so the read-time chain never re-derives it.
     #[test]
-    fn refresh_forge_crons_falls_back_to_cwd_when_stamp_none_and_no_catalog() {
+    fn refresh_forge_crons_resolves_via_stamp_when_no_catalog_entry() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
 
         let mut app = App::test_default();
@@ -473,17 +484,16 @@ mod tests {
         };
         ws.seed_test_cron(cron.clone());
 
-        // Real UUID NOT in the catalog + stamp None: only cwd_raw resolves.
+        // Real UUID NOT in the catalog: only the bucket's stamp resolves.
         let key = forge_workspace::SessionKey::from_session_id("uncatalogued-uuid");
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
-        bucket.project = None;
+        let mut bucket = crate::app::session::UiSession::new(key.clone(), "web-api");
         bucket.cwd_raw = path.to_owned();
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key);
 
         app.refresh_forge_crons();
         assert_eq!(app.active_project_name().as_deref(), Some("web-api"));
-        assert_eq!(app.forge_crons, vec![cron], "SCHEDULES resolves via the cwd fallback");
+        assert_eq!(app.forge_crons, vec![cron], "SCHEDULES resolves via the bucket's stamp");
     }
 
     /// REPRODUCE (recurring SCHEDULES-blank bug, 3rd attempt): the
@@ -518,8 +528,7 @@ mod tests {
         ws.seed_test_cron(cron.clone());
 
         let key = forge_workspace::SessionKey::from_session_id("__spawn_web-api__");
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
-        bucket.project = Some("web-api".to_owned());
+        let mut bucket = crate::app::session::UiSession::new(key.clone(), "web-api");
         bucket.cwd_raw = "~/Projects/web-api".to_owned();
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key);
@@ -534,10 +543,10 @@ mod tests {
 
     /// A synthetic `__spawn_<name>__` active key resolves its project via
     /// the same pane/top-bar resolver (by name), so SCHEDULES populates
-    /// even when the bucket carries no stamp. A truly-unresolvable active
-    /// bucket - no name match, not in the catalog, no stamp, cwd under no
-    /// project - still degrades cleanly to empty rather than surfacing
-    /// another project's crons.
+    /// even when the bucket's stamp is unresolvable. A bucket whose stamp
+    /// names no project - not in the catalog, not a known name - still
+    /// degrades cleanly to empty rather than surfacing another project's
+    /// crons.
     #[test]
     fn refresh_forge_crons_resolves_synthetic_spawn_key_by_name() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
@@ -559,10 +568,10 @@ mod tests {
         };
         ws.seed_test_cron(cron.clone());
 
-        // Synthetic spawn key with NO stamp: resolves to cronproj by name.
+        // Synthetic spawn key with an empty stamp: resolves to cronproj
+        // by name.
         let synthetic = forge_workspace::SessionKey::from_session_id("__spawn_cronproj__");
-        let mut bucket = crate::app::session::UiSession::new(synthetic.clone());
-        bucket.project = None;
+        let bucket = crate::app::session::UiSession::new(synthetic.clone(), "");
         app.sessions.insert(synthetic.clone(), bucket);
         app.active_session_key = Some(synthetic);
 
@@ -574,11 +583,12 @@ mod tests {
         );
 
         // Degrade cleanly: an active bucket that resolves via no link (not
-        // a known project name, not catalogued, no stamp, cwd under no
-        // project) yields empty rather than another project's crons.
+        // a known project name, not catalogued, a stamp naming no project,
+        // cwd under no project) yields empty rather than another
+        // project's crons.
         let orphan = forge_workspace::SessionKey::from_session_id("orphan-uuid");
-        let mut orphan_bucket = crate::app::session::UiSession::new(orphan.clone());
-        orphan_bucket.project = None;
+        let mut orphan_bucket =
+            crate::app::session::UiSession::new(orphan.clone(), "orphan-project");
         orphan_bucket.cwd_raw = "/tmp/unmapped-dir".to_owned();
         app.sessions.insert(orphan.clone(), orphan_bucket);
         app.active_session_key = Some(orphan);
@@ -616,8 +626,7 @@ mod tests {
             ws.seed_test_cron(cron.clone());
 
             let key = forge_workspace::SessionKey::from_session_id(key_str);
-            let mut bucket = crate::app::session::UiSession::new(key.clone());
-            bucket.project = Some("cronproj".to_owned());
+            let bucket = crate::app::session::UiSession::new(key.clone(), "cronproj");
             app.sessions.insert(key.clone(), bucket);
             app.active_session_key = Some(key);
 
@@ -656,9 +665,8 @@ mod tests {
         ws.seed_test_cron(cron.clone());
 
         let key = forge_workspace::SessionKey::from_session_id("worktree-worker-uuid");
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        let mut bucket = crate::app::session::UiSession::new(key.clone(), "cronproj");
         bucket.cwd_raw = format!("{path}/.claude/worktrees/reviewer");
-        bucket.project = Some("cronproj".to_owned());
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key);
 
@@ -690,9 +698,8 @@ mod tests {
         });
 
         let key = forge_workspace::SessionKey::from_session_id("__spawn_gproj__");
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        let mut bucket = crate::app::session::UiSession::new(key.clone(), "gproj");
         bucket.cwd_raw = format!("{path}/.claude/worktrees/reviewer");
-        bucket.project = Some("gproj".to_owned());
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key);
 
@@ -717,8 +724,7 @@ mod tests {
         let ws = app.workspace.clone().expect("test workspace");
         ws.seed_test_project(project, &format!("/tmp/{project}"));
         let key = forge_workspace::SessionKey::from_session_id(session_id);
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
-        bucket.project = Some(project.to_owned());
+        let bucket = crate::app::session::UiSession::new(key.clone(), project);
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key.clone());
         (app, ws, key)

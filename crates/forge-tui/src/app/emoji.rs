@@ -602,7 +602,7 @@ mod tests {
         press(&mut app, crossterm::event::KeyCode::Enter);
 
         assert!(app.emoji.is_none());
-        assert_eq!(app.input().text(), "ship it \u{1F680}");
+        assert_eq!(app.input().expect("active session").text(), "ship it \u{1F680}");
         assert!(app.pending_submit().is_none(), "Enter on the picker must not arm a prompt submit");
     }
 
@@ -613,7 +613,7 @@ mod tests {
         press(&mut app, crossterm::event::KeyCode::Enter);
         type_into_chat(&mut app, " ship");
 
-        assert_eq!(app.input().text(), "\u{1F389} ship");
+        assert_eq!(app.input().expect("active session").text(), "\u{1F389} ship");
     }
 
     #[test]
@@ -624,7 +624,11 @@ mod tests {
         press(&mut app, crossterm::event::KeyCode::Esc);
 
         assert!(app.emoji.is_none());
-        assert_eq!(app.input().text(), "hi :roc", "the typed token survives");
+        assert_eq!(
+            app.input().expect("active session").text(),
+            "hi :roc",
+            "the typed token survives"
+        );
     }
 
     #[test]
@@ -638,7 +642,7 @@ mod tests {
         }
 
         assert!(app.emoji.is_none(), "the `:` is gone, so is the picker");
-        assert_eq!(app.input().text(), "");
+        assert_eq!(app.input().expect("active session").text(), "");
     }
 
     #[test]
@@ -647,7 +651,7 @@ mod tests {
         type_into_chat(&mut app, "see https://example.dev");
 
         assert!(app.emoji.is_none());
-        assert_eq!(app.input().text(), "see https://example.dev");
+        assert_eq!(app.input().expect("active session").text(), "see https://example.dev");
     }
 
     #[test]
@@ -661,6 +665,6 @@ mod tests {
 
         assert_ne!(first.name, second.name, "Down moves to the next row");
         press(&mut app, crossterm::event::KeyCode::Enter);
-        assert_eq!(app.input().text(), second.glyph);
+        assert_eq!(app.input().expect("active session").text(), second.glyph);
     }
 }

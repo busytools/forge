@@ -1280,7 +1280,7 @@ mod tests {
         ));
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
         app.insert_session_task_mapping("task-agent".to_owned(), "tu-agent".to_owned());
-        *app.background_tasks_mut() = vec![
+        *app.background_tasks_mut().expect("active session") = vec![
             bg_task("task-bash", "local_bash", "watch CI"),
             bg_task("task-agent", "local_agent", "investigate"),
         ];
@@ -1298,7 +1298,8 @@ mod tests {
         use crate::app::App;
 
         let mut app = App::test_default();
-        *app.background_tasks_mut() = vec![bg_task("task-agent", "local_agent", "investigate")];
+        *app.background_tasks_mut().expect("active session") =
+            vec![bg_task("task-agent", "local_agent", "investigate")];
         let session = app.active_session().expect("active session");
         assert!(live_local_bash_commands(session).is_empty());
     }
@@ -1384,7 +1385,8 @@ mod tests {
         use crate::app::App;
 
         let mut app = App::test_default();
-        *app.background_tasks_mut() = vec![bg_task("task-orphan", "local_bash", "watch CI")];
+        *app.background_tasks_mut().expect("active session") =
+            vec![bg_task("task-orphan", "local_bash", "watch CI")];
 
         let session = app.active_session().expect("active session");
         let commands = session_command_by_task_id(session);
@@ -1415,7 +1417,8 @@ mod tests {
             vec![MessageBlock::ToolCall(Box::new(bash))],
         ));
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
-        *app.background_tasks_mut() = vec![bg_task("task-bash", "local_bash", "watch CI")];
+        *app.background_tasks_mut().expect("active session") =
+            vec![bg_task("task-bash", "local_bash", "watch CI")];
 
         let session = app.active_session().expect("active session");
         let commands = session_command_by_task_id(session);
@@ -1518,7 +1521,8 @@ mod tests {
             vec![MessageBlock::ToolCall(Box::new(agent))],
         ));
         app.insert_session_task_mapping("task-agent".to_owned(), "tu-agent".to_owned());
-        *app.background_tasks_mut() = vec![bg_task("task-agent", "local_agent", "audit")];
+        *app.background_tasks_mut().expect("active session") =
+            vec![bg_task("task-agent", "local_agent", "audit")];
 
         let session = app.active_session().expect("active session");
         assert!(
@@ -1598,7 +1602,7 @@ mod tests {
         // Session-scoped signals the real producer writes mid-turn: the
         // task map (task_id -> tool_use_id) and the local_bash registry.
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
-        *app.background_tasks_mut() = vec![BackgroundTask {
+        *app.background_tasks_mut().expect("active session") = vec![BackgroundTask {
             task_id: "task-bash".to_owned(),
             task_type: "local_bash".to_owned(),
             description: "Wait then print".to_owned(),
@@ -1731,7 +1735,7 @@ mod tests {
         ));
 
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
-        *app.background_tasks_mut() = vec![BackgroundTask {
+        *app.background_tasks_mut().expect("active session") = vec![BackgroundTask {
             task_id: "task-bash".to_owned(),
             task_type: "local_bash".to_owned(),
             description: "Print marker then wait".to_owned(),
@@ -1795,7 +1799,7 @@ mod tests {
                 },
             ],
         });
-        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers = vec![forge_primitives::McpServerStatus {
             name: "context7".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             config: Some(json!({
@@ -1838,7 +1842,7 @@ mod tests {
             vec![MessageBlock::ToolCall(Box::new(bash))],
         ));
         app.insert_session_task_mapping("task-bash".to_owned(), "tu-bash".to_owned());
-        *app.background_tasks_mut() = vec![BackgroundTask {
+        *app.background_tasks_mut().expect("active session") = vec![BackgroundTask {
             task_id: "task-bash".to_owned(),
             task_type: "local_bash".to_owned(),
             description: "Deploy".to_owned(),

@@ -62,7 +62,10 @@ impl AgentHandle {
         self.bridge.project_memory_path(cwd)
     }
 
-    pub fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {
+    pub fn settings_documents(
+        &self,
+        cwd: Option<&Path>,
+    ) -> crate::userdata::settings::SettingsDocuments {
         self.bridge.settings_documents(cwd)
     }
 

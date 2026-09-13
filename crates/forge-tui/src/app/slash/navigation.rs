@@ -64,9 +64,15 @@ pub fn activate(app: &mut App) {
     // valid top-row highlight.
     advance_past_leading_divider(&mut state);
 
-    *app.slash_mut() = Some(state);
-    *app.mention_mut() = None;
-    *app.subagent_mut() = None;
+    if let Some(slot) = app.slash_mut() {
+        *slot = Some(state);
+    }
+    if let Some(slot) = app.mention_mut() {
+        *slot = None;
+    }
+    if let Some(slot) = app.subagent_mut() {
+        *slot = None;
+    }
     app.claim_focus_target(FocusTarget::Mention);
 }
 
@@ -94,7 +100,10 @@ pub fn update_query(app: &mut App) {
         return;
     };
 
-    if let Some(slash) = app.slash_mut().as_mut() {
+    if app.slash().is_some() {
+        let Some(slash) = app.slash_mut().and_then(|slot| slot.as_mut()) else {
+            return;
+        };
         let keep_selection = slash.context == next_state.context;
         let dialog = if keep_selection { slash.dialog } else { super::DialogState::default() };
         slash.trigger_row = next_state.trigger_row;
@@ -110,7 +119,9 @@ pub fn update_query(app: &mut App) {
     } else {
         let mut state = next_state;
         advance_past_leading_divider(&mut state);
-        *app.slash_mut() = Some(state);
+        if let Some(slot) = app.slash_mut() {
+            *slot = Some(state);
+        }
         app.claim_focus_target(FocusTarget::Mention);
     }
 }
@@ -125,19 +136,21 @@ pub fn sync_with_cursor(app: &mut App) {
 }
 
 pub fn deactivate(app: &mut App) {
-    *app.slash_mut() = None;
+    if let Some(slot) = app.slash_mut() {
+        *slot = None;
+    }
     release_autocomplete_focus_if_idle(app);
 }
 
 pub fn move_up(app: &mut App) {
-    if let Some(slash) = app.slash_mut().as_mut() {
+    if let Some(slash) = app.slash_mut().and_then(|slot| slot.as_mut()) {
         slash.dialog.move_up(slash.candidates.len(), MAX_VISIBLE);
         skip_dividers(slash, MoveDir::Up);
     }
 }
 
 pub fn move_down(app: &mut App) {
-    if let Some(slash) = app.slash_mut().as_mut() {
+    if let Some(slash) = app.slash_mut().and_then(|slot| slot.as_mut()) {
         slash.dialog.move_down(slash.candidates.len(), MAX_VISIBLE);
         skip_dividers(slash, MoveDir::Down);
     }
@@ -174,7 +187,7 @@ fn skip_dividers(slash: &mut super::SlashState, dir: MoveDir) {
 
 /// Confirm selected candidate in input.
 pub fn confirm_selection(app: &mut App) {
-    let Some(slash) = app.slash_mut().take() else {
+    let Some(slash) = app.slash_mut().and_then(Option::take) else {
         return;
     };
 
@@ -186,15 +199,22 @@ pub fn confirm_selection(app: &mut App) {
     // Dividers are non-selectable. Surface as a no-op (keep the
     // dropdown open) by re-installing the slash state.
     if super::candidates::is_group_divider(candidate) {
-        *app.slash_mut() = Some(slash);
+        if let Some(slot) = app.slash_mut() {
+            *slot = Some(slash);
+        }
         return;
     }
 
-    let mut lines = app.input().lines().to_vec();
+    let Some(input) = app.input() else {
+        release_autocomplete_focus_if_idle(app);
+        return;
+    };
+    let mut lines = input.lines().to_vec();
+    let line_count = lines.len();
     let Some(line) = lines.get(slash.trigger_row) else {
         tracing::debug!(
             trigger_row = slash.trigger_row,
-            line_count = app.input().lines().len(),
+            line_count,
             "Slash confirm aborted: trigger row out of bounds"
         );
         release_autocomplete_focus_if_idle(app);
@@ -231,11 +251,9 @@ pub fn confirm_selection(app: &mut App) {
         );
     }
     lines[slash.trigger_row] = new_line;
-    app.input_mut().replace_lines_and_cursor(
-        lines,
-        slash.trigger_row,
-        new_cursor_col.min(new_line_len),
-    );
+    if let Some(input) = app.input_mut() {
+        input.replace_lines_and_cursor(lines, slash.trigger_row, new_cursor_col.min(new_line_len));
+    }
 
     if closes_after_confirmation {
         deactivate(app);

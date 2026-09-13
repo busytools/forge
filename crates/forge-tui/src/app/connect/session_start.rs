@@ -119,7 +119,7 @@ fn log_session_request(
             outcome = "start",
             reason = reason.as_str(),
             session_id = %session_id,
-            cwd = %app.cwd_raw(),
+            cwd = %app.cwd_raw().unwrap_or_default(),
             has_language,
             has_settings,
             agent_progress_summaries_enabled,
@@ -131,7 +131,7 @@ fn log_session_request(
             message = "session request queued",
             outcome = "start",
             reason = reason.as_str(),
-            cwd = %app.cwd_raw(),
+            cwd = %app.cwd_raw().unwrap_or_default(),
             has_language,
             has_settings,
             agent_progress_summaries_enabled,
@@ -142,7 +142,7 @@ fn log_session_request(
 pub(crate) fn start_new_session(app: &App, reason: SessionStartReason) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, reason);
     log_session_request(app, reason, &launch_settings, None);
-    let cwd = app.cwd_raw();
+    let cwd = app.cwd_raw().unwrap_or_default();
     app.dispatch_command(|key| forge_workspace::Command::NewSession { key, cwd, launch_settings })
         .map_err(|err| anyhow::anyhow!("workspace dispatch failed: {err}"))
 }
@@ -150,7 +150,7 @@ pub(crate) fn start_new_session(app: &App, reason: SessionStartReason) -> anyhow
 pub(crate) fn resume_session(app: &App, session_id: String) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, SessionStartReason::Resume);
     log_session_request(app, SessionStartReason::Resume, &launch_settings, Some(&session_id));
-    let cwd = app.cwd_raw();
+    let cwd = app.cwd_raw().unwrap_or_default();
     // `claude --resume` keys sessions off the subprocess's working
     // directory; pass the current bucket's cwd so claude looks in the
     // right project subdir. Empty cwd would inherit forge's `$PWD`,
@@ -170,7 +170,9 @@ pub(crate) fn resume_session(app: &App, session_id: String) -> anyhow::Result<()
 /// Caller owns UI concerns such as entering `CommandPending` and surfacing
 /// synchronous errors.
 pub(crate) fn begin_resume_session(app: &mut App, session_id: String) -> anyhow::Result<()> {
-    *app.resuming_session_id_mut() = Some(session_id.clone());
+    if let Some(slot) = app.resuming_session_id_mut() {
+        *slot = Some(session_id.clone());
+    }
     resume_session(app, session_id)
 }
 

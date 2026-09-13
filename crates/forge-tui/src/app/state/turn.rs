@@ -12,7 +12,7 @@ use crate::agent::model;
 impl super::App {
     /// Run `f` with read-only access to the active session's
     /// turn state. Falls through to a fresh `SessionTurnState::default()`
-    /// when no active bucket exists (pre-Connect window).
+    /// when no session is focused.
     pub fn with_turn_state<R>(&self, f: impl FnOnce(&SessionTurnState) -> R) -> R {
         match self.active_session() {
             Some(s) => f(&s.turn_state),
@@ -20,10 +20,15 @@ impl super::App {
         }
     }
 
-    /// Run `f` with mutable access to the active session's turn
-    /// state. Auto-creates the pre-Connect bucket if missing.
+    /// Run `f` with mutable access to the active session's turn state.
+    /// Falls through to a fresh `SessionTurnState::default()` when no
+    /// session is focused, so mutations are discarded exactly as the
+    /// read-only [`Self::with_turn_state`] falls through.
     pub fn with_turn_state_mut<R>(&mut self, f: impl FnOnce(&mut SessionTurnState) -> R) -> R {
-        f(&mut self.active_bucket_mut().turn_state)
+        match self.active_bucket_mut() {
+            Some(bucket) => f(&mut bucket.turn_state),
+            None => f(&mut SessionTurnState::default()),
+        }
     }
 
     /// Active session's `is_compacting` flag.
@@ -59,7 +64,9 @@ impl super::App {
 
     /// Set the active session's `is_compacting` flag.
     pub fn set_is_compacting(&mut self, value: bool) {
-        self.active_bucket_mut().is_compacting = value;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.is_compacting = value;
+        }
     }
 
     /// Active session's `pending_compact_clear` flag.
@@ -69,7 +76,9 @@ impl super::App {
 
     /// Set the active session's `pending_compact_clear` flag.
     pub fn set_pending_compact_clear(&mut self, value: bool) {
-        self.active_bucket_mut().pending_compact_clear = value;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.pending_compact_clear = value;
+        }
     }
 
     /// Active session's cancelled-turn pending hint flag.
@@ -79,7 +88,9 @@ impl super::App {
 
     /// Set the active session's cancelled-turn pending hint flag.
     pub fn set_cancelled_turn_pending_hint(&mut self, value: bool) {
-        self.active_bucket_mut().cancelled_turn_pending_hint = value;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.cancelled_turn_pending_hint = value;
+        }
     }
 
     /// Active session's pending cancel origin.
@@ -89,7 +100,9 @@ impl super::App {
 
     /// Set the active session's pending cancel origin.
     pub fn set_pending_cancel(&mut self, value: bool) {
-        self.active_bucket_mut().pending_cancel = value;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.pending_cancel = value;
+        }
     }
 
     /// Borrow the active session's prompt suggestion.
@@ -99,7 +112,9 @@ impl super::App {
 
     /// Set the active session's prompt suggestion.
     pub fn set_prompt_suggestion(&mut self, value: Option<String>) {
-        self.active_bucket_mut().prompt_suggestion = value;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.prompt_suggestion = value;
+        }
     }
 
     /// Borrow the active session's last rate-limit update.
@@ -109,7 +124,9 @@ impl super::App {
 
     /// Set the active session's last rate-limit update.
     pub fn set_last_rate_limit_update(&mut self, value: Option<model::RateLimitUpdate>) {
-        self.active_bucket_mut().last_rate_limit_update = value;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.last_rate_limit_update = value;
+        }
     }
 
     /// Borrow the active session's turn notice ref list.
@@ -118,8 +135,8 @@ impl super::App {
     }
 
     /// Mutable borrow of the turn notice ref list.
-    pub fn turn_notice_refs_mut(&mut self) -> &mut Vec<TurnNoticeRef> {
-        &mut self.active_bucket_mut().turn_notice_refs
+    pub fn turn_notice_refs_mut(&mut self) -> Option<&mut Vec<TurnNoticeRef>> {
+        self.active_bucket_mut().map(|bucket| &mut bucket.turn_notice_refs)
     }
 
     /// Active session's main-assistant turn message index.
@@ -129,7 +146,9 @@ impl super::App {
 
     /// Set the active session's main-assistant turn message index.
     pub fn set_active_turn_assistant_message_idx(&mut self, idx: Option<usize>) {
-        self.active_bucket_mut().active_turn_assistant_message_idx = idx;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.active_turn_assistant_message_idx = idx;
+        }
     }
 
     /// Active session's running thinking-token estimate for the
@@ -144,7 +163,9 @@ impl super::App {
     /// `None` at each turn boundary, which is what keeps one turn's
     /// estimate off the next turn's row.
     pub fn set_latest_thinking_tokens(&mut self, value: Option<u64>) {
-        self.active_bucket_mut().latest_thinking_tokens = value;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.latest_thinking_tokens = value;
+        }
     }
 
     /// Start the active session's live turn accounting, so the row
@@ -157,16 +178,19 @@ impl super::App {
     /// next one's, since the deltas accumulate rather than overwrite.
     pub fn start_live_turn(&mut self, at: std::time::Instant) {
         self.set_latest_thinking_tokens(None);
-        self.active_bucket_mut().live_turn.start(at);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.live_turn.start(at);
+        }
         self.settle_orphaned_turn_rows(at);
         let Some(idx) = self
             .messages()
+            .unwrap_or_default()
             .iter()
             .rposition(|m| matches!(m.role, crate::app::MessageRole::Assistant))
         else {
             return;
         };
-        if let Some(msg) = self.active_messages_mut().get_mut(idx)
+        if let Some(msg) = self.active_messages_mut().and_then(|messages| messages.get_mut(idx))
             && !msg.turn_info.is_settled()
         {
             msg.turn_info = crate::app::state::messages::TurnInfo {
@@ -182,7 +206,10 @@ impl super::App {
     /// prompt into the interrupted turn without emitting one, so the
     /// fresh start is the only chance to stop the clock.
     fn settle_orphaned_turn_rows(&mut self, at: std::time::Instant) {
-        for msg in self.active_messages_mut() {
+        let Some(messages) = self.active_messages_mut() else {
+            return;
+        };
+        for msg in messages {
             if !matches!(msg.role, crate::app::MessageRole::Assistant) {
                 continue;
             }
@@ -214,7 +241,9 @@ impl super::App {
         let live_started = if let Some(started) = bucket_clock {
             started
         } else {
-            self.active_bucket_mut().live_turn.start(at);
+            if let Some(bucket) = self.active_bucket_mut() {
+                bucket.live_turn.start(at);
+            }
             at
         };
         let fresh_row = || crate::app::state::messages::TurnInfo {
@@ -225,6 +254,7 @@ impl super::App {
         let mut target_idx = None;
         for idx in self
             .messages()
+            .unwrap_or_default()
             .iter()
             .enumerate()
             .filter(|(_, m)| matches!(m.role, crate::app::MessageRole::Assistant))
@@ -238,19 +268,24 @@ impl super::App {
         };
         // The take waits until the target gate has passed, so a gate
         // failure cannot silently drop the row it just carried.
-        if self.active_messages_mut().get(target_idx).is_some_and(|msg| msg.turn_info.is_settled())
+        if self
+            .active_messages_mut()
+            .and_then(|messages| messages.get(target_idx))
+            .is_some_and(|msg| msg.turn_info.is_settled())
         {
             return;
         }
         let carried = source_idx
-            .and_then(|idx| self.active_messages_mut().get_mut(idx))
+            .and_then(|idx| self.active_messages_mut().and_then(|messages| messages.get_mut(idx)))
             .filter(|msg| !msg.turn_info.is_settled() && !msg.turn_info.is_empty())
             .map_or_else(fresh_row, |msg| {
                 let carried = std::mem::take(&mut msg.turn_info);
                 msg.invalidate_render_cache();
                 carried
             });
-        if let Some(msg) = self.active_messages_mut().get_mut(target_idx) {
+        if let Some(msg) =
+            self.active_messages_mut().and_then(|messages| messages.get_mut(target_idx))
+        {
             msg.turn_info = carried;
             msg.invalidate_render_cache();
         }
@@ -265,7 +300,10 @@ impl super::App {
         message_id: String,
         usage: crate::app::state::messages::LiveUsage,
     ) -> (Option<std::time::Instant>, Option<crate::app::state::messages::LiveUsage>) {
-        let live = &mut self.active_bucket_mut().live_turn;
+        let Some(bucket) = self.active_bucket_mut() else {
+            return (None, None);
+        };
+        let live = &mut bucket.live_turn;
         if live.started_at.is_none() {
             live.start(std::time::Instant::now());
         }
@@ -283,7 +321,7 @@ impl super::App {
     /// the counter is millisecond-granular, so a turn that reached the
     /// API cannot register zero.
     pub fn settle_live_turn(&mut self, duration_api_ms: u64) -> Option<u64> {
-        let bucket = self.active_bucket_mut();
+        let bucket = self.active_bucket_mut()?;
         let per_turn = match bucket.prev_duration_api_ms {
             Some(prev) if duration_api_ms >= prev => duration_api_ms - prev,
             _ => duration_api_ms,
@@ -303,16 +341,19 @@ impl super::App {
     /// Set the active session's stop-hook summary. Each turn's
     /// `Message::StopHookSummary` overwrites the prior value.
     pub fn set_last_stop_hook_summary(&mut self, value: Option<StopHookSummaryState>) {
-        self.active_bucket_mut().last_stop_hook_summary = value;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.last_stop_hook_summary = value;
+        }
     }
 
     /// Toggle / set the per-message stop-hook-summary expansion
     /// flag. Default-collapsed; clicking `[▶ expand]` flips to true,
     /// `[▼ collapse]` flips back.
     pub fn toggle_stop_hook_summary_expanded(&mut self, message_idx: usize) {
-        let bucket = self.active_bucket_mut();
-        let entry = bucket.stop_hook_summary_expanded.entry(message_idx).or_default();
-        *entry = !*entry;
+        if let Some(bucket) = self.active_bucket_mut() {
+            let entry = bucket.stop_hook_summary_expanded.entry(message_idx).or_default();
+            *entry = !*entry;
+        }
     }
 
     /// Is the stop-hook summary for `message_idx` currently expanded?
@@ -324,21 +365,23 @@ impl super::App {
 
     pub fn active_turn_assistant_idx(&self) -> Option<usize> {
         self.active_turn_assistant_message_idx().filter(|&idx| {
-            self.messages().get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
+            self.messages()
+                .and_then(|messages| messages.get(idx))
+                .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
         })
     }
 
     pub fn bind_active_turn_assistant(&mut self, idx: usize) {
         let next = self
             .messages()
-            .get(idx)
+            .and_then(|messages| messages.get(idx))
             .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
             .then_some(idx);
         self.set_active_turn_assistant_message_idx(next);
     }
 
     pub fn bind_active_turn_assistant_to_tail(&mut self) {
-        if let Some(idx) = self.messages().len().checked_sub(1) {
+        if let Some(idx) = self.messages().map_or(0, <[ChatMessage]>::len).checked_sub(1) {
             self.bind_active_turn_assistant(idx);
         } else {
             self.clear_active_turn_assistant();
@@ -369,7 +412,7 @@ impl super::App {
         }
         let tail_is_empty_assistant = self
             .messages()
-            .last()
+            .and_then(|messages| messages.last())
             .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
         if tail_is_empty_assistant {
             self.bind_active_turn_assistant_to_tail();
@@ -385,12 +428,12 @@ impl super::App {
     /// bubbles between them. Shared by the typed-submit and
     /// delivered-prompt turn-open paths.
     pub(crate) fn strip_trailing_empty_assistant_placeholder(&mut self) {
-        let Some(tail_idx) = self.messages().len().checked_sub(1) else {
+        let Some(tail_idx) = self.messages().map_or(0, <[ChatMessage]>::len).checked_sub(1) else {
             return;
         };
         let tail_is_empty_asst = self
             .messages()
-            .get(tail_idx)
+            .and_then(|messages| messages.get(tail_idx))
             .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
         if tail_is_empty_asst {
             let _ = self.remove_message_tracked(tail_idx);
@@ -402,11 +445,16 @@ impl super::App {
     }
 
     pub(crate) fn clear_turn_notice_refs(&mut self) {
-        self.turn_notice_refs_mut().clear();
+        if let Some(refs) = self.turn_notice_refs_mut() {
+            refs.clear();
+        }
     }
 
     pub(crate) fn shift_turn_notice_refs_for_insert(&mut self, idx: usize) {
-        for notice_ref in self.turn_notice_refs_mut() {
+        let Some(refs) = self.turn_notice_refs_mut() else {
+            return;
+        };
+        for notice_ref in refs {
             match &mut notice_ref.location {
                 TurnNoticeLocation::Inline { msg_idx, .. }
                 | TurnNoticeLocation::Standalone { msg_idx }
@@ -420,7 +468,10 @@ impl super::App {
     }
 
     pub(crate) fn shift_turn_notice_refs_for_remove(&mut self, idx: usize) {
-        self.turn_notice_refs_mut().retain_mut(|notice_ref| match &mut notice_ref.location {
+        let Some(refs) = self.turn_notice_refs_mut() else {
+            return;
+        };
+        refs.retain_mut(|notice_ref| match &mut notice_ref.location {
             TurnNoticeLocation::Inline { msg_idx, .. }
             | TurnNoticeLocation::Standalone { msg_idx } => match idx.cmp(msg_idx) {
                 std::cmp::Ordering::Less => {
@@ -437,7 +488,10 @@ impl super::App {
         &mut self,
         old_to_new: &[Option<usize>],
     ) {
-        self.turn_notice_refs_mut().retain_mut(|notice_ref| match &mut notice_ref.location {
+        let Some(refs) = self.turn_notice_refs_mut() else {
+            return;
+        };
+        refs.retain_mut(|notice_ref| match &mut notice_ref.location {
             TurnNoticeLocation::Inline { msg_idx, .. }
             | TurnNoticeLocation::Standalone { msg_idx } => {
                 let Some(new_idx) = old_to_new.get(*msg_idx).copied().flatten() else {
@@ -458,7 +512,8 @@ impl super::App {
     }
 
     pub(crate) fn shift_stop_hook_summary_for_insert(&mut self, idx: usize) {
-        if let Some(summary) = self.active_bucket_mut().last_stop_hook_summary.as_mut()
+        if let Some(bucket) = self.active_bucket_mut()
+            && let Some(summary) = bucket.last_stop_hook_summary.as_mut()
             && idx <= summary.message_idx
         {
             summary.message_idx = summary.message_idx.saturating_add(1);
@@ -483,7 +538,9 @@ impl super::App {
         };
         match idx.cmp(&owner_idx) {
             std::cmp::Ordering::Less => {
-                if let Some(summary) = self.active_bucket_mut().last_stop_hook_summary.as_mut() {
+                if let Some(bucket) = self.active_bucket_mut()
+                    && let Some(summary) = bucket.last_stop_hook_summary.as_mut()
+                {
                     summary.message_idx = owner_idx.saturating_sub(1);
                 }
             }
@@ -501,7 +558,9 @@ impl super::App {
         };
         match old_to_new.get(old_idx).copied().flatten() {
             Some(new_idx) => {
-                if let Some(summary) = self.active_bucket_mut().last_stop_hook_summary.as_mut() {
+                if let Some(bucket) = self.active_bucket_mut()
+                    && let Some(summary) = bucket.last_stop_hook_summary.as_mut()
+                {
                     summary.message_idx = new_idx;
                 }
             }
@@ -526,7 +585,7 @@ mod tests {
                 vec![MessageBlock::Text(TextBlock::from_complete(t))],
             )
         };
-        let bound_idx = app.messages().len();
+        let bound_idx = app.messages().expect("active session").len();
         app.push_message_tracked(msg("bound"));
         app.set_last_stop_hook_summary(Some(StopHookSummaryState {
             message_idx: bound_idx,
@@ -550,7 +609,7 @@ mod tests {
                 vec![MessageBlock::Text(TextBlock::from_complete(t))],
             )
         };
-        let base = app.messages().len();
+        let base = app.messages().expect("active session").len();
         app.push_message_tracked(msg("before"));
         app.push_message_tracked(msg("bound"));
         let bound_idx = base + 1;

@@ -99,7 +99,7 @@ pub(super) fn save_active_input(app: &mut App) {
 fn persist_active_input(app: &mut App) {
     // Project name is read before the overlay borrow so the persist call
     // below can reach `app.workspace` without a borrow conflict.
-    let project = app.active_session().and_then(|s| s.project.clone());
+    let project = app.active_session().map(|s| s.project.clone());
     let workspace = app.workspace.clone();
     let Some(overlay) = app.diff_overlay.as_mut() else { return };
     let branch = overlay.branch.clone();
@@ -1544,8 +1544,7 @@ mod tests {
         // (persisted = false), not be marked durable on scope alone.
         let mut app = App::test_default();
         let key = forge_workspace::SessionKey::from_session_id("review-session");
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some("forge".to_owned());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = "/tmp/repo".into();
         app.sessions.insert(key.clone(), session);
         app.active_session_key = Some(key);

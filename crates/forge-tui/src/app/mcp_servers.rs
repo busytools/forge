@@ -60,7 +60,7 @@ pub fn collect_mcp_servers(app: &App) -> McpServerSection {
     let Some(session) = app.active_session() else {
         return McpServerSection { rows: Vec::new(), claimed_pids: HashSet::new() };
     };
-    let servers = &app.mcp().servers;
+    let servers = &session.mcp.servers;
     if servers.is_empty() {
         return McpServerSection { rows: Vec::new(), claimed_pids: HashSet::new() };
     }
@@ -347,7 +347,7 @@ mod tests {
         if let Some(snapshot) = snapshot {
             app.set_active_process_snapshot_for_test(snapshot);
         }
-        app.mcp_mut().servers = servers;
+        app.mcp_mut().expect("active session").servers = servers;
         app
     }
 

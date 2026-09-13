@@ -29,14 +29,19 @@ fn reset_session_identity_state(
     app.set_session_id(Some(session_id));
     app.set_current_model(Some(current_model.clone()));
     app.set_mode(mode);
-    app.config_options_mut().clear();
-    if let Some(requested_id) = current_model.requested_id {
-        app.config_options_mut()
-            .insert("model".to_owned(), serde_json::Value::String(requested_id));
+    if let Some(options) = app.config_options_mut() {
+        options.clear();
+        if let Some(requested_id) = current_model.requested_id {
+            options.insert("model".to_owned(), serde_json::Value::String(requested_id));
+        }
     }
-    *app.login_hint_mut() = None;
+    if let Some(hint) = app.login_hint_mut() {
+        *hint = None;
+    }
     super::clear_compaction_state(app, false);
-    *app.session_usage_mut() = super::super::SessionUsageState::default();
+    if let Some(usage) = app.session_usage_mut() {
+        *usage = super::super::SessionUsageState::default();
+    }
     app.set_runtime_session_state(None);
     app.set_observed_permission_mode(None);
     app.set_observed_effort(None);
@@ -56,54 +61,88 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
     let preserved_tip_seed =
         preserve_current_welcome_tip.then(|| app.current_welcome_tip_seed()).flatten();
     app.clear_messages_tracked();
-    *app.history_retention_stats_mut() = super::super::state::HistoryRetentionStats::default();
+    if let Some(stats) = app.history_retention_stats_mut() {
+        *stats = super::super::state::HistoryRetentionStats::default();
+    }
     let mut welcome = app.build_welcome_message();
     if let Some(tip_seed) = preserved_tip_seed {
         App::apply_welcome_tip_seed(&mut welcome, tip_seed);
     }
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
-    *app.active_viewport_mut() = super::super::ChatViewport::new();
+    if let Some(viewport) = app.active_viewport_mut() {
+        *viewport = super::super::ChatViewport::new();
+    }
 }
 
 fn reset_input_state_for_new_session(app: &mut App) {
-    app.input_mut().clear();
+    if let Some(input) = app.input_mut() {
+        input.clear();
+    }
     app.help_open = false;
-    *app.pending_submit_mut() = None;
-    app.pending_paste_text_mut().clear();
-    *app.pending_paste_session_mut() = None;
-    *app.active_paste_session_mut() = None;
-    app.pending_images_mut().clear();
+    if let Some(submit) = app.pending_submit_mut() {
+        *submit = None;
+    }
+    if let Some(paste) = app.pending_paste_text_mut() {
+        paste.clear();
+    }
+    if let Some(session) = app.pending_paste_session_mut() {
+        *session = None;
+    }
+    if let Some(session) = app.active_paste_session_mut() {
+        *session = None;
+    }
+    if let Some(images) = app.pending_images_mut() {
+        images.clear();
+    }
 }
 
 fn reset_interaction_state_for_new_session(app: &mut App) {
     app.clear_tool_scope_tracking();
-    app.active_tool_call_index_mut().clear();
+    if let Some(index) = app.active_tool_call_index_mut() {
+        index.clear();
+    }
     app.clear_active_session_background_task_registry();
-    app.todos_mut().clear();
+    if let Some(todos) = app.todos_mut() {
+        todos.clear();
+    }
     app.focus = super::super::FocusManager::default();
-    app.available_commands_mut().clear();
-    app.available_agents_mut().clear();
+    if let Some(commands) = app.available_commands_mut() {
+        commands.clear();
+    }
+    if let Some(agents) = app.available_agents_mut() {
+        agents.clear();
+    }
     app.config.overlay = None;
 }
 
 fn reset_render_state_for_new_session(app: &mut App) {
-    *app.selection_mut() = None;
+    if let Some(selection) = app.selection_mut() {
+        *selection = None;
+    }
     app.scrollbar_drag = None;
     app.rendered_chat_area = ratatui::layout::Rect::default();
     app.rendered_input_lines.clear();
     app.rendered_input_area = ratatui::layout::Rect::default();
-    *app.mention_mut() = None;
+    if let Some(mention) = app.mention_mut() {
+        *mention = None;
+    }
     crate::app::file_index::reset(app);
-    *app.slash_mut() = None;
-    *app.subagent_mut() = None;
+    if let Some(slash) = app.slash_mut() {
+        *slash = None;
+    }
+    if let Some(subagent) = app.subagent_mut() {
+        *subagent = None;
+    }
     app.help_view = super::super::HelpView::default();
     app.help_dialog = crate::app::dialog::DialogState::default();
     app.help_visible_count = 0;
 }
 
 fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
-    *app.mcp_mut() = super::super::McpState::default();
+    if let Some(mcp) = app.mcp_mut() {
+        *mcp = super::super::McpState::default();
+    }
     crate::app::usage::reset_for_session_change(app);
     crate::app::extensions::reset_for_session_change(app);
     app.force_redraw = true;
@@ -135,7 +174,7 @@ fn append_resume_user_message_chunk(
     }
 
     if continues_previous
-        && let Some(last) = app.active_messages_mut().last_mut()
+        && let Some(last) = app.active_messages_mut().and_then(|messages| messages.last_mut())
         && matches!(last.role, MessageRole::User)
         && !tail_renders_as_envelope_card(last)
     {
@@ -157,7 +196,7 @@ fn append_resume_user_message_chunk(
                 peer_last_measured_width: 0,
             }));
         }
-        let last_idx = app.messages().len().saturating_sub(1);
+        let last_idx = app.messages().map_or(0, <[ChatMessage]>::len).saturating_sub(1);
         app.sync_after_message_tail_changed(last_idx);
         return;
     }
@@ -376,7 +415,9 @@ fn report_unterminated_tool_calls(app: &App, history: &[forge_primitives::Messag
 pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primitives::Message]) {
     let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
-    *app.history_retention_stats_mut() = super::super::state::HistoryRetentionStats::default();
+    if let Some(stats) = app.history_retention_stats_mut() {
+        *stats = super::super::state::HistoryRetentionStats::default();
+    }
     let mut welcome = app.build_welcome_message();
     if let Some(tip_seed) = preserved_tip_seed {
         App::apply_welcome_tip_seed(&mut welcome, tip_seed);
@@ -500,8 +541,10 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
     report_unterminated_tool_calls(app, history_messages);
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
-    *app.active_viewport_mut() = super::super::ChatViewport::new();
-    app.active_viewport_mut().engage_auto_scroll();
+    if let Some(viewport) = app.active_viewport_mut() {
+        *viewport = super::super::ChatViewport::new();
+        viewport.engage_auto_scroll();
+    }
 }
 
 #[cfg(test)]
@@ -701,7 +744,7 @@ mod tests {
 
     fn tool_call_status(app: &App, id: &str) -> Option<crate::agent::model::ToolCallStatus> {
         let (mi, bi) = app.lookup_tool_call(id)?;
-        match app.messages().get(mi)?.blocks.get(bi)? {
+        match app.messages()?.get(mi)?.blocks.get(bi)? {
             MessageBlock::ToolCall(tc) => Some(tc.status),
             _ => None,
         }
@@ -881,7 +924,10 @@ mod tests {
         );
         assert!(app.lookup_tool_call("toolu_err").is_some(), "the failed call never landed");
         assert!(app.lookup_tool_call("toolu_refused").is_some(), "the refused call never landed");
-        assert!(!app.todos().is_empty(), "the Task pair never reached the inspector");
+        assert!(
+            !app.todos().expect("active session").is_empty(),
+            "the Task pair never reached the inspector"
+        );
 
         // Closed world rather than a deny-list.
         let mut info = capture.names_at(tracing::Level::INFO);
@@ -1240,6 +1286,7 @@ mod tests {
 
         let todos_of = |app: &App| {
             app.todos()
+                .expect("active session")
                 .iter()
                 // Destructured so a new `TodoItem` field is a compile
                 // error here rather than a silently uncompared one.
@@ -1312,6 +1359,7 @@ mod tests {
 
     fn user_bubble_texts(app: &App) -> Vec<String> {
         app.messages()
+            .expect("active session")
             .iter()
             .filter(|m| matches!(m.role, MessageRole::User))
             .flat_map(|m| m.blocks.iter())
@@ -1342,19 +1390,19 @@ mod tests {
 
         load_resume_history(&mut app, &history);
 
-        let slots = app.render_cache_slots().to_vec();
+        let slots = app.render_cache_slots().expect("active session").to_vec();
         let total = app.render_cache_total_bytes();
         let protected = app.render_cache_protected_bytes();
         let evictable = app.render_cache_evictable().cloned();
         assert_eq!(
             slots.len(),
-            app.messages().len(),
+            app.messages().expect("active session").len(),
             "a suspended walk must not leave the slot rows short of the message list",
         );
 
         app.rebuild_render_cache_accounting();
 
-        assert_eq!(app.render_cache_slots(), slots.as_slice());
+        assert_eq!(app.render_cache_slots(), Some(slots.as_slice()));
         assert_eq!(app.render_cache_total_bytes(), total);
         assert_eq!(app.render_cache_protected_bytes(), protected);
         assert_eq!(app.render_cache_evictable(), evictable.as_ref());
@@ -1416,6 +1464,7 @@ mod tests {
         // welcome message lives above it as a Welcome-role entry.
         let group = app
             .messages()
+            .expect("active session")
             .iter()
             .find(|m| matches!(m.role, MessageRole::User) && m.blocks.len() == 4)
             .expect("queued group bubble");
@@ -1455,8 +1504,12 @@ mod tests {
         let history = vec![synthesized_queued("solo mid-turn message")];
         load_resume_history(&mut app, &history);
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(user_msgs.len(), 1, "exactly one user bubble for the solo queued message");
         assert_eq!(user_msgs[0].blocks.len(), 1, "no group header for a singleton");
         let MessageBlock::Text(text_block) = &user_msgs[0].blocks[0] else {
@@ -1479,8 +1532,12 @@ mod tests {
         ];
         load_resume_history(&mut app, &history);
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(user_msgs.len(), 1, "two task-notifications drop, leaving one prompt");
         let MessageBlock::Text(text_block) = &user_msgs[0].blocks[0] else {
             panic!("should be a Text block");
@@ -1544,7 +1601,10 @@ mod tests {
             "command-message wrapper must not render: {texts:?}",
         );
         assert!(
-            app.messages().iter().all(|m| !matches!(m.role, MessageRole::User)),
+            app.messages()
+                .expect("active session")
+                .iter()
+                .all(|m| !matches!(m.role, MessageRole::User)),
             "no user bubble should survive the lone wrapper turn",
         );
     }
@@ -1579,7 +1639,10 @@ mod tests {
             "local-command-stdout must stay suppressed: {texts:?}",
         );
         assert!(
-            app.messages().iter().all(|m| !matches!(m.role, MessageRole::User)),
+            app.messages()
+                .expect("active session")
+                .iter()
+                .all(|m| !matches!(m.role, MessageRole::User)),
             "every user turn was a wrapper; none should render",
         );
     }
@@ -1624,8 +1687,12 @@ mod tests {
         let mut app = App::test_default();
         load_resume_history(&mut app, &[historical_user_text(&peer_envelope_text("t-1"))]);
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(user_msgs.len(), 1, "the resume loop must not pre-paint the envelope text");
         assert!(
             user_msgs[0].is_peer_envelope,
@@ -1644,8 +1711,12 @@ mod tests {
             ],
         );
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(user_msgs.len(), 1, "adjacent envelopes merge into one stamped streak");
         assert!(user_msgs[0].is_peer_envelope);
         assert_eq!(user_msgs[0].blocks.len(), 2, "one block per delivered envelope");
@@ -1663,8 +1734,12 @@ mod tests {
             &[historical_user_text("first prompt"), historical_user_text("second prompt")],
         );
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(user_msgs.len(), 2, "each plain user envelope is its own bubble");
         let texts: Vec<&str> = user_msgs
             .iter()
@@ -1687,8 +1762,12 @@ mod tests {
             &[synthesized_queued("mid-turn queue"), historical_user_text("the next prompt")],
         );
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(user_msgs.len(), 2, "queued echo and the next turn are two bubbles");
         let texts: Vec<&str> = user_msgs
             .iter()
@@ -1716,8 +1795,12 @@ mod tests {
             ],
         );
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(user_msgs.len(), 2, "envelope card and plain turn stay distinct messages");
         assert!(user_msgs[0].is_peer_envelope, "the envelope entry is the stamped card");
         let MessageBlock::Text(plain) = &user_msgs[1].blocks[0] else {
@@ -1733,8 +1816,12 @@ mod tests {
             "[Gotify - app 'Backups', priority 3]\nNightly backup complete\nAll volumes backed up";
         load_resume_history(&mut app, &[historical_user_text(notification)]);
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(user_msgs.len(), 1, "one card for the notification");
         assert!(user_msgs[0].is_gotify_envelope, "gotify stamps its own kind");
         assert!(!user_msgs[0].is_peer_envelope, "and it is not peer traffic");
@@ -1748,8 +1835,12 @@ mod tests {
         )];
         load_resume_history(&mut app, &history);
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(user_msgs.len(), 1, "the echo must not push a second bubble");
         assert!(user_msgs[0].is_peer_envelope, "a queued envelope prompt renders as a card");
     }
@@ -1764,8 +1855,12 @@ mod tests {
         ];
         load_resume_history(&mut app, &history);
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(
             user_msgs.iter().filter(|m| m.is_peer_envelope).count(),
             1,
@@ -1810,8 +1905,12 @@ mod tests {
         ];
         load_resume_history(&mut app, &history);
 
-        let user_msgs: Vec<&_> =
-            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        let user_msgs: Vec<&_> = app
+            .messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .collect();
         assert_eq!(user_msgs.len(), 2, "the stamped card and the plain bubble both render");
         assert_eq!(
             user_msgs.iter().filter(|m| m.is_peer_envelope).count(),
@@ -1876,7 +1975,7 @@ mod tests {
         let mut app = App::test_default();
         // Seed the active bucket with replay-orphan monitors (the
         // shape #277 Bug 3b's resume-marking loop produces).
-        *app.monitors_mut() = vec![
+        *app.monitors_mut().expect("active session") = vec![
             stub_monitor("a", MonitorStatus::Stopped),
             stub_monitor("b", MonitorStatus::Completed),
         ];
@@ -1894,7 +1993,7 @@ mod tests {
     #[test]
     fn resume_replay_clears_all_terminal_workflows() {
         let mut app = App::test_default();
-        *app.workflows_mut() = vec![
+        *app.workflows_mut().expect("active session") = vec![
             stub_workflow("a", WorkflowStatus::Completed),
             stub_workflow("b", WorkflowStatus::Completed),
         ];
@@ -1908,7 +2007,7 @@ mod tests {
     #[test]
     fn resume_replay_keeps_monitors_section_when_some_still_running() {
         let mut app = App::test_default();
-        *app.monitors_mut() = vec![
+        *app.monitors_mut().expect("active session") = vec![
             stub_monitor("running", MonitorStatus::Running),
             stub_monitor("stopped", MonitorStatus::Stopped),
         ];
@@ -1926,7 +2025,7 @@ mod tests {
     #[test]
     fn resume_replay_keeps_workflows_section_when_some_still_in_progress() {
         let mut app = App::test_default();
-        *app.workflows_mut() = vec![
+        *app.workflows_mut().expect("active session") = vec![
             stub_workflow("in_progress", WorkflowStatus::InProgress),
             stub_workflow("done", WorkflowStatus::Completed),
         ];
@@ -1947,7 +2046,8 @@ mod tests {
     #[test]
     fn resume_replay_drains_a_replayed_workflow_and_its_completed_sibling() {
         let mut app = App::test_default();
-        *app.workflows_mut() = vec![stub_workflow("sibling", WorkflowStatus::Completed)];
+        *app.workflows_mut().expect("active session") =
+            vec![stub_workflow("sibling", WorkflowStatus::Completed)];
         let history = vec![historical_tool_use_named(
             "toolu_wf",
             "Workflow",
@@ -1968,7 +2068,8 @@ mod tests {
         // so hold the sibling non-terminal and check the replayed entry
         // is really there and really terminal.
         let mut app = App::test_default();
-        *app.workflows_mut() = vec![stub_workflow("sibling", WorkflowStatus::InProgress)];
+        *app.workflows_mut().expect("active session") =
+            vec![stub_workflow("sibling", WorkflowStatus::InProgress)];
         load_resume_history(&mut app, &history);
 
         assert_eq!(

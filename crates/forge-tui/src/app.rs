@@ -457,7 +457,9 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         flush_paste_burst(app, Instant::now());
 
         // Merge and process `Event::Paste` chunks as one paste action.
-        if app.has_focused_text_input() && !app.pending_paste_text().is_empty() {
+        if app.has_focused_text_input()
+            && app.pending_paste_text().is_some_and(|pending| !pending.is_empty())
+        {
             finalize_pending_paste_event(app);
         }
 
@@ -484,7 +486,11 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         let is_animating = is_animating(app);
         if is_animating {
             advance_spinner_frame(app, Instant::now());
-            tab_title::update_tab_title(is_animating, app.spinner_frame, app.cwd());
+            tab_title::update_tab_title(
+                is_animating,
+                app.spinner_frame,
+                app.cwd().unwrap_or_default(),
+            );
             // The loop wakes more often than the frame interval, so
             // repainting per wake would redraw an unchanged frame
             // several times over.
@@ -498,13 +504,19 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
         // Catch the transition into stillness, which the branch above cannot.
         if !is_animating && app.needs_redraw {
-            tab_title::update_tab_title(is_animating, app.spinner_frame, app.cwd());
+            tab_title::update_tab_title(
+                is_animating,
+                app.spinner_frame,
+                app.cwd().unwrap_or_default(),
+            );
         }
         // Smooth scroll still settling - viewport row index (usize)
         // converts to f32 for sub-pixel scroll comparison; loss is bounded
         // by terminal height so precision is irrelevant here.
         #[allow(clippy::cast_precision_loss)]
-        let scroll_delta = (app.viewport().scroll_target as f32 - app.viewport().scroll_pos).abs();
+        let scroll_delta = app
+            .viewport()
+            .map_or(0.0, |viewport| (viewport.scroll_target as f32 - viewport.scroll_pos).abs());
         if scroll_delta >= 0.01 {
             app.needs_redraw = true;
         }
@@ -602,7 +614,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     }
 
     // Restore terminal
-    tab_title::restore_tab_title(app.cwd());
+    tab_title::restore_tab_title(app.cwd().unwrap_or_default());
     suspend_terminal();
     ratatui::restore();
 
@@ -707,7 +719,9 @@ fn flush_paste_burst(app: &mut App, now: Instant) {
 
 /// Finalize queued `Event::Paste` chunks for this drain cycle.
 fn finalize_pending_paste_event(app: &mut App) {
-    let pasted = std::mem::take(app.pending_paste_text_mut());
+    let Some(pasted) = app.pending_paste_text_mut().map(std::mem::take) else {
+        return;
+    };
     if pasted.is_empty() {
         return;
     }
@@ -716,10 +730,14 @@ fn finalize_pending_paste_event(app: &mut App) {
     };
     let pasted_chars = pasted.chars().count();
 
-    let session = app.pending_paste_session_mut().take().unwrap_or_else(|| {
-        let id = app.allocate_paste_session_id();
+    let session = if let Some(session) = app.pending_paste_session_mut().and_then(Option::take) {
+        session
+    } else {
+        let Some(id) = app.allocate_paste_session_id() else {
+            return;
+        };
         state::PasteSessionState { id, start: cursor, placeholder_index: None }
-    });
+    };
     let session_id = session.id;
 
     if session.placeholder_index.is_none() {
@@ -738,7 +756,9 @@ fn finalize_pending_paste_event(app: &mut App) {
         .is_some()
         && app.focused_input_mut().is_some_and(|input| input.append_to_active_paste_block(&pasted));
     if appended {
-        *app.active_paste_session_mut() = Some(session);
+        if let Some(slot) = app.active_paste_session_mut() {
+            *slot = Some(session);
+        }
         app.needs_redraw = true;
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
@@ -763,8 +783,9 @@ fn finalize_pending_paste_event(app: &mut App) {
             let line = input.lines().get(input.cursor_row())?;
             input::parse_paste_placeholder_before_cursor(line, input.cursor_col())
         });
-        *app.active_paste_session_mut() =
-            Some(state::PasteSessionState { placeholder_index: idx, ..session });
+        if let Some(slot) = app.active_paste_session_mut() {
+            *slot = Some(state::PasteSessionState { placeholder_index: idx, ..session });
+        }
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
             event_name = "paste_placeholder_inserted",
@@ -779,7 +800,9 @@ fn finalize_pending_paste_event(app: &mut App) {
         if let Some(input) = app.focused_input_mut() {
             input.insert_str(&pasted);
         }
-        *app.active_paste_session_mut() = None;
+        if let Some(slot) = app.active_paste_session_mut() {
+            *slot = None;
+        }
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
             event_name = "paste_inline_inserted",
@@ -885,10 +908,12 @@ fn strip_input_range(app: &mut App, start: SelectionPoint, end: SelectionPoint) 
 /// Finalize a deferred Enter by restoring the exact pre-submit input snapshot
 /// and submitting that original draft text.
 fn finalize_deferred_submit(app: &mut App) {
-    let Some(snapshot) = app.pending_submit_mut().take() else {
+    let Some(snapshot) = app.pending_submit_mut().and_then(Option::take) else {
         return;
     };
-    app.input_mut().restore_snapshot(snapshot);
+    if let Some(input) = app.input_mut() {
+        input.restore_snapshot(snapshot);
+    }
     input_submit::submit_input(app);
 }
 
@@ -1007,8 +1032,11 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
-        let rx = app.install_testing_stub();
+        // Re-key first: the id rename mints a fresh bucket, so the stub
+        // has to be installed after it or the conn lands on the fixture
+        // bucket the rename abandons.
         app.set_session_id(Some(model::SessionId::new("session-1")));
+        let rx = app.install_testing_stub();
         (app, rx)
     }
 
@@ -1021,41 +1049,53 @@ mod tests {
         events::handle_terminal_event(&mut app, Event::Paste(second.clone()));
 
         // Not applied until post-drain finalization.
-        assert!(app.input().is_empty());
-        assert!(!app.pending_paste_text().is_empty());
+        assert!(app.input().expect("active session").is_empty());
+        assert!(app.pending_paste_text().is_some_and(|text| !text.is_empty()));
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input().lines(), vec!["[Pasted Text 1 - 1101 chars]"]);
-        assert_eq!(app.input().text(), format!("{first}{second}"));
+        assert_eq!(
+            app.input().expect("active session").lines(),
+            vec!["[Pasted Text 1 - 1101 chars]"]
+        );
+        assert_eq!(app.input().expect("active session").text(), format!("{first}{second}"));
     }
 
     #[test]
     fn pending_paste_chunk_appends_to_same_session_placeholder() {
         let mut app = App::test_default();
-        app.input_mut().insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
-        *app.active_paste_session_mut() = Some(state::PasteSessionState {
+        app.input_mut()
+            .expect("active session")
+            .insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
+        *app.active_paste_session_mut().expect("active session") = Some(state::PasteSessionState {
             id: 7,
             start: SelectionPoint { row: 0, col: 0 },
             placeholder_index: Some(0),
         });
-        *app.pending_paste_session_mut() = app.active_paste_session().copied();
-        *app.pending_paste_text_mut() = "\nl\nm".to_owned();
+        *app.pending_paste_session_mut().expect("active session") =
+            app.active_paste_session().copied();
+        *app.pending_paste_text_mut().expect("active session") = "\nl\nm".to_owned();
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input().lines(), vec!["[Pasted Text 1 - 25 chars]"]);
-        assert_eq!(app.input().text(), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm");
+        assert_eq!(
+            app.input().expect("active session").lines(),
+            vec!["[Pasted Text 1 - 25 chars]"]
+        );
+        assert_eq!(
+            app.input().expect("active session").text(),
+            "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm"
+        );
     }
 
     #[test]
     fn pending_paste_exact_1000_chars_stays_inline() {
         let mut app = App::test_default();
-        *app.pending_paste_text_mut() = "x".repeat(1000);
+        *app.pending_paste_text_mut().expect("active session") = "x".repeat(1000);
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input().lines(), vec!["x".repeat(1000)]);
+        assert_eq!(app.input().expect("active session").lines(), vec!["x".repeat(1000)]);
     }
 
     #[test]
@@ -1064,34 +1104,37 @@ mod tests {
         // threshold, but still over the 5-line threshold. Should
         // collapse to a placeholder so the input box doesn't grow tall.
         let mut app = App::test_default();
-        *app.pending_paste_text_mut() = "a\nb\nc\nd\ne\nf".to_owned();
+        *app.pending_paste_text_mut().expect("active session") = "a\nb\nc\nd\ne\nf".to_owned();
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input().lines(), vec!["[Pasted Text 1 - 11 chars]"]);
+        assert_eq!(
+            app.input().expect("active session").lines(),
+            vec!["[Pasted Text 1 - 11 chars]"]
+        );
     }
 
     #[test]
     fn pending_paste_five_lines_stays_inline() {
         // Five lines fits inline (right at the threshold = 5).
         let mut app = App::test_default();
-        *app.pending_paste_text_mut() = "a\nb\nc\nd\ne".to_owned();
+        *app.pending_paste_text_mut().expect("active session") = "a\nb\nc\nd\ne".to_owned();
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input().lines(), vec!["a", "b", "c", "d", "e"]);
+        assert_eq!(app.input().expect("active session").lines(), vec!["a", "b", "c", "d", "e"]);
     }
 
     #[test]
     fn pending_paste_finalization_marks_redraw() {
         let mut app = App::test_default();
         app.needs_redraw = false;
-        *app.pending_paste_text_mut() = "hello\nworld".to_owned();
+        *app.pending_paste_text_mut().expect("active session") = "hello\nworld".to_owned();
 
         finalize_pending_paste_event(&mut app);
 
         assert!(app.needs_redraw);
-        assert_eq!(app.input().lines(), vec!["hello", "world"]);
+        assert_eq!(app.input().expect("active session").lines(), vec!["hello", "world"]);
     }
 
     /// Diff view with a comment editor open at line 0 of the first
@@ -1138,7 +1181,10 @@ mod tests {
         finalize_pending_paste_event(&mut app);
 
         assert_eq!(comment_editor_text(&app), "pasted note");
-        assert!(app.input().is_empty(), "the chat draft must not absorb a review paste");
+        assert!(
+            app.input().expect("active session").is_empty(),
+            "the chat draft must not absorb a review paste"
+        );
     }
 
     /// The review editors get the chat draft's paste-block treatment: a
@@ -1182,7 +1228,10 @@ mod tests {
             .lines()
             .join("\n");
         assert_eq!(overview, "overview text");
-        assert!(app.input().is_empty(), "the chat draft must not absorb a review paste");
+        assert!(
+            app.input().expect("active session").is_empty(),
+            "the chat draft must not absorb a review paste"
+        );
     }
 
     /// A dictation burst (speech-to-text delivers one keystroke per
@@ -1205,7 +1254,10 @@ mod tests {
         finalize_pending_paste_event(&mut app);
 
         assert_eq!(comment_editor_text(&app), "hi!");
-        assert!(app.input().is_empty(), "the chat draft must not absorb dictated review text");
+        assert!(
+            app.input().expect("active session").is_empty(),
+            "the chat draft must not absorb dictated review text"
+        );
     }
 
     /// The prompt's notes field writes into the same `App.input` a
@@ -1227,7 +1279,11 @@ mod tests {
         flush_paste_burst(&mut app, Instant::now() + Duration::from_millis(200));
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input().text(), "hi!", "the coalesced burst lands in the notes editor");
+        assert_eq!(
+            app.input().expect("active session").text(),
+            "hi!",
+            "the coalesced burst lands in the notes editor"
+        );
     }
 
     #[test]
@@ -1255,7 +1311,7 @@ mod tests {
         let t0 = Instant::now();
 
         assert_eq!(app.paste_burst.on_char('a', t0), paste_burst::CharAction::Passthrough('a'));
-        let _ = app.input_mut().textarea_insert_char('a');
+        let _ = app.input_mut().expect("active session").textarea_insert_char('a');
         assert_eq!(
             app.paste_burst.on_char('b', t0 + Duration::from_millis(2)),
             paste_burst::CharAction::Consumed
@@ -1264,7 +1320,7 @@ mod tests {
             app.paste_burst.on_char('c', t0 + Duration::from_millis(4)),
             paste_burst::CharAction::RetroCapture(1)
         );
-        let _ = app.input_mut().textarea_delete_char_before();
+        let _ = app.input_mut().expect("active session").textarea_delete_char_before();
 
         let t_flush = t0 + Duration::from_millis(200);
         assert_eq!(
@@ -1273,7 +1329,7 @@ mod tests {
         );
         app.queue_paste_text("abc");
         finalize_pending_paste_event(&mut app);
-        assert_eq!(app.input().text(), "abc");
+        assert_eq!(app.input().expect("active session").text(), "abc");
 
         let t_enter = t_flush + Duration::from_millis(10);
         assert!(app.paste_burst.on_enter(t_enter));
@@ -1298,25 +1354,28 @@ mod tests {
         app.queue_paste_text("\ndef");
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input().lines(), vec!["abc", "def"]);
-        assert_eq!(app.input().text(), "abc\ndef");
+        assert_eq!(app.input().expect("active session").lines(), vec!["abc", "def"]);
+        assert_eq!(app.input().expect("active session").text(), "abc\ndef");
     }
 
     #[test]
     fn pending_paste_1001_chars_becomes_placeholder() {
         let mut app = App::test_default();
-        *app.pending_paste_text_mut() = "x".repeat(1001);
+        *app.pending_paste_text_mut().expect("active session") = "x".repeat(1001);
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input().lines(), vec!["[Pasted Text 1 - 1001 chars]"]);
-        assert_eq!(app.input().text(), "x".repeat(1001));
+        assert_eq!(
+            app.input().expect("active session").lines(),
+            vec!["[Pasted Text 1 - 1001 chars]"]
+        );
+        assert_eq!(app.input().expect("active session").text(), "x".repeat(1001));
     }
 
     #[test]
     fn pending_paste_session_isolation_prevents_unintended_append() {
         let mut app = App::test_default();
-        *app.pending_paste_text_mut() = "a".repeat(1001);
+        *app.pending_paste_text_mut().expect("active session") = "a".repeat(1001);
         finalize_pending_paste_event(&mut app);
         events::handle_terminal_event(
             &mut app,
@@ -1326,39 +1385,42 @@ mod tests {
             )),
         );
 
-        *app.pending_paste_text_mut() = "b".repeat(1001);
+        *app.pending_paste_text_mut().expect("active session") = "b".repeat(1001);
         finalize_pending_paste_event(&mut app);
 
         assert_eq!(
-            app.input().lines(),
+            app.input().expect("active session").lines(),
             vec!["[Pasted Text 1 - 1001 chars][Pasted Text 2 - 1001 chars]"]
         );
-        assert_eq!(app.input().text(), format!("{}{}", "a".repeat(1001), "b".repeat(1001)));
+        assert_eq!(
+            app.input().expect("active session").text(),
+            format!("{}{}", "a".repeat(1001), "b".repeat(1001))
+        );
     }
 
     #[test]
     fn plain_enter_preserves_single_line_draft_before_submit() {
         let (mut app, mut rx) = app_with_connection();
-        app.input_mut().set_text("hello world");
-        let _ = app.input_mut().set_cursor(0, "hello".chars().count());
+        app.input_mut().expect("active session").set_text("hello world");
+        let _ = app.input_mut().expect("active session").set_cursor(0, "hello".chars().count());
 
         events::handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input().text(), "hello world");
-        assert_eq!(app.input().cursor(), (0, "hello".chars().count()));
+        assert_eq!(app.input().expect("active session").text(), "hello world");
+        assert_eq!(app.input().expect("active session").cursor(), (0, "hello".chars().count()));
         assert!(app.pending_submit().is_some());
 
         finalize_deferred_submit(&mut app);
 
         assert!(app.pending_submit().is_none());
-        assert!(app.input().text().is_empty());
-        assert_eq!(app.messages().len(), 2);
-        assert!(matches!(app.messages()[0].role, MessageRole::User));
+        assert!(app.input().expect("active session").text().is_empty());
+        assert_eq!(app.messages().expect("active session").len(), 2);
+        assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::User));
         assert!(matches!(
-            app.messages()[0].blocks.as_slice(),
+            app.messages().expect("active session")[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "hello world"
         ));
         let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -1371,23 +1433,23 @@ mod tests {
     #[test]
     fn plain_enter_preserves_multiline_draft_with_mid_buffer_cursor() {
         let (mut app, mut rx) = app_with_connection();
-        app.input_mut().set_text("alpha beta\ngamma");
-        let _ = app.input_mut().set_cursor(0, "alpha".chars().count());
+        app.input_mut().expect("active session").set_text("alpha beta\ngamma");
+        let _ = app.input_mut().expect("active session").set_cursor(0, "alpha".chars().count());
 
         events::handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input().text(), "alpha beta\ngamma");
-        assert_eq!(app.input().cursor(), (0, "alpha".chars().count()));
+        assert_eq!(app.input().expect("active session").text(), "alpha beta\ngamma");
+        assert_eq!(app.input().expect("active session").cursor(), (0, "alpha".chars().count()));
         assert!(app.pending_submit().is_some());
 
         finalize_deferred_submit(&mut app);
 
         assert!(app.pending_submit().is_none());
         assert!(matches!(
-            app.messages()[0].blocks.as_slice(),
+            app.messages().expect("active session")[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "alpha beta\ngamma"
         ));
         let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -1406,7 +1468,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input().text(), "?");
+        assert_eq!(app.input().expect("active session").text(), "?");
         assert!(app.is_help_active());
 
         events::handle_terminal_event(
@@ -1418,10 +1480,10 @@ mod tests {
         finalize_deferred_submit(&mut app);
 
         assert!(app.pending_submit().is_none());
-        assert!(app.input().text().is_empty());
+        assert!(app.input().expect("active session").text().is_empty());
         assert!(!app.is_help_active());
         assert!(matches!(
-            app.messages()[0].blocks.as_slice(),
+            app.messages().expect("active session")[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "?"
         ));
         let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -1442,8 +1504,8 @@ mod tests {
                 ModeInfo { id: "code".to_owned(), name: "Code".to_owned(), description: None },
             ],
         }));
-        app.input_mut().set_text("/mode pl");
-        let _ = app.input_mut().set_cursor(0, "/mode pl".chars().count());
+        app.input_mut().expect("active session").set_text("/mode pl");
+        let _ = app.input_mut().expect("active session").set_cursor(0, "/mode pl".chars().count());
         crate::app::slash::sync_with_cursor(&mut app);
 
         events::handle_terminal_event(
@@ -1451,7 +1513,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input().text(), "/mode plan ");
+        assert_eq!(app.input().expect("active session").text(), "/mode plan ");
         assert!(app.slash().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
@@ -1466,12 +1528,12 @@ mod tests {
     #[test]
     fn model_selection_then_second_enter_arms_submit() {
         let mut app = App::test_default();
-        app.try_active_bucket_mut().unwrap().available_models = vec![
+        app.active_bucket_mut().unwrap().available_models = vec![
             model::AvailableModel::new("sonnet", "Claude Sonnet"),
             model::AvailableModel::new("haiku", "Claude Haiku"),
         ];
-        app.input_mut().set_text("/model so");
-        let _ = app.input_mut().set_cursor(0, "/model so".chars().count());
+        app.input_mut().expect("active session").set_text("/model so");
+        let _ = app.input_mut().expect("active session").set_cursor(0, "/model so".chars().count());
         crate::app::slash::sync_with_cursor(&mut app);
 
         events::handle_terminal_event(
@@ -1479,7 +1541,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input().text(), "/model sonnet ");
+        assert_eq!(app.input().expect("active session").text(), "/model sonnet ");
         assert!(app.slash().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
@@ -1494,7 +1556,7 @@ mod tests {
     #[test]
     fn resume_selection_then_second_enter_arms_submit() {
         let mut app = App::test_default();
-        *app.recent_sessions_mut() = vec![RecentSessionInfo {
+        *app.recent_sessions_mut().expect("active session") = vec![RecentSessionInfo {
             session_id: "session-1".to_owned(),
             summary: "Session one".to_owned(),
             last_modified_ms: 1,
@@ -1502,8 +1564,9 @@ mod tests {
             custom_title: None,
             first_prompt: None,
         }];
-        app.input_mut().set_text("/resume se");
-        let _ = app.input_mut().set_cursor(0, "/resume se".chars().count());
+        app.input_mut().expect("active session").set_text("/resume se");
+        let _ =
+            app.input_mut().expect("active session").set_cursor(0, "/resume se".chars().count());
         crate::app::slash::sync_with_cursor(&mut app);
 
         events::handle_terminal_event(
@@ -1511,7 +1574,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input().text(), "/resume session-1 ");
+        assert_eq!(app.input().expect("active session").text(), "/resume session-1 ");
         assert!(app.slash().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
@@ -1526,7 +1589,7 @@ mod tests {
     #[test]
     fn paste_event_cancels_deferred_submit_snapshot() {
         let mut app = App::test_default();
-        app.input_mut().set_text("draft");
+        app.input_mut().expect("active session").set_text("draft");
 
         events::handle_terminal_event(
             &mut app,
@@ -1537,14 +1600,14 @@ mod tests {
         events::handle_terminal_event(&mut app, Event::Paste("pasted".into()));
 
         assert!(app.pending_submit().is_none());
-        assert_eq!(app.pending_paste_text(), "pasted");
-        assert_eq!(app.input().text(), "draft");
+        assert_eq!(app.pending_paste_text(), Some("pasted"));
+        assert_eq!(app.input().expect("active session").text(), "draft");
     }
 
     #[test]
     fn esc_cancels_deferred_submit_snapshot_before_finalize() {
         let (mut app, mut rx) = app_with_connection();
-        app.input_mut().set_text("draft");
+        app.input_mut().expect("active session").set_text("draft");
 
         events::handle_terminal_event(
             &mut app,
@@ -1559,8 +1622,8 @@ mod tests {
 
         assert!(app.pending_submit().is_none());
         finalize_deferred_submit(&mut app);
-        assert_eq!(app.input().text(), "draft");
-        assert!(app.messages().is_empty());
+        assert_eq!(app.input().expect("active session").text(), "draft");
+        assert!(app.messages().expect("active session").is_empty());
         assert!(rx.try_recv().is_err(), "Esc should prevent deferred submit dispatch");
     }
 
@@ -1572,7 +1635,7 @@ mod tests {
         app.sessions.clear();
 
         let key = forge_workspace::SessionKey::from_session_id("bg-gate");
-        let mut session = UiSession::new(key.clone());
+        let mut session = UiSession::new(key.clone(), "test-project");
         session.lifecycle_state = SessionLifecycleState::Idle;
         app.sessions.insert(key.clone(), session);
 
@@ -1614,7 +1677,7 @@ mod tests {
         app.sessions.clear();
 
         let key = forge_workspace::SessionKey::from_session_id("gate-match");
-        let mut session = UiSession::new(key.clone());
+        let mut session = UiSession::new(key.clone(), "test-project");
         session.lifecycle_state = SessionLifecycleState::Attention;
         session.background_tasks.push(crate::app::BackgroundTask {
             task_id: "t1".to_owned(),
@@ -1667,7 +1730,7 @@ mod tests {
         assert!(!app.shows_activity(), "focused session idle, nothing else running");
 
         let other = forge_workspace::SessionKey::from_session_id("other-project");
-        let mut session = UiSession::new(other.clone());
+        let mut session = UiSession::new(other.clone(), "other-project");
         session.lifecycle_state = SessionLifecycleState::Running;
         app.sessions.insert(other.clone(), session);
 

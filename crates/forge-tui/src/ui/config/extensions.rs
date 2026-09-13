@@ -54,7 +54,7 @@ fn tab_header_line(app: &App) -> Line<'static> {
         .chain(ExtensionsTab::ALL.into_iter().enumerate().flat_map(|(index, tab)| {
             let active = tab == app.plugins.active_tab;
             let count = match tab {
-                ExtensionsTab::Mcps => app.mcp().servers.len(),
+                ExtensionsTab::Mcps => app.mcp().map_or(0, |mcp| mcp.servers.len()),
                 ExtensionsTab::Marketplaces => app.plugins.marketplaces.len(),
                 other => count_for_tab(&app.plugins.installed_rows, other),
             };

@@ -24,6 +24,7 @@ use forge_workspace::{SessionKey, SessionUpdate};
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
     let (message_index, block_index) = app.lookup_tool_call(id).expect("missing tool index");
     app.messages()
+        .expect("active session")
         .get(message_index)
         .and_then(|message| message.blocks.get(block_index))
         .and_then(|block| match block {
@@ -202,7 +203,10 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             serde_json::json!({"description": "Running subtask"}),
         )]),
     );
-    assert!(app.active_task_ids().contains("task-pend"), "new Task should be tracked");
+    assert!(
+        app.active_task_ids().expect("active session").contains("task-pend"),
+        "new Task should be tracked"
+    );
 
     // The wire path has no equivalent of the SessionUpdate-only
     // intermediate "Pending" status; resending an open tool_use keeps
@@ -215,10 +219,16 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             serde_json::json!({"description": "Running subtask"}),
         )]),
     );
-    assert!(app.active_task_ids().contains("task-pend"), "still in-progress should stay active");
+    assert!(
+        app.active_task_ids().expect("active session").contains("task-pend"),
+        "still in-progress should stay active"
+    );
 
     send_msg(&mut app, user_message(vec![tool_result_block("task-pend", serde_json::json!("ok"))]));
-    assert!(!app.active_task_ids().contains("task-pend"), "completed Task should be removed");
+    assert!(
+        !app.active_task_ids().expect("active session").contains("task-pend"),
+        "completed Task should be removed"
+    );
 
     send_msg(
         &mut app,
@@ -228,13 +238,16 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             serde_json::json!({"description": "Subtask"}),
         )]),
     );
-    assert!(app.active_task_ids().contains("task-fail"));
+    assert!(app.active_task_ids().expect("active session").contains("task-fail"));
 
     send_msg(
         &mut app,
         user_message(vec![tool_result_error_block("task-fail", serde_json::json!("bang"))]),
     );
-    assert!(!app.active_task_ids().contains("task-fail"), "failed Task should also be removed");
+    assert!(
+        !app.active_task_ids().expect("active session").contains("task-fail"),
+        "failed Task should also be removed"
+    );
 }
 
 #[tokio::test]
@@ -398,10 +411,10 @@ async fn multiple_tool_calls_independently_indexed() {
         );
     }
 
-    assert_eq!(app.tool_call_index().len(), 5);
+    assert_eq!(app.tool_call_index().expect("active session").len(), 5);
     for i in 0..5 {
         let key = format!("tc-{i}");
-        assert!(app.tool_call_index().contains_key(&key), "missing {key}");
+        assert!(app.tool_call_index().expect("active session").contains_key(&key), "missing {key}");
     }
 }
 
@@ -425,7 +438,7 @@ async fn tool_call_update_via_meta_sets_sdk_tool_name() {
     );
 
     let (mi, bi) = app.lookup_tool_call("tc-meta").expect("missing tool index");
-    if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
+    if let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[mi].blocks[bi] {
         assert_eq!(tc.sdk_tool_name, "WebSearch");
     } else {
         panic!("expected ToolCall block");
@@ -447,7 +460,7 @@ async fn title_shortened_relative_to_cwd() {
     );
 
     let (mi, bi) = app.lookup_tool_call("tc-shorten").expect("missing tool index");
-    if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
+    if let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[mi].blocks[bi] {
         assert_eq!(tc.title, "Read src/main.rs", "absolute path shortened to relative");
     } else {
         panic!("expected ToolCall block");
@@ -1218,7 +1231,7 @@ fn seed_active_backgrounded_bash(app: &mut App) {
 
 /// A non-active bucket carrying a mapped, still-open backgrounded bash card.
 fn bg_bucket_with_backgrounded_bash(key: &SessionKey) -> UiSession {
-    let mut session = UiSession::new(key.clone());
+    let mut session = UiSession::new(key.clone(), "test-project");
     session.messages.push(ChatMessage::new(
         MessageRole::Assistant,
         vec![MessageBlock::ToolCall(Box::new(backgrounded_bash_card("toolu_bash")))],
@@ -1487,6 +1500,7 @@ async fn subagent_assistant_narration_does_not_leak_into_main_chat() {
 
     let chat_text: String = app
         .messages()
+        .expect("active session")
         .iter()
         .flat_map(|m| m.blocks.iter())
         .filter_map(|b| match b {
@@ -1559,7 +1573,7 @@ async fn backgrounded_subagent_traffic_does_not_reopen_the_finished_turn() {
     );
     send_msg(&mut app, result_success_message());
 
-    let ended_turn = app.messages().len() - 1;
+    let ended_turn = app.messages().expect("active session").len() - 1;
     send_msg(
         &mut app,
         assistant_message_with_parent(
@@ -1579,7 +1593,7 @@ async fn backgrounded_subagent_traffic_does_not_reopen_the_finished_turn() {
         app.status,
     );
     assert_eq!(
-        app.messages().len() - 1,
+        app.messages().expect("active session").len() - 1,
         ended_turn,
         "the child belongs beside the turn that dispatched it, not in a new one",
     );
@@ -1609,7 +1623,7 @@ async fn a_turn_opening_with_a_tool_use_does_not_land_on_the_previous_turn() {
         *duration_ms = 3_174;
     }
     send_msg(&mut app, first);
-    assert_eq!(app.messages().len(), 1, "one turn so far");
+    assert_eq!(app.messages().expect("active session").len(), 1, "one turn so far");
 
     send_msg(
         &mut app,
@@ -1621,14 +1635,14 @@ async fn a_turn_opening_with_a_tool_use_does_not_land_on_the_previous_turn() {
     );
     send_msg(&mut app, assistant_message(vec![text_block("second turn")]));
 
-    assert_eq!(app.messages().len(), 2, "the second turn owns its own message");
+    let messages = app.messages().expect("active session");
+    assert_eq!(messages.len(), 2, "the second turn owns its own message");
     assert_eq!(
-        app.messages()[1].turn_info.duration_ms,
-        None,
+        messages[1].turn_info.duration_ms, None,
         "the new turn must not inherit the finished turn's duration",
     );
     assert_eq!(
-        app.messages()[0].turn_info.duration_ms,
+        messages[0].turn_info.duration_ms,
         Some(3_174),
         "and the finished turn keeps its own",
     );
@@ -1695,7 +1709,7 @@ async fn the_background_sweep_spares_a_live_backgrounded_subagents_children() {
     send_msg(&mut app, assistant_message(vec![text_block("active")]));
 
     let bg_key = SessionKey::from_str_for_test("bg-subagent");
-    let mut bg = UiSession::new(bg_key.clone());
+    let mut bg = UiSession::new(bg_key.clone(), "test-project");
     let mut root = backgrounded_bash_card("toolu_root");
     root.sdk_tool_name = "Agent".to_owned();
     let child = backgrounded_bash_card("toolu_child");
@@ -2135,7 +2149,11 @@ async fn a_turn_opening_with_a_subagent_dispatch_still_owns_its_turn() {
 #[tokio::test]
 async fn orphaned_subagent_children_do_not_accumulate_assistant_messages() {
     let assistants = |app: &App| {
-        app.messages().iter().filter(|m| matches!(m.role, MessageRole::Assistant)).count()
+        app.messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .count()
     };
 
     let mut app = test_app();
@@ -2145,7 +2163,7 @@ async fn orphaned_subagent_children_do_not_accumulate_assistant_messages() {
 
     let mut settled: Option<usize> = None;
     for i in 0..10 {
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::System(None),
             vec![MessageBlock::Text(forge_tui::app::TextBlock::from_complete("notice"))],
         ));
@@ -2199,6 +2217,7 @@ async fn a_subagent_child_follows_its_root_not_the_last_assistant() {
     send_msg(&mut app, result_success_message());
     let last_assistant = app
         .messages()
+        .expect("active session")
         .iter()
         .rposition(|m| matches!(m.role, MessageRole::Assistant))
         .expect("an assistant exists");
@@ -2249,11 +2268,11 @@ async fn a_resumed_unscoped_root_surfaces_through_its_children_frames() {
     root.sdk_tool_name = "Task".to_owned();
     root.status = model::ToolCallStatus::Completed;
     root.hidden = true;
-    app.active_messages_mut().push(ChatMessage::new(
+    app.active_messages_mut().expect("active session").push(ChatMessage::new(
         MessageRole::Assistant,
         vec![MessageBlock::ToolCall(Box::new(root))],
     ));
-    let root_msg = app.messages().len() - 1;
+    let root_msg = app.messages().expect("active session").len() - 1;
     app.index_tool_call("toolu_root".to_owned(), root_msg, 0);
 
     assert!(

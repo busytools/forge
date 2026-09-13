@@ -8,11 +8,12 @@ impl super::App {
         self.active_session().map_or(&[], |s| s.workflows.as_slice())
     }
 
-    /// Mutable accessor for the active session's
-    /// WORKFLOWS list. Auto-creates the pre-Connect bucket if
-    /// missing.
-    pub(crate) fn workflows_mut(&mut self) -> &mut Vec<crate::app::state::types::WorkflowEntry> {
-        &mut self.active_bucket_mut().workflows
+    /// Mutable accessor for the active session's WORKFLOWS list, or
+    /// `None` when no session is focused.
+    pub(crate) fn workflows_mut(
+        &mut self,
+    ) -> Option<&mut Vec<crate::app::state::types::WorkflowEntry>> {
+        self.active_bucket_mut().map(|bucket| &mut bucket.workflows)
     }
 
     /// Insert / refresh a `WorkflowEntry` from a
@@ -39,7 +40,9 @@ impl super::App {
         } else {
             crate::app::state::types::WorkflowStatus::InProgress
         };
-        let workflows = self.workflows_mut();
+        let Some(workflows) = self.workflows_mut() else {
+            return false;
+        };
         if let Some(existing) = workflows.iter_mut().find(|w| w.tool_use_id == tool_use_id) {
             existing.meta_name = meta_name;
             existing.meta_description = meta_description;
@@ -62,7 +65,10 @@ impl super::App {
     /// `TaskStarted`'s task_id ↔ tool_use_id mapping). No-op when
     /// no entry matches or the entry already has a task_id.
     pub fn stamp_workflow_task_id(&mut self, tool_use_id: &str, task_id: String) {
-        if let Some(entry) = self.workflows_mut().iter_mut().find(|w| w.tool_use_id == tool_use_id)
+        let Some(workflows) = self.workflows_mut() else {
+            return;
+        };
+        if let Some(entry) = workflows.iter_mut().find(|w| w.tool_use_id == tool_use_id)
             && entry.task_id.is_none()
         {
             entry.task_id = Some(task_id);
@@ -78,9 +84,10 @@ impl super::App {
         task_id: &str,
         events: &[forge_primitives::WorkflowProgressEvent],
     ) {
-        if let Some(entry) =
-            self.workflows_mut().iter_mut().find(|w| w.task_id.as_deref() == Some(task_id))
-        {
+        let Some(workflows) = self.workflows_mut() else {
+            return;
+        };
+        if let Some(entry) = workflows.iter_mut().find(|w| w.task_id.as_deref() == Some(task_id)) {
             entry.apply_workflow_progress(events);
         }
         self.clear_workflows_if_all_terminal();
@@ -90,9 +97,10 @@ impl super::App {
     /// `Completed` status (called from `TaskUpdated` terminal
     /// patch). Triggers the all-completed clear.
     pub fn set_workflow_completed_by_task_id(&mut self, task_id: &str) {
-        if let Some(entry) =
-            self.workflows_mut().iter_mut().find(|w| w.task_id.as_deref() == Some(task_id))
-        {
+        let Some(workflows) = self.workflows_mut() else {
+            return;
+        };
+        if let Some(entry) = workflows.iter_mut().find(|w| w.task_id.as_deref() == Some(task_id)) {
             entry.status = crate::app::state::types::WorkflowStatus::Completed;
         }
         self.clear_workflows_if_all_terminal();
@@ -101,8 +109,10 @@ impl super::App {
     /// Drain the WORKFLOWS list once every entry has finished -
     /// matches the MONITORS / TODOs all-completed clear shape.
     pub fn clear_workflows_if_all_terminal(&mut self) {
-        let workflows = self.workflows_mut();
-        if !workflows.is_empty() && workflows.iter().all(|w| !w.is_in_progress()) {
+        if let Some(workflows) = self.workflows_mut()
+            && !workflows.is_empty()
+            && workflows.iter().all(|w| !w.is_in_progress())
+        {
             workflows.clear();
         }
     }

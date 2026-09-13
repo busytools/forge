@@ -31,12 +31,13 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::Render
         );
     }
     let tool_scope = app.tool_call_scope(&id_str);
-    let previous_status =
-        app.messages().get(mi).and_then(|message| message.blocks.get(bi)).and_then(|block| {
-            match block {
-                MessageBlock::ToolCall(tc) => Some(tc.status),
-                _ => None,
-            }
+    let previous_status = app
+        .messages()
+        .and_then(|messages| messages.get(mi))
+        .and_then(|message| message.blocks.get(bi))
+        .and_then(|block| match block {
+            MessageBlock::ToolCall(tc) => Some(tc.status),
+            _ => None,
         });
     apply_tool_scope_status_update(app, &id_str, tool_scope.as_ref(), tcu.fields.status);
 
@@ -208,11 +209,13 @@ fn apply_tool_call_update_to_indexed_block(
     };
     // Snapshot upfront so the per-tool mutable-borrow of `app.active_messages_mut()`
     // doesn't conflict with `&app.cwd_raw`.
-    let cwd_raw = app.cwd_raw();
+    let cwd_raw = app.cwd_raw().unwrap_or_default();
     let mut should_engage_auto_scroll = false;
 
-    if let Some(MessageBlock::ToolCall(tc)) =
-        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    if let Some(MessageBlock::ToolCall(tc)) = app
+        .active_messages_mut()
+        .and_then(|messages| messages.get_mut(mi))
+        .and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         // What `render_tool_call_body` reads on `ToolCallInfo`, and therefore
@@ -285,8 +288,8 @@ fn apply_tool_call_update_to_indexed_block(
             crate::perf::mark("tool_update_noop_skips");
         }
     }
-    if should_engage_auto_scroll {
-        app.active_viewport_mut().engage_auto_scroll();
+    if should_engage_auto_scroll && let Some(viewport) = app.active_viewport_mut() {
+        viewport.engage_auto_scroll();
     }
     if out.changed {
         app.sync_render_cache_slot(mi, bi);
@@ -540,7 +543,11 @@ fn log_tool_call_update_applied(
 
     let Some(tc) = app
         .lookup_tool_call(id_str)
-        .and_then(|(mi, bi)| app.messages().get(mi).and_then(|message| message.blocks.get(bi)))
+        .and_then(|(mi, bi)| {
+            app.messages()
+                .and_then(|messages| messages.get(mi))
+                .and_then(|message| message.blocks.get(bi))
+        })
         .and_then(|block| match block {
             MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
             _ => None,
@@ -748,7 +755,11 @@ fn log_command_update_applied(
 ) {
     let Some(tc) = app
         .lookup_tool_call(id_str)
-        .and_then(|(mi, bi)| app.messages().get(mi).and_then(|message| message.blocks.get(bi)))
+        .and_then(|(mi, bi)| {
+            app.messages()
+                .and_then(|messages| messages.get(mi))
+                .and_then(|message| message.blocks.get(bi))
+        })
         .and_then(|block| match block {
             MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
             _ => None,
@@ -949,7 +960,7 @@ mod tests {
                 ))];
             }
         }
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tc))],
         ));
@@ -958,7 +969,7 @@ mod tests {
     }
 
     fn tool_call_block(app: &mut App) -> &mut ToolCallInfo {
-        match &mut app.active_messages_mut()[0].blocks[0] {
+        match &mut app.active_messages_mut().expect("active session")[0].blocks[0] {
             MessageBlock::ToolCall(tc) => tc.as_mut(),
             _ => panic!("expected a tool call block"),
         }
@@ -1232,7 +1243,7 @@ mod tests {
             "description": "Map the pipeline",
             "prompt": "map the render pipeline",
         }));
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(root))],
         ));
@@ -1286,7 +1297,7 @@ mod tests {
     fn task_metadata_update_is_applied_to_tool_call() {
         let mut app = App::test_default();
         let tool_id = "task-1";
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
                 tool_id,
@@ -1306,7 +1317,8 @@ mod tests {
 
         handle_tool_call_update_session(&mut app, &update);
 
-        let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[0].blocks[0]
+        else {
             panic!("expected tool call block");
         };
         assert_eq!(
@@ -1323,7 +1335,7 @@ mod tests {
     fn task_metadata_update_merges_partial_patches() {
         let mut app = App::test_default();
         let tool_id = "task-1";
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
                 tool_id,
@@ -1350,7 +1362,8 @@ mod tests {
         );
         handle_tool_call_update_session(&mut app, &timing_update);
 
-        let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[0].blocks[0]
+        else {
             panic!("expected tool call block");
         };
         assert_eq!(
@@ -1369,7 +1382,7 @@ mod tests {
     fn killed_task_update_clears_active_task_scope() {
         let mut app = App::test_default();
         let tool_id = "task-1";
-        app.active_messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().expect("active session").push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
                 tool_id,
@@ -1387,10 +1400,11 @@ mod tests {
 
         handle_tool_call_update_session(&mut app, &update);
 
-        let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[0].blocks[0]
+        else {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Killed);
-        assert!(!app.active_task_ids().contains(tool_id));
+        assert!(!app.active_task_ids().expect("active session").contains(tool_id));
     }
 }

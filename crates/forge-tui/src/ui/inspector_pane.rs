@@ -432,7 +432,7 @@ fn render_scrollable_body(
     let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
 
     // Read + clamp + write back the per-session scroll offset.
-    let offset = if let Some(session) = app.try_active_bucket_mut() {
+    let offset = if let Some(session) = app.active_bucket_mut() {
         let clamped = session.inspector_scroll_offset.min(max_offset_u16);
         session.inspector_scroll_offset = clamped;
         clamped
@@ -591,7 +591,7 @@ fn append_body(
         append_git_section(lines, app, width)
     };
 
-    let todos = app.todos();
+    let todos = app.todos().unwrap_or_default();
     // Section visibility gates on PENDING/IN-PROGRESS tasks
     // (completed are hidden by the renderer anyway).
     let has_live_tasks = todos.iter().any(|t| t.status != TodoStatus::Completed);
@@ -882,7 +882,7 @@ fn append_git_section(
     // Path row - always rendered. Head-truncated so the leaf
     // (project name) is preserved when the path overflows.
     let path_budget = usize::from(width).saturating_sub(usize::from(PANE_PAD));
-    let path_value = fit_path_head_truncated(app.cwd(), path_budget);
+    let path_value = fit_path_head_truncated(app.cwd().unwrap_or_default(), path_budget);
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled(path_value, Style::default().fg(theme::DIM)),
@@ -1529,7 +1529,7 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
 }
 
 fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    let todos = app.todos();
+    let todos = app.todos().unwrap_or_default();
     let active_glyph = app.active_spinner_glyph();
 
     if todos.is_empty() {
@@ -3113,7 +3113,7 @@ mod tests {
         // background_tasks snapshot never renders a BACKGROUND header.
         use crate::app::BackgroundTask;
         let mut app = App::test_default();
-        *app.background_tasks_mut() = vec![BackgroundTask {
+        *app.background_tasks_mut().expect("active session") = vec![BackgroundTask {
             task_id: "b1".to_owned(),
             task_type: "local_bash".to_owned(),
             description: "Run the integration suite".to_owned(),
@@ -3143,7 +3143,7 @@ mod tests {
         // Session-scoped mapping (from task_started) - turn_state is left
         // empty to simulate a finalised turn.
         app.insert_session_task_mapping("b1".to_owned(), "tu-bash".to_owned());
-        *app.background_tasks_mut() = vec![BackgroundTask {
+        *app.background_tasks_mut().expect("active session") = vec![BackgroundTask {
             task_id: "b1".to_owned(),
             task_type: "local_bash".to_owned(),
             description: "Run the integration suite".to_owned(),
@@ -3166,7 +3166,7 @@ mod tests {
         // PROCESSES row - the feed filters to local_bash.
         use crate::app::BackgroundTask;
         let mut app = App::test_default();
-        *app.background_tasks_mut() = vec![BackgroundTask {
+        *app.background_tasks_mut().expect("active session") = vec![BackgroundTask {
             task_id: "a1".to_owned(),
             task_type: "local_agent".to_owned(),
             description: "Review conv-row animation".to_owned(),
@@ -3202,7 +3202,7 @@ mod tests {
             vec![MessageBlock::ToolCall(Box::new(bash))],
         ));
         app.insert_session_task_mapping("b1".to_owned(), "tu-bash".to_owned());
-        *app.background_tasks_mut() = vec![BackgroundTask {
+        *app.background_tasks_mut().expect("active session") = vec![BackgroundTask {
             task_id: "b1".to_owned(),
             task_type: "local_bash".to_owned(),
             description: "Run unit tests".to_owned(),
@@ -3230,7 +3230,7 @@ mod tests {
         use crate::app::BackgroundTask;
         let mut app = App::test_default();
         app.upsert_workflow_from_tool_input("tu-wf", "nightly-audit".to_owned(), None);
-        *app.background_tasks_mut() = vec![BackgroundTask {
+        *app.background_tasks_mut().expect("active session") = vec![BackgroundTask {
             task_id: "wf1".to_owned(),
             task_type: "local_workflow".to_owned(),
             description: "nightly-audit run".to_owned(),
@@ -4231,7 +4231,7 @@ mod tests {
         // handshake either.
         use forge_primitives::McpToolInfo;
         let mut app = App::test_default();
-        app.mcp_mut().servers = vec![
+        app.mcp_mut().expect("active session").servers = vec![
             forge_primitives::McpServerStatus {
                 name: "forge".to_owned(),
                 status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -4292,7 +4292,7 @@ mod tests {
         // with the CLI's error text. Wide enough that the reason fits;
         // narrower panes truncate it like every other pane cell.
         let mut app = App::test_default();
-        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers = vec![forge_primitives::McpServerStatus {
             name: "jetbrains".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Failed,
             error: Some("SSE error: Non-200 status code (502)".to_owned()),
@@ -4347,7 +4347,7 @@ mod tests {
                 },
             ],
         });
-        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers = vec![forge_primitives::McpServerStatus {
             name: "context7".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             scope: Some("user".to_owned()),
@@ -4412,7 +4412,7 @@ mod tests {
                 },
             ],
         });
-        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers = vec![forge_primitives::McpServerStatus {
             name: "context7".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             config: Some(serde_json::json!({
@@ -4466,7 +4466,7 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let mut app = App::test_default();
-        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers = vec![forge_primitives::McpServerStatus {
             name: "forge".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             config: Some(serde_json::json!({ "type": "sdk", "name": "forge" })),
@@ -4495,7 +4495,7 @@ mod tests {
             })
         };
         let set_offset = |app: &mut App, offset: u16| {
-            if let Some(bucket) = app.try_active_bucket_mut() {
+            if let Some(bucket) = app.active_bucket_mut() {
                 bucket.inspector_scroll_offset = offset;
             }
         };
@@ -4615,7 +4615,7 @@ mod tests {
 
     fn build_session_with_workflows(workflows: Vec<crate::app::WorkflowEntry>) -> App {
         let mut app = App::test_default();
-        *app.workflows_mut() = workflows;
+        *app.workflows_mut().expect("active session") = workflows;
         app
     }
 
@@ -4655,7 +4655,7 @@ mod tests {
     fn app_with_git_gate(repo_gate: RepoGate) -> App {
         let mut app = App::test_default();
         let key = forge_workspace::SessionKey::from_session_id("inspector-git-test");
-        let mut session = crate::app::session::UiSession::new(key.clone());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "test-project");
         session.git_diff_snapshot = Some(forge_primitives::git_diff::GitDiffSnapshot {
             branch: forge_primitives::git::GitBranch::NoRepo,
             default_branch: None,
@@ -5445,8 +5445,7 @@ mod tests {
     fn app_with_waiting_session(name: &str) -> App {
         let mut app = App::test_default();
         let key = forge_workspace::SessionKey::from_session_id(name);
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some(name.to_owned());
+        let mut session = crate::app::session::UiSession::new(key.clone(), name);
         let prompt = crate::app::prompt::PromptState::from_permission(
             format!("tc-{name}"),
             crate::app::prompt::tests::make_permission_request(),
@@ -5486,8 +5485,7 @@ mod tests {
     fn attention_band_renders_a_waiting_review_replies_row() {
         let mut app = App::test_default();
         let key = forge_workspace::SessionKey::from_session_id("reviewer");
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some("forge".to_owned());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.review_replies_waiting = crate::app::ReviewRepliesWaiting::merge(None, "feat", 2);
         app.sessions.insert(key, session);
 
@@ -5729,8 +5727,7 @@ mod tests {
         let mut app = App::test_default();
         for name in names {
             let key = forge_workspace::SessionKey::from_session_id(name);
-            let mut session = crate::app::session::UiSession::new(key.clone());
-            session.project = Some(name.to_owned());
+            let mut session = crate::app::session::UiSession::new(key.clone(), name);
             let prompt = crate::app::prompt::PromptState::from_permission(
                 format!("tc-{name}"),
                 crate::app::prompt::tests::make_permission_request(),
@@ -5788,7 +5785,7 @@ mod tests {
         let area = Rect { x: 0, y: 0, width: 40, height: 24 };
 
         let row_y_at = |app: &mut App, offset: u16| -> u16 {
-            if let Some(active) = app.try_active_bucket_mut() {
+            if let Some(active) = app.active_bucket_mut() {
                 active.inspector_scroll_offset = offset;
             }
             app.pane_hit_targets.clear();
@@ -5821,8 +5818,7 @@ mod tests {
         let mut app = App::test_default();
         for i in 0..6 {
             let key = forge_workspace::SessionKey::from_session_id(format!("bg-{i}"));
-            let mut session = crate::app::session::UiSession::new(key.clone());
-            session.project = Some(format!("proj-{i}"));
+            let mut session = crate::app::session::UiSession::new(key.clone(), format!("proj-{i}"));
             let prompt = crate::app::prompt::PromptState::from_permission(
                 format!("tc-{i}"),
                 crate::app::prompt::tests::make_permission_request(),
@@ -5908,11 +5904,12 @@ mod tests {
                 vec![MessageBlock::ToolCall(Box::new(bash))],
             ));
             app.insert_session_task_mapping("b1".to_owned(), "tu-bash".to_owned());
-            *app.background_tasks_mut() = vec![crate::app::BackgroundTask {
-                task_id: "b1".to_owned(),
-                task_type: "local_bash".to_owned(),
-                description: "Run unit tests".to_owned(),
-            }];
+            *app.background_tasks_mut().expect("active session") =
+                vec![crate::app::BackgroundTask {
+                    task_id: "b1".to_owned(),
+                    task_type: "local_bash".to_owned(),
+                    description: "Run unit tests".to_owned(),
+                }];
             app.spinner_frame = spinner_frame;
 
             let (width, height) = (32u16, 6u16);

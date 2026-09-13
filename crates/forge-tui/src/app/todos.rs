@@ -135,12 +135,14 @@ fn parse_status_field(raw_input: &serde_json::Value) -> Option<TaskStatusUpdate>
 /// status transitions land via subsequent `TaskUpdate` calls. The
 /// inspector immediately reflects the new row.
 pub(crate) fn apply_task_create(app: &mut App, input: TaskCreateInput, id: String) {
-    app.todos_mut().push(TodoItem {
-        id,
-        content: input.content,
-        status: TodoStatus::Pending,
-        active_form: input.active_form,
-    });
+    if let Some(todos) = app.todos_mut() {
+        todos.push(TodoItem {
+            id,
+            content: input.content,
+            status: TodoStatus::Pending,
+            active_form: input.active_form,
+        });
+    }
 }
 
 /// Apply a TaskUpdate to the active session's todo list. Three
@@ -153,7 +155,8 @@ pub(crate) fn apply_task_create(app: &mut App, input: TaskCreateInput, id: Strin
 /// - Otherwise -> mutate matching item's fields in place (status,
 ///   content, active_form), each optional.
 pub(crate) fn apply_task_update(app: &mut App, update: TaskUpdateInput, tool_call_id: &str) {
-    let Some(idx) = app.todos().iter().position(|t| t.id == update.task_id) else {
+    let Some(idx) = app.todos().and_then(|todos| todos.iter().position(|t| t.id == update.task_id))
+    else {
         tracing::warn!(
             target: crate::logging::targets::APP_TOOL,
             event_name = "task_update_unknown_id",
@@ -166,10 +169,14 @@ pub(crate) fn apply_task_update(app: &mut App, update: TaskUpdateInput, tool_cal
         return;
     };
     if matches!(update.status, Some(TaskStatusUpdate::Deleted)) {
-        app.todos_mut().remove(idx);
+        if let Some(todos) = app.todos_mut() {
+            todos.remove(idx);
+        }
         return;
     }
-    let todos = app.todos_mut();
+    let Some(todos) = app.todos_mut() else {
+        return;
+    };
     if let Some(status) = update.status {
         todos[idx].status = match status {
             TaskStatusUpdate::Pending => TodoStatus::Pending,
@@ -244,11 +251,11 @@ mod tests {
         let input = json!({"subject": "Read", "activeForm": "Reading"});
         let parsed = parse_task_create_input(&input).expect("parsed");
         apply_task_create(&mut app, parsed, "42".to_owned());
-        assert_eq!(app.todos().len(), 1);
-        assert_eq!(app.todos()[0].id, "42");
-        assert_eq!(app.todos()[0].content, "Read");
-        assert_eq!(app.todos()[0].active_form, "Reading");
-        assert_eq!(app.todos()[0].status, TodoStatus::Pending);
+        assert_eq!(app.todos().expect("active session").len(), 1);
+        assert_eq!(app.todos().expect("active session")[0].id, "42");
+        assert_eq!(app.todos().expect("active session")[0].content, "Read");
+        assert_eq!(app.todos().expect("active session")[0].active_form, "Reading");
+        assert_eq!(app.todos().expect("active session")[0].status, TodoStatus::Pending);
     }
 
     #[test]
@@ -293,9 +300,9 @@ mod tests {
             },
             "toolu_test",
         );
-        assert_eq!(app.todos().len(), 1, "no new item added");
-        assert_eq!(app.todos()[0].status, TodoStatus::InProgress);
-        assert_eq!(app.todos()[0].content, "Read");
+        assert_eq!(app.todos().expect("active session").len(), 1, "no new item added");
+        assert_eq!(app.todos().expect("active session")[0].status, TodoStatus::InProgress);
+        assert_eq!(app.todos().expect("active session")[0].content, "Read");
     }
 
     #[test]
@@ -322,8 +329,12 @@ mod tests {
             },
             "toolu_test",
         );
-        assert_eq!(app.todos().len(), 1, "deleted item is removed, the other stays");
-        assert_eq!(app.todos()[0].id, "2");
+        assert_eq!(
+            app.todos().expect("active session").len(),
+            1,
+            "deleted item is removed, the other stays"
+        );
+        assert_eq!(app.todos().expect("active session")[0].id, "2");
     }
 
     #[test]
@@ -386,12 +397,12 @@ mod tests {
         assert!(parsed.status.is_none(), "unknown status maps to None");
         apply_task_update(&mut app, parsed, "toolu_test");
         assert_eq!(
-            app.todos()[0].status,
+            app.todos().expect("active session")[0].status,
             TodoStatus::InProgress,
             "status must NOT regress to Pending when the CLI emits an unknown variant",
         );
         assert_eq!(
-            app.todos()[0].content,
+            app.todos().expect("active session")[0].content,
             "Renamed",
             "subject mutation on the same payload still applies",
         );
@@ -416,7 +427,7 @@ mod tests {
             },
             "toolu_test",
         );
-        assert_eq!(app.todos().len(), 1, "no change when id misses");
-        assert_eq!(app.todos()[0].status, TodoStatus::Pending);
+        assert_eq!(app.todos().expect("active session").len(), 1, "no change when id misses");
+        assert_eq!(app.todos().expect("active session")[0].status, TodoStatus::Pending);
     }
 }

@@ -39,19 +39,35 @@ pub fn set_active_view(app: &mut App, next: ActiveView) {
 }
 
 fn clear_transient_view_state(app: &mut App) {
-    *app.selection_mut() = None;
+    if let Some(slot) = app.selection_mut() {
+        *slot = None;
+    }
     app.scrollbar_drag = None;
-    *app.active_paste_session_mut() = None;
-    *app.pending_paste_session_mut() = None;
-    app.pending_paste_text_mut().clear();
-    *app.pending_submit_mut() = None;
+    if let Some(slot) = app.active_paste_session_mut() {
+        *slot = None;
+    }
+    if let Some(slot) = app.pending_paste_session_mut() {
+        *slot = None;
+    }
+    if let Some(text) = app.pending_paste_text_mut() {
+        text.clear();
+    }
+    if let Some(slot) = app.pending_submit_mut() {
+        *slot = None;
+    }
     app.help_open = false;
     app.help_view = crate::app::HelpView::default();
     app.help_dialog = crate::app::dialog::DialogState::default();
     app.help_visible_count = 0;
-    *app.mention_mut() = None;
-    *app.slash_mut() = None;
-    *app.subagent_mut() = None;
+    if let Some(slot) = app.mention_mut() {
+        *slot = None;
+    }
+    if let Some(slot) = app.slash_mut() {
+        *slot = None;
+    }
+    if let Some(slot) = app.subagent_mut() {
+        *slot = None;
+    }
     app.emoji = None;
     if app.active_view == ActiveView::Extensions {
         app.config.overlay = None;

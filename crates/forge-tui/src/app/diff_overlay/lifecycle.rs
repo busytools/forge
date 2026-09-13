@@ -280,7 +280,7 @@ pub fn open_with_target(app: &mut App, target: String) {
         return;
     }
     let cwd = resolve_active_diff_cwd(app, &cwd_raw);
-    let project = app.active_session().and_then(|s| s.project.clone());
+    let project = app.active_session().map(|s| s.project.clone());
     let workspace = app.workspace.clone();
     // Bump the seq before spawning so the new scan's events
     // outrank anything still in flight from an earlier /diff call.
@@ -586,7 +586,7 @@ mod tests {
             },
         );
 
-        let mut session = crate::app::session::UiSession::new(worker_key.clone());
+        let mut session = crate::app::session::UiSession::new(worker_key.clone(), "forge");
         session.cwd_raw = project_root.into();
         app.sessions.insert(worker_key.clone(), session);
         app.active_session_key = Some(worker_key);
@@ -602,7 +602,7 @@ mod tests {
         // circuits via `worker_lookup_for_session` returning None.
         let mut app = App::test_default();
         let lead_key = forge_workspace::SessionKey::from_session_id("lead-uuid");
-        let mut session = crate::app::session::UiSession::new(lead_key.clone());
+        let mut session = crate::app::session::UiSession::new(lead_key.clone(), "forge");
         session.cwd_raw = "/tmp/project".into();
         app.sessions.insert(lead_key.clone(), session);
         app.active_session_key = Some(lead_key);

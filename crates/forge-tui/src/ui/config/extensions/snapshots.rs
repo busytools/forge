@@ -373,7 +373,7 @@ pub(crate) fn snapshot_app() -> App {
         },
     ];
 
-    app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
+    app.mcp_mut().expect("active session").servers = vec![forge_primitives::McpServerStatus {
         name: "plugin:context7:context7".to_owned(),
         status: forge_primitives::McpServerConnectionStatus::Connected,
         server_info: Some(forge_primitives::McpServerInfo {

@@ -17,14 +17,20 @@ use ratatui::backend::TestBackend;
 /// Force-set a UiSession bucket with the given lifecycle so the
 /// launchpad picker resolves the row to that state.
 fn register_bucket(app: &mut App, key: &SessionKey, lifecycle: SessionLifecycleState) {
-    let bucket = app.sessions.entry(key.clone()).or_insert_with(|| UiSession::new(key.clone()));
+    let bucket = app
+        .sessions
+        .entry(key.clone())
+        .or_insert_with(|| UiSession::new(key.clone(), "test-project"));
     bucket.lifecycle_state = lifecycle;
 }
 
 /// Convenience: stamp a Failed bucket carrying an error message for
 /// the launchpad's per-row error tail.
 fn register_failed_bucket(app: &mut App, key: &SessionKey, message: &str) {
-    let bucket = app.sessions.entry(key.clone()).or_insert_with(|| UiSession::new(key.clone()));
+    let bucket = app
+        .sessions
+        .entry(key.clone())
+        .or_insert_with(|| UiSession::new(key.clone(), "test-project"));
     bucket.lifecycle_state = SessionLifecycleState::Failed;
     bucket.last_connection_error = Some(message.to_owned());
 }

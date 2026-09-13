@@ -632,8 +632,10 @@ mod tests {
         let (mut app, workspace) = app_with_dictate_enabled();
         let active = app.active_session_key.clone().expect("active session");
         let background = forge_workspace::SessionKey::from_session_id("background-take");
-        app.sessions
-            .insert(background.clone(), crate::app::session::UiSession::new(background.clone()));
+        app.sessions.insert(
+            background.clone(),
+            crate::app::session::UiSession::new(background.clone(), "test-project"),
+        );
         app.sessions.get_mut(&background).expect("bucket").dictate =
             Some(crate::app::dictate::DictateIndicator::recording(-50.0, 1));
 

@@ -86,8 +86,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// Build the `<project>·<session>` label, falling back to ` - ` for
-/// either piece when it can't be resolved (e.g. pre-Connect, no
-/// workspace, sleeping project). Truncated to fit `max_chars`.
+/// either piece when it can't be resolved (e.g. no session focused,
+/// no workspace, sleeping project). Truncated to fit `max_chars`.
 fn build_active_context(app: &App, max_chars: usize) -> String {
     let project = active_project_label(app).unwrap_or_else(|| "\u{2014}".to_owned());
     let session = active_session_label(app).unwrap_or_else(|| "\u{2014}".to_owned());
@@ -96,10 +96,10 @@ fn build_active_context(app: &App, max_chars: usize) -> String {
 }
 
 /// Active project's user-facing `name` (from `forge.toml`). Handles
-/// the synthetic-key sentinels (`__spawn_<name>__`, `__resume_<id>__`,
-/// `__conn_pending__`) so the top bar reflects the project the user
-/// just clicked even during the Spawning window - before `Connected`
-/// arrives and the bucket migrates to its real session id.
+/// the synthetic-key sentinels (`__spawn_<name>__`, `__resume_<id>__`)
+/// so the top bar reflects the project the user just clicked even
+/// during the Spawning window - before `Connected` arrives and the
+/// bucket migrates to its real session id.
 fn active_project_label(app: &App) -> Option<String> {
     let workspace = app.workspace.as_ref()?;
     let active_key = app.active_session_key.as_ref()?;
@@ -110,8 +110,8 @@ fn active_project_label(app: &App) -> Option<String> {
 
 /// Compact representation of the active session for the top-bar
 /// strip. Prefers the on-disk `SessionView::label` when one exists;
-/// falls back to a short-form session UUID; finally `None` for the
-/// pre-Connect bucket.
+/// falls back to a short-form session UUID; finally `None` when no
+/// session is focused or its bucket has no id yet.
 fn active_session_label(app: &App) -> Option<String> {
     if let Some(active_key) = app.active_session_key.as_ref() {
         let s = active_key.as_str();

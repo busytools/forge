@@ -176,7 +176,9 @@ fn handle_resize(app: &mut App, width: u16, height: u16) {
     app.rendered_chat_area = ratatui::layout::Rect::default();
     app.rendered_input_area = ratatui::layout::Rect::default();
     app.rendered_input_lines.clear();
-    *app.selection_mut() = None;
+    if let Some(selection) = app.selection_mut() {
+        *selection = None;
+    }
     app.scrollbar_drag = None;
 
     // The Narrow-tier Projects overlay is transient - its design
@@ -200,7 +202,9 @@ fn handle_resize(app: &mut App, width: u16, height: u16) {
 fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     match app.active_view {
         ActiveView::Chat => {
-            *app.active_paste_session_mut() = None;
+            if let Some(paste) = app.active_paste_session_mut() {
+                *paste = None;
+            }
             super::keys::dispatch_key_by_focus(app, key)
         }
         ActiveView::Extensions => {
@@ -209,7 +213,9 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
         }
         ActiveView::Launchpad => super::keys::dispatch_key_by_focus(app, key),
         ActiveView::Diff => {
-            *app.active_paste_session_mut() = None;
+            if let Some(paste) = app.active_paste_session_mut() {
+                *paste = None;
+            }
             super::diff_overlay::handle_key(app, key);
             true
         }
@@ -223,7 +229,9 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
 fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
     match app.active_view {
         ActiveView::Chat => {
-            *app.active_paste_session_mut() = None;
+            if let Some(paste) = app.active_paste_session_mut() {
+                *paste = None;
+            }
             mouse::handle_mouse_event(app, mouse);
         }
         ActiveView::Diff => {
@@ -262,7 +270,9 @@ pub(super) fn apply_available_commands_update(app: &mut App, cmds: model::Availa
         outcome = "success",
         command_count = cmds.available_commands.len(),
     );
-    *app.available_commands_mut() = cmds.available_commands;
+    if let Some(commands) = app.available_commands_mut() {
+        *commands = cmds.available_commands;
+    }
     crate::app::extensions::clamp_selection(app);
     if app.slash().is_some() {
         super::slash::update_query(app);
@@ -277,7 +287,9 @@ pub(super) fn apply_available_agents_update(app: &mut App, agents: model::Availa
         outcome = "success",
         agent_count = agents.available_agents.len(),
     );
-    *app.available_agents_mut() = agents.available_agents;
+    if let Some(agents_list) = app.available_agents_mut() {
+        *agents_list = agents.available_agents;
+    }
     if app.subagent().is_some() {
         super::subagent::update_query(app);
     }
@@ -449,7 +461,9 @@ pub(crate) fn push_system_message_with_severity(
     message: &str,
 ) {
     insert_active_system_message(app, severity, message);
-    app.active_viewport_mut().engage_auto_scroll();
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.engage_auto_scroll();
+    }
 }
 
 /// Push a system-message toast into a specific session's chat
@@ -541,20 +555,19 @@ mod tests {
 
     use std::time::{Duration, Instant};
 
-    /// Helper: synthetic [`forge_workspace::SessionKey`] used to
-    /// tag `ClientEvent`s emitted by tests. Tests built around
+    /// Helper: the [`forge_workspace::SessionKey`] used to tag
+    /// `ClientEvent`s emitted by tests. Tests built around
     /// `App::test_default` always have one bucket keyed by
-    /// `App::PRE_CONNECT_KEY`, and tests that swap session ids in
-    /// (via `App::set_session_id`) migrate the bucket onto the new
-    /// key - but for tagging synthetic events both forms route
-    /// through the active-session matcher in
-    /// [`super::handle_client_event`], so the pre-Connected key is
-    /// what the multiplexer expects when no real
+    /// [`App::TEST_SESSION_KEY`], and tests that swap session ids in
+    /// (via `App::set_session_id`) file the bucket under the new key -
+    /// but for tagging synthetic events both forms route through the
+    /// active-session matcher in [`super::handle_client_event`], so the
+    /// seeded key is what the multiplexer expects when no real
     /// Connect/SessionReplaced has flowed through yet.
     fn active_session_key(app: &App) -> forge_workspace::SessionKey {
         app.active_session_key
             .clone()
-            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY))
+            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY))
     }
 
     // Helper: build a minimal ToolCallInfo with given id + status
@@ -593,10 +606,10 @@ mod tests {
     }
 
     fn append_tool_call_block(app: &mut App, tool_id: &str) -> (usize, usize) {
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call(tool_id, model::ToolCallStatus::InProgress),
-        ))]));
-        let msg_idx = app.messages().len().saturating_sub(1);
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call(tool_id, model::ToolCallStatus::InProgress))),
+        ]));
+        let msg_idx = app.messages().expect("active session").len().saturating_sub(1);
         app.index_tool_call(tool_id.into(), msg_idx, 0);
         (msg_idx, 0)
     }
@@ -711,7 +724,10 @@ mod tests {
                 serde_json::json!({"description": "Research"}),
             )]),
         );
-        assert!(app.active_task_ids().contains("task-1"), "task must be tracked while InProgress");
+        assert!(
+            app.active_task_ids().expect("active session").contains("task-1"),
+            "task must be tracked while InProgress"
+        );
 
         // User cancels then TurnComplete finalizes the turn
         let session_key = active_session_key(&app);
@@ -729,7 +745,10 @@ mod tests {
         );
 
         // Stale task ID must be gone after turn boundary
-        assert!(app.active_task_ids().is_empty(), "stale task id must not survive TurnComplete");
+        assert!(
+            app.active_task_ids().expect("active session").is_empty(),
+            "stale task id must not survive TurnComplete"
+        );
 
         // Next turn: a normal main-agent Glob must get MainAgent scope, not Subagent
         send_msg(
@@ -945,8 +964,8 @@ mod tests {
         let mut app = make_test_app();
         send_msg(&mut app, assistant_message(vec![text_block("p1\n\np2\n\np3")]));
 
-        assert_eq!(app.messages().len(), 1);
-        let Some(last) = app.messages().last() else {
+        assert_eq!(app.messages().expect("active session").len(), 1);
+        let Some(last) = app.messages().expect("active session").last() else {
             panic!("missing assistant message");
         };
         assert!(matches!(last.role, MessageRole::Assistant));
@@ -1266,7 +1285,7 @@ mod tests {
             panic!("tool call not indexed");
         };
         let Some(MessageBlock::ToolCall(tc)) =
-            app.messages().get(mi).and_then(|m| m.blocks.get(bi))
+            app.messages().expect("active session").get(mi).and_then(|m| m.blocks.get(bi))
         else {
             panic!("tool call block missing");
         };
@@ -1277,9 +1296,12 @@ mod tests {
     fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("test-session")));
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("tool-stale", model::ToolCallStatus::Completed),
-        ))]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call(
+                "tool-stale",
+                model::ToolCallStatus::Completed,
+            ))),
+        ]));
         app.index_tool_call("tool-stale".into(), 0, 0);
         app.register_tool_call_scope(
             "tool-stale".into(),
@@ -1303,7 +1325,7 @@ mod tests {
             )]),
         );
 
-        assert!(app.active_task_ids().is_empty());
+        assert!(app.active_task_ids().expect("active session").is_empty());
     }
 
     #[test]
@@ -1320,10 +1342,16 @@ mod tests {
 
         let (mi, bi) = app.lookup_tool_call("tc-noop").expect("tool call not indexed");
         let (before_render, before_layout, before_oldest_stale) = {
-            let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+            let MessageBlock::ToolCall(tc) =
+                &app.messages().expect("active session")[mi].blocks[bi]
+            else {
                 panic!("tool call block missing");
             };
-            (tc.render_epoch, tc.layout_epoch, app.active_viewport_mut().oldest_stale_index())
+            (
+                tc.render_epoch,
+                tc.layout_epoch,
+                app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            )
         };
 
         // Re-send the same tool_use envelope. The wire path keeps the
@@ -1338,12 +1366,16 @@ mod tests {
             )]),
         );
 
-        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[mi].blocks[bi]
+        else {
             panic!("tool call block missing");
         };
         assert_eq!(tc.render_epoch, before_render);
         assert_eq!(tc.layout_epoch, before_layout);
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), before_oldest_stale);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            before_oldest_stale
+        );
     }
 
     #[test]
@@ -1356,6 +1388,7 @@ mod tests {
     fn has_in_progress_no_tool_calls() {
         let mut app = make_test_app();
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("hello"))]));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1363,9 +1396,9 @@ mod tests {
     #[test]
     fn has_in_progress_with_pending_tool() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("tc1", model::ToolCallStatus::Pending),
-        ))]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Pending))),
+        ]));
         app.bind_active_turn_assistant_to_tail();
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1373,9 +1406,9 @@ mod tests {
     #[test]
     fn has_in_progress_with_in_progress_tool() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("tc1", model::ToolCallStatus::InProgress),
-        ))]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
+        ]));
         app.bind_active_turn_assistant_to_tail();
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1383,18 +1416,18 @@ mod tests {
     #[test]
     fn has_in_progress_all_completed() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("tc1", model::ToolCallStatus::Completed),
-        ))]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
+        ]));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
     #[test]
     fn has_in_progress_all_failed() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("tc1", model::ToolCallStatus::Failed),
-        ))]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Failed))),
+        ]));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1403,7 +1436,7 @@ mod tests {
     #[test]
     fn has_in_progress_user_message_last() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_msg("hi"));
+        app.active_messages_mut().expect("active session").push(user_msg("hi"));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1411,10 +1444,10 @@ mod tests {
     #[test]
     fn has_in_progress_requires_explicit_owner() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("tc1", model::ToolCallStatus::InProgress),
-        ))]));
-        app.active_messages_mut().push(user_msg("thanks"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
+        ]));
+        app.active_messages_mut().expect("active session").push(user_msg("thanks"));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1422,13 +1455,13 @@ mod tests {
     #[test]
     fn has_in_progress_uses_owned_assistant_not_latest_assistant() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("tc1", model::ToolCallStatus::InProgress),
-        ))]));
-        app.active_messages_mut().push(user_msg("ok"));
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("tc2", model::ToolCallStatus::Completed),
-        ))]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
+        ]));
+        app.active_messages_mut().expect("active session").push(user_msg("ok"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Completed))),
+        ]));
         app.bind_active_turn_assistant(0);
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1436,7 +1469,7 @@ mod tests {
     #[test]
     fn has_in_progress_mixed_completed_and_pending() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::InProgress))),
         ]));
@@ -1448,7 +1481,7 @@ mod tests {
     #[test]
     fn has_in_progress_text_and_tools_mixed() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
             MessageBlock::Text(TextBlock::from_complete("thinking...")),
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
             MessageBlock::Text(TextBlock::from_complete("done")),
@@ -1472,7 +1505,7 @@ mod tests {
             "tc_pending",
             model::ToolCallStatus::Pending,
         ))));
-        app.active_messages_mut().push(assistant_msg(blocks));
+        app.active_messages_mut().expect("active session").push(assistant_msg(blocks));
         app.bind_active_turn_assistant_to_tail();
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1489,7 +1522,7 @@ mod tests {
                 )))
             })
             .collect();
-        app.active_messages_mut().push(assistant_msg(blocks));
+        app.active_messages_mut().expect("active session").push(assistant_msg(blocks));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1497,7 +1530,7 @@ mod tests {
     #[test]
     fn has_in_progress_failed_and_completed_mix() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Failed))),
             MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
@@ -1509,7 +1542,7 @@ mod tests {
     #[test]
     fn has_in_progress_empty_assistant_blocks() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![]));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1518,16 +1551,16 @@ mod tests {
     #[test]
     fn test_app_defaults() {
         let app = make_test_app();
-        assert!(app.messages().is_empty());
-        assert_eq!(app.viewport().scroll_offset, 0);
-        assert_eq!(app.viewport().scroll_target, 0);
-        assert!(app.viewport().auto_scroll);
+        assert!(app.messages().expect("active session").is_empty());
+        assert_eq!(app.viewport().expect("active session").scroll_offset, 0);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 0);
+        assert!(app.viewport().expect("active session").auto_scroll);
         assert!(!app.should_quit);
         assert!(app.session_id().is_none());
         assert_eq!(app.files_accessed(), 0);
         assert!(app.tools_collapsed);
         assert!(!app.force_redraw);
-        assert!(app.todos().is_empty());
+        assert!(app.todos().expect("active session").is_empty());
         assert!(app.selection().is_none());
         assert!(app.mention().is_none());
         assert!(!app.cancelled_turn_pending_hint());
@@ -1556,7 +1589,11 @@ mod tests {
         );
 
         assert!(!app.cancelled_turn_pending_hint());
-        let last = app.messages().last().expect("expected interruption hint message");
+        let last = app
+            .messages()
+            .expect("active session")
+            .last()
+            .expect("expected interruption hint message");
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
@@ -1568,10 +1605,10 @@ mod tests {
     fn turn_complete_after_manual_cancel_marks_tail_assistant_layout_dirty() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_msg("build app"));
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
-            TextBlock::from_complete("partial output"),
-        )]));
+        app.active_messages_mut().expect("active session").push(user_msg("build app"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::Text(TextBlock::from_complete("partial output")),
+        ]));
         app.set_pending_cancel(true);
 
         let session_key = active_session_key(&app);
@@ -1584,8 +1621,8 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(!app.active_viewport_mut().message_height_is_current(1));
-        let Some(last) = app.messages().last() else {
+        assert!(!app.active_viewport_mut().expect("active session").message_height_is_current(1));
+        let Some(last) = app.messages().expect("active session").last() else {
             panic!("expected interruption hint message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
@@ -1594,13 +1631,14 @@ mod tests {
     #[test]
     fn connected_updates_welcome_session_id_while_pristine() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
             "/test",
             "-",
         ));
-        let Some(MessageBlock::Welcome(welcome)) = app.active_messages_mut()[0].blocks.first_mut()
+        let Some(MessageBlock::Welcome(welcome)) =
+            app.active_messages_mut().expect("active session")[0].blocks.first_mut()
         else {
             panic!("expected welcome block");
         };
@@ -1608,7 +1646,7 @@ mod tests {
 
         apply_session_update(&mut app, connected_event("claude-updated"));
 
-        let Some(first) = app.messages().first() else {
+        let Some(first) = app.messages().expect("active session").first() else {
             panic!("missing welcome message");
         };
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -1621,7 +1659,7 @@ mod tests {
     #[test]
     fn connected_leaves_account_line_skeleton_until_data_arrives() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "old",
             "/test",
@@ -1630,7 +1668,7 @@ mod tests {
 
         apply_session_update(&mut app, connected_event("opus"));
 
-        let Some(first) = app.messages().first() else {
+        let Some(first) = app.messages().expect("active session").first() else {
             panic!("missing welcome message");
         };
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -1648,7 +1686,7 @@ mod tests {
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.active_view = crate::app::ActiveView::Extensions;
-        app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
@@ -1669,8 +1707,8 @@ mod tests {
                 session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
-        assert!(app.mcp().in_flight);
-        assert!(app.mcp().servers.is_empty());
+        assert!(app.mcp().expect("active session").in_flight);
+        assert!(app.mcp().expect("active session").servers.is_empty());
     }
 
     fn mcp_server_with_status(
@@ -1701,10 +1739,10 @@ mod tests {
         while rx.try_recv().is_ok() {}
         // Stand in for the connect-time snapshot having landed; the
         // reducer clears `in_flight` when the response arrives.
-        app.mcp_mut().in_flight = false;
-        app.mcp_mut().servers = servers;
+        app.mcp_mut().expect("active session").in_flight = false;
+        app.mcp_mut().expect("active session").servers = servers;
         let stamped = Instant::now();
-        app.mcp_mut().last_refresh_requested = Some(stamped);
+        app.mcp_mut().expect("active session").last_refresh_requested = Some(stamped);
         (app, rx, stamped)
     }
 
@@ -1765,17 +1803,24 @@ mod tests {
             "playwright",
             forge_primitives::McpServerConnectionStatus::Pending,
         )]);
-        app.mcp_mut().last_error = Some("reconnect failed".to_owned());
+        app.mcp_mut().expect("active session").last_error = Some("reconnect failed".to_owned());
 
         crate::app::config::request_mcp_snapshot_if_needed(
             &mut app,
             stamped + std::time::Duration::from_secs(3),
         );
 
-        assert_eq!(app.mcp().servers.len(), 1, "a background poll must not blank the rows");
-        assert!(!app.mcp().in_flight, "a background poll must not raise the loading state");
         assert_eq!(
-            app.mcp().last_error.as_deref(),
+            app.mcp().expect("active session").servers.len(),
+            1,
+            "a background poll must not blank the rows"
+        );
+        assert!(
+            !app.mcp().expect("active session").in_flight,
+            "a background poll must not raise the loading state"
+        );
+        assert_eq!(
+            app.mcp().expect("active session").last_error.as_deref(),
             Some("reconnect failed"),
             "a background poll must not wipe a user-visible error"
         );
@@ -1791,7 +1836,8 @@ mod tests {
                 "playwright",
                 forge_primitives::McpServerConnectionStatus::Connected,
             )]);
-        app.mcp_mut().last_error = Some("Failed to reconnect MCP server playwright".to_owned());
+        app.mcp_mut().expect("active session").last_error =
+            Some("Failed to reconnect MCP server playwright".to_owned());
 
         apply_session_update(
             &mut app,
@@ -1806,7 +1852,7 @@ mod tests {
         );
 
         assert_eq!(
-            app.mcp().last_error.as_deref(),
+            app.mcp().expect("active session").last_error.as_deref(),
             Some("Failed to reconnect MCP server playwright"),
             "a poll's error: None must not clear a reconnect failure"
         );
@@ -1848,13 +1894,17 @@ mod tests {
     #[test]
     fn connected_updates_cwd_and_clears_resuming_marker() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(ChatMessage::welcome(
+        // This Connected arrives for a key with no bucket, so the
+        // session is filed under the project its cwd names - which is
+        // what a session's cwd is in production.
+        app.workspace.as_ref().expect("workspace").seed_test_project("cwd-proj", "/changed");
+        app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
             "/test",
             "-",
         ));
-        *app.resuming_session_id_mut() = Some("resume-123".into());
+        *app.resuming_session_id_mut().expect("active session") = Some("resume-123".into());
 
         apply_session_update(
             &mut app,
@@ -1870,10 +1920,10 @@ mod tests {
             },
         );
 
-        assert_eq!(app.cwd_raw(), "/changed");
-        assert_eq!(app.cwd(), "/changed");
+        assert_eq!(app.cwd_raw().as_deref(), Some("/changed"));
+        assert_eq!(app.cwd(), Some("/changed"));
         assert!(app.resuming_session_id().is_none());
-        let Some(first) = app.messages().first() else {
+        let Some(first) = app.messages().expect("active session").first() else {
             panic!("missing welcome message");
         };
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -1882,25 +1932,85 @@ mod tests {
         assert_eq!(welcome.cwd, "/changed");
     }
 
+    /// The one path in the new model where a session is dropped: a
+    /// `Connected` for a key with no bucket, whose cwd names no
+    /// configured project. Nothing is minted, because a session the TUI
+    /// cannot name is not one this model holds - the alternative was a
+    /// bucket with a substituted project.
+    #[test]
+    fn connected_with_no_project_for_the_cwd_mints_nothing() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+        app.active_session_key = None;
+        let key = forge_workspace::SessionKey::from_session_id("orphan-uuid");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::Connected {
+                key: key.clone(),
+                session_id: forge_primitives::SessionId::new("orphan-uuid"),
+                cwd: "/nowhere/orphan".into(),
+                current_model: test_current_model_primitives("claude"),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 0,
+            },
+        );
+
+        assert!(!app.sessions.contains_key(&key), "an unnameable session gets no bucket");
+        assert!(app.active_session_key.is_none(), "and it takes no tab");
+    }
+
+    /// The background `SessionReplaced` sibling of the drop above: no
+    /// bucket to carry across and a cwd that names no project, so the
+    /// replacement is dropped whole rather than filed under a guess.
+    #[test]
+    fn a_background_replacement_with_no_project_mints_nothing() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+        app.active_session_key = None;
+        let from = forge_workspace::SessionKey::from_session_id("__spawn_worker_beta__");
+        let to = forge_workspace::SessionKey::from_session_id("replacement-uuid");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SessionReplaced {
+                key: to.clone(),
+                previous_key: from,
+                session_id: forge_primitives::SessionId::new("replacement-uuid"),
+                cwd: "/nowhere/orphan".into(),
+                current_model: test_current_model_primitives("claude"),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 0,
+            },
+        );
+
+        assert!(!app.sessions.contains_key(&to), "an unnameable replacement gets no bucket");
+    }
+
     #[test]
     fn connected_updates_welcome_once_even_after_chat_started() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
             "/test",
             "-",
         ));
-        let Some(MessageBlock::Welcome(welcome)) = app.active_messages_mut()[0].blocks.first_mut()
+        let Some(MessageBlock::Welcome(welcome)) =
+            app.active_messages_mut().expect("active session")[0].blocks.first_mut()
         else {
             panic!("expected welcome block");
         };
         welcome.tip_seed = 11;
-        app.active_messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().expect("active session").push(user_msg("hello"));
 
         apply_session_update(&mut app, connected_event("claude-updated"));
 
-        let Some(first) = app.messages().first() else {
+        let Some(first) = app.messages().expect("active session").first() else {
             panic!("missing first message");
         };
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -1915,7 +2025,7 @@ mod tests {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("session-1")));
         app.set_current_model(Some(test_current_model("opus")));
-        *app.active_messages_mut() =
+        *app.active_messages_mut().expect("active session") =
             vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
         crate::app::config::store::set_model(
             &mut app.config.committed_settings_document,
@@ -1932,7 +2042,9 @@ mod tests {
         // SessionUpdate::CurrentModelUpdate.
         send_msg(&mut app, system_message("init", serde_json::json!({"model": "claude-opus-4-7"})));
 
-        let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
+        let Some(MessageBlock::Welcome(welcome)) =
+            app.messages().expect("active session")[0].blocks.first()
+        else {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.session_id, "session-1");
@@ -1944,10 +2056,10 @@ mod tests {
     #[test]
     fn connected_resets_session_scoped_view_data() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().expect("active session").push(user_msg("hello"));
         app.status = AppStatus::Running;
         app.set_files_accessed(9);
-        app.usage_mut().snapshot = Some(UsageSnapshot {
+        app.usage_mut().expect("active session").snapshot = Some(UsageSnapshot {
             source: UsageSourceKind::Oauth,
             fetched_at: std::time::SystemTime::now(),
             five_hour: None,
@@ -1981,10 +2093,10 @@ mod tests {
         apply_session_update(&mut app, connected_event("claude-updated"));
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.messages().len(), 1);
-        assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
+        assert_eq!(app.messages().expect("active session").len(), 1);
+        assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed(), 0);
-        assert!(app.usage().snapshot.is_none());
+        assert!(app.usage().expect("active session").snapshot.is_none());
         assert!(app.account_info().is_none());
         assert!(app.plugins.installed.is_empty());
         assert!(app.plugins.last_inventory_refresh_at.is_none());
@@ -1994,17 +2106,17 @@ mod tests {
     fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
         let mut app = make_test_app();
         app.set_current_model(Some(test_current_model("opus")));
-        app.active_messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
             "/test",
             "-",
         ));
-        app.active_messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().expect("active session").push(user_msg("hello"));
 
         send_msg(&mut app, system_message("init", serde_json::json!({"model": "claude-opus-4-7"})));
 
-        let Some(first) = app.messages().first() else {
+        let Some(first) = app.messages().expect("active session").first() else {
             panic!("missing first message");
         };
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -2017,7 +2129,7 @@ mod tests {
             system_message("init", serde_json::json!({"model": "claude-sonnet-4-5"})),
         );
 
-        let Some(first) = app.messages().first() else {
+        let Some(first) = app.messages().expect("active session").first() else {
             panic!("missing first message");
         };
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -2029,7 +2141,7 @@ mod tests {
     #[test]
     fn auth_required_sets_hint_without_prefilling_login_command() {
         let mut app = make_test_app();
-        app.input_mut().set_text("keep me");
+        app.input_mut().expect("active session").set_text("keep me");
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -2042,7 +2154,7 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.input().text(), "keep me");
+        assert_eq!(app.input().expect("active session").text(), "keep me");
         let Some(hint) = &app.login_hint() else {
             panic!("expected login hint");
         };
@@ -2063,7 +2175,7 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().expect("active session").last() else {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Warning))));
@@ -2072,7 +2184,7 @@ mod tests {
     #[test]
     fn service_status_error_pushes_system_error_without_locking_input() {
         let mut app = make_test_app();
-        app.input_mut().set_text("draft stays");
+        app.input_mut().expect("active session").set_text("draft stays");
 
         apply_session_update(
             &mut app,
@@ -2083,8 +2195,8 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.input().text(), "draft stays");
-        let Some(last) = app.messages().last() else {
+        assert_eq!(app.input().expect("active session").text(), "draft stays");
+        let Some(last) = app.messages().expect("active session").last() else {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Error))));
@@ -2093,30 +2205,33 @@ mod tests {
     #[test]
     fn session_replaced_resets_chat_and_transient_state() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
             "/test",
             "-",
         ));
-        let Some(MessageBlock::Welcome(welcome)) = app.active_messages_mut()[0].blocks.first_mut()
+        let Some(MessageBlock::Welcome(welcome)) =
+            app.active_messages_mut().expect("active session")[0].blocks.first_mut()
         else {
             panic!("expected welcome block");
         };
         welcome.tip_seed = 5;
-        app.active_messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().expect("active session").push(user_msg("hello"));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
         app.status = AppStatus::Running;
         app.set_files_accessed(9);
-        app.todos_mut().push(TodoItem {
+        app.todos_mut().expect("active session").push(TodoItem {
             id: "1".to_owned(),
             content: "Task".into(),
             status: TodoStatus::InProgress,
             active_form: String::new(),
         });
-        *app.mention_mut() = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-        app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
+        *app.mention_mut().expect("active session") =
+            Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
+        app.mcp_mut().expect("active session").servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
@@ -2147,15 +2262,17 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Ready));
         assert_eq!(app.session_id().map(|s| s.to_string()).as_deref(), Some("replacement"));
         assert_eq!(app.current_model().map(|model| model.resolved_id.as_str()), Some("new-model"));
-        assert_eq!(app.messages().len(), 1);
-        assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
+        assert_eq!(app.messages().expect("active session").len(), 1);
+        assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed(), 0);
-        assert!(app.todos().is_empty());
+        assert!(app.todos().expect("active session").is_empty());
         assert!(app.mention().is_none());
-        assert!(app.mcp().servers.is_empty());
-        assert_eq!(app.cwd_raw(), "/replacement");
-        assert_eq!(app.cwd(), "/replacement");
-        let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
+        assert!(app.mcp().expect("active session").servers.is_empty());
+        assert_eq!(app.cwd_raw().as_deref(), Some("/replacement"));
+        assert_eq!(app.cwd(), Some("/replacement"));
+        let Some(MessageBlock::Welcome(welcome)) =
+            app.messages().expect("active session")[0].blocks.first()
+        else {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.cwd, "/replacement");
@@ -2166,7 +2283,7 @@ mod tests {
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.active_view = crate::app::ActiveView::Extensions;
-        app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
@@ -2201,8 +2318,8 @@ mod tests {
                 session_id: forge_primitives::SessionId::new("replacement".to_owned()),
             }
         );
-        assert!(app.mcp().in_flight);
-        assert!(app.mcp().servers.is_empty());
+        assert!(app.mcp().expect("active session").in_flight);
+        assert!(app.mcp().expect("active session").servers.is_empty());
     }
 
     #[test]
@@ -2254,7 +2371,7 @@ mod tests {
     #[test]
     fn forge_account_identity_ready_stores_name_but_keeps_welcome_skeleton_until_tier_arrives() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "",
             "/test",
@@ -2279,7 +2396,9 @@ mod tests {
         // tier hasn't arrived yet - committing "Account: Stargate"
         // now would flicker into "Account: Stargate · team" once
         // the status snapshot lands.
-        let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
+        let Some(MessageBlock::Welcome(welcome)) =
+            app.messages().expect("active session")[0].blocks.first()
+        else {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.account_label, "Account");
@@ -2289,7 +2408,7 @@ mod tests {
     #[test]
     fn status_snapshot_with_forge_account_renders_account_label() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
             "/test",
@@ -2313,7 +2432,9 @@ mod tests {
             },
         );
 
-        let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
+        let Some(MessageBlock::Welcome(welcome)) =
+            app.messages().expect("active session")[0].blocks.first()
+        else {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.account_label, "Account");
@@ -2323,7 +2444,7 @@ mod tests {
     #[test]
     fn status_snapshot_without_forge_account_keeps_workspace_account_skeleton() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
             "/test",
@@ -2351,7 +2472,9 @@ mod tests {
         // pair with the subscription tier, the row stays on the
         // "Account: …" skeleton rather than flipping to the legacy
         // `Subscription: <tier>` label.
-        let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
+        let Some(MessageBlock::Welcome(welcome)) =
+            app.messages().expect("active session")[0].blocks.first()
+        else {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.account_label, "Account");
@@ -2362,7 +2485,7 @@ mod tests {
     fn stale_mcp_snapshot_for_old_session_is_ignored() {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("current-session")));
-        app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
+        app.mcp_mut().expect("active session").servers.push(forge_primitives::McpServerStatus {
             name: "current".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
@@ -2393,8 +2516,8 @@ mod tests {
             },
         );
 
-        assert_eq!(app.mcp().servers.len(), 1);
-        assert_eq!(app.mcp().servers[0].name, "current");
+        assert_eq!(app.mcp().expect("active session").servers.len(), 1);
+        assert_eq!(app.mcp().expect("active session").servers[0].name, "current");
     }
 
     #[test]
@@ -2406,8 +2529,10 @@ mod tests {
         let mut app = make_test_app();
         let key_a = forge_workspace::SessionKey::from_str_for_test("project-a");
         let key_b = forge_workspace::SessionKey::from_str_for_test("project-b");
-        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
-        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
+        app.sessions
+            .insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone(), "project-a"));
+        app.sessions
+            .insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone(), "project-b"));
         app.active_session_key = Some(key_a.clone());
 
         // Seed A's list directly so we have an observable baseline.
@@ -2438,8 +2563,8 @@ mod tests {
         );
 
         // A (active) still has its original list, B got the new one.
-        assert_eq!(app.recent_sessions().len(), 1);
-        assert_eq!(app.recent_sessions()[0].session_id, "a-only");
+        assert_eq!(app.recent_sessions().expect("active session").len(), 1);
+        assert_eq!(app.recent_sessions().expect("active session")[0].session_id, "a-only");
         let bucket_b = app.sessions.get(&key_b).expect("bucket b");
         assert_eq!(bucket_b.recent_sessions.len(), 1);
         assert_eq!(bucket_b.recent_sessions[0].session_id, "b-only");
@@ -2755,7 +2880,7 @@ mod tests {
     fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
         let mut app = make_test_app();
         app.status = AppStatus::CommandPending;
-        *app.resuming_session_id_mut() = Some("resume-123".into());
+        *app.resuming_session_id_mut().expect("active session") = Some("resume-123".into());
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -2774,7 +2899,7 @@ mod tests {
         app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Mcps;
         app.config.status_message =
             Some("Starting MCP auth for claude.ai Google Calendar...".into());
-        app.mcp_mut().in_flight = true;
+        app.mcp_mut().expect("active session").in_flight = true;
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -2791,23 +2916,25 @@ mod tests {
         );
 
         assert_eq!(
-            app.mcp().last_error.as_deref(),
+            app.mcp().expect("active session").last_error.as_deref(),
             Some(
                 "Failed to authenticate MCP server claude.ai Google Calendar: Server type \"claudeai-proxy\" does not support OAuth authentication"
             )
         );
-        assert_eq!(app.config.last_error, app.mcp().last_error);
+        assert_eq!(app.config.last_error, app.mcp().expect("active session").last_error);
         assert!(app.config.status_message.is_none());
-        assert!(!app.mcp().in_flight);
-        assert!(app.messages().is_empty());
+        assert!(!app.mcp().expect("active session").in_flight);
+        assert!(app.messages().expect("active session").is_empty());
     }
 
     #[test]
     fn current_mode_update_clears_pending_when_expected() {
         let mut app = make_test_app();
         app.status = AppStatus::CommandPending;
-        *app.pending_command_label_mut() = Some("Switching mode...".into());
-        *app.pending_command_ack_mut() = Some(PendingCommandAck::CurrentMode);
+        *app.pending_command_label_mut().expect("active session") =
+            Some("Switching mode...".into());
+        *app.pending_command_ack_mut().expect("active session") =
+            Some(PendingCommandAck::CurrentMode);
         app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
@@ -2824,8 +2951,8 @@ mod tests {
                 },
             ],
         }));
-        app.active_messages_mut().push(user_msg("seed"));
-        let layout_generation_before = app.viewport().layout_generation;
+        app.active_messages_mut().expect("active session").push(user_msg("seed"));
+        let layout_generation_before = app.viewport().expect("active session").layout_generation;
 
         // Wire path: server-side mode switches arrive via System("status")
         // with a `permissionMode` field.
@@ -2834,7 +2961,7 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.pending_command_label().is_none());
         assert!(app.pending_command_ack().is_none());
-        let layout_generation_after = app.viewport().layout_generation;
+        let layout_generation_after = app.viewport().expect("active session").layout_generation;
         let mode = app.mode().cloned().expect("mode should be present");
         assert_eq!(mode.current_mode_id, "plan");
         assert_eq!(mode.current_mode_name, "Plan");
@@ -2860,8 +2987,8 @@ mod tests {
                 },
             ],
         }));
-        app.active_messages_mut().push(user_msg("seed"));
-        let layout_generation_before = app.viewport().layout_generation;
+        app.active_messages_mut().expect("active session").push(user_msg("seed"));
+        let layout_generation_before = app.viewport().expect("active session").layout_generation;
 
         // Wire path: System("init") with permissionMode rebuilds the
         // mode state and applies via apply_mode_state_update - same
@@ -2869,15 +2996,20 @@ mod tests {
         // SessionUpdate::ModeStateUpdate.
         send_msg(&mut app, system_message("init", serde_json::json!({"permissionMode": "plan"})));
 
-        assert_eq!(app.viewport().layout_generation, layout_generation_before + 1);
+        assert_eq!(
+            app.viewport().expect("active session").layout_generation,
+            layout_generation_before + 1
+        );
     }
 
     #[test]
     fn current_model_update_updates_state_and_clears_pending_when_expected() {
         let mut app = make_test_app();
         app.status = AppStatus::CommandPending;
-        *app.pending_command_label_mut() = Some("Switching model...".into());
-        *app.pending_command_ack_mut() = Some(PendingCommandAck::CurrentModel);
+        *app.pending_command_label_mut().expect("active session") =
+            Some("Switching model...".into());
+        *app.pending_command_ack_mut().expect("active session") =
+            Some(PendingCommandAck::CurrentModel);
         app.set_current_model(Some(test_current_model("old-model")));
 
         send_msg(&mut app, system_message("init", serde_json::json!({"model": "sonnet"})));
@@ -2891,7 +3023,7 @@ mod tests {
     #[test]
     fn resume_does_not_add_confirmation_system_message() {
         let mut app = make_test_app();
-        *app.resuming_session_id_mut() = Some("requested-123".into());
+        *app.resuming_session_id_mut().expect("active session") = Some("requested-123".into());
 
         let previous_key = active_session_key(&app);
         apply_session_update(
@@ -2909,8 +3041,8 @@ mod tests {
             },
         );
 
-        assert_eq!(app.messages().len(), 1);
-        assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
+        assert_eq!(app.messages().expect("active session").len(), 1);
+        assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::Welcome));
         assert!(app.resuming_session_id().is_none());
         assert!(matches!(app.status, AppStatus::Ready));
     }
@@ -2937,12 +3069,14 @@ mod tests {
             },
         );
 
-        assert_eq!(app.messages().len(), 3);
-        assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
-        assert!(matches!(app.messages()[1].role, MessageRole::User));
-        assert!(matches!(app.messages()[2].role, MessageRole::Assistant));
+        assert_eq!(app.messages().expect("active session").len(), 3);
+        assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::Welcome));
+        assert!(matches!(app.messages().expect("active session")[1].role, MessageRole::User));
+        assert!(matches!(app.messages().expect("active session")[2].role, MessageRole::Assistant));
 
-        let Some(MessageBlock::Text(user_text)) = app.messages()[1].blocks.first() else {
+        let Some(MessageBlock::Text(user_text)) =
+            app.messages().expect("active session")[1].blocks.first()
+        else {
             panic!("expected user text block");
         };
         assert_eq!(user_text.text, "first user line");
@@ -2978,11 +3112,17 @@ mod tests {
         );
 
         assert!(
-            app.messages().iter().any(|m| matches!(m.role, MessageRole::User)),
+            app.messages()
+                .expect("active session")
+                .iter()
+                .any(|m| matches!(m.role, MessageRole::User)),
             "the resumed user turn stays visible after a switch",
         );
         assert!(
-            app.messages().iter().any(|m| matches!(m.role, MessageRole::Assistant)),
+            app.messages()
+                .expect("active session")
+                .iter()
+                .any(|m| matches!(m.role, MessageRole::Assistant)),
             "the resumed assistant turn stays visible after a switch",
         );
     }
@@ -3015,6 +3155,7 @@ mod tests {
 
         let rendered: Vec<(MessageRole, String)> = app
             .messages()
+            .expect("active session")
             .iter()
             .filter_map(|message| {
                 let text = message.blocks.iter().find_map(|block| match block {
@@ -3067,7 +3208,7 @@ mod tests {
             panic!("missing tool call index");
         };
         let Some(MessageBlock::ToolCall(tc)) =
-            app.messages().get(mi).and_then(|m| m.blocks.get(bi))
+            app.messages().expect("active session").get(mi).and_then(|m| m.blocks.get(bi))
         else {
             panic!("expected tool call block");
         };
@@ -3124,7 +3265,7 @@ mod tests {
             },
         );
 
-        assert!(app.active_task_ids().is_empty());
+        assert!(app.active_task_ids().expect("active session").is_empty());
         assert_eq!(app.tool_call_scope("resume-task"), None);
     }
 
@@ -3139,7 +3280,7 @@ mod tests {
                 terminal_reason: None,
             },
         );
-        assert!(app.messages().is_empty());
+        assert!(app.messages().expect("active session").is_empty());
     }
 
     #[test]
@@ -3152,12 +3293,12 @@ mod tests {
         // status to Thinking so the spinner stays visible.
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("session-anticipate")));
-        app.active_messages_mut().push(user_msg("first"));
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
-            TextBlock::from_complete("response to first"),
-        )]));
-        app.active_messages_mut().push(user_msg("mid-turn-1"));
-        app.active_messages_mut().push(user_msg("mid-turn-2"));
+        app.active_messages_mut().expect("active session").push(user_msg("first"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::Text(TextBlock::from_complete("response to first")),
+        ]));
+        app.active_messages_mut().expect("active session").push(user_msg("mid-turn-1"));
+        app.active_messages_mut().expect("active session").push(user_msg("mid-turn-2"));
         app.status = AppStatus::Running;
 
         let session_key = active_session_key(&app);
@@ -3172,10 +3313,14 @@ mod tests {
         // An empty assistant placeholder was appended after the two
         // mid-turn user bubbles, and the active turn assistant index
         // points at it.
-        let last = app.messages().last().expect("trailing assistant placeholder");
+        let last =
+            app.messages().expect("active session").last().expect("trailing assistant placeholder");
         assert!(matches!(last.role, MessageRole::Assistant));
         assert!(last.blocks.is_empty(), "placeholder is empty until claude streams text");
-        assert_eq!(app.active_turn_assistant_message_idx(), Some(app.messages().len() - 1));
+        assert_eq!(
+            app.active_turn_assistant_message_idx(),
+            Some(app.messages().expect("active session").len() - 1)
+        );
         // Status flipped back to Thinking so the spinner renders.
         assert!(matches!(app.status, AppStatus::Thinking));
     }
@@ -3187,12 +3332,13 @@ mod tests {
         // pushed, status returns to Ready.
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("session-normal")));
-        app.active_messages_mut().push(user_msg("hi"));
+        app.active_messages_mut().expect("active session").push(user_msg("hi"));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("hello back"))]));
         app.status = AppStatus::Running;
 
-        let before = app.messages().len();
+        let before = app.messages().expect("active session").len();
         let session_key = active_session_key(&app);
         apply_session_update(
             &mut app,
@@ -3202,7 +3348,11 @@ mod tests {
             },
         );
 
-        assert_eq!(app.messages().len(), before, "no extra placeholder appended");
+        assert_eq!(
+            app.messages().expect("active session").len(),
+            before,
+            "no extra placeholder appended"
+        );
         assert!(matches!(app.status, AppStatus::Ready));
     }
 
@@ -3210,8 +3360,9 @@ mod tests {
     fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary() {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("session-x")));
-        app.active_messages_mut().push(user_msg("/compact"));
+        app.active_messages_mut().expect("active session").push(user_msg("/compact"));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
         send_msg(&mut app, compact_boundary_message("manual", 123_456));
         assert!(app.pending_compact_clear());
@@ -3226,10 +3377,10 @@ mod tests {
         );
 
         assert!(!app.pending_compact_clear());
-        assert_eq!(app.messages().len(), 3);
+        assert_eq!(app.messages().expect("active session").len(), 3);
         let Some(ChatMessage {
             role: MessageRole::System(Some(SystemSeverity::Info)), blocks, ..
-        }) = app.messages().last()
+        }) = app.messages().expect("active session").last()
         else {
             panic!("expected compaction success system message");
         };
@@ -3249,7 +3400,7 @@ mod tests {
 
         assert!(!app.is_compacting());
         assert!(!app.pending_compact_clear());
-        assert!(app.messages().iter().all(|message| {
+        assert!(app.messages().expect("active session").iter().all(|message| {
             !matches!(
                 message,
                 ChatMessage { role: MessageRole::System(Some(SystemSeverity::Info)), .. }
@@ -3318,7 +3469,7 @@ mod tests {
 
         assert!(!app.is_compacting());
         assert!(!app.pending_compact_clear());
-        assert!(app.messages().is_empty());
+        assert!(app.messages().expect("active session").is_empty());
     }
 
     #[test]
@@ -3340,7 +3491,7 @@ mod tests {
     fn turn_error_keeps_history_when_compact_pending() {
         let mut app = make_test_app();
         app.set_pending_compact_clear(true);
-        app.active_messages_mut().push(user_msg("/compact"));
+        app.active_messages_mut().expect("active session").push(user_msg("/compact"));
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -3355,11 +3506,11 @@ mod tests {
 
         assert!(!app.pending_compact_clear());
         assert!(matches!(app.status, AppStatus::Error));
-        assert_eq!(app.messages().len(), 3);
-        assert!(matches!(app.messages()[0].role, MessageRole::User));
+        assert_eq!(app.messages().expect("active session").len(), 3);
+        assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::User));
         let Some(ChatMessage {
             role: MessageRole::System(Some(SystemSeverity::Info)), blocks, ..
-        }) = app.messages().get(1)
+        }) = app.messages().expect("active session").get(1)
         else {
             panic!("expected compaction success system message");
         };
@@ -3367,7 +3518,8 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Session successfully compacted.");
-        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages().last()
+        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
+            app.messages().expect("active session").last()
         else {
             panic!("expected system error message");
         };
@@ -3397,7 +3549,7 @@ mod tests {
     #[test]
     fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_msg("/compact"));
+        app.active_messages_mut().expect("active session").push(user_msg("/compact"));
         app.set_pending_compact_clear(true);
         app.set_is_compacting(true);
 
@@ -3417,13 +3569,20 @@ mod tests {
             },
         );
 
-        assert_eq!(app.messages().len(), 3);
-        assert!(matches!(app.messages()[1].role, MessageRole::System(Some(SystemSeverity::Info))));
-        let Some(MessageBlock::Text(block)) = app.messages()[1].blocks.first() else {
+        assert_eq!(app.messages().expect("active session").len(), 3);
+        assert!(matches!(
+            app.messages().expect("active session")[1].role,
+            MessageRole::System(Some(SystemSeverity::Info))
+        ));
+        let Some(MessageBlock::Text(block)) =
+            app.messages().expect("active session")[1].blocks.first()
+        else {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Session successfully compacted.");
-        let Some(MessageBlock::Text(block)) = app.messages()[2].blocks.first() else {
+        let Some(MessageBlock::Text(block)) =
+            app.messages().expect("active session")[2].blocks.first()
+        else {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Conversation interrupted. Tell the model how to proceed.");
@@ -3445,12 +3604,15 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Error));
-        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages().last()
+        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
+            app.messages().expect("active session").last()
         else {
             panic!("expected system error message");
         };
         assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
-        let text = first_block_text(app.messages().last().expect("expected message"));
+        let text = first_block_text(
+            app.messages().expect("active session").last().expect("expected message"),
+        );
         assert!(text.contains("Turn blocked by account or plan limits"));
         assert!(text.contains("Next steps:"));
         assert!(text.contains("Check quota/billing"));
@@ -3472,12 +3634,15 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Error));
-        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages().last()
+        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
+            app.messages().expect("active session").last()
         else {
             panic!("expected system error message");
         };
         assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
-        let text = first_block_text(app.messages().last().expect("expected message"));
+        let text = first_block_text(
+            app.messages().expect("active session").last().expect("expected message"),
+        );
         assert!(text.contains("Turn blocked by account or plan limits"));
         assert!(text.contains("Next steps:"));
     }
@@ -3512,9 +3677,12 @@ mod tests {
     #[test]
     fn turn_error_clears_tool_scope_tracking() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("task-1", model::ToolCallStatus::InProgress),
-        ))]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call(
+                "task-1",
+                model::ToolCallStatus::InProgress,
+            ))),
+        ]));
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
 
@@ -3529,7 +3697,7 @@ mod tests {
             },
         );
 
-        assert!(app.active_task_ids().is_empty());
+        assert!(app.active_task_ids().expect("active session").is_empty());
         assert_eq!(app.tool_call_scope("task-1"), None);
     }
 
@@ -3548,9 +3716,12 @@ mod tests {
                 description: None,
             }],
         }));
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("task-1", model::ToolCallStatus::InProgress),
-        ))]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call(
+                "task-1",
+                model::ToolCallStatus::InProgress,
+            ))),
+        ]));
         app.bind_active_turn_assistant(0);
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
@@ -3566,8 +3737,10 @@ mod tests {
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
-        assert!(app.active_task_ids().is_empty());
-        let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
+        assert!(app.active_task_ids().expect("active session").is_empty());
+        let Some(MessageBlock::ToolCall(tc)) =
+            app.messages().expect("active session")[0].blocks.first()
+        else {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
@@ -3594,9 +3767,12 @@ mod tests {
     fn connection_failed_clears_active_turn_runtime_tracking() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("task-1", model::ToolCallStatus::InProgress),
-        ))]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call(
+                "task-1",
+                model::ToolCallStatus::InProgress,
+            ))),
+        ]));
         app.bind_active_turn_assistant(0);
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
@@ -3612,8 +3788,10 @@ mod tests {
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
-        assert!(app.active_task_ids().is_empty());
-        let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
+        assert!(app.active_task_ids().expect("active session").is_empty());
+        let Some(MessageBlock::ToolCall(tc)) =
+            app.messages().expect("active session")[0].blocks.first()
+        else {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
@@ -3678,7 +3856,8 @@ mod tests {
             Some("claude-original".into()),
             "the requested model id rolled back with the chip"
         );
-        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages().last()
+        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
+            app.messages().expect("active session").last()
         else {
             panic!("expected a system refusal message");
         };
@@ -3725,9 +3904,12 @@ mod tests {
     fn fatal_event_clears_active_turn_runtime_tracking() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
-            tool_call("task-1", model::ToolCallStatus::InProgress),
-        ))]));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call(
+                "task-1",
+                model::ToolCallStatus::InProgress,
+            ))),
+        ]));
         app.bind_active_turn_assistant(0);
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
@@ -3738,8 +3920,10 @@ mod tests {
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
-        assert!(app.active_task_ids().is_empty());
-        let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
+        assert!(app.active_task_ids().expect("active session").is_empty());
+        let Some(MessageBlock::ToolCall(tc)) =
+            app.messages().expect("active session")[0].blocks.first()
+        else {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
@@ -3755,22 +3939,25 @@ mod tests {
         assert!(app.is_compacting());
         assert!(app.pending_compact_clear());
         assert_eq!(
-            app.session_usage().last_compaction_trigger,
+            app.session_usage().expect("active session").last_compaction_trigger,
             Some(model::CompactionTrigger::Manual)
         );
-        assert_eq!(app.session_usage().last_compaction_pre_tokens, Some(123_456));
+        assert_eq!(
+            app.session_usage().expect("active session").last_compaction_pre_tokens,
+            Some(123_456)
+        );
     }
 
     #[test]
     fn each_compaction_boundary_increments_the_session_count() {
         let mut app = make_test_app();
-        assert_eq!(app.session_usage().compaction_count, 0);
+        assert_eq!(app.session_usage().expect("active session").compaction_count, 0);
 
         for _ in 0..3 {
             send_msg(&mut app, compact_boundary_message("auto", 234_567));
         }
 
-        assert_eq!(app.session_usage().compaction_count, 3);
+        assert_eq!(app.session_usage().expect("active session").compaction_count, 3);
     }
 
     /// The whole point of the seed: a session resumed after N
@@ -3793,7 +3980,7 @@ mod tests {
     fn connect_seeds_the_count_from_the_resumed_transcript() {
         let mut app = make_test_app();
         apply_session_update(&mut app, connected_with_compactions(54));
-        assert_eq!(app.session_usage().compaction_count, 54);
+        assert_eq!(app.session_usage().expect("active session").compaction_count, 54);
     }
 
     #[test]
@@ -3801,7 +3988,7 @@ mod tests {
         let mut app = make_test_app();
         apply_session_update(&mut app, connected_with_compactions(5));
         send_msg(&mut app, compact_boundary_message("auto", 1_002_459));
-        assert_eq!(app.session_usage().compaction_count, 6);
+        assert_eq!(app.session_usage().expect("active session").compaction_count, 6);
     }
 
     #[test]
@@ -3822,7 +4009,7 @@ mod tests {
                 compaction_count: 7,
             },
         );
-        assert_eq!(app.session_usage().compaction_count, 7);
+        assert_eq!(app.session_usage().expect("active session").compaction_count, 7);
     }
 
     /// The background arm reaches the bucket through `key_renamed` rather
@@ -3835,7 +4022,7 @@ mod tests {
             forge_workspace::SessionKey::from_session_id("background-old".to_owned());
         app.sessions.insert(
             background_key.clone(),
-            crate::app::session::UiSession::new(background_key.clone()),
+            crate::app::session::UiSession::new(background_key.clone(), "test-project"),
         );
         let replacement = forge_workspace::SessionKey::from_session_id("background-new".to_owned());
         apply_session_update(
@@ -3874,8 +4061,8 @@ mod tests {
             &mut app,
             system_message("compact_boundary", serde_json::json!({"nonsense": true})),
         );
-        assert_eq!(app.session_usage().compaction_count, 1);
-        assert_eq!(app.session_usage().last_compaction_trigger, None);
+        assert_eq!(app.session_usage().expect("active session").compaction_count, 1);
+        assert_eq!(app.session_usage().expect("active session").last_compaction_trigger, None);
     }
 
     #[test]
@@ -3888,10 +4075,13 @@ mod tests {
         assert!(app.is_compacting());
         assert!(!app.pending_compact_clear());
         assert_eq!(
-            app.session_usage().last_compaction_trigger,
+            app.session_usage().expect("active session").last_compaction_trigger,
             Some(model::CompactionTrigger::Auto)
         );
-        assert_eq!(app.session_usage().last_compaction_pre_tokens, Some(234_567));
+        assert_eq!(
+            app.session_usage().expect("active session").last_compaction_pre_tokens,
+            Some(234_567)
+        );
     }
 
     #[test]
@@ -3910,12 +4100,15 @@ mod tests {
         send_msg(&mut app, rate_limit_event(warning_info.clone()));
         send_msg(&mut app, rate_limit_event(warning_info.clone()));
 
-        assert_eq!(app.messages().len(), 1);
+        assert_eq!(app.messages().expect("active session").len(), 1);
         assert!(matches!(
-            app.messages()[0].role,
+            app.messages().expect("active session")[0].role,
             MessageRole::System(Some(SystemSeverity::Warning))
         ));
-        assert!(matches!(app.messages()[0].blocks.first(), Some(MessageBlock::Notice(_))));
+        assert!(matches!(
+            app.messages().expect("active session")[0].blocks.first(),
+            Some(MessageBlock::Notice(_))
+        ));
 
         let rejected_info = forge_primitives::RateLimitInfo {
             status: forge_primitives::RateLimitStatus::Rejected,
@@ -3924,19 +4117,25 @@ mod tests {
         send_msg(&mut app, rate_limit_event(rejected_info.clone()));
         send_msg(&mut app, rate_limit_event(rejected_info));
 
-        assert_eq!(app.messages().len(), 1);
-        assert!(matches!(app.messages()[0].role, MessageRole::System(Some(SystemSeverity::Error))));
-        assert!(first_block_text(&app.messages()[0]).contains("Rate limit reached"));
+        assert_eq!(app.messages().expect("active session").len(), 1);
+        assert!(matches!(
+            app.messages().expect("active session")[0].role,
+            MessageRole::System(Some(SystemSeverity::Error))
+        ));
+        assert!(
+            first_block_text(&app.messages().expect("active session")[0])
+                .contains("Rate limit reached")
+        );
     }
 
     #[test]
     fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_msg("hello"));
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
-            TextBlock::from_complete("partial response"),
-        )]));
+        app.active_messages_mut().expect("active session").push(user_msg("hello"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::Text(TextBlock::from_complete("partial response")),
+        ]));
         app.bind_active_turn_assistant(1);
 
         send_msg(
@@ -3950,9 +4149,12 @@ mod tests {
                 None,
             )),
         );
-        assert_eq!(app.messages().len(), 2);
-        assert_eq!(app.messages()[1].blocks.len(), 2);
-        assert!(matches!(app.messages()[1].blocks[1], MessageBlock::Notice(_)));
+        assert_eq!(app.messages().expect("active session").len(), 2);
+        assert_eq!(app.messages().expect("active session")[1].blocks.len(), 2);
+        assert!(matches!(
+            app.messages().expect("active session")[1].blocks[1],
+            MessageBlock::Notice(_)
+        ));
         assert_eq!(app.turn_notice_refs().len(), 1);
 
         let session_key = active_session_key(&app);
@@ -3967,9 +4169,11 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Error));
-        assert_eq!(app.messages().len(), 2);
-        assert_eq!(app.messages()[1].blocks.len(), 2);
-        let Some(MessageBlock::Notice(block)) = app.messages()[1].blocks.get(1) else {
+        assert_eq!(app.messages().expect("active session").len(), 2);
+        assert_eq!(app.messages().expect("active session")[1].blocks.len(), 2);
+        let Some(MessageBlock::Notice(block)) =
+            app.messages().expect("active session")[1].blocks.get(1)
+        else {
             panic!("expected inline notice block");
         };
         assert_eq!(block.severity, SystemSeverity::Warning);
@@ -3993,8 +4197,8 @@ mod tests {
             surpassed_threshold: None,
         }));
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_msg("first"));
-        app.active_messages_mut().push(assistant_msg(vec![]));
+        app.active_messages_mut().expect("active session").push(user_msg("first"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(1);
 
         let session_key = active_session_key(&app);
@@ -4008,16 +4212,16 @@ mod tests {
             },
         );
 
-        assert_eq!(app.messages().len(), 2);
-        let first_notice_text = match app.messages()[1].blocks.as_slice() {
+        assert_eq!(app.messages().expect("active session").len(), 2);
+        let first_notice_text = match app.messages().expect("active session")[1].blocks.as_slice() {
             [MessageBlock::Notice(block)] => block.text.text.clone(),
             _ => panic!("expected first turn notice"),
         };
         assert!(first_notice_text.contains("Approaching rate limit"));
 
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_msg("second"));
-        app.active_messages_mut().push(assistant_msg(vec![]));
+        app.active_messages_mut().expect("active session").push(user_msg("second"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(3);
         send_msg(
             &mut app,
@@ -4031,12 +4235,16 @@ mod tests {
             )),
         );
 
-        assert_eq!(app.messages().len(), 4);
-        let Some(MessageBlock::Notice(first_notice)) = app.messages()[1].blocks.first() else {
+        assert_eq!(app.messages().expect("active session").len(), 4);
+        let Some(MessageBlock::Notice(first_notice)) =
+            app.messages().expect("active session")[1].blocks.first()
+        else {
             panic!("expected first turn notice");
         };
         assert_eq!(first_notice.text.text, first_notice_text);
-        let Some(MessageBlock::Notice(second_notice)) = app.messages()[3].blocks.first() else {
+        let Some(MessageBlock::Notice(second_notice)) =
+            app.messages().expect("active session")[3].blocks.first()
+        else {
             panic!("expected second turn notice");
         };
         assert!(second_notice.text.text.contains("daily rate limit"));
@@ -4072,9 +4280,9 @@ mod tests {
         // 2. Bind an active assistant turn so the next upsert takes
         // the standalone->inline promotion branch.
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_msg("hello"));
-        app.active_messages_mut().push(assistant_msg(vec![]));
-        app.bind_active_turn_assistant(app.messages().len() - 1);
+        app.active_messages_mut().expect("active session").push(user_msg("hello"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![]));
+        app.bind_active_turn_assistant(app.messages().expect("active session").len() - 1);
 
         // 3. Same dedup_key, now with active turn -> promote-to-inline
         // success-path.
@@ -4092,8 +4300,8 @@ mod tests {
     fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_msg("hello"));
-        app.active_messages_mut().push(assistant_msg(vec![]));
+        app.active_messages_mut().expect("active session").push(user_msg("hello"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(1);
 
         send_msg(
@@ -4120,9 +4328,9 @@ mod tests {
         assert!(app.turn_notice_refs().is_empty());
 
         app.status = AppStatus::Thinking;
-        app.active_messages_mut().push(user_msg("again"));
-        app.active_messages_mut().push(assistant_msg(vec![]));
-        app.bind_active_turn_assistant(app.messages().len() - 1);
+        app.active_messages_mut().expect("active session").push(user_msg("again"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![]));
+        app.bind_active_turn_assistant(app.messages().expect("active session").len() - 1);
         send_msg(
             &mut app,
             rate_limit_event(build_rate_limit_info(
@@ -4163,7 +4371,7 @@ mod tests {
     #[test]
     fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_msg("build app"));
+        app.active_messages_mut().expect("active session").push(user_msg("build app"));
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -4186,7 +4394,7 @@ mod tests {
         assert!(!app.cancelled_turn_pending_hint());
         assert!(matches!(app.status, AppStatus::Ready));
 
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().expect("active session").last() else {
             panic!("expected interruption hint message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
@@ -4199,7 +4407,7 @@ mod tests {
     #[test]
     fn turn_cancel_marks_active_tools_failed() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
             MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
@@ -4211,7 +4419,7 @@ mod tests {
             forge_workspace::SessionUpdate::TurnCancelled { key: session_key },
         );
 
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().expect("active session").last() else {
             panic!("missing assistant message");
         };
         let statuses: Vec<model::ToolCallStatus> = last
@@ -4235,7 +4443,7 @@ mod tests {
     #[test]
     fn turn_complete_marks_lingering_tools_completed() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
         ]));
@@ -4249,7 +4457,7 @@ mod tests {
             },
         );
 
-        let Some(last) = app.messages().last() else {
+        let Some(last) = app.messages().expect("active session").last() else {
             panic!("missing assistant message");
         };
         let statuses: Vec<model::ToolCallStatus> = last
@@ -4274,18 +4482,18 @@ mod tests {
         ] {
             let mut app = make_test_app();
             handler(&mut app, KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
-            assert_eq!(app.input().text(), "");
+            assert_eq!(app.input().expect("active session").text(), "");
         }
     }
 
     #[test]
     fn pending_paste_payload_blocks_overlapping_key_text_insertion() {
         let mut app = make_test_app();
-        *app.pending_paste_text_mut() = "clipboard".to_owned();
+        *app.pending_paste_text_mut().expect("active session") = "clipboard".to_owned();
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
 
-        assert_eq!(app.input().text(), "");
+        assert_eq!(app.input().expect("active session").text(), "");
     }
 
     #[test]
@@ -4296,59 +4504,59 @@ mod tests {
             KeyEvent::new(KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::ALT),
         );
 
-        assert_eq!(app.input().text(), "@");
+        assert_eq!(app.input().expect("active session").text(), "@");
         assert!(app.mention().is_some());
     }
 
     #[test]
     fn word_nav_backspace_and_delete_use_word_operations() {
         let mut app = make_test_app();
-        app.input_mut().set_text("hello world");
+        app.input_mut().expect("active session").set_text("hello world");
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD));
-        assert_eq!(app.input().text(), "hello ");
+        assert_eq!(app.input().expect("active session").text(), "hello ");
 
-        app.input_mut().move_home();
+        app.input_mut().expect("active session").move_home();
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Delete, WORD_NAV_MOD));
-        assert_eq!(app.input().text(), " ");
+        assert_eq!(app.input().expect("active session").text(), " ");
     }
 
     #[test]
     fn cmd_z_and_redo_undo_and_redo_textarea_history() {
         let mut app = make_test_app();
-        app.input_mut().set_text("hello world");
+        app.input_mut().expect("active session").set_text("hello world");
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD));
-        assert_eq!(app.input().text(), "hello ");
+        assert_eq!(app.input().expect("active session").text(), "hello ");
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), CMD_MOD));
-        assert_eq!(app.input().text(), "hello world");
+        assert_eq!(app.input().expect("active session").text(), "hello world");
 
         // Redo: Cmd+Shift+Z on macOS (reported as 'Z' with SUPER), Ctrl+Y elsewhere.
         #[cfg(target_os = "macos")]
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('Z'), CMD_MOD));
         #[cfg(not(target_os = "macos"))]
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), CMD_MOD));
-        assert_eq!(app.input().text(), "hello ");
+        assert_eq!(app.input().expect("active session").text(), "hello ");
     }
 
     #[test]
     fn word_nav_left_right_move_by_word() {
         let mut app = make_test_app();
-        app.input_mut().set_text("hello world");
-        app.input_mut().move_home();
+        app.input_mut().expect("active session").set_text("hello world");
+        app.input_mut().expect("active session").move_home();
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Right, WORD_NAV_MOD));
-        assert!(app.input().cursor_col() > 0);
+        assert!(app.input().expect("active session").cursor_col() > 0);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Left, WORD_NAV_MOD));
-        assert_eq!(app.input().cursor_col(), 0);
+        assert_eq!(app.input().expect("active session").cursor_col(), 0);
     }
 
     #[test]
     fn help_overlay_left_right_switches_help_view_tab() {
         let mut app = make_test_app();
-        app.input_mut().set_text("?");
+        app.input_mut().expect("active session").set_text("?");
         app.help_open = true;
         app.help_view = HelpView::Keys;
 
@@ -4370,16 +4578,16 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Connecting;
         app.help_view = HelpView::Keys;
-        app.active_viewport_mut().scroll_target = 2;
+        app.active_viewport_mut().expect("active session").scroll_target = 2;
 
         // Chat navigation remains available during startup.
         handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
-        assert_eq!(app.viewport().scroll_target, 1);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 1);
         handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
         );
-        assert_eq!(app.viewport().scroll_target, 2);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 2);
 
         // Help toggle via "?" remains available.
         handle_terminal_event(
@@ -4400,8 +4608,8 @@ mod tests {
     fn connecting_state_blocks_input_shortcuts_and_tab() {
         let mut app = make_test_app();
         app.status = AppStatus::Connecting;
-        app.input_mut().set_text("seed");
-        *app.pending_submit_mut() = None;
+        app.input_mut().expect("active session").set_text("seed");
+        *app.pending_submit_mut().expect("active session") = None;
         app.help_view = HelpView::Keys;
 
         for key in [
@@ -4415,7 +4623,7 @@ mod tests {
             handle_terminal_event(&mut app, Event::Key(key));
         }
 
-        assert_eq!(app.input().text(), "seed");
+        assert_eq!(app.input().expect("active session").text(), "seed");
         assert!(app.pending_submit().is_none());
         assert_eq!(app.help_view, HelpView::Keys);
     }
@@ -4426,7 +4634,7 @@ mod tests {
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.rendered_input_lines = vec!["copy".to_owned()];
-        *app.selection_mut() = Some(crate::app::SelectionState {
+        *app.selection_mut().expect("active session") = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 4 },
@@ -4445,7 +4653,7 @@ mod tests {
     #[test]
     fn ctrl_c_without_selection_quits() {
         let mut app = make_test_app();
-        *app.selection_mut() = None;
+        *app.selection_mut().expect("active session") = None;
 
         handle_terminal_event(
             &mut app,
@@ -4461,7 +4669,7 @@ mod tests {
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.rendered_input_lines = vec!["copy".to_owned()];
-        *app.selection_mut() = Some(crate::app::SelectionState {
+        *app.selection_mut().expect("active session") = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 4 },
@@ -4488,7 +4696,7 @@ mod tests {
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Fail);
         app.rendered_input_lines = vec!["copy".to_owned()];
-        *app.selection_mut() = Some(crate::app::SelectionState {
+        *app.selection_mut().expect("active session") = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 4 },
@@ -4508,7 +4716,7 @@ mod tests {
     fn ctrl_c_with_zero_length_selection_quits() {
         let mut app = make_test_app();
         app.rendered_input_lines = vec!["copy".to_owned()];
-        *app.selection_mut() = Some(crate::app::SelectionState {
+        *app.selection_mut().expect("active session") = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 0 },
@@ -4529,7 +4737,7 @@ mod tests {
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.rendered_input_lines = vec!["   ".to_owned()];
-        *app.selection_mut() = Some(crate::app::SelectionState {
+        *app.selection_mut().expect("active session") = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 1 },
@@ -4548,7 +4756,7 @@ mod tests {
     #[test]
     fn ctrl_q_quits_even_with_selection() {
         let mut app = make_test_app();
-        *app.selection_mut() = Some(crate::app::SelectionState {
+        *app.selection_mut().expect("active session") = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 0 },
@@ -4580,8 +4788,8 @@ mod tests {
     fn error_state_blocks_input_shortcuts() {
         let mut app = make_test_app();
         app.status = AppStatus::Error;
-        app.input_mut().set_text("seed");
-        *app.pending_submit_mut() = None;
+        app.input_mut().expect("active session").set_text("seed");
+        *app.pending_submit_mut().expect("active session") = None;
 
         for key in [
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -4594,7 +4802,7 @@ mod tests {
             handle_terminal_event(&mut app, Event::Key(key));
         }
 
-        assert_eq!(app.input().text(), "seed");
+        assert_eq!(app.input().expect("active session").text(), "seed");
         assert!(app.pending_submit().is_none());
     }
 
@@ -4631,15 +4839,15 @@ mod tests {
 
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-        assert!(app.pending_paste_text().is_empty());
-        assert!(app.input().is_empty());
+        assert!(app.pending_paste_text().unwrap_or_default().is_empty());
+        assert!(app.input().expect("active session").is_empty());
     }
 
     #[test]
     fn mouse_scroll_clears_selection_before_scrolling() {
         let mut app = make_test_app();
-        app.active_viewport_mut().scroll_target = 2;
-        *app.selection_mut() = Some(crate::app::SelectionState {
+        app.active_viewport_mut().expect("active session").scroll_target = 2;
+        *app.selection_mut().expect("active session") = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Chat,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 1 },
@@ -4657,17 +4865,17 @@ mod tests {
         );
 
         assert!(app.selection().is_none());
-        assert_eq!(app.viewport().scroll_target, 5);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 5);
     }
 
     #[test]
     fn mouse_down_on_scrollbar_rail_starts_drag_and_scrolls() {
         let mut app = make_test_app();
         app.rendered_chat_area = Rect::new(0, 0, 19, 10);
-        app.active_viewport_mut().height_prefix_sums = vec![30];
-        app.active_viewport_mut().scrollbar_thumb_top = 0.0;
-        app.active_viewport_mut().scrollbar_thumb_size = 3.0;
-        *app.selection_mut() = Some(crate::app::SelectionState {
+        app.active_viewport_mut().expect("active session").height_prefix_sums = vec![30];
+        app.active_viewport_mut().expect("active session").scrollbar_thumb_top = 0.0;
+        app.active_viewport_mut().expect("active session").scrollbar_thumb_size = 3.0;
+        *app.selection_mut().expect("active session") = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Chat,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 1 },
@@ -4686,17 +4894,17 @@ mod tests {
 
         assert!(app.scrollbar_drag.is_some());
         assert!(app.selection().is_none());
-        assert!(!app.viewport().auto_scroll);
-        assert!(app.viewport().scroll_target > 0);
+        assert!(!app.viewport().expect("active session").auto_scroll);
+        assert!(app.viewport().expect("active session").scroll_target > 0);
     }
 
     #[test]
     fn dragging_scrollbar_thumb_can_reach_bottom_and_top() {
         let mut app = make_test_app();
         app.rendered_chat_area = Rect::new(0, 0, 19, 10);
-        app.active_viewport_mut().height_prefix_sums = vec![30];
-        app.active_viewport_mut().scrollbar_thumb_top = 0.0;
-        app.active_viewport_mut().scrollbar_thumb_size = 3.0;
+        app.active_viewport_mut().expect("active session").height_prefix_sums = vec![30];
+        app.active_viewport_mut().expect("active session").scrollbar_thumb_top = 0.0;
+        app.active_viewport_mut().expect("active session").scrollbar_thumb_size = 3.0;
 
         handle_terminal_event(
             &mut app,
@@ -4716,7 +4924,7 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             }),
         );
-        assert_eq!(app.viewport().scroll_target, 20);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 20);
 
         handle_terminal_event(
             &mut app,
@@ -4727,7 +4935,7 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             }),
         );
-        assert_eq!(app.viewport().scroll_target, 0);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 0);
 
         handle_terminal_event(
             &mut app,
@@ -4762,8 +4970,9 @@ mod tests {
         msg.turn_info_height = 1;
         msg.turn_info_width = chat_width;
         app.push_message_tracked(msg);
-        app.active_viewport_mut().height_prefix_sums = vec![row_y as usize + 1];
-        app.active_viewport_mut().scroll_offset = 0;
+        app.active_viewport_mut().expect("active session").height_prefix_sums =
+            vec![row_y as usize + 1];
+        app.active_viewport_mut().expect("active session").scroll_offset = 0;
         app.rendered_chat_area = Rect::new(0, 0, chat_width, 10);
 
         let click = |app: &mut App| {
@@ -4776,10 +4985,13 @@ mod tests {
                     modifiers: KeyModifiers::NONE,
                 }),
             );
-            app.messages()[0].turn_info.expanded
+            app.messages().expect("active session")[0].turn_info.expanded
         };
 
-        assert!(!app.messages()[0].turn_info.expanded, "fixture guard: collapsed is the default");
+        assert!(
+            !app.messages().expect("active session")[0].turn_info.expanded,
+            "fixture guard: collapsed is the default"
+        );
         assert!(click(&mut app), "a click inside the row's measured rect expands it");
         assert!(app.selection().is_none(), "and is consumed, not left to start a drag");
         assert!(!click(&mut app), "and clicking it again collapses it");
@@ -4815,9 +5027,9 @@ mod tests {
         let (msg_idx, block_idx) = append_tool_call_block(&mut app, "tool-1");
         let chat_width: u16 = 40;
         let tool_height: usize = 4;
-        let layout_generation = app.viewport().layout_generation;
+        let layout_generation = app.viewport().expect("active session").layout_generation;
         if let MessageBlock::ToolCall(tc) =
-            &mut app.active_messages_mut()[msg_idx].blocks[block_idx]
+            &mut app.active_messages_mut().expect("active session")[msg_idx].blocks[block_idx]
         {
             tc.last_measured_width = chat_width;
             tc.last_measured_height = tool_height;
@@ -4827,8 +5039,8 @@ mod tests {
         } else {
             panic!("seeded tool-call block not found");
         }
-        app.active_viewport_mut().height_prefix_sums = vec![tool_height];
-        app.active_viewport_mut().scroll_offset = 0;
+        app.active_viewport_mut().expect("active session").height_prefix_sums = vec![tool_height];
+        app.active_viewport_mut().expect("active session").scroll_offset = 0;
         app.rendered_chat_area = Rect::new(0, 0, chat_width, 10);
         app.tools_collapsed = false;
 
@@ -4851,7 +5063,9 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             }),
         );
-        let MessageBlock::ToolCall(tc) = &app.messages()[msg_idx].blocks[block_idx] else {
+        let MessageBlock::ToolCall(tc) =
+            &app.messages().expect("active session")[msg_idx].blocks[block_idx]
+        else {
             panic!("tool-call block missing post-click");
         };
         assert_eq!(tc.collapsed_override, Some(true));
@@ -4861,9 +5075,9 @@ mod tests {
         // mark_tool_call_layout_dirty zeroed the cached measurement so a
         // real re-render would re-fill it. The test doesn't run the
         // render pass, so re-prime manually before the second click.
-        let layout_generation = app.viewport().layout_generation;
+        let layout_generation = app.viewport().expect("active session").layout_generation;
         if let MessageBlock::ToolCall(tc) =
-            &mut app.active_messages_mut()[msg_idx].blocks[block_idx]
+            &mut app.active_messages_mut().expect("active session")[msg_idx].blocks[block_idx]
         {
             tc.last_measured_width = chat_width;
             tc.last_measured_height = tool_height;
@@ -4882,7 +5096,9 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             }),
         );
-        let MessageBlock::ToolCall(tc) = &app.messages()[msg_idx].blocks[block_idx] else {
+        let MessageBlock::ToolCall(tc) =
+            &app.messages().expect("active session")[msg_idx].blocks[block_idx]
+        else {
             panic!("tool-call block missing post-second-click");
         };
         assert_eq!(tc.collapsed_override, Some(false));
@@ -4904,13 +5120,13 @@ mod tests {
         tool.last_measured_height = 3;
         tool.last_measured_y_in_msg = 2; // sits after the 2-row text block
 
-        app.active_messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
             MessageBlock::Text(text_block),
             MessageBlock::ToolCall(Box::new(tool)),
         ]));
         app.index_tool_call("tool-x".into(), 0, 1);
-        app.active_viewport_mut().height_prefix_sums = vec![5]; // text(2) + tool(3)
-        app.active_viewport_mut().scroll_offset = 0;
+        app.active_viewport_mut().expect("active session").height_prefix_sums = vec![5]; // text(2) + tool(3)
+        app.active_viewport_mut().expect("active session").scroll_offset = 0;
         app.rendered_chat_area = Rect::new(0, 0, chat_width, 10);
 
         // Click on the text portion (row 0) inside the chat area.
@@ -4923,7 +5139,8 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             }),
         );
-        let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[1] else {
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[0].blocks[1]
+        else {
             panic!("tool-call block missing");
         };
         assert!(tc.collapsed_override.is_none());
@@ -4935,9 +5152,9 @@ mod tests {
     fn dragging_uses_displayed_thumb_track_when_scrollbar_is_smoothed() {
         let mut app = make_test_app();
         app.rendered_chat_area = Rect::new(0, 0, 19, 10);
-        app.active_viewport_mut().height_prefix_sums = vec![30];
-        app.active_viewport_mut().scrollbar_thumb_top = 2.0;
-        app.active_viewport_mut().scrollbar_thumb_size = 6.0;
+        app.active_viewport_mut().expect("active session").height_prefix_sums = vec![30];
+        app.active_viewport_mut().expect("active session").scrollbar_thumb_top = 2.0;
+        app.active_viewport_mut().expect("active session").scrollbar_thumb_size = 6.0;
 
         handle_terminal_event(
             &mut app,
@@ -4958,50 +5175,50 @@ mod tests {
             }),
         );
 
-        assert_eq!(app.viewport().scroll_target, 20);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 20);
     }
 
     #[test]
     fn up_down_without_focus_scrolls_chat() {
         let mut app = make_test_app();
-        app.active_viewport_mut().scroll_target = 5;
-        app.active_viewport_mut().auto_scroll = true;
+        app.active_viewport_mut().expect("active session").scroll_target = 5;
+        app.active_viewport_mut().expect("active session").auto_scroll = true;
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.viewport().scroll_target, 4);
-        assert!(!app.viewport().auto_scroll);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 4);
+        assert!(!app.viewport().expect("active session").auto_scroll);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.viewport().scroll_target, 5);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 5);
     }
 
     #[test]
     fn up_down_moves_input_cursor_when_multiline() {
         let mut app = make_test_app();
-        app.input_mut().set_text("line1\nline2\nline3");
-        let _ = app.input_mut().set_cursor(1, 3);
-        app.active_viewport_mut().scroll_target = 7;
+        app.input_mut().expect("active session").set_text("line1\nline2\nline3");
+        let _ = app.input_mut().expect("active session").set_cursor(1, 3);
+        app.active_viewport_mut().expect("active session").scroll_target = 7;
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.input().cursor_row(), 0);
-        assert_eq!(app.viewport().scroll_target, 7);
+        assert_eq!(app.input().expect("active session").cursor_row(), 0);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 7);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.input().cursor_row(), 1);
-        assert_eq!(app.viewport().scroll_target, 7);
+        assert_eq!(app.input().expect("active session").cursor_row(), 1);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 7);
     }
 
     #[test]
     fn down_at_input_bottom_falls_back_to_chat_scroll() {
         let mut app = make_test_app();
-        app.input_mut().set_text("line1\nline2");
-        let _ = app.input_mut().set_cursor(1, 0);
-        app.active_viewport_mut().scroll_target = 2;
+        app.input_mut().expect("active session").set_text("line1\nline2");
+        let _ = app.input_mut().expect("active session").set_cursor(1, 0);
+        app.active_viewport_mut().expect("active session").scroll_target = 2;
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
-        assert_eq!(app.input().cursor_row(), 1);
-        assert_eq!(app.viewport().scroll_target, 3);
+        assert_eq!(app.input().expect("active session").cursor_row(), 1);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 3);
     }
 
     #[test]
@@ -5011,7 +5228,7 @@ mod tests {
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
         crate::app::config::open_extensions(&mut app).expect("open extensions");
-        app.input_mut().set_text("seed");
+        app.input_mut().expect("active session").set_text("seed");
 
         handle_terminal_event(
             &mut app,
@@ -5019,7 +5236,7 @@ mod tests {
         );
 
         assert_eq!(app.active_view, ActiveView::Chat);
-        assert_eq!(app.input().text(), "seed");
+        assert_eq!(app.input().expect("active session").text(), "seed");
         assert!(app.pending_submit().is_none());
     }
 
@@ -5030,8 +5247,8 @@ mod tests {
 
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-        assert!(app.pending_paste_text().is_empty());
-        assert!(app.input().is_empty());
+        assert!(app.pending_paste_text().unwrap_or_default().is_empty());
+        assert!(app.input().expect("active session").is_empty());
     }
 
     #[test]
@@ -5086,15 +5303,15 @@ mod tests {
         );
 
         assert!(app.slash().is_some(), "a bare modifier must not tear down autocomplete");
-        assert_eq!(app.input().text(), "/");
+        assert_eq!(app.input().expect("active session").text(), "/");
     }
 
     #[test]
     fn settings_view_ignores_mouse_events() {
         let mut app = make_test_app();
         app.active_view = ActiveView::Extensions;
-        app.active_viewport_mut().scroll_target = 4;
-        *app.selection_mut() = Some(SelectionState {
+        app.active_viewport_mut().expect("active session").scroll_target = 4;
+        *app.selection_mut().expect("active session") = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },
             end: SelectionPoint { row: 0, col: 1 },
@@ -5111,7 +5328,7 @@ mod tests {
             }),
         );
 
-        assert_eq!(app.viewport().scroll_target, 4);
+        assert_eq!(app.viewport().expect("active session").scroll_target, 4);
         assert!(app.selection().is_some());
     }
 
@@ -5140,7 +5357,7 @@ mod tests {
         );
 
         assert!(!app.needs_redraw);
-        assert!(app.input().is_empty());
+        assert!(app.input().expect("active session").is_empty());
     }
 
     #[test]
@@ -5176,9 +5393,10 @@ mod tests {
             ),
         );
 
-        assert_eq!(app.messages().len(), 1);
+        assert_eq!(app.messages().expect("active session").len(), 1);
         assert_eq!(app.turn_notice_refs().len(), 1);
-        let MessageBlock::Notice(notice) = &app.messages()[0].blocks[0] else {
+        let MessageBlock::Notice(notice) = &app.messages().expect("active session")[0].blocks[0]
+        else {
             panic!("expected API retry notice");
         };
         assert_eq!(notice.severity, SystemSeverity::Warning);
@@ -5221,7 +5439,8 @@ mod tests {
     fn background_turn_error_records_failed_turn_from_last_retry() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
             Some((forge_primitives::ApiRetryError::BillingError, Some(402)));
 
@@ -5248,7 +5467,8 @@ mod tests {
     fn background_turn_error_without_retries_records_unknown_failure() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
 
         apply_session_update(
             &mut app,
@@ -5273,7 +5493,8 @@ mod tests {
     fn server_error_turn_error_arms_a_continuation_instead_of_an_attention_row() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
             Some((forge_primitives::ApiRetryError::ServerError, Some(529)));
 
@@ -5301,7 +5522,8 @@ mod tests {
     fn server_error_turn_error_falls_through_to_attention_once_the_cap_is_spent() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         let bucket = app.sessions.get_mut(&bg).expect("bucket");
         bucket.last_api_retry = Some((forge_primitives::ApiRetryError::ServerError, Some(529)));
         bucket.auto_continue_attempts = super::auto_continue::MAX_ATTEMPTS;
@@ -5329,7 +5551,8 @@ mod tests {
     fn rate_limit_turn_error_goes_straight_to_the_attention_row() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
             Some((forge_primitives::ApiRetryError::RateLimit, Some(429)));
 
@@ -5354,7 +5577,7 @@ mod tests {
     fn cancelled_background_turn_records_no_failure() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        let mut bucket = crate::app::session::UiSession::new(bg.clone());
+        let mut bucket = crate::app::session::UiSession::new(bg.clone(), "test-project");
         bucket.pending_cancel = true;
         app.sessions.insert(bg.clone(), bucket);
 
@@ -5382,7 +5605,8 @@ mod tests {
         let mut app = make_test_app();
         // A second bucket, never selected: a background session.
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
 
         apply_session_update(
             &mut app,
@@ -5399,10 +5623,14 @@ mod tests {
     fn switch_active_session_clears_unseen_completion() {
         let mut app = make_test_app();
         let bg = forge_workspace::SessionKey::from_session_id("bg-session");
-        app.sessions.insert(bg.clone(), crate::app::session::UiSession::new(bg.clone()));
+        app.sessions
+            .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         // A second background session whose turn also wrapped unseen.
         let other = forge_workspace::SessionKey::from_session_id("bg-session-2");
-        app.sessions.insert(other.clone(), crate::app::session::UiSession::new(other.clone()));
+        app.sessions.insert(
+            other.clone(),
+            crate::app::session::UiSession::new(other.clone(), "test-project"),
+        );
 
         apply_session_update(
             &mut app,
@@ -5452,7 +5680,7 @@ mod tests {
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
-        assert_eq!(app.input().text(), "Write focused tests");
+        assert_eq!(app.input().expect("active session").text(), "Write focused tests");
         assert!(app.prompt_suggestion().is_none());
     }
 
@@ -5484,7 +5712,7 @@ mod tests {
     #[test]
     fn info_notice_mid_turn_anchors_above_active_placeholder() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_msg("orchestrate workers"));
+        app.active_messages_mut().expect("active session").push(user_msg("orchestrate workers"));
         app.push_active_turn_assistant_placeholder();
         app.status = AppStatus::Running;
         let placeholder_idx = app.active_turn_assistant_idx().expect("active turn");
@@ -5493,7 +5721,7 @@ mod tests {
 
         assert!(
             matches!(
-                app.messages()[placeholder_idx].role,
+                app.messages().expect("active session")[placeholder_idx].role,
                 MessageRole::System(Some(SystemSeverity::Info))
             ),
             "Info notice anchors above the active placeholder, not at the tail",
@@ -5501,8 +5729,8 @@ mod tests {
         let shifted = app.active_turn_assistant_idx().expect("pointer still bound");
         assert_eq!(shifted, placeholder_idx + 1, "pointer follows the shifted placeholder");
         assert!(
-            matches!(app.messages()[shifted].role, MessageRole::Assistant)
-                && app.messages()[shifted].blocks.is_empty(),
+            matches!(app.messages().expect("active session")[shifted].role, MessageRole::Assistant)
+                && app.messages().expect("active session")[shifted].blocks.is_empty(),
             "placeholder intact below the notice",
         );
 
@@ -5515,7 +5743,7 @@ mod tests {
         let owner = app.active_turn_assistant_idx().expect("still bound");
         assert_eq!(owner, placeholder_idx + 1, "streaming lands on the placeholder");
         assert!(
-            app.messages()[owner]
+            app.messages().expect("active session")[owner]
                 .blocks
                 .iter()
                 .any(|b| matches!(b, MessageBlock::Text(t) if t.text.contains("streaming reply"))),
@@ -5528,19 +5756,20 @@ mod tests {
     #[test]
     fn info_notice_when_idle_appends_at_tail() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_msg("hi"));
+        app.active_messages_mut().expect("active session").push(user_msg("hi"));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("done"))]));
         app.clear_active_turn_assistant();
         app.status = AppStatus::Ready;
-        let before_len = app.messages().len();
+        let before_len = app.messages().expect("active session").len();
 
         push_system_message_with_severity(&mut app, Some(SystemSeverity::Info), "Worker closed");
 
-        let tail = app.messages().len() - 1;
+        let tail = app.messages().expect("active session").len() - 1;
         assert_eq!(tail, before_len, "idle Info appends at the tail");
         assert!(matches!(
-            app.messages()[tail].role,
+            app.messages().expect("active session")[tail].role,
             MessageRole::System(Some(SystemSeverity::Info))
         ));
     }
@@ -5551,18 +5780,18 @@ mod tests {
     #[test]
     fn worker_closed_toast_to_active_session_anchors_without_autoscroll() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_msg("orchestrate"));
+        app.active_messages_mut().expect("active session").push(user_msg("orchestrate"));
         app.push_active_turn_assistant_placeholder();
         app.status = AppStatus::Running;
         let placeholder_idx = app.active_turn_assistant_idx().expect("active turn");
-        app.active_viewport_mut().auto_scroll = false;
+        app.active_viewport_mut().expect("active session").auto_scroll = false;
 
         let key = active_session_key(&app);
         push_system_message_to_session(&mut app, &key, Some(SystemSeverity::Info), "Worker closed");
 
         assert!(
             matches!(
-                app.messages()[placeholder_idx].role,
+                app.messages().expect("active session")[placeholder_idx].role,
                 MessageRole::System(Some(SystemSeverity::Info))
             ),
             "toast anchors above the active placeholder",
@@ -5573,7 +5802,7 @@ mod tests {
             "pointer shifted with the placeholder",
         );
         assert!(
-            !app.active_viewport_mut().auto_scroll,
+            !app.active_viewport_mut().expect("active session").auto_scroll,
             "no auto-scroll: the toast must not yank a scrolled-up reader",
         );
     }
@@ -5589,8 +5818,9 @@ mod tests {
         let mut app = make_test_app();
         // Resumed prior turn (what load_resume_history leaves), with the
         // pointer cleared as that path does at the end of replay.
-        app.active_messages_mut().push(user_msg("resumed prompt"));
+        app.active_messages_mut().expect("active session").push(user_msg("resumed prompt"));
         app.active_messages_mut()
+            .expect("active session")
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("prior turn"))]));
         app.clear_active_turn_assistant();
 
@@ -5606,7 +5836,10 @@ mod tests {
         );
 
         app.ensure_running_turn_spinner_anchor();
-        assert_eq!(app.active_turn_assistant_idx(), Some(app.messages().len() - 1));
+        assert_eq!(
+            app.active_turn_assistant_idx(),
+            Some(app.messages().expect("active session").len() - 1)
+        );
     }
 
     /// Round-2 regression: replay persists no Result records, so a
@@ -5618,20 +5851,21 @@ mod tests {
     #[test]
     fn running_anchor_pushes_fresh_for_resumed_completed_tail() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_msg("q1"));
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
-            TextBlock::from_complete("prior answer"),
-        )]));
+        app.active_messages_mut().expect("active session").push(user_msg("q1"));
+        app.active_messages_mut().expect("active session").push(assistant_msg(vec![
+            MessageBlock::Text(TextBlock::from_complete("prior answer")),
+        ]));
         app.clear_active_turn_assistant();
         app.status = AppStatus::Running;
-        let completed_idx = app.messages().len() - 1;
+        let completed_idx = app.messages().expect("active session").len() - 1;
 
         app.ensure_running_turn_spinner_anchor();
 
         let anchor = app.active_turn_assistant_idx().expect("anchor bound");
         assert_ne!(anchor, completed_idx, "must not reuse the resumed-completed bubble");
         assert!(
-            anchor > completed_idx && app.messages()[anchor].blocks.is_empty(),
+            anchor > completed_idx
+                && app.messages().expect("active session")[anchor].blocks.is_empty(),
             "opened a fresh placeholder past the completed bubble",
         );
 
@@ -5642,13 +5876,13 @@ mod tests {
             ))),
         );
         assert_eq!(
-            app.messages()[completed_idx].blocks.len(),
+            app.messages().expect("active session")[completed_idx].blocks.len(),
             1,
             "historical bubble untouched by the next turn's stream",
         );
         let owner = app.active_turn_assistant_idx().expect("bound");
         assert!(
-            app.messages()[owner]
+            app.messages().expect("active session")[owner]
                 .blocks
                 .iter()
                 .any(|b| matches!(b, MessageBlock::Text(t) if t.text.contains("new turn"))),
@@ -5674,9 +5908,12 @@ mod tests {
             ),
         );
 
-        assert_eq!(app.messages().len(), 1);
-        assert!(matches!(app.messages()[0].role, MessageRole::System(Some(SystemSeverity::Error))));
-        let MessageBlock::Text(text) = &app.messages()[0].blocks[0] else {
+        assert_eq!(app.messages().expect("active session").len(), 1);
+        assert!(matches!(
+            app.messages().expect("active session")[0].role,
+            MessageRole::System(Some(SystemSeverity::Error))
+        ));
+        let MessageBlock::Text(text) = &app.messages().expect("active session")[0].blocks[0] else {
             panic!("expected settings parse error text");
         };
         assert_eq!(

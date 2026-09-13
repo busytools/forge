@@ -70,8 +70,10 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
 }
 
 fn request_context_usage_refresh_at(app: &mut App, now: Instant) {
-    if app.session_usage().context_usage_in_flight {
-        app.session_usage_mut().context_usage_refresh_pending = Some(RefreshPending::Auto);
+    if app.session_usage().is_some_and(|usage| usage.context_usage_in_flight) {
+        if let Some(usage) = app.session_usage_mut() {
+            usage.context_usage_refresh_pending = Some(RefreshPending::Auto);
+        }
         if let Some(session_id) = app.session_id() {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
@@ -83,7 +85,7 @@ fn request_context_usage_refresh_at(app: &mut App, now: Instant) {
         return;
     }
 
-    if let Some(tokens) = snapshot_transcript_tokens(app.session_usage())
+    if let Some(tokens) = app.session_usage().and_then(snapshot_transcript_tokens)
         && tokens >= CONTEXT_USAGE_TOKEN_GATE
     {
         tracing::debug!(
@@ -95,7 +97,7 @@ fn request_context_usage_refresh_at(app: &mut App, now: Instant) {
         return;
     }
 
-    if let Some(last) = app.session_usage().context_usage_last_sent
+    if let Some(last) = app.session_usage().and_then(|usage| usage.context_usage_last_sent)
         && now.duration_since(last) < CONTEXT_USAGE_MIN_SEND_INTERVAL
     {
         tracing::debug!(
@@ -113,8 +115,10 @@ fn request_context_usage_refresh_at(app: &mut App, now: Instant) {
 /// path - today the post-/compact refresh, where the displayed
 /// percentage is guaranteed stale.
 pub(crate) fn request_context_usage_refresh_forced(app: &mut App) {
-    if app.session_usage().context_usage_in_flight {
-        app.session_usage_mut().context_usage_refresh_pending = Some(RefreshPending::Forced);
+    if app.session_usage().is_some_and(|usage| usage.context_usage_in_flight) {
+        if let Some(usage) = app.session_usage_mut() {
+            usage.context_usage_refresh_pending = Some(RefreshPending::Forced);
+        }
         return;
     }
     send_context_usage_request(app, Instant::now());
@@ -135,8 +139,7 @@ fn send_context_usage_request(app: &mut App, now: Instant) {
     };
 
     let session_id = session_id.to_string();
-    {
-        let usage = app.session_usage_mut();
+    if let Some(usage) = app.session_usage_mut() {
         usage.context_usage_in_flight = true;
         usage.context_usage_refresh_pending = None;
         usage.context_usage_last_sent = Some(now);
@@ -150,7 +153,9 @@ fn send_context_usage_request(app: &mut App, now: Instant) {
             session_id = %session_id,
         ),
         Err(error) => {
-            app.session_usage_mut().context_usage_in_flight = false;
+            if let Some(usage) = app.session_usage_mut() {
+                usage.context_usage_in_flight = false;
+            }
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "context_usage_request_failed",
@@ -222,12 +227,14 @@ pub(crate) fn apply_context_usage_snapshot(
     percentage: Option<u8>,
     max_tokens: Option<u64>,
 ) {
-    let refresh_pending = {
-        let usage = app.session_usage_mut();
-        usage.context_usage_percent = percentage;
-        usage.context_max_tokens = max_tokens;
-        usage.context_usage_in_flight = false;
-        std::mem::take(&mut usage.context_usage_refresh_pending)
+    let refresh_pending = match app.session_usage_mut() {
+        Some(usage) => {
+            usage.context_usage_percent = percentage;
+            usage.context_max_tokens = max_tokens;
+            usage.context_usage_in_flight = false;
+            std::mem::take(&mut usage.context_usage_refresh_pending)
+        }
+        None => None,
     };
     match refresh_pending {
         Some(RefreshPending::Forced) => request_context_usage_refresh_forced(app),
@@ -237,9 +244,10 @@ pub(crate) fn apply_context_usage_snapshot(
 }
 
 fn clear_context_usage_refresh_state(app: &mut App) {
-    let usage = app.session_usage_mut();
-    usage.context_usage_in_flight = false;
-    usage.context_usage_refresh_pending = None;
+    if let Some(usage) = app.session_usage_mut() {
+        usage.context_usage_in_flight = false;
+        usage.context_usage_refresh_pending = None;
+    }
 }
 
 #[cfg(test)]
@@ -291,9 +299,9 @@ mod tests {
         request_context_usage_refresh(&mut app);
         request_context_usage_refresh(&mut app);
 
-        assert!(app.session_usage().context_usage_in_flight);
+        assert!(app.session_usage().expect("active session").context_usage_in_flight);
         assert_eq!(
-            app.session_usage().context_usage_refresh_pending,
+            app.session_usage().expect("active session").context_usage_refresh_pending,
             Some(super::RefreshPending::Auto)
         );
         let envelope = rx.try_recv().expect("context usage command");
@@ -328,13 +336,13 @@ mod tests {
     fn request_context_usage_refresh_skips_auto_refresh_on_large_transcripts() {
         let (mut app, mut rx) = app_with_connection();
 
-        app.session_usage_mut().context_usage_percent = Some(50);
-        app.session_usage_mut().context_max_tokens = Some(1_000_000);
+        app.session_usage_mut().expect("active session").context_usage_percent = Some(50);
+        app.session_usage_mut().expect("active session").context_max_tokens = Some(1_000_000);
         request_context_usage_refresh(&mut app);
         assert!(rx.try_recv().is_err(), "at the token gate the auto refresh is skipped");
-        assert!(!app.session_usage().context_usage_in_flight);
+        assert!(!app.session_usage().expect("active session").context_usage_in_flight);
 
-        app.session_usage_mut().context_usage_percent = Some(40);
+        app.session_usage_mut().expect("active session").context_usage_percent = Some(40);
         request_context_usage_refresh(&mut app);
         let envelope = rx.try_recv().expect("below the token gate the refresh still sends");
         assert!(matches!(
@@ -347,8 +355,8 @@ mod tests {
     fn auto_context_usage_refresh_resumes_after_compaction_lowers_the_snapshot() {
         let (mut app, mut rx) = app_with_connection();
 
-        app.session_usage_mut().context_usage_percent = Some(80);
-        app.session_usage_mut().context_max_tokens = Some(1_000_000);
+        app.session_usage_mut().expect("active session").context_usage_percent = Some(80);
+        app.session_usage_mut().expect("active session").context_max_tokens = Some(1_000_000);
         request_context_usage_refresh(&mut app);
         assert!(rx.try_recv().is_err(), "gated while the snapshot is huge");
 
@@ -366,9 +374,10 @@ mod tests {
     fn request_context_usage_refresh_forced_bypasses_both_gates() {
         let (mut app, mut rx) = app_with_connection();
 
-        app.session_usage_mut().context_usage_percent = Some(80);
-        app.session_usage_mut().context_max_tokens = Some(1_000_000);
-        app.session_usage_mut().context_usage_last_sent = Some(std::time::Instant::now());
+        app.session_usage_mut().expect("active session").context_usage_percent = Some(80);
+        app.session_usage_mut().expect("active session").context_max_tokens = Some(1_000_000);
+        app.session_usage_mut().expect("active session").context_usage_last_sent =
+            Some(std::time::Instant::now());
 
         request_context_usage_refresh_forced(&mut app);
 
@@ -387,7 +396,7 @@ mod tests {
         let _ = rx.try_recv().expect("initial send");
         request_context_usage_refresh_forced(&mut app);
         assert_eq!(
-            app.session_usage().context_usage_refresh_pending,
+            app.session_usage().expect("active session").context_usage_refresh_pending,
             Some(super::RefreshPending::Forced)
         );
         assert!(rx.try_recv().is_err(), "still in flight, nothing new sent");
@@ -410,9 +419,11 @@ mod tests {
 
         apply_context_usage_snapshot(&mut app, Some(62), Some(200_000));
 
-        assert_eq!(app.session_usage().context_usage_percent, Some(62));
-        assert!(!app.session_usage().context_usage_in_flight);
-        assert!(app.session_usage().context_usage_refresh_pending.is_none());
+        assert_eq!(app.session_usage().expect("active session").context_usage_percent, Some(62));
+        assert!(!app.session_usage().expect("active session").context_usage_in_flight);
+        assert!(
+            app.session_usage().expect("active session").context_usage_refresh_pending.is_none()
+        );
         assert!(
             rx.try_recv().is_err(),
             "the pending refresh inside the min interval is served by the fresh snapshot, not re-sent"

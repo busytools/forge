@@ -389,7 +389,7 @@ fn afterglow_colour(border: &DictateBorder, now: Instant) -> Option<[f32; 3]> {
 /// the colour to draw it in, or `None` when no handoff is in flight
 /// and the plain orange must stand.
 pub(crate) fn border_color(app: &mut App, now: Instant) -> Option<Color> {
-    let bucket = app.try_active_bucket_mut()?;
+    let bucket = app.active_bucket_mut()?;
     if bucket
         .dictate_border
         .as_ref()
@@ -559,7 +559,7 @@ pub(crate) fn dictate_row_visible(app: &App) -> bool {
 pub(crate) fn dictate_row_content(app: &mut App, width: usize) -> Line<'static> {
     let reduced_motion = app.config.prefers_reduced_motion_effective();
     let pulse_ms = app.spinner_epoch.elapsed().as_secs_f32() * 1000.0;
-    let Some(bucket) = app.try_active_bucket_mut() else { return Line::default() };
+    let Some(bucket) = app.active_bucket_mut() else { return Line::default() };
     if let Some(notice) = bucket.visible_dictate_notice() {
         return Line::from(Span::styled(
             format!("  {}", notice.text),
@@ -1150,7 +1150,7 @@ mod tests {
     fn border_targets_follow_the_take_state() {
         let mut bucket = UiSession {
             dictate: Some(DictateIndicator::recording(-50.0, 1)),
-            ..UiSession::default()
+            ..UiSession::blank(None, "test-project".to_owned())
         };
         let quiet = border_target(&bucket);
         bucket.dictate.as_mut().expect("live").push_level(-6.0);
@@ -1210,7 +1210,7 @@ mod tests {
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         let other = forge_workspace::SessionKey::from_session_id("other-project");
-        app.sessions.insert(other.clone(), UiSession::new(other.clone()));
+        app.sessions.insert(other.clone(), UiSession::new(other.clone(), "other-project"));
         {
             let bucket = app.sessions.get_mut(&other).expect("bucket");
             bucket.dictate = Some(DictateIndicator::recording(-50.0, 1));
@@ -1238,7 +1238,10 @@ mod tests {
             "landed",
             "the fallback lands the words in the owning session's draft"
         );
-        assert!(app.input().text().is_empty(), "the focused session's draft keeps nothing");
+        assert!(
+            app.input().expect("active session").text().is_empty(),
+            "the focused session's draft keeps nothing"
+        );
         let notice = app
             .sessions
             .get(&other)

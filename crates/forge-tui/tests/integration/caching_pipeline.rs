@@ -90,8 +90,8 @@ async fn streaming_creates_single_block_under_soft_limit() {
     stream_text(&mut app, "Hello world.");
     complete_turn(&mut app);
 
-    assert_eq!(app.messages().len(), 1);
-    let texts = collect_block_texts(&app.messages()[0]);
+    assert_eq!(app.messages().expect("active session").len(), 1);
+    let texts = collect_block_texts(&app.messages().expect("active session")[0]);
     assert_eq!(texts.len(), 1);
     assert_eq!(texts[0], "Hello world.");
 }
@@ -103,8 +103,8 @@ async fn streaming_accumulates_multiple_chunks() {
     stream_text(&mut app, "Part two.");
     complete_turn(&mut app);
 
-    assert_eq!(app.messages().len(), 1);
-    let texts = collect_block_texts(&app.messages()[0]);
+    assert_eq!(app.messages().expect("active session").len(), 1);
+    let texts = collect_block_texts(&app.messages().expect("active session")[0]);
     assert_eq!(texts.len(), 1);
     assert_eq!(texts[0], "Part one. Part two.");
 }
@@ -129,13 +129,16 @@ async fn streaming_splits_at_soft_limit() {
     stream_text(&mut app, &text);
     complete_turn(&mut app);
 
-    assert_eq!(app.messages().len(), 1);
-    let block_count =
-        app.messages()[0].blocks.iter().filter(|b| matches!(b, MessageBlock::Text(..))).count();
+    assert_eq!(app.messages().expect("active session").len(), 1);
+    let block_count = app.messages().expect("active session")[0]
+        .blocks
+        .iter()
+        .filter(|b| matches!(b, MessageBlock::Text(..)))
+        .count();
     assert!(block_count >= 2, "expected split, got {block_count} text blocks");
 
     // First block should not exceed the hard limit.
-    if let MessageBlock::Text(first_block) = &app.messages()[0].blocks[0] {
+    if let MessageBlock::Text(first_block) = &app.messages().expect("active session")[0].blocks[0] {
         assert!(
             first_block.text.len() <= DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
             "first block {} bytes exceeds hard limit {}",
@@ -167,12 +170,15 @@ async fn streaming_splits_at_hard_limit() {
     stream_text(&mut app, &text);
     complete_turn(&mut app);
 
-    assert_eq!(app.messages().len(), 1);
-    let block_count =
-        app.messages()[0].blocks.iter().filter(|b| matches!(b, MessageBlock::Text(..))).count();
+    assert_eq!(app.messages().expect("active session").len(), 1);
+    let block_count = app.messages().expect("active session")[0]
+        .blocks
+        .iter()
+        .filter(|b| matches!(b, MessageBlock::Text(..)))
+        .count();
     assert!(block_count >= 2, "expected hard split, got {block_count} text blocks");
 
-    if let MessageBlock::Text(first_block) = &app.messages()[0].blocks[0] {
+    if let MessageBlock::Text(first_block) = &app.messages().expect("active session")[0].blocks[0] {
         assert!(
             first_block.text.len() <= DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
             "first block {} bytes exceeds hard limit {}",
@@ -187,7 +193,9 @@ async fn budget_enforcement_no_eviction_under_budget() {
     let mut app = test_app();
 
     // Create a message with a small cache.
-    app.active_messages_mut().push(assistant_message_with_cache("short line"));
+    app.active_messages_mut()
+        .expect("active session")
+        .push(assistant_message_with_cache("short line"));
     complete_turn(&mut app);
 
     let stats = app.enforce_render_cache_budget();
@@ -203,9 +211,15 @@ async fn budget_enforcement_evicts_lru_when_over_budget() {
     // Insert 3 messages with caches that each exceed 50 bytes.
     // Stored in order: msg 0 (oldest tick), msg 1, msg 2 (newest tick).
     let big_text = "x".repeat(80);
-    app.active_messages_mut().push(assistant_message_with_cache(&big_text));
-    app.active_messages_mut().push(assistant_message_with_cache(&big_text));
-    app.active_messages_mut().push(assistant_message_with_cache(&big_text));
+    app.active_messages_mut()
+        .expect("active session")
+        .push(assistant_message_with_cache(&big_text));
+    app.active_messages_mut()
+        .expect("active session")
+        .push(assistant_message_with_cache(&big_text));
+    app.active_messages_mut()
+        .expect("active session")
+        .push(assistant_message_with_cache(&big_text));
 
     let stats = app.enforce_render_cache_budget();
     assert!(stats.evicted_blocks > 0, "expected evictions, got 0");
@@ -224,8 +238,12 @@ async fn budget_enforcement_protects_streaming_tail() {
     app.render_cache_budget.max_bytes = 100;
 
     let big_text = "x".repeat(80);
-    app.active_messages_mut().push(assistant_message_with_cache(&big_text));
-    app.active_messages_mut().push(assistant_message_with_cache(&big_text));
+    app.active_messages_mut()
+        .expect("active session")
+        .push(assistant_message_with_cache(&big_text));
+    app.active_messages_mut()
+        .expect("active session")
+        .push(assistant_message_with_cache(&big_text));
 
     // Set streaming state -- last message is protected.
     app.status = AppStatus::Running;
@@ -234,7 +252,7 @@ async fn budget_enforcement_protects_streaming_tail() {
     assert!(stats.protected_bytes > 0, "tail message should be protected during streaming");
 
     // Last message's cache should still have bytes.
-    let last_msg = app.messages().last().expect("should have messages");
+    let last_msg = app.messages().expect("active session").last().expect("should have messages");
     let last_cached: usize = last_msg
         .blocks
         .iter()
@@ -257,19 +275,19 @@ async fn history_retention_drops_oldest_under_pressure() {
     // Push 5 messages with ~2KB text each.
     let text = "y".repeat(2000);
     for _ in 0..5 {
-        app.active_messages_mut().push(user_text_message(&text));
+        app.active_messages_mut().expect("active session").push(user_text_message(&text));
     }
 
     // Set a budget that can hold ~2 messages.
-    app.history_retention_mut().max_bytes = 4_000;
+    app.history_retention_mut().expect("active session").max_bytes = 4_000;
 
     let stats = app.enforce_history_retention();
     assert!(stats.dropped_messages >= 1, "expected drops, got {}", stats.dropped_messages);
     assert!(
-        app.measure_history_bytes() <= app.history_retention().max_bytes,
+        app.measure_history_bytes() <= app.history_retention().expect("active session").max_bytes,
         "remaining {} should be <= budget {}",
         app.measure_history_bytes(),
-        app.history_retention().max_bytes,
+        app.history_retention().expect("active session").max_bytes,
     );
 }
 
@@ -279,14 +297,14 @@ async fn history_retention_inserts_hidden_marker() {
 
     let text = "y".repeat(2000);
     for _ in 0..5 {
-        app.active_messages_mut().push(user_text_message(&text));
+        app.active_messages_mut().expect("active session").push(user_text_message(&text));
     }
-    app.history_retention_mut().max_bytes = 4_000;
+    app.history_retention_mut().expect("active session").max_bytes = 4_000;
 
     let _ = app.enforce_history_retention();
 
     // The marker is a system message whose text starts with "Older messages hidden".
-    let has_marker = app.messages().iter().any(|msg| {
+    let has_marker = app.messages().expect("active session").iter().any(|msg| {
         matches!(msg.role, MessageRole::System(_))
             && msg.blocks.iter().any(|b| match b {
                 MessageBlock::Text(block) => block.text.starts_with("Older messages hidden"),
@@ -334,19 +352,22 @@ async fn full_pipeline_stream_split_and_measure_height() {
     complete_turn(&mut app);
 
     // Verify blocks were split.
-    assert_eq!(app.messages().len(), 1);
-    let block_count =
-        app.messages()[0].blocks.iter().filter(|b| matches!(b, MessageBlock::Text(..))).count();
+    assert_eq!(app.messages().expect("active session").len(), 1);
+    let block_count = app.messages().expect("active session")[0]
+        .blocks
+        .iter()
+        .filter(|b| matches!(b, MessageBlock::Text(..)))
+        .count();
     assert!(block_count >= 2, "expected split, got {block_count} blocks");
 
     // Set viewport width.
-    let _ = app.active_viewport_mut().on_frame(80, 24);
+    let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
 
     // Measure height.
     let spinner = inactive_spinner();
-    let layout_generation = app.viewport().layout_generation;
+    let layout_generation = app.viewport().expect("active session").layout_generation;
     let (height, _wrapped) = measure_message_height_cached(
-        &mut app.active_messages_mut()[0],
+        &mut app.active_messages_mut().expect("active session")[0],
         &spinner,
         80,
         layout_generation,
@@ -354,12 +375,12 @@ async fn full_pipeline_stream_split_and_measure_height() {
     assert!(height > 0, "measured height should be > 0");
 
     // Set height + rebuild prefix sums.
-    app.active_viewport_mut().set_message_height(0, height);
-    app.active_viewport_mut().mark_heights_valid();
-    app.active_viewport_mut().rebuild_prefix_sums();
+    app.active_viewport_mut().expect("active session").set_message_height(0, height);
+    app.active_viewport_mut().expect("active session").mark_heights_valid();
+    app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
-    assert!(app.active_viewport_mut().total_message_height() >= height);
-    assert_eq!(app.active_viewport_mut().find_first_visible(0), 0);
+    assert!(app.active_viewport_mut().expect("active session").total_message_height() >= height);
+    assert_eq!(app.active_viewport_mut().expect("active session").find_first_visible(0), 0);
 }
 
 #[tokio::test]
@@ -369,26 +390,26 @@ async fn invalidation_from_streaming_preserves_fast_path() {
     // Stream first message and complete.
     stream_text(&mut app, "First message content.");
     complete_turn(&mut app);
-    assert_eq!(app.messages().len(), 1);
+    assert_eq!(app.messages().expect("active session").len(), 1);
 
     // Set up viewport with valid heights and prefix sums.
-    let _ = app.active_viewport_mut().on_frame(80, 24);
-    app.active_viewport_mut().set_message_height(0, 5);
-    app.active_viewport_mut().mark_heights_valid();
-    app.active_viewport_mut().rebuild_prefix_sums();
+    let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+    app.active_viewport_mut().expect("active session").set_message_height(0, 5);
+    app.active_viewport_mut().expect("active session").mark_heights_valid();
+    app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
     // Insert a user message so the next streaming chunk creates a new assistant message
     // (consecutive assistant chunks merge into the last assistant message by design).
-    app.active_messages_mut().push(user_text_message("follow-up prompt"));
+    app.active_messages_mut().expect("active session").push(user_text_message("follow-up prompt"));
 
     // Stream second assistant message.
     stream_text(&mut app, "Second message content.");
-    assert_eq!(app.messages().len(), 3); // msg 0: assistant, msg 1: user, msg 2: assistant
+    assert_eq!(app.messages().expect("active session").len(), 3); // msg 0: assistant, msg 1: user, msg 2: assistant
 
     // The new assistant message dirties itself, and the previous tail user message
     // may also be dirtied because it stops being the last message and regains its
     // trailing separator row. Earlier non-tail messages should remain untouched.
-    if let Some(stale) = app.active_viewport_mut().oldest_stale_index() {
+    if let Some(stale) = app.active_viewport_mut().expect("active session").oldest_stale_index() {
         assert!(
             stale >= 1,
             "oldest stale message should be >= 1 (previous tail or new assistant), got {stale}"
@@ -404,27 +425,27 @@ async fn resize_invalidates_all_heights() {
     // Stream 2 assistant messages with a user message in between.
     stream_text(&mut app, "Message one.");
     complete_turn(&mut app);
-    app.active_messages_mut().push(user_text_message("next prompt"));
+    app.active_messages_mut().expect("active session").push(user_text_message("next prompt"));
     stream_text(&mut app, "Message two.");
     complete_turn(&mut app);
-    assert_eq!(app.messages().len(), 3); // assistant, user, assistant
+    assert_eq!(app.messages().expect("active session").len(), 3); // assistant, user, assistant
 
     // Set up viewport at width 80 with valid caches.
-    let _ = app.active_viewport_mut().on_frame(80, 24);
-    app.active_viewport_mut().set_message_height(0, 5);
-    app.active_viewport_mut().set_message_height(1, 3);
-    app.active_viewport_mut().set_message_height(2, 10);
-    app.active_viewport_mut().mark_heights_valid();
-    app.active_viewport_mut().rebuild_prefix_sums();
-    let old_prefix_width = app.viewport().prefix_sums_width;
-    assert_eq!(app.viewport().message_heights_width, 80);
-    assert_eq!(app.viewport().prefix_sums_width, 80);
+    let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+    app.active_viewport_mut().expect("active session").set_message_height(0, 5);
+    app.active_viewport_mut().expect("active session").set_message_height(1, 3);
+    app.active_viewport_mut().expect("active session").set_message_height(2, 10);
+    app.active_viewport_mut().expect("active session").mark_heights_valid();
+    app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+    let old_prefix_width = app.viewport().expect("active session").prefix_sums_width;
+    assert_eq!(app.viewport().expect("active session").message_heights_width, 80);
+    assert_eq!(app.viewport().expect("active session").prefix_sums_width, 80);
 
     // Resize to 120.
-    let resized = app.active_viewport_mut().on_frame(120, 24);
+    let resized = app.active_viewport_mut().expect("active session").on_frame(120, 24);
     assert!(resized.width_changed, "should detect resize");
-    assert_ne!(app.viewport().message_heights_width, 80);
-    assert_ne!(app.viewport().prefix_sums_width, old_prefix_width);
+    assert_ne!(app.viewport().expect("active session").message_heights_width, 80);
+    assert_ne!(app.viewport().expect("active session").prefix_sums_width, old_prefix_width);
 }
 
 #[tokio::test]
@@ -434,34 +455,34 @@ async fn multi_turn_message_accumulation() {
     // Turn 1: assistant response.
     stream_text(&mut app, "Turn one response.");
     complete_turn(&mut app);
-    assert_eq!(app.messages().len(), 1);
+    assert_eq!(app.messages().expect("active session").len(), 1);
 
     // Insert user message so next stream creates a new assistant message.
-    app.active_messages_mut().push(user_text_message("next prompt"));
+    app.active_messages_mut().expect("active session").push(user_text_message("next prompt"));
 
     // Turn 2: new assistant response.
     stream_text(&mut app, "Turn two response.");
     complete_turn(&mut app);
-    assert_eq!(app.messages().len(), 3); // assistant, user, assistant
+    assert_eq!(app.messages().expect("active session").len(), 3); // assistant, user, assistant
 
     // Set viewport and measure all 3 messages.
-    let _ = app.active_viewport_mut().on_frame(80, 24);
+    let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
     let spinner = inactive_spinner();
-    let layout_generation = app.viewport().layout_generation;
+    let layout_generation = app.viewport().expect("active session").layout_generation;
     let (h0, _) = measure_message_height_cached(
-        &mut app.active_messages_mut()[0],
+        &mut app.active_messages_mut().expect("active session")[0],
         &spinner,
         80,
         layout_generation,
     );
     let (h1, _) = measure_message_height_cached(
-        &mut app.active_messages_mut()[1],
+        &mut app.active_messages_mut().expect("active session")[1],
         &spinner,
         80,
         layout_generation,
     );
     let (h2, _) = measure_message_height_cached(
-        &mut app.active_messages_mut()[2],
+        &mut app.active_messages_mut().expect("active session")[2],
         &spinner,
         80,
         layout_generation,
@@ -470,19 +491,22 @@ async fn multi_turn_message_accumulation() {
     assert!(h1 > 0);
     assert!(h2 > 0);
 
-    app.active_viewport_mut().set_message_height(0, h0);
-    app.active_viewport_mut().set_message_height(1, h1);
-    app.active_viewport_mut().set_message_height(2, h2);
-    app.active_viewport_mut().mark_heights_valid();
-    app.active_viewport_mut().rebuild_prefix_sums();
+    app.active_viewport_mut().expect("active session").set_message_height(0, h0);
+    app.active_viewport_mut().expect("active session").set_message_height(1, h1);
+    app.active_viewport_mut().expect("active session").set_message_height(2, h2);
+    app.active_viewport_mut().expect("active session").mark_heights_valid();
+    app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
-    assert_eq!(app.active_viewport_mut().total_message_height(), h0 + h1 + h2);
-    assert!(
-        app.active_viewport_mut().cumulative_height_before(1)
-            <= app.active_viewport_mut().total_message_height()
+    assert_eq!(
+        app.active_viewport_mut().expect("active session").total_message_height(),
+        h0 + h1 + h2
     );
     assert!(
-        app.active_viewport_mut().cumulative_height_before(2)
-            <= app.active_viewport_mut().total_message_height()
+        app.active_viewport_mut().expect("active session").cumulative_height_before(1)
+            <= app.active_viewport_mut().expect("active session").total_message_height()
+    );
+    assert!(
+        app.active_viewport_mut().expect("active session").cumulative_height_before(2)
+            <= app.active_viewport_mut().expect("active session").total_message_height()
     );
 }

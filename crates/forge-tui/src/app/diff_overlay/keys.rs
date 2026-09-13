@@ -336,7 +336,10 @@ mod tests {
             Some("dictated words"),
             "the words land in the focused comment editor"
         );
-        assert!(app.input().text().is_empty(), "the chat draft keeps nothing");
+        assert!(
+            app.input().expect("active session").text().is_empty(),
+            "the chat draft keeps nothing"
+        );
     }
 
     /// Esc ownership: with a take live, the first Esc abandons the take
@@ -544,7 +547,10 @@ mod tests {
             Some("overview words"),
             "the words land in the overview editor"
         );
-        assert!(app.input().text().is_empty(), "the chat draft keeps nothing");
+        assert!(
+            app.input().expect("active session").text().is_empty(),
+            "the chat draft keeps nothing"
+        );
     }
 
     #[test]

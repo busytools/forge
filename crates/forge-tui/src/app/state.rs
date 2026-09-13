@@ -357,8 +357,8 @@ pub struct App {
     /// [`super::session::UiSession`] value type one bucket at a time.
     pub sessions: std::collections::HashMap<forge_workspace::SessionKey, super::session::UiSession>,
     /// Which entry of [`Self::sessions`] the renderer reads from.
-    /// `None` only in the brief pre-Connect window where no session
-    /// has landed in the map yet.
+    /// `None` while no session is focused - production boots that way
+    /// until the first spawn lands.
     pub active_session_key: Option<forge_workspace::SessionKey>,
     /// True while `active_session_key` is a pivot alias: a background
     /// frame is being routed through the active accessors and the
@@ -368,10 +368,10 @@ pub struct App {
     pub active_session_pivoted: bool,
     /// Synthetic spawn key the user asked to be taken to, set when a
     /// click wakes a cold project and consumed by the `Spawning`
-    /// reducer once that bucket exists. The reducer cannot focus
-    /// unconditionally - every `auto_start` project emits `Spawning`
-    /// at boot and the first to arrive would steal the tab - so a
-    /// user-driven wake records its intent here instead.
+    /// reducer once that bucket exists. The reducer focuses a wake by
+    /// itself only when nothing is focused, so a click that arrives
+    /// while another session holds the tab records its intent here
+    /// instead.
     pub pending_spawn_focus: Option<forge_workspace::SessionKey>,
     /// Snapshot of the durable forge crons (`mcp__forge__cron`) the
     /// active session itself created, refreshed on the ~1s ticker
@@ -661,7 +661,7 @@ pub struct App {
     // active bucket. See `App::usage` / `App::usage_mut`.
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
-    /// Central notification manager (bell + desktop toast when unfocused).
+    /// Central notification manager (bell + OSC 9 escape when unfocused).
     pub notifications: super::notify::NotificationManager,
     /// Performance logger. Present only when built with `--features perf`.
     /// Taken out (`Option::take`) during render, used, then put back to avoid
@@ -679,6 +679,12 @@ pub struct App {
     /// Forwarded to [`forge_workspace::SessionTarget::Named`] when the
     /// connection task spins up.
     pub startup_project: Option<String>,
+    /// That project's `path` from `forge.toml`, resolved at boot. The
+    /// settings documents are read before any session exists, so this
+    /// is the only project root available then - and it is deliberately
+    /// not derived from the process working directory (hard rule 14).
+    /// `None` on a launchpad boot, where no project was named.
+    pub startup_project_root: Option<std::path::PathBuf>,
     /// True while `events::session_reset::load_resume_history` is
     /// walking on-disk history through the shared SDK-message
     /// dispatcher. Replay reuses the live walker so content blocks,
@@ -731,8 +737,8 @@ impl App {
     }
 
     /// Install a fresh testing stub agent against the active
-    /// session's [`forge_workspace::DomainSession`], auto-creating a
-    /// pre-Connect bucket when no active session exists yet. Returns
+    /// session's [`forge_workspace::DomainSession`], auto-creating the
+    /// seeded test bucket when no active session exists yet. Returns
     /// the matching `forge_primitives::AgentCommand` receiver so tests can
     /// assert on the commands the workspace routes through the stub.
     ///
@@ -744,10 +750,10 @@ impl App {
         &mut self,
     ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         if self.active_session_key.is_none() {
-            let key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
-            self.sessions
-                .entry(key.clone())
-                .or_insert_with(|| super::session::UiSession::new(key.clone()));
+            let key = forge_workspace::SessionKey::from_session_id(Self::TEST_SESSION_KEY);
+            self.sessions.entry(key.clone()).or_insert_with(|| {
+                super::session::UiSession::new(key.clone(), Self::TEST_SESSION_PROJECT)
+            });
             self.active_session_key = Some(key);
         }
         let key = self.active_session_key.clone().expect("active_session_key was just set above");
@@ -762,8 +768,9 @@ impl App {
 
     /// Increment the active session's scope epoch.
     pub fn bump_session_scope_epoch(&mut self) {
-        let bucket = self.active_bucket_mut();
-        bucket.session_scope_epoch = bucket.session_scope_epoch.saturating_add(1);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.session_scope_epoch = bucket.session_scope_epoch.saturating_add(1);
+        }
     }
 
     /// Mark one presented frame at `now`, updating smoothed FPS.
@@ -787,7 +794,9 @@ impl App {
     }
 
     pub(crate) fn sync_after_message_tail_changed(&mut self, msg_idx: usize) {
-        if let Some(message) = self.active_messages_mut().get_mut(msg_idx) {
+        if let Some(message) =
+            self.active_messages_mut().and_then(|messages| messages.get_mut(msg_idx))
+        {
             message.invalidate_render_cache();
         }
         self.sync_render_cache_message_tail(msg_idx);
@@ -804,17 +813,23 @@ impl App {
         self.last_invalidation_level.set(Some(level));
         match level {
             LayoutInvalidation::MessageChanged(idx) => {
-                self.active_viewport_mut().invalidate_message(idx);
+                if let Some(viewport) = self.active_viewport_mut() {
+                    viewport.invalidate_message(idx);
+                }
             }
             LayoutInvalidation::MessagesFrom(idx) => {
-                self.active_viewport_mut().invalidate_messages_from(idx);
+                if let Some(viewport) = self.active_viewport_mut() {
+                    viewport.invalidate_messages_from(idx);
+                }
             }
             LayoutInvalidation::Global => {
-                if self.messages().is_empty() {
+                if self.messages().is_none_or(<[ChatMessage]>::is_empty) {
                     return;
                 }
-                self.active_viewport_mut().invalidate_all_messages(LayoutRemeasureReason::Global);
-                self.active_viewport_mut().bump_layout_generation();
+                if let Some(viewport) = self.active_viewport_mut() {
+                    viewport.invalidate_all_messages(LayoutRemeasureReason::Global);
+                    viewport.bump_layout_generation();
+                }
             }
             LayoutInvalidation::Resize => {
                 // Resize is handled by viewport.on_frame(). This arm exists
@@ -855,10 +870,12 @@ impl App {
     where
         I: IntoIterator<Item = usize>,
     {
-        let unique: BTreeSet<_> =
-            indices.into_iter().filter(|&idx| idx < self.messages().len()).collect();
+        let message_count = self.messages().map_or(0, <[ChatMessage]>::len);
+        let unique: BTreeSet<_> = indices.into_iter().filter(|&idx| idx < message_count).collect();
         for idx in unique {
-            self.active_viewport_mut().invalidate_message(idx);
+            if let Some(viewport) = self.active_viewport_mut() {
+                viewport.invalidate_message(idx);
+            }
         }
     }
 
@@ -869,15 +886,23 @@ impl App {
     /// instead of `enforce_history_retention()` at all non-test call sites.
     pub fn enforce_history_retention_tracked(&mut self) {
         let stats = self.enforce_history_retention();
-        let policy = self.history_retention();
-        let should_log = self.cache_metrics_mut().record_history_enforcement(&stats, policy);
-        if should_log {
+        let Some(policy) = self.history_retention() else {
+            return;
+        };
+        let Some(cache_metrics) = self.cache_metrics_mut() else {
+            return;
+        };
+        let should_log = cache_metrics.record_history_enforcement(&stats, policy);
+        if should_log
+            && let (Some(retention_stats), Some(metrics), Some(viewport)) =
+                (self.history_retention_stats(), self.cache_metrics(), self.viewport())
+        {
             let snap = cache_metrics::build_snapshot(
                 &self.render_cache_budget,
-                self.history_retention_stats(),
+                retention_stats,
                 policy,
-                self.cache_metrics(),
-                self.viewport(),
+                metrics,
+                viewport,
                 0, // entry_count not needed for history-only log
                 0,
                 stats.dropped_messages,
@@ -892,8 +917,8 @@ impl App {
     ///
     /// Wires a `Workspace::testing_stub()` so any code path that
     /// reaches `Workspace::dispatch` / `Workspace::refresh_*` finds
-    /// a registered `forge_workspace::DomainSession` keyed by the
-    /// `__conn_pending__` synthetic. The underlying `AgentHandle`
+    /// a registered `forge_workspace::DomainSession` keyed by
+    /// the `TEST_SESSION_KEY` seeded session. The underlying `AgentHandle`
     /// is the `Agent::testing_stub` no-op bridge; commands sent
     /// through it are silently dropped. Behind the `testing` Cargo
     /// feature so production builds don't pull in the stub helpers.
@@ -908,8 +933,9 @@ impl App {
         let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
         let (diff_overlay_tx, diff_overlay_rx) = std_mpsc::channel();
         let (usage_overlay_tx, usage_overlay_rx) = std_mpsc::channel();
-        let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
-        let mut pending_session = super::session::UiSession::new(pending_key.clone());
+        let pending_key = forge_workspace::SessionKey::from_session_id(Self::TEST_SESSION_KEY);
+        let mut pending_session =
+            super::session::UiSession::new(pending_key.clone(), Self::TEST_SESSION_PROJECT);
         // Seed a synthetic `current_model` so tests that depend on
         // model-resolution UI paths see a stable value.
         pending_session.current_model = Some(
@@ -924,12 +950,12 @@ impl App {
         sessions.insert(pending_key.clone(), pending_session);
 
         // Build a Workspace stub and register a DomainSession for the
-        // pre-Connect key. The DomainSession carries the routing
+        // seeded test key. The DomainSession carries the routing
         // metadata (handle slot, session_id, pending interactions);
         // tests that exercise "post-Connect" flows install a stub
         // handle via `App::install_testing_stub`, which writes onto
-        // this same DomainSession's `conn` slot. Tests that target
-        // the pre-Connect state observe `has_active_agent() == false`
+        // this same DomainSession's `conn` slot. Tests that target an
+        // unconnected session observe `has_active_agent() == false`
         // until they do.
         let (workspace, _update_rx) = forge_workspace::Workspace::testing_stub();
         workspace.register_domain_session(pending_key.clone(), None);
@@ -1038,6 +1064,7 @@ impl App {
             last_frame_at: None,
             connection_started: false,
             startup_project: None,
+            startup_project_root: None,
             replay_in_progress: false,
         }
     }
@@ -1052,7 +1079,7 @@ impl App {
         &mut self,
         snapshot: forge_workspace::env::processes::ProcessSnapshot,
     ) {
-        self.active_bucket_mut().process_snapshot = Some(snapshot);
+        self.active_bucket_mut().expect("active session").process_snapshot = Some(snapshot);
     }
 }
 
@@ -1147,103 +1174,118 @@ mod tests {
     #[test]
     fn invalidate_single_tail_preserves_prefix_sums() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
-        app.active_messages_mut().push(user_text_message("b"));
-        app.active_messages_mut().push(user_text_message("c"));
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().set_message_height(0, 5);
-        app.active_viewport_mut().set_message_height(1, 10);
-        app.active_viewport_mut().set_message_height(2, 3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("b"));
+        app.active_messages_mut().expect("active session").push(user_text_message("c"));
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 5);
+        app.active_viewport_mut().expect("active session").set_message_height(1, 10);
+        app.active_viewport_mut().expect("active session").set_message_height(2, 3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(2)); // tail
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(2));
-        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(2));
-        assert_eq!(app.viewport().prefix_sums_width, 0);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(2)
+        );
+        assert_eq!(app.active_viewport_mut().expect("active session").prefix_dirty_from(), Some(2));
+        assert_eq!(app.viewport().expect("active session").prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_single_nontail_invalidates_prefix_sums() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
-        app.active_messages_mut().push(user_text_message("b"));
-        app.active_messages_mut().push(user_text_message("c"));
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().set_message_height(0, 5);
-        app.active_viewport_mut().set_message_height(1, 10);
-        app.active_viewport_mut().set_message_height(2, 3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("b"));
+        app.active_messages_mut().expect("active session").push(user_text_message("c"));
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 5);
+        app.active_viewport_mut().expect("active session").set_message_height(1, 10);
+        app.active_viewport_mut().expect("active session").set_message_height(2, 3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(1)); // non-tail
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(1));
-        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(1));
-        assert_eq!(app.viewport().prefix_sums_width, 0);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(1)
+        );
+        assert_eq!(app.active_viewport_mut().expect("active session").prefix_dirty_from(), Some(1));
+        assert_eq!(app.viewport().expect("active session").prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_from_always_invalidates_prefix_sums() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
-        app.active_messages_mut().push(user_text_message("b"));
-        app.active_messages_mut().push(user_text_message("c"));
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().set_message_height(0, 5);
-        app.active_viewport_mut().set_message_height(1, 10);
-        app.active_viewport_mut().set_message_height(2, 3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
-        assert_ne!(app.viewport().prefix_sums_width, 0);
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("b"));
+        app.active_messages_mut().expect("active session").push(user_text_message("c"));
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 5);
+        app.active_viewport_mut().expect("active session").set_message_height(1, 10);
+        app.active_viewport_mut().expect("active session").set_message_height(2, 3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        assert_ne!(app.viewport().expect("active session").prefix_sums_width, 0);
 
         // From at tail index still invalidates prefix sums (unlike Single).
         app.invalidate_layout(InvalidationLevel::MessagesFrom(2));
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(2));
-        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(2));
-        assert_eq!(app.viewport().prefix_sums_width, 0);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(2)
+        );
+        assert_eq!(app.active_viewport_mut().expect("active session").prefix_dirty_from(), Some(2));
+        assert_eq!(app.viewport().expect("active session").prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_from_zero_matches_old_mark_all() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
-        app.active_messages_mut().push(user_text_message("b"));
-        app.active_messages_mut().push(user_text_message("c"));
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().set_message_height(0, 5);
-        app.active_viewport_mut().set_message_height(1, 10);
-        app.active_viewport_mut().set_message_height(2, 3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("b"));
+        app.active_messages_mut().expect("active session").push(user_text_message("c"));
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").set_message_height(0, 5);
+        app.active_viewport_mut().expect("active session").set_message_height(1, 10);
+        app.active_viewport_mut().expect("active session").set_message_height(2, 3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
-        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(0));
-        assert_eq!(app.viewport().prefix_sums_width, 0);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(0)
+        );
+        assert_eq!(app.active_viewport_mut().expect("active session").prefix_dirty_from(), Some(0));
+        assert_eq!(app.viewport().expect("active session").prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_global_bumps_generation() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
-        app.active_messages_mut().push(user_text_message("b"));
-        app.active_messages_mut().push(user_text_message("c"));
-        let _ = app.active_viewport_mut().on_frame(80, 24);
-        app.active_viewport_mut().sync_message_count(3);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
-        let gen_before = app.viewport().layout_generation;
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("b"));
+        app.active_messages_mut().expect("active session").push(user_text_message("c"));
+        let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
+        app.active_viewport_mut().expect("active session").sync_message_count(3);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
+        app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+        let gen_before = app.viewport().expect("active session").layout_generation;
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
-        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(0));
-        assert_eq!(app.viewport().prefix_sums_width, 0);
-        assert_eq!(app.viewport().layout_generation, gen_before + 1);
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(0)
+        );
+        assert_eq!(app.active_viewport_mut().expect("active session").prefix_dirty_from(), Some(0));
+        assert_eq!(app.viewport().expect("active session").prefix_sums_width, 0);
+        assert_eq!(app.viewport().expect("active session").layout_generation, gen_before + 1);
     }
 
     /// #310 architectural-fix regression-lock: `invalidate_layout`
@@ -1257,7 +1299,7 @@ mod tests {
     #[test]
     fn invalidate_layout_sets_needs_redraw_for_message_changed() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
         app.needs_redraw = false;
         app.invalidate_layout(InvalidationLevel::MessageChanged(0));
         assert!(
@@ -1269,7 +1311,7 @@ mod tests {
     #[test]
     fn invalidate_layout_sets_needs_redraw_for_messages_from() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
         app.needs_redraw = false;
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
         assert!(app.needs_redraw, "invalidate_layout(MessagesFrom) must set needs_redraw");
@@ -1278,7 +1320,7 @@ mod tests {
     #[test]
     fn invalidate_layout_sets_needs_redraw_for_global() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().expect("active session").push(user_text_message("a"));
         app.needs_redraw = false;
         app.invalidate_layout(InvalidationLevel::Global);
         assert!(app.needs_redraw, "invalidate_layout(Global) must set needs_redraw");
@@ -1287,13 +1329,13 @@ mod tests {
     #[test]
     fn invalidate_global_noop_on_empty() {
         let mut app = make_test_app();
-        assert!(app.messages().is_empty());
-        let gen_before = app.viewport().layout_generation;
+        assert!(app.messages().expect("active session").is_empty());
+        let gen_before = app.viewport().expect("active session").layout_generation;
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert!(app.active_viewport_mut().oldest_stale_index().is_none());
-        assert_eq!(app.viewport().layout_generation, gen_before);
+        assert!(app.active_viewport_mut().expect("active session").oldest_stale_index().is_none());
+        assert_eq!(app.viewport().expect("active session").layout_generation, gen_before);
     }
 
     #[test]
@@ -1301,16 +1343,19 @@ mod tests {
         let mut app = make_test_app();
         // Need enough messages so all indices are non-tail for consistent behavior.
         for _ in 0..10 {
-            app.active_messages_mut().push(user_text_message("x"));
+            app.active_messages_mut().expect("active session").push(user_text_message("x"));
         }
-        app.active_viewport_mut().sync_message_count(10);
-        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().expect("active session").sync_message_count(10);
+        app.active_viewport_mut().expect("active session").mark_heights_valid();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(5));
         app.invalidate_layout(InvalidationLevel::MessageChanged(2));
         app.invalidate_layout(InvalidationLevel::MessageChanged(7));
 
-        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(2));
+        assert_eq!(
+            app.active_viewport_mut().expect("active session").oldest_stale_index(),
+            Some(2)
+        );
     }
 
     #[test]

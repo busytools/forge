@@ -254,7 +254,7 @@ mod tests {
 
     fn last_message_text(app: &App) -> String {
         app.messages()
-            .last()
+            .and_then(|messages| messages.last())
             .map(|m| {
                 m.blocks
                     .iter()

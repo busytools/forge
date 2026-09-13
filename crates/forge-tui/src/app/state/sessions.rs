@@ -1,5 +1,5 @@
 //! The multi-session bucket model on `App`: which session is active,
-//! how a switch re-derives the status mirror, the pre-Connect synthetic
+//! how a switch re-derives the status mirror, the test-session fixture
 //! key, and the Inspector's NEEDS ATTENTION scan.
 
 use std::collections::HashMap;
@@ -8,24 +8,39 @@ use super::types::{AppStatus, AttentionEntry, AttentionKind, SessionUsageState};
 use crate::agent::model;
 
 impl super::App {
-    /// Synthetic session key used during the pre-Connect window
-    /// (test contexts and the brief startup interval before the
-    /// first `Connected` event lands). [`Self::set_session_id`]
-    /// migrates the bucket onto the real session key when the
-    /// claude-issued id arrives.
-    pub(crate) const PRE_CONNECT_KEY: &'static str = "__conn_pending__";
+    /// The key and project `App::test_default()` files its seeded bucket
+    /// under. A test builds an `App` with no spawn to wait for, so it
+    /// starts with one session already focused; production starts with
+    /// no session at all until the first spawn lands. The key keeps the
+    /// synthetic `__…__` shape a spawn key has, because the seeded
+    /// bucket stands in for the not-yet-renamed one production holds
+    /// between a spawn and its `Connected`.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) const TEST_SESSION_KEY: &'static str = "__test_session__";
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) const TEST_SESSION_PROJECT: &'static str = "test-project";
 
     /// Returns a reference to the currently-active session bucket,
-    /// or `None` in the brief pre-Connect window before any session
-    /// has landed in [`Self::sessions`].
+    /// or `None` while no session is focused - production boots that
+    /// way until the first spawn lands in [`Self::sessions`].
     pub fn active_session(&self) -> Option<&crate::app::session::UiSession> {
         self.active_session_key.as_ref().and_then(|key| self.sessions.get(key))
     }
 
     /// Mutable accessor for the active session bucket.
-    pub fn try_active_bucket_mut(&mut self) -> Option<&mut crate::app::session::UiSession> {
+    pub fn active_bucket_mut(&mut self) -> Option<&mut crate::app::session::UiSession> {
         let key = self.active_session_key.clone()?;
         self.sessions.get_mut(&key)
+    }
+
+    /// Whether a session arriving now takes the tab by itself. That is
+    /// the case the user asked for: nothing is focused, and the arrival
+    /// belongs to the project the CLI was launched for. A launchpad
+    /// boot names no project, so the `auto_start` spawns it dispatches
+    /// register in the background and the picker keeps the screen until
+    /// the user picks one.
+    pub(crate) fn arriving_session_takes_the_tab(&self, project: &str) -> bool {
+        self.active_session_key.is_none() && self.startup_project.as_deref() == Some(project)
     }
 
     /// Lookup a session by key (used by the event multiplexer to
@@ -158,7 +173,7 @@ impl super::App {
         crate::app::tab_title::update_tab_title(
             self.shows_activity(),
             self.spinner_frame,
-            self.cwd(),
+            self.cwd().unwrap_or(""),
         );
         // Ensure the file index for `@`-mention autocomplete is
         // started for the incoming bucket. Each bucket owns its own
@@ -178,8 +193,8 @@ impl super::App {
         // branch - file index restart, chat focus rebuild, runtime
         // tabs refresh, the same per-session refresh chain. The
         // launchpad-pick path spawns the project in the BACKGROUND
-        // branch (because `__conn_pending__` is still active at
-        // Connected time) and then relies on `switch_active_session`
+        // branch (a fresh boot has no focused session at Connected
+        // time) and then relies on `switch_active_session`
         // to bring the bucket up to the same activation level.
         // Without these calls clicking forge from the launchpad
         // leaves the chat input unfocused, the runtime tabs stale,
@@ -197,37 +212,8 @@ impl super::App {
         self.needs_redraw = true;
     }
 
-    /// Internal helper: yield a `&mut Session` for the active bucket,
-    /// auto-creating a pre-Connect synthetic bucket if no active
-    /// session exists. Used by the `_mut` accessors so call sites
-    /// can stay infallible.
-    ///
-    /// Hot path: chat render and ~50 other `_mut` accessors hit this
-    /// per frame. Uses the `HashMap::entry` API to avoid the extra
-    /// `SessionKey` clone an `if !contains { insert }` shape would
-    /// need.
-    pub(super) fn active_bucket_mut(&mut self) -> &mut crate::app::session::UiSession {
-        use std::collections::hash_map::Entry;
-        // The active key is normally already set; the synthetic
-        // fallback is the cold first-touch path.
-        let key = if let Some(key) = self.active_session_key.clone() {
-            key
-        } else {
-            let synthetic = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
-            self.active_session_key = Some(synthetic.clone());
-            synthetic
-        };
-        match self.sessions.entry(key) {
-            Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(e) => {
-                let new = crate::app::session::UiSession::new(e.key().clone());
-                e.insert(new)
-            }
-        }
-    }
-
-    /// Active session's claude session id, or `None` in the
-    /// pre-Connect window.
+    /// Active session's claude session id, or `None` when no session
+    /// is focused or its bucket has no id yet.
     ///
     /// Workspace keeps an internal copy on `DomainSession.session_id`
     /// for `AgentHandle` dispatch; TUI mirrors that id onto the
@@ -239,119 +225,30 @@ impl super::App {
             .map(|sid| model::SessionId::new(sid.to_string()))
     }
 
-    /// Set the active session's session_id. Ensures the sessions
-    /// map has an entry keyed by the id; sets `active_session_key`
-    /// to that entry.
+    /// Set the active session's session_id. Files the bucket under the
+    /// claude-issued id and points `active_session_key` at it.
     ///
-    /// `id = None` clears the active bucket's `session_id` and
-    /// `key` fields but leaves the bucket attached to
-    /// `active_session_key`. The active-path event handlers
-    /// (`auth_required`, `connection_failed`) call this from inside
-    /// a longer cleanup sequence that still needs to write into the
-    /// active bucket - finalizing in-flight tool calls to Failed,
-    /// pushing system messages - so the user can see what happened.
-    /// Removing the bucket here would orphan that work into a
-    /// freshly-minted pre-Connect bucket.
-    ///
-    /// If a synthetic-keyed bucket exists (from an earlier
-    /// `install_testing_stub` before `set_session_id` - test ordering),
-    /// migrates that bucket's contents to the real key so the conn
-    /// + session_id end up on the same bucket.
+    /// `id = None` clears the active bucket's `session_id` and `key`
+    /// fields but leaves the bucket attached to `active_session_key`.
+    /// The active-path handlers (`auth_required`, `connection_failed`)
+    /// call this from inside a longer cleanup sequence that still needs
+    /// to write into that bucket - finalizing in-flight tool calls to
+    /// Failed, pushing system messages - so the user can see what
+    /// happened. Removing the bucket there would orphan that work.
     ///
     /// Leak guard: when `active_session_key` was previously `None`
     /// (Connect-after-failure path), sweeps stale buckets from
     /// earlier disconnect cycles.
     pub fn set_session_id(&mut self, id: Option<model::SessionId>) {
-        if let Some(id) = id {
-            {
-                let prev_active_was_none = self.active_session_key.is_none();
-                let key = forge_workspace::SessionKey::from_session_id(id.to_string());
-                let primitive_id = forge_primitives::SessionId::new(id.to_string());
-                // Migrate any synthetic-keyed bucket onto the real key.
-                // Guard against the case where BOTH a synthetic bucket
-                // and the real-key bucket already exist: in that case
-                // the real bucket is authoritative, and we must NOT
-                // overwrite it with the synthetic. Stamp the real
-                // bucket's session_id and drop the synthetic.
-                let pending = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
-                if let Some(mut existing) = self.sessions.remove(&pending) {
-                    if self.sessions.contains_key(&key) {
-                        tracing::warn!(
-                            target: crate::logging::targets::APP_SESSION,
-                            event_name = "set_session_id_synthetic_dropped",
-                            message = "synthetic pre-Connect bucket dropped because the real-key bucket already existed",
-                            outcome = "dropped",
-                            session_id = %id,
-                            reason = "real_bucket_present",
-                        );
-                        drop(existing);
-                    } else {
-                        existing.key = Some(key.clone());
-                        existing.session_id = Some(primitive_id.clone());
-                        self.sessions.insert(key.clone(), existing);
-                        // Mirror the bucket re-key onto the workspace's
-                        // `DomainSession` handle map so the workspace's
-                        // `domain_session_for(real_key)` lookup keeps
-                        // resolving after the synthetic→real migration.
-                        if let Some(ws) = self.workspace.as_ref() {
-                            ws.rekey_domain_session(&pending, key.clone());
-                        }
-                    }
-                } else {
-                    let bucket = self
-                        .sessions
-                        .entry(key.clone())
-                        .or_insert_with(|| crate::app::session::UiSession::new(key.clone()));
-                    bucket.session_id = Some(primitive_id.clone());
-                }
-                if self.active_session_key.as_ref() != Some(&key) {
-                    tracing::info!(
-                        target: crate::logging::targets::APP_SESSION,
-                        event_name = "active_session_switched",
-                        outcome = "success",
-                        reason = "session_id_adoption",
-                        from = %self.active_session_key.as_ref().map_or("<none>", |k| k.as_str()),
-                        to = %key.as_str(),
-                    );
-                }
-                self.active_session_key = Some(key.clone());
-                self.refresh_status_from_active_lifecycle();
-                // Mirror `session_id` onto the workspace's
-                // DomainSession so `AgentHandle` dispatch (which
-                // routes by claude-issued session UUID) finds it.
-                // Auto-create a handle-less domain when the workspace
-                // doesn't yet have one for `key` - covers the rare
-                // test path that calls `set_session_id` before any
-                // domain is registered.
-                if let Some(ws) = self.workspace.as_ref() {
-                    if ws.domain_session_for(&key).is_none() {
-                        ws.register_domain_session(key.clone(), None);
-                    }
-                    ws.set_session_id_in_domain(&key, Some(primitive_id));
-                }
-                // If we landed on an existing bucket without going
-                // through the synthetic-migration branch above, ensure
-                // its `session_id` mirror is current.
-                if let Some(bucket) = self.sessions.get_mut(&key) {
-                    bucket.session_id = Some(forge_primitives::SessionId::new(id.to_string()));
-                }
-                // Connect-after-failure cleanup: when no session was
-                // active before this call, sweep stale buckets that
-                // accumulated across earlier disconnect cycles.
-                if prev_active_was_none {
-                    self.sessions.retain(|k, _| *k == key);
-                }
-            }
-        } else {
-            // Clear the bucket's `key` field so it stops
-            // advertising the now-stale id (the next
-            // `set_session_id(Some(...))` re-stamps it). Keep
-            // the bucket attached to `active_session_key` so
-            // the active-path handler can keep writing into it
-            // (failed tool calls, system messages - see doc
-            // comment above). Also clear the workspace's
+        let Some(id) = id else {
+            // Clear the bucket's `key` field so it stops advertising
+            // the now-stale id (the next `set_session_id(Some(...))`
+            // re-stamps it). Keep the bucket attached to
+            // `active_session_key` so the active-path handler can keep
+            // writing into it (failed tool calls, system messages - see
+            // the doc comment above). Also clear the workspace's
             // DomainSession session_id so readers observe `None`.
-            if let Some(s) = self.try_active_bucket_mut() {
+            if let Some(s) = self.active_bucket_mut() {
                 s.key = None;
                 s.session_id = None;
             }
@@ -360,6 +257,81 @@ impl super::App {
             {
                 ws.set_session_id_in_domain(key, None);
             }
+            return;
+        };
+        let prev_active_was_none = self.active_session_key.is_none();
+        let key = forge_workspace::SessionKey::from_session_id(id.to_string());
+        let primitive_id = forge_primitives::SessionId::new(id.to_string());
+        if !self.sessions.contains_key(&key) {
+            // Adopting an id is this same session acquiring the key
+            // claude issued it, so the active bucket moves onto that
+            // key - cwd, project, chat and handle included - rather
+            // than a blank one being minted beside it. The callers
+            // point `active_session_key` at the connecting session
+            // before they get here.
+            let Some(previous_key) = self.active_session_key.clone() else {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "session_id_adoption_without_session",
+                    message = "no active session to adopt the id onto",
+                    outcome = "skipped",
+                    session_id = %id,
+                );
+                return;
+            };
+            let Some(mut bucket) = self.sessions.remove(&previous_key) else {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "session_id_adoption_without_bucket",
+                    message = "no bucket for the active key to adopt the id onto",
+                    outcome = "skipped",
+                    session_id = %id,
+                    previous_key = %previous_key.as_str(),
+                );
+                return;
+            };
+            bucket.key = Some(key.clone());
+            self.sessions.insert(key.clone(), bucket);
+            // The workspace's handle lives on its `DomainSession`, so
+            // that moves with the bucket for the same reason.
+            if let Some(ws) = self.workspace.as_ref()
+                && ws.domain_session_for(&key).is_none()
+            {
+                ws.rekey_domain_session(&previous_key, key.clone());
+            }
+        }
+        if self.active_session_key.as_ref() != Some(&key) {
+            tracing::info!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "active_session_switched",
+                outcome = "success",
+                reason = "session_id_adoption",
+                from = %self.active_session_key.as_ref().map_or("<none>", |k| k.as_str()),
+                to = %key.as_str(),
+            );
+        }
+        self.active_session_key = Some(key.clone());
+        self.refresh_status_from_active_lifecycle();
+        // Mirror `session_id` onto the workspace's DomainSession so
+        // `AgentHandle` dispatch (which routes by claude-issued session
+        // UUID) finds it. Auto-create a handle-less domain when the
+        // workspace doesn't yet have one for `key` - covers the rare
+        // test path that calls `set_session_id` before any domain is
+        // registered.
+        if let Some(ws) = self.workspace.as_ref() {
+            if ws.domain_session_for(&key).is_none() {
+                ws.register_domain_session(key.clone(), None);
+            }
+            ws.set_session_id_in_domain(&key, Some(primitive_id.clone()));
+        }
+        if let Some(bucket) = self.sessions.get_mut(&key) {
+            bucket.session_id = Some(primitive_id);
+        }
+        // Connect-after-failure cleanup: when no session was active
+        // before this call, sweep stale buckets that accumulated across
+        // earlier disconnect cycles.
+        if prev_active_was_none {
+            self.sessions.retain(|k, _| *k == key);
         }
     }
 
@@ -373,24 +345,23 @@ impl super::App {
         self.set_observed_effort(None);
         self.set_pending_mode_rollback(None);
         self.set_pending_model_rollback(None);
-        *self.session_usage_mut() = SessionUsageState::default();
-        let bucket = self.active_bucket_mut();
-        bucket.dictate_overrides = forge_workspace::DictateOverrides::default();
+        if let Some(session_usage) = self.session_usage_mut() {
+            *session_usage = SessionUsageState::default();
+        }
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.dictate_overrides = forge_workspace::DictateOverrides::default();
+        }
     }
 
     /// The active tab's forge.toml project name, backing the Inspector
-    /// SCHEDULES + GOTIFY snapshots. Resolved through a robust chain so a
-    /// missing / lost per-bucket stamp can't blank the section while the
-    /// rest of the tab (GIT, PROCESSES, the pane highlight, the top bar)
-    /// renders the project fine:
+    /// SCHEDULES + GOTIFY snapshots:
     ///   1. `resolve_active_project_view` on the active KEY - the exact
     ///      resolver the projects pane + top bar use (catalog for a real
     ///      UUID, name for a `__spawn_<name>__` sentinel). Independent of
     ///      the stamp, so it resolves whenever the pane highlights the
     ///      project.
-    ///   2. The per-bucket stamp (`UiSession.project`, set at Connect).
-    ///   3. `project_name_for_path(cwd_raw)` - resolve from the active
-    ///      bucket's cwd, the same value GIT/PROCESSES read successfully.
+    ///   2. The per-bucket stamp (`UiSession.project`), which every
+    ///      bucket carries from the moment it is minted.
     pub fn active_project_name(&self) -> Option<String> {
         let active_key = self.active_session_key.as_ref()?;
         if let Some(ws) = self.workspace.as_ref() {
@@ -402,11 +373,7 @@ impl super::App {
                 return Some(view.name.clone());
             }
         }
-        if let Some(name) = self.active_session().and_then(|s| s.project.clone()) {
-            return Some(name);
-        }
-        let cwd = self.active_session().map(|s| s.cwd_raw.clone())?;
-        self.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd))
+        self.active_session().map(|s| s.project.clone())
     }
 
     /// Background sessions (everything but the active one) that need
@@ -484,9 +451,7 @@ impl super::App {
             } else {
                 let name =
                     crate::ui::projects_pane::resolve_active_project_view(key, &project_refs)
-                        .map(|view| view.name.clone())
-                        .or_else(|| session.project.clone())
-                        .unwrap_or_else(|| key.as_str().to_owned());
+                        .map_or_else(|| session.project.clone(), |view| view.name.clone());
                 (name, None)
             };
             entries.push(AttentionEntry {
@@ -512,7 +477,9 @@ impl super::App {
 
     /// Set the active session's files-accessed counter.
     pub fn set_files_accessed(&mut self, value: usize) {
-        self.active_bucket_mut().files_accessed = value;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.files_accessed = value;
+        }
     }
 
     /// Retain the classification of the active session's latest
@@ -522,13 +489,16 @@ impl super::App {
         &mut self,
         retry: Option<(forge_primitives::ApiRetryError, Option<u16>)>,
     ) {
-        self.active_bucket_mut().last_api_retry = retry;
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.last_api_retry = retry;
+        }
     }
 
     /// Increment the active session's files-accessed counter by one.
     pub fn increment_files_accessed(&mut self) {
-        let s = self.active_bucket_mut();
-        s.files_accessed = s.files_accessed.saturating_add(1);
+        if let Some(bucket) = self.active_bucket_mut() {
+            bucket.files_accessed = bucket.files_accessed.saturating_add(1);
+        }
     }
 }
 
@@ -555,8 +525,7 @@ mod tests {
     /// the row resolves without a workspace catalog. Returns its key.
     fn seed_attention_session(app: &mut App, id: &str, secs: u64) -> forge_workspace::SessionKey {
         let key = forge_workspace::SessionKey::from_session_id(id);
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some(format!("proj-{id}"));
+        let mut session = crate::app::session::UiSession::new(key.clone(), format!("proj-{id}"));
         let mut prompt = crate::app::prompt::PromptState::from_permission(
             format!("tc-{id}"),
             crate::app::prompt::tests::make_permission_request(),
@@ -582,6 +551,7 @@ mod tests {
     fn attention_first_pass_ignores_a_settled_session() {
         let settled = crate::app::session::UiSession::new(
             forge_workspace::SessionKey::from_session_id("quiet"),
+            "test-project",
         );
         assert!(
             !super::session_needs_attention(&settled),
@@ -590,6 +560,7 @@ mod tests {
 
         let mut waiting = crate::app::session::UiSession::new(
             forge_workspace::SessionKey::from_session_id("quiet"),
+            "test-project",
         );
         waiting.review_replies_waiting = Some(crate::app::ReviewRepliesWaiting {
             branch: "feat".to_owned(),
@@ -629,7 +600,7 @@ mod tests {
     fn needs_input_sessions_reports_question_kind() {
         let mut app = App::test_default();
         let key = forge_workspace::SessionKey::from_session_id("q");
-        let mut session = crate::app::session::UiSession::new(key.clone());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "test-project");
         let mut prompt = crate::app::prompt::PromptState::from_question(
             "tc-q".to_owned(),
             crate::app::prompt::tests::make_question_request(false),
@@ -691,7 +662,7 @@ mod tests {
         );
 
         // A waiting (background) bucket for that worker session.
-        let mut session = crate::app::session::UiSession::new(worker_key.clone());
+        let mut session = crate::app::session::UiSession::new(worker_key.clone(), "core-v1");
         let mut prompt = crate::app::prompt::PromptState::from_permission(
             "tc-w".to_owned(),
             crate::app::prompt::tests::make_permission_request(),
@@ -718,8 +689,7 @@ mod tests {
         status: Option<u16>,
     ) -> forge_workspace::SessionKey {
         let key = forge_workspace::SessionKey::from_session_id(id);
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some(format!("proj-{id}"));
+        let mut session = crate::app::session::UiSession::new(key.clone(), format!("proj-{id}"));
         session.failed_turn = Some(crate::app::FailedTurn {
             error,
             status,
@@ -778,8 +748,7 @@ mod tests {
         count: usize,
     ) -> forge_workspace::SessionKey {
         let key = forge_workspace::SessionKey::from_session_id(id);
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some(format!("proj-{id}"));
+        let mut session = crate::app::session::UiSession::new(key.clone(), format!("proj-{id}"));
         session.review_replies_waiting = Some(crate::app::ReviewRepliesWaiting {
             branch: "feat".to_owned(),
             count,
@@ -901,7 +870,7 @@ mod tests {
         app.status = AppStatus::Connecting;
         let uuid = "11111111-2222-3333-4444-555555555555";
         let real = forge_workspace::SessionKey::from_session_id(uuid);
-        let mut bucket = crate::app::session::UiSession::new(real.clone());
+        let mut bucket = crate::app::session::UiSession::new(real.clone(), "test-project");
         bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         app.sessions.insert(real.clone(), bucket);
 
@@ -926,7 +895,7 @@ mod tests {
     fn same_key_switch_still_derives_status_from_the_bucket() {
         let mut app = App::test_default();
         let key = forge_workspace::SessionKey::from_session_id("same");
-        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        let mut bucket = crate::app::session::UiSession::new(key.clone(), "test-project");
         bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key.clone());
@@ -949,7 +918,7 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Connecting;
         let real = forge_workspace::SessionKey::from_session_id("boot-resumed");
-        let mut bucket = crate::app::session::UiSession::new(real.clone());
+        let mut bucket = crate::app::session::UiSession::new(real.clone(), "test-project");
         bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         app.sessions.insert(real.clone(), bucket);
 
@@ -1015,15 +984,15 @@ mod tests {
     }
 
     #[test]
-    fn test_default_seeds_pre_connect_bucket_so_accessors_are_infallible() {
+    fn test_default_seeds_test_session_bucket_so_accessors_are_infallible() {
         let app = App::test_default();
         // Task 3 onwards: per-session field accessors (messages, viewport,
         // ...) need an active session to read/write. test_default seeds a
-        // synthetic pre-Connect bucket so call sites stay infallible
-        // before Connect lands.
+        // synthetic test bucket so call sites stay infallible before
+        // Connect lands.
         assert_eq!(app.sessions.len(), 1);
-        let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-        assert_eq!(app.active_session_key.as_ref(), Some(&pre_connect_key));
+        let test_key = forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY);
+        assert_eq!(app.active_session_key.as_ref(), Some(&test_key));
         assert!(app.active_session().is_some());
     }
 
@@ -1033,13 +1002,13 @@ mod tests {
         let key = forge_workspace::SessionKey::from_str_for_test("abc-123");
         app.sessions
             .entry(key.clone())
-            .or_insert_with(|| crate::app::session::UiSession::new(key.clone()));
+            .or_insert_with(|| crate::app::session::UiSession::new(key.clone(), "test-project"));
         app.active_session_key = Some(key.clone());
 
         assert_eq!(app.active_session_key.as_ref(), Some(&key));
         assert!(app.active_session().is_some());
         assert_eq!(app.active_session().and_then(|s| s.key.as_ref()), Some(&key));
-        assert!(app.try_active_bucket_mut().is_some());
+        assert!(app.active_bucket_mut().is_some());
         assert!(app.session_mut(&key).is_some());
     }
 
@@ -1052,11 +1021,11 @@ mod tests {
     #[test]
     fn switch_active_session_triggers_context_usage_refresh_on_destination() {
         let mut app = App::test_default();
-        let _pre_connect_outbox = app.install_testing_stub();
+        let _seeded_outbox = app.install_testing_stub();
         // Seed a second bucket and stamp it with a session_id so the
         // refresh fns clear their session_id gate after the switch.
         let dest_key = forge_workspace::SessionKey::from_str_for_test("destination-session");
-        let mut dest_bucket = crate::app::session::UiSession::new(dest_key.clone());
+        let mut dest_bucket = crate::app::session::UiSession::new(dest_key.clone(), "test-project");
         dest_bucket.session_id =
             Some(forge_primitives::SessionId::new(dest_key.as_str().to_owned()));
         app.sessions.insert(dest_key.clone(), dest_bucket);
@@ -1099,34 +1068,34 @@ mod tests {
         );
     }
 
-    /// Regression: the pre-connect bucket's `cwd_raw` must not be
+    /// Regression: the seeded bucket's `cwd_raw` must not be
     /// seeded from `std::env::current_dir()` - forge.toml is the
     /// source of truth (Hard Rule #14). In launchpad mode (no argv
-    /// project), the pre-connect bucket's `cwd_raw` stays empty so
+    /// project), the seeded bucket's `cwd_raw` stays empty so
     /// it cannot collide with any project lookup. This test pins
-    /// that invariant for `test_default`'s pre-connect bucket.
+    /// that invariant for `test_default`'s seeded bucket.
     #[test]
-    fn test_default_pre_connect_bucket_does_not_collide_with_project_paths() {
+    fn test_default_seeded_bucket_does_not_collide_with_project_paths() {
         let app = App::test_default();
-        let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-        let pre_bucket = app.sessions.get(&pre_connect_key).expect("pre-connect bucket");
+        let test_key = forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY);
+        let test_bucket = app.sessions.get(&test_key).expect("seeded bucket");
         // `test_default` seeds `/test` for stable rendering; production
-        // launchpad-mode pre-connect uses an empty `cwd_raw`. Either
+        // launchpad-mode seeding uses an empty `cwd_raw`. Either
         // way, the invariant the production fix relies on is that no
-        // real project's `path` ever ends up matching the pre-connect
+        // real project's `path` ever ends up matching the seeded
         // bucket's `cwd_raw` - there is no way to construct a forge
-        // project named `/test` and pre-connect cannot equal a real
+        // project named `/test` and the seeded bucket cannot equal a real
         // project's `path` accidentally because nothing reads from
         // `current_dir()` to seed it anymore.
         assert!(
-            pre_bucket.cwd_raw == "/test" || pre_bucket.cwd_raw.is_empty(),
-            "pre-connect bucket should hold a sentinel cwd, got {:?}",
-            pre_bucket.cwd_raw,
+            test_bucket.cwd_raw == "/test" || test_bucket.cwd_raw.is_empty(),
+            "seeded bucket should hold a sentinel cwd, got {:?}",
+            test_bucket.cwd_raw,
         );
     }
 
     /// `find_running_bucket_for_path` returns the unique bucket
-    /// matching `path` when one exists. The pre-connect bucket
+    /// matching `path` when one exists. The seeded bucket
     /// never participates because its `cwd_raw` is sourced from
     /// `forge.toml`-or-empty, not from `current_dir()` - so it
     /// cannot accidentally match a real project's `path`.
@@ -1136,7 +1105,7 @@ mod tests {
         let project_path = "/Users/developer/Projects/forge";
         let real_key =
             forge_workspace::SessionKey::from_str_for_test("11111111-2222-3333-4444-555555555555");
-        let mut real_bucket = crate::app::session::UiSession::new(real_key.clone());
+        let mut real_bucket = crate::app::session::UiSession::new(real_key.clone(), "forge");
         real_bucket.cwd_raw = project_path.to_owned();
         app.sessions.insert(real_key.clone(), real_bucket);
 
@@ -1170,11 +1139,11 @@ mod tests {
         let lead_key = SessionKey::from_str_for_test("aaaaaaaa-1111-2222-3333-444444444444");
         let worker_key = SessionKey::from_str_for_test("bbbbbbbb-1111-2222-3333-444444444444");
 
-        let mut lead_bucket = crate::app::session::UiSession::new(lead_key.clone());
+        let mut lead_bucket = crate::app::session::UiSession::new(lead_key.clone(), "forge");
         lead_bucket.cwd_raw = project_path.to_owned();
         app.sessions.insert(lead_key.clone(), lead_bucket);
 
-        let mut worker_bucket = crate::app::session::UiSession::new(worker_key.clone());
+        let mut worker_bucket = crate::app::session::UiSession::new(worker_key.clone(), "forge");
         worker_bucket.cwd_raw = project_path.to_owned();
         app.sessions.insert(worker_key.clone(), worker_bucket);
 
@@ -1218,13 +1187,13 @@ mod tests {
             current_mode_name: "Plan".to_owned(),
             available_modes: Vec::new(),
         }));
-        let usage = app.session_usage_mut();
+        let usage = app.session_usage_mut().expect("active session");
         usage.context_usage_percent = Some(62);
         usage.context_usage_in_flight = true;
         usage.context_usage_refresh_pending = Some(crate::app::state::types::RefreshPending::Auto);
         usage.last_compaction_pre_tokens = Some(123_456);
         {
-            let bucket = app.active_bucket_mut();
+            let bucket = app.active_bucket_mut().expect("active session");
             bucket.dictate_overrides.styling = Some(forge_workspace::Styling::Formal);
         }
         app.dictate_device_pin = Some(forge_workspace::DictateDeviceChoice::System);
@@ -1234,8 +1203,11 @@ mod tests {
         assert!(app.session_id().is_none());
         assert!(app.current_model().is_none());
         assert!(app.mode().is_none());
-        assert_eq!(*app.session_usage(), crate::app::state::types::SessionUsageState::default());
-        let bucket = app.active_bucket_mut();
+        assert_eq!(
+            *app.session_usage().expect("active session"),
+            crate::app::state::types::SessionUsageState::default()
+        );
+        let bucket = app.active_bucket_mut().expect("active session");
         assert_eq!(
             bucket.dictate_overrides,
             forge_workspace::DictateOverrides::default(),
@@ -1268,8 +1240,8 @@ mod tests {
     #[test]
     fn set_session_id_logs_the_focus_move_it_makes() {
         let mut app = App::test_default();
-        let pending = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-        assert_eq!(app.active_session_key.as_ref(), Some(&pending));
+        let seeded = forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY);
+        assert_eq!(app.active_session_key.as_ref(), Some(&seeded));
 
         let log = capture_logs(|| {
             app.set_session_id(Some(crate::agent::model::SessionId::new("real-uuid")));
@@ -1280,7 +1252,8 @@ mod tests {
             "the pointer move must log like every other focus move; got: {log}"
         );
         assert!(
-            log.contains("to=real-uuid") && log.contains("from=__conn_pending__"),
+            log.contains("to=real-uuid")
+                && log.contains(&format!("from={}", App::TEST_SESSION_KEY)),
             "the log names both ends of the move; got: {log}"
         );
     }

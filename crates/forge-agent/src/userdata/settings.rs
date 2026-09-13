@@ -40,11 +40,14 @@ pub struct SettingsDocuments {
 /// bound this read to (typically the per-spawn account binding).
 /// `cwd` is the project root used to locate
 /// `<cwd>/.claude/settings.local.json` - sourced from `forge.toml` or
-/// the agent's reported cwd, never `std::env::current_dir()`.
-pub fn settings_documents(config_dir: &Path, cwd: &Path) -> SettingsDocuments {
+/// the agent's reported cwd, never `std::env::current_dir()`. It is
+/// `None` when no project root resolves, which reads no project-local
+/// document rather than joining an empty root into a relative path.
+pub fn settings_documents(config_dir: &Path, cwd: Option<&Path>) -> SettingsDocuments {
     SettingsDocuments {
         user: read_json_file(&config_dir.join("settings.json")),
-        project_local: read_json_file(&cwd.join(".claude").join("settings.local.json")),
+        project_local: cwd
+            .and_then(|cwd| read_json_file(&cwd.join(".claude").join("settings.local.json"))),
         preferences: home_dir().and_then(|h| read_json_file(&h.join(".claude.json"))),
     }
 }
@@ -118,5 +121,21 @@ mod tests {
         assert!(docs.user.is_none());
         assert!(docs.project_local.is_none());
         assert!(docs.preferences.is_none());
+    }
+
+    /// A `None` root yields no project-local document, and the config
+    /// dir is not consulted for one. Neither half is pinned by this
+    /// test: the rule-14 half could only be caught by a fixture at the
+    /// cwd-relative path, which is a write into the source tree, and
+    /// the config-dir half lost the fixture that caught it when that
+    /// one went. The producer side pins the rule-14 half, in
+    /// `app::config`.
+    #[test]
+    fn settings_documents_reads_no_project_local_without_a_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let docs = settings_documents(dir.path(), None);
+
+        assert!(docs.project_local.is_none(), "no root, no project-local document");
     }
 }

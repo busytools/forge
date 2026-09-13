@@ -157,7 +157,7 @@ pub(super) fn thread_in_scope(
 /// untouched). Moved-line updates and drift-to-`Outdated` flips are
 /// written back to redb. No-op without a workspace / project / branch.
 pub(super) fn hydrate_threads(app: &mut App) {
-    let project = app.active_session().and_then(|s| s.project.clone());
+    let project = app.active_session().map(|s| s.project.clone());
     let workspace = app.workspace.clone();
     let Some(overlay) = app.diff_overlay.as_mut() else {
         return;
@@ -356,7 +356,7 @@ pub(super) fn hydrate_threads(app: &mut App) {
 /// render from a field instead of querying the store per frame.
 fn park_replies_waiting(app: &mut App, branch: &str, threads: &[ReviewThread]) {
     let count = threads.iter().filter(|t| t.awaits_reviewer()).count();
-    if let Some(session) = app.try_active_bucket_mut() {
+    if let Some(session) = app.active_bucket_mut() {
         session.review_replies_waiting = crate::app::ReviewRepliesWaiting::merge(
             session.review_replies_waiting.as_ref(),
             branch,
@@ -373,7 +373,7 @@ pub(super) fn refresh_replies_waiting(app: &mut App) {
     let Some(branch) = app.diff_overlay.as_ref().and_then(|o| o.branch.clone()) else {
         return;
     };
-    let Some(project) = app.active_session().and_then(|s| s.project.clone()) else {
+    let Some(project) = app.active_session().map(|s| s.project.clone()) else {
         return;
     };
     let Some(workspace) = app.workspace.clone() else {
@@ -417,7 +417,7 @@ fn set_thread_status_by_key(
     next: ReviewStatus,
     allowed_from: &[ReviewStatus],
 ) -> bool {
-    let project = app.active_session().and_then(|s| s.project.clone());
+    let project = app.active_session().map(|s| s.project.clone());
     let Some(overlay) = app.diff_overlay.as_mut() else {
         return false;
     };
@@ -1891,8 +1891,7 @@ mod tests {
             .expect("write corrupt row");
         workspace.install_db_for_test(db);
         let key = forge_workspace::SessionKey::from_session_id("review-session");
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some("forge".to_owned());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = "/tmp/repo".into();
         app.sessions.insert(key.clone(), session);
         app.active_session_key = Some(key);
@@ -1924,8 +1923,7 @@ mod tests {
             .expect("write corrupt reviews row");
         workspace.install_db_for_test(db);
         let key = forge_workspace::SessionKey::from_session_id("review-session");
-        let mut session = crate::app::session::UiSession::new(key.clone());
-        session.project = Some("forge".to_owned());
+        let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = "/tmp/repo".into();
         app.sessions.insert(key.clone(), session);
         app.active_session_key = Some(key);

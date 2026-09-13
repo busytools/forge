@@ -374,7 +374,7 @@ impl ConfigState {
     }
 
     fn apply_loaded(&mut self, loaded: store::LoadedSettingsDocuments, preserve_status: bool) {
-        self.settings_path = Some(loaded.paths.settings);
+        self.settings_path = loaded.paths.settings;
         self.committed_settings_document = loaded.settings_document;
         self.committed_local_settings_document = loaded.local_settings_document;
         self.committed_preferences_document = loaded.preferences_document;
@@ -391,7 +391,7 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
-        pr.as_path(),
+        pr.as_deref(),
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
@@ -405,7 +405,7 @@ pub fn open_extensions(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
-        pr.as_path(),
+        pr.as_deref(),
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
@@ -467,8 +467,24 @@ pub(crate) fn store_workspace_bridge(app: &App) -> Option<store::WorkspaceBridge
     Some(store::WorkspaceBridge { workspace, key })
 }
 
-fn project_root(app: &App) -> std::path::PathBuf {
-    std::path::PathBuf::from(app.cwd_raw())
+/// The project root the settings documents are read against: the
+/// focused session's cwd, or - before any session exists - the project
+/// the CLI was launched for, resolved from `forge.toml` at boot.
+/// `None` when neither names one, which is the launchpad boot; the
+/// local document is then not read at all rather than falling back to
+/// a path derived from the process working directory (hard rule 14).
+fn project_root(app: &App) -> Option<std::path::PathBuf> {
+    let root = app
+        .cwd_raw()
+        .filter(|cwd| !cwd.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| app.startup_project_root.clone());
+    // An empty root is not a root: joining one would put the
+    // local-settings read back on the process working directory (hard
+    // rule 14). The launch project's path is a bare string out of
+    // `forge.toml`, so the check lives here rather than being trusted
+    // from the producer.
+    root.filter(|root| !root.as_os_str().is_empty())
 }
 
 const LANGUAGE_MIN_CHARS: usize = 2;
@@ -489,5 +505,56 @@ pub(crate) fn language_input_validation_message(value: &str) -> Option<&'static 
         Some("Language must be at most 30 characters.")
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The settings read resolves its project root from the focused
+    /// session, and before any session exists from the project the CLI
+    /// was launched for. Never from the process working directory: a
+    /// launchpad boot, which names no project, has no root at all
+    /// (hard rule 14).
+    #[test]
+    fn project_root_comes_from_the_session_then_the_launch_project() {
+        let mut app = App::test_default();
+        app.startup_project_root = Some(std::path::PathBuf::from("/forge-toml/project"));
+
+        assert_eq!(
+            project_root(&app),
+            Some(std::path::PathBuf::from("/test")),
+            "a focused session's cwd wins",
+        );
+
+        // An empty cwd is not a project root: joining it would make the
+        // project-local settings path relative to the process working
+        // directory, which is the launch-directory dependence this
+        // resolution exists to avoid (hard rule 14).
+        let key = app.active_session_key.clone().expect("active key");
+        app.sessions.get_mut(&key).expect("bucket").cwd_raw = String::new();
+        assert_eq!(
+            project_root(&app),
+            Some(std::path::PathBuf::from("/forge-toml/project")),
+            "an empty cwd falls through to the launch project, never to a relative root",
+        );
+
+        app.sessions.clear();
+        app.active_session_key = None;
+        assert_eq!(
+            project_root(&app),
+            Some(std::path::PathBuf::from("/forge-toml/project")),
+            "with no session the launch project's forge.toml path is the root",
+        );
+
+        // `forge.toml`'s project path is a bare string, so an empty one
+        // is expressible and must not become a root: it would join into
+        // a relative local-settings path.
+        app.startup_project_root = Some(std::path::PathBuf::new());
+        assert_eq!(project_root(&app), None, "an empty launch root is no root, not a relative one");
+
+        app.startup_project_root = None;
+        assert_eq!(project_root(&app), None, "a launchpad boot has no project root");
     }
 }

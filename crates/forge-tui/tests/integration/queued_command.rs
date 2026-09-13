@@ -42,12 +42,12 @@ async fn replay_synthesised_user_envelope_pushes_un_dimmed_bubble() {
     // walker has no pending match (fresh App), so it pushes a fresh
     // un-dimmed user bubble.
     let mut app = test_app();
-    let before = app.messages().len();
+    let before = app.messages().expect("active session").len();
 
     send_msg(&mut app, user_message(vec![queued_command_block("from-history-replay")]));
 
-    assert_eq!(app.messages().len(), before + 1, "replay bubble pushed");
-    let new_msg = app.messages().last().expect("bubble");
+    assert_eq!(app.messages().expect("active session").len(), before + 1, "replay bubble pushed");
+    let new_msg = app.messages().expect("active session").last().expect("bubble");
     assert!(matches!(new_msg.role, MessageRole::User));
     // Replayed bubbles are plain user bubbles - no dim/queued state.
 }
@@ -59,7 +59,7 @@ async fn replay_multi_block_prompt_renders_text_with_image_placeholder() {
     // non-text blocks render as `[image]` / `[document]` placeholders
     // so the user sees something rather than blank.
     let mut app = test_app();
-    let before = app.messages().len();
+    let before = app.messages().expect("active session").len();
 
     let multi_prompt = serde_json::json!([
         {"type": "text", "text": "look at this"},
@@ -75,8 +75,8 @@ async fn replay_multi_block_prompt_renders_text_with_image_placeholder() {
         }]),
     );
 
-    assert_eq!(app.messages().len(), before + 1);
-    let new_msg = app.messages().last().expect("bubble");
+    assert_eq!(app.messages().expect("active session").len(), before + 1);
+    let new_msg = app.messages().expect("active session").last().expect("bubble");
     let rendered: String = new_msg
         .blocks
         .iter()

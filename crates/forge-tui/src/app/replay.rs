@@ -185,8 +185,8 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
     let mut result_duration_ms = None;
     // Adopt a stable session id BEFORE the reducer runs so the
     // session-id guard inside `apply_session_update` accepts each
-    // ChatAppended envelope. The pre-Connect bucket migrates onto
-    // this key as part of `set_session_id`.
+    // ChatAppended envelope. The seeded bucket is re-keyed onto this
+    // id by `set_session_id`.
     app.set_session_id(Some(model::SessionId::new("replay-session")));
 
     for (raw_line_no, raw_line) in content.lines().enumerate() {
@@ -467,7 +467,7 @@ mod tests {
         let mut app = build_app_with_consecutive_reads(3);
         // Give each read an absolute path under /repo, then point cwd at
         // /repo so relativization has a real prefix to strip.
-        if let Some(bucket) = app.try_active_bucket_mut()
+        if let Some(bucket) = app.active_bucket_mut()
             && let Some(msg) = bucket.messages.last_mut()
         {
             for (i, block) in msg.blocks.iter_mut().enumerate() {
@@ -586,7 +586,7 @@ mod tests {
         // Flip the trailing Read to InProgress so the aggregate is
         // InProgress; leave the first three at Completed (the
         // builder default is `Completed`, see below).
-        if let Some(session) = app.try_active_bucket_mut()
+        if let Some(session) = app.active_bucket_mut()
             && let Some(msg) = session.messages.last_mut()
             && let Some(crate::app::MessageBlock::ToolCall(tc)) = msg.blocks.last_mut()
         {
