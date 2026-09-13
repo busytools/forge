@@ -92,8 +92,8 @@ impl Workspace {
     pub fn testing_stub_with_config_dir(
         config_dir: PathBuf,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
-        // No `[[slack]]` entries to build from, so the empty set is the
-        // whole of it; this constructor cannot fail.
+        // `empty_for_test` carries no `[[slack]]` entries, so there is
+        // nothing here for `from_config` to check.
         Self::testing_stub_with_slack(
             config_dir,
             LoadedConfig::empty_for_test(),
@@ -109,11 +109,13 @@ impl Workspace {
     /// `crate::config::load_from_dir` on a tempdir `forge.toml` fixture;
     /// `db` stays `None`, so nothing touches the real machine store.
     ///
-    /// Clients are built from the injected config the way `new` builds
-    /// them, and a `[[slack]]` entry the loader refuses is returned as
-    /// its error rather than degrading to a workspace with no clients:
-    /// a malformed fixture has to fail where the test that built it can
-    /// see it.
+    /// Clients come from the injected config through
+    /// `SlackWorkspaces::from_config`, the only thing that checks a
+    /// `[[slack]]` entry; `load_from_dir` parses the section straight
+    /// through. An entry `from_config` refuses is returned as its bare
+    /// error rather than degrading to a workspace with no clients, the
+    /// way `new` refuses to boot on the same error. A malformed fixture
+    /// has to fail where the test that built it can see it.
     ///
     /// `#[cfg(test)]` because `LoadedConfig` is crate-private and only
     /// this crate's own test modules call it; the feature build, which
@@ -327,7 +329,7 @@ mod tests {
     use super::*;
     use forge_primitives::slack::SlackConfig;
 
-    /// A `[[slack]]` fixture the config loader refuses: the entry names a
+    /// A `[[slack]]` fixture `from_config` refuses: the entry names a
     /// workspace but carries no token.
     fn config_with_a_tokenless_slack_entry() -> LoadedConfig {
         let mut config = LoadedConfig::empty_for_test();
@@ -339,7 +341,7 @@ mod tests {
         config
     }
 
-    /// A fixture the loader rejects must not come back as a workspace
+    /// A fixture `from_config` refuses must not come back as a workspace
     /// whose Slack surface is quietly empty: a test written against it
     /// would pass while exercising nothing.
     #[test]
