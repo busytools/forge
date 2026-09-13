@@ -410,18 +410,21 @@ fn rows_from_os_snapshot<'a>(
         .collect();
     // One match pass for the whole snapshot. The sibling sort, the row
     // builder and the tier all read this instead of re-testing every
-    // process against every live call. Skipped entirely when no live call
-    // carries a command: every tier is then the generic one and every row
-    // unmatched, so the pass would only cost the map.
+    // process against every live call. Sparse on purpose: an unmatched
+    // process reads the same defaults the lookup falls back to, so only
+    // matches are stored and a frame where nothing matches builds no map.
+    // Skipped entirely when no live call carries a command, for the same
+    // reason.
     let matched_by_pid: HashMap<u32, MatchedProcess<'_>> = if matcher.is_empty() {
         HashMap::new()
     } else {
         snapshot
             .processes
             .iter()
-            .map(|entry| {
-                let call = matcher.matched(&entry.command);
-                (entry.pid, MatchedProcess { call, tier: render_tier(call) })
+            .filter_map(|entry| {
+                let call = matcher.matched(&entry.command)?;
+                let tier = render_tier(Some(call));
+                Some((entry.pid, MatchedProcess { call: Some(call), tier }))
             })
             .collect()
     };
