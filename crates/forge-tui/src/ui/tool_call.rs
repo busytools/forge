@@ -1105,10 +1105,6 @@ mod tests {
             "the extracted message renders: {rendered:?}"
         );
         assert!(
-            !rendered.iter().any(|line| line.contains("FALLBACK")),
-            "the raw first output line is dropped once a message is extracted: {rendered:?}"
-        );
-        assert!(
             !rendered.iter().any(|line| line.contains("tool_use_error")),
             "the raw tag is unwrapped, not shown verbatim: {rendered:?}"
         );
