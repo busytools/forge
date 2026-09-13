@@ -327,7 +327,6 @@ pub(super) fn finalize_background_tool_calls(
                 ) && !exempt.contains(tc.id.as_str())
                 {
                     tc.status = new_status;
-                    let _ = tc.terminal_id.take();
                     swept += 1;
                 }
             }
@@ -1332,7 +1331,6 @@ mod tests {
                 status,
                 content: Vec::new(),
                 hidden: false,
-                terminal_id: None,
                 terminal_output: None,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,

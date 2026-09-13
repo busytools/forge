@@ -16,8 +16,6 @@ pub struct ToolCallInfo {
     pub content: Vec<model::RenderToolCallContent>,
     /// Hidden tool calls are subagent children - not rendered directly.
     pub hidden: bool,
-    /// Terminal ID if this is a Bash-like SDK tool call with a running/completed terminal.
-    pub terminal_id: Option<String>,
     /// Snapshot of terminal output, updated each frame while `InProgress`.
     pub terminal_output: Option<String>,
     /// Last 5 lines of the watched command's output for a `Monitor`

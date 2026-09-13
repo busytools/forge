@@ -625,7 +625,6 @@ mod tests {
                     status: model::ToolCallStatus::Completed,
                     content: Vec::new(),
                     hidden: false,
-                    terminal_id: None,
                     terminal_output: None,
                     monitor_output_tail: Vec::default(),
                     monitor_status: None,

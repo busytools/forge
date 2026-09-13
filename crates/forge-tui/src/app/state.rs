@@ -1089,7 +1089,6 @@ mod tests {
                 status,
                 content: Vec::new(),
                 hidden: false,
-                terminal_id: None,
                 terminal_output: Some("x".repeat(1024)),
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
@@ -1111,7 +1110,6 @@ mod tests {
     pub(super) fn assistant_bash_tool_message(
         id: &str,
         status: model::ToolCallStatus,
-        terminal_id: &str,
     ) -> ChatMessage {
         ChatMessage::new(
             MessageRole::Assistant,
@@ -1126,7 +1124,6 @@ mod tests {
                 status,
                 content: Vec::new(),
                 hidden: false,
-                terminal_id: Some(terminal_id.to_owned()),
                 terminal_output: Some("x".repeat(1024)),
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
