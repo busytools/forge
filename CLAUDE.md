@@ -6,11 +6,11 @@ terminal UI. Nine crates, layered acyclically:
 ```
 forge-primitives ───── leaf (pure data, no logic)
 forge-dictate    ───── leaf (dictation; depends on no forge-* crate)
-forge-providers  ───→ primitives
+forge-gateway    ───→ primitives
 forge-connectors ───→ primitives
 forge-sdk        ───→ primitives
-forge-agent      ───→ primitives + sdk + providers
-forge-workspace  ───→ primitives + agent + sdk + dictate + providers + connectors
+forge-agent      ───→ primitives + sdk + gateway
+forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
 forge-tui        ───→ primitives + workspace      (no direct agent dep)
 forge-test-harness ─→ primitives + sdk + workspace
 ```
@@ -22,7 +22,7 @@ forge-test-harness ─→ primitives + sdk + workspace
   on no forge-* crate and knows nothing about a host, so it must not
   grow one; a doc comment mentioning a keypress, a composer or a
   session is a bug.
-- **`forge-providers`** - one backend per `forge.toml` provider token:
+- **`forge-gateway`** - one backend per `forge.toml` provider token:
   credential resolution, the usage probe's HTTP + payload mapping,
   billing shape, the OpenRouter model catalog. Depends on
   forge-primitives only; the `claude --version` user agent and the
@@ -85,7 +85,7 @@ Work top-down; first match wins.
 3. **Provider credential, probe, usage mapping, billing or repair?**
    (how one `forge.toml` provider token authenticates, what endpoint
    its usage probe hits, how the payload maps to a snapshot, what a
-   failure allows) -> `forge-providers`, one backend per token.
+   failure allows) -> `forge-gateway`, one backend per token.
 4. **Inbound connector I/O for an external integration?** (its stream
    client, REST lookups, subscription matching, reconnecting
    subsystem pump) -> `forge-connectors`, one module per connector.
@@ -129,9 +129,9 @@ much in forge-tui", so bias toward the deeper crate when unsure.
   means one is wrong; lift to primitives or import the re-export. The
   one exception is `forge-dictate`, which may not depend on primitives
   at all: its types stay in it and consumers import them from there.
-- **Provider dispatch outside `forge-providers`.** A match on
+- **Provider dispatch outside `forge-gateway`.** A match on
   `Provider` in workspace or tui is the thing this crate exists to
-  delete; route through `forge_providers::backend(token)` instead.
+  delete; route through `forge_gateway::backend(token)` instead.
 - **Workspace methods bypassing the Command bus for user actions.**
   User-initiated actions go through `dispatch(Command)`; query-style
   refreshes are direct inherent methods. Don't conflate them.

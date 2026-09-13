@@ -5,11 +5,11 @@ Nine crates, layered so the dependency graph stays acyclic.
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
 forge-dictate         leaf: dictation, depends on no forge-* crate
-forge-providers   ->  primitives
+forge-gateway     ->  primitives
 forge-connectors  ->  primitives
 forge-sdk         ->  primitives
-forge-agent       ->  primitives + sdk + providers
-forge-workspace   ->  primitives + agent + sdk + dictate + providers + connectors
+forge-agent       ->  primitives + sdk + gateway
+forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
 forge-tui         ->  primitives + workspace
 forge-test-harness->  primitives + sdk
 ```
@@ -18,7 +18,7 @@ forge-test-harness->  primitives + sdk
 |---|---|
 | `forge-primitives` | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side view structs. No logic, no I/O, no async. |
 | `forge-dictate` | The dictation primitive: audio in, text out. Owns its model files, speech recognition and transcript normalization. Depends on no forge-* crate and knows nothing about the program embedding it. |
-| `forge-providers` | One backend per provider token: credential resolution, the usage probe's HTTP and payload mapping, billing shape, the OpenRouter model catalog. Depends on forge-primitives only; the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements. |
+| `forge-gateway` | One backend per provider token: credential resolution, the usage probe's HTTP and payload mapping, billing shape, the OpenRouter model catalog. Depends on forge-primitives only; the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements. |
 | `forge-connectors` | One module per inbound connector: the stream client, REST lookups, subscription matching and subsystem pump for one external integration (Gotify and Slack today). Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements. |
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
@@ -44,7 +44,7 @@ Work top-down; the first match wins.
    struct, a hook payload, anything sent over a channel or touched by
    more than one crate) goes in `forge-primitives`. Data shapes only.
 3. **Provider credential resolution, the usage probe, payload-to-snapshot
-   mapping, billing shape or repair policy** goes in `forge-providers`,
+   mapping, billing shape or repair policy** goes in `forge-gateway`,
    as one backend per provider token.
 4. **Inbound connector work for an external integration** (its stream
    client, REST lookups, subscription matching) goes in
@@ -81,7 +81,7 @@ Five patterns get caught in review repeatedly:
   separate channel.
 - **Defining the same shape in two crates.** Lift it to primitives, or
   import the re-export.
-- **Provider dispatch outside `forge-providers`.** A match on
+- **Provider dispatch outside `forge-gateway`.** A match on
   `Provider` in workspace or tui is the thing the provider-backends
   crate exists to delete.
 - **Reaching around the command bus for a user action.** User-initiated
