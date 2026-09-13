@@ -1932,6 +1932,65 @@ mod tests {
         assert_eq!(welcome.cwd, "/changed");
     }
 
+    /// The one path in the new model where a session is dropped: a
+    /// `Connected` for a key with no bucket, whose cwd names no
+    /// configured project. Nothing is minted, because a session the TUI
+    /// cannot name is not one this model holds - the alternative was a
+    /// bucket with a substituted project.
+    #[test]
+    fn connected_with_no_project_for_the_cwd_mints_nothing() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+        app.active_session_key = None;
+        let key = forge_workspace::SessionKey::from_session_id("orphan-uuid");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::Connected {
+                key: key.clone(),
+                session_id: forge_primitives::SessionId::new("orphan-uuid"),
+                cwd: "/nowhere/orphan".into(),
+                current_model: test_current_model_primitives("claude"),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 0,
+            },
+        );
+
+        assert!(!app.sessions.contains_key(&key), "an unnameable session gets no bucket");
+        assert!(app.active_session_key.is_none(), "and it takes no tab");
+    }
+
+    /// The background `SessionReplaced` sibling of the drop above: no
+    /// bucket to carry across and a cwd that names no project, so the
+    /// replacement is dropped whole rather than filed under a guess.
+    #[test]
+    fn a_background_replacement_with_no_project_mints_nothing() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+        app.active_session_key = None;
+        let from = forge_workspace::SessionKey::from_session_id("__spawn_worker_beta__");
+        let to = forge_workspace::SessionKey::from_session_id("replacement-uuid");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SessionReplaced {
+                key: to.clone(),
+                previous_key: from,
+                session_id: forge_primitives::SessionId::new("replacement-uuid"),
+                cwd: "/nowhere/orphan".into(),
+                current_model: test_current_model_primitives("claude"),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 0,
+            },
+        );
+
+        assert!(!app.sessions.contains_key(&to), "an unnameable replacement gets no bucket");
+    }
+
     #[test]
     fn connected_updates_welcome_once_even_after_chat_started() {
         let mut app = make_test_app();
