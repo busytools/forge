@@ -610,6 +610,7 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
+        let _t = crate::perf::start("ui::inspector_pane::workflows_section");
         append_workflows_section(lines, app, width);
     }
 
@@ -621,6 +622,7 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
+        let _t = crate::perf::start("ui::inspector_pane::subagents_section");
         append_subagents_section(lines, app, width, subagents);
     }
 
@@ -634,6 +636,7 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
+        let _t = crate::perf::start("ui::inspector_pane::schedules_section");
         append_schedules_section(lines, app, width);
     }
 
@@ -644,6 +647,7 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
+        let _t = crate::perf::start("ui::inspector_pane::gotify_section");
         append_gotify_section(lines, app, width);
     }
 
@@ -655,6 +659,7 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
+        let _t = crate::perf::start("ui::inspector_pane::slack_section");
         append_slack_section(lines, app, width);
     }
 
@@ -662,7 +667,10 @@ fn append_body(
     // the session's MCP snapshot, so every configured server renders -
     // sdk/in-process servers with no process, pending and failed ones
     // included. Whole section is a click-through to the /mcp view.
-    let mcp_section = crate::app::mcp_servers::collect_mcp_servers(app);
+    let mcp_section = {
+        let _t = crate::perf::start("ui::inspector_pane::collect_mcp_servers");
+        crate::app::mcp_servers::collect_mcp_servers(app)
+    };
     let mcp_range = if mcp_section.rows.is_empty() {
         None
     } else {
@@ -670,6 +678,7 @@ fn append_body(
         push_section_rule(lines, width);
         lines.push(Line::default());
         let start = lines.len();
+        let _t = crate::perf::start("ui::inspector_pane::mcp_servers_section");
         append_mcp_servers_section(lines, &mcp_section.rows, width);
         Some((start, lines.len() - start))
     };
@@ -680,11 +689,15 @@ fn append_body(
     // WORKFLOWS; MCP servers render in MCP SERVERS above). The join ran
     // once above; its claimed pids hand off here. Auto-hidden when
     // nothing is active.
-    let processes = collect_active_processes(app, &mcp_section.claimed_pids);
+    let processes = {
+        let _t = crate::perf::start("ui::inspector_pane::collect_active_processes");
+        collect_active_processes(app, &mcp_section.claimed_pids)
+    };
     if !processes.is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
+        let _t = crate::perf::start("ui::inspector_pane::processes_section");
         append_processes_section(lines, &processes, width, app.active_spinner_glyph());
     }
 
