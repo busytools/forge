@@ -540,6 +540,21 @@ inspected.
     quietly does nothing reads as forge being broken rather than as
     the multiplexer eating it.
 
+    **The notification escape is a deliberate exception to that, and
+    the reason is the sentence above it.** forge writes OSC 9
+    unconditionally (2026-09-13) and detects nothing about whether it
+    will cross. Nothing in the middle reports what it forwarded, so
+    there is no absence to detect and no true requirement to state:
+    reading `ZELLIJ`, `STY` or `SHPOOL_SESSION_NAME` names the
+    manager and still does not say whether that manager passes the
+    escape, and the same reads guessed wrong in both directions when
+    detection existed. A terminal that ignores the sequence is
+    harmless, not degraded, so the failure this rule exists to
+    prevent - a feature that quietly does nothing - is not the one the
+    user meets. This is a case the binary test below resolves to
+    silence on purpose, because there is no explanation available to
+    give.
+
     **The keyboard-enhancement negotiation is the example to copy.**
     `resume_terminal` (`crates/forge-tui/src/app.rs`) pushes the
     kitty enhancement flags because `SUPER` arrives no other way, and
