@@ -64,13 +64,11 @@ pub struct DeliveredNotification {
 /// Two notification layers exist; the channel decides which run:
 /// 1. **Terminal bell** (`BEL \x07`) -- causes a taskbar flash / dock bounce
 ///    on virtually every terminal emulator.
-/// 2. **OSC 9 escape** -- while the terminal is believed to support it,
-///    channels that can emit it suppress the bell (except on
-///    `iterm2_with_bell`), so a multiplexer that strips the escape silently
-///    leaves nothing. The `[ui] notifications_osc9` forge.toml key forces
-///    that belief either way: `off` leaves the Iterm2 channel the bell alone
-///    and Ghostty nothing at all, `on` sends the escape regardless of
-///    detection.
+/// 2. **OSC 9 escape** -- always written, whether or not the host terminal
+///    is known to render it; a terminal that ignores the sequence is
+///    harmless. The `[ui] notifications_osc9` forge.toml key can still turn
+///    it off: `off` leaves the Iterm2 channel the bell alone and Ghostty
+///    nothing at all.
 #[derive(Debug)]
 pub struct NotificationManager {
     terminal_focused: bool,
@@ -89,11 +87,6 @@ impl Default for NotificationManager {
 struct NotificationPlan {
     ring_bell: bool,
     osc9_text: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TerminalCapabilities {
-    osc9_notifications: bool,
 }
 
 impl NotificationManager {
@@ -145,8 +138,7 @@ impl NotificationManager {
             return;
         }
         let text = notification_text(event, &context.project, context.worker_label.as_deref());
-        let plan =
-            notification_plan(channel, detect_terminal_capabilities(), self.osc9_mode, &text);
+        let plan = notification_plan(channel, self.osc9_mode, &text);
         if let Some(line) = &plan.osc9_text {
             send_osc9_notification(line);
         }
@@ -306,16 +298,10 @@ fn send_osc9_notification(message: &str) {
 
 fn notification_plan(
     channel: PreferredNotifChannel,
-    capabilities: TerminalCapabilities,
     osc9_mode: Osc9NotificationMode,
     text: &NotificationText,
 ) -> NotificationPlan {
-    let osc9_available = match osc9_mode {
-        Osc9NotificationMode::Auto => capabilities.osc9_notifications,
-        Osc9NotificationMode::On => true,
-        Osc9NotificationMode::Off => false,
-    };
-    let osc9_text = osc9_available.then(|| text.osc9_line());
+    let osc9_text = (!matches!(osc9_mode, Osc9NotificationMode::Off)).then(|| text.osc9_line());
     match channel {
         PreferredNotifChannel::NotificationsDisabled => {
             NotificationPlan { ring_bell: false, osc9_text: None }
@@ -331,38 +317,6 @@ fn notification_plan(
         PreferredNotifChannel::Ghostty => NotificationPlan { ring_bell: false, osc9_text },
         PreferredNotifChannel::Iterm2WithBell => NotificationPlan { ring_bell: true, osc9_text },
     }
-}
-
-fn detect_terminal_capabilities() -> TerminalCapabilities {
-    terminal_capabilities_from_env(
-        std::env::vars_os()
-            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?))),
-    )
-}
-
-fn terminal_capabilities_from_env<I>(vars: I) -> TerminalCapabilities
-where
-    I: IntoIterator<Item = (String, String)>,
-{
-    let mut term_program = None::<String>;
-    let mut term = None::<String>;
-    let mut iterm_session = false;
-
-    for (key, value) in vars {
-        match key.as_str() {
-            "TERM_PROGRAM" => term_program = Some(value),
-            "TERM" => term = Some(value),
-            "ITERM_SESSION_ID" if !value.is_empty() => iterm_session = true,
-            _ => {}
-        }
-    }
-
-    // `TERM` is read because a multiplexer can drop `TERM_PROGRAM` while
-    // forwarding `TERM` unchanged, which is how shpool reaches Ghostty.
-    let osc9_notifications = matches!(term_program.as_deref(), Some("iTerm.app" | "ghostty"))
-        || matches!(term.as_deref(), Some("xterm-ghostty"))
-        || iterm_session;
-    TerminalCapabilities { osc9_notifications }
 }
 
 /// Build the delivered strings for one event from the session's
@@ -451,12 +405,28 @@ mod tests {
         }
     }
 
+    /// The escape is planned without asking the host terminal. There is
+    /// no detected-capability input left to consult, so no terminal can
+    /// decide that a notification is delivered without its escape.
+    #[test]
+    fn the_escape_is_planned_without_a_detected_capability() {
+        for mode in [Osc9NotificationMode::Auto, Osc9NotificationMode::On] {
+            assert_eq!(
+                notification_plan(PreferredNotifChannel::Iterm2, mode, &fixture_text()),
+                NotificationPlan {
+                    ring_bell: false,
+                    osc9_text: Some("companies - lead - turn complete".to_owned()),
+                },
+                "mode {mode:?} must carry the escape with no capability consulted",
+            );
+        }
+    }
+
     #[test]
     fn disabled_notifications_plan_is_silent() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::NotificationsDisabled,
-                TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Auto,
                 &fixture_text(),
             ),
@@ -469,7 +439,6 @@ mod tests {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::TerminalBell,
-                TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Auto,
                 &fixture_text(),
             ),
@@ -478,11 +447,10 @@ mod tests {
     }
 
     #[test]
-    fn iterm2_uses_osc9_when_supported() {
+    fn iterm2_uses_osc9() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Auto,
                 &fixture_text(),
             ),
@@ -494,24 +462,10 @@ mod tests {
     }
 
     #[test]
-    fn iterm2_auto_falls_back_to_the_bell_when_osc9_is_unavailable() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: false },
-                Osc9NotificationMode::Auto,
-                &fixture_text(),
-            ),
-            NotificationPlan { ring_bell: true, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn iterm2_with_bell_uses_osc9_and_bell_when_supported() {
+    fn iterm2_with_bell_uses_osc9_and_bell() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2WithBell,
-                TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Auto,
                 &fixture_text(),
             ),
@@ -523,24 +477,10 @@ mod tests {
     }
 
     #[test]
-    fn iterm2_with_bell_keeps_the_bell_when_osc9_is_unavailable() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2WithBell,
-                TerminalCapabilities { osc9_notifications: false },
-                Osc9NotificationMode::Auto,
-                &fixture_text(),
-            ),
-            NotificationPlan { ring_bell: true, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn ghostty_uses_osc9_when_supported() {
+    fn ghostty_uses_osc9() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Ghostty,
-                TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Auto,
                 &fixture_text(),
             ),
@@ -552,65 +492,10 @@ mod tests {
     }
 
     #[test]
-    fn detects_iterm2_via_term_program() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "iTerm.app".to_owned())]);
-
-        assert!(capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn detects_iterm2_via_session_id() {
-        let capabilities =
-            terminal_capabilities_from_env([("ITERM_SESSION_ID".to_owned(), "w0t1p0".to_owned())]);
-
-        assert!(capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn detects_ghostty_via_term_program() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "ghostty".to_owned())]);
-
-        assert!(capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn detects_ghostty_via_term_when_term_program_is_absent() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM".to_owned(), "xterm-ghostty".to_owned())]);
-
-        assert!(
-            capabilities.osc9_notifications,
-            "TERM survives a multiplexer that drops TERM_PROGRAM",
-        );
-    }
-
-    #[test]
-    fn a_term_that_is_not_ghostty_does_not_advertise_osc9() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM".to_owned(), "xterm-256color".to_owned())]);
-
-        assert!(
-            !capabilities.osc9_notifications,
-            "only ghostty's TERM value counts, so this branch is not matching every TERM",
-        );
-    }
-
-    #[test]
-    fn unsupported_term_does_not_advertise_osc9() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "wezterm".to_owned())]);
-
-        assert!(!capabilities.osc9_notifications);
-    }
-
-    #[test]
     fn osc9_override_off_forces_iterm2_to_the_bell() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Off,
                 &fixture_text(),
             ),
@@ -623,46 +508,11 @@ mod tests {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Ghostty,
-                TerminalCapabilities { osc9_notifications: true },
                 Osc9NotificationMode::Off,
                 &fixture_text(),
             ),
             NotificationPlan { ring_bell: false, osc9_text: None },
             "Ghostty has no fallback once the escape is off",
-        );
-    }
-
-    #[test]
-    fn osc9_override_on_sends_osc9_from_iterm2_despite_negative_detection() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: false },
-                Osc9NotificationMode::On,
-                &fixture_text(),
-            ),
-            NotificationPlan {
-                ring_bell: false,
-                osc9_text: Some("companies - lead - turn complete".to_owned()),
-            },
-            "On forces OSC 9 and suppresses the bell, detection notwithstanding",
-        );
-    }
-
-    #[test]
-    fn osc9_override_on_sends_osc9_from_ghostty_despite_negative_detection() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Ghostty,
-                TerminalCapabilities { osc9_notifications: false },
-                Osc9NotificationMode::On,
-                &fixture_text(),
-            ),
-            NotificationPlan {
-                ring_bell: false,
-                osc9_text: Some("companies - lead - turn complete".to_owned()),
-            },
-            "On forces OSC 9 for a terminal that does not announce itself",
         );
     }
 
@@ -869,11 +719,10 @@ mod tests {
         );
     }
 
-    /// With the escape unavailable the Iterm2 channel falls back to the
-    /// bell alone; OSC 9 mode Off pins that regardless of the test
-    /// process's environment.
+    /// With the escape switched off the Iterm2 channel falls back to the
+    /// bell alone.
     #[test]
-    fn unfocused_terminal_delivers_only_the_bell_when_osc9_is_unavailable() {
+    fn unfocused_terminal_delivers_only_the_bell_when_the_escape_is_off() {
         let mut app = App::test_default();
         let key = seed_bucket(&mut app, "session-a", "companies");
         app.notifications = NotificationManager::new(Osc9NotificationMode::Off);
