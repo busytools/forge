@@ -1104,7 +1104,7 @@ impl ForgeSdkBridge {
 
     pub(crate) fn settings_documents(
         &self,
-        cwd: &Path,
+        cwd: Option<&Path>,
     ) -> crate::userdata::settings::SettingsDocuments {
         crate::userdata::settings::settings_documents(&self.inner.config_dir, cwd)
     }

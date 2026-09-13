@@ -40,11 +40,14 @@ pub struct SettingsDocuments {
 /// bound this read to (typically the per-spawn account binding).
 /// `cwd` is the project root used to locate
 /// `<cwd>/.claude/settings.local.json` - sourced from `forge.toml` or
-/// the agent's reported cwd, never `std::env::current_dir()`.
-pub fn settings_documents(config_dir: &Path, cwd: &Path) -> SettingsDocuments {
+/// the agent's reported cwd, never `std::env::current_dir()`. It is
+/// `None` when no project root resolves, which reads no project-local
+/// document rather than joining an empty root into a relative path.
+pub fn settings_documents(config_dir: &Path, cwd: Option<&Path>) -> SettingsDocuments {
     SettingsDocuments {
         user: read_json_file(&config_dir.join("settings.json")),
-        project_local: read_json_file(&cwd.join(".claude").join("settings.local.json")),
+        project_local: cwd
+            .and_then(|cwd| read_json_file(&cwd.join(".claude").join("settings.local.json"))),
         preferences: home_dir().and_then(|h| read_json_file(&h.join(".claude.json"))),
     }
 }
@@ -118,5 +121,22 @@ mod tests {
         assert!(docs.user.is_none());
         assert!(docs.project_local.is_none());
         assert!(docs.preferences.is_none());
+    }
+
+    /// No project root reads no project-local document. Joining an empty
+    /// root would open a path relative to the process working directory,
+    /// so a `settings.local.json` in the launch directory could shape
+    /// forge (hard rule 14).
+    #[test]
+    fn settings_documents_reads_no_project_local_without_a_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let local = dir.path().join(".claude");
+        std::fs::create_dir_all(&local).expect("mkdir");
+        std::fs::write(local.join("settings.local.json"), r#"{"alwaysThinkingEnabled":true}"#)
+            .expect("write");
+
+        let docs = settings_documents(dir.path(), None);
+
+        assert!(docs.project_local.is_none(), "no root, no project-local document");
     }
 }

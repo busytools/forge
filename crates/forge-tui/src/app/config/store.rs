@@ -60,13 +60,12 @@ pub fn load(
     // test runs.
     let (settings_document, local_settings_document, preferences_document) = match bridge {
         Some(bridge) if home_override.is_none() => {
-            // A session with no cwd yet reads its own project-local
-            // document from the empty root, which is what it did before
-            // the root became optional; the launchpad boot, which has
-            // no session at all, is the case that reads nothing.
+            // No root means no project-local document, the same rule the
+            // non-bridge arm follows; an empty root would join into a
+            // relative path read against the process working directory.
             let docs = bridge
                 .workspace
-                .settings_documents(bridge.key, project_root.unwrap_or(Path::new("")))
+                .settings_documents(bridge.key, project_root)
                 .ok_or_else(|| "no agent registered for session".to_owned())?;
             (
                 docs.user.unwrap_or_else(empty_object),
@@ -712,17 +711,22 @@ mod tests {
         assert!(strays.is_empty(), "temp files left behind: {strays:?}");
     }
 
-    /// With no project root there is no project-local document to read.
-    /// Nothing derives one from the process working directory, so a
-    /// settings.local.json sitting in the launch directory cannot shape
-    /// forge (hard rule 14).
+    /// With no project root no project-local path is resolved, and the
+    /// document read follows the path: `None` means the loader has
+    /// nothing to open. That is half of the rule-14 property - the
+    /// other half is `project_root` never handing back an empty root,
+    /// pinned in `app::config`, so nothing can join an empty path into
+    /// a relative `.claude/settings.local.json`.
     #[test]
-    fn load_without_a_project_root_reads_no_local_document() {
+    fn load_without_a_project_root_resolves_no_local_path() {
         let dir = tempfile::tempdir().expect("tempdir");
 
         let loaded = load(Some(dir.path()), None, None).expect("load");
 
-        assert!(loaded.paths.local_settings.is_none(), "no root, no local path");
+        assert!(
+            loaded.paths.local_settings.is_none(),
+            "an empty root must not become a relative local-settings path",
+        );
         assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
     }
 

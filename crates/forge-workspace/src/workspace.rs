@@ -5595,7 +5595,7 @@ impl Workspace {
     pub fn settings_documents(
         &self,
         key: &SessionKey,
-        cwd: &std::path::Path,
+        cwd: Option<&std::path::Path>,
     ) -> Option<forge_agent::userdata::settings::SettingsDocuments> {
         let handle = self.agent_handle_for(key)?;
         Some(handle.settings_documents(cwd))
