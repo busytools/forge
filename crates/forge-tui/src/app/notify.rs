@@ -238,11 +238,22 @@ impl crate::app::App {
     }
 
     /// The event session's project name + worker label, read at notify
-    /// time. Falls back to defaults when the bucket is gone or the
-    /// session is not a live worker.
+    /// time. An unresolved project means the delivered line cannot name
+    /// one, so it is logged rather than papered over with a name that
+    /// would read as plausible.
     fn notification_context(&self, session_key: &SessionKey) -> NotifyContext {
+        let project = self.sessions.get(session_key).and_then(|bucket| bucket.project.clone());
+        if project.is_none() {
+            tracing::warn!(
+                target: crate::logging::targets::APP_NOTIFY,
+                event_name = "notification_project_unresolved",
+                message = "notification session has no project; the delivered line cannot name one",
+                outcome = "degraded",
+                session_key = %session_key.as_str(),
+            );
+        }
         NotifyContext {
-            project: self.sessions.get(session_key).and_then(|bucket| bucket.project.clone()),
+            project,
             worker_label: self
                 .workspace
                 .as_ref()
@@ -389,28 +400,32 @@ where
     TerminalCapabilities { osc9_notifications }
 }
 
-/// The title the toast carries when the session has no project yet.
-const APP_NAME: &str = "forge";
+/// The title an unresolved project renders as. A missing project means
+/// the session bucket is unstamped, which is a bug: naming it loudly
+/// beats substituting a plausible string that hides the bug.
+const UNKNOWN_PROJECT: &str = "unknown project";
 
 /// Build the delivered strings for one event from the session's
-/// project + worker label. The title stays short (the project); the
-/// detail names the event, and the worker when the session is one.
+/// project + worker label. The title is the project; the detail names
+/// the session's kind and the event, because on the OSC 9 path this
+/// line is the only thing forge controls - the terminal supplies the
+/// rest of the banner.
 fn notification_text(
     event: NotifyEvent,
     project: Option<&str>,
     worker_label: Option<&str>,
 ) -> NotificationText {
-    let title = project.unwrap_or(APP_NAME).to_owned();
-    let detail = match (event, worker_label) {
-        (NotifyEvent::TurnComplete, _) => "turn complete".to_owned(),
-        (NotifyEvent::PermissionRequired, Some(label)) => format!("worker {label} needs input"),
-        (NotifyEvent::PermissionRequired, None) => "permission needs your approval".to_owned(),
-        (NotifyEvent::QuestionRequired, Some(label)) => {
-            format!("worker {label} needs your answer")
-        }
-        (NotifyEvent::QuestionRequired, None) => "question needs your answer".to_owned(),
+    let title = project.unwrap_or(UNKNOWN_PROJECT).to_owned();
+    let kind = match worker_label {
+        Some(label) => format!("worker {label}"),
+        None => "lead".to_owned(),
     };
-    NotificationText { title, detail }
+    let happened = match event {
+        NotifyEvent::TurnComplete => "turn complete",
+        NotifyEvent::PermissionRequired => "needs input",
+        NotifyEvent::QuestionRequired => "needs your answer",
+    };
+    NotificationText { title, detail: format!("{kind} - {happened}") }
 }
 
 fn osc9_escape_sequence(message: &str) -> Cow<'_, str> {
@@ -693,44 +708,57 @@ mod tests {
     }
 
     #[test]
-    fn turn_complete_text_carries_the_project() {
-        let text = notification_text(NotifyEvent::TurnComplete, Some("companies"), None);
-        assert_eq!(text.title, "companies");
-        assert_eq!(text.detail, "turn complete");
-        assert_eq!(text.osc9_line(), "companies - turn complete");
-
-        let worker_turn =
-            notification_text(NotifyEvent::TurnComplete, Some("companies"), Some("egen-lead"));
-        assert_eq!(worker_turn.detail, "turn complete", "the detail discards the worker label");
-    }
-
-    #[test]
-    fn permission_text_varies_by_worker_label() {
+    fn turn_complete_text_names_the_project_and_the_session_kind() {
         let worker =
-            notification_text(NotifyEvent::PermissionRequired, Some("forge"), Some("egen-lead"));
-        assert_eq!(worker.title, "forge");
-        assert_eq!(worker.detail, "worker egen-lead needs input");
+            notification_text(NotifyEvent::TurnComplete, Some("forge"), Some("chat-stutter"));
+        assert_eq!(
+            worker.osc9_line(),
+            "forge - worker chat-stutter - turn complete",
+            "the line carries project, kind, label and event on its own",
+        );
 
-        let lead = notification_text(NotifyEvent::PermissionRequired, Some("forge"), None);
-        assert_eq!(lead.detail, "permission needs your approval");
+        let lead = notification_text(NotifyEvent::TurnComplete, Some("forge"), None);
+        assert_eq!(lead.osc9_line(), "forge - lead - turn complete");
+
+        assert_ne!(
+            worker.osc9_line(),
+            lead.osc9_line(),
+            "a worker's turn-complete must not read as a lead's",
+        );
     }
 
     #[test]
-    fn question_text_varies_by_worker_label() {
+    fn permission_text_names_the_project_and_the_session_kind() {
+        let worker = notification_text(
+            NotifyEvent::PermissionRequired,
+            Some("busymail"),
+            Some("demo-route"),
+        );
+        assert_eq!(worker.osc9_line(), "busymail - worker demo-route - needs input");
+
+        let lead = notification_text(NotifyEvent::PermissionRequired, Some("busymail"), None);
+        assert_eq!(lead.osc9_line(), "busymail - lead - needs input");
+    }
+
+    #[test]
+    fn question_text_names_the_project_and_the_session_kind() {
         let worker =
-            notification_text(NotifyEvent::QuestionRequired, Some("forge"), Some("egen-lead"));
-        assert_eq!(worker.detail, "worker egen-lead needs your answer");
+            notification_text(NotifyEvent::QuestionRequired, Some("busymail"), Some("demo-route"));
+        assert_eq!(worker.osc9_line(), "busymail - worker demo-route - needs your answer");
 
-        let lead = notification_text(NotifyEvent::QuestionRequired, Some("forge"), None);
-        assert_eq!(lead.detail, "question needs your answer");
+        let lead = notification_text(NotifyEvent::QuestionRequired, Some("busymail"), None);
+        assert_eq!(lead.osc9_line(), "busymail - lead - needs your answer");
     }
 
     #[test]
-    fn text_falls_back_to_the_app_name_without_a_project() {
+    fn an_unresolved_project_does_not_render_as_the_app_name() {
         let text = notification_text(NotifyEvent::TurnComplete, None, None);
-        assert_eq!(text.title, "forge");
-        assert_eq!(text.detail, "turn complete");
-        assert_eq!(text.osc9_line(), "forge - turn complete");
+
+        assert_eq!(
+            text.osc9_line(),
+            "unknown project - lead - turn complete",
+            "an unstamped bucket must read as missing, not as the app name",
+        );
     }
 
     fn seed_bucket(app: &mut App, id: &str, project: &str) -> forge_workspace::SessionKey {
@@ -814,6 +842,39 @@ mod tests {
         );
     }
 
+    /// The single line the escape carries stands alone: the event
+    /// session's project, its kind, the worker's label where there is
+    /// one, and the event.
+    #[test]
+    fn unfocused_worker_turn_complete_line_names_the_worker() {
+        let mut app = App::test_default();
+        let lead_key = seed_bucket(&mut app, "session-lead", "beta");
+        let worker_key = seed_bucket(&mut app, "session-worker", "beta");
+        seed_worker(
+            &app,
+            &forge_workspace::ProjectKey::new_for_test("p-beta"),
+            &worker_key,
+            "chat-stutter",
+        );
+        app.notifications = NotificationManager::new(Osc9NotificationMode::On);
+        app.notifications.on_focus_lost();
+
+        app.notify(NotifyEvent::TurnComplete, &lead_key);
+        app.notify(NotifyEvent::TurnComplete, &worker_key);
+
+        let lines: Vec<_> = app
+            .notifications
+            .take_delivered()
+            .into_iter()
+            .filter_map(|delivered| delivered.osc9_line)
+            .collect();
+        assert_eq!(
+            lines,
+            vec!["beta - lead - turn complete", "beta - worker chat-stutter - turn complete"],
+            "the two turn-completes are told apart on the line alone",
+        );
+    }
+
     /// The desktop toast receives (title, body) = (project, event
     /// detail) in that order; OSC 9 mode Off pins the plan to bell +
     /// desktop regardless of the test process's environment.
@@ -831,7 +892,7 @@ mod tests {
             vec![DeliveredNotification {
                 osc9_line: None,
                 bell: true,
-                desktop: Some(("companies".to_owned(), "turn complete".to_owned())),
+                desktop: Some(("companies".to_owned(), "lead - turn complete".to_owned())),
             }],
         );
     }

@@ -1037,7 +1037,7 @@ mod tests {
             vec![crate::app::notify::DeliveredNotification {
                 osc9_line: None,
                 bell: true,
-                desktop: Some(("beta".to_owned(), "turn complete".to_owned())),
+                desktop: Some(("beta".to_owned(), "lead - turn complete".to_owned())),
             }],
             "the unfocused manager delivered the completion ping",
         );
