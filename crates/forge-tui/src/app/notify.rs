@@ -129,7 +129,7 @@ impl NotificationManager {
             event = ?event,
             title = %text.title,
             detail = %text.detail,
-            osc9_written = written,
+            escape_written = written,
         );
         // The `testing` feature records what was delivered so tests
         // can assert it; the write above still runs.
@@ -257,16 +257,16 @@ fn notification_text(
     worker_label: Option<&str>,
 ) -> NotificationText {
     let title = project.to_owned();
-    let kind = match worker_label {
-        Some(label) => format!("worker {label}"),
-        None => "lead".to_owned(),
-    };
     let happened = match event {
-        NotifyEvent::TurnComplete => "turn complete",
-        NotifyEvent::PermissionRequired => "needs input",
-        NotifyEvent::QuestionRequired => "needs your answer",
+        NotifyEvent::TurnComplete => "Turn complete",
+        NotifyEvent::PermissionRequired => "Needs input",
+        NotifyEvent::QuestionRequired => "Needs your answer",
     };
-    NotificationText { title, detail: format!("{kind} - {happened}") }
+    let detail = match worker_label {
+        Some(label) => format!("Worker {label} - {happened}"),
+        None => happened.to_owned(),
+    };
+    NotificationText { title, detail }
 }
 
 /// The escape one notification delivers. OSC 777 carries the title as
@@ -336,12 +336,12 @@ mod tests {
         let worker = notification_text(NotifyEvent::TurnComplete, "forge", Some("chat-stutter"));
         assert_eq!(
             worker.fields(),
-            ("forge", "worker chat-stutter - turn complete"),
+            ("forge", "Worker chat-stutter - Turn complete"),
             "the title carries the project and the detail the kind, label and event",
         );
 
         let lead = notification_text(NotifyEvent::TurnComplete, "forge", None);
-        assert_eq!(lead.fields(), ("forge", "lead - turn complete"));
+        assert_eq!(lead.fields(), ("forge", "Turn complete"));
 
         assert_ne!(
             worker.fields(),
@@ -350,24 +350,55 @@ mod tests {
         );
     }
 
+    /// The project is the title now, so the body stops repeating it: a
+    /// lead's body is the event alone, a worker's names the worker.
+    #[test]
+    fn the_project_is_the_title_and_the_body_names_the_session() {
+        let lead = notification_text(NotifyEvent::TurnComplete, "companies", None);
+        assert_eq!(
+            lead.fields(),
+            ("companies", "Turn complete"),
+            "a lead turn complete is the project and the event, with no lead prefix",
+        );
+
+        let worker = notification_text(NotifyEvent::TurnComplete, "forge", Some("osc777"));
+        assert_eq!(
+            worker.fields(),
+            ("forge", "Worker osc777 - Turn complete"),
+            "a worker names itself, since the project is already the title",
+        );
+    }
+
+    #[test]
+    fn every_event_phrase_is_capitalised() {
+        assert_eq!(
+            notification_text(NotifyEvent::PermissionRequired, "busymail", None).fields().1,
+            "Needs input",
+        );
+        assert_eq!(
+            notification_text(NotifyEvent::QuestionRequired, "busymail", None).fields().1,
+            "Needs your answer",
+        );
+    }
+
     #[test]
     fn permission_text_names_the_project_and_the_session_kind() {
         let worker =
             notification_text(NotifyEvent::PermissionRequired, "busymail", Some("demo-route"));
-        assert_eq!(worker.fields(), ("busymail", "worker demo-route - needs input"));
+        assert_eq!(worker.fields(), ("busymail", "Worker demo-route - Needs input"));
 
         let lead = notification_text(NotifyEvent::PermissionRequired, "busymail", None);
-        assert_eq!(lead.fields(), ("busymail", "lead - needs input"));
+        assert_eq!(lead.fields(), ("busymail", "Needs input"));
     }
 
     #[test]
     fn question_text_names_the_project_and_the_session_kind() {
         let worker =
             notification_text(NotifyEvent::QuestionRequired, "busymail", Some("demo-route"));
-        assert_eq!(worker.fields(), ("busymail", "worker demo-route - needs your answer"));
+        assert_eq!(worker.fields(), ("busymail", "Worker demo-route - Needs your answer"));
 
         let lead = notification_text(NotifyEvent::QuestionRequired, "busymail", None);
-        assert_eq!(lead.fields(), ("busymail", "lead - needs your answer"));
+        assert_eq!(lead.fields(), ("busymail", "Needs your answer"));
     }
 
     /// A key with no bucket is where an "unresolved project" now lands:
@@ -497,8 +528,8 @@ mod tests {
         assert_eq!(
             fields,
             vec![
-                ("beta".to_owned(), "lead - turn complete".to_owned()),
-                ("beta".to_owned(), "worker chat-stutter - turn complete".to_owned()),
+                ("beta".to_owned(), "Turn complete".to_owned()),
+                ("beta".to_owned(), "Worker chat-stutter - Turn complete".to_owned()),
             ],
             "the two turn-completes are told apart on the fields alone",
         );
@@ -531,8 +562,8 @@ mod tests {
         assert_eq!(
             fields,
             vec![
-                ("busymail".to_owned(), "worker demo-route - needs input".to_owned()),
-                ("busymail".to_owned(), "worker demo-route - needs your answer".to_owned()),
+                ("busymail".to_owned(), "Worker demo-route - Needs input".to_owned()),
+                ("busymail".to_owned(), "Worker demo-route - Needs your answer".to_owned()),
             ],
         );
     }
@@ -558,7 +589,7 @@ mod tests {
             .collect();
         assert_eq!(
             fields,
-            vec![("companies".to_owned(), "lead - turn complete".to_owned())],
+            vec![("companies".to_owned(), "Turn complete".to_owned())],
             "a stored channel preference must not change what is delivered",
         );
     }
@@ -578,7 +609,7 @@ mod tests {
             app.notifications.take_delivered(),
             vec![DeliveredNotification {
                 title: "companies".to_owned(),
-                body: "lead - turn complete".to_owned(),
+                body: "Turn complete".to_owned(),
                 written: true,
             }],
             "the escape is written, not merely planned",
