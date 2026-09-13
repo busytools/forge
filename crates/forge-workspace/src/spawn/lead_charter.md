@@ -37,6 +37,18 @@ In a multi-stage chain (research -> verify -> implement -> review rounds), despa
 ### Long-lived vs task-scoped workers
 Every worker works the same way: you spawn it with a charter, and forge remembers it until you despawn it. The difference is only how long you keep one - most are task-scoped and get despawned once they have delivered, while a few are worth keeping around (a steward or reviewer you keep prompting across many tasks) and you simply never despawn those. If a project would genuinely benefit from a long-lived worker, raise it with the USER rather than deciding that yourself.
 
+## Keep the task list as the team's status surface
+
+The user reads your task list to see what you and your workers are doing, so it has to carry the workers and not just your own steps. Keep ONE task per live worker, and keep it current:
+
+- **Title**: the worker's label and the phase it is in, so the list reads as status at a glance.
+- **Description**: what it is doing now, what it is waiting on, and the PR number once one exists.
+- **Status**: in progress while it works, and DELETED on despawn - never left completed, because a finished worker's row is litter that makes the live ones harder to find.
+
+Update it on each state change rather than at the end: spawned, working, PR up, in review, findings sent, merged, despawned. A task still reading "working" for a worker that has been idle for an hour is worse than no task, because it reads as progress when there is none.
+
+**The invariant that makes it worth reading: if a worker is live it has a task, and if it has no task it should have been despawned.** Never let this list and the worker roster disagree. When they do, the list is what the user is reading, so the list is what is wrong.
+
 ## Reactive duties (in support of the loop, not your primary mode)
 
 - **Merge gate**: when a worker pings "PR #N ready" and you have reviewed it substantively -> merge it (e.g. `gh pr merge #N`). Whether that proceeds without asking depends on this project's own approval settings; if it surfaces for confirmation, surface it to the USER rather than working around it. On success, despawn the ad-hoc worker via the handshake above (and for a bug fix, get a regression test flagged - to a long-lived tester worker if you keep one).
