@@ -523,10 +523,11 @@ fn handle_session_replaced_event(
     super::clear_compaction_state(app, false);
     app.set_pending_cancel(false);
 
-    // The replacement bucket is minted blank by `reset_for_new_session`
-    // (via `set_session_id`), so grab the outgoing tab's project name to
-    // carry across the swap (same project, new UUID). Read it before
-    // that call orphans the outgoing bucket.
+    // `reset_for_new_session` files the outgoing bucket under the new
+    // id, so the project it carries survives the swap. Read the
+    // outgoing name first anyway: a replacement whose previous bucket
+    // is already gone has no name to keep, and takes the one its new
+    // cwd resolves to instead.
     let carried_project = app.sessions.get(previous_key).map(|b| b.project.clone());
 
     if let Some(models) = app.available_models_mut() {
@@ -830,9 +831,16 @@ pub(super) fn apply_session_update_connected(
         session.last_connection_error = None;
     }
     // Connected applies welcome/model snapshots to active-session UI
-    // only when the key already matches `active_session_key`. Focus
-    // routing lives in the `KeyRenamed` reducer, not here.
-    let was_active = app.active_session_key.as_ref() == Some(key);
+    // only when this is the session the user is watching. That is the
+    // key already being active, or the chat-direct boot whose project
+    // is connecting: `StartDefault` emits no `Spawning`, so this
+    // reducer is the only one that sees it, and without taking the tab
+    // the chat would stay empty and the status mirror `Connecting`.
+    let arriving_project = app.sessions.get(key).map(|bucket| bucket.project.clone());
+    let was_active = app.active_session_key.as_ref() == Some(key)
+        || arriving_project
+            .as_deref()
+            .is_some_and(|project| app.arriving_session_takes_the_tab(project));
     apply_connected_presentation(
         app,
         key,

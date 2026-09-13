@@ -904,9 +904,7 @@ fn apply_session_update_spawning(
                 .or_else(|| ws.project_name_for_path(cwd))
         })
         .unwrap_or_else(|| project_name.to_owned());
-    let worker_label = forge_workspace::worker_label_for_spawn_key(&key);
     let mut bucket = crate::app::session::UiSession::new(key.clone(), project);
-    bucket.worker_label = worker_label;
     bucket.cwd = shorten_cwd_display_path(cwd);
     cwd.clone_into(&mut bucket.cwd_raw);
     bucket.messages.push(crate::app::ChatMessage::new(
@@ -923,33 +921,26 @@ fn apply_session_update_spawning(
         crate::app::session::SessionLifecycleState::Spawning,
     );
 
-    // **Focus stays where it is** for a wake that arrives while a
-    // session is focused. Auto-focusing a background wake would let
-    // whichever auto_start project's Spawning event arrives first
-    // steal the focused tab, so a Spawning event for a non-focused
-    // auto_start project must just register the bucket and trigger
-    // a redraw - never move focus.
+    // **Focus stays where it is** for a wake nobody asked for.
+    // Auto-focusing a background wake would let whichever auto_start
+    // project's Spawning event arrives first steal the screen, so such
+    // a wake only registers its bucket and triggers a redraw.
     //
     // A user-driven wake is the exception: it recorded this exact key
     // in `pending_spawn_focus` when the click dispatched, so honouring
-    // it moves focus for that one spawn and no other.
-    //
-    // The other case we'd switch focus from here is
-    // `active_session_key == None`, which is how production boots:
-    // nothing is focused until the first spawn lands, so that spawn
-    // takes the tab. (The project named on the command line does not
-    // reach this reducer at all - its bucket is minted by the
-    // `Connected` that follows.)
+    // it moves focus for that one spawn and no other. The project named
+    // on the command line does not reach this reducer at all - its
+    // bucket is minted by the `Connected` that follows.
     let user_asked_for_this = app.pending_spawn_focus.as_ref() == Some(&key);
     if user_asked_for_this {
         app.pending_spawn_focus = None;
     }
-    if user_asked_for_this || app.active_session_key.is_none() {
+    if user_asked_for_this || app.arriving_session_takes_the_tab(project_name) {
         tracing::info!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "spawn_wake_focus",
             outcome = "focused",
-            reason = if user_asked_for_this { "user_asked" } else { "no_active_session" },
+            reason = if user_asked_for_this { "user_asked" } else { "boot_project" },
             key = %key.as_str(),
         );
         app.switch_active_session(key);
@@ -2532,11 +2523,13 @@ mod tests {
     }
 
     /// `SessionUpdate::Spawning` should seed a placeholder bucket
-    /// under the synthetic key with `Spawning` lifecycle state, a
-    /// "Waking …" system message, and switch the active session
-    /// to the placeholder so the user sees the wake immediately.
+    /// under the synthetic key with `Spawning` lifecycle state and a
+    /// "Waking …" system message. Focus is the click's to move (via
+    /// `pending_spawn_focus`) or the boot project's when the CLI named
+    /// one; a wake nobody asked for registers in the background, so
+    /// nothing here takes the tab.
     #[test]
-    fn spawning_reducer_seeds_placeholder_bucket_and_switches_active() {
+    fn spawning_reducer_seeds_the_placeholder_bucket() {
         let mut app = App::test_default();
         // Strip the seeded test bucket so the assertions are clean.
         app.sessions.clear();
@@ -2575,10 +2568,9 @@ mod tests {
             bucket.messages.iter().any(|m| matches!(m.role, crate::app::MessageRole::System(_))),
             "spawning placeholder system message present"
         );
-        assert_eq!(
-            app.active_session_key.as_ref(),
-            Some(&synth_key),
-            "active session switched to the placeholder",
+        assert!(
+            app.active_session_key.is_none(),
+            "a wake nobody asked for must not take a tab it was not given",
         );
     }
 
@@ -3284,6 +3276,75 @@ mod tests {
         );
     }
 
+    /// A launchpad boot names no project, so the `auto_start` spawns it
+    /// dispatches land in the background while the picker holds the
+    /// screen. Nothing may take the tab until the user picks one.
+    #[test]
+    fn a_launchpad_boot_leaves_an_auto_start_spawn_in_the_background() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+        app.active_session_key = None;
+        app.startup_project = None;
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Spawning {
+                key: SessionKey::from_session_id("__spawn_autostart__".to_owned()),
+                project_name: "autostart".to_owned(),
+                cwd: "/p/autostart".to_owned(),
+                display_name: "autostart".to_owned(),
+            },
+        );
+
+        assert!(
+            app.active_session_key.is_none(),
+            "the picker keeps the screen until the user picks a project",
+        );
+    }
+
+    /// The chat-direct boot path: `StartDefault` emits no `Spawning`, so
+    /// `KeyRenamed` then `Connected` are the only events the TUI sees,
+    /// and the session the user launched forge for has to take the tab.
+    /// Without that the chat renders empty for it, `App.status` stays
+    /// `Connecting` because the status mirror has no bucket to read, and
+    /// the render loop animates a session nobody can see.
+    #[test]
+    fn a_boot_connect_takes_the_tab_when_nothing_is_focused() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+        app.active_session_key = None;
+        app.startup_project = Some("boot-proj".to_owned());
+        let ws = app.workspace.clone().expect("test workspace");
+        ws.seed_test_project("boot-proj", "/tmp/boot-proj");
+
+        let synth = SessionKey::from_session_id("__conn_pending__");
+        let real = SessionKey::from_session_id("real-uuid");
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::KeyRenamed { from: synth, to: real.clone() },
+        );
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Connected {
+                key: real.clone(),
+                session_id: forge_primitives::SessionId::new("real-uuid"),
+                cwd: "/tmp/boot-proj".to_owned(),
+                current_model: test_current_model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                compaction_count: 0,
+            },
+        );
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&real),
+            "the boot session takes the tab nothing else is holding",
+        );
+        assert!(app.sessions.contains_key(&real), "and it is the session the accessors read");
+    }
+
     /// A background spawn wake (cron, peer prompt, gotify or slack delivery) landing while the
     /// user's own click-woken spawn is mid-boot must not steal the
     /// landing. Project B's earlier spawn failed and left its
@@ -3687,10 +3748,10 @@ mod tests {
     }
 
     /// A replaced session that is not the one on screen takes the
-    /// background arm. That arm never passes through `Connected`, and the
-    /// replaced key carries no bucket of its own, so the replacement's
-    /// project has to come from its new cwd - left unstamped, every
-    /// notification from it titled with the app name instead.
+    /// background arm, which never passes through `Connected`. With no
+    /// bucket at the replaced key to carry a project across, the
+    /// replacement is minted from its new cwd, which is the only thing
+    /// naming the project it belongs to.
     #[test]
     fn background_session_replaced_stamps_the_project_from_the_new_cwd() {
         let dir = tempfile::tempdir().expect("tempdir");

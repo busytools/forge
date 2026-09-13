@@ -33,6 +33,16 @@ impl super::App {
         self.sessions.get_mut(&key)
     }
 
+    /// Whether a session arriving now takes the tab by itself. That is
+    /// the case the user asked for: nothing is focused, and the arrival
+    /// belongs to the project the CLI was launched for. A launchpad
+    /// boot names no project, so the `auto_start` spawns it dispatches
+    /// register in the background and the picker keeps the screen until
+    /// the user picks one.
+    pub(crate) fn arriving_session_takes_the_tab(&self, project: &str) -> bool {
+        self.active_session_key.is_none() && self.startup_project.as_deref() == Some(project)
+    }
+
     /// Lookup a session by key (used by the event multiplexer to
     /// route background-session events to their bucket).
     pub fn session_mut(
