@@ -521,6 +521,18 @@ mod tests {
             "a focused session's cwd wins",
         );
 
+        // An empty cwd is not a project root: joining it would make the
+        // project-local settings path relative to the process working
+        // directory, which is the launch-directory dependence this
+        // resolution exists to avoid (hard rule 14).
+        let key = app.active_session_key.clone().expect("active key");
+        app.sessions.get_mut(&key).expect("bucket").cwd_raw = String::new();
+        assert_eq!(
+            project_root(&app),
+            Some(std::path::PathBuf::from("/forge-toml/project")),
+            "an empty cwd falls through to the launch project, never to a relative root",
+        );
+
         app.sessions.clear();
         app.active_session_key = None;
         assert_eq!(
