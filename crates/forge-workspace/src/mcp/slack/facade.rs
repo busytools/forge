@@ -1636,7 +1636,8 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let mut config = LoadedConfig::empty_for_test();
         config.slack = vec![cfg(label)];
-        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config);
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
         ws.seed_test_project("forge", "/tmp/slack-facade-scope");
         ws.record_connected_session("/tmp/slack-facade-scope", "caller-uuid", None);
         let facade = ProdSlackFacade::from_arc(&ws);
@@ -1651,7 +1652,8 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let mut config = LoadedConfig::empty_for_test();
         config.slack = vec![cfg(label)];
-        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config);
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
