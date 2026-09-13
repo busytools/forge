@@ -216,7 +216,7 @@ fn apply_timer_tick(app: &mut App) {
     // uses: passed wakeups drop on the first tick after their fire
     // time, recurring crons drop at +7 days. Runs before the early
     // returns below so the prune fires even when no active session
-    // is git-watchable (pre-Connect, synthetic spawn buckets).
+    // is git-watchable (no session focused, synthetic spawn buckets).
     app.prune_expired_schedules(std::time::SystemTime::now());
 
     // Refresh the active project's durable forge-cron snapshot on the
@@ -247,8 +247,8 @@ fn apply_timer_tick(app: &mut App) {
         return;
     };
     // Only poll truly-connected sessions with a real cwd. Synthetic
-    // spawn buckets (`__spawn_<name>__`) have empty cwd_raw;
-    // pre-Connect buckets have no session_id.
+    // spawn buckets (`__spawn_<name>__`) have empty cwd_raw; a bucket
+    // minted ahead of `Connected` has no session_id.
     if session.cwd_raw.is_empty() || session.session_id.is_none() {
         return;
     }

@@ -21,8 +21,8 @@ impl super::App {
     pub(crate) const TEST_SESSION_PROJECT: &'static str = "test-project";
 
     /// Returns a reference to the currently-active session bucket,
-    /// or `None` in the brief pre-Connect window before any session
-    /// has landed in [`Self::sessions`].
+    /// or `None` while no session is focused - production boots that
+    /// way until the first spawn lands in [`Self::sessions`].
     pub fn active_session(&self) -> Option<&crate::app::session::UiSession> {
         self.active_session_key.as_ref().and_then(|key| self.sessions.get(key))
     }
@@ -202,8 +202,8 @@ impl super::App {
         self.needs_redraw = true;
     }
 
-    /// Active session's claude session id, or `None` in the
-    /// pre-Connect window.
+    /// Active session's claude session id, or `None` when no session
+    /// is focused or its bucket has no id yet.
     ///
     /// Workspace keeps an internal copy on `DomainSession.session_id`
     /// for `AgentHandle` dispatch; TUI mirrors that id onto the

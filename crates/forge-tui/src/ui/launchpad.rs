@@ -190,7 +190,8 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
 /// Find the live `UiSession` bucket for `project`, if any. Three-step
 /// resolution mirrors the projects-pane lookup:
 ///
-/// 1. `__spawn_<name>__` synthetic - the pre-Connected placeholder.
+/// 1. `__spawn_<name>__` synthetic - the placeholder a spawn mints
+///    before its `Connected`.
 /// 2. Catalog session UUIDs - the lead recorded on disk, if pooled.
 /// 3. `cwd_raw` match - covers the post-KeyRenamed window when the
 ///    synthetic has migrated to the real session UUID but the
@@ -1111,8 +1112,8 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
     // will appear in `app.sessions` on the next event tick (via the
     // workspace's SessionTask emitting SessionUpdate::Connected /
     // KeyRenamed) and the chat view will pick it up automatically.
-    // Until then the chat view renders against the pre-connect
-    // bucket, matching the existing mouse-click → spawn flow in
+    // Until then the chat renders with no session focused, matching
+    // the existing mouse-click → spawn flow in
     // `events/mouse.rs::switch_to_project_lead`.
     if let Some(workspace) = app.workspace.as_ref() {
         let launch_settings = crate::app::connect::session_launch_settings_for_startup(app);

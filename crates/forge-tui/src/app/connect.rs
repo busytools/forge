@@ -52,10 +52,10 @@ fn create_app_impl(
     workspace: Arc<forge_workspace::Workspace>,
     perf_log: Option<std::path::PathBuf>,
 ) -> App {
-    // Resolve the pre-Connect seed cwd from `forge.toml`:
+    // Resolve the boot cwd from `forge.toml`:
     //
     // - `forge <project>` (chat-direct): look up `project.path`.
-    // - `forge` (launchpad): no project picked, leave both empty.
+    // - `forge` (launchpad): no project picked, leave it empty.
     //   Trust + file_index init handle an empty cwd cleanly; the
     //   first per-project Connected event populates the real
     //   bucket's `cwd_raw` from the agent's reported cwd.
@@ -517,10 +517,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn create_app_launchpad_mode_leaves_cwd_raw_empty() {
-        // No argv → launchpad mode → no project picked → pre-connect
-        // bucket carries an empty `cwd_raw`. This is the invariant
-        // the `find_running_bucket_for_path` simplification depends
-        // on: pre-connect can never collide with a real project's
+        // No argv → launchpad mode → no project picked → nothing is
+        // focused, so `cwd_raw()` is `None`. This is the invariant the
+        // `find_running_bucket_for_path` lookup depends on: a boot
+        // with no session can never collide with a real project's
         // `path` because there's nothing to compare against.
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
@@ -537,7 +537,7 @@ mod tests {
 
         assert!(
             app.cwd_raw().is_none_or(|cwd| cwd.is_empty()),
-            "launchpad-mode pre-connect should leave cwd_raw empty, got {:?}",
+            "a launchpad-mode boot should leave cwd_raw empty, got {:?}",
             app.cwd_raw(),
         );
         assert!(app.workspace.is_some(), "workspace should be wired");
@@ -550,8 +550,8 @@ mod tests {
         // (forge.toml is the source of truth for project paths;
         // `std::env::current_dir()` is deliberately not consulted). No
         // session carries it at boot: the bucket is minted by the spawn
-        // that resolves the project, so there is no pre-Connect cwd to
-        // read here at all.
+        // that resolves the project, so there is no cwd at boot to read
+        // here at all.
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());

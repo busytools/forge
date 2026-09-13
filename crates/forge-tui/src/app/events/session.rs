@@ -850,10 +850,9 @@ pub(super) fn apply_session_update_connected(
     seed_compaction_count(app, key, compaction_count);
 }
 
-/// Sentinel-pattern check: synthetic keys (`__conn_pending__`,
-/// `__spawn_<project>__`, `__resume_<id>__`) all wrap a name in
-/// double underscores. Real claude session UUIDs never look like
-/// this.
+/// Sentinel-pattern check: synthetic keys (`__spawn_<project>__`,
+/// `__resume_<id>__`) all wrap a name in double underscores. Real
+/// claude session UUIDs never look like this.
 fn is_synthetic_key(key: &SessionKey) -> bool {
     let s = key.as_str();
     s.len() >= 4 && s.starts_with("__") && s.ends_with("__")

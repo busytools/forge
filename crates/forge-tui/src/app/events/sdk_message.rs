@@ -2789,7 +2789,7 @@ mod assistant_lifecycle_gate_tests {
     #[test]
     fn live_assistant_message_flips_lifecycle_to_running() {
         let mut app = App::test_default();
-        // Baseline: bucket starts at Idle (the pre-Connect bucket
+        // Baseline: bucket starts at Idle (the seeded test bucket's
         // initialiser leaves lifecycle at the default `Sleeping`, so
         // pin Idle here explicitly to model a connected bucket).
         if let Some(key) = app.active_session_key.clone()

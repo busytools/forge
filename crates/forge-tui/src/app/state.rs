@@ -357,8 +357,8 @@ pub struct App {
     /// [`super::session::UiSession`] value type one bucket at a time.
     pub sessions: std::collections::HashMap<forge_workspace::SessionKey, super::session::UiSession>,
     /// Which entry of [`Self::sessions`] the renderer reads from.
-    /// `None` only in the brief pre-Connect window where no session
-    /// has landed in the map yet.
+    /// `None` while no session is focused - production boots that way
+    /// until the first spawn lands.
     pub active_session_key: Option<forge_workspace::SessionKey>,
     /// True while `active_session_key` is a pivot alias: a background
     /// frame is being routed through the active accessors and the
@@ -368,10 +368,10 @@ pub struct App {
     pub active_session_pivoted: bool,
     /// Synthetic spawn key the user asked to be taken to, set when a
     /// click wakes a cold project and consumed by the `Spawning`
-    /// reducer once that bucket exists. The reducer cannot focus
-    /// unconditionally - every `auto_start` project emits `Spawning`
-    /// at boot and the first to arrive would steal the tab - so a
-    /// user-driven wake records its intent here instead.
+    /// reducer once that bucket exists. The reducer focuses a wake by
+    /// itself only when nothing is focused, so a click that arrives
+    /// while another session holds the tab records its intent here
+    /// instead.
     pub pending_spawn_focus: Option<forge_workspace::SessionKey>,
     /// Snapshot of the durable forge crons (`mcp__forge__cron`) the
     /// active session itself created, refreshed on the ~1s ticker
@@ -731,8 +731,8 @@ impl App {
     }
 
     /// Install a fresh testing stub agent against the active
-    /// session's [`forge_workspace::DomainSession`], auto-creating a
-    /// pre-Connect bucket when no active session exists yet. Returns
+    /// session's [`forge_workspace::DomainSession`], auto-creating the
+    /// seeded test bucket when no active session exists yet. Returns
     /// the matching `forge_primitives::AgentCommand` receiver so tests can
     /// assert on the commands the workspace routes through the stub.
     ///
@@ -944,12 +944,12 @@ impl App {
         sessions.insert(pending_key.clone(), pending_session);
 
         // Build a Workspace stub and register a DomainSession for the
-        // pre-Connect key. The DomainSession carries the routing
+        // seeded test key. The DomainSession carries the routing
         // metadata (handle slot, session_id, pending interactions);
         // tests that exercise "post-Connect" flows install a stub
         // handle via `App::install_testing_stub`, which writes onto
-        // this same DomainSession's `conn` slot. Tests that target
-        // the pre-Connect state observe `has_active_agent() == false`
+        // this same DomainSession's `conn` slot. Tests that target an
+        // unconnected session observe `has_active_agent() == false`
         // until they do.
         let (workspace, _update_rx) = forge_workspace::Workspace::testing_stub();
         workspace.register_domain_session(pending_key.clone(), None);

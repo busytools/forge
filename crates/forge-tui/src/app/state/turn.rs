@@ -12,7 +12,7 @@ use crate::agent::model;
 impl super::App {
     /// Run `f` with read-only access to the active session's
     /// turn state. Falls through to a fresh `SessionTurnState::default()`
-    /// when no active bucket exists (pre-Connect window).
+    /// when no session is focused.
     pub fn with_turn_state<R>(&self, f: impl FnOnce(&SessionTurnState) -> R) -> R {
         match self.active_session() {
             Some(s) => f(&s.turn_state),

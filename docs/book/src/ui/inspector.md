@@ -112,7 +112,7 @@ The focused session's cwd, the branch, an optional `PR #N → closes #M #K` row,
 - Uncommitted edits only: layer 1 renders below the branch row. Committed-but-unmerged only: layer 2 (`1 commit vs <default>` singular at one). Both: layer 1 first, layer 2 beneath.
 - Scanner unhealthy: a dim warning line "`git scanner unhealthy, see logs`" replaces the layer content, distinct from a legitimate non-repo.
 - The `PR #N` row resolves against the branch's newest pushed commit sha, not the branch name, so a worktree whose local branch differs from the PR's head ref still resolves; stacked PRs render the most recently updated. `gh` re-shells out only when that sha moved, the branch changed, or the 5-minute refresh timer (300 s) elapsed; same-branch scans reuse the cached row. Clicking the row opens the PR in the system browser (a failed open surfaces a chat warning). GitHub-only via `gh` - other remotes render no row. The closing-issue list truncates to a trailing `...` when it would overflow. Rows are suppressed when there is no open PR, the branch is the default or detached, nothing of HEAD's ancestry is pushed, or `gh` cannot run - a resolved row survives transient `gh` failures until the next lookup succeeds.
-- Poll exclusions: synthetic spawn buckets and pre-connect buckets skip the refresh, and a cwd change invalidates the cached snapshot via a generation bump, so any in-flight scan against the old cwd is dropped.
+- Poll exclusions: synthetic spawn buckets (no cwd, no session id yet) skip the refresh, and a cwd change invalidates the cached snapshot via a generation bump, so any in-flight scan against the old cwd is dropped.
 
 </details>
 

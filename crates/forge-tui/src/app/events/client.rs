@@ -833,10 +833,11 @@ fn apply_dictate_outcome(
 /// switch active focus.
 ///
 /// **Focus rule:** auto-focus the new spawn ONLY when
-/// `active_session_key` is `None`, which in practice means never -
-/// the App seeds a pre-Connect bucket at startup and something is
-/// always focused. auto_start projects all emit `Spawning` during
-/// boot, and whichever arrived first would otherwise take the tab.
+/// `active_session_key` is `None`, or when a click recorded this key
+/// in [`App::pending_spawn_focus`]. Production boots with nothing
+/// focused, so the first `auto_start` project's `Spawning` takes the
+/// tab; every later one arrives while a session is focused and must
+/// not steal it.
 ///
 /// Both branches share one gate, because a person asking for THIS
 /// session is the only thing that may move focus: either the click
@@ -922,14 +923,10 @@ fn apply_session_update_spawning(
         crate::app::session::SessionLifecycleState::Spawning,
     );
 
-    // **Focus stays where it is.** Auto-focus over the pre-Connect
-    // placeholder would let whichever auto_start project's Spawning
-    // event arrives first steal the focused tab - but pre-Connect
-    // is reserved for the StartDefault target's migration (the
-    // project named on the command line, which doesn't go through
-    // this reducer at all; it
-    // uses KeyRenamed to swap the pre-Connect bucket onto the real
-    // key in-place). So a Spawning event for a non-focused
+    // **Focus stays where it is** for a wake that arrives while a
+    // session is focused. Auto-focusing a background wake would let
+    // whichever auto_start project's Spawning event arrives first
+    // steal the focused tab, so a Spawning event for a non-focused
     // auto_start project must just register the bucket and trigger
     // a redraw - never move focus.
     //
@@ -937,11 +934,12 @@ fn apply_session_update_spawning(
     // in `pending_spawn_focus` when the click dispatched, so honouring
     // it moves focus for that one spawn and no other.
     //
-    // The only other case we'd switch focus from here is
-    // `active_session_key == None`, which doesn't happen in practice
-    // (the App constructs pre-Connect at startup). Kept defensively so
-    // a future flow that skips the pre-Connect bucket still focuses
-    // its first spawn.
+    // The other case we'd switch focus from here is
+    // `active_session_key == None`, which is how production boots:
+    // nothing is focused until the first spawn lands, so that spawn
+    // takes the tab. (The project named on the command line does not
+    // reach this reducer at all - its bucket is minted by the
+    // `Connected` that follows.)
     let user_asked_for_this = app.pending_spawn_focus.as_ref() == Some(&key);
     if user_asked_for_this {
         app.pending_spawn_focus = None;
@@ -1988,8 +1986,8 @@ mod tests {
         let mut app = App::test_default();
 
         // Two real session buckets keyed off claude-issued UUIDs.
-        // The pre-Connect synthetic bucket from `App::test_default`
-        // stays in the map; we only care that A and B are present.
+        // The seeded test bucket from `App::test_default` stays in
+        // the map; we only care that A and B are present.
         let (key_a, key_b) = seed_two_sessions(&mut app);
         assert!(bucket_account_info_for(&app, &key_a).is_none());
         assert!(bucket_account_info_for(&app, &key_b).is_none());
@@ -2540,7 +2538,7 @@ mod tests {
     #[test]
     fn spawning_reducer_seeds_placeholder_bucket_and_switches_active() {
         let mut app = App::test_default();
-        // Strip the pre-Connect bucket so the assertions are clean.
+        // Strip the seeded test bucket so the assertions are clean.
         app.sessions.clear();
         app.active_session_key = None;
 
@@ -4200,8 +4198,8 @@ mod tests {
         let worker_key = SessionKey::from_session_id("uuid-1");
         // Note: no lead-uuid bucket present. The test_default()
         // helper already seeded an active session under
-        // `__conn_pending__`; that bucket plays the role of "any
-        // surviving session" for this test.
+        // `App::TEST_SESSION_KEY`; that bucket plays the role of
+        // "any surviving session" for this test.
         app.sessions.insert(
             worker_key.clone(),
             crate::app::session::UiSession::new(worker_key.clone(), "test-project"),
@@ -4537,10 +4535,9 @@ mod tests {
 }
 
 /// The spawn-stub focus seam. An id-less focused bucket - a
-/// `__spawn_<name>__` stub or the boot `__conn_pending__` sentinel -
-/// must not inherit a background session's identity, or
-/// `set_session_id` drags focus there and the spawn's own
-/// KeyRenamed + Connected find the stub unfocused. Enforced for
+/// `__spawn_<name>__` stub - must not inherit a background session's
+/// identity, or `set_session_id` drags focus there and the spawn's
+/// own KeyRenamed + Connected find the stub unfocused. Enforced for
 /// frames whose session already owns a bucket; a frame whose session
 /// owns none (fresh spawn before its first real-id frame, a
 /// just-closed session's in-flight tail) still adopts - logged as
@@ -4680,10 +4677,12 @@ mod focus_seam_tests {
         );
     }
 
-    /// A launchpad boot leaves `__conn_pending__` focused while
-    /// every auto_start session connects in the background. None of
-    /// them may take the tab - not at the stub, not at connect, and
-    /// not via a stray frame adopting onto the id-less sentinel.
+    /// A session the user is already watching must never be taken by
+    /// a background auto_start wake: `App::test_default` seeds the
+    /// one focused session, and every auto_start session connects
+    /// behind it. None of them may take the tab - not at the stub,
+    /// not at connect, and not via a stray frame adopting onto the
+    /// id-less stub.
     #[test]
     fn background_boot_connects_never_take_focus() {
         let mut app = App::test_default();

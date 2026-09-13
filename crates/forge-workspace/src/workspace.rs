@@ -1485,18 +1485,19 @@ impl Workspace {
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
         // per-session peer-MCP server's CallerKeyResolver can read
-        // back through the same Arc<Mutex<DomainSession>>. The
-        // existing connect::create_app path may have registered a
-        // pre-Connect placeholder under `session_key` (conn = None);
-        // reuse it when present so the TUI's pre-spawn accessors
-        // keep their handle reference. Otherwise create fresh with
-        // conn = None and update post-Agent::spawn at line ~470.
+        // back through the same Arc<Mutex<DomainSession>>. A caller
+        // may have registered one at `session_key` already (the cron
+        // and gotify delivery paths register a worker's domain before
+        // its spawn); reuse it when present so the TUI's pre-spawn
+        // accessors keep their handle reference. Otherwise create
+        // fresh with conn = None and update post-Agent::spawn at line
+        // ~470.
         let domain_arc = {
             let mut handles = self.domain_handles.lock();
             // Three cases:
             //  1. A DomainSession is already registered at `session_key`
-            //     (e.g. connect::create_app's pre-Connect placeholder).
-            //     Reuse it.
+            //     (the cron / gotify delivery paths register a worker's
+            //     domain before dispatching its spawn). Reuse it.
             //  2. `spawn_key` was provided AND a DomainSession exists
             //     there (peer-coordination spawn path: handle_deliver_
             //     peer_prompt pre-populated pending_peer_prompts at
@@ -1506,11 +1507,12 @@ impl Workspace {
             //     we're about to construct sees the buffered state.
             //  3. Neither - create fresh at `session_key`.
             //
-            // When both `session_key` and `spawn_key` exist (race:
-            // peer ask arrives while a pre-Connect placeholder was
-            // already there), merge `spawn_key`'s buffered prompts
-            // into the placeholder. The placeholder is the
-            // one the SessionTask will pick up via `session_key`.
+            // When both `session_key` and `spawn_key` exist (race: a
+            // peer ask arrives at the spawn key while a domain is
+            // already registered at `session_key`), merge
+            // `spawn_key`'s buffered prompts into the one at
+            // `session_key`. That is the one the SessionTask will pick
+            // up.
             if let Some(existing) = handles.get(&session_key).cloned() {
                 if let Some(spawn) = spawn_key.as_ref()
                     && spawn != &session_key

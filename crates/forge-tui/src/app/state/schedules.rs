@@ -161,13 +161,13 @@ impl super::App {
     /// from the workspace, sorted soonest-first. Called on the ~1s ticker so
     /// the Inspector reads a cheap cached `Vec` instead of resolving the
     /// project + locking the workspace every render. Scopes by the active
-    /// tab's stamped project NAME ([`Self::active_project_name`]): the
-    /// bucket resolves its project once at Connect, so the per-tick read
-    /// never re-derives it from a stale / synthetic / pre-Connect cwd.
+    /// tab's stamped project NAME ([`Self::active_project_name`]): every
+    /// bucket carries its project from the moment it is minted, so the
+    /// per-tick read never re-derives it from a stale / synthetic cwd.
     /// Then narrows to the session's own `team_role`, so a lead and its
     /// workers each see only what they can act on.
-    /// Empty when the active bucket has no project yet or the session
-    /// created no cron. Also humanizes the crons into `forge_schedule_rows`
+    /// Empty when no session is focused or the session created no cron.
+    /// Also humanizes the crons into `forge_schedule_rows`
     /// here (resolving the local timezone once) so the render never pays
     /// that per frame.
     pub fn refresh_forge_crons(&mut self) {

@@ -941,9 +941,9 @@ fn line_count_as_u16(lines: &[Line<'_>]) -> u16 {
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
 }
 
-/// Find the `ProjectView` that owns `active_key` - handling the three
-/// synthetic-key sentinels (`__conn_pending__`, `__spawn_<name>__`,
-/// `__resume_<id>__`) in addition to real claude UUIDs. Without this,
+/// Find the `ProjectView` that owns `active_key` - handling the two
+/// synthetic-key sentinels (`__spawn_<name>__`, `__resume_<id>__`)
+/// in addition to real claude UUIDs. Without this,
 /// every pane reader that does `sessions.iter().any(|s| &s.session
 /// == key)` returns `None` during the Spawning window - leaving the
 /// pane and top bar with no project highlighted while the user
@@ -952,10 +952,7 @@ fn line_count_as_u16(lines: &[Line<'_>]) -> u16 {
 /// Resolution order:
 /// 1. `__spawn_<name>__` → find by `p.name == name`.
 /// 2. `__resume_<session_id>__` → find by any session matching id.
-/// 3. `__conn_pending__` → fall through to default-project lookup;
-///    pane callers can supply their own fallback (the default lead is
-///    in the catalog so step 4 generally still finds it on startup).
-/// 4. Real UUID → existing catalog scan.
+/// 3. Real UUID → existing catalog scan.
 pub(crate) fn resolve_active_project_view<'p>(
     active_key: &forge_workspace::SessionKey,
     projects: &'p [&ProjectView],

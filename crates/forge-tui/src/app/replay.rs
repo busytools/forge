@@ -185,8 +185,8 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
     let mut result_duration_ms = None;
     // Adopt a stable session id BEFORE the reducer runs so the
     // session-id guard inside `apply_session_update` accepts each
-    // ChatAppended envelope. The pre-Connect bucket migrates onto
-    // this key as part of `set_session_id`.
+    // ChatAppended envelope. The seeded bucket is re-keyed onto this
+    // id by `set_session_id`.
     app.set_session_id(Some(model::SessionId::new("replay-session")));
 
     for (raw_line_no, raw_line) in content.lines().enumerate() {
