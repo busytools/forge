@@ -1151,16 +1151,6 @@ pub(crate) fn parse_worker_synth_key(key: &SessionKey) -> Option<(String, String
     Some((project_key.to_owned(), label.to_owned()))
 }
 
-/// The worker label encoded in a synthetic worker spawn key, or `None`
-/// for a lead spawn key or any other shape. Read while the key is still
-/// synthetic, which is when the TUI mints the session's bucket; a
-/// resumed worker's entry is keyed by its real session id from the
-/// start, so that case is only reachable through
-/// `Workspace::worker_lookup_for_session`.
-pub fn worker_label_for_spawn_key(key: &SessionKey) -> Option<String> {
-    parse_worker_synth_key(key).map(|(_, label)| label)
-}
-
 /// Shared worker-kick hook: if `spawn_key` is a worker synth key,
 /// dispatch a `Command::Prompt` carrying the live worker's stored kick
 /// to the freshly-Connected worker. Claude sessions don't act until a

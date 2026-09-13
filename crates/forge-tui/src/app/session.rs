@@ -69,12 +69,6 @@ pub struct UiSession {
     /// `cwd_raw` (fragile for empty / synthetic / tilde / worktree cwd
     /// forms).
     pub project: String,
-    /// The live-worker label this session was spawned as; `None` for a
-    /// lead. Stamped from the synthetic worker spawn key while the
-    /// bucket is still keyed by it, and carried across the rename onto
-    /// the real uuid, so nothing has to infer worker-ness from a
-    /// registry lookup that can miss.
-    pub worker_label: Option<String>,
     /// Monotonic session authority epoch - bumped on each session
     /// reset (`/new`, login, logout) so stale async view data can be
     /// ignored.
@@ -840,7 +834,6 @@ impl UiSession {
         Self {
             key,
             project,
-            worker_label: Option::default(),
             dictate_overrides: forge_workspace::DictateOverrides::default(),
             backgrounded_roots: HashSet::new(),
             session_id: Option::default(),
