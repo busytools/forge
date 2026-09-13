@@ -410,18 +410,24 @@ fn rows_from_os_snapshot<'a>(
         .collect();
     // One match pass for the whole snapshot. The sibling sort, the row
     // builder and the tier all read this instead of re-testing every
-    // process against every live call.
-    let matched_by_pid: HashMap<u32, Option<&ToolCallInfo>> = snapshot
-        .processes
-        .iter()
-        .map(|entry| (entry.pid, matcher.matched(&entry.command)))
-        .collect();
-    let tier_of: HashMap<u32, u8> =
-        matched_by_pid.iter().map(|(pid, m)| (*pid, render_tier(*m))).collect();
-    sort_siblings_inplace(&mut roots, &tier_of, Some(&root_subtree));
+    // process against every live call. Skipped entirely when no live call
+    // carries a command: every tier is then the generic one and every row
+    // unmatched, so the pass would only cost the map.
+    let matched_by_pid: HashMap<u32, MatchedProcess<'_>> = if matcher.is_empty() {
+        HashMap::new()
+    } else {
+        snapshot
+            .processes
+            .iter()
+            .map(|entry| {
+                let call = matcher.matched(&entry.command);
+                (entry.pid, MatchedProcess { call, tier: render_tier(call) })
+            })
+            .collect()
+    };
+    sort_siblings_inplace(&mut roots, &matched_by_pid, Some(&root_subtree));
 
-    let walk =
-        Walk { children_of: &children_of, matched: &matched_by_pid, tier_of: &tier_of };
+    let walk = Walk { children_of: &children_of, matched: &matched_by_pid };
     let mut rows = Vec::new();
     let n_roots = roots.len();
     for (idx, root) in roots.iter().enumerate() {
@@ -434,8 +440,15 @@ fn rows_from_os_snapshot<'a>(
 /// node, unlike the per-node tree position.
 struct Walk<'a> {
     children_of: &'a HashMap<u32, Vec<&'a ProcessEntry>>,
-    matched: &'a HashMap<u32, Option<&'a ToolCallInfo>>,
-    tier_of: &'a HashMap<u32, u8>,
+    matched: &'a HashMap<u32, MatchedProcess<'a>>,
+}
+
+/// A process's precomputed wire match for this frame: the call it matched,
+/// if any, and the render tier that follows from that call's name.
+#[derive(Clone, Copy)]
+struct MatchedProcess<'a> {
+    call: Option<&'a ToolCallInfo>,
+    tier: u8,
 }
 
 /// Emit `entry` + DFS its children, sorted siblings-first. Each
@@ -450,8 +463,8 @@ fn emit_with_descendants<'a>(
     walk: &Walk<'a>,
     out: &mut Vec<ProcessRow>,
 ) {
-    let Walk { children_of, matched, tier_of } = *walk;
-    let mut row = build_row_for_entry(entry, matched.get(&entry.pid).copied().flatten());
+    let Walk { children_of, matched } = *walk;
+    let mut row = build_row_for_entry(entry, matched.get(&entry.pid).and_then(|m| m.call));
     row.depth = depth;
     let mut visited = HashSet::new();
     let subtree_bytes = subtree_memory(entry, children_of, &mut visited);
@@ -467,7 +480,7 @@ fn emit_with_descendants<'a>(
 
     let mut kids: Vec<&ProcessEntry> =
         children_of.get(&entry.pid).map_or_else(Vec::new, Clone::clone);
-    sort_siblings_inplace(&mut kids, tier_of, None);
+    sort_siblings_inplace(&mut kids, matched, None);
 
     // The next level's ancestor_has_more appends THIS row's
     // "more-siblings-below" bit so a deep descendant knows whether
@@ -581,6 +594,11 @@ impl<'a> WireMatcher<'a> {
         Self { needles }
     }
 
+    /// True when no live call carries a command to match on.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.needles.is_empty()
+    }
+
     /// The first prepared call whose command appears in `process_cmd`, in
     /// `wire_alive` order.
     pub(crate) fn matched(&self, process_cmd: &str) -> Option<&'a ToolCallInfo> {
@@ -634,18 +652,18 @@ fn build_row_for_entry(entry: &ProcessEntry, matched: Option<&ToolCallInfo>) -> 
 /// by their own RSS, which is also what they display.
 fn sort_siblings_inplace(
     entries: &mut [&ProcessEntry],
-    tier_of: &std::collections::HashMap<u32, u8>,
+    matched: &std::collections::HashMap<u32, MatchedProcess<'_>>,
     subtree_totals: Option<&std::collections::HashMap<u32, u64>>,
 ) {
     let sort_mem = |e: &ProcessEntry| -> u64 {
         subtree_totals.and_then(|m| m.get(&e.pid).copied()).unwrap_or(e.memory_bytes)
     };
-    // `tier_of` is precomputed from the same arms as `build_row_for_entry`'s
+    // `matched` is precomputed from the same arms as `build_row_for_entry`'s
     // kind, so sort tier and render kind cannot disagree: matched Bash renders
     // BashBackgrounded (0); a matched Monitor renders generic (1 - its
     // authoritative surface is the MONITORS section). Reading it here keeps a
     // comparison O(1) instead of re-matching both sides.
-    let tier = |e: &ProcessEntry| -> u8 { tier_of.get(&e.pid).copied().unwrap_or(1) };
+    let tier = |e: &ProcessEntry| -> u8 { matched.get(&e.pid).map_or(1, |m| m.tier) };
     entries.sort_by(|a, b| {
         tier(a)
             .cmp(&tier(b))
@@ -785,13 +803,10 @@ mod tests {
         }
     }
 
-    /// Build a minimal `ToolCallInfo` carrying just the fields the
-    /// collector reads (id, sdk_tool_name, raw_input). All other
-    /// fields stay at zero / default so the helper is short.
     /// The pre-change one-shot match, kept verbatim from the production
-/// function it replaced so the prepared matcher is compared against the
-/// old expression rather than against itself. Its guard reads the RAW
-/// command string, which is the detail the helpers alone do not express.
+    /// function it replaced so the prepared matcher is compared against the
+    /// old expression rather than against itself. Its guard reads the RAW
+    /// command string, which is the detail the helpers alone do not express.
     fn wire_match_before<'a>(
         entry: &ProcessEntry,
         wire_alive: &[&'a ToolCallInfo],
@@ -855,6 +870,9 @@ mod tests {
         assert_eq!(render_tier(None), 1, "unmatched processes render generic");
     }
 
+    /// Build a minimal `ToolCallInfo` carrying just the fields the
+    /// collector reads (id, sdk_tool_name, raw_input). All other
+    /// fields stay at zero / default so the helper is short.
     fn fake_tool_call_info(id: &str, sdk_tool_name: &str, raw_input: Value) -> ToolCallInfo {
         ToolCallInfo {
             id: id.to_owned(),
