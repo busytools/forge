@@ -391,7 +391,7 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
-        pr.as_path(),
+        pr.as_deref(),
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
@@ -405,7 +405,7 @@ pub fn open_extensions(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
-        pr.as_path(),
+        pr.as_deref(),
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
@@ -467,8 +467,17 @@ pub(crate) fn store_workspace_bridge(app: &App) -> Option<store::WorkspaceBridge
     Some(store::WorkspaceBridge { workspace, key })
 }
 
-fn project_root(app: &App) -> std::path::PathBuf {
-    std::path::PathBuf::from(app.cwd_raw().unwrap_or_default())
+/// The project root the settings documents are read against: the
+/// focused session's cwd, or - before any session exists - the project
+/// the CLI was launched for, resolved from `forge.toml` at boot.
+/// `None` when neither names one, which is the launchpad boot; the
+/// local document is then not read at all rather than falling back to
+/// a path derived from the process working directory (hard rule 14).
+fn project_root(app: &App) -> Option<std::path::PathBuf> {
+    app.cwd_raw()
+        .filter(|cwd| !cwd.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| app.startup_project_root.clone())
 }
 
 const LANGUAGE_MIN_CHARS: usize = 2;
@@ -489,5 +498,38 @@ pub(crate) fn language_input_validation_message(value: &str) -> Option<&'static 
         Some("Language must be at most 30 characters.")
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The settings read resolves its project root from the focused
+    /// session, and before any session exists from the project the CLI
+    /// was launched for. Never from the process working directory: a
+    /// launchpad boot, which names no project, has no root at all
+    /// (hard rule 14).
+    #[test]
+    fn project_root_comes_from_the_session_then_the_launch_project() {
+        let mut app = App::test_default();
+        app.startup_project_root = Some(std::path::PathBuf::from("/forge-toml/project"));
+
+        assert_eq!(
+            project_root(&app),
+            Some(std::path::PathBuf::from("/test")),
+            "a focused session's cwd wins",
+        );
+
+        app.sessions.clear();
+        app.active_session_key = None;
+        assert_eq!(
+            project_root(&app),
+            Some(std::path::PathBuf::from("/forge-toml/project")),
+            "with no session the launch project's forge.toml path is the root",
+        );
+
+        app.startup_project_root = None;
+        assert_eq!(project_root(&app), None, "a launchpad boot has no project root");
     }
 }

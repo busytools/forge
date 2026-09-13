@@ -16,7 +16,10 @@ const ANTHROPIC_DEFAULT_OPUS_MODEL_ENV: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsPaths {
     pub settings: PathBuf,
-    pub local_settings: PathBuf,
+    /// `None` when no project root resolved, which is the launchpad
+    /// boot. There is deliberately no fallback path: a cwd-derived one
+    /// would make the launch directory shape forge's settings.
+    pub local_settings: Option<PathBuf>,
     pub preferences: PathBuf,
 }
 
@@ -40,7 +43,7 @@ pub struct WorkspaceBridge<'a> {
 
 pub fn load(
     home_override: Option<&Path>,
-    project_root: &Path,
+    project_root: Option<&Path>,
     bridge: Option<WorkspaceBridge<'_>>,
 ) -> Result<LoadedSettingsDocuments, String> {
     let paths = resolve_paths(home_override, project_root, bridge)?;
@@ -52,9 +55,13 @@ pub fn load(
     // test runs.
     let (settings_document, local_settings_document, preferences_document) = match bridge {
         Some(bridge) if home_override.is_none() => {
+            // A session with no cwd yet reads its own project-local
+            // document from the empty root, which is what it did before
+            // the root became optional; the launchpad boot, which has
+            // no session at all, is the case that reads nothing.
             let docs = bridge
                 .workspace
-                .settings_documents(bridge.key, project_root)
+                .settings_documents(bridge.key, project_root.unwrap_or(Path::new("")))
                 .ok_or_else(|| "no agent registered for session".to_owned())?;
             (
                 docs.user.unwrap_or_else(empty_object),
@@ -64,7 +71,7 @@ pub fn load(
         }
         _ => (
             read_json_or_empty(&paths.settings),
-            read_json_or_empty(&paths.local_settings),
+            paths.local_settings.as_deref().map_or_else(empty_object, read_json_or_empty),
             read_json_or_empty(&paths.preferences),
         ),
     };
@@ -287,7 +294,7 @@ pub fn terminal_progress_bar_enabled(document: &Value) -> Result<bool, ()> {
 
 fn resolve_paths(
     home_override: Option<&Path>,
-    project_root: &Path,
+    project_root: Option<&Path>,
     bridge: Option<WorkspaceBridge<'_>>,
 ) -> Result<SettingsPaths, String> {
     let home = if let Some(path) = home_override {
@@ -295,7 +302,6 @@ fn resolve_paths(
     } else {
         dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_owned())?
     };
-    let project_root = project_root.to_path_buf();
 
     // User settings live under <config_dir>, which honours
     // $CLAUDE_CONFIG_DIR - delegate to the workspace facade so the
@@ -312,7 +318,8 @@ fn resolve_paths(
 
     Ok(SettingsPaths {
         settings,
-        local_settings: project_root.join(CLAUDE_DIR).join(LOCAL_SETTINGS_FILENAME),
+        local_settings: project_root
+            .map(|root| root.join(CLAUDE_DIR).join(LOCAL_SETTINGS_FILENAME)),
         preferences: home.join(PREFERENCES_FILENAME),
     })
 }
@@ -489,7 +496,7 @@ mod tests {
     fn load_missing_files_returns_empty_objects() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let loaded = load(Some(dir.path()), dir.path(), None).expect("load");
+        let loaded = load(Some(dir.path()), Some(dir.path()), None).expect("load");
 
         assert_eq!(loaded.settings_document, Value::Object(Map::new()));
         assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
@@ -497,7 +504,7 @@ mod tests {
         assert_eq!(loaded.paths.settings, dir.path().join(".claude").join("settings.json"));
         assert_eq!(
             loaded.paths.local_settings,
-            dir.path().join(".claude").join("settings.local.json")
+            Some(dir.path().join(".claude").join("settings.local.json"))
         );
         assert_eq!(loaded.paths.preferences, dir.path().join(".claude.json"));
     }
@@ -513,7 +520,7 @@ mod tests {
             .expect("write settings");
         std::fs::write(&preferences_path, "{ not-json").expect("write malformed");
 
-        let loaded = load(Some(dir.path()), dir.path(), None).expect("load");
+        let loaded = load(Some(dir.path()), Some(dir.path()), None).expect("load");
 
         assert_eq!(always_thinking_enabled(&loaded.settings_document), Ok(true));
         assert_eq!(loaded.preferences_document, Value::Object(Map::new()));
@@ -695,5 +702,19 @@ mod tests {
             .filter(|n| Path::new(n).extension().is_some_and(|ext| ext == "tmp"))
             .collect();
         assert!(strays.is_empty(), "temp files left behind: {strays:?}");
+    }
+
+    /// With no project root there is no project-local document to read.
+    /// Nothing derives one from the process working directory, so a
+    /// settings.local.json sitting in the launch directory cannot shape
+    /// forge (hard rule 14).
+    #[test]
+    fn load_without_a_project_root_reads_no_local_document() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let loaded = load(Some(dir.path()), None, None).expect("load");
+
+        assert!(loaded.paths.local_settings.is_none(), "no root, no local path");
+        assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
     }
 }

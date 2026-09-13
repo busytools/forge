@@ -291,6 +291,7 @@ fn create_app_impl(
         last_frame_at: None,
         connection_started: false,
         startup_project: cli.project.clone(),
+        startup_project_root: project_path.clone(),
         replay_in_progress: false,
     };
 

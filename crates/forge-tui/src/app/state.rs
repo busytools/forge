@@ -679,6 +679,12 @@ pub struct App {
     /// Forwarded to [`forge_workspace::SessionTarget::Named`] when the
     /// connection task spins up.
     pub startup_project: Option<String>,
+    /// That project's `path` from `forge.toml`, resolved at boot. The
+    /// settings documents are read before any session exists, so this
+    /// is the only project root available then - and it is deliberately
+    /// not derived from the process working directory (hard rule 14).
+    /// `None` on a launchpad boot, where no project was named.
+    pub startup_project_root: Option<std::path::PathBuf>,
     /// True while `events::session_reset::load_resume_history` is
     /// walking on-disk history through the shared SDK-message
     /// dispatcher. Replay reuses the live walker so content blocks,
@@ -1058,6 +1064,7 @@ impl App {
             last_frame_at: None,
             connection_started: false,
             startup_project: None,
+            startup_project_root: None,
             replay_in_progress: false,
         }
     }
