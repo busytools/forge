@@ -1,4 +1,3 @@
-use forge_workspace::Osc9NotificationMode;
 use forge_workspace::SessionKey;
 use std::borrow::Cow;
 
@@ -59,29 +58,27 @@ pub struct DeliveredNotification {
 /// notifications only when the window is **not** focused.
 ///
 /// One delivery: the OSC 9 escape, always written, whether or not the
-/// host terminal is known to render it. A terminal that ignores the
-/// sequence is harmless, so nothing is planned around the answer.
+/// host terminal renders it. A terminal that ignores the sequence is
+/// harmless, so nothing is planned around the answer.
 #[derive(Debug)]
 pub struct NotificationManager {
     terminal_focused: bool,
-    osc9_mode: Osc9NotificationMode,
     #[cfg(feature = "testing")]
     delivered: std::cell::RefCell<Vec<DeliveredNotification>>,
 }
 
 impl Default for NotificationManager {
     fn default() -> Self {
-        Self::new(Osc9NotificationMode::default())
+        Self::new()
     }
 }
 
 impl NotificationManager {
-    pub const fn new(osc9_mode: Osc9NotificationMode) -> Self {
+    pub const fn new() -> Self {
         // Default to `true` (focused) so that terminals which do not support
         // DECSET 1004 never fire spurious notifications.
         Self {
             terminal_focused: true,
-            osc9_mode,
             #[cfg(feature = "testing")]
             delivered: std::cell::RefCell::new(Vec::new()),
         }
@@ -102,11 +99,6 @@ impl NotificationManager {
         self.terminal_focused
     }
 
-    #[cfg(test)]
-    pub(crate) const fn osc9_mode(&self) -> Osc9NotificationMode {
-        self.osc9_mode
-    }
-
     /// Send a notification if the terminal is not focused.
     ///
     /// This is the single entry-point that all event handlers should call.
@@ -115,17 +107,6 @@ impl NotificationManager {
     /// resolved context so a wrong title is diagnosable from the log.
     pub fn notify(&self, event: NotifyEvent, session_key: &SessionKey, context: &NotifyContext) {
         if self.terminal_focused {
-            return;
-        }
-        if matches!(self.osc9_mode, Osc9NotificationMode::Off) {
-            tracing::info!(
-                target: crate::logging::targets::APP_NOTIFY,
-                event_name = "notification_planned_no_channels",
-                message = "notification channel disabled; nothing dispatched",
-                outcome = "skipped",
-                session_key = %session_key.as_str(),
-                event = ?event,
-            );
             return;
         }
         let text = notification_text(event, &context.project, context.worker_label.as_deref());
@@ -159,11 +140,11 @@ impl NotificationManager {
 
 impl crate::app::App {
     /// Raise `event` for `session_key`'s session through this app's
-    /// notification manager, using the app's configured channel. The
-    /// single call site for every notification, so nothing grows a
-    /// second policy about when to notify: the manager's own
-    /// terminal-focus check decides that. The notification text comes
-    /// from the event session's project + worker label.
+    /// notification manager. The single call site for every
+    /// notification, so nothing grows a second policy about when to
+    /// notify: the manager's own terminal-focus check decides that.
+    /// The notification text comes from the event session's project +
+    /// worker label.
     pub(crate) fn notify(&self, event: NotifyEvent, session_key: &SessionKey) {
         // A session with no bucket has nothing to notify about, so this
         // is where an event for a closed or never-spawned key stops.
@@ -308,20 +289,20 @@ mod tests {
 
     #[test]
     fn defaults_to_focused() {
-        let mgr = NotificationManager::new(Osc9NotificationMode::default());
+        let mgr = NotificationManager::new();
         assert!(mgr.is_focused(), "should default to focused to suppress spurious notifications");
     }
 
     #[test]
     fn focus_lost_sets_unfocused() {
-        let mut mgr = NotificationManager::new(Osc9NotificationMode::default());
+        let mut mgr = NotificationManager::new();
         mgr.on_focus_lost();
         assert!(!mgr.is_focused());
     }
 
     #[test]
     fn focus_gained_restores_focused() {
-        let mut mgr = NotificationManager::new(Osc9NotificationMode::default());
+        let mut mgr = NotificationManager::new();
         mgr.on_focus_lost();
         mgr.on_focus_gained();
         assert!(mgr.is_focused());
@@ -372,7 +353,7 @@ mod tests {
     #[test]
     fn an_unresolved_project_delivers_nothing_rather_than_the_app_name() {
         let mut app = App::test_default();
-        app.notifications = NotificationManager::new(Osc9NotificationMode::On);
+        app.notifications = NotificationManager::new();
         app.notifications.on_focus_lost();
         let unknown = forge_workspace::SessionKey::from_session_id("no-such-session");
 
@@ -478,7 +459,7 @@ mod tests {
             &worker_key,
             "chat-stutter",
         );
-        app.notifications = NotificationManager::new(Osc9NotificationMode::On);
+        app.notifications = NotificationManager::new();
         app.notifications.on_focus_lost();
 
         app.notify(NotifyEvent::TurnComplete, &lead_key);
@@ -509,7 +490,7 @@ mod tests {
             &worker_key,
             "demo-route",
         );
-        app.notifications = NotificationManager::new(Osc9NotificationMode::On);
+        app.notifications = NotificationManager::new();
         app.notifications.on_focus_lost();
 
         app.notify(NotifyEvent::PermissionRequired, &worker_key);
@@ -556,23 +537,6 @@ mod tests {
         );
     }
 
-    /// The escape is the whole delivery, so switching it off delivers
-    /// nothing.
-    #[test]
-    fn unfocused_terminal_delivers_nothing_when_the_escape_is_off() {
-        let mut app = App::test_default();
-        let key = seed_bucket(&mut app, "session-a", "companies");
-        app.notifications = NotificationManager::new(Osc9NotificationMode::Off);
-        app.notifications.on_focus_lost();
-
-        app.notify(NotifyEvent::TurnComplete, &key);
-
-        assert!(
-            app.notifications.take_delivered().is_empty(),
-            "the escape is the whole delivery, so switching it off delivers nothing",
-        );
-    }
-
     /// An unfocused notification is the escape and nothing else: no
     /// capability decides it and no channel plans around it.
     #[test]
@@ -585,7 +549,9 @@ mod tests {
 
         assert_eq!(
             app.notifications.take_delivered(),
-            vec![DeliveredNotification { osc9_line: "companies - lead - turn complete".to_owned() }],
+            vec![DeliveredNotification {
+                osc9_line: "companies - lead - turn complete".to_owned()
+            }],
             "the escape is the whole delivery",
         );
     }

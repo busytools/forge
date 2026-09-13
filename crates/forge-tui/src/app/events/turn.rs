@@ -1024,9 +1024,7 @@ mod tests {
     fn background_turn_complete_notifies_when_unfocused() {
         let mut app = App::test_default();
         let background = seed_bucket(&mut app, "session-bg", "beta");
-        app.notifications = crate::app::notify::NotificationManager::new(
-            forge_workspace::Osc9NotificationMode::Auto,
-        );
+        app.notifications = crate::app::notify::NotificationManager::new();
         app.notifications.on_focus_lost();
 
         apply_session_update_turn_complete(&mut app, &background, None);

@@ -28,56 +28,6 @@ pub struct UiSettings {
     /// default rather than failing the load (see `deserialize_fps`).
     #[serde(default, deserialize_with = "deserialize_fps")]
     pub fps: RepaintCadence,
-    /// Whether forge may send OSC 9 desktop-notification escapes:
-    /// `auto` (default) trusts the detected capability, `on` forces the
-    /// escape on and suppresses the bell as a true detection does,
-    /// `off` treats OSC 9 as unavailable and falls back to what does
-    /// not cross the terminal: the Iterm2 channel rings the bell, and
-    /// Ghostty is left with no channel.
-    ///
-    /// Detection reads `TERM_PROGRAM`, `ITERM_SESSION_ID` and `TERM`
-    /// (`TERM` only when it reads `xterm-ghostty`). The first two
-    /// describe the terminal at the far end of the pipe; `TERM` is the
-    /// one that can survive a multiplexer which drops them, and tmux
-    /// substitutes both `TERM_PROGRAM` and `TERM`. A multiplexer that
-    /// strips the escape leaves the default notification channel
-    /// silent rather than degraded. A banner that does arrive shows
-    /// while Ghostty is not the frontmost app and is downgraded to a
-    /// dock bounce when it is. `off` serves a setup where the escape
-    /// is emitted but stripped, and `on` the converse, a terminal
-    /// that speaks OSC 9 without announcing itself; the seam is
-    /// config here, not code.
-    #[serde(default)]
-    pub notifications_osc9: Osc9NotificationMode,
-}
-
-/// What the `[ui] notifications_osc9` key accepts. Strictly parsed:
-/// an unknown value fails the config load.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Osc9NotificationMode {
-    /// Trust the detected terminal capability.
-    #[default]
-    Auto,
-    /// Always send OSC 9, regardless of the detected capability.
-    On,
-    /// Never send OSC 9; the plan falls back to the bell, and the
-    /// Ghostty channel is left with nothing.
-    Off,
-}
-
-impl<'de> Deserialize<'de> for Osc9NotificationMode {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        match value.as_str() {
-            "auto" => Ok(Self::Auto),
-            "on" => Ok(Self::On),
-            "off" => Ok(Self::Off),
-            other => Err(serde::de::Error::unknown_variant(other, &["auto", "on", "off"])),
-        }
-    }
 }
 
 /// Repaint rate when `[ui] fps` is absent.
@@ -520,48 +470,15 @@ mod tests {
         );
     }
 
+    /// `notifications_osc9` is gone. A forge.toml still carrying it must
+    /// load: forge always writes the escape now, and a removed key must
+    /// never refuse boot on a config that has one.
     #[test]
-    fn notifications_osc9_defaults_to_auto() {
-        let parsed: UiSettings = toml::from_str("").expect("empty parses");
-        assert_eq!(parsed.notifications_osc9, Osc9NotificationMode::Auto);
-    }
-
-    #[test]
-    fn notifications_osc9_parses_off() {
-        let parsed: UiSettings = toml::from_str("notifications_osc9 = \"off\"\n").expect("parse");
-        assert_eq!(parsed.notifications_osc9, Osc9NotificationMode::Off);
-    }
-
-    #[test]
-    fn notifications_osc9_parses_on() {
-        let parsed: UiSettings = toml::from_str("notifications_osc9 = \"on\"\n").expect("parse");
-        assert_eq!(parsed.notifications_osc9, Osc9NotificationMode::On);
-    }
-
-    #[test]
-    fn notifications_osc9_parses_explicit_auto() {
-        let parsed: UiSettings = toml::from_str("notifications_osc9 = \"auto\"\n").expect("parse");
-        assert_eq!(parsed.notifications_osc9, Osc9NotificationMode::Auto);
-    }
-
-    #[test]
-    fn unknown_notifications_osc9_value_fails_the_load() {
-        let err = toml::from_str::<UiSettings>("notifications_osc9 = \"never\"\n")
-            .expect_err("an unknown value must be refused");
-        let rendered = err.to_string();
-        assert!(
-            rendered.contains("never"),
-            "the error must name the value that was not understood, got: {rendered}"
-        );
-        assert!(
-            rendered.contains("notifications_osc9"),
-            "the error must name the key, got: {rendered}"
-        );
-        for accepted in ["`auto`", "`on`", "`off`"] {
-            assert!(
-                rendered.contains(accepted),
-                "the error must list {accepted} among the accepted values, got: {rendered}"
-            );
+    fn a_removed_notifications_osc9_key_still_loads() {
+        for value in ["auto", "on", "off"] {
+            let parsed: UiSettings = toml::from_str(&format!("notifications_osc9 = \"{value}\"\n"))
+                .unwrap_or_else(|err| panic!("a stale key must not refuse the load: {err}"));
+            assert_eq!(parsed, UiSettings::default(), "the removed key must not set anything");
         }
     }
 
