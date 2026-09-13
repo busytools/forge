@@ -123,12 +123,13 @@ mod tests {
         assert!(docs.preferences.is_none());
     }
 
-    /// A `None` root yields no project-local document, and nothing
-    /// falls back to the config dir for one. It does not pin the
-    /// rule-14 property: a cwd-relative read here would be relative to
-    /// this test's process working directory, so the only fixture that
-    /// could catch it is a file written into the source tree. The
-    /// producer side is what pins that, in `app::config`.
+    /// A `None` root yields no project-local document, and the config
+    /// dir is not consulted for one. Neither half is pinned by this
+    /// test: the rule-14 half could only be caught by a fixture at the
+    /// cwd-relative path, which is a write into the source tree, and
+    /// the config-dir half lost the fixture that caught it when that
+    /// one went. The producer side pins the rule-14 half, in
+    /// `app::config`.
     #[test]
     fn settings_documents_reads_no_project_local_without_a_root() {
         let dir = tempfile::tempdir().expect("tempdir");
