@@ -7062,7 +7062,7 @@ mod tests {
 
     // -- /model catalog merge (openrouter sessions) ------------------
 
-    /// The trimmed live capture beside forge-gateway' module.
+    /// The trimmed live capture beside forge-gateway's module.
     fn fixture_catalog_models() -> Vec<forge_gateway::model_catalog::CatalogModel> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../forge-gateway/fixtures/model_catalog.json");
