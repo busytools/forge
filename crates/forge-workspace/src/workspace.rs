@@ -211,7 +211,7 @@ pub struct Workspace {
     /// `recompute_plan_if_ready`. Spawn paths consult this for
     /// CLAUDE_CONFIG_DIR selection; the launchpad gates clickable
     /// project rows on it being `Some` AND the project having a
-    /// non-empty pool. See `crate::assignment_plan`.
+    /// non-empty pool. See `forge_gateway::assignment_plan`.
     assignment_plan: Mutex<Option<forge_gateway::assignment_plan::AssignmentPlan>>,
     /// Dictation preflight: the per-model progress the launchpad
     /// renders, the flag Escape sets, and the loaded engine held for
