@@ -41,8 +41,14 @@ impl super::App {
     /// than on [`Self::active_view`] so the /diff review editors get the
     /// same treatment as the chat draft.
     pub fn input_focus(&self) -> InputFocus {
+        // A chat with no session focused has no editor behind it, so the
+        // predicate has to say so: callers gate on this and then write
+        // through `focused_input`, which would swallow the payload.
+        if self.active_view == crate::app::view::ActiveView::Chat && self.active_session().is_some()
+        {
+            return InputFocus::Chat;
+        }
         match self.active_view {
-            crate::app::view::ActiveView::Chat => InputFocus::Chat,
             // Ordering mirrors `diff_overlay::handle_key`: the
             // Finish-review modal draws over the diff and captures keys
             // ahead of any comment editor underneath it.
@@ -57,7 +63,8 @@ impl super::App {
                     }
                 })
             }
-            crate::app::view::ActiveView::Launchpad
+            crate::app::view::ActiveView::Chat
+            | crate::app::view::ActiveView::Launchpad
             | crate::app::view::ActiveView::Extensions
             | crate::app::view::ActiveView::Usage => InputFocus::None,
         }
@@ -802,5 +809,27 @@ impl super::App {
             pending_chars,
             had_pending_submit,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The chat view with no session behind it has no editor, and the
+    /// predicate has to agree with the accessor. Every paste and
+    /// dictation caller gates on `has_focused_text_input()` and then
+    /// writes through `focused_input()`, so a `true` with no editor
+    /// swallows the payload.
+    #[test]
+    fn a_chat_view_with_no_session_has_no_focused_input() {
+        let mut app = crate::app::App::test_default();
+        app.sessions.clear();
+        app.active_session_key = None;
+        app.active_view = crate::app::view::ActiveView::Chat;
+
+        assert_eq!(app.input_focus(), InputFocus::None);
+        assert!(!app.has_focused_text_input(), "the predicate must not promise an editor");
+        assert!(app.focused_input().is_none(), "and the accessor agrees with it");
     }
 }
