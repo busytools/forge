@@ -17,7 +17,8 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
-use crate::account::{self, AccountKey, AccountStateMap};
+use forge_gateway::{AccountKey, AccountStateMap};
+
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
@@ -37,7 +38,7 @@ mod testing;
 /// the "which account has more headroom" decision can be while
 /// staying clear of the OAuth usage endpoint's 429 throttle under
 /// multi-instance polling - combined with per-account `last_error`
-/// backoff (see `account::AccountState`), transient 429s recover
+/// backoff (see `forge_gateway::AccountState`), transient 429s recover
 /// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -2017,13 +2018,14 @@ impl Workspace {
         drop(accounts);
 
         let state = match loading {
-            crate::account::LoadingState::Bailed => match last_error {
+            forge_gateway::LoadingState::Bailed => match last_error {
                 Some(
-                    account::UsageFetchStatus::Unauthorized | account::UsageFetchStatus::Expired,
+                    forge_gateway::UsageFetchStatus::Unauthorized
+                    | forge_gateway::UsageFetchStatus::Expired,
                 ) => SessionChipState::Bailed,
                 _ => SessionChipState::Degraded,
             },
-            crate::account::LoadingState::Ready if saturated => SessionChipState::AtCap,
+            forge_gateway::LoadingState::Ready if saturated => SessionChipState::AtCap,
             _ => SessionChipState::Normal,
         };
 
@@ -2288,7 +2290,7 @@ impl Workspace {
     /// the assignment plan consumes, in forge.toml definition order.
     /// `None` while any account is still loading.
     fn account_health_sets(&self) -> Option<(Vec<AccountKey>, Vec<AccountKey>, Vec<AccountKey>)> {
-        use crate::account::LoadingState;
+        use forge_gateway::LoadingState;
 
         let accounts = self.accounts.lock();
         if !accounts.all_loaded() {
@@ -2636,7 +2638,7 @@ impl Workspace {
                 Err(forge_gateway::ProbeError::Unmappable(message)) => {
                     self.accounts.lock().set_last_error(
                         &key,
-                        crate::account::UsageFetchStatus::Other,
+                        forge_gateway::UsageFetchStatus::Other,
                         None,
                     );
                     tracing::debug!(
@@ -2670,15 +2672,17 @@ impl Workspace {
                     // an auth/credentials issue and sent users hunting
                     // for /login problems that didn't exist.
                     let message: &str = match status {
-                        account::UsageFetchStatus::RateLimited => {
+                        forge_gateway::UsageFetchStatus::RateLimited => {
                             "usage_poll fetch rate-limited by Anthropic; sub-second Retry-After is treated as 'no hint' and we back off exponentially"
                         }
-                        account::UsageFetchStatus::Expired
-                        | account::UsageFetchStatus::Unauthorized => auth_repair_hint(provider),
-                        account::UsageFetchStatus::NetworkFailed => {
+                        forge_gateway::UsageFetchStatus::Expired
+                        | forge_gateway::UsageFetchStatus::Unauthorized => {
+                            auth_repair_hint(provider)
+                        }
+                        forge_gateway::UsageFetchStatus::NetworkFailed => {
                             "usage_poll fetch failed with network error; will retry on next tick"
                         }
-                        account::UsageFetchStatus::Other => {
+                        forge_gateway::UsageFetchStatus::Other => {
                             "usage_poll fetch failed with unhandled error class; see error field for details"
                         }
                     };
@@ -2727,7 +2731,7 @@ impl Workspace {
         key: &AccountKey,
         snapshot: forge_primitives::usage::UsageSnapshot,
     ) {
-        use crate::account::LoadingState;
+        use forge_gateway::LoadingState;
         let healed = {
             let mut accounts = self.accounts.lock();
             let healed = accounts.loading_state(key) == LoadingState::Bailed;
@@ -2761,7 +2765,7 @@ impl Workspace {
     /// user can tell an empty bar from an upstream failure (the
     /// HTTP 429 case is especially common when multiple forge
     /// instances poll the same Anthropic account).
-    pub fn usage_error_for(&self, display_name: &str) -> Option<crate::account::UsageFetchStatus> {
+    pub fn usage_error_for(&self, display_name: &str) -> Option<forge_gateway::UsageFetchStatus> {
         self.accounts.lock().usage_error(&AccountKey(display_name.to_owned()))
     }
 
@@ -5684,7 +5688,7 @@ fn account_budget(
 }
 
 /// Map a failed probe to the renderer-facing
-/// [`account::UsageFetchStatus`] bucket. Separates HTTP 429 (the
+/// [`forge_gateway::UsageFetchStatus`] bucket. Separates HTTP 429 (the
 /// common multi-instance throttle case) from the auth-related
 /// failures (`Expired` / `NoCredentials` / `Unauthorized`) and
 /// transport failures (`Network`), so the TUI's bottom-panel hint
@@ -5693,8 +5697,8 @@ fn account_budget(
 /// callers handle a 200 that maps to nothing before classifying.
 pub(crate) fn classify_oauth_usage_error(
     err: &forge_gateway::ProbeError,
-) -> account::UsageFetchStatus {
-    use account::UsageFetchStatus;
+) -> forge_gateway::UsageFetchStatus {
+    use forge_gateway::UsageFetchStatus;
     use forge_primitives::usage::oauth::OauthUsageError;
     match err {
         forge_gateway::ProbeError::NoCredentials => UsageFetchStatus::Expired,
@@ -6577,7 +6581,7 @@ mod tests {
         assert!(rows[0].is_current, "A is the session's active account");
         assert_eq!(
             rows[0].unusable,
-            Some(crate::account::Unusable::Saturated),
+            Some(forge_gateway::Unusable::Saturated),
             "A saturated on 5h -> Saturated, not a probe failure",
         );
         match rows[0].budget {
@@ -7110,7 +7114,7 @@ mod tests {
             std::collections::HashMap::new()
         };
         *ws.accounts.lock() =
-            crate::account::AccountStateMap::new(&[crate::config::LoadedAccount {
+            forge_gateway::AccountStateMap::new(&[crate::config::LoadedAccount {
                 display_name: display_name.to_owned(),
                 config_dir: PathBuf::from(format!("/cfg/{display_name}")),
                 provider,
@@ -8863,7 +8867,7 @@ provider = "anthropic"
         use forge_primitives::permission::PermissionMode;
         let (workspace, _update_rx) = Workspace::testing_stub();
         *workspace.accounts.lock() =
-            crate::account::AccountStateMap::new(&[crate::config::LoadedAccount {
+            forge_gateway::AccountStateMap::new(&[crate::config::LoadedAccount {
                 display_name: "Openrouter".to_owned(),
                 config_dir: PathBuf::from("/cfg/Openrouter"),
                 provider: forge_primitives::account::Provider::Openrouter,
@@ -8933,7 +8937,7 @@ provider = "anthropic"
     fn respawn_commands_on_a_modeless_account_keep_the_launcher_default() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         *workspace.accounts.lock() =
-            crate::account::AccountStateMap::new(&[crate::config::LoadedAccount {
+            forge_gateway::AccountStateMap::new(&[crate::config::LoadedAccount {
                 display_name: "Plain".to_owned(),
                 config_dir: PathBuf::from("/cfg/Plain"),
                 provider: forge_primitives::account::Provider::Anthropic,
@@ -9342,8 +9346,8 @@ provider = "anthropic"
     /// generic bucket.
     #[test]
     fn classify_oauth_usage_error_buckets_known_variants() {
-        use crate::account::UsageFetchStatus;
         use forge_gateway::ProbeError;
+        use forge_gateway::UsageFetchStatus;
         use forge_primitives::usage::oauth::OauthUsageError;
 
         let fetch = |err| ProbeError::Fetch(err);
@@ -13980,7 +13984,7 @@ provider = "anthropic"
             let mut accounts = workspace.account_states().lock();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), snapshot.clone());
             accounts
-                .set_loading(&AccountKey("Beta".to_owned()), crate::account::LoadingState::Bailed);
+                .set_loading(&AccountKey("Beta".to_owned()), forge_gateway::LoadingState::Bailed);
         }
         workspace.recompute_plan_if_ready();
         let project_key =
@@ -14496,11 +14500,11 @@ provider = "anthropic"
             let mut accounts = workspace.account_states().lock();
             accounts.set_loading(
                 &AccountKey("Stargate".to_owned()),
-                crate::account::LoadingState::Bailed,
+                forge_gateway::LoadingState::Bailed,
             );
             accounts.set_last_error(
                 &AccountKey("Stargate".to_owned()),
-                crate::account::UsageFetchStatus::Unauthorized,
+                forge_gateway::UsageFetchStatus::Unauthorized,
                 None,
             );
         }
@@ -14538,7 +14542,7 @@ provider = "anthropic"
         workspace
             .account_states()
             .lock()
-            .set_loading(&AccountKey("Stargate".to_owned()), crate::account::LoadingState::Bailed);
+            .set_loading(&AccountKey("Stargate".to_owned()), forge_gateway::LoadingState::Bailed);
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),

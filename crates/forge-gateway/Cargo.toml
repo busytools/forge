@@ -12,6 +12,11 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Test fixture helpers on the account state map, reached by
+# forge-workspace's `testing` feature. Production builds never see it.
+testing = []
+
 [dependencies]
 forge-primitives = { workspace = true }
 async-trait = { workspace = true }

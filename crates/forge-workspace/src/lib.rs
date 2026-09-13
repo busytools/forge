@@ -58,7 +58,6 @@
 //! forge-agent - the workspace just exposes them under the workspace
 //! name so TUI can keep its dep graph clean.
 
-mod account;
 mod account_cache;
 mod account_loader;
 mod assignment_plan;
@@ -82,12 +81,12 @@ pub mod ui;
 mod views;
 mod workspace;
 
-pub use account::{LoadingState, Unusable, UsageFetchStatus};
 pub use dictate::{
     DictateBind, DictateDeviceCatalog, DictateDeviceChoice, DictateFailure, DictateMode,
     DictateModel, DictateModelState, DictateOverrideUpdate, DictateOverrides, DictateRole,
     DictateSettings, DictateSnapshot,
 };
+pub use forge_gateway::{LoadingState, Unusable, UsageFetchStatus};
 // The normalizer's prompt axes reach the TUI only through this
 // re-export: forge-tui depends on no forge-dictate crate of its own.
 pub use dictate::resolve_capture_device;

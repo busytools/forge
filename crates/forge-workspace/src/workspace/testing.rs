@@ -9,11 +9,11 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-use crate::account::{AccountKey, AccountStateMap};
 use crate::config::LoadedConfig;
 use crate::protocol::SessionUpdate;
 use crate::target::{ProjectKey, SessionKey};
 use crate::workspace::{KickRequest, Workspace};
+use forge_gateway::{AccountKey, AccountStateMap};
 
 #[cfg(any(test, feature = "testing"))]
 impl Workspace {
@@ -254,7 +254,7 @@ impl Workspace {
     pub fn seed_test_ready_account(&self, account: &str) {
         self.accounts
             .lock()
-            .set_loading(&AccountKey(account.to_owned()), crate::account::LoadingState::Ready);
+            .set_loading(&AccountKey(account.to_owned()), forge_gateway::LoadingState::Ready);
         self.recompute_plan_if_ready();
     }
 
@@ -262,7 +262,7 @@ impl Workspace {
     /// render a mid-flight or bailed preflight screen without the real
     /// loader. Test-only.
     #[cfg(any(test, feature = "testing"))]
-    pub fn seed_test_account_state(&self, account: &str, state: crate::account::LoadingState) {
+    pub fn seed_test_account_state(&self, account: &str, state: forge_gateway::LoadingState) {
         self.accounts.lock().set_loading(&AccountKey(account.to_owned()), state);
     }
 
@@ -272,7 +272,7 @@ impl Workspace {
     pub fn seed_test_account_failure(
         &self,
         account: &str,
-        status: crate::account::UsageFetchStatus,
+        status: forge_gateway::UsageFetchStatus,
     ) {
         self.accounts.lock().set_last_error(&AccountKey(account.to_owned()), status, None);
     }

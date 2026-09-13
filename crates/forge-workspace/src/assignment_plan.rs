@@ -34,7 +34,8 @@
 
 use std::collections::HashMap;
 
-use crate::account::AccountKey;
+use forge_gateway::AccountKey;
+
 use crate::target::ProjectKey;
 
 /// Session-within-project identifier. `"lead"` for the project's

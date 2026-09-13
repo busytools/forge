@@ -111,7 +111,7 @@ pub struct AccountRow {
     /// The reason renders as the row's status tag: a capped window
     /// reads `limit hit`, a blocked probe or a bail reads
     /// `auth failed or expired`.
-    pub unusable: Option<crate::account::Unusable>,
+    pub unusable: Option<forge_gateway::Unusable>,
     /// What this account has left, in whatever terms its backend bills.
     pub budget: AccountBudget,
     /// `true` for an `experimental = true` account. The picker renders
@@ -137,11 +137,11 @@ pub use forge_primitives::account::AccountAuth;
 pub struct AccountLoadingRow {
     /// forge.toml `[[accounts]]` display name.
     pub display_name: String,
-    pub state: crate::account::LoadingState,
+    pub state: forge_gateway::LoadingState,
     /// The classified outcome of the last failed probe attempt. What
     /// lets a bailed row say `unreachable` when the endpoint is simply
     /// down rather than `auth failed`.
-    pub last_error: Option<crate::account::UsageFetchStatus>,
+    pub last_error: Option<forge_gateway::UsageFetchStatus>,
     /// Remaining hold-down before the pollers re-probe a failed
     /// account - the server `Retry-After` for a 429, the exponential
     /// schedule otherwise. `None` when nothing is scheduled.

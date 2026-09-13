@@ -8,6 +8,7 @@
 //! may reach, so this crate stays HTTP + mapping and is testable
 //! offline.
 
+pub mod account;
 mod anthropic;
 mod codex;
 pub mod helpers;
@@ -27,6 +28,9 @@ pub use forge_primitives::usage::oauth::OauthUsageError;
 
 pub use crate::model_catalog::ModelCatalog;
 
+pub use crate::account::{
+    AccountKey, AccountState, AccountStateMap, LoadingState, Unusable, UsageFetchStatus,
+};
 pub use crate::anthropic::{Anthropic, CLAUDE_CODE_OAUTH_TOKEN_ENV, token_bearer};
 pub use crate::codex::Codex;
 pub use crate::openrouter::Openrouter;

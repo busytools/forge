@@ -319,9 +319,9 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::account::AccountKey;
     use crate::protocol::Command;
     use crate::workspace::PooledAgent;
+    use forge_gateway::AccountKey;
 
     fn dynamic_worker_row(
         project: &str,

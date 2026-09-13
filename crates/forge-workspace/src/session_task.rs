@@ -14,7 +14,7 @@ use forge_agent::AgentHandle;
 use forge_agent::client::AgentEvent;
 use forge_primitives::SessionId;
 
-use crate::account::{AccountKey, UsageFetchStatus};
+use forge_gateway::{AccountKey, UsageFetchStatus};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -1539,7 +1539,7 @@ mod tests {
     /// waiting for the periodic usage probe.
     #[test]
     fn live_429_flips_active_account_to_unusable() {
-        use crate::account::{AccountKey, AccountStateMap};
+        use forge_gateway::{AccountKey, AccountStateMap};
         let mut map = AccountStateMap::new(&[loaded_account("A"), loaded_account("B")]);
         let key_a = AccountKey("A".to_owned());
         assert!(map.is_account_usable(&key_a), "account usable before the 429");
@@ -1984,7 +1984,7 @@ mod tests {
             key.clone(),
             crate::workspace::PooledAgent {
                 handle: Arc::clone(&handle),
-                account: crate::account::AccountKey("Acct".to_owned()),
+                account: forge_gateway::AccountKey("Acct".to_owned()),
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -2036,7 +2036,7 @@ mod tests {
             key.clone(),
             crate::workspace::PooledAgent {
                 handle: Arc::clone(&handle),
-                account: crate::account::AccountKey("Acct".to_owned()),
+                account: forge_gateway::AccountKey("Acct".to_owned()),
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -2084,7 +2084,7 @@ mod tests {
             key.clone(),
             crate::workspace::PooledAgent {
                 handle: Arc::clone(&handle),
-                account: crate::account::AccountKey("Acct".to_owned()),
+                account: forge_gateway::AccountKey("Acct".to_owned()),
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -2330,7 +2330,7 @@ mod tests {
     /// (upgrade + the account-map lock).
     #[tokio::test]
     async fn note_rate_limit_rotates_the_sessions_own_account() {
-        use crate::account::AccountKey;
+        use forge_gateway::AccountKey;
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let key = AccountKey("Acct".to_owned());
         assert!(workspace.account_states().lock().is_account_usable(&key), "usable before the 429");
@@ -2348,7 +2348,7 @@ mod tests {
     /// rotate anything - it hits the warn path instead.
     #[tokio::test]
     async fn note_rate_limit_leaves_untracked_config_dir_accounts_alone() {
-        use crate::account::AccountKey;
+        use forge_gateway::AccountKey;
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-test-rl-other");
         let key = AccountKey("Acct".to_owned());
         assert!(workspace.account_states().lock().is_account_usable(&key));
@@ -2367,7 +2367,7 @@ mod tests {
     /// sibling a config-dir reverse lookup would happen to find.
     #[tokio::test]
     async fn note_rate_limit_marks_the_sessions_account_not_a_shared_dir_sibling() {
-        use crate::account::AccountKey;
+        use forge_gateway::AccountKey;
         let dir = tempfile::tempdir().expect("tempdir");
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge dir");
@@ -3054,7 +3054,7 @@ mod tests {
             key.clone(),
             crate::workspace::PooledAgent {
                 handle: Arc::clone(&arc),
-                account: crate::account::AccountKey("test".to_owned()),
+                account: forge_gateway::AccountKey("test".to_owned()),
             },
         );
         let domain = workspace.register_domain_session(key.clone(), Some(Arc::clone(&arc)));
