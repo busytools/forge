@@ -34,8 +34,10 @@ pub(crate) struct ForgeState {
     /// override - the active style falls back to forge.toml's `[ui]
     /// spinner` default.
     pub spinner: Option<crate::ui::SpinnerStyle>,
-    /// Account display name to cached snapshot.
-    pub account_usage: std::collections::BTreeMap<String, CachedAccountUsage>,
+    /// Account display name to cached snapshot. The redb row shape
+    /// ([`CachedAccountUsage`]) is unwrapped at the store boundary, so
+    /// the in-memory map the account pool consumes is bare snapshots.
+    pub account_usage: std::collections::BTreeMap<String, UsageSnapshot>,
 }
 
 impl ForgeState {
@@ -56,14 +58,17 @@ pub(crate) fn load(db: &crate::store::Db) -> ForgeState {
             );
             None
         }),
-        account_usage: crate::store::state::account_usage(db).unwrap_or_else(|error| {
-            tracing::warn!(
-                target: "forge_workspace::account_cache",
-                %error,
-                "reading the account-usage cache from the store failed",
-            );
-            std::collections::BTreeMap::new()
-        }),
+        account_usage: crate::store::state::account_usage(db).map_or_else(
+            |error| {
+                tracing::warn!(
+                    target: "forge_workspace::account_cache",
+                    %error,
+                    "reading the account-usage cache from the store failed",
+                );
+                std::collections::BTreeMap::new()
+            },
+            |rows| rows.into_iter().map(|(name, row)| (name, row.snapshot)).collect(),
+        ),
     }
 }
 
@@ -71,9 +76,13 @@ pub(crate) fn load(db: &crate::store::Db) -> ForgeState {
 /// set. Backs the 60 s poller. Non-fatal + logged on failure.
 pub(crate) fn store(
     db: &crate::store::Db,
-    entries: &std::collections::BTreeMap<String, CachedAccountUsage>,
+    entries: &std::collections::BTreeMap<String, UsageSnapshot>,
 ) {
-    if let Err(error) = crate::store::state::replace_account_usage(db, entries) {
+    let rows: std::collections::BTreeMap<String, CachedAccountUsage> = entries
+        .iter()
+        .map(|(name, snapshot)| (name.clone(), CachedAccountUsage { snapshot: snapshot.clone() }))
+        .collect();
+    if let Err(error) = crate::store::state::replace_account_usage(db, &rows) {
         tracing::warn!(
             target: "forge_workspace::account_cache",
             %error,
@@ -106,23 +115,21 @@ mod tests {
         tempdir().expect("cfg tempdir")
     }
 
-    fn fixture_entry() -> CachedAccountUsage {
-        CachedAccountUsage {
-            snapshot: UsageSnapshot {
-                source: UsageSourceKind::Oauth,
-                fetched_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
-                five_hour: Some(UsageWindow {
-                    utilization: 42.0,
-                    resets_at: None,
-                    reset_description: None,
-                }),
-                seven_day: None,
-                seven_day_opus: None,
-                seven_day_sonnet: None,
-                extra_usage: None,
-                spend: None,
-                balance: None,
-            },
+    fn fixture_entry() -> UsageSnapshot {
+        UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+            five_hour: Some(UsageWindow {
+                utilization: 42.0,
+                resets_at: None,
+                reset_description: None,
+            }),
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            spend: None,
+            balance: None,
         }
     }
 

@@ -1,5 +1,6 @@
-//! `forge-gateway` - one backend per `forge.toml` `provider`
-//! token.
+//! `forge-gateway` - the account pool: one backend per
+//! `forge.toml` `provider` token, plus account selection, health,
+//! probe scheduling and backoff.
 //!
 //! Each [`ProviderBackend`] owns credential resolution, the probe
 //! request and its payload mapping, the billing shape, and what repair
@@ -7,8 +8,14 @@
 //! implemented by forge-agent, is the only process plumbing a backend
 //! may reach, so this crate stays HTTP + mapping and is testable
 //! offline.
+//!
+//! [`AccountStateMap`] holds each account's health, usage snapshot and
+//! probe schedule, and [`assignment_plan`] picks the account a session
+//! spawns under.
 
+pub mod account;
 mod anthropic;
+pub mod assignment_plan;
 mod codex;
 pub mod helpers;
 pub mod model_catalog;
@@ -27,6 +34,9 @@ pub use forge_primitives::usage::oauth::OauthUsageError;
 
 pub use crate::model_catalog::ModelCatalog;
 
+pub use crate::account::{
+    AccountKey, AccountState, AccountStateMap, LoadingState, Unusable, UsageFetchStatus,
+};
 pub use crate::anthropic::{Anthropic, CLAUDE_CODE_OAUTH_TOKEN_ENV, token_bearer};
 pub use crate::codex::Codex;
 pub use crate::openrouter::Openrouter;

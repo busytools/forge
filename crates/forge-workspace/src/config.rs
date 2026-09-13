@@ -161,23 +161,10 @@ struct AccountEntry {
     permission_mode: Option<String>,
 }
 
-#[derive(Debug)]
-pub(crate) struct LoadedAccount {
-    pub display_name: String,
-    pub config_dir: PathBuf,
-    /// Declared backend. Drives the usage probe and the billing shape.
-    /// See [`AccountEntry::provider`].
-    pub provider: forge_primitives::account::Provider,
-    /// Per-account environment from `[accounts.env]`, stamped onto the
-    /// spawned `claude` subprocess. See [`AccountEntry::env`].
-    pub env: HashMap<String, String>,
-    /// Excluded from auto-assignment, picker-only. See
-    /// [`AccountEntry::experimental`].
-    pub experimental: bool,
-    /// Optional CLI permission mode stamped into launch settings at
-    /// spawn. See [`AccountEntry::permission_mode`].
-    pub permission_mode: Option<PermissionMode>,
-}
+// The loaded account shape lives in forge-primitives: the gateway
+// builds its account state from it, so it crosses a crate boundary.
+// Re-exported here so `crate::config::LoadedAccount` keeps resolving.
+pub(crate) use forge_primitives::account::LoadedAccount;
 
 /// The `[plugins]` section. Unknown fields are rejected so a mistyped
 /// key cannot silently leave auto-update doing nothing.

@@ -43,6 +43,47 @@ impl Provider {
     }
 }
 
+/// One account as the config load produces it. The gateway's account
+/// state is built from these, and the spawn path stamps the per-account
+/// env onto the child from here.
+#[derive(Debug)]
+pub struct LoadedAccount {
+    pub display_name: String,
+    pub config_dir: std::path::PathBuf,
+    /// Declared backend. Drives the usage probe and the billing shape.
+    /// See [`Provider`].
+    pub provider: Provider,
+    /// Per-account environment from `[accounts.env]`, stamped onto the
+    /// spawned `claude` subprocess.
+    pub env: std::collections::HashMap<String, String>,
+    /// Excluded from auto-assignment, picker-only.
+    pub experimental: bool,
+    /// Optional CLI permission mode stamped into launch settings at
+    /// spawn.
+    pub permission_mode: Option<crate::permission::PermissionMode>,
+}
+
+/// How an account proves who it is, which is the only thing that
+/// changes what preflight tells you to do about a failed one. Derived
+/// from the provider plus the account's merged env; it carries the
+/// distinction and none of the secret.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountAuth {
+    /// `ANTHROPIC_BASE_URL` in the account's `[accounts.env]`, so its
+    /// credential is the `ANTHROPIC_AUTH_TOKEN` beside it. Repaired by
+    /// editing the env, which needs a restart; the 60 s usage poll
+    /// recovers a transient bail.
+    BaseUrl,
+    /// `CLAUDE_CODE_OAUTH_TOKEN` in the account's env (a setup token,
+    /// merged from global `[env]` and `[accounts.env]`) - the only
+    /// credential an Anthropic account has. Repaired by minting or
+    /// re-minting the token, which is an env edit and needs a restart;
+    /// the 60 s usage poll recovers a transient bail. An Anthropic
+    /// account whose env carries no token classifies here too: the
+    /// repair it needs is the same.
+    Token,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

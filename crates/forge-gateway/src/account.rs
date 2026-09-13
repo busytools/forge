@@ -1,8 +1,8 @@
-//! Account selection - internal to forge-workspace.
+//! Account selection, health and probe scheduling.
 //!
-//! `Workspace::get_agent_handle` consults `pick_for_project` on
-//! every spawn; the chosen `AccountKey` becomes the spawned Agent's
-//! `CLAUDE_CONFIG_DIR` override.
+//! The workspace consults `pick_for_project` on every spawn; the
+//! chosen `AccountKey` becomes the spawned Agent's `CLAUDE_CONFIG_DIR`
+//! override.
 //!
 //! **Policy - two-tier filter + global round-robin:**
 //!
@@ -37,11 +37,11 @@ use std::path::PathBuf;
 
 use forge_primitives::usage::{UsageSnapshot, UsageWindow};
 
-use crate::config::LoadedAccount;
+use forge_primitives::account::LoadedAccount;
 
-/// Internal newtype wrapping the account's `display_name`.
+/// Newtype wrapping the account's `display_name`.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub(crate) struct AccountKey(pub String);
+pub struct AccountKey(pub String);
 
 /// Classification of the latest usage-poll attempt outcome for an
 /// account. Surfaced to the TUI's bottom panel so empty bars can
@@ -106,7 +106,7 @@ pub enum LoadingState {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AccountState {
+pub struct AccountState {
     pub config_dir: PathBuf,
     /// Declared backend from `[[accounts]] provider`. Decides which
     /// endpoint the usage probe hits and which credential it carries.
@@ -170,7 +170,7 @@ pub(crate) struct AccountState {
 }
 
 #[derive(Debug)]
-pub(crate) struct AccountStateMap {
+pub struct AccountStateMap {
     pub ordered_keys: Vec<AccountKey>, // forge.toml definition order
     pub by_key: std::collections::HashMap<AccountKey, AccountState>,
     /// Global round-robin cursor for `pick_for_project`. Each pick
@@ -227,14 +227,11 @@ impl AccountStateMap {
     /// `next_probe_at` - the cache is purely seed data; the live
     /// poller still drives backoff. Used by `Workspace::new` to make
     /// the launchpad picker non-empty on cold boot.
-    pub fn seed_from_cache(
-        &mut self,
-        cached: &std::collections::BTreeMap<String, crate::account_cache::CachedAccountUsage>,
-    ) {
-        for (name, entry) in cached {
+    pub fn seed_from_cache(&mut self, cached: &std::collections::BTreeMap<String, UsageSnapshot>) {
+        for (name, snapshot) in cached {
             let key = AccountKey(name.clone());
             if let Some(state) = self.by_key.get_mut(&key) {
-                state.usage = Some(entry.snapshot.clone());
+                state.usage = Some(snapshot.clone());
             }
         }
     }
@@ -242,13 +239,11 @@ impl AccountStateMap {
     /// Snapshot the per-account `usage` for writing to the on-disk
     /// cache. Accounts with no live snapshot are omitted so the cache
     /// file doesn't grow placeholders.
-    pub fn snapshots_for_cache(
-        &self,
-    ) -> std::collections::BTreeMap<String, crate::account_cache::CachedAccountUsage> {
+    pub fn snapshots_for_cache(&self) -> std::collections::BTreeMap<String, UsageSnapshot> {
         let mut out = std::collections::BTreeMap::new();
         for (key, state) in &self.by_key {
             if let Some(snapshot) = state.usage.clone() {
-                out.insert(key.0.clone(), crate::account_cache::CachedAccountUsage { snapshot });
+                out.insert(key.0.clone(), snapshot);
             }
         }
         out
@@ -270,7 +265,7 @@ impl AccountStateMap {
         self.by_key.get(key).map(|s| &s.env)
     }
 
-    /// Declared [`Provider`] for `key`, the input the probe plan and the
+    /// Declared [`forge_primitives::account::Provider`] for `key`, the input the probe plan and the
     /// preflight repair copy both branch on. `None` for unknown keys.
     pub fn provider(&self, key: &AccountKey) -> Option<forge_primitives::account::Provider> {
         self.by_key.get(key).map(|s| s.provider)
@@ -310,11 +305,11 @@ impl AccountStateMap {
     /// env carries. Every other account's credential is its setup
     /// token, so both its token-mode and its token-less shapes repair
     /// the same way. `None` for unknown keys.
-    pub fn auth(&self, key: &AccountKey) -> Option<crate::views::AccountAuth> {
+    pub fn auth(&self, key: &AccountKey) -> Option<forge_primitives::account::AccountAuth> {
         if self.provider(key)?.uses_base_url() {
-            return Some(crate::views::AccountAuth::BaseUrl);
+            return Some(forge_primitives::account::AccountAuth::BaseUrl);
         }
-        Some(crate::views::AccountAuth::Token)
+        Some(forge_primitives::account::AccountAuth::Token)
     }
 
     /// Distinct on-disk config_dirs across every known account. Used by
@@ -485,7 +480,7 @@ impl AccountStateMap {
     /// classifies on. A Ready-but-saturated account logs in
     /// fine but trips the rate limit on its next request, so the
     /// assignment plan prefers other accounts when one is available.
-    pub(crate) fn is_saturated(&self, key: &AccountKey) -> bool {
+    pub fn is_saturated(&self, key: &AccountKey) -> bool {
         self.by_key.get(key).and_then(|s| s.usage.as_ref()).is_some_and(is_rate_limited)
     }
 
@@ -513,7 +508,7 @@ impl AccountStateMap {
         }
         let usage = self
             .provider(key)
-            .and_then(forge_gateway::backend)
+            .and_then(crate::backend)
             .and_then(|backend| self.usage(key).filter(|s| s.source == backend.source()));
         unusable_reason(usage, self.usage_error(key))
     }
@@ -937,16 +932,16 @@ mod tests {
         let map = AccountStateMap::new(&[token, base_url, make_account("Tokenless")]);
         assert_eq!(
             map.auth(&AccountKey("Token".to_owned())),
-            Some(crate::views::AccountAuth::Token),
+            Some(forge_primitives::account::AccountAuth::Token),
         );
         assert_eq!(
             map.auth(&AccountKey("Base".to_owned())),
-            Some(crate::views::AccountAuth::BaseUrl),
+            Some(forge_primitives::account::AccountAuth::BaseUrl),
             "a base-url provider classifies BaseUrl even beside a setup token",
         );
         assert_eq!(
             map.auth(&AccountKey("Tokenless".to_owned())),
-            Some(crate::views::AccountAuth::Token),
+            Some(forge_primitives::account::AccountAuth::Token),
             "a token-less anthropic account repairs as a token account",
         );
         assert_eq!(map.auth(&AccountKey("Unknown".to_owned())), None, "unknown key -> None");

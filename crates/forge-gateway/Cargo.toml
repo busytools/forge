@@ -6,11 +6,16 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "One backend per forge.toml provider token: credential resolution, probe HTTP + mapping, billing shape."
+description = "The account pool: one backend per forge.toml provider token (credential resolution, probe HTTP + mapping, billing shape), plus account selection, health, probe scheduling and backoff."
 publish = false
 
 [lints]
 workspace = true
+
+[features]
+# Test fixture helpers on the account state map, reached by
+# forge-workspace's `testing` feature. Production builds never see it.
+testing = []
 
 [dependencies]
 forge-primitives = { workspace = true }

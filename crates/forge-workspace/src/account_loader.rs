@@ -29,7 +29,8 @@ use forge_gateway::ProbeError;
 use forge_primitives::usage::UsageSnapshot;
 use forge_primitives::usage::oauth::OauthUsageError;
 
-use crate::account::{AccountKey, LoadingState};
+use forge_gateway::{AccountKey, AccountStateMap, LoadingState};
+
 use crate::workspace::Workspace;
 
 /// Apply one probe outcome to the account state map and return the
@@ -37,7 +38,7 @@ use crate::workspace::Workspace;
 /// terminal in this single pass; healing is the usage poller's
 /// schedule.
 fn settle_probe_result(
-    states: &mut crate::account::AccountStateMap,
+    states: &mut AccountStateMap,
     key: &AccountKey,
     result: &Result<UsageSnapshot, ProbeError>,
 ) -> LoadingState {
@@ -113,8 +114,8 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::account::{AccountStateMap, UsageFetchStatus};
     use forge_gateway::ProbeError;
+    use forge_gateway::{AccountStateMap, UsageFetchStatus};
     use forge_primitives::usage::oauth::OauthUsageError;
     use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
     use std::time::{Duration, Instant};

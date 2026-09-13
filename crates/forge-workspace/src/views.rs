@@ -111,7 +111,7 @@ pub struct AccountRow {
     /// The reason renders as the row's status tag: a capped window
     /// reads `limit hit`, a blocked probe or a bail reads
     /// `auth failed or expired`.
-    pub unusable: Option<crate::account::Unusable>,
+    pub unusable: Option<forge_gateway::Unusable>,
     /// What this account has left, in whatever terms its backend bills.
     pub budget: AccountBudget,
     /// `true` for an `experimental = true` account. The picker renders
@@ -125,26 +125,11 @@ pub struct AccountRow {
     pub fallback: bool,
 }
 
-/// How an account proves who it is, which is the only thing that
-/// changes what preflight tells you to do about a failed one. Derived
-/// from the provider plus the account's merged env; it carries the
-/// distinction and none of the secret.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AccountAuth {
-    /// `ANTHROPIC_BASE_URL` in the account's `[accounts.env]`, so its
-    /// credential is the `ANTHROPIC_AUTH_TOKEN` beside it. Repaired by
-    /// editing the env, which needs a restart; the 60 s usage poll
-    /// recovers a transient bail.
-    BaseUrl,
-    /// `CLAUDE_CODE_OAUTH_TOKEN` in the account's env (a setup token,
-    /// merged from global `[env]` and `[accounts.env]`) - the only
-    /// credential an Anthropic account has. Repaired by minting or
-    /// re-minting the token, which is an env edit and needs a restart;
-    /// the 60 s usage poll recovers a transient bail. An Anthropic
-    /// account whose env carries no token classifies here too: the
-    /// repair it needs is the same.
-    Token,
-}
+// The account auth classification is returned by the gateway's account
+// state, so it lives in forge-primitives now. Re-exported here so
+// `forge_workspace::AccountAuth` and `crate::views::AccountAuth` keep
+// resolving.
+pub use forge_primitives::account::AccountAuth;
 
 /// One account's place in preflight: what it is called, how far it
 /// has got, and how it authenticates.
@@ -152,11 +137,11 @@ pub enum AccountAuth {
 pub struct AccountLoadingRow {
     /// forge.toml `[[accounts]]` display name.
     pub display_name: String,
-    pub state: crate::account::LoadingState,
+    pub state: forge_gateway::LoadingState,
     /// The classified outcome of the last failed probe attempt. What
     /// lets a bailed row say `unreachable` when the endpoint is simply
     /// down rather than `auth failed`.
-    pub last_error: Option<crate::account::UsageFetchStatus>,
+    pub last_error: Option<forge_gateway::UsageFetchStatus>,
     /// Remaining hold-down before the pollers re-probe a failed
     /// account - the server `Retry-After` for a 429, the exponential
     /// schedule otherwise. `None` when nothing is scheduled.

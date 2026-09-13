@@ -39,6 +39,8 @@
 //! - [`question`] - `AskUserQuestion` request/response shapes.
 //! - [`mcp_ui_sync`] - MCP UI events (`McpOperationError`).
 //! - [`session_meta`] - `SessionListEntry`, `PromptChunk`.
+//! - [`project_key`] - `ProjectKey`, the canonical on-disk project
+//!   identity.
 //!
 //! Add a type here when 2+ forge crates need it. Never reach for
 //! cross-crate `pub use` chains as a substitute.
@@ -63,6 +65,7 @@ pub mod permission;
 pub mod permission_ui;
 pub mod permissions;
 pub mod plugins;
+pub mod project_key;
 pub mod public_types;
 pub mod question;
 pub mod review;
@@ -110,6 +113,7 @@ pub use permissions::{
     PermissionBehavior, PermissionDecision, PermissionRuleValue, PermissionUpdate,
     PermissionUpdateDestination, ToolPermissionContext,
 };
+pub use project_key::ProjectKey;
 pub use public_types::{
     AccountInfo, ContextUsageResponse, ForgeAccountIdentity, McpServerConfig,
     McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpSetServersResponse,

@@ -110,7 +110,8 @@ review comment. The
 [architecture page](https://busytools.github.io/forge/architecture.html)
 has the placement guide; the short version is that audio and speech go
 in `forge-dictate`, cross-crate types go in `forge-primitives`,
-provider credentials, probes and billing go in `forge-gateway`,
+provider credentials, probes, billing, account selection and account
+health go in `forge-gateway`,
 inbound connector clients and matching go in `forge-connectors`,
 anything speaking stream-json goes in `forge-sdk`, environment and I/O
 go in `forge-agent`, multi-session orchestration goes in
