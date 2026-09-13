@@ -311,7 +311,6 @@ mod tests {
             status,
             content: Vec::new(),
             hidden: false,
-            terminal_id: None,
             terminal_output: None,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
@@ -1026,69 +1025,15 @@ mod tests {
         assert!(rendered.iter().any(|line| line == "Line B"));
     }
 
-    /// The ToolCallInfo literal behind the captured-terminal tests,
-    /// differing only in the four fields that matter.
-    fn terminal_tool_call(
+    /// A Bash tool call carrying captured output, for the body-render tests.
+    fn bash_tool_call(
         id: &str,
         status: model::ToolCallStatus,
-        terminal_id: &str,
         terminal_output: &str,
     ) -> ToolCallInfo {
         let mut tc = test_tool_call(id, "Bash", status);
-        tc.terminal_id = Some(terminal_id.to_owned());
         tc.terminal_output = Some(terminal_output.to_owned());
         tc
-    }
-
-    #[test]
-    fn content_summary_only_extracts_tool_use_error_for_failed_execute() {
-        let tc = terminal_tool_call(
-            "tc-1",
-            model::ToolCallStatus::Completed,
-            "term-1",
-            "<tool_use_error>bad</tool_use_error>\ndone",
-        );
-        assert_eq!(content_summary(&tc), "done");
-    }
-
-    #[test]
-    fn content_summary_extracts_tool_use_error_for_failed_execute() {
-        let tc = terminal_tool_call(
-            "tc-1",
-            model::ToolCallStatus::Failed,
-            "term-1",
-            "<tool_use_error>bad</tool_use_error>\ndone",
-        );
-        assert_eq!(content_summary(&tc), "bad");
-    }
-
-    #[test]
-    fn content_summary_uses_first_terminal_line_for_failed_execute() {
-        let tc = terminal_tool_call(
-            "tc-2",
-            model::ToolCallStatus::Failed,
-            "term-2",
-            "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail",
-        );
-        assert_eq!(content_summary(&tc), "Exit code 1");
-    }
-
-    /// The non-failed execute summary drops the last terminal line into
-    /// the collapsed span raw; a control char must picture like the
-    /// failed path does.
-    #[test]
-    fn content_summary_pictures_control_chars_in_last_terminal_line() {
-        let tc = terminal_tool_call("tc-4", model::ToolCallStatus::Completed, "term-4", "a\rb");
-        assert_eq!(content_summary(&tc), "a\u{240d}b");
-
-        // The truncation branch wraps too: a CR inside the kept 77 chars
-        // pictures rather than vanishing into the short form.
-        let long = format!("{}\r{}", "x".repeat(10), "y".repeat(71));
-        let tc = terminal_tool_call("tc-5", model::ToolCallStatus::Completed, "term-5", &long);
-        assert_eq!(
-            content_summary(&tc),
-            format!("{}\u{240d}{}...", "x".repeat(10), "y".repeat(66))
-        );
     }
 
     #[test]
@@ -1107,10 +1052,9 @@ mod tests {
         // For Failed/Killed Bash, the body shows the first non-empty
         // stderr-ish line via `failed_execute_first_line` instead of
         // dumping the whole captured output.
-        let mut tc = terminal_tool_call(
+        let mut tc = bash_tool_call(
             "tc-3",
             model::ToolCallStatus::Failed,
-            "term-3",
             "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail",
         );
 
@@ -1138,10 +1082,9 @@ mod tests {
     /// metadata spans.
     #[test]
     fn failed_execute_error_line_pictures_control_chars_so_measured_width_equals_painted() {
-        let mut tc = terminal_tool_call(
+        let mut tc = bash_tool_call(
             "tc-4",
             model::ToolCallStatus::Failed,
-            "term-4",
             "50%\r75%\r100%\nbash: line 1: cd: too many arguments",
         );
 

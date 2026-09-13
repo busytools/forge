@@ -1834,7 +1834,6 @@ mod tests {
             status: crate::agent::model::ToolCallStatus::InProgress,
             content: Vec::new(),
             hidden: true,
-            terminal_id: None,
             terminal_output: None,
             monitor_output_tail: Vec::default(),
             monitor_status: None,

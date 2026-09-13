@@ -194,11 +194,6 @@ impl super::App {
                         tc.status = new_status;
                         tc.mark_tool_call_layout_dirty();
                         changed_slots.push((msg_idx, block_idx));
-                        // A completed execute's captured terminal id no
-                        // longer means anything to the renderer.
-                        if tc.is_execute_tool() {
-                            tc.terminal_id = None;
-                        }
                         if changed_message_indices.last().copied() != Some(msg_idx) {
                             changed_message_indices.push(msg_idx);
                         }
@@ -647,7 +642,6 @@ mod tests {
             status: ToolCallStatus::InProgress,
             content: Vec::new(),
             hidden: true,
-            terminal_id: None,
             terminal_output: None,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
@@ -1227,13 +1221,10 @@ mod tests {
     }
 
     #[test]
-    fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
+    fn finalize_in_progress_tool_calls_finalizes_an_execute_tool_call() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_bash_tool_message(
-            "bash-1",
-            model::ToolCallStatus::InProgress,
-            "term-1",
-        ));
+        app.active_messages_mut()
+            .push(assistant_bash_tool_message("bash-1", model::ToolCallStatus::InProgress));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
 
         let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
@@ -1243,7 +1234,6 @@ mod tests {
             panic!("expected tool call");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Completed);
-        assert_eq!(tc.terminal_id, None);
     }
 
     #[test]
@@ -1316,7 +1306,6 @@ mod tests {
                     status: model::ToolCallStatus::Completed,
                     content: Vec::new(),
                     hidden: false,
-                    terminal_id: None,
                     terminal_output: None,
                     monitor_output_tail: Vec::default(),
                     monitor_status: None,
@@ -1486,7 +1475,6 @@ mod tests {
                 status: model::ToolCallStatus::Completed,
                 content: Vec::new(),
                 hidden: false,
-                terminal_id: None,
                 terminal_output: None,
                 monitor_output_tail: Vec::default(),
                 monitor_status: None,
@@ -1555,7 +1543,6 @@ mod tests {
             status,
             content: Vec::new(),
             hidden: false,
-            terminal_id: None,
             terminal_output: None,
             monitor_output_tail: Vec::default(),
             monitor_status: None,
@@ -1585,7 +1572,6 @@ mod tests {
             status: model::ToolCallStatus::Completed,
             content: Vec::new(),
             hidden: true,
-            terminal_id: None,
             terminal_output: None,
             monitor_output_tail: Vec::default(),
             monitor_status: None,

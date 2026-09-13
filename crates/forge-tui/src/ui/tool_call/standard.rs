@@ -10,7 +10,6 @@ use crate::ui::diff::{
 use crate::ui::highlight;
 use crate::ui::markdown;
 use crate::ui::theme;
-use crate::ui::wrap::replace_control_chars;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -151,38 +150,6 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
 
 /// One-line summary for collapsed tool calls.
 pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
-    // For Execute tool calls, show last non-empty line of terminal output
-    if tc.terminal_id.is_some() {
-        if let Some(ref output) = tc.terminal_output {
-            let stripped_output = highlight::strip_ansi(output);
-            if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-                && let Some(first_line) = failed_execute_first_line(&stripped_output)
-            {
-                return if first_line.chars().count() > 80 {
-                    let truncated: String = first_line.chars().take(77).collect();
-                    format!("{truncated}...")
-                } else {
-                    first_line
-                };
-            }
-            let last = stripped_output.lines().rev().find(|l| !l.trim().is_empty());
-            if let Some(line) = last {
-                let summary = if line.chars().count() > 80 {
-                    let truncated: String = line.chars().take(77).collect();
-                    format!("{truncated}...")
-                } else {
-                    line.to_owned()
-                };
-                return replace_control_chars(summary.into()).into_owned();
-            }
-        }
-        return if matches!(tc.status, model::ToolCallStatus::InProgress) {
-            "running...".to_owned()
-        } else {
-            String::new()
-        };
-    }
-
     for content in &tc.content {
         match content {
             model::RenderToolCallContent::Diff(diff) => {

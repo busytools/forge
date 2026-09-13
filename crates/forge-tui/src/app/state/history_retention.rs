@@ -126,7 +126,6 @@ impl super::App {
             .saturating_add(tc.id.capacity())
             .saturating_add(tc.title.capacity())
             .saturating_add(tc.sdk_tool_name.capacity())
-            .saturating_add(tc.terminal_id.as_ref().map_or(0, String::capacity))
             .saturating_add(tc.terminal_output.as_ref().map_or(0, String::capacity))
             .saturating_add(
                 tc.content.capacity().saturating_mul(size_of::<model::RenderToolCallContent>()),
@@ -726,7 +725,7 @@ mod tests {
         *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop this"),
-            assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress, "term-1"),
+            assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress),
         ];
         app.index_tool_call("tool-idx".to_owned(), 99, 99);
         app.history_retention_mut().max_bytes = 1;
@@ -975,13 +974,10 @@ mod tests {
     }
 
     #[test]
-    fn clear_messages_tracked_clears_tool_and_terminal_tracking() {
+    fn clear_messages_tracked_clears_tool_tracking() {
         let mut app = make_test_app();
-        app.active_messages_mut().push(assistant_bash_tool_message(
-            "bash-1",
-            model::ToolCallStatus::InProgress,
-            "term-1",
-        ));
+        app.active_messages_mut()
+            .push(assistant_bash_tool_message("bash-1", model::ToolCallStatus::InProgress));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
 
         app.clear_messages_tracked();

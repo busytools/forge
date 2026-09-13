@@ -1159,7 +1159,6 @@ fn backgrounded_bash_card(id: &str) -> ToolCallInfo {
         status: model::ToolCallStatus::InProgress,
         content: Vec::new(),
         hidden: false,
-        terminal_id: None,
         terminal_output: None,
         monitor_output_tail: Vec::default(),
         monitor_status: None,

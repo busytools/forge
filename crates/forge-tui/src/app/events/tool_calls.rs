@@ -87,7 +87,6 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::RenderToolCall) {
 
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
-    log_terminal_spawned(app, &tool_info, "initial");
     if should_jump_on_large_write(&tool_info) {
         app.active_viewport_mut().engage_auto_scroll();
     }
@@ -239,7 +238,6 @@ fn build_tool_info_from_tool_call(
         // stream and surfaces only in the Inspector SUBAGENTS section.
         hidden: is_chat_suppressed
             || matches!(scope, ToolCallScope::SubagentRoot | ToolCallScope::SubagentChild { .. },),
-        terminal_id: None,
         terminal_output: None,
         monitor_output_tail: Vec::default(),
         monitor_status,
@@ -388,9 +386,6 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         }
         changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
         changed |= sync_if_changed(&mut existing.task_metadata, &tool_info.task_metadata);
-        if tool_info.terminal_id.is_some() {
-            changed |= sync_if_changed(&mut existing.terminal_id, &tool_info.terminal_id);
-        }
         if tool_info.terminal_output.is_some() {
             changed |= sync_if_changed(&mut existing.terminal_output, &tool_info.terminal_output);
         }
@@ -542,11 +537,9 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
                 outcome = "start",
                 session_id = %current_session_id(app),
                 tool_call_id = %tc.id,
-                terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
                 size_bytes = u64::try_from(tc.raw_input_bytes).unwrap_or_default(),
                 tool_name = %tc.sdk_tool_name,
                 tool_status = ?tc.status,
-                has_terminal = tc.terminal_id.is_some(),
                 terminal_output_bytes =
                     u64::try_from(tc.terminal_output.as_deref().map_or(0, str::len))
                         .unwrap_or_default(),
@@ -560,11 +553,9 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
             outcome = "success",
             session_id = %current_session_id(app),
             tool_call_id = %tc.id,
-            terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
             size_bytes = u64::try_from(tc.raw_input_bytes).unwrap_or_default(),
             tool_name = %tc.sdk_tool_name,
             tool_status = ?tc.status,
-            has_terminal = tc.terminal_id.is_some(),
             terminal_output_bytes = u64::try_from(tc.terminal_output.as_deref().map_or(0, str::len))
                 .unwrap_or_default(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
@@ -584,36 +575,15 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
             outcome = "failure",
             session_id = %current_session_id(app),
             tool_call_id = %tc.id,
-            terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
             size_bytes = u64::try_from(tc.raw_input_bytes).unwrap_or_default(),
             tool_name = %tc.sdk_tool_name,
             tool_status = ?tc.status,
             error_kind = "command_error",
-            has_terminal = tc.terminal_id.is_some(),
             terminal_output_bytes = u64::try_from(tc.terminal_output.as_deref().map_or(0, str::len))
                 .unwrap_or_default(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
         ),
     }
-}
-
-pub(super) fn log_terminal_spawned(app: &App, tc: &ToolCallInfo, source: &str) {
-    if !tc.is_execute_tool() || tc.terminal_id.is_none() {
-        return;
-    }
-
-    tracing::info!(
-        target: crate::logging::targets::APP_COMMAND,
-        event_name = "terminal_spawned",
-        message = "terminal attached to command execution",
-        outcome = "success",
-        session_id = %current_session_id(app),
-        tool_call_id = %tc.id,
-        terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
-        tool_name = %tc.sdk_tool_name,
-        spawn_source = source,
-        assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
-    );
 }
 
 pub(super) fn current_session_id(app: &App) -> String {
@@ -666,7 +636,6 @@ mod tests {
             status: model::ToolCallStatus::InProgress,
             content: Vec::new(),
             hidden: false,
-            terminal_id: None,
             terminal_output: None,
             monitor_output_tail: Vec::new(),
             monitor_status: None,
