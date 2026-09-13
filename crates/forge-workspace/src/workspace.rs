@@ -7412,7 +7412,8 @@ provider = "anthropic"
         let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
         fs::write(forge_dir.join("forge.toml"), ACCOUNT_PIN_FIXTURE).expect("write forge.toml");
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
-        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
         (ws, dir)
     }
 
@@ -7473,7 +7474,8 @@ SOLO_TOKEN = "value-must-never-be-logged"
         )
         .expect("write forge.toml");
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
-        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
 
         let capture = LogCapture::default();
         let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
@@ -7535,7 +7537,8 @@ SOLO_TOKEN = "solo-secret"
         )
         .expect("write forge.toml");
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
-        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
         let key = |p: &std::path::Path| {
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 &p.to_string_lossy(),
@@ -9161,7 +9164,8 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
-        let (ws, update_rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+        let (ws, update_rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
 
         let lead = SessionKey::from_session_id("lead-uuid".to_owned());
         ws.record_connected_session(&root.to_string_lossy(), lead.as_str(), None);

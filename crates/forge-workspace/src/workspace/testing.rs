@@ -92,7 +92,13 @@ impl Workspace {
     pub fn testing_stub_with_config_dir(
         config_dir: PathBuf,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
-        Self::testing_stub_with_config(config_dir, LoadedConfig::empty_for_test())
+        // `empty_for_test` carries no `[[slack]]` entries, so there is
+        // nothing here for `from_config` to check.
+        Self::testing_stub_with_slack(
+            config_dir,
+            LoadedConfig::empty_for_test(),
+            Arc::new(crate::slack::SlackWorkspaces::default()),
+        )
     }
 
     /// Like `testing_stub_with_config_dir` but injects a caller-built
@@ -102,18 +108,26 @@ impl Workspace {
     /// does not populate. Build the config via
     /// `crate::config::load_from_dir` on a tempdir `forge.toml` fixture;
     /// `db` stays `None`, so nothing touches the real machine store.
+    ///
+    /// Clients come from the injected config through
+    /// `SlackWorkspaces::from_config`, the only thing that checks a
+    /// `[[slack]]` entry; `load_from_dir` parses the section straight
+    /// through. An entry `from_config` refuses is returned as its bare
+    /// error rather than degrading to a workspace with no clients, the
+    /// way `new` refuses to boot on the same error. A malformed fixture
+    /// has to fail where the test that built it can see it.
+    ///
+    /// `#[cfg(test)]` because `LoadedConfig` is crate-private and only
+    /// this crate's own test modules call it; the feature build, which
+    /// exists for the cross-crate constructors above, has no use for it.
+    #[cfg(test)]
     pub(crate) fn testing_stub_with_config(
         config_dir: PathBuf,
         config: LoadedConfig,
-    ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
-        // Built from the injected config the way `new` builds it, so a
-        // test that supplies a `[[slack]]` entry gets a workspace whose
-        // clients exist. `new` cannot fail here on a stub config.
-        let slack = Arc::new(
-            crate::slack::SlackWorkspaces::from_config(&config.slack, &reqwest::Client::new())
-                .unwrap_or_default(),
-        );
-        Self::testing_stub_with_slack(config_dir, config, slack)
+    ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>), String> {
+        let slack =
+            crate::slack::SlackWorkspaces::from_config(&config.slack, &reqwest::Client::new())?;
+        Ok(Self::testing_stub_with_slack(config_dir, config, Arc::new(slack)))
     }
 
     /// [`Self::testing_stub_with_config`] with the Slack clients supplied
@@ -278,7 +292,11 @@ impl Workspace {
     {
         let mut config = LoadedConfig::empty_for_test();
         config.dictate.enabled = true;
-        Self::testing_stub_with_config(PathBuf::from("/tmp/forge-testing-stub-dictate"), config)
+        Self::testing_stub_with_slack(
+            PathBuf::from("/tmp/forge-testing-stub-dictate"),
+            config,
+            Arc::new(crate::slack::SlackWorkspaces::default()),
+        )
     }
 
     /// Give `label` an assignment-plan entry the way a spawn does, so a
@@ -303,5 +321,41 @@ impl Workspace {
             resume_kick: None,
             interactive: false,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_primitives::slack::SlackConfig;
+
+    /// A `[[slack]]` fixture `from_config` refuses: the entry names a
+    /// workspace but carries no token.
+    fn config_with_a_tokenless_slack_entry() -> LoadedConfig {
+        let mut config = LoadedConfig::empty_for_test();
+        config.slack = vec![SlackConfig {
+            workspace: "acme".to_owned(),
+            token: String::new(),
+            poll_seconds: 30,
+        }];
+        config
+    }
+
+    /// A fixture `from_config` refuses must not come back as a workspace
+    /// whose Slack surface is quietly empty: a test written against it
+    /// would pass while exercising nothing.
+    #[test]
+    fn a_tokenless_slack_fixture_does_not_build_a_stub() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let error = Workspace::testing_stub_with_config(
+            dir.path().to_path_buf(),
+            config_with_a_tokenless_slack_entry(),
+        )
+        .err()
+        .expect("a tokenless [[slack]] fixture must fail rather than yield an empty client set");
+        assert!(
+            error.contains("has an empty token"),
+            "the error names the malformed fixture, got: {error}",
+        );
     }
 }
