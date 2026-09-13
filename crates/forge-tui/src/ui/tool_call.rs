@@ -1114,6 +1114,40 @@ mod tests {
         );
     }
 
+    /// Only a failed run narrows to an extracted message; a completed run
+    /// shows its whole captured output.
+    #[test]
+    fn completed_bash_body_shows_full_output_not_extracted_message() {
+        let mut tc = bash_tool_call(
+            "tc-done",
+            model::ToolCallStatus::Completed,
+            "<tool_use_error>EXTRACTED</tool_use_error>\nFALLBACK",
+        );
+
+        let mut out = Vec::new();
+        render_tool_call_cached_with_tools_collapsed(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            120,
+            '\u{280B}',
+            false,
+            &mut out,
+        );
+
+        let rendered: Vec<String> = out
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            rendered.iter().any(|line| line.contains("FALLBACK")),
+            "a completed run renders every output line, not only an extracted message: {rendered:?}"
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains("tool_use_error")),
+            "a completed run shows its output verbatim rather than unwrapping it: {rendered:?}"
+        );
+    }
+
     /// A failed run's first output line is often a progress meter: a
     /// raw control character is charged a column by `Span::width` and
     /// painted by nothing, so the line is pictured like the other
