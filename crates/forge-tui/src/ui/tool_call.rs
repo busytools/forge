@@ -1076,6 +1076,44 @@ mod tests {
         assert!(!rendered.iter().any(|line| line.contains("more detail")));
     }
 
+    /// A failed run carrying an extracted `<tool_use_error>` message shows
+    /// that message rather than the raw first output line.
+    #[test]
+    fn failed_bash_body_prefers_extracted_tool_use_error_over_first_line() {
+        let mut tc = bash_tool_call(
+            "tc-err",
+            model::ToolCallStatus::Failed,
+            "<tool_use_error>EXTRACTED</tool_use_error>\nFALLBACK",
+        );
+
+        let mut out = Vec::new();
+        render_tool_call_cached_with_tools_collapsed(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            120,
+            '\u{280B}',
+            false,
+            &mut out,
+        );
+
+        let rendered: Vec<String> = out
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            rendered.iter().any(|line| line.contains("EXTRACTED")),
+            "the extracted message renders: {rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|line| line.contains("FALLBACK")),
+            "the raw first output line is dropped once a message is extracted: {rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|line| line.contains("tool_use_error")),
+            "the raw tag is unwrapped, not shown verbatim: {rendered:?}"
+        );
+    }
+
     /// A failed run's first output line is often a progress meter: a
     /// raw control character is charged a column by `Span::width` and
     /// painted by nothing, so the line is pictured like the other
