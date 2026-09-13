@@ -38,7 +38,7 @@ forge-test-harness->  primitives + sdk
 |---|---|
 | [`forge-primitives`](crates/forge-primitives) | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side views. Pure data. |
 | [`forge-dictate`](crates/forge-dictate) | The dictation primitive: audio in, text out. Owns its model files, speech recognition and normalization. Depends on no forge-* crate and knows nothing about a host. |
-| [`forge-gateway`](crates/forge-gateway) | One backend per provider token: credential resolution, the usage probe's HTTP and payload mapping, billing shape, the OpenRouter model catalog. Depends on forge-primitives only. |
+| [`forge-gateway`](crates/forge-gateway) | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape, the OpenRouter model catalog), plus account selection, account health, probe scheduling and backoff. Depends on forge-primitives only. |
 | [`forge-connectors`](crates/forge-connectors) | One module per inbound connector: the stream client, REST lookups and matching for one external integration (Gotify and Slack today). Depends on forge-primitives only. |
 | [`forge-sdk`](crates/forge-sdk) | The `claude` subprocess. Stream-json codec, transport, control dispatch, in-process MCP host, options builder. |
 | [`forge-agent`](crates/forge-agent) | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. User-data reads, cloud calls, environment probes, event translation, tooling. |

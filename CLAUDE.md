@@ -22,13 +22,14 @@ forge-test-harness ─→ primitives + sdk + workspace
   on no forge-* crate and knows nothing about a host, so it must not
   grow one; a doc comment mentioning a keypress, a composer or a
   session is a bug.
-- **`forge-gateway`** - one backend per `forge.toml` provider token:
-  credential resolution, the usage probe's HTTP + payload mapping,
-  billing shape, the OpenRouter model catalog. Depends on
-  forge-primitives only; the `claude --version` user agent and the
-  TLS-trust client arrive through the `ProviderHost` port forge-agent
-  implements, so the crate stays HTTP + mapping and never spawns the
-  CLI.
+- **`forge-gateway`** - the account pool: one backend per `forge.toml`
+  provider token (credential resolution, the usage probe's HTTP +
+  payload mapping, billing shape, the OpenRouter model catalog), plus
+  account selection, account health, probe scheduling and backoff.
+  Depends on forge-primitives only; the `claude --version` user agent
+  and the TLS-trust client arrive through the `ProviderHost` port
+  forge-agent implements, so the crate stays HTTP + mapping and never
+  spawns the CLI.
 - **`forge-connectors`** - one module per inbound connector: the
   stream client, REST lookups, subscription matching and subsystem
   pump for one external integration (Gotify and Slack today). Depends
@@ -85,7 +86,9 @@ Work top-down; first match wins.
 3. **Provider credential, probe, usage mapping, billing or repair?**
    (how one `forge.toml` provider token authenticates, what endpoint
    its usage probe hits, how the payload maps to a snapshot, what a
-   failure allows) -> `forge-gateway`, one backend per token.
+   failure allows), or is it which account a session spawns under,
+   whether an account is healthy, or when it is next probed? ->
+   `forge-gateway`, one backend per token and the account pool.
 4. **Inbound connector I/O for an external integration?** (its stream
    client, REST lookups, subscription matching, reconnecting
    subsystem pump) -> `forge-connectors`, one module per connector.

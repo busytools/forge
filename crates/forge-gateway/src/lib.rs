@@ -1,5 +1,6 @@
-//! `forge-gateway` - one backend per `forge.toml` `provider`
-//! token.
+//! `forge-gateway` - the account pool: one backend per
+//! `forge.toml` `provider` token, plus account selection, health,
+//! probe scheduling and backoff.
 //!
 //! Each [`ProviderBackend`] owns credential resolution, the probe
 //! request and its payload mapping, the billing shape, and what repair
@@ -7,6 +8,10 @@
 //! implemented by forge-agent, is the only process plumbing a backend
 //! may reach, so this crate stays HTTP + mapping and is testable
 //! offline.
+//!
+//! [`AccountStateMap`] holds each account's health, usage snapshot and
+//! probe schedule, and [`assignment_plan`] picks the account a session
+//! spawns under.
 
 pub mod account;
 mod anthropic;
