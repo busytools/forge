@@ -22,8 +22,9 @@ impl ProjectKey {
     }
 
     /// Test-only constructor for cross-crate fixtures (forge-tui's
-    /// Projects pane snapshot tests). Behind the `test-helpers`
-    /// Cargo feature so production builds don't carry the helper.
+    /// Projects pane snapshot tests). Byte-identical to
+    /// [`ProjectKey::new`]; the `test-helpers` gate, not a visibility
+    /// difference, is what keeps it out of production builds.
     #[cfg(feature = "test-helpers")]
     pub fn new_for_test(key: impl Into<String>) -> Self {
         Self(key.into())
