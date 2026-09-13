@@ -1025,7 +1025,7 @@ mod tests {
         let mut app = App::test_default();
         let background = seed_bucket(&mut app, "session-bg", "beta");
         app.notifications = crate::app::notify::NotificationManager::new(
-            forge_workspace::Osc9NotificationMode::Off,
+            forge_workspace::Osc9NotificationMode::Auto,
         );
         app.notifications.on_focus_lost();
 
@@ -1044,7 +1044,9 @@ mod tests {
         );
         assert_eq!(
             app.notifications.take_delivered(),
-            vec![crate::app::notify::DeliveredNotification { osc9_line: None, bell: true }],
+            vec![crate::app::notify::DeliveredNotification {
+                osc9_line: "beta - lead - turn complete".to_owned(),
+            }],
             "the unfocused manager delivered the completion ping",
         );
     }

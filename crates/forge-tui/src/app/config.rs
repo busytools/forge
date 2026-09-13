@@ -52,39 +52,6 @@ impl DefaultPermissionMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PreferredNotifChannel {
-    #[default]
-    Iterm2,
-    Iterm2WithBell,
-    TerminalBell,
-    NotificationsDisabled,
-    Ghostty,
-}
-
-impl PreferredNotifChannel {
-    pub const fn as_stored(self) -> &'static str {
-        match self {
-            Self::Iterm2 => "iterm2",
-            Self::Iterm2WithBell => "iterm2_with_bell",
-            Self::TerminalBell => "terminal_bell",
-            Self::NotificationsDisabled => "notifications_disabled",
-            Self::Ghostty => "ghostty",
-        }
-    }
-
-    pub fn from_stored(value: &str) -> Option<Self> {
-        match value {
-            "iterm2" => Some(Self::Iterm2),
-            "iterm2_with_bell" => Some(Self::Iterm2WithBell),
-            "terminal_bell" => Some(Self::TerminalBell),
-            "notifications_disabled" => Some(Self::NotificationsDisabled),
-            "ghostty" => Some(Self::Ghostty),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputStyle {
     #[default]
     Default,
@@ -291,11 +258,6 @@ impl ConfigState {
 
     pub fn respect_gitignore_effective(&self) -> bool {
         store::respect_gitignore(&self.committed_preferences_document).unwrap_or(true)
-    }
-
-    pub fn preferred_notification_channel_effective(&self) -> PreferredNotifChannel {
-        store::preferred_notification_channel(&self.committed_preferences_document)
-            .unwrap_or_default()
     }
 
     pub fn prefers_reduced_motion_effective(&self) -> bool {
