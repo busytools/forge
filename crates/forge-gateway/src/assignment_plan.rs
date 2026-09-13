@@ -34,9 +34,9 @@
 
 use std::collections::HashMap;
 
-use forge_gateway::AccountKey;
+use forge_primitives::ProjectKey;
 
-use crate::target::ProjectKey;
+use crate::account::AccountKey;
 
 /// Session-within-project identifier. `"lead"` for the project's
 /// primary session; a worker's own label for everything else.
@@ -144,7 +144,7 @@ impl AssignmentPlan {
     /// one account. Other rows unmoved. Returns the assigned account,
     /// or `None` on an empty pool (mirroring `assign_adhoc_worker`),
     /// leaving every row and slot untouched.
-    pub(crate) fn retier_assignment(
+    pub fn retier_assignment(
         &mut self,
         project: &ProjectKey,
         label: &str,
@@ -267,7 +267,7 @@ impl AssignmentPlan {
 /// whether a fallback tier (2 or 4) won. Consumed by `compute_plan`
 /// (all projects at once) and by the resume path's single-project
 /// re-tier.
-pub(crate) fn tier_pool(
+pub fn tier_pool(
     accounts: &[String],
     fallback_accounts: &[String],
     ready: &[AccountKey],

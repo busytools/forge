@@ -10,6 +10,7 @@
 
 pub mod account;
 mod anthropic;
+pub mod assignment_plan;
 mod codex;
 pub mod helpers;
 pub mod model_catalog;

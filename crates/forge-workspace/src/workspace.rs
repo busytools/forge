@@ -212,7 +212,7 @@ pub struct Workspace {
     /// CLAUDE_CONFIG_DIR selection; the launchpad gates clickable
     /// project rows on it being `Some` AND the project having a
     /// non-empty pool. See `crate::assignment_plan`.
-    assignment_plan: Mutex<Option<crate::assignment_plan::AssignmentPlan>>,
+    assignment_plan: Mutex<Option<forge_gateway::assignment_plan::AssignmentPlan>>,
     /// Dictation preflight: the per-model progress the launchpad
     /// renders, the flag Escape sets, and the loaded engine held for
     /// the run. Populated by `start_dictate_preflight`; inert when
@@ -2128,7 +2128,7 @@ impl Workspace {
             ))) == *project_key
         })?;
         let project = &self.config.projects[idx];
-        let (pool, degraded, fallback) = crate::assignment_plan::tier_pool(
+        let (pool, degraded, fallback) = forge_gateway::assignment_plan::tier_pool(
             &project.accounts,
             &project.fallback_accounts,
             &ready,
@@ -2338,7 +2338,7 @@ impl Workspace {
     }
 
     pub(crate) fn recompute_plan_if_ready(&self) {
-        use crate::assignment_plan::{ProjectInput, compute_plan};
+        use forge_gateway::assignment_plan::{ProjectInput, compute_plan};
 
         let Some((ready_accounts, degraded_accounts, saturated)) = self.account_health_sets()
         else {
