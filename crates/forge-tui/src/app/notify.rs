@@ -37,21 +37,23 @@ pub(crate) struct NotificationText {
 }
 
 impl NotificationText {
-    /// The single-line form the OSC 9 escape carries.
-    fn osc9_line(&self) -> String {
-        format!("{} - {}", self.title, self.detail)
+    /// The two fields the escape carries: the project, and the session
+    /// kind with the event.
+    fn fields(&self) -> (&str, &str) {
+        (&self.title, &self.detail)
     }
 }
 
 /// What one unfocused notify() delivered, recorded instead of sent
-/// when the `testing` feature is on: the OSC 9 line and whether the
-/// bytes reached stdout, in delivery order. `written` is what makes the
-/// emission observable; without it a guard around the write is
+/// when the `testing` feature is on: the two escape fields and whether
+/// the bytes reached stdout, in delivery order. `written` is what makes
+/// the emission observable; without it a guard around the write is
 /// invisible to every assertion here.
 #[cfg(feature = "testing")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveredNotification {
-    pub osc9_line: String,
+    pub title: String,
+    pub body: String,
     pub written: bool,
 }
 
@@ -61,7 +63,7 @@ pub struct DeliveredNotification {
 /// `FocusGained`/`FocusLost` events backed by DECSET 1004) and dispatches
 /// notifications only when the window is **not** focused.
 ///
-/// One delivery: the OSC 9 escape, always written, whether or not the
+/// One delivery: the OSC 777 escape, always written, whether or not the
 /// host terminal renders it. A terminal that ignores the sequence is
 /// harmless, so nothing is planned around the answer.
 #[derive(Debug)]
@@ -114,8 +116,8 @@ impl NotificationManager {
             return;
         }
         let text = notification_text(event, &context.project, context.worker_label.as_deref());
-        let line = text.osc9_line();
-        let written = send_osc9_notification(&line).is_ok();
+        let (title, body) = text.fields();
+        let written = send_notification_escape(title, body).is_ok();
         tracing::info!(
             target: crate::logging::targets::APP_NOTIFY,
             event_name = "notification_fired",
@@ -132,7 +134,11 @@ impl NotificationManager {
         // The `testing` feature records what was delivered so tests
         // can assert it; the write above still runs.
         #[cfg(feature = "testing")]
-        self.delivered.borrow_mut().push(DeliveredNotification { osc9_line: line, written });
+        self.delivered.borrow_mut().push(DeliveredNotification {
+            title: title.to_owned(),
+            body: body.to_owned(),
+            written,
+        });
     }
 
     /// Test-only: drain what the unfocused notify()s delivered, in
@@ -219,20 +225,20 @@ pub(crate) mod test_capture {
 // Private helpers
 // ---------------------------------------------------------------------------
 
-/// Write the OSC 9 notification sequence to stdout. The outcome is
-/// returned as well as logged, and `io::Result` is `must_use`, so a
-/// caller cannot drop the write out of the delivery path unnoticed.
-fn send_osc9_notification(message: &str) -> std::io::Result<()> {
+/// Write the notification escape to stdout. The outcome is returned as
+/// well as logged, and `io::Result` is `must_use`, so a caller cannot
+/// drop the write out of the delivery path unnoticed.
+fn send_notification_escape(title: &str, body: &str) -> std::io::Result<()> {
     use std::io::Write;
 
-    let sequence = osc9_escape_sequence(message);
+    let sequence = notification_escape_sequence(title, body);
     let result =
         std::io::stdout().write_all(sequence.as_bytes()).and_then(|()| std::io::stdout().flush());
     if let Err(error) = &result {
         tracing::warn!(
             target: crate::logging::targets::APP_NOTIFY,
-            event_name = "osc9_send_failed",
-            message = "could not write the OSC 9 notification sequence",
+            event_name = "notification_send_failed",
+            message = "could not write the notification sequence",
             outcome = "failure",
             error_message = %error,
         );
@@ -263,22 +269,30 @@ fn notification_text(
     NotificationText { title, detail: format!("{kind} - {happened}") }
 }
 
-fn osc9_escape_sequence(message: &str) -> Cow<'_, str> {
-    let sanitized = sanitize_osc9_message(message);
-    let mut sequence = String::with_capacity(sanitized.len() + 8);
+/// The escape one notification delivers. OSC 777 carries the title as
+/// its own field, which is what puts the project on the banner's bold
+/// line - OSC 9's single field leaves that line to the app name.
+fn notification_escape_sequence<'a>(title: &'a str, body: &'a str) -> Cow<'a, str> {
+    let title = sanitize_notification_field(title);
+    let body = sanitize_notification_field(body);
+    let mut sequence = String::with_capacity(title.len() + body.len() + 20);
     sequence.push('\u{1b}');
-    sequence.push_str("]9;");
-    sequence.push_str(&sanitized);
+    sequence.push_str("]777;notify;");
+    sequence.push_str(&title);
+    sequence.push(';');
+    sequence.push_str(&body);
     sequence.push('\u{1b}');
     sequence.push('\\');
     Cow::Owned(sequence)
 }
 
-fn sanitize_osc9_message(message: &str) -> String {
-    let mut sanitized = String::with_capacity(message.len());
-    for ch in message.chars() {
+/// One OSC 777 field, made safe to embed. `;` is dropped rather than
+/// replaced: it is the protocol's delimiter, so it is not content.
+fn sanitize_notification_field(field: &str) -> String {
+    let mut sanitized = String::with_capacity(field.len());
+    for ch in field.chars() {
         match ch {
-            '\u{07}' | '\u{1b}' | '\u{9c}' => {}
+            '\u{07}' | '\u{1b}' | '\u{9c}' | ';' => {}
             '\r' | '\n' => sanitized.push(' '),
             _ => sanitized.push(ch),
         }
@@ -321,17 +335,17 @@ mod tests {
     fn turn_complete_text_names_the_project_and_the_session_kind() {
         let worker = notification_text(NotifyEvent::TurnComplete, "forge", Some("chat-stutter"));
         assert_eq!(
-            worker.osc9_line(),
-            "forge - worker chat-stutter - turn complete",
-            "the line carries project, kind, label and event on its own",
+            worker.fields(),
+            ("forge", "worker chat-stutter - turn complete"),
+            "the title carries the project and the detail the kind, label and event",
         );
 
         let lead = notification_text(NotifyEvent::TurnComplete, "forge", None);
-        assert_eq!(lead.osc9_line(), "forge - lead - turn complete");
+        assert_eq!(lead.fields(), ("forge", "lead - turn complete"));
 
         assert_ne!(
-            worker.osc9_line(),
-            lead.osc9_line(),
+            worker.fields(),
+            lead.fields(),
             "a worker's turn-complete must not read as a lead's",
         );
     }
@@ -340,20 +354,20 @@ mod tests {
     fn permission_text_names_the_project_and_the_session_kind() {
         let worker =
             notification_text(NotifyEvent::PermissionRequired, "busymail", Some("demo-route"));
-        assert_eq!(worker.osc9_line(), "busymail - worker demo-route - needs input");
+        assert_eq!(worker.fields(), ("busymail", "worker demo-route - needs input"));
 
         let lead = notification_text(NotifyEvent::PermissionRequired, "busymail", None);
-        assert_eq!(lead.osc9_line(), "busymail - lead - needs input");
+        assert_eq!(lead.fields(), ("busymail", "lead - needs input"));
     }
 
     #[test]
     fn question_text_names_the_project_and_the_session_kind() {
         let worker =
             notification_text(NotifyEvent::QuestionRequired, "busymail", Some("demo-route"));
-        assert_eq!(worker.osc9_line(), "busymail - worker demo-route - needs your answer");
+        assert_eq!(worker.fields(), ("busymail", "worker demo-route - needs your answer"));
 
         let lead = notification_text(NotifyEvent::QuestionRequired, "busymail", None);
-        assert_eq!(lead.osc9_line(), "busymail - lead - needs your answer");
+        assert_eq!(lead.fields(), ("busymail", "lead - needs your answer"));
     }
 
     /// A key with no bucket is where an "unresolved project" now lands:
@@ -474,16 +488,19 @@ mod tests {
         app.notify(NotifyEvent::TurnComplete, &lead_key);
         app.notify(NotifyEvent::TurnComplete, &worker_key);
 
-        let lines: Vec<_> = app
+        let fields: Vec<_> = app
             .notifications
             .take_delivered()
             .into_iter()
-            .map(|delivered| delivered.osc9_line)
+            .map(|delivered| (delivered.title, delivered.body))
             .collect();
         assert_eq!(
-            lines,
-            vec!["beta - lead - turn complete", "beta - worker chat-stutter - turn complete"],
-            "the two turn-completes are told apart on the line alone",
+            fields,
+            vec![
+                ("beta".to_owned(), "lead - turn complete".to_owned()),
+                ("beta".to_owned(), "worker chat-stutter - turn complete".to_owned()),
+            ],
+            "the two turn-completes are told apart on the fields alone",
         );
     }
 
@@ -505,17 +522,17 @@ mod tests {
         app.notify(NotifyEvent::PermissionRequired, &worker_key);
         app.notify(NotifyEvent::QuestionRequired, &worker_key);
 
-        let lines: Vec<_> = app
+        let fields: Vec<_> = app
             .notifications
             .take_delivered()
             .into_iter()
-            .map(|delivered| delivered.osc9_line)
+            .map(|delivered| (delivered.title, delivered.body))
             .collect();
         assert_eq!(
-            lines,
+            fields,
             vec![
-                "busymail - worker demo-route - needs input",
-                "busymail - worker demo-route - needs your answer",
+                ("busymail".to_owned(), "worker demo-route - needs input".to_owned()),
+                ("busymail".to_owned(), "worker demo-route - needs your answer".to_owned()),
             ],
         );
     }
@@ -533,15 +550,15 @@ mod tests {
 
         app.notify(NotifyEvent::TurnComplete, &key);
 
-        let lines: Vec<_> = app
+        let fields: Vec<_> = app
             .notifications
             .take_delivered()
             .into_iter()
-            .map(|delivered| delivered.osc9_line)
+            .map(|delivered| (delivered.title, delivered.body))
             .collect();
         assert_eq!(
-            lines,
-            vec!["companies - lead - turn complete"],
+            fields,
+            vec![("companies".to_owned(), "lead - turn complete".to_owned())],
             "a stored channel preference must not change what is delivered",
         );
     }
@@ -560,18 +577,48 @@ mod tests {
         assert_eq!(
             app.notifications.take_delivered(),
             vec![DeliveredNotification {
-                osc9_line: "companies - lead - turn complete".to_owned(),
+                title: "companies".to_owned(),
+                body: "lead - turn complete".to_owned(),
                 written: true,
             }],
             "the escape is written, not merely planned",
         );
     }
 
+    /// The escape is OSC 777 carrying `notify`, the title and the body as
+    /// separate fields. The title is what displaces the app name on the
+    /// banner's bold line.
     #[test]
-    fn osc9_sequence_uses_st_terminator_and_sanitizes_message() {
+    fn notification_sequence_carries_two_delimited_fields() {
         assert_eq!(
-            osc9_escape_sequence("hello\n\u{1b}world\u{07}").as_ref(),
-            "\u{1b}]9;hello world\u{1b}\\"
+            notification_escape_sequence("companies", "Turn complete").as_ref(),
+            "\u{1b}]777;notify;companies;Turn complete\u{1b}\\",
+            "the escape is OSC 777 with notify, the title and the body as separate fields",
+        );
+    }
+
+    /// forge.toml is hand-authored, so a project named with a delimiter is
+    /// reachable. A raw ';' would move the body into the title's slot.
+    #[test]
+    fn a_semicolon_in_a_field_cannot_shift_the_split() {
+        let sequence = notification_escape_sequence("a;b", "c;d");
+        let fields: Vec<&str> = sequence
+            .trim_start_matches("\u{1b}]777;")
+            .trim_end_matches("\u{1b}\\")
+            .split(';')
+            .collect();
+        assert_eq!(
+            fields,
+            vec!["notify", "ab", "cd"],
+            "a delimiter inside a field must not add a field",
+        );
+    }
+
+    #[test]
+    fn the_escape_sanitizes_control_characters_in_both_fields() {
+        assert_eq!(
+            notification_escape_sequence("hello\n\u{1b}world\u{07}", "a\u{9c}b").as_ref(),
+            "\u{1b}]777;notify;hello world;ab\u{1b}\\"
         );
     }
 }
