@@ -6,32 +6,11 @@
 // sites continue to import via `forge_workspace::SessionKey`.
 pub use forge_primitives::SessionKey;
 
-/// Project root path key - the canonicalised, sanitised string form
-/// produced by
-/// [`forge_agent::userdata::catalog::scan::project_key_for_directory`].
-/// Equivalent to the directory names you see under
-/// `<config_dir>/projects/`.
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct ProjectKey(pub(crate) String);
-
-impl ProjectKey {
-    pub(crate) fn new(key: impl Into<String>) -> Self {
-        Self(key.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Test-only constructor for cross-crate fixtures (forge-tui's
-    /// Projects pane snapshot tests). Behind the `test-helpers`
-    /// Cargo feature so the production constructor stays
-    /// crate-private.
-    #[cfg(feature = "test-helpers")]
-    pub fn new_for_test(key: impl Into<String>) -> Self {
-        Self(key.into())
-    }
-}
+// `ProjectKey` lives in forge-primitives for the same reason
+// `SessionKey` does: the gateway's account selection keys on it and the
+// workspace keys its own maps on it. Re-exported here so call sites
+// continue to import via `forge_workspace::ProjectKey`.
+pub use forge_primitives::ProjectKey;
 
 /// What [`crate::Workspace::get_agent_handle`] should hand back.
 #[derive(Clone, Debug)]
