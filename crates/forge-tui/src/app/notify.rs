@@ -44,11 +44,15 @@ impl NotificationText {
 }
 
 /// What one unfocused notify() delivered, recorded instead of sent
-/// when the `testing` feature is on: the OSC 9 line, in delivery order.
+/// when the `testing` feature is on: the OSC 9 line and whether the
+/// bytes reached stdout, in delivery order. `written` is what makes the
+/// emission observable; without it a guard around the write is
+/// invisible to every assertion here.
 #[cfg(feature = "testing")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveredNotification {
     pub osc9_line: String,
+    pub written: bool,
 }
 
 /// Central notification manager.
@@ -111,7 +115,7 @@ impl NotificationManager {
         }
         let text = notification_text(event, &context.project, context.worker_label.as_deref());
         let line = text.osc9_line();
-        send_osc9_notification(&line);
+        let written = send_osc9_notification(&line).is_ok();
         tracing::info!(
             target: crate::logging::targets::APP_NOTIFY,
             event_name = "notification_fired",
@@ -123,11 +127,12 @@ impl NotificationManager {
             event = ?event,
             title = %text.title,
             detail = %text.detail,
+            osc9_written = written,
         );
         // The `testing` feature records what was delivered so tests
-        // can assert it; the send above still runs.
+        // can assert it; the write above still runs.
         #[cfg(feature = "testing")]
-        self.delivered.borrow_mut().push(DeliveredNotification { osc9_line: line });
+        self.delivered.borrow_mut().push(DeliveredNotification { osc9_line: line, written });
     }
 
     /// Test-only: drain what the unfocused notify()s delivered, in
@@ -214,13 +219,16 @@ pub(crate) mod test_capture {
 // Private helpers
 // ---------------------------------------------------------------------------
 
-fn send_osc9_notification(message: &str) {
+/// Write the OSC 9 notification sequence to stdout. The outcome is
+/// returned as well as logged, and `io::Result` is `must_use`, so a
+/// caller cannot drop the write out of the delivery path unnoticed.
+fn send_osc9_notification(message: &str) -> std::io::Result<()> {
     use std::io::Write;
 
     let sequence = osc9_escape_sequence(message);
     let result =
         std::io::stdout().write_all(sequence.as_bytes()).and_then(|()| std::io::stdout().flush());
-    if let Err(error) = result {
+    if let Err(error) = &result {
         tracing::warn!(
             target: crate::logging::targets::APP_NOTIFY,
             event_name = "osc9_send_failed",
@@ -229,6 +237,7 @@ fn send_osc9_notification(message: &str) {
             error_message = %error,
         );
     }
+    result
 }
 
 /// Build the delivered strings for one event from the session's
@@ -537,10 +546,11 @@ mod tests {
         );
     }
 
-    /// An unfocused notification is the escape and nothing else: no
-    /// capability decides it and no channel plans around it.
+    /// The escape reaches stdout. `written` comes back from the write
+    /// itself, so a guard put around the send fails here rather than
+    /// passing on the recorded line alone.
     #[test]
-    fn an_unfocused_notification_carries_the_escape_and_nothing_else() {
+    fn an_unfocused_notification_writes_the_escape() {
         let mut app = App::test_default();
         let key = seed_bucket(&mut app, "session-a", "companies");
         app.notifications.on_focus_lost();
@@ -550,9 +560,10 @@ mod tests {
         assert_eq!(
             app.notifications.take_delivered(),
             vec![DeliveredNotification {
-                osc9_line: "companies - lead - turn complete".to_owned()
+                osc9_line: "companies - lead - turn complete".to_owned(),
+                written: true,
             }],
-            "the escape is the whole delivery",
+            "the escape is written, not merely planned",
         );
     }
 
