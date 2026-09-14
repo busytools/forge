@@ -42,6 +42,17 @@ mod testing;
 /// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// The CLI's model-slot variables: the project's `model` key is
+/// stamped into all of them at spawn, so one model serves the main
+/// loop, subagents and background slots alike.
+const MODEL_SLOT_VARIABLES: [&str; 5] = [
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+];
+
 /// Max attempts for `tag_session_with_retry` to find the worker's
 /// `<session_id>.jsonl` and append the tag row. claude CLI writes the
 /// file lazily on the first user turn - workers with an `initial_prompt`
@@ -1578,7 +1589,7 @@ impl Workspace {
                 provider,
             })
         });
-        let session_env = match &registration {
+        let mut session_env = match &registration {
             Some(registration) => self
                 .gateway
                 .bindings
@@ -1586,6 +1597,15 @@ impl Workspace {
                 .into_map(),
             None => merged_env,
         };
+        // The project's model fills the CLI's model slots: one model
+        // for everything the CLI does - main, subagents, background
+        // slots. A /model change re-seats the primary immediately; the
+        // slots follow on the next respawn.
+        if let Some(model) = project.as_ref().and_then(|project| project.model.as_ref()) {
+            for var in MODEL_SLOT_VARIABLES {
+                session_env.insert((*var).to_owned(), model.clone());
+            }
+        }
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
         // per-session peer-MCP server's CallerKeyResolver can read
@@ -6504,6 +6524,7 @@ mod account_stamp_tests {
             accounts: vec!["Stargate".to_owned()],
             fallback_accounts: Vec::new(),
             auto_start: false,
+            model: None,
             env: HashMap::new(),
             max_workers: None,
             permission_mode,
@@ -13548,6 +13569,50 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
         dir
+    }
+
+    /// A project `model` fills the CLI's model slots: all five slot
+    /// variables carry that one model on the spawned child.
+    #[tokio::test]
+    async fn a_project_model_fills_the_cli_model_slots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[projects.forge]
+model = "claude-sonnet-5"
+"#,
+        )
+        .expect("write forge.toml");
+        let workspace =
+            std::sync::Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_gateway_ready(true);
+        let handle = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .expect("spawn");
+        let env = handle.env();
+        for var in MODEL_SLOT_VARIABLES {
+            assert_eq!(
+                env.get(var).map(String::as_str),
+                Some("claude-sonnet-5"),
+                "{var} carries the project model",
+            );
+        }
     }
 
     /// A spawn resolving to no project keeps the direct account env:

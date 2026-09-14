@@ -107,6 +107,11 @@ struct ProjectSettings {
     /// spawns. Absent resolves to `auto`.
     #[serde(default)]
     permission_mode: Option<String>,
+    /// The project's model: the session default AND the value stamped
+    /// into every CLI model slot at spawn. Required to be declared by
+    /// at least one account in the org.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 /// One `[gateway]` table. Unknown fields are rejected so a mistyped
@@ -372,6 +377,10 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
+    /// The project's model: fills the CLI's model slots at spawn and
+    /// seeds the gateway's routing. Absent means the account's own
+    /// default applies.
+    pub model: Option<String>,
     /// Per-project environment from `[projects.<name>.env]`, layered
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
     /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
@@ -665,16 +674,21 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
-            let (env, max_workers, permission_mode) = match project_env_tables
-                .remove(&project_entry.name)
-            {
-                Some(table) => {
-                    let permission_mode = table.permission_mode(&path, &project_entry.name)?;
-                    let max_workers = table.max_workers;
-                    (resolve_project_env(&project_entry.name, table), max_workers, permission_mode)
-                }
-                None => (HashMap::new(), None, PermissionMode::Auto),
-            };
+            let (env, max_workers, permission_mode, model) =
+                match project_env_tables.remove(&project_entry.name) {
+                    Some(table) => {
+                        let permission_mode = table.permission_mode(&path, &project_entry.name)?;
+                        let max_workers = table.max_workers;
+                        let ProjectSettings { env, env_file, model, .. } = table;
+                        (
+                            resolve_project_env(&project_entry.name, env, env_file),
+                            max_workers,
+                            permission_mode,
+                            model,
+                        )
+                    }
+                    None => (HashMap::new(), None, PermissionMode::Auto, None),
+                };
             projects.push(LoadedProject {
                 name: project_entry.name,
                 path: expand_home(&project_entry.path),
@@ -683,6 +697,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 accounts: org_entry.accounts.clone(),
                 fallback_accounts: org_entry.fallback_accounts.clone(),
                 auto_start: project_entry.auto_start,
+                model,
                 env,
                 max_workers,
                 permission_mode,
@@ -757,11 +772,15 @@ fn trim_setup_token<S: std::hash::BuildHasher>(env: &mut HashMap<String, String,
     }
 }
 
-fn resolve_project_env(project: &str, entry: ProjectSettings) -> HashMap<String, String> {
-    let mut env = entry.env_file.map(|path| read_env_file(project, &path)).unwrap_or_default();
-    env.extend(entry.env);
-    trim_setup_token(&mut env);
-    env
+fn resolve_project_env(
+    project: &str,
+    env: HashMap<String, String>,
+    env_file: Option<String>,
+) -> HashMap<String, String> {
+    let mut merged = env_file.map(|path| read_env_file(project, &path)).unwrap_or_default();
+    merged.extend(env);
+    trim_setup_token(&mut merged);
+    merged
 }
 
 /// Parse `KEY=value` lines, skipping blanks and `#` comments. Every way

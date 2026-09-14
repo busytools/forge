@@ -393,6 +393,16 @@ impl RouteHandler for Gateway {
 
         let url = format!("{upstream}/v1/messages{query}");
 
+        // The body carries the canonical model name; the upstream may
+        // spell it differently. When the account declares a slug for
+        // the model, splice the slug in - never deserializing.
+        let spliced = match self.pool.model_slug_for(&account, &model) {
+            Some(slug) => {
+                splice_model(&spliced, Some(&slug)).map(|(body, _)| body).unwrap_or(spliced)
+            }
+            None => spliced,
+        };
+
         // The CLI's headers forward verbatim - anthropic-beta,
         // anthropic-version, user-agent, x-app: the betas and the API
         // version are entitlements the upstream validates, and dropping
@@ -625,7 +635,10 @@ mod tests {
                 provider: forge_primitives::account::Provider::Openrouter,
                 base_url: None,
                 models: vec!["glm-5.3-flash".to_owned()],
-                model_slugs: std::collections::HashMap::new(),
+                model_slugs: std::collections::HashMap::from([(
+                    "glm-5.3-flash".to_owned(),
+                    "zai-org/glm-5.3-flash".to_owned(),
+                )]),
                 env: account_env.clone(),
             },
             forge_primitives::account::LoadedAccount {
@@ -1127,6 +1140,35 @@ mod tests {
                 fallback_accounts: Vec::new(),
             },
         )]);
+    }
+
+    /// The account's declared slug replaces the canonical model name
+    /// on the forwarded body - the upstream spelling is the account's
+    /// business, invisible to the CLI.
+    #[tokio::test]
+    async fn a_declared_slug_replaces_the_canonical_model_upstream() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "OpenRouter");
+        harness
+            .gateway
+            .pool
+            .set_loading(&AccountKey("OpenRouter".to_owned()), crate::LoadingState::Ready);
+        // Give the account a slug for the canonical model: the forward
+        // must splice the slug in, not the name the CLI sent.
+        harness.gateway.pool.set_model_slug(
+            &AccountKey("OpenRouter".to_owned()),
+            "glm-5.3-flash",
+            "zai-org/glm-5.3-flash",
+        );
+        let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
+        let response = post_model(&ghost_url, "glm-5.3-flash").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let recorded = harness.requests.lock().first().expect("the upstream saw a request").clone();
+        assert!(
+            recorded.body.contains("zai-org/glm-5.3-flash"),
+            "the forwarded body carries the upstream slug: {}",
+            recorded.body,
+        );
     }
 
     #[tokio::test]

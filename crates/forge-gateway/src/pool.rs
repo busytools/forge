@@ -226,6 +226,22 @@ impl AccountPool {
             .is_some_and(|account| account.models.iter().any(|m| m == model))
     }
 
+    /// The upstream slug the account maps `canonical` to, when the
+    /// account declares a different upstream spelling. `None` forwards
+    /// the canonical name unchanged.
+    pub fn model_slug_for(&self, key: &AccountKey, canonical: &str) -> Option<String> {
+        self.accounts.lock().by_key.get(key)?.model_slugs.get(canonical).cloned()
+    }
+
+    /// Set a slug mapping on one account. Test setup only - production
+    /// slugs arrive through the config-loaded state map.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_model_slug(&self, key: &AccountKey, canonical: &str, slug: &str) {
+        if let Some(account) = self.accounts.lock().by_key.get_mut(key) {
+            account.model_slugs.insert(canonical.to_owned(), slug.to_owned());
+        }
+    }
+
     /// The provider and env of one account, for credential resolution.
     pub fn provider_and_env(
         &self,
