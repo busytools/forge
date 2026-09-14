@@ -58,9 +58,6 @@ pub struct LoadedAccount {
     pub env: std::collections::HashMap<String, String>,
     /// Excluded from auto-assignment, picker-only.
     pub experimental: bool,
-    /// Optional CLI permission mode stamped into launch settings at
-    /// spawn.
-    pub permission_mode: Option<crate::permission::PermissionMode>,
 }
 
 /// How an account proves who it is, which is the only thing that

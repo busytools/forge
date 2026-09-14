@@ -99,6 +99,33 @@ struct ProjectSettings {
     /// workers. Absent keeps the default.
     #[serde(default)]
     max_workers: Option<usize>,
+    /// CLI permission mode stamped onto every session this project
+    /// spawns. Absent resolves to `auto`.
+    #[serde(default)]
+    permission_mode: Option<String>,
+}
+
+impl ProjectSettings {
+    /// The resolved mode for the project. Absent is `auto`, not "no
+    /// override": under account rotation a session can start on any
+    /// account in its org's pool, so the project is the stable scope
+    /// and a forge default is what keeps its sessions consistent.
+    fn permission_mode(
+        &self,
+        path: &std::path::Path,
+        name: &str,
+    ) -> Result<PermissionMode, WorkspaceError> {
+        match self.permission_mode.as_deref() {
+            None => Ok(PermissionMode::Auto),
+            Some(raw) => PermissionMode::from_wire(raw).ok_or_else(|| {
+                WorkspaceError::ProjectInvalidPermissionMode {
+                    path: path.to_path_buf(),
+                    name: name.to_owned(),
+                    value: raw.to_owned(),
+                }
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,12 +180,6 @@ struct AccountEntry {
     /// false so existing accounts keep rotating normally.
     #[serde(default)]
     experimental: bool,
-    /// Optional CLI permission mode stamped onto every session this
-    /// account spawns, overriding the launcher's session default;
-    /// validated against `PermissionMode::from_wire` at load. The
-    /// account owns the credential and endpoint, so it owns the mode.
-    #[serde(default)]
-    permission_mode: Option<String>,
 }
 
 // The loaded account shape lives in forge-primitives: the gateway
@@ -242,6 +263,9 @@ pub(crate) struct LoadedProject {
     /// Cap on this project's live dynamic workers; `None` keeps the
     /// default. See `ProjectSettings::max_workers`.
     pub max_workers: Option<usize>,
+    /// CLI permission mode stamped onto every session this project
+    /// spawns. Resolved once at load; absent key resolves to `auto`.
+    pub permission_mode: PermissionMode,
 }
 
 /// Complete `[env]` < `[accounts.env]` < `[projects.<name>.env]`,
@@ -384,19 +408,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 names: vec![entry.display_name],
             });
         };
-        let permission_mode = match entry.permission_mode.as_deref() {
-            None => None,
-            Some(raw) => match PermissionMode::from_wire(raw) {
-                Some(mode) => Some(mode),
-                None => {
-                    return Err(WorkspaceError::AccountInvalidPermissionMode {
-                        path,
-                        name: entry.display_name.clone(),
-                        value: raw.to_owned(),
-                    });
-                }
-            },
-        };
         let mut env = global_env.clone();
         env.extend(entry.env);
         trim_setup_token(&mut env);
@@ -443,7 +454,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             provider,
             env,
             experimental: entry.experimental,
-            permission_mode,
         });
     }
 
@@ -489,13 +499,16 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
-            let (env, max_workers) = project_env_tables
+            let (env, max_workers, permission_mode) = match project_env_tables
                 .remove(&project_entry.name)
-                .map(|table| {
+            {
+                Some(table) => {
+                    let permission_mode = table.permission_mode(&path, &project_entry.name)?;
                     let max_workers = table.max_workers;
-                    (resolve_project_env(&project_entry.name, table), max_workers)
-                })
-                .unwrap_or_default();
+                    (resolve_project_env(&project_entry.name, table), max_workers, permission_mode)
+                }
+                None => (HashMap::new(), None, PermissionMode::Auto),
+            };
             projects.push(LoadedProject {
                 name: project_entry.name,
                 path: expand_home(&project_entry.path),
@@ -506,6 +519,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 auto_start: project_entry.auto_start,
                 env,
                 max_workers,
+                permission_mode,
             });
         }
     }
@@ -921,73 +935,126 @@ ANTHROPIC_BASE_URL = "   "
     }
 
     #[test]
-    fn account_permission_mode_parses_into_the_loaded_account() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Openrouter"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Openrouter"
-config_dir = "/tmp/forge-test/claude-openrouter"
-provider = "openrouter"
-permission_mode = "bypassPermissions"
-[accounts.env]
-ANTHROPIC_BASE_URL = "https://openrouter.ai/api"
-ANTHROPIC_AUTH_TOKEN = "unused"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(
-            config.accounts[0].permission_mode,
-            Some(PermissionMode::BypassPermissions),
-            "a valid mode lands on the LoadedAccount verbatim",
-        );
-    }
-
-    #[test]
-    fn account_without_permission_mode_loads_with_none() {
+    fn project_permission_mode_defaults_to_auto_when_absent() {
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("absent key must not block the load");
         assert_eq!(
-            config.accounts[0].permission_mode, None,
-            "accounts without the key keep every spawn unchanged",
+            config.projects[0].permission_mode,
+            PermissionMode::Auto,
+            "a project with no [projects.<name>] table at all still lands on auto",
         );
     }
 
     #[test]
-    fn account_with_invalid_permission_mode_fails_naming_the_accepted_set() {
+    fn project_permission_mode_defaults_to_auto_when_the_table_omits_it() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
             r#"
 [[orgs]]
 name = "Personal"
-accounts = ["Openrouter"]
+accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
-display_name = "Openrouter"
-config_dir = "/tmp/forge-test/claude-openrouter-bad"
-provider = "openrouter"
+display_name = "Stargate"
+config_dir = "/tmp/forge-test/claude-mode-omitted"
+provider = "anthropic"
+[projects.forge]
+max_workers = 2
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("a table without the key loads");
+        assert_eq!(
+            config.projects[0].permission_mode,
+            PermissionMode::Auto,
+            "a project whose table omits the key gets auto, not the launcher default",
+        );
+    }
+
+    #[test]
+    fn project_permission_mode_parses_an_explicit_value() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test/claude-mode-explicit"
+provider = "anthropic"
+[projects.forge]
+permission_mode = "bypassPermissions"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(
+            config.projects[0].permission_mode,
+            PermissionMode::BypassPermissions,
+            "a valid mode lands on the LoadedProject verbatim",
+        );
+    }
+
+    #[test]
+    fn project_permission_mode_accepts_the_snake_case_alias() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test/claude-mode-alias"
+provider = "anthropic"
+[projects.forge]
+permission_mode = "bypass_permissions"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("the from_wire aliases still work");
+        assert_eq!(
+            config.projects[0].permission_mode,
+            PermissionMode::BypassPermissions,
+            "the alias set must not shrink now the key moved tables",
+        );
+    }
+
+    #[test]
+    fn project_with_invalid_permission_mode_fails_naming_the_accepted_set() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test/claude-mode-bad"
+provider = "anthropic"
+[projects.forge]
 permission_mode = "yolo"
-[accounts.env]
-ANTHROPIC_BASE_URL = "https://openrouter.ai/api"
-ANTHROPIC_AUTH_TOKEN = "unused"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("an invalid mode must not load");
         let message = err.to_string();
         assert!(
-            message.contains("yolo") && message.contains("Openrouter"),
-            "the error has to name the offending value and account, got: {message}",
+            message.contains("yolo") && message.contains("forge"),
+            "the error has to name the offending value and project, got: {message}",
         );
         assert!(
             message.contains("bypassPermissions") && message.contains("acceptEdits"),
@@ -1011,10 +1078,11 @@ path = "~/Projects/forge"
 display_name = "Stargate"
 config_dir = "/tmp/forge-test/claude-mistyped-mode"
 provider = "anthropic"
+[projects.forge]
 permissionmode = "bypassPermissions"
 "#,
         );
-        let err = load_from_dir(dir.path()).expect_err("a mistyped account key must not load");
+        let err = load_from_dir(dir.path()).expect_err("a mistyped project key must not load");
         assert!(
             err.to_string().contains("permissionmode"),
             "deny_unknown_fields has to catch the near-miss, got: {err}",

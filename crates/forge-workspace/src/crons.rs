@@ -641,7 +641,11 @@ mod tests {
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
 
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -885,7 +889,11 @@ mod tests {
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
 
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -919,7 +927,11 @@ mod tests {
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
 
