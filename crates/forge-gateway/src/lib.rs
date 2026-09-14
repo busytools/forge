@@ -23,6 +23,7 @@ pub mod listener;
 pub mod model_catalog;
 mod openrouter;
 pub mod pool;
+pub mod splice;
 mod zai;
 
 use std::collections::HashMap;
