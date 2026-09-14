@@ -3908,21 +3908,24 @@ mod tests {
     /// Re-measure harness for #1080. The perf log only records frames at or
     /// above SLOW_FRAME_THRESHOLD_MS (50ms), so a cold open of a large
     /// session that stays under budget yields zero chat::update_heights
-    /// samples at all. Ignored by default: wall-clock based; run in release
-    /// with the perf feature via
-    /// `cargo nextest run -p forge-tui --features perf --release --run-ignored only`.
+    /// samples at all. The logger rides on `app.perf`, the same path the
+    /// render spans read, so an unwired logger cannot fake a clean run.
+    /// Ignored by default: wall-clock based; run in release with the perf
+    /// feature via
+    /// `cargo nextest run -p forge-tui --features perf --release --run-ignored ignored-only`.
     #[test]
     #[ignore = "wall-clock re-measure; run in release with --features perf"]
     fn cold_open_of_a_large_session_records_no_slow_frames() {
         let dir = tempfile::tempdir().expect("tempdir");
         let log_path = dir.path().join("perf.jsonl");
         {
-            let _logger = crate::perf::PerfLogger::open(&log_path).expect("perf log opens");
             let mut app = realistic_session_app(2000);
+            let logger = crate::perf::PerfLogger::open(&log_path).expect("perf log opens");
+            app.perf = Some(logger);
             let spinner = idle_spinner();
             let area = Rect::new(0, 0, 80, 30);
             for _ in 0..120 {
-                let _frame = crate::perf::start("frame_total");
+                let _frame = app.perf.as_ref().map(|p| p.start("frame_total"));
                 let _ = sync_chat_layout(&mut app, area, &spinner);
             }
         }
@@ -3936,18 +3939,20 @@ mod tests {
     }
 
     /// Proves the harness above can record a slow frame: a deliberately
-    /// over-budget frame_total must land in the log. Without this the
-    /// zero-sample assertion cannot distinguish a clean run from a logger
-    /// that captured nothing.
+    /// over-budget frame_total must land in the log through the same
+    /// `app.perf` route the render spans read. Without this the zero-sample
+    /// assertion cannot distinguish a clean run from an unwired logger.
     #[test]
     #[ignore = "wall-clock re-measure; run in release with --features perf"]
     fn perf_log_captures_a_deliberately_slow_frame() {
         let dir = tempfile::tempdir().expect("tempdir");
         let log_path = dir.path().join("perf.jsonl");
         {
-            let _logger = crate::perf::PerfLogger::open(&log_path).expect("perf log opens");
+            let mut app = App::test_default();
+            let logger = crate::perf::PerfLogger::open(&log_path).expect("perf log opens");
+            app.perf = Some(logger);
             {
-                let _frame = crate::perf::start("frame_total");
+                let _frame = app.perf.as_ref().map(|p| p.start("frame_total"));
                 std::thread::sleep(std::time::Duration::from_millis(60));
             }
         }
