@@ -100,6 +100,12 @@ struct DirComponents {
 /// The component-path fields of `.claude-plugin/plugin.json`. The
 /// `claude` CLI resolves each as a string path or an array of paths,
 /// hooks and MCP servers additionally as inline objects.
+///
+/// Declared paths join the plugin dir unvalidated: an absolute path
+/// replaces it, `..` walks out, symlinks are followed. Accepted under
+/// the trust model (one trusted user driving their own machine); the
+/// cost is that a bogus declaration counts a foreign directory's
+/// entries as the plugin's own.
 #[derive(Deserialize, Default)]
 struct PluginManifest {
     #[serde(default)]
