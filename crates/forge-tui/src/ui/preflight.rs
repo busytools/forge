@@ -2,10 +2,9 @@
 //!
 //! Three sibling sections, `Accounts`, `Dictation` and `Gateway`, each
 //! row carrying its own state. Shown once per forge run, on every
-//! route; nothing
-//! proceeds until every account has settled and every configured model
-//! is loaded, so neither the project picker nor a chat session can be
-//! reached mid-load.
+//! route; nothing proceeds until every account has settled and every
+//! configured model is loaded, so neither the project picker nor a
+//! chat session can be reached mid-load.
 //!
 //! **Preflight completes when every account settles, not only when
 //! every account is `Ready`.** A bailed account rides along as
@@ -271,13 +270,15 @@ fn gateway_rows(app: &App, width: u16) -> Vec<Line<'static>> {
             return vec![
                 Line::default(),
                 heading_row("Gateway", width),
+                // A failure reads as an account bail reads: the name
+                // bolds, the state carries the red.
                 status_row(
                     "\u{26a0}",
                     Color::Red,
                     "inference listener",
-                    Style::default(),
+                    Style::default().add_modifier(Modifier::BOLD),
                     &format!("failed :{port}"),
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::Red),
                     width,
                 ),
                 file_row(&error, width),

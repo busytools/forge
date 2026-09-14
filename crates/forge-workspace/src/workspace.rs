@@ -2587,9 +2587,9 @@ impl Workspace {
     /// Bind the gateway's inference listener and open the boot gate
     /// once the port is ours. Called once at boot, from the TUI's
     /// connect path. On success the launchpad's gate opens; on failure
-    /// the gate STAYS SHUT and every spawn attempt is refused at the
-    /// spawn entries with the reason attached - the refusal is the
-    /// protection, not the log line.
+    /// the gate STAYS SHUT and an opted-in project's spawn attempts
+    /// are refused at the spawn entries with the reason attached - the
+    /// refusal is the protection, not the log line.
     pub fn start_gateway_listener(self: &Arc<Self>) {
         let port = self.gateway_port;
         let weak = Arc::downgrade(self);
@@ -2614,7 +2614,7 @@ impl Workspace {
                         target: "forge_workspace::workspace",
                         error = %error,
                         "the gateway listener could not start; the boot gate stays shut and \
-                         spawn attempts are refused until forge restarts",
+                         opted-in projects' spawn attempts are refused until forge restarts",
                     );
                 }
             }
@@ -13762,12 +13762,35 @@ provider = "anthropic"
             Some(AccountKey("Stargate".to_owned())),
             "the respawn re-registered the binding for this generation",
         );
+    }
 
-        // The direct arm: no registration was recorded at spawn, so
-        // the respawn site's `if let Some(registration)` never fires
-        // and no gateway key reaches the child.
-        let direct: Option<forge_gateway::binding::Registration> = None;
-        assert!(direct.is_none(), "a direct spawn's respawn applies no overrides");
+    /// The direct arm of the respawn contract, asserted through a real
+    /// spawn: nothing registered the session, so the respawn site's
+    /// `if let Some(registration)` never fires and no gateway key
+    /// reaches the respawned child.
+    #[tokio::test]
+    async fn a_direct_spawn_records_no_registration_for_its_respawn() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.gateway_ready.store(false, std::sync::atomic::Ordering::Release);
+
+        let handle = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .expect("a non-opted project spawns direct with the listener down");
+        assert!(
+            !handle.env().contains_key("ANTHROPIC_BASE_URL"),
+            "the direct child carries no listener base URL",
+        );
+
+        let session_key = workspace.resolve_target(&SessionTarget::Default).expect("resolves");
+        assert!(
+            workspace
+                .gateway
+                .bindings
+                .binding_for("Default", "forge", session_key.as_str())
+                .is_none(),
+            "no binding was recorded, so the respawn applies no gateway overrides",
+        );
     }
 
     /// Like `make_workspace_dir_246` without `auto_start`, so a test can
