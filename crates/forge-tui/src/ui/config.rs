@@ -590,8 +590,8 @@ mod tests {
         app.plugins.search_focused = false;
         assert_eq!(
             super::extensions_help_text(&app),
-            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | u update all | c check updates | Esc close",
-            "the list hint names the update and check keys"
+            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close",
+            "the list hint names the toggle, update and check keys: Installed takes the toggle too"
         );
     }
 

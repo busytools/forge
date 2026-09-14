@@ -96,9 +96,9 @@ impl ExtensionsTab {
 
 /// The kind-filtered rows of ONE stream: plugin rows only on the
 /// Installed tab, each component tab by its kind. The pane state holds
-/// two streams - installed and available - and a tab draws its rows
-/// from the installed one, joining the available one only behind the
-/// Available toggle.
+/// two streams - installed and available - and a tab draws the
+/// installed one with the available one appended, unless the Available
+/// toggle has hidden the latter.
 pub fn rows_for_tab(rows: &[ExtensionRow], tab: ExtensionsTab) -> Vec<&ExtensionRow> {
     use forge_primitives::plugins::ExtensionKind;
     match tab {
@@ -121,9 +121,10 @@ pub fn rows_for_tab(rows: &[ExtensionRow], tab: ExtensionsTab) -> Vec<&Extension
 }
 
 /// Whether the Available toggle can change what this tab renders:
-/// only the component tabs can reveal the available stream.
+/// every row-backed tab except MCPs and Marketplaces, which carry no
+/// available stream at all.
 pub const fn tab_takes_available(tab: ExtensionsTab) -> bool {
-    !matches!(tab, ExtensionsTab::Installed | ExtensionsTab::Mcps | ExtensionsTab::Marketplaces)
+    !matches!(tab, ExtensionsTab::Mcps | ExtensionsTab::Marketplaces)
 }
 
 /// A row matches the filter when its name or source carries the query
@@ -255,7 +256,7 @@ mod tests {
         assert_eq!(
             available_count_for_tab(&available, ExtensionsTab::Installed),
             0,
-            "the Installed tab never reveals the available stream"
+            "skill rows in the available stream are not Installed-tab rows: each helper reads its own stream argument, what joins them per tab is tab_rows"
         );
     }
 

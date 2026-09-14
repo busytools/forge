@@ -897,13 +897,17 @@ fn open_marketplace_overlay(app: &mut App) -> bool {
 /// `visible_rows` positionally, matched back to its plugin by id - so
 /// the overlay can never open a different plugin than the one
 /// highlighted. A load-failed row states its reason instead of
-/// opening an overlay nothing can act on.
+/// opening an overlay nothing can act on; an available catalog row
+/// opens the install scope picker for its plugin.
 fn open_installed_actions_overlay(app: &mut App) -> bool {
     let tab = ExtensionsTab::Installed;
     let selected = app.plugins.selected_index_for(tab);
     let Some(row) = visible_rows(app, tab).into_iter().nth(selected).cloned() else {
         return false;
     };
+    if row.state == RowState::AvailableNotInstalled {
+        return open_plugin_install_overlay(app, &row.id);
+    }
     if let RowState::LoadFailed(reason) = &row.state {
         // No overlay can act on a broken install; say why instead of
         // silently swallowing the keypress.
@@ -2862,44 +2866,14 @@ mod tests {
         assert!(app.config.overlay.is_none());
     }
 
-    /// The streams stay separate: an available-not-installed plugin is
-    /// catalog, not install - it never renders on the Installed tab,
-    /// and Enter there can never open an install overlay for it. The
-    /// catalog's install seam is the component rows behind the
-    /// Available toggle.
+    /// The streams stay separate in the pane state, but the component
+    /// tabs draw both: the catalog row rides the Skills tab's default
+    /// view, and the Available toggle removes it.
     #[test]
-    fn the_installed_tab_never_renders_the_available_stream() {
+    fn the_component_tabs_render_the_available_stream_by_default() {
         let mut app = App::test_default();
-        app.plugins.installed.push(InstalledPluginEntry {
-            id: "superpowers@probe".to_owned(),
-            version: Some("6.3.0".to_owned()),
-            scope: "user".to_owned(),
-            enabled: true,
-            installed_at: None,
-            last_updated: None,
-            project_path: None,
-            capability: PluginCapability::Skill,
-        });
+        app.plugins.active_tab = ExtensionsTab::Skills;
         app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
-        app.plugins.available_rows =
-            vec![plugin_row("gone@claude-night-market", RowState::AvailableNotInstalled)];
-        app.plugins.set_selected_index_for(ExtensionsTab::Installed, 0);
-
-        assert_eq!(
-            visible_rows(&app, ExtensionsTab::Installed)
-                .iter()
-                .map(|row| row.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["superpowers@probe"],
-            "the catalog row stays off the Installed tab"
-        );
-        assert!(open_installed_actions_overlay(&mut app));
-        assert!(
-            app.config.installed_plugin_actions_overlay().is_some(),
-            "Enter opens the installed plugin's actions, not an install overlay"
-        );
-
-        // On the Skills tab the catalog row rides the default view.
         assert!(visible_rows(&app, ExtensionsTab::Skills).is_empty());
         app.plugins.available_rows.push(ExtensionRow {
             id: "skill:gone:ghost-skill".to_owned(),
@@ -2921,6 +2895,59 @@ mod tests {
         );
         app.plugins.hide_available = true;
         assert!(visible_rows(&app, ExtensionsTab::Skills).is_empty());
+    }
+
+    /// The Installed tab renders the available catalog after the
+    /// installed rows - a row that cannot be told apart from an
+    /// install is the complaint being fixed.
+    #[test]
+    fn the_installed_tab_renders_the_available_catalog_after_the_installed_rows() {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = ExtensionsTab::Installed;
+        app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+        app.plugins.available_rows = vec![
+            plugin_row("blabbermouth@claude-night-market", RowState::AvailableNotInstalled),
+            plugin_row("sec-audit@trailofbits", RowState::AvailableNotInstalled),
+        ];
+
+        let names: Vec<String> = visible_rows(&app, ExtensionsTab::Installed)
+            .into_iter()
+            .map(|row| row.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["superpowers".to_owned(), "blabbermouth".to_owned(), "sec-audit".to_owned()],
+            "installed rows first, then the catalog"
+        );
+
+        assert!(press(&mut app, KeyCode::Char('a')));
+        assert_eq!(
+            visible_rows(&app, ExtensionsTab::Installed)
+                .into_iter()
+                .map(|row| row.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["superpowers".to_owned()],
+            "a hides the catalog on the Installed tab too"
+        );
+    }
+
+    /// Enter on an available Installed row opens the install scope
+    /// picker for that plugin, not the installed-actions overlay.
+    #[test]
+    fn installed_tab_enter_on_an_available_row_opens_the_install_overlay() {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = ExtensionsTab::Installed;
+        app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+        app.plugins.available_rows =
+            vec![plugin_row("blabbermouth@claude-night-market", RowState::AvailableNotInstalled)];
+        app.plugins.set_selected_index_for(ExtensionsTab::Installed, 1);
+
+        assert!(open_installed_actions_overlay(&mut app));
+        let overlay = app.config.plugin_install_overlay().expect("the install scope picker opens");
+        assert_eq!(
+            overlay.plugin_id, "blabbermouth@claude-night-market",
+            "the picker targets the selected plugin"
+        );
     }
 
     /// The available stream renders by default on component tabs,
@@ -2963,11 +2990,11 @@ mod tests {
         );
     }
 
-    /// `a` flips the Available toggle on a component tab and resets the
-    /// selection; on the Installed tab it does nothing - the catalog
-    /// has no seam there.
+    /// `a` flips the Available toggle on a row-backed tab and resets
+    /// the selection; on MCPs and Marketplaces it does nothing - those
+    /// tabs carry no available stream at all.
     #[test]
-    fn the_available_toggle_key_flips_only_component_tabs() {
+    fn the_available_toggle_key_flips_only_row_backed_tabs() {
         let mut app = app_with_focused_search(ExtensionsTab::Skills);
         app.plugins.search_focused = false;
         app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
@@ -2977,10 +3004,12 @@ mod tests {
         assert!(app.plugins.hide_available, "a hides the available stream");
         assert_eq!(app.plugins.selected_index_for(ExtensionsTab::Skills), 0);
 
-        app.plugins.active_tab = ExtensionsTab::Installed;
-        app.plugins.hide_available = false;
-        assert!(press(&mut app, KeyCode::Char('a')));
-        assert!(!app.plugins.hide_available, "the Installed tab has no Available toggle");
+        for tab in [ExtensionsTab::Mcps, ExtensionsTab::Marketplaces] {
+            app.plugins.active_tab = tab;
+            app.plugins.hide_available = false;
+            assert!(press(&mut app, KeyCode::Char('a')));
+            assert!(!app.plugins.hide_available, "{tab:?} has no Available toggle");
+        }
     }
 
     /// The partition is `installed || load_error.is_some()`: a refresh
