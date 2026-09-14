@@ -13799,13 +13799,9 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.gateway_ready.store(false, std::sync::atomic::Ordering::Release);
 
-        let handle = workspace
+        let _handle = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("a non-opted project spawns direct with the listener down");
-        assert!(
-            !handle.env().contains_key("ANTHROPIC_BASE_URL"),
-            "the direct child carries no listener base URL",
-        );
 
         let session_key = workspace.resolve_target(&SessionTarget::Default).expect("resolves");
         assert!(

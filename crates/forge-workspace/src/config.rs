@@ -1168,6 +1168,36 @@ providers = "anthropic"
     }
 
     #[test]
+    fn project_entry_rejects_an_unknown_key() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+gatewy = true
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test/claude-unknown-key"
+provider = "anthropic"
+"#,
+        );
+        // The near-miss matters: a gateway typo that loaded as nothing
+        // would silently keep the project on the direct path.
+        let err = load_from_dir(dir.path()).expect_err("a mistyped project key must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("gatewy"),
+            "the error has to name the offending key, got: {message}",
+        );
+    }
+
+    #[test]
     fn slack_section_parses_and_rejects_an_unknown_key() {
         let toml = r#"
 [[slack]]
