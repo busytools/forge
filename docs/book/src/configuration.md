@@ -88,7 +88,6 @@ An array of tables. At least one is required, or the load fails with
 | `config_dir` | string | yes | | The `claude` config directory this account uses. `~/` is expanded. |
 | `provider` | string | yes | | One of `"anthropic"`, `"codex"`, `"openrouter"`, `"zai"`. Decides how the account is probed and how its usage reads. |
 | `experimental` | bool | no | `false` | Excludes the account from automatic assignment while leaving it selectable by hand. |
-| `permission_mode` | string | no | | Stamps the CLI's permission mode onto every session this account spawns, overriding the session default. |
 | `env` | table | no | `{}` | Written as `[accounts.env]`. See [Environment layering](#environment-layering). |
 
 `config_dir` is what forge exports as `CLAUDE_CONFIG_DIR` to the
@@ -137,19 +136,6 @@ denominator, and forge says so rather than showing an empty bar.
 Unknown keys in an `[[accounts]]` block are rejected, so a near-miss
 like `providers` fails the load instead of loading and doing nothing.
 
-`permission_mode` stamps a permission mode onto every session the
-account spawns, overriding the launcher's per-session default, so one
-account can run bypassed while the rest keep the session default. The
-key lives on the account rather than a project because the account owns
-the CLI's credential and endpoint, so it owns the mode. The accepted
-values are the CLI's mode names, `"default"`, `"acceptEdits"`, `"plan"`,
-`"dontAsk"`, `"auto"` and `"bypassPermissions"`, plus the legacy aliases
-`"ask"`, `"deny"`, `"accept_edits"`, `"dont_ask"` and
-`"bypass_permissions"`; anything else fails the load listing them. The
-mode the session actually runs is what the CLI reports back on connect,
-and the `/mode` picker offers `bypassPermissions` only on sessions
-launched into it; the CLI refuses a mid-session switch to bypass.
-
 ## `[env]`
 
 A flat table of string keys to string values, stamped onto every
@@ -171,6 +157,20 @@ table fails the load loudly instead of quietly applying nothing.
 | `env` | table | `{}` | Written as `[projects.<name>.env]`. |
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
 | `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
+| `permission_mode` | string | `auto` | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate. |
+
+`permission_mode` stamps a permission mode onto every session the
+project spawns, overriding the launcher's per-session default. A project
+that does not set the key gets `auto` stamped rather than the launcher
+default, so its sessions run one mode consistently however the org's
+accounts rotate. The accepted values are the CLI's mode names,
+`"default"`, `"acceptEdits"`, `"plan"`, `"dontAsk"`, `"auto"` and
+`"bypassPermissions"`, plus the legacy aliases `"ask"`, `"deny"`,
+`"accept_edits"`, `"dont_ask"` and `"bypass_permissions"`; anything else
+fails the load listing them. The mode the session actually runs is what
+the CLI reports back on connect, and the `/mode` picker offers
+`bypassPermissions` only on sessions launched into it; the CLI refuses a
+mid-session switch to bypass.
 
 A `[projects.<name>]` block naming a project that no
 `[[orgs.projects]]` declares fails the load, and the error lists the
