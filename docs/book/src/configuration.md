@@ -202,6 +202,9 @@ at.
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `port` | integer | `8787` | The port the gateway's listener binds on `127.0.0.1`. There is no fallback to an OS-assigned port: if the port is taken, the gateway fails to start and preflight stays shut, because every session's base URL names this port and a silent drift would point children at an address nothing serves. `0` fails the load outright (`GatewayPortInvalid`) for the same reason - it reads as "pick one for me". |
+| `streak_count` | integer | `5` | How many consecutive 429s from one account fire a rotation. `0` fails the load outright (`GatewayRotationInvalid`) - it would silently disable the streak. |
+| `streak_window_secs` | integer | `60` | The window the 429 streak is counted over, in seconds. `0` fails the load outright (`GatewayRotationInvalid`). |
+| `no_reset_cooldown_secs` | integer | `60` | The cooldown applied when neither the failing response nor the account's own usage probe reports a reset time, in seconds. `0` fails the load outright (`GatewayRotationInvalid`). |
 
 ## Environment layering
 

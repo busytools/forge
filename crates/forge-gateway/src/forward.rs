@@ -28,7 +28,7 @@ use hyper::{HeaderMap, Method, Request, StatusCode};
 use crate::account::AccountKey;
 use crate::binding::{AUTH_TOKEN_VARIABLE, Bindings, DUMMY_CREDENTIAL, OAUTH_VARIABLE};
 use crate::listener::{RouteHandler, StreamBody, text_response};
-use crate::rotation::{NO_RESET_COOLDOWN, RotationState};
+use crate::rotation::RotationState;
 use crate::splice::splice_model;
 
 /// The upstream an account with no base URL of its own talks to: the
@@ -45,6 +45,9 @@ enum SelectFailure {
     UnknownOrg { org: String },
     /// Every account in the walk fails the family rule for the model.
     NoEligibleAccount { model: String, org: String },
+    /// The whole walk is inside a rotation cooldown: they serve the
+    /// model, they are cooling until `reset_in`.
+    BudgetExhausted { tried: usize, org: String, model: String, reset_in: Duration },
 }
 
 /// The gateway's route handler: bindings + the account pool +
@@ -57,8 +60,9 @@ pub struct Gateway {
     /// when a session has no binding and selection must run.
     org_pins: parking_lot::Mutex<HashMap<String, crate::selection::OrgPin>>,
     /// Exhaustion marks and cooldowns, shared with the workspace's
-    /// `rate_limit_event` reports.
-    rotation: RotationState,
+    /// `rate_limit_event` reports. The numbers inside arrive from
+    /// `[gateway]` at boot and never change mid-run.
+    rotation: parking_lot::Mutex<RotationState>,
 }
 
 impl Gateway {
@@ -68,8 +72,15 @@ impl Gateway {
             pool,
             client: reqwest::Client::new(),
             org_pins: parking_lot::Mutex::new(HashMap::new()),
-            rotation: RotationState::new(),
+            rotation: parking_lot::Mutex::new(RotationState::new()),
         }
+    }
+
+    /// The rotation numbers from `[gateway]`: the 429 streak count and
+    /// window, and the cooldown when no reset time is known. Called
+    /// once at boot beside the org pins.
+    pub fn set_rotation_numbers(&self, numbers: crate::rotation::RotationNumbers) {
+        *self.rotation.lock() = RotationState::with_numbers(numbers);
     }
 
     /// Publish each org's walk order (primary pin then fallbacks).
@@ -94,7 +105,15 @@ impl Gateway {
             return Err(SelectFailure::UnknownOrg { org: org.to_owned() });
         };
         let now = SystemTime::now();
-        let cooling = |name: &String| self.rotation.is_cooling_down(&AccountKey(name.clone()), now);
+        let rotation = self.rotation.lock();
+        let cooling = |name: &String| rotation.is_cooling_down(&AccountKey(name.clone()), now);
+        let cooled: Vec<String> = pin
+            .accounts
+            .iter()
+            .chain(pin.fallback_accounts.iter())
+            .filter(|n| cooling(n))
+            .cloned()
+            .collect();
         let pin = crate::selection::OrgPin {
             accounts: pin.accounts.into_iter().filter(|name| !cooling(name)).collect(),
             fallback_accounts: pin
@@ -105,7 +124,20 @@ impl Gateway {
         };
         let account = match self.pool.select_account(&pin, org, model) {
             Ok(account) => account,
+            // The walk emptied. When cooling accounts were filtered out,
+            // the real cause is exhaustion: they DO serve the model,
+            // they are cooling until a knowable time, and the budget
+            // failure says so. Only a walk empty without cooling is the
+            // family rule refusing the model.
             Err(crate::selection::SelectionError::NoEligibleAccount { model, org }) => {
+                if let Some(reset) = rotation.soonest_reset(now).filter(|_| !cooled.is_empty()) {
+                    return Err(SelectFailure::BudgetExhausted {
+                        tried: cooled.len(),
+                        org,
+                        model,
+                        reset_in: reset.duration_since(now).unwrap_or(Duration::ZERO),
+                    });
+                }
                 return Err(SelectFailure::NoEligibleAccount { model, org });
             }
         };
@@ -131,6 +163,65 @@ impl Gateway {
         Some((upstream, credential))
     }
 
+    /// The reset the account's own usage probe reports for its
+    /// exhausted window, when still ahead. Absent for every
+    /// non-window-billed account.
+    fn probe_reset_for(&self, account: &AccountKey) -> Option<Duration> {
+        let now = SystemTime::now();
+        let reset = self.pool.usage(&account.0)?.binding_reset_at()?;
+        reset.duration_since(now).ok()
+    }
+
+    /// The cooldown for a failing response: the response's Retry-After,
+    /// else the account's own probe reset, else the configured default.
+    fn cooldown_for(&self, account: &AccountKey, headers: &HeaderMap) -> Duration {
+        retry_after(headers)
+            .or_else(|| self.probe_reset_for(account))
+            .unwrap_or_else(|| self.rotation.lock().no_reset_cooldown())
+    }
+
+    /// Whether the bound account's family serves `model`. An unknown
+    /// account serves nothing: the binding is stale and re-selects.
+    fn binding_serves(&self, account: &AccountKey, model: &str) -> bool {
+        self.pool
+            .provider_and_env(account)
+            .is_some_and(|(provider, _)| crate::selection::family_matches(provider, model))
+    }
+
+    /// Selection, or the loud response its failure produces.
+    fn select_or_fail(
+        &self,
+        org: &str,
+        project: &str,
+        session: &str,
+        model: &str,
+    ) -> Result<AccountKey, Box<hyper::Response<StreamBody>>> {
+        match self.select_and_bind(org, project, session, model) {
+            Ok(account) => Ok(account),
+            Err(SelectFailure::UnknownOrg { org }) => Err(Box::new(text_response(
+                StatusCode::NOT_FOUND,
+                format!("org '{org}' is not known to the gateway"),
+            ))),
+            Err(SelectFailure::NoEligibleAccount { model, org }) => Err(Box::new(text_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!(
+                    "no account in org '{org}' serves model '{model}'; the session is \
+                     unbound and nothing was forwarded"
+                ),
+            ))),
+            Err(SelectFailure::BudgetExhausted { tried, org, model, reset_in }) => {
+                Err(Box::new(text_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!(
+                        "every account serving model '{model}' in org '{org}' is cooling; \
+                         tried {tried} account(s), soonest reset in {}s",
+                        reset_in.as_secs()
+                    ),
+                )))
+            }
+        }
+    }
+
     /// Apply the rotation triggers the held response proves, then
     /// stream it back untouched - the CLI's retry carries the same
     /// session id, so rotating the binding here is what routes the
@@ -146,8 +237,8 @@ impl Gateway {
     ) {
         if status == StatusCode::TOO_MANY_REQUESTS {
             let now = SystemTime::now();
-            if self.rotation.record_429(account, now) {
-                let cooldown = retry_after(headers).unwrap_or(NO_RESET_COOLDOWN);
+            if self.rotation.lock().record_429(account, now) {
+                let cooldown = self.cooldown_for(account, headers);
                 self.rotate_off(account, org, project, session, now + cooldown);
             }
         } else {
@@ -160,11 +251,11 @@ impl Gateway {
                     ))
             {
                 let now = SystemTime::now();
-                let cooldown = retry_after(headers).unwrap_or(NO_RESET_COOLDOWN);
+                let cooldown = self.cooldown_for(account, headers);
                 self.rotate_off(account, org, project, session, now + cooldown);
             }
             if status.is_success() {
-                self.rotation.reset_streak(account);
+                self.rotation.lock().reset_streak(account);
             }
         }
     }
@@ -180,7 +271,7 @@ impl Gateway {
         session: &str,
         until: SystemTime,
     ) {
-        self.rotation.cool_down(account, until);
+        self.rotation.lock().cool_down(account, until);
         self.bindings.unbind(org, project, session);
     }
 
@@ -195,8 +286,12 @@ impl Gateway {
             return;
         };
         let now = SystemTime::now();
-        let until = reset_at.map_or(now + NO_RESET_COOLDOWN, crate::rotation::reset_instant);
-        self.rotation.cool_down(&account, until);
+        // A zero reset means no usable reset: it would end the cooldown
+        // the instant it starts, so the configured default applies.
+        let until = reset_at
+            .filter(|secs| *secs > 0)
+            .map_or(now + self.rotation.lock().no_reset_cooldown(), crate::rotation::reset_instant);
+        self.rotation.lock().cool_down(&account, until);
     }
 
     /// The usage probe's verdict: a snapshot with any window at the
@@ -204,18 +299,23 @@ impl Gateway {
     /// session bound to the account rotates.
     pub fn report_probe_limit(&self, account: &AccountKey, reset_at: Option<u64>) {
         let now = SystemTime::now();
-        let until = reset_at.map_or(now + NO_RESET_COOLDOWN, crate::rotation::reset_instant);
-        self.rotation.cool_down(account, until);
+        let until = reset_at
+            .filter(|secs| *secs > 0)
+            .map_or(now + self.rotation.lock().no_reset_cooldown(), crate::rotation::reset_instant);
+        self.rotation.lock().cool_down(account, until);
         self.bindings.unbind_for_account(account);
     }
 }
 
-/// The `Retry-After` header, as seconds.
+/// The `Retry-After` header, as seconds. Zero reads as absent: a
+/// cooldown ending the instant it starts is the same as none, and the
+/// next arm of the cooldown rule should decide instead.
 fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     headers
         .get(hyper::header::RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
         .map(Duration::from_secs)
 }
 
@@ -249,28 +349,29 @@ impl RouteHandler for Gateway {
             Err(error) => return text_response(StatusCode::BAD_REQUEST, error.to_string()),
         };
 
-        // A known binding is kept; an unbound session selects now, from
-        // the model in its own body and the org named in its path. The
-        // selection failure names both.
+        // A binding keeps the session only while its account can serve
+        // the model in the body: a model change the bound account
+        // cannot serve rotates here, with the prompt-cache miss
+        // accepted. An unbound session selects now, from the model in
+        // its own body and the org named in its path. The selection
+        // failure names both.
         let account = match self.bindings.binding_for(org, project, session) {
-            Some(account) => account,
-            None => match self.select_and_bind(org, project, session, &model) {
+            Some(bound) if self.binding_serves(&bound, &model) => bound,
+            Some(bound) => {
+                tracing::info!(
+                    target: "forge_gateway::forward",
+                    account = %bound.0,
+                    "the bound account cannot serve the model in the body; re-selecting"
+                );
+                self.bindings.unbind(org, project, session);
+                match self.select_or_fail(org, project, session, &model) {
+                    Ok(account) => account,
+                    Err(response) => return *response,
+                }
+            }
+            None => match self.select_or_fail(org, project, session, &model) {
                 Ok(account) => account,
-                Err(SelectFailure::UnknownOrg { org }) => {
-                    return text_response(
-                        StatusCode::NOT_FOUND,
-                        format!("org '{org}' is not known to the gateway"),
-                    );
-                }
-                Err(SelectFailure::NoEligibleAccount { model, org }) => {
-                    return text_response(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        format!(
-                            "no account in org '{org}' serves model '{model}'; the session is \
-                             unbound and nothing was forwarded"
-                        ),
-                    );
-                }
+                Err(response) => return *response,
             },
         };
         let Some((upstream, credential)) = self.credential_for(&account) else {
@@ -562,6 +663,9 @@ mod tests {
     /// real CLI emits - exactly what a launching env with
     /// `ANTHROPIC_API_KEY` set would produce.
     async fn post_as_cli(url: &str) -> reqwest::Response {
+        // The harness session is bound to the OpenRouter account, so
+        // the body carries that account's family: a claude model here
+        // would rotate the binding instead of forwarding.
         reqwest::Client::new()
             .post(url)
             .header(hyper::header::AUTHORIZATION, "Bearer forge-gateway-unused")
@@ -570,7 +674,7 @@ mod tests {
             .header("anthropic-beta", "oauth-2025-04-20,extended-cache-ttl-2025-04-11")
             .header("anthropic-version", "2023-06-01")
             .header("user-agent", "claude-code/2.1.263")
-            .body(r#"{"model":"claude-opus-5","messages":[]}"#)
+            .body(r#"{"model":"glm-5.3-flash","messages":[]}"#)
             .send()
             .await
             .expect("gateway responds")
@@ -979,6 +1083,206 @@ mod tests {
             retry.status(),
             StatusCode::SERVICE_UNAVAILABLE,
             "the cooled account cannot be re-selected until its reset",
+        );
+    }
+
+    /// A usage snapshot with the five-hour window at the cap and a
+    /// reset ahead: the probe-proven exhaustion shape.
+    fn saturated_usage(reset_in: Duration) -> forge_primitives::usage::UsageSnapshot {
+        forge_primitives::usage::UsageSnapshot {
+            source: forge_primitives::usage::UsageSourceKind::Oauth,
+            fetched_at: std::time::SystemTime::UNIX_EPOCH,
+            five_hour: Some(forge_primitives::usage::UsageWindow {
+                utilization: 100.0,
+                resets_at: Some(SystemTime::now() + reset_in),
+                reset_description: None,
+            }),
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            spend: None,
+            balance: None,
+        }
+    }
+
+    async fn post_model(url: &str, model: &str) -> reqwest::Response {
+        reqwest::Client::new()
+            .post(format!("{url}/v1/messages?beta=true"))
+            .header(CONTENT_TYPE, "application/json")
+            .body(format!(r#"{{"model":"{model}","messages":[]}}"#))
+            .send()
+            .await
+            .expect("gateway responds")
+    }
+
+    fn pin_only(harness: &Harness, account: &str) {
+        harness.gateway.set_org_pins([(
+            "Busytools".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec![account.to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+    }
+
+    #[tokio::test]
+    async fn the_budget_failure_names_the_accounts_tried_and_the_soonest_reset() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "OpenRouter");
+        for _ in 0..5 {
+            harness
+                .script
+                .lock()
+                .push_back((429, vec![("retry-after".to_owned(), "30".to_owned())]));
+            post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        }
+        // The bound account rotated off on the streak; a fresh session
+        // finds the whole walk cooling, which is budget exhaustion, not
+        // a family miss.
+        let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
+        let response = post_model(&ghost_url, "glm-5.3-flash").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response.text().await.expect("body");
+        assert!(
+            body.contains("tried 1 account(s)"),
+            "the failure names how many exhausted accounts were tried, got: {body}",
+        );
+        assert!(
+            body.contains("soonest reset in "),
+            "the failure names the soonest reset, got: {body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zero_retry_after_falls_through_to_the_probe_reset() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "OpenRouter");
+        // The account's own probe reports a reset an hour out; the
+        // response carries no usable Retry-After.
+        harness.gateway.pool.set_usage(
+            &AccountKey("OpenRouter".to_owned()),
+            saturated_usage(Duration::from_secs(3600)),
+        );
+        for _ in 0..5 {
+            harness
+                .script
+                .lock()
+                .push_back((429, vec![("retry-after".to_owned(), "0".to_owned())]));
+            post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        }
+        let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
+        let response = post_model(&ghost_url, "glm-5.3-flash").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response.text().await.expect("body");
+        assert!(
+            body.contains("3599") || body.contains("3600"),
+            "the cooldown holds until the probe's reset, not the 60s default, got: {body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_overage_status_header_rotates_on_the_first_response() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "OpenRouter");
+        harness.script.lock().push_back((
+            StatusCode::PAYMENT_REQUIRED.as_u16(),
+            vec![("anthropic-ratelimit-unified-overage-status".to_owned(), "rejected".to_owned())],
+        ));
+        let response = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            None,
+            "the overage arm is proven exhaustion, same as the unified arm",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zero_reset_in_a_rate_limit_report_still_cools_the_account() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "OpenRouter");
+        harness.gateway.report_rate_limit("session-1", Some(0));
+        let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
+        let response = post_model(&ghost_url, "glm-5.3-flash").await;
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a zero reset reads as absent, so the default cooldown still applies"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_change_the_bound_account_cannot_serve_rotates() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "Anthropic");
+        harness
+            .gateway
+            .pool
+            .set_loading(&AccountKey("Anthropic".to_owned()), crate::LoadingState::Ready);
+        // session-1 is bound to OpenRouter; the body now asks for a
+        // claude model. The binding rotates to the account that serves
+        // it, with the prompt-cache miss accepted.
+        let response = post_model(&harness.client_url, "claude-sonnet-5").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            Some(AccountKey("Anthropic".to_owned())),
+            "the model change moved the binding to the serving account",
+        );
+        assert_eq!(harness.requests.lock().len(), 1, "the request was forwarded once");
+    }
+
+    #[tokio::test]
+    async fn a_model_change_with_no_serving_account_fails_loudly() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "OpenRouter");
+        harness
+            .gateway
+            .pool
+            .set_loading(&AccountKey("OpenRouter".to_owned()), crate::LoadingState::Ready);
+        // Bound to OpenRouter and asking for claude: the family gate
+        // refuses the re-selection instead of forwarding to an account
+        // that cannot answer it.
+        let response = post_model(&harness.client_url, "claude-sonnet-5").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response.text().await.expect("body");
+        assert!(
+            body.contains("claude-sonnet-5") && body.contains("Busytools"),
+            "the failure names the model and the org, got: {body}",
+        );
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            None,
+            "the unservable binding was dropped",
+        );
+        assert!(
+            harness.requests.lock().is_empty(),
+            "the request must not reach an account that cannot serve it",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_claude_model_on_an_anthropic_binding_rotates_too() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "OpenRouter");
+        harness
+            .gateway
+            .pool
+            .set_loading(&AccountKey("OpenRouter".to_owned()), crate::LoadingState::Ready);
+        harness.gateway.bindings.bind(
+            "Busytools",
+            "forge",
+            "session-2",
+            AccountKey("Anthropic".to_owned()),
+        );
+        let session_2_url = harness.client_url.replacen("session-1", "session-2", 1);
+        let response = post_model(&session_2_url, "glm-5.3-flash").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-2"),
+            Some(AccountKey("OpenRouter".to_owned())),
+            "the family gate is symmetric across both directions",
         );
     }
 }

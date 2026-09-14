@@ -1102,6 +1102,7 @@ impl Workspace {
             }
             gateway.set_org_pins(pins);
         }
+        gateway.set_rotation_numbers(config.gateway_rotation);
 
         // Seed account usage from the machine-local store so the
         // launchpad picker has tier data immediately at cold boot.
@@ -14216,6 +14217,30 @@ provider = "anthropic"
             worker,
             Some(AccountKey("Beta".to_owned())),
             "the healed account must have joined the pool for new sessions",
+        );
+    }
+
+    /// The probe-glue edge: record_usage_success with any window at
+    /// the cap reports the gateway, which rotates every session bound
+    /// to that account. A probe under the cap reports nothing.
+    #[tokio::test]
+    async fn record_usage_success_reports_probe_exhaustion_to_the_gateway() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let pool = workspace.account_pool();
+        pool.set_usage(&AccountKey("Stargate".to_owned()), usage_at(10.0));
+        workspace.gateway.bindings.bind("Org", "forge", "s1", AccountKey("Stargate".to_owned()));
+        workspace.record_usage_success(&AccountKey("Stargate".to_owned()), usage_at(100.0));
+        assert!(
+            workspace.gateway.bindings.binding_for("Org", "forge", "s1").is_none(),
+            "a probe verdict at the cap rotates the bound session",
+        );
+
+        workspace.gateway.bindings.bind("Org", "forge", "s2", AccountKey("Stargate".to_owned()));
+        workspace.record_usage_success(&AccountKey("Stargate".to_owned()), usage_at(10.0));
+        assert!(
+            workspace.gateway.bindings.binding_for("Org", "forge", "s2").is_some(),
+            "a probe under the cap rotates nothing",
         );
     }
 

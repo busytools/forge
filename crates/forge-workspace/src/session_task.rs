@@ -605,10 +605,13 @@ impl SessionTask {
                 // A rate-limit window that is not `allowed` proves the
                 // bound account exhausted: report it so the gateway
                 // cools the account down and drops this session's
-                // binding - the CLI's next request re-selects. Both
-                // this task's key and its pre-rename spawn key are
-                // tried, since the binding is keyed by whichever one
-                // the child's base URL was stamped with.
+                // binding - the CLI's next request re-selects. The
+                // trigger is literal: `allowed_warning` and unknown
+                // statuses rotate too, because a warning already means
+                // the window is closing. Both this task's key and its
+                // pre-rename spawn key are tried, since the binding is
+                // keyed by whichever one the child's base URL was
+                // stamped with.
                 if let forge_primitives::Message::RateLimitEvent { rate_limit_info, .. } = &msg
                     && rate_limit_info.status != forge_primitives::RateLimitStatus::Allowed
                     && let Some(workspace) = self.workspace.upgrade()
@@ -1725,6 +1728,88 @@ mod tests {
 
         let (key, ..) = drained_notice(&mut update_rx).expect("a cancelled turn still notifies");
         assert_eq!(key, reviewer);
+    }
+
+    /// The gateway edge: a rate_limit_event whose status is not
+    /// `allowed` reports the gateway through BOTH of the task's keys,
+    /// since the binding is keyed by whichever one the child's base
+    /// URL was stamped with. An `allowed` frame reports nothing.
+    #[test]
+    fn a_rate_limit_event_not_allowed_reports_the_gateway_through_both_keys() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionKey::from_session_id("w-uuid");
+        let spawn_key = SessionKey::from_str_for_test("__spawn_w__");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        task.spawn_key = Some(spawn_key.clone());
+
+        workspace.gateway.bindings.bind(
+            "Org",
+            "forge",
+            key.as_str(),
+            forge_gateway::AccountKey("A".to_owned()),
+        );
+        workspace.gateway.bindings.bind(
+            "Org",
+            "forge",
+            spawn_key.as_str(),
+            forge_gateway::AccountKey("B".to_owned()),
+        );
+
+        let rejected = forge_primitives::Message::RateLimitEvent {
+            rate_limit_info: forge_primitives::RateLimitInfo {
+                status: forge_primitives::RateLimitStatus::Rejected,
+                resets_at: Some(1_800_000_000),
+                rate_limit_type: None,
+                utilization: None,
+                overage_status: None,
+                overage_resets_at: None,
+                overage_disabled_reason: None,
+                raw: serde_json::Map::new(),
+            },
+            uuid: "u1".to_owned(),
+            session_id: key.as_str().to_owned(),
+        };
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: key.as_str().to_owned(),
+            msg: rejected,
+        });
+
+        assert!(
+            workspace.gateway.bindings.binding_for("Org", "forge", key.as_str()).is_none(),
+            "the report drops the current key's binding",
+        );
+        assert!(
+            workspace.gateway.bindings.binding_for("Org", "forge", spawn_key.as_str()).is_none(),
+            "the report also drops the pre-rename spawn key's binding",
+        );
+
+        workspace.gateway.bindings.bind(
+            "Org",
+            "forge",
+            "other",
+            forge_gateway::AccountKey("C".to_owned()),
+        );
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: key.as_str().to_owned(),
+            msg: forge_primitives::Message::RateLimitEvent {
+                rate_limit_info: forge_primitives::RateLimitInfo {
+                    status: forge_primitives::RateLimitStatus::Allowed,
+                    resets_at: None,
+                    rate_limit_type: None,
+                    utilization: None,
+                    overage_status: None,
+                    overage_resets_at: None,
+                    overage_disabled_reason: None,
+                    raw: serde_json::Map::new(),
+                },
+                uuid: "u2".to_owned(),
+                session_id: key.as_str().to_owned(),
+            },
+        });
+        assert!(
+            workspace.gateway.bindings.binding_for("Org", "forge", "other").is_some(),
+            "an allowed frame rotates nothing",
+        );
     }
 
     /// `Message::Error` is the CLI's last-gasp transport failure; no

@@ -31,7 +31,7 @@ pub enum SelectionError {
 
 /// `true` when `provider` can serve `model` under the mechanical
 /// family rule.
-fn family_matches(provider: Provider, model: &str) -> bool {
+pub(crate) fn family_matches(provider: Provider, model: &str) -> bool {
     if model.starts_with("claude-") {
         provider == Provider::Anthropic
     } else {

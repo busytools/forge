@@ -16,16 +16,36 @@ use parking_lot::Mutex;
 
 use crate::account::AccountKey;
 
-/// The streak fires when this many consecutive 429s land from one
-/// account inside [`STREAK_WINDOW`].
+/// The default streak: this many consecutive 429s from one account
+/// inside [`STREAK_WINDOW`] fire the rotation.
 pub const STREAK_COUNT: u32 = 5;
 
-/// The window the streak is counted over.
+/// The default window the streak is counted over.
 pub const STREAK_WINDOW: Duration = Duration::from_secs(60);
 
-/// The cooldown applied when neither the failing response nor the
-/// quota probe reports a reset time.
+/// The default cooldown applied when neither the failing response nor
+/// the account's own usage probe reports a reset time.
 pub const NO_RESET_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// The rotation numbers from `[gateway]`: how many 429s fire the
+/// streak, the window they are counted over, and the cooldown when no
+/// reset time is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RotationNumbers {
+    pub streak_count: u32,
+    pub streak_window: Duration,
+    pub no_reset_cooldown: Duration,
+}
+
+impl Default for RotationNumbers {
+    fn default() -> Self {
+        Self {
+            streak_count: STREAK_COUNT,
+            streak_window: STREAK_WINDOW,
+            no_reset_cooldown: NO_RESET_COOLDOWN,
+        }
+    }
+}
 
 /// A unix-seconds reset time, as the wire frames and headers carry.
 pub fn reset_instant(unix_seconds: u64) -> SystemTime {
@@ -33,8 +53,11 @@ pub fn reset_instant(unix_seconds: u64) -> SystemTime {
 }
 
 /// Per-account rotation state: cooldown end, and the streak.
-#[derive(Default)]
 pub struct RotationState {
+    /// Streak count, window, and no-reset cooldown, from `[gateway]`.
+    streak_count: u32,
+    streak_window: Duration,
+    no_reset_cooldown: Duration,
     /// Cooldown end per account; an account inside its cooldown is
     /// skipped by selection and cannot be re-bound.
     cooldowns: Mutex<HashMap<AccountKey, SystemTime>>,
@@ -42,9 +65,33 @@ pub struct RotationState {
     streaks: Mutex<HashMap<AccountKey, (u32, SystemTime)>>,
 }
 
+impl Default for RotationState {
+    fn default() -> Self {
+        Self::with_numbers(RotationNumbers::default())
+    }
+}
+
 impl RotationState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The numbers from `[gateway]`: how many 429s fire the streak,
+    /// the window they are counted over, and the cooldown when no
+    /// reset time is known.
+    pub fn with_numbers(numbers: RotationNumbers) -> Self {
+        Self {
+            streak_count: numbers.streak_count,
+            streak_window: numbers.streak_window,
+            no_reset_cooldown: numbers.no_reset_cooldown,
+            cooldowns: Mutex::new(HashMap::new()),
+            streaks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The cooldown applied when no reset time is known.
+    pub fn no_reset_cooldown(&self) -> Duration {
+        self.no_reset_cooldown
     }
 
     /// Mark an account exhausted until `until`.
@@ -64,18 +111,23 @@ impl RotationState {
     }
 
     /// Record a 429 from `account` at `now`; rotates when the streak
-    /// reaches [`STREAK_COUNT`] inside [`STREAK_WINDOW`]. `true` when
-    /// the streak fired.
+    /// reaches the configured count inside the configured window.
+    /// `true` when the streak fired.
+    ///
+    /// The window is a max-gap since the last 429, not a sliding
+    /// count: a gap beyond the window restarts at 1, so a slow drip
+    /// still accumulates. That over-rotates a drip marginally rather
+    /// than under-rotating a burst - the conservative direction.
     pub fn record_429(&self, key: &AccountKey, now: SystemTime) -> bool {
         let mut streaks = self.streaks.lock();
         let entry = streaks.entry(key.clone()).or_insert((0, now));
-        if now.duration_since(entry.1).unwrap_or(Duration::ZERO) > STREAK_WINDOW {
+        if now.duration_since(entry.1).unwrap_or(Duration::ZERO) > self.streak_window {
             *entry = (1, now);
         } else {
             entry.0 += 1;
             entry.1 = now;
         }
-        entry.0 >= STREAK_COUNT
+        entry.0 >= self.streak_count
     }
 
     /// Clear the streak: any non-429 success resets it.
@@ -144,6 +196,37 @@ mod tests {
         assert_eq!(
             reset.duration_since(SystemTime::UNIX_EPOCH).unwrap(),
             Duration::from_secs(1_000_000)
+        );
+    }
+
+    #[test]
+    fn configured_numbers_replace_the_defaults() {
+        let state = RotationState::with_numbers(RotationNumbers {
+            streak_count: 2,
+            streak_window: Duration::from_secs(30),
+            no_reset_cooldown: Duration::from_secs(120),
+        });
+        let key = AccountKey("A".to_owned());
+        let mut now = SystemTime::now();
+        assert!(!state.record_429(&key, now), "the configured count must not fire early");
+        now += Duration::from_secs(10);
+        assert!(
+            state.record_429(&key, now),
+            "the second 429 inside the configured window fires at count 2"
+        );
+        assert_eq!(
+            state.no_reset_cooldown(),
+            Duration::from_secs(120),
+            "the configured no-reset cooldown is what the failure paths apply"
+        );
+        // The configured window is the one the max-gap reads against.
+        let key = AccountKey("B".to_owned());
+        let mut now = SystemTime::now();
+        state.record_429(&key, now);
+        now += Duration::from_secs(31);
+        assert!(
+            !state.record_429(&key, now),
+            "a 429 beyond the configured 30s window restarts the count"
         );
     }
 }
