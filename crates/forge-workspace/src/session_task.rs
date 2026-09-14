@@ -142,13 +142,10 @@ impl SessionTask {
         else {
             return event;
         };
+        // Declared models replace discovery: the picker rows are the
+        // org's accounts' declared models, authored in forge.toml.
         let available_models = match self.workspace.upgrade() {
-            Some(workspace) => match self.handle.display_name() {
-                Some(display_name) => {
-                    workspace.catalog_available_models(&display_name, available_models).await
-                }
-                None => available_models,
-            },
+            Some(workspace) => workspace.declared_models_for_session(&self.key),
             None => available_models,
         };
         AgentEvent::Connected {
