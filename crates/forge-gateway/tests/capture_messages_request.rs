@@ -4,7 +4,10 @@
 //! after a CLI bump, then commit the redacted fixture.
 //!
 //! The stub upstream answers 401, so nothing is billed - the capture is
-//! of the request the CLI emits before any auth check.
+//! of the request the CLI emits before any auth check. Redaction walks
+//! the parsed JSON and rewrites string values only: a byte-level pass
+//! ate numeric literals (12+ decimal digits ARE hex digits) and
+//! corrupted the fixture outside every string.
 
 #![allow(clippy::expect_used)]
 
@@ -33,11 +36,11 @@ impl RouteHandler for CaptureUpstream {
     async fn route(&self, request: hyper::Request<Bytes>) -> hyper::Response<StreamBody> {
         *self.body.lock() = Some(String::from_utf8_lossy(request.body()).into_owned());
         let response = hyper::Response::builder().status(hyper::StatusCode::UNAUTHORIZED);
-        response.body(crate_shape_error_body()).expect("static response parts always build")
+        response.body(error_body()).expect("static response parts always build")
     }
 }
 
-fn crate_shape_error_body() -> StreamBody {
+fn error_body() -> StreamBody {
     http_body_util::combinators::BoxBody::new(
         http_body_util::Full::new(Bytes::from_static(
             b"{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}",
@@ -46,17 +49,21 @@ fn crate_shape_error_body() -> StreamBody {
     )
 }
 
-/// Anything shaped like a UUID or a long hex blob is capture-local;
-/// the body's structure is what the test pins, not these values.
-fn redact(body: &str) -> String {
-    let mut out = body.to_owned();
-    while let Some((start, len)) = find_uuid(&out) {
+/// Capture-machine identifiers and long hex-shaped runs (UUIDs, the
+/// CLI's 64-hex device id, hashes) are capture-local; the body's
+/// structure and non-identifier content are what the tests pin.
+fn redact(text: &str) -> String {
+    let mut out = text.to_owned();
+    for secret in ["/Users/vedhavyas", "7549475+vedhavyas@users.noreply.github.com"] {
+        out = out.replace(secret, "<REDACTED>");
+    }
+    while let Some((start, len)) = find_hex_run(&out) {
         out.replace_range(start..start + len, "<UUID>");
     }
     out
 }
 
-fn find_uuid(text: &str) -> Option<(usize, usize)> {
+fn find_hex_run(text: &str) -> Option<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -78,6 +85,25 @@ fn find_uuid(text: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Walk the parsed capture and redact string values only, so numeric
+/// literals and JSON structure survive the pass untouched.
+fn redact_string_values(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => *text = redact(text),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_string_values(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                redact_string_values(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[tokio::test]
 #[ignore = "live capture: spawns the real claude CLI; run with --ignored after a CLI bump"]
 async fn capture_a_real_messages_request_body() {
@@ -85,21 +111,22 @@ async fn capture_a_real_messages_request_body() {
     let stub_port = free_port().await;
     let stub_listener = GatewayListener::bind(stub_port).await.expect("stub bind");
     let stub_url = format!("http://127.0.0.1:{stub_port}");
-    let upstream_handler: Arc<dyn RouteHandler> = Arc::clone(&upstream) as Arc<dyn RouteHandler>;
+    let upstream_handler: Arc<dyn RouteHandler> = upstream.clone();
     tokio::spawn(async move { stub_listener.run(upstream_handler).await });
 
+    let account_env = HashMap::from([
+        // The upstream is the local stub: the capture stays local and
+        // the stub 401s the request, so nothing is billed.
+        ("ANTHROPIC_BASE_URL".to_owned(), stub_url.clone()),
+        // A capture-shaped credential: the gateway attaches it and the
+        // stub 401s it. The real setup token is never involved.
+        ("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "capture-credential".to_owned()),
+    ]);
     let pool = Arc::new(forge_gateway::AccountPool::new(&[LoadedAccount {
         display_name: "Capture".to_owned(),
         config_dir: PathBuf::from("/tmp/forge-capture-config"),
         provider: Provider::Anthropic,
-        env: HashMap::from([
-            // The upstream is the local stub: the capture stays local
-            // and the stub 401s the request, so nothing is billed.
-            ("ANTHROPIC_BASE_URL".to_owned(), stub_url),
-            // A capture-shaped credential: the gateway attaches it and
-            // the stub 401s it. The real setup token is never involved.
-            ("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "capture-credential".to_owned()),
-        ]),
+        env: account_env.clone(),
         experimental: false,
     }]));
     let gateway = Arc::new(Gateway::new(Arc::clone(&pool)));
@@ -116,7 +143,7 @@ async fn capture_a_real_messages_request_body() {
             provider: Provider::Anthropic,
         },
         &base,
-        &HashMap::from([("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "capture-credential".to_owned())]),
+        &account_env,
     );
     let handler: Arc<dyn RouteHandler> = gateway.clone();
     tokio::spawn(async move { listener.run(handler).await });
@@ -150,9 +177,15 @@ async fn capture_a_real_messages_request_body() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
 
-    let redacted = redact(&captured);
+    // Redact through the parsed value so only string contents change:
+    // a byte-level pass ate numeric literals (12+ decimal digits ARE
+    // hex digits) and corrupted the fixture outside every string.
+    let mut value: serde_json::Value =
+        serde_json::from_str(&captured).expect("the captured body parses as JSON");
+    redact_string_values(&mut value);
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/messages_request.json");
-    std::fs::write(&fixture, redacted).expect("write fixture");
+    std::fs::write(&fixture, serde_json::to_string_pretty(&value).expect("serializes"))
+        .expect("write fixture");
     println!("captured {} bytes -> {}", captured.len(), fixture.display());
 }
 

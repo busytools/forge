@@ -194,6 +194,16 @@ mod tests {
         assert!(!model.is_empty(), "the real body's model is extracted");
     }
 
+    /// The control that makes the next redactor mistake visible: the
+    /// byte-level splice tests ran green against a corrupt fixture
+    /// because they never parse, so this parses independently.
+    #[test]
+    fn the_committed_capture_parses_as_json() {
+        let body = live_capture_body();
+        serde_json::from_str::<serde_json::Value>(std::str::from_utf8(&body).expect("utf8"))
+            .expect("the committed capture must be valid JSON");
+    }
+
     #[test]
     fn a_rewrite_changes_only_the_model_and_fixes_the_length() {
         let body = live_capture_body();
