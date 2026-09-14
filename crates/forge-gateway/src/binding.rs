@@ -117,6 +117,16 @@ impl Bindings {
             .cloned()
     }
 
+    /// Look up the binding for a session string alone, scanning the
+    /// by-session map for a matching third element.
+    pub fn binding_for_session(&self, session: &str) -> Option<AccountKey> {
+        self.by_session
+            .lock()
+            .iter()
+            .find(|(key, _)| key.2 == session)
+            .map(|(_, account)| account.clone())
+    }
+
     /// Bind a selected account to the three routing segments.
     pub fn bind(&self, org: &str, project: &str, session: &str, account: AccountKey) {
         self.by_session
