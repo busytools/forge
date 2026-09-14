@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
-use forge_gateway::{AccountKey, AccountStateMap};
+use forge_gateway::AccountKey;
 
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
@@ -203,16 +203,13 @@ pub struct Workspace {
     /// membership for lead-delivery gating without an extra method
     /// wrapper.
     pub(crate) pool: Mutex<HashMap<SessionKey, PooledAgent>>,
-    /// Account picker state. Updated on every spawn; refreshed by
-    /// the in-memory usage poller.
-    accounts: Mutex<AccountStateMap>,
-    /// Deterministic per-session account assignment. `None` until the
-    /// boot-time loading tasks reach `all_loaded()`; populated by
-    /// `recompute_plan_if_ready`. Spawn paths consult this for
-    /// CLAUDE_CONFIG_DIR selection; the launchpad gates clickable
-    /// project rows on it being `Some` AND the project having a
-    /// non-empty pool. See `forge_gateway::assignment_plan`.
-    assignment_plan: Mutex<Option<forge_gateway::assignment_plan::AssignmentPlan>>,
+    /// The account state map and the assignment plan, owned by the
+    /// gateway and reached through its pool. The state map carries
+    /// picker/health state updated on every spawn and refreshed by the
+    /// in-memory usage poller; the plan is `None` until the boot-time
+    /// loading tasks reach `all_loaded()`, and spawn paths consult it
+    /// for CLAUDE_CONFIG_DIR selection.
+    accounts: Arc<forge_gateway::AccountPool>,
     /// Dictation preflight: the per-model progress the launchpad
     /// renders, the flag Escape sets, and the loaded engine held for
     /// the run. Populated by `start_dictate_preflight`; inert when
@@ -1055,7 +1052,7 @@ impl Workspace {
         // gate on `catalog_loaded` via `wait_catalog_ready`.
         let catalog = Arc::new(Mutex::new(HashMap::new()));
 
-        let mut accounts = AccountStateMap::new(&config.accounts);
+        let accounts = forge_gateway::AccountPool::new(&config.accounts);
 
         // Seed account usage from the machine-local store so the
         // launchpad picker has tier data immediately at cold boot.
@@ -1068,7 +1065,7 @@ impl Workspace {
             Some(db) => crate::account_cache::load(db),
             None => crate::account_cache::ForgeState::empty(),
         };
-        accounts.seed_from_cache(&state.account_usage);
+        accounts.state().seed_from_cache(&state.account_usage);
 
         // The store's runtime spinner override (set via `/spinner`) wins
         // over the hand-authored forge.toml `[ui] spinner` default.
@@ -1099,8 +1096,7 @@ impl Workspace {
             config,
             catalog,
             pool: Mutex::new(HashMap::new()),
-            accounts: Mutex::new(accounts),
-            assignment_plan: Mutex::new(None),
+            accounts: Arc::new(accounts),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
@@ -1464,7 +1460,7 @@ impl Workspace {
             self.plan_assignment(&target, spawn_key.as_ref()).unwrap_or_else(|| {
                 let project_account_pin = self.project_accounts_for(&target);
                 let fallback_pin = self.project_fallback_accounts_for(&target);
-                let accounts = self.accounts.lock();
+                let accounts = self.accounts.state();
                 accounts.pick_for_project(&project_account_pin, &fallback_pin)
             })
         });
@@ -1482,7 +1478,7 @@ impl Workspace {
         // inherits it as `CLAUDE_CONFIG_DIR` so each session reads/
         // writes the right account's user-data tree.
         let account_env = {
-            let accounts = self.accounts.lock();
+            let accounts = self.accounts.state();
             accounts.env(&account_key).cloned().unwrap_or_default()
         };
         let project = self.project_for_target(&target);
@@ -1849,7 +1845,9 @@ impl Workspace {
     /// drive `LoadingState` transitions on the workspace's account
     /// map. Not exposed beyond the crate - the field stays private
     /// so only intentional callers reach in.
-    pub(crate) fn account_states(&self) -> &Mutex<AccountStateMap> {
+    /// The gateway's account pool: the account state map and the
+    /// assignment plan behind one handle.
+    pub(crate) fn account_pool(&self) -> &forge_gateway::AccountPool {
         &self.accounts
     }
 
@@ -1862,7 +1860,7 @@ impl Workspace {
     /// mouse handlers on it without reaching into the crate-private
     /// account map.
     pub fn all_accounts_loaded(&self) -> bool {
-        self.accounts.lock().all_loaded()
+        self.accounts.state().all_loaded()
     }
 
     /// `true` when the assignment plan is populated AND has at least
@@ -1873,7 +1871,7 @@ impl Workspace {
     /// unclickable. Returns `false` when the plan isn't populated yet.
     /// Public for forge-tui to consult during render.
     pub fn project_has_assigned_account(&self, project_key: &ProjectKey) -> bool {
-        let plan = self.assignment_plan.lock();
+        let plan = self.accounts.plan();
         plan.as_ref().is_some_and(|p| !p.project_has_no_assignments(project_key))
     }
 
@@ -1888,7 +1886,7 @@ impl Workspace {
     /// can see every account settled while the plan is still absent -
     /// which is the round-robin fallback the gate exists to prevent.
     pub fn assignment_plan_ready(&self) -> bool {
-        self.assignment_plan.lock().is_some()
+        self.accounts.plan().is_some()
     }
 
     /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
@@ -1897,7 +1895,7 @@ impl Workspace {
     /// `forge.toml`'s `[[accounts]]` declarations so the glyphs sit
     /// next to the user's mental model of which-account-is-which.
     pub fn account_loading_snapshot(&self) -> Vec<AccountLoadingRow> {
-        let accounts = self.accounts.lock();
+        let accounts = self.accounts.state();
         accounts
             .ordered_keys
             .iter()
@@ -1919,7 +1917,7 @@ impl Workspace {
     /// the auth-repair hints branch on. `None` when the name isn't a
     /// configured account.
     pub fn account_auth_for(&self, display_name: &str) -> Option<crate::views::AccountAuth> {
-        self.accounts.lock().auth(&AccountKey(display_name.to_owned()))
+        self.accounts.state().auth(&AccountKey(display_name.to_owned()))
     }
 
     /// The `forge.toml` this workspace loaded. Preflight names it as
@@ -2016,12 +2014,12 @@ impl Workspace {
         project_key: &ProjectKey,
         label: &str,
     ) -> Option<SessionChipInfo> {
-        let plan_guard = self.assignment_plan.lock();
+        let plan_guard = self.accounts.plan();
         let plan = plan_guard.as_ref()?;
         let account_key = plan.lookup(project_key, &label.to_owned())?.clone();
         drop(plan_guard);
 
-        let accounts = self.accounts.lock();
+        let accounts = self.accounts.state();
         let loading = accounts.loading_state(&account_key);
         let saturated = accounts.is_saturated(&account_key);
         let last_error = accounts.usage_error(&account_key);
@@ -2075,11 +2073,11 @@ impl Workspace {
         let account_key = if is_resume && !degraded_worker_resume {
             self.retier_on_resume(&project_key, &label)?
         } else {
-            let plan_guard = self.assignment_plan.lock();
+            let plan_guard = self.accounts.plan();
             let plan = plan_guard.as_ref()?;
             plan.lookup(&project_key, &label)?.clone()
         };
-        let accounts = self.accounts.lock();
+        let accounts = self.accounts.state();
         let dir = accounts.config_dir(&account_key)?.clone();
         Some((account_key, dir))
     }
@@ -2091,12 +2089,12 @@ impl Workspace {
     /// plan row, leaving every other session unmoved.
     fn retier_on_resume(&self, project_key: &ProjectKey, label: &str) -> Option<AccountKey> {
         let recorded = {
-            let plan_guard = self.assignment_plan.lock();
+            let plan_guard = self.accounts.plan();
             plan_guard.as_ref()?.lookup(project_key, &label.to_owned()).cloned()?
         };
         match self.best_tier_pool(project_key) {
             Some(best) if !best.pool.contains(&recorded) => {
-                let mut plan_guard = self.assignment_plan.lock();
+                let mut plan_guard = self.accounts.plan();
                 let Some(plan) = plan_guard.as_mut() else {
                     return Some(recorded);
                 };
@@ -2252,7 +2250,7 @@ impl Workspace {
         // snapshot doubles as the rotation predicate and the
         // warn-surface check below.
         let usable: std::collections::HashSet<AccountKey> = {
-            let accounts = self.accounts.lock();
+            let accounts = self.accounts.state();
             accounts
                 .ordered_keys
                 .iter()
@@ -2266,7 +2264,7 @@ impl Workspace {
         };
 
         let assigned = {
-            let mut plan_guard = self.assignment_plan.lock();
+            let mut plan_guard = self.accounts.plan();
             let plan = plan_guard.as_mut()?;
             plan.assign_adhoc_worker(project_key, &label.to_owned(), |k| usable.contains(k))
         }?;
@@ -2302,7 +2300,7 @@ impl Workspace {
     fn account_health_sets(&self) -> Option<(Vec<AccountKey>, Vec<AccountKey>, Vec<AccountKey>)> {
         use forge_gateway::LoadingState;
 
-        let accounts = self.accounts.lock();
+        let accounts = self.accounts.state();
         if !accounts.all_loaded() {
             return None;
         }
@@ -2415,7 +2413,7 @@ impl Workspace {
             }
         }
 
-        let mut plan_guard = self.assignment_plan.lock();
+        let mut plan_guard = self.accounts.plan();
         match plan_guard.as_mut() {
             // First compute - just store. Boot-time path.
             None => *plan_guard = Some(fresh),
@@ -2438,7 +2436,7 @@ impl Workspace {
     /// `AccountStateMap::all_loaded()`.
     pub fn start_account_loading_tasks(self: &Arc<Self>) {
         let entries: Vec<AccountKey> = {
-            let accounts = self.accounts.lock();
+            let accounts = self.accounts.state();
             accounts.ordered_keys.clone()
         };
         for key in entries {
@@ -2588,7 +2586,7 @@ impl Workspace {
             forge_primitives::account::Provider,
             std::collections::HashMap<String, String>,
         )> = {
-            let accounts = self.accounts.lock();
+            let accounts = self.accounts.state();
             accounts
                 .ordered_keys
                 .iter()
@@ -2623,7 +2621,7 @@ impl Workspace {
         // own lock acquisition so it doesn't contend with the
         // per-iteration set_usage / set_last_error locks below.
         {
-            let mut accounts = self.accounts.lock();
+            let mut accounts = self.accounts.state();
             for (key, _, _) in &entries {
                 if !accounts.should_probe_now(key) {
                     accounts.disarm_override(key);
@@ -2646,7 +2644,7 @@ impl Workspace {
                     any_success = true;
                 }
                 Err(forge_gateway::ProbeError::Unmappable(message)) => {
-                    self.accounts.lock().set_last_error(
+                    self.accounts.state().set_last_error(
                         &key,
                         forge_gateway::UsageFetchStatus::Other,
                         None,
@@ -2672,7 +2670,7 @@ impl Workspace {
                         ) => *retry_after,
                         _ => None,
                     };
-                    self.accounts.lock().set_last_error(&key, status, retry_after);
+                    self.accounts.state().set_last_error(&key, status, retry_after);
                     // Branch the log message by error class so anyone
                     // reading triage logs gets the right framing.
                     // The previous shape said "persistent failures
@@ -2713,7 +2711,7 @@ impl Workspace {
         // first probe. Skipped when no probe succeeded this round -
         // no point rewriting the file with the same contents.
         if any_success {
-            let snapshots = self.accounts.lock().snapshots_for_cache();
+            let snapshots = self.accounts.state().snapshots_for_cache();
             let account_count = snapshots.len();
             // A redb write is a small mmap'd transaction, not the old
             // load-merge-write of a TOML file, so it runs inline on the
@@ -2743,7 +2741,7 @@ impl Workspace {
     ) {
         use forge_gateway::LoadingState;
         let healed = {
-            let mut accounts = self.accounts.lock();
+            let mut accounts = self.accounts.state();
             let healed = accounts.loading_state(key) == LoadingState::Bailed;
             accounts.set_usage(key, snapshot);
             healed
@@ -2765,7 +2763,7 @@ impl Workspace {
     /// cache, no credentials, network blip). The TUI bottom panel
     /// renders the 5h / 7d bars from this snapshot.
     pub fn usage_for(&self, display_name: &str) -> Option<forge_primitives::usage::UsageSnapshot> {
-        self.accounts.lock().usage(&AccountKey(display_name.to_owned())).cloned()
+        self.accounts.state().usage(&AccountKey(display_name.to_owned())).cloned()
     }
 
     /// Read the last poll-attempt failure for an account, if any.
@@ -2776,7 +2774,7 @@ impl Workspace {
     /// HTTP 429 case is especially common when multiple forge
     /// instances poll the same Anthropic account).
     pub fn usage_error_for(&self, display_name: &str) -> Option<forge_gateway::UsageFetchStatus> {
-        self.accounts.lock().usage_error(&AccountKey(display_name.to_owned()))
+        self.accounts.state().usage_error(&AccountKey(display_name.to_owned()))
     }
 
     /// Resolve an account `display_name` to its `(AccountKey,
@@ -2787,7 +2785,7 @@ impl Workspace {
         &self,
         display_name: &str,
     ) -> Option<(AccountKey, PathBuf)> {
-        let accounts = self.accounts.lock();
+        let accounts = self.accounts.state();
         let key = AccountKey(display_name.to_owned());
         let config_dir = accounts.config_dir(&key)?.clone();
         Some((key, config_dir))
@@ -2810,7 +2808,7 @@ impl Workspace {
         fallback_accounts: &[String],
         current_account: Option<&str>,
     ) -> Vec<crate::AccountRow> {
-        let accounts = self.accounts.lock();
+        let accounts = self.accounts.state();
         // Resolve the allow-list to concrete account names, falling
         // back to every configured account when the project pins none.
         // Fallback names then join (deduped) - usually accounts the pin
@@ -3812,7 +3810,7 @@ impl Workspace {
         let workspace = Arc::clone(self);
         let tag_cache = std::sync::Arc::new(load_session_tag_cache(self.db.lock().as_ref()));
         let config_dirs = {
-            let mut dirs = self.accounts.lock().config_dirs();
+            let mut dirs = self.accounts.state().config_dirs();
             if !dirs.contains(&self.config_dir) {
                 dirs.push(self.config_dir.clone());
             }
@@ -3859,7 +3857,7 @@ impl Workspace {
     ) -> Option<String> {
         let tag_cache = std::sync::Arc::new(load_session_tag_cache(self.db.lock().as_ref()));
         let config_dirs = {
-            let mut dirs = self.accounts.lock().config_dirs();
+            let mut dirs = self.accounts.state().config_dirs();
             if !dirs.contains(&self.config_dir) {
                 dirs.push(self.config_dir.clone());
             }
@@ -4551,7 +4549,7 @@ impl Workspace {
 
         let key = AccountKey(account_display_name.to_owned());
         let (provider, base_url) = {
-            let accounts = self.accounts.lock();
+            let accounts = self.accounts.state();
             let base_url = accounts
                 .env(&key)
                 .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
@@ -6468,6 +6466,7 @@ mod account_stamp_tests {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use forge_gateway::AccountStateMap;
     use std::fs;
     use tempfile::tempdir;
 
@@ -6562,7 +6561,7 @@ mod tests {
                 &AccountKey("B".to_owned()),
                 account_usage_snapshot(34.0, 22.0, Some(future)),
             );
-            *ws.accounts.lock() = map;
+            *ws.accounts.state() = map;
         }
 
         let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &[], Some("A"));
@@ -6630,7 +6629,7 @@ mod tests {
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
             map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            *ws.accounts.lock() = map;
+            *ws.accounts.state() = map;
         }
 
         // Allow-list pins only "A"; "Exp" is a different org's account.
@@ -6667,7 +6666,7 @@ mod tests {
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
             map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            *ws.accounts.lock() = map;
+            *ws.accounts.state() = map;
         }
 
         // "Exp" is BOTH pinned by the allow-list AND experimental.
@@ -6705,7 +6704,7 @@ mod tests {
             ]);
             map.set_usage(&AccountKey("One".to_owned()), account_usage_snapshot(10.0, 10.0, None));
             map.set_usage(&AccountKey("Two".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            *ws.accounts.lock() = map;
+            *ws.accounts.state() = map;
         }
 
         let rows = ws.project_accounts_snapshot(&[], &[], None);
@@ -6749,7 +6748,7 @@ mod tests {
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
             map.set_usage(&AccountKey("B".to_owned()), account_usage_snapshot(10.0, 10.0, None));
             map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            *ws.accounts.lock() = map;
+            *ws.accounts.state() = map;
         }
 
         let rows = ws.project_accounts_snapshot(
@@ -6790,7 +6789,7 @@ mod tests {
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
             map.set_usage(&AccountKey("B".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            *ws.accounts.lock() = map;
+            *ws.accounts.state() = map;
         }
 
         let rows = ws.project_accounts_snapshot(
@@ -7101,7 +7100,7 @@ mod tests {
         } else {
             std::collections::HashMap::new()
         };
-        *ws.accounts.lock() =
+        *ws.accounts.state() =
             forge_gateway::AccountStateMap::new(&[crate::config::LoadedAccount {
                 display_name: display_name.to_owned(),
                 config_dir: PathBuf::from(format!("/cfg/{display_name}")),
@@ -13334,7 +13333,7 @@ mod git_scan_cwd_tests {
     // session_chip_for. Build a real workspace from the local
     // `make_workspace_dir_246` helper (single account "Stargate",
     // single project "forge") + manually drive the loading state via
-    // account_states().lock().set_*().
+    // account_pool().state().set_*().
     // ---------------------------------------------------------------
 
     fn make_workspace_dir_246() -> tempfile::TempDir {
@@ -13535,7 +13534,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_lead_and_worker();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
             accounts.set_usage(&AccountKey("Beta".to_owned()), usage_at(10.0));
         }
@@ -13597,7 +13596,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_primary_and_fallback();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
             accounts.set_usage(&AccountKey("Api".to_owned()), usage_at(10.0));
         }
@@ -13621,7 +13620,7 @@ provider = "anthropic"
 
         // The primary hits its cap while the fallback stays healthy.
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
         }
 
@@ -13635,7 +13634,7 @@ provider = "anthropic"
             "the resume falls to the healthy fallback",
         );
         {
-            let plan = workspace.assignment_plan.lock();
+            let plan = workspace.account_pool().plan();
             assert_eq!(
                 plan.as_ref().expect("plan populated").lookup(&project_key, &"lead".to_owned()),
                 Some(&AccountKey("Api".to_owned())),
@@ -13665,7 +13664,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_multi_fallback();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
             accounts.set_usage(&AccountKey("Api1".to_owned()), usage_at(10.0));
             accounts.set_usage(&AccountKey("Api2".to_owned()), usage_at(10.0));
@@ -13683,7 +13682,7 @@ provider = "anthropic"
         // recompute runs, so the slot still holds the stale boot pool -
         // exactly the state a resume can land in.
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
         }
 
@@ -13697,8 +13696,8 @@ provider = "anthropic"
 
         let row = |label: &str| -> Option<AccountKey> {
             workspace
-                .assignment_plan
-                .lock()
+                .account_pool()
+                .plan()
                 .as_ref()
                 .expect("plan")
                 .lookup(&project_key, &label.to_owned())
@@ -13730,7 +13729,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_multi_fallback();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
             accounts.set_usage(&AccountKey("Api1".to_owned()), usage_at(10.0));
             accounts.set_usage(&AccountKey("Api2".to_owned()), usage_at(10.0));
@@ -13763,7 +13762,7 @@ provider = "anthropic"
         // The primary saturates with no recompute; both worker rows sit
         // out of the fresh fallback pool.
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
         }
 
@@ -13793,7 +13792,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_primary_and_fallback();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
             accounts.set_usage(&AccountKey("Api".to_owned()), usage_at(10.0));
         }
@@ -13809,7 +13808,7 @@ provider = "anthropic"
 
         // The primary saturates; a live lead resume WOULD re-tier here.
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
         }
 
@@ -13825,8 +13824,8 @@ provider = "anthropic"
             "the spawn keeps the recorded lead lookup",
         );
         let lead_row = workspace
-            .assignment_plan
-            .lock()
+            .account_pool()
+            .plan()
             .as_ref()
             .expect("plan")
             .lookup(&project_key, &"lead".to_owned())
@@ -13883,7 +13882,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_246_two_accounts();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             for name in ["Alpha", "Beta"] {
                 let snapshot = forge_primitives::usage::UsageSnapshot {
                     source: forge_primitives::usage::UsageSourceKind::Oauth,
@@ -13901,7 +13900,7 @@ provider = "anthropic"
         }
 
         workspace.recompute_plan_if_ready();
-        let plan = workspace.assignment_plan.lock();
+        let plan = workspace.account_pool().plan();
         let plan = plan.as_ref().expect("plan populates once all_loaded fires");
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -13923,7 +13922,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_experimental();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             for name in ["Exp", "Alpha"] {
                 let snapshot = forge_primitives::usage::UsageSnapshot {
                     source: forge_primitives::usage::UsageSourceKind::Oauth,
@@ -13941,7 +13940,7 @@ provider = "anthropic"
         }
 
         workspace.recompute_plan_if_ready();
-        let plan = workspace.assignment_plan.lock();
+        let plan = workspace.account_pool().plan();
         let plan = plan.as_ref().expect("plan populates once all_loaded fires");
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -13977,7 +13976,7 @@ provider = "anthropic"
         // Fresh workspace: account starts in `Loading`. all_loaded
         // returns false; recompute must not populate the plan.
         workspace.recompute_plan_if_ready();
-        let plan = workspace.assignment_plan.lock();
+        let plan = workspace.account_pool().plan();
         assert!(plan.is_none(), "plan stays None while accounts are still Loading");
     }
 
@@ -14003,7 +14002,7 @@ provider = "anthropic"
             balance: None,
         };
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), snapshot.clone());
             accounts
                 .set_loading(&AccountKey("Beta".to_owned()), forge_gateway::LoadingState::Bailed);
@@ -14017,7 +14016,7 @@ provider = "anthropic"
         // Heal Beta exactly the way the usage poller's success arm does.
         workspace.record_usage_success(&AccountKey("Beta".to_owned()), snapshot);
 
-        let mut plan_guard = workspace.assignment_plan.lock();
+        let mut plan_guard = workspace.account_pool().plan();
         let plan = plan_guard.as_mut().expect("plan populated while accounts settle");
         let worker = plan.assign_adhoc_worker(&project_key, &"w1".to_owned(), |_| true);
         assert_eq!(
@@ -14033,7 +14032,7 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         // Transition the lone account to Ready by injecting a snapshot.
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             let snapshot = forge_primitives::usage::UsageSnapshot {
                 source: forge_primitives::usage::UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::UNIX_EPOCH,
@@ -14049,7 +14048,7 @@ provider = "anthropic"
         }
 
         workspace.recompute_plan_if_ready();
-        let plan = workspace.assignment_plan.lock();
+        let plan = workspace.account_pool().plan();
         let plan = plan.as_ref().expect("plan populates once all_loaded fires");
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -14066,7 +14065,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             let snapshot = forge_primitives::usage::UsageSnapshot {
                 source: forge_primitives::usage::UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::UNIX_EPOCH,
@@ -14082,12 +14081,12 @@ provider = "anthropic"
         }
 
         workspace.recompute_plan_if_ready();
-        let first_plan = workspace.assignment_plan.lock().clone();
+        let first_plan = workspace.account_pool().plan().clone();
 
         // Recompute should be idempotent on the same ready set
         // (frozen overlay merges; existing assignments preserved).
         workspace.recompute_plan_if_ready();
-        let second_plan = workspace.assignment_plan.lock().clone();
+        let second_plan = workspace.account_pool().plan().clone();
         assert!(first_plan.is_some());
         assert!(second_plan.is_some());
         // Same plan contents (the frozen overlay preserves entries).
@@ -14121,7 +14120,7 @@ provider = "anthropic"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
         workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        assert!(workspace.assignment_plan.lock().is_none(), "plan still unpopulated");
+        assert!(workspace.account_pool().plan().is_none(), "plan still unpopulated");
     }
 
     #[tokio::test]
@@ -14129,7 +14128,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             let snapshot = forge_primitives::usage::UsageSnapshot {
                 source: forge_primitives::usage::UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::UNIX_EPOCH,
@@ -14153,7 +14152,7 @@ provider = "anthropic"
             assigned.is_none(),
             "assigning to a usable account returns None (nothing to surface)",
         );
-        let plan = workspace.assignment_plan.lock();
+        let plan = workspace.account_pool().plan();
         let plan = plan.as_ref().expect("populated");
         assert!(
             plan.lookup(&project_key, &"reviewer".to_owned()).is_some(),
@@ -14191,8 +14190,8 @@ provider = "anthropic"
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace
-            .account_states()
-            .lock()
+            .account_pool()
+            .state()
             .set_usage(&AccountKey("Stargate".to_owned()), usage_at(100.0));
         workspace.recompute_plan_if_ready();
         let project_key =
@@ -14217,23 +14216,20 @@ provider = "anthropic"
         let dir = make_workspace_dir_246_two_accounts();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
             accounts.set_usage(&AccountKey("Beta".to_owned()), usage_at(10.0));
         }
         workspace.recompute_plan_if_ready();
         // Beta saturates after the pool was frozen.
-        workspace
-            .account_states()
-            .lock()
-            .set_usage(&AccountKey("Beta".to_owned()), usage_at(100.0));
+        workspace.account_pool().state().set_usage(&AccountKey("Beta".to_owned()), usage_at(100.0));
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
         let assigned = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
         assert!(assigned.is_none(), "rotating onto a usable account returns None");
-        let plan = workspace.assignment_plan.lock();
+        let plan = workspace.account_pool().plan();
         let plan = plan.as_ref().expect("populated");
         assert_eq!(
             plan.lookup(&project_key, &"reviewer".to_owned()),
@@ -14252,7 +14248,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_246_two_accounts();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
             accounts.set_usage(&AccountKey("Beta".to_owned()), usage_at(10.0));
         }
@@ -14265,7 +14261,7 @@ provider = "anthropic"
         let first = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
         assert!(first.is_none(), "initial pin onto a usable account returns None");
         {
-            let plan = workspace.assignment_plan.lock();
+            let plan = workspace.account_pool().plan();
             let plan = plan.as_ref().expect("populated");
             assert_eq!(
                 plan.lookup(&project_key, &"reviewer".to_owned()),
@@ -14274,10 +14270,7 @@ provider = "anthropic"
         }
 
         // Beta goes rate-limited; Alpha is still usable.
-        workspace
-            .account_states()
-            .lock()
-            .set_usage(&AccountKey("Beta".to_owned()), usage_at(100.0));
+        workspace.account_pool().state().set_usage(&AccountKey("Beta".to_owned()), usage_at(100.0));
 
         // Re-spawn the same label: the pin is preserved (not re-homed
         // onto Alpha) and the now-unusable state is surfaced.
@@ -14287,7 +14280,7 @@ provider = "anthropic"
             Some(AccountKey("Beta".to_owned())),
             "re-spawn keeps the pinned account and surfaces its unusable state",
         );
-        let plan = workspace.assignment_plan.lock();
+        let plan = workspace.account_pool().plan();
         let plan = plan.as_ref().expect("populated");
         assert_eq!(
             plan.lookup(&project_key, &"reviewer".to_owned()),
@@ -14350,7 +14343,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             let snapshot = forge_primitives::usage::UsageSnapshot {
                 source: forge_primitives::usage::UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::UNIX_EPOCH,
@@ -14391,7 +14384,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_no_auto_start();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             let snapshot = forge_primitives::usage::UsageSnapshot {
                 source: forge_primitives::usage::UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::UNIX_EPOCH,
@@ -14428,7 +14421,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             let snapshot = forge_primitives::usage::UsageSnapshot {
                 source: forge_primitives::usage::UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::UNIX_EPOCH,
@@ -14465,7 +14458,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             let snapshot = forge_primitives::usage::UsageSnapshot {
                 source: forge_primitives::usage::UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::UNIX_EPOCH,
@@ -14502,7 +14495,7 @@ provider = "anthropic"
         // Snapshot first then transition to Bailed (preserves plan
         // assignment, just changes loading state).
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             let snapshot = forge_primitives::usage::UsageSnapshot {
                 source: forge_primitives::usage::UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::UNIX_EPOCH,
@@ -14519,7 +14512,7 @@ provider = "anthropic"
         workspace.recompute_plan_if_ready();
         // Now flip to Bailed on an auth failure - the red class.
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             accounts.set_loading(
                 &AccountKey("Stargate".to_owned()),
                 forge_gateway::LoadingState::Bailed,
@@ -14546,7 +14539,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         {
-            let mut accounts = workspace.account_states().lock();
+            let mut accounts = workspace.account_pool().state();
             let snapshot = forge_primitives::usage::UsageSnapshot {
                 source: forge_primitives::usage::UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::UNIX_EPOCH,
@@ -14562,8 +14555,8 @@ provider = "anthropic"
         }
         workspace.recompute_plan_if_ready();
         workspace
-            .account_states()
-            .lock()
+            .account_pool()
+            .state()
             .set_loading(&AccountKey("Stargate".to_owned()), forge_gateway::LoadingState::Bailed);
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(

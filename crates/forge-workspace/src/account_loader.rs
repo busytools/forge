@@ -81,7 +81,7 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
         return;
     };
     let (provider, account_env) = {
-        let accounts = workspace.account_states().lock();
+        let accounts = workspace.account_pool().state();
         (
             accounts.provider_or_anthropic(&account_key),
             accounts.env(&account_key).cloned().unwrap_or_default(),
@@ -104,7 +104,7 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
         ),
     }
     {
-        let mut states = workspace.account_states().lock();
+        let mut states = workspace.account_pool().state();
         settle_probe_result(&mut states, &account_key, &probe_result);
     }
     workspace.recompute_plan_if_ready();

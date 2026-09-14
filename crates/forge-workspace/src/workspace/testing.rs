@@ -13,7 +13,7 @@ use crate::config::LoadedConfig;
 use crate::protocol::SessionUpdate;
 use crate::target::{ProjectKey, SessionKey};
 use crate::workspace::{KickRequest, Workspace};
-use forge_gateway::{AccountKey, AccountStateMap};
+use forge_gateway::AccountKey;
 
 #[cfg(any(test, feature = "testing"))]
 impl Workspace {
@@ -150,8 +150,7 @@ impl Workspace {
             config,
             catalog: Arc::new(Mutex::new(HashMap::new())),
             pool: Mutex::new(HashMap::new()),
-            accounts: Mutex::new(AccountStateMap::empty_for_test()),
-            assignment_plan: Mutex::new(None),
+            accounts: std::sync::Arc::new(forge_gateway::AccountPool::empty_for_test()),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
@@ -254,7 +253,7 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_ready_account(&self, account: &str) {
         self.accounts
-            .lock()
+            .state()
             .set_loading(&AccountKey(account.to_owned()), forge_gateway::LoadingState::Ready);
         self.recompute_plan_if_ready();
     }
@@ -264,7 +263,7 @@ impl Workspace {
     /// loader. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_account_state(&self, account: &str, state: forge_gateway::LoadingState) {
-        self.accounts.lock().set_loading(&AccountKey(account.to_owned()), state);
+        self.accounts.state().set_loading(&AccountKey(account.to_owned()), state);
     }
 
     /// Record a probe failure on `account`, so a cross-crate test can
@@ -275,7 +274,7 @@ impl Workspace {
         account: &str,
         status: forge_gateway::UsageFetchStatus,
     ) {
-        self.accounts.lock().set_last_error(&AccountKey(account.to_owned()), status, None);
+        self.accounts.state().set_last_error(&AccountKey(account.to_owned()), status, None);
     }
 
     /// Replace the dictation preflight snapshot, so a cross-crate test
