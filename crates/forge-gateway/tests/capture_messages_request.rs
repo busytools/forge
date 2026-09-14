@@ -66,8 +66,9 @@ fn find_uuid(text: &str) -> Option<(usize, usize)> {
                 i += 1;
             }
             let len = i - start;
-            // 8-4-4-4-12 UUIDs and 12+ hex ids are capture-local values.
-            if len >= 12 && text[start..i].contains('-') {
+            // Any 12+ char hex-shaped run is capture-local: UUIDs, the
+            // CLI's 64-hex device id, long hashes. Dash or no dash.
+            if len >= 12 {
                 return Some((start, len));
             }
         } else {

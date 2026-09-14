@@ -201,7 +201,7 @@ at.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `port` | integer | `8787` | The port the gateway's listener binds on `127.0.0.1`. There is no fallback to an OS-assigned port: if the port is taken, the gateway fails to start and preflight stays shut, because every session's base URL names this port and a silent drift would point children at an address nothing serves. |
+| `port` | integer | `8787` | The port the gateway's listener binds on `127.0.0.1`. There is no fallback to an OS-assigned port: if the port is taken, the gateway fails to start and preflight stays shut, because every session's base URL names this port and a silent drift would point children at an address nothing serves. `0` fails the load outright (`GatewayPortInvalid`) for the same reason - it reads as "pick one for me". |
 
 ## Environment layering
 
@@ -215,6 +215,13 @@ The global and account layers merge at load. The project layer is
 applied at spawn rather than earlier, because one account serves many
 projects and merging sooner would leak one project's keys into every
 other project on that account.
+
+One carve-out applies to project spawns: after those layers compose,
+the gateway re-stamps four keys over the result - `ANTHROPIC_BASE_URL`
+(the listener with the session's routing segments), the
+`CLAUDE_CODE_API_BASE_URL` slot, the account's credential variable, and
+`ANTHROPIC_API_KEY` (forced empty) - so no layer can point a child away
+from the listener while it holds only the dummy credential.
 
 One key is reserved by forge: `CLAUDE_CONFIG_DIR`. Setting it in any
 env layer overrides forge's own stamp. The value still applies, since
