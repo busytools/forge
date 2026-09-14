@@ -1,6 +1,7 @@
 //! `forge-gateway` - the account pool: one backend per
 //! `forge.toml` `provider` token, plus account selection, health,
-//! probe scheduling and backoff.
+//! probe scheduling, backoff, and the inference listener spawned
+//! sessions route through.
 //!
 //! Each [`ProviderBackend`] owns credential resolution, the probe
 //! request and its payload mapping, the billing shape, and what repair
@@ -16,11 +17,15 @@
 pub mod account;
 mod anthropic;
 pub mod assignment_plan;
+pub mod binding;
 mod codex;
+pub mod forward;
 pub mod helpers;
+pub mod listener;
 pub mod model_catalog;
 mod openrouter;
 pub mod pool;
+pub mod splice;
 mod zai;
 
 use std::collections::HashMap;

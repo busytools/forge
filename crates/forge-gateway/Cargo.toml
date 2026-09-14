@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "The account pool: one backend per forge.toml provider token (credential resolution, probe HTTP + mapping, billing shape), plus account selection, health, probe scheduling and backoff."
+description = "The account pool and its inference listener: one backend per forge.toml provider token (credential resolution, probe HTTP + mapping, billing shape), account selection, health, probe scheduling, backoff, and the HTTP listener spawned sessions route through."
 publish = false
 
 [lints]
@@ -20,13 +20,20 @@ testing = []
 [dependencies]
 forge-primitives = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+futures-util = { workspace = true }
 httpdate = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true }
