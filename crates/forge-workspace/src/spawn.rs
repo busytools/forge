@@ -100,11 +100,11 @@ fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
     settings.charter = Some(DEFAULT_LEAD_CHARTER.to_owned());
 }
 
-/// Stamp the account's `[[accounts]] permission_mode` into the launch
-/// settings' `permissions.defaultMode`, where the existing
+/// Stamp the project's `permission_mode` into the launch settings'
+/// `permissions.defaultMode`, where the existing
 /// `applied_permission_mode` arm in `forge_sdk_worker` picks it up;
 /// overrides a launcher-supplied default.
-pub(crate) fn stamp_account_permission_mode(
+pub(crate) fn stamp_permission_mode(
     settings: &mut SessionLaunchSettings,
     mode: forge_primitives::permission::PermissionMode,
 ) {
@@ -1894,9 +1894,9 @@ provider = "anthropic"
     }
 
     #[test]
-    fn account_permission_mode_stamps_into_absent_settings() {
+    fn project_permission_mode_stamps_into_absent_settings() {
         let mut settings = SessionLaunchSettings::default();
-        stamp_account_permission_mode(
+        stamp_permission_mode(
             &mut settings,
             forge_primitives::permission::PermissionMode::BypassPermissions,
         );
@@ -1909,12 +1909,12 @@ provider = "anthropic"
         assert_eq!(
             mode,
             Some("bypassPermissions"),
-            "the account mode reaches the settings JSON the worker's applied_permission_mode arm reads",
+            "the project mode reaches the settings JSON the worker's applied_permission_mode arm reads",
         );
     }
 
     #[test]
-    fn account_permission_mode_overrides_the_launcher_default_and_keeps_siblings() {
+    fn project_permission_mode_overrides_the_launcher_default_and_keeps_siblings() {
         let mut settings = SessionLaunchSettings {
             settings: Some(serde_json::json!({
                 "permissions": { "defaultMode": "default" },
@@ -1922,7 +1922,7 @@ provider = "anthropic"
             })),
             ..SessionLaunchSettings::default()
         };
-        stamp_account_permission_mode(
+        stamp_permission_mode(
             &mut settings,
             forge_primitives::permission::PermissionMode::BypassPermissions,
         );
@@ -1933,7 +1933,7 @@ provider = "anthropic"
                 .and_then(|p| p.get("defaultMode"))
                 .and_then(serde_json::Value::as_str),
             Some("bypassPermissions"),
-            "the account mode wins over the launcher's session default",
+            "the project mode wins over the launcher's session default",
         );
         assert_eq!(
             record.get("model").and_then(serde_json::Value::as_str),

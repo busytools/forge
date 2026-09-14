@@ -1515,7 +1515,6 @@ mod tests {
             provider: forge_primitives::account::Provider::Anthropic,
             env: std::collections::HashMap::new(),
             experimental: false,
-            permission_mode: None,
         }
     }
 
@@ -1985,6 +1984,7 @@ mod tests {
             crate::workspace::PooledAgent {
                 handle: Arc::clone(&handle),
                 account: forge_gateway::AccountKey("Acct".to_owned()),
+                permission_mode: None,
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -2037,6 +2037,7 @@ mod tests {
             crate::workspace::PooledAgent {
                 handle: Arc::clone(&handle),
                 account: forge_gateway::AccountKey("Acct".to_owned()),
+                permission_mode: None,
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -2085,6 +2086,7 @@ mod tests {
             crate::workspace::PooledAgent {
                 handle: Arc::clone(&handle),
                 account: forge_gateway::AccountKey("Acct".to_owned()),
+                permission_mode: None,
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -3055,6 +3057,7 @@ mod tests {
             crate::workspace::PooledAgent {
                 handle: Arc::clone(&arc),
                 account: forge_gateway::AccountKey("test".to_owned()),
+                permission_mode: None,
             },
         );
         let domain = workspace.register_domain_session(key.clone(), Some(Arc::clone(&arc)));

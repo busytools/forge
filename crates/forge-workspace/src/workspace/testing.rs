@@ -244,6 +244,7 @@ impl Workspace {
             auto_start: false,
             env: std::collections::HashMap::new(),
             max_workers: None,
+            permission_mode: forge_primitives::permission::PermissionMode::Auto,
         });
     }
 

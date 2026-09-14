@@ -437,14 +437,18 @@ pub struct Workspace {
     test_extra_projects: Mutex<Vec<LoadedProject>>,
 }
 
-/// Pool entry wrapping the live `Arc<AgentHandle>` and the account key
-/// the subprocess is bound to.
+/// Pool entry wrapping the live `Arc<AgentHandle>`, the account key
+/// the subprocess is bound to, and the permission mode that spawn
+/// resolved for its project.
 pub(crate) struct PooledAgent {
     pub handle: Arc<AgentHandle>,
-    /// The account the subprocess is bound to, resolved at spawn; the
-    /// dispatch path reads it to stamp `permission_mode` onto `/new`
-    /// and `/resume` re-spawns.
+    /// The account the subprocess is bound to, resolved at spawn.
     pub account: AccountKey,
+    /// The permission mode this session spawned with, from its
+    /// project; `None` when the spawn resolved to no project and the
+    /// launcher default applied. The dispatch path reads it to stamp
+    /// the same mode onto `/new` and `/resume` re-spawns.
+    pub permission_mode: Option<forge_primitives::permission::PermissionMode>,
 }
 
 /// Why `insert_live_worker_if_label_absent` refused an insert. Decided
@@ -1481,7 +1485,9 @@ impl Workspace {
             let accounts = self.accounts.lock();
             accounts.env(&account_key).cloned().unwrap_or_default()
         };
-        apply_account_permission_mode(&self.accounts.lock(), &account_key, &mut settings);
+        let project = self.project_for_target(&target);
+        apply_project_permission_mode(project.as_ref(), &mut settings);
+        let project_permission_mode = project.map(|project| project.permission_mode);
         let session_env = self.session_env_for(&target, &account_env);
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
@@ -1657,7 +1663,11 @@ impl Workspace {
             }
             pool.insert(
                 session_key.clone(),
-                PooledAgent { handle: Arc::clone(&arc), account: account_key.clone() },
+                PooledAgent {
+                    handle: Arc::clone(&arc),
+                    account: account_key.clone(),
+                    permission_mode: project_permission_mode,
+                },
             );
         }
 
@@ -3346,36 +3356,23 @@ impl Workspace {
             if let Command::NewSession { launch_settings, .. }
             | Command::ResumeSession { launch_settings, .. } = &mut cmd
             {
-                let account_key = self.pool.lock().get(&key).map(|p| p.account.clone());
-                match account_key {
+                let pooled =
+                    self.pool.lock().get(&key).map(|p| (p.permission_mode, p.account.0.clone()));
+                match pooled {
                     None => tracing::warn!(
                         target: "forge_workspace::workspace",
                         key = %key.as_str(),
                         "permission_mode stamp skipped: respawn routed but no pool entry \
                          (release_session teardown window)",
                     ),
-                    Some(account_key) => {
-                        let accounts = self.accounts.lock();
-                        if accounts.provider(&account_key).is_none() {
-                            tracing::warn!(
-                                target: "forge_workspace::workspace",
-                                key = %key.as_str(),
-                                account = %account_key.0,
-                                "permission_mode stamp skipped: pooled account is not in the \
-                                 account map",
-                            );
-                        } else if let Some(mode) = accounts.permission_mode(&account_key) {
-                            spawn::stamp_account_permission_mode(launch_settings, mode);
-                        } else {
-                            tracing::debug!(
-                                target: "forge_workspace::workspace",
-                                key = %key.as_str(),
-                                account = %account_key.0,
-                                "respawn keeps the launcher default: account sets no \
-                                 permission_mode",
-                            );
-                        }
-                    }
+                    Some((None, account)) => tracing::debug!(
+                        target: "forge_workspace::workspace",
+                        key = %key.as_str(),
+                        account,
+                        "respawn keeps the launcher default: the session's project resolved \
+                         to no permission mode",
+                    ),
+                    Some((Some(mode), _)) => spawn::stamp_permission_mode(launch_settings, mode),
                 }
             }
             let senders = self.command_senders.lock();
@@ -6316,15 +6313,15 @@ async fn tag_session_with_retry(
     }))
 }
 
-/// An account carrying `[[accounts]] permission_mode` owns the mode
-/// for every session it spawns; a no-op without the key.
-fn apply_account_permission_mode(
-    accounts: &AccountStateMap,
-    account_key: &AccountKey,
+/// Stamp the project's `permission_mode` into the launch settings'
+/// `permissions.defaultMode`. A spawn that resolved to no project
+/// stamps nothing, so the launcher's session default applies.
+fn apply_project_permission_mode(
+    project: Option<&crate::config::LoadedProject>,
     settings: &mut SessionLaunchSettings,
 ) {
-    if let Some(mode) = accounts.permission_mode(account_key) {
-        spawn::stamp_account_permission_mode(settings, mode);
+    if let Some(mode) = project.map(|project| project.permission_mode) {
+        spawn::stamp_permission_mode(settings, mode);
     }
 }
 
@@ -6417,20 +6414,23 @@ mod resolver_tests {
 #[cfg(test)]
 mod account_stamp_tests {
     use super::*;
-    use crate::config::LoadedAccount;
+    use crate::config::LoadedProject;
 
-    fn account_map(
-        permission_mode: Option<forge_primitives::permission::PermissionMode>,
-    ) -> AccountStateMap {
-        let accounts = [LoadedAccount {
-            display_name: "Stargate".to_owned(),
-            config_dir: PathBuf::from("/tmp/claude-stargate"),
-            provider: forge_primitives::account::Provider::Anthropic,
+    fn project_with_mode(
+        permission_mode: forge_primitives::permission::PermissionMode,
+    ) -> LoadedProject {
+        LoadedProject {
+            name: "forge".to_owned(),
+            path: PathBuf::from("/tmp/forge"),
+            display_path: "~/Projects/forge".to_owned(),
+            org: "Personal".to_owned(),
+            accounts: vec!["Stargate".to_owned()],
+            fallback_accounts: Vec::new(),
+            auto_start: false,
             env: HashMap::new(),
-            experimental: false,
+            max_workers: None,
             permission_mode,
-        }];
-        AccountStateMap::new(&accounts)
+        }
     }
 
     fn stamped_mode(settings: &SessionLaunchSettings) -> Option<String> {
@@ -6444,26 +6444,23 @@ mod account_stamp_tests {
     }
 
     #[test]
-    fn account_mode_stamps_fresh_spawn_settings_and_modeless_account_leaves_them() {
+    fn project_mode_stamps_fresh_spawn_settings_and_projectless_leaves_them() {
+        let bypass =
+            project_with_mode(forge_primitives::permission::PermissionMode::BypassPermissions);
         let mut stamped = SessionLaunchSettings::default();
-        apply_account_permission_mode(
-            &account_map(Some(forge_primitives::permission::PermissionMode::BypassPermissions)),
-            &AccountKey("Stargate".to_owned()),
-            &mut stamped,
-        );
+        apply_project_permission_mode(Some(&bypass), &mut stamped);
         assert_eq!(
             stamped_mode(&stamped).as_deref(),
             Some("bypassPermissions"),
-            "an account carrying permission_mode stamps the fresh spawn settings",
+            "a project carrying permission_mode stamps the fresh spawn settings",
         );
 
         let mut untouched = SessionLaunchSettings::default();
-        apply_account_permission_mode(
-            &account_map(None),
-            &AccountKey("Stargate".to_owned()),
-            &mut untouched,
+        apply_project_permission_mode(None, &mut untouched);
+        assert!(
+            untouched.settings.is_none(),
+            "a spawn that resolved to no project leaves fresh settings untouched"
         );
-        assert!(untouched.settings.is_none(), "a modeless account leaves fresh settings untouched");
     }
 }
 
@@ -6546,7 +6543,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
-                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
@@ -6554,7 +6550,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
-                    permission_mode: None,
                 },
             ]);
             // A: 5h saturated (100%, future reset) -> rate limited; 7d 63%.
@@ -6624,7 +6619,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
-                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Exp".to_owned(),
@@ -6632,7 +6626,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: true,
-                    permission_mode: None,
                 },
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -6663,7 +6656,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
-                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Exp".to_owned(),
@@ -6671,7 +6663,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: true,
-                    permission_mode: None,
                 },
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -6703,7 +6694,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
-                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Two".to_owned(),
@@ -6711,7 +6701,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
-                    permission_mode: None,
                 },
             ]);
             map.set_usage(&AccountKey("One".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -6741,7 +6730,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
-                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
@@ -6749,7 +6737,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
-                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Exp".to_owned(),
@@ -6757,7 +6744,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: true,
-                    permission_mode: None,
                 },
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -6793,7 +6779,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
-                    permission_mode: None,
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
@@ -6801,7 +6786,6 @@ mod tests {
                     provider: forge_primitives::account::Provider::Anthropic,
                     env: std::collections::HashMap::new(),
                     experimental: false,
-                    permission_mode: None,
                 },
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -6839,7 +6823,11 @@ mod tests {
         let (tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
         ws.pool.lock().insert(
             key.clone(),
-            PooledAgent { handle: Arc::clone(&arc_b), account: AccountKey("B".to_owned()) },
+            PooledAgent {
+                handle: Arc::clone(&arc_b),
+                account: AccountKey("B".to_owned()),
+                permission_mode: None,
+            },
         );
         ws.command_senders.lock().insert(key.clone(), tx);
         ws.register_domain_session(key.clone(), Some(Arc::clone(&arc_b)));
@@ -7120,7 +7108,6 @@ mod tests {
                 provider,
                 env,
                 experimental: false,
-                permission_mode: None,
             }]);
     }
 
@@ -7978,7 +7965,11 @@ SOLO_TOKEN = "solo-secret"
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
         ws.mark_session_connected_for_test(&key, "q-uuid");
         ws.enable_test_dispatch_intercept();
@@ -8013,7 +8004,11 @@ SOLO_TOKEN = "solo-secret"
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         ws.enable_test_dispatch_intercept();
@@ -8074,7 +8069,11 @@ SOLO_TOKEN = "solo-secret"
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         ws.enable_test_dispatch_intercept();
@@ -8122,7 +8121,11 @@ SOLO_TOKEN = "solo-secret"
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         ws.enable_test_dispatch_intercept();
@@ -8311,7 +8314,11 @@ SOLO_TOKEN = "solo-secret"
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         // A sender whose receiver is dropped: `dispatch` takes the production
@@ -8860,26 +8867,21 @@ provider = "anthropic"
 
     /// `/new` and `/resume` re-spawn on the already-pooled handle, where
     /// the spawn-path stamp in `get_agent_handle_with_spawn_key` never
-    /// runs - the launch settings must pick the pooled account's mode up
+    /// runs - the launch settings must pick the pooled session's mode up
     /// at dispatch instead.
     #[test]
-    fn respawn_commands_on_a_pooled_session_carry_the_account_mode() {
+    fn respawn_commands_on_a_pooled_session_carry_its_mode() {
         use forge_primitives::permission::PermissionMode;
         let (workspace, _update_rx) = Workspace::testing_stub();
-        *workspace.accounts.lock() =
-            forge_gateway::AccountStateMap::new(&[crate::config::LoadedAccount {
-                display_name: "Openrouter".to_owned(),
-                config_dir: PathBuf::from("/cfg/Openrouter"),
-                provider: forge_primitives::account::Provider::Openrouter,
-                env: HashMap::new(),
-                experimental: false,
-                permission_mode: Some(PermissionMode::BypassPermissions),
-            }]);
         let key = SessionKey::from_str_for_test("respawn-mode-test");
         let (handle, mut agent_rx) = Workspace::testing_stub_handle();
         workspace.pool.lock().insert(
             key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("Openrouter".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("Openrouter".to_owned()),
+                permission_mode: Some(PermissionMode::BypassPermissions),
+            },
         );
 
         let auto_settings = || SessionLaunchSettings {
@@ -8922,34 +8924,30 @@ provider = "anthropic"
         assert_eq!(
             carried_mode(&new).as_deref(),
             Some("bypassPermissions"),
-            "/new must carry the pooled account's mode, not the TUI session default",
+            "/new must carry the pooled session's mode, not the TUI session default",
         );
         assert_eq!(
             carried_mode(&resume).as_deref(),
             Some("bypassPermissions"),
-            "/resume must carry the pooled account's mode, not the TUI session default",
+            "/resume must carry the pooled session's mode, not the TUI session default",
         );
     }
 
-    /// A mode-less account must not gain a fallback mode at dispatch:
-    /// the launcher's own session default survives a respawn.
+    /// A session that spawned with no project mode must not gain a
+    /// fallback mode at dispatch: the launcher's own session default
+    /// survives a respawn.
     #[test]
-    fn respawn_commands_on_a_modeless_account_keep_the_launcher_default() {
+    fn respawn_commands_on_a_session_with_no_mode_keep_the_launcher_default() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        *workspace.accounts.lock() =
-            forge_gateway::AccountStateMap::new(&[crate::config::LoadedAccount {
-                display_name: "Plain".to_owned(),
-                config_dir: PathBuf::from("/cfg/Plain"),
-                provider: forge_primitives::account::Provider::Anthropic,
-                env: HashMap::new(),
-                experimental: false,
-                permission_mode: None,
-            }]);
         let key = SessionKey::from_str_for_test("respawn-modeless-test");
         let (handle, mut agent_rx) = Workspace::testing_stub_handle();
         workspace.pool.lock().insert(
             key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("Plain".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("Plain".to_owned()),
+                permission_mode: None,
+            },
         );
 
         workspace
@@ -8978,7 +8976,7 @@ provider = "anthropic"
         assert_eq!(
             carried,
             Some("plan"),
-            "an account without permission_mode must keep the launcher's session default",
+            "a session with no project mode must keep the launcher's session default",
         );
     }
 
@@ -9005,7 +9003,11 @@ provider = "anthropic"
         let arc = Arc::new(handle);
         workspace.pool.lock().insert(
             key.clone(),
-            PooledAgent { handle: Arc::clone(&arc), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::clone(&arc),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -9790,7 +9792,11 @@ provider = "anthropic"
         let (handle, _hrx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             caller.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("acct".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("acct".to_owned()),
+                permission_mode: None,
+            },
         );
         assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
         let dispatched = ws.drain_test_dispatch_buffer();
@@ -9836,7 +9842,11 @@ provider = "anthropic"
         let (handle, _hrx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             caller.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("acct".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("acct".to_owned()),
+                permission_mode: None,
+            },
         );
         assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
 
@@ -12481,7 +12491,11 @@ mod async_worker_spawn_failure_tests {
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         workspace.pool.lock().insert(
             key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
         key
     }
@@ -12702,7 +12716,11 @@ mod async_worker_spawn_failure_tests {
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
         workspace.pool.lock().insert(
             session_key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
 
@@ -12787,7 +12805,11 @@ mod async_worker_spawn_failure_tests {
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
         workspace.pool.lock().insert(
             session_key.clone(),
-            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+            },
         );
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
 
