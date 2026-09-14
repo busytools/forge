@@ -8,8 +8,11 @@
 //!   auth.
 //! - `<segments>/v1/messages` (query ignored) resolves the binding and
 //!   forwards to the bound account's upstream with the real credential
-//!   attached and the CLI's dummy stripped. An unbound session selects
-//!   an account now, from the model in its own body.
+//!   attached and the CLI's dummy stripped. A binding keeps the session
+//!   only while its account serves the model in the body: a model the
+//!   bound account cannot serve drops the binding and re-selects. An
+//!   unbound session selects an account now, from the model in its own
+//!   body.
 //! - The failing response streams back to the CLI untouched, but the
 //!   triggers it carries mark the account exhausted and rotate the
 //!   binding, so the CLI's retry lands on the next account with
@@ -1151,6 +1154,31 @@ mod tests {
         assert!(
             body.contains("soonest reset in "),
             "the failure names the soonest reset, got: {body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_family_miss_stays_a_family_miss_with_an_unrelated_cooldown_live() {
+        let harness = harness(Duration::ZERO).await;
+        pin_only(&harness, "Anthropic");
+        harness
+            .gateway
+            .pool
+            .set_loading(&AccountKey("Anthropic".to_owned()), crate::LoadingState::Ready);
+        // An account OUTSIDE the walk is cooling; the walk itself holds
+        // nothing cooling, so the walk emptied on the family rule and
+        // the failure must keep saying so.
+        let reset = SystemTime::now() + Duration::from_secs(600);
+        let reset_secs =
+            reset.duration_since(SystemTime::UNIX_EPOCH).expect("future reset").as_secs();
+        harness.gateway.report_probe_limit(&AccountKey("OpenRouter".to_owned()), Some(reset_secs));
+        let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
+        let response = post_model(&ghost_url, "glm-5.3-flash").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response.text().await.expect("body");
+        assert!(
+            body.contains("no account in org 'Busytools' serves model 'glm-5.3-flash'"),
+            "a family miss keeps the family message even with an unrelated cooldown live, got: {body}",
         );
     }
 

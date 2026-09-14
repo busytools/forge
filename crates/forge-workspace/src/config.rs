@@ -142,12 +142,14 @@ impl GatewaySettings {
 
     /// The resolved rotation numbers, refusing 0 on any of them: each
     /// 0 would silently disable the mechanism it configures, which
-    /// reads as a bug rather than a choice.
+    /// reads as a bug rather than a choice. A magnitude above u32
+    /// seconds is refused the same way - silently mapping it to the
+    /// default is the substitution this refusal exists to prevent.
     fn resolved_rotation(
         &self,
         path: &Path,
     ) -> Result<forge_gateway::rotation::RotationNumbers, WorkspaceError> {
-        fn refused_zero(
+        fn refused_u32(
             path: &Path,
             key: &'static str,
             value: Option<u32>,
@@ -161,26 +163,42 @@ impl GatewaySettings {
                 None => Ok(default),
             }
         }
+        fn refused_duration(
+            path: &Path,
+            key: &'static str,
+            value: Option<u64>,
+            default: Duration,
+        ) -> Result<Duration, WorkspaceError> {
+            match value {
+                Some(0) => {
+                    Err(WorkspaceError::GatewayRotationInvalid { path: path.to_path_buf(), key })
+                }
+                Some(v) => u32::try_from(v).map(u64::from).map(Duration::from_secs).map_err(|_| {
+                    WorkspaceError::GatewayRotationInvalid { path: path.to_path_buf(), key }
+                }),
+                None => Ok(default),
+            }
+        }
         let defaults = forge_gateway::rotation::RotationNumbers::default();
         Ok(forge_gateway::rotation::RotationNumbers {
-            streak_count: refused_zero(
+            streak_count: refused_u32(
                 path,
                 "streak_count",
                 self.streak_count,
                 defaults.streak_count,
             )?,
-            streak_window: Duration::from_secs(u64::from(refused_zero(
+            streak_window: refused_duration(
                 path,
                 "streak_window_secs",
-                self.streak_window_secs.and_then(|s| u32::try_from(s).ok()),
-                u32::try_from(defaults.streak_window.as_secs()).unwrap_or(u32::MAX),
-            )?)),
-            no_reset_cooldown: Duration::from_secs(u64::from(refused_zero(
+                self.streak_window_secs,
+                defaults.streak_window,
+            )?,
+            no_reset_cooldown: refused_duration(
                 path,
                 "no_reset_cooldown_secs",
-                self.no_reset_cooldown_secs.and_then(|s| u32::try_from(s).ok()),
-                u32::try_from(defaults.no_reset_cooldown.as_secs()).unwrap_or(u32::MAX),
-            )?)),
+                self.no_reset_cooldown_secs,
+                defaults.no_reset_cooldown,
+            )?,
         })
     }
 }
@@ -879,7 +897,16 @@ no_reset_cooldown_secs = 90
 
     #[test]
     fn gateway_rotation_zero_keys_are_refused_at_load() {
-        for key in ["streak_count", "streak_window_secs", "no_reset_cooldown_secs"] {
+        // An absurd magnitude is refused with the same error: silently
+        // mapping it to the default would substitute the user's value.
+        let values = [
+            ("streak_count", "0"),
+            ("streak_window_secs", "0"),
+            ("streak_window_secs", "99999999999"),
+            ("no_reset_cooldown_secs", "0"),
+            ("no_reset_cooldown_secs", "99999999999"),
+        ];
+        for (key, value) in values {
             let dir = tempdir().expect("tempdir");
             write_config(
                 dir.path(),
@@ -899,11 +926,11 @@ config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 
 [gateway]
-{key} = 0
+{key} = {value}
 "#
                 ),
             );
-            let err = load_from_dir(dir.path()).expect_err("a zero key must not load");
+            let err = load_from_dir(dir.path()).expect_err("an unusable key must not load");
             assert!(err.to_string().contains(key), "the error names the unusable key, got: {err}");
         }
     }

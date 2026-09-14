@@ -1783,10 +1783,14 @@ mod tests {
             "the report also drops the pre-rename spawn key's binding",
         );
 
+        // The re-bound key must survive the allowed frame: allowed
+        // frames arrive every turn, so a lost guard here would rotate
+        // a live session's binding on each one. Re-binding the task's
+        // OWN key is what makes this assert kill the guard regression.
         workspace.gateway.bindings.bind(
             "Org",
             "forge",
-            "other",
+            key.as_str(),
             forge_gateway::AccountKey("C".to_owned()),
         );
         task.translate_event(AgentEvent::SdkMessage {
@@ -1806,8 +1810,9 @@ mod tests {
                 session_id: key.as_str().to_owned(),
             },
         });
-        assert!(
-            workspace.gateway.bindings.binding_for("Org", "forge", "other").is_some(),
+        assert_eq!(
+            workspace.gateway.bindings.binding_for("Org", "forge", key.as_str()),
+            Some(forge_gateway::AccountKey("C".to_owned())),
             "an allowed frame rotates nothing",
         );
     }
