@@ -18,6 +18,7 @@ mod anthropic;
 pub mod assignment_plan;
 mod codex;
 pub mod helpers;
+pub mod listener;
 pub mod model_catalog;
 mod openrouter;
 pub mod pool;

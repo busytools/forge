@@ -20,12 +20,17 @@ testing = []
 [dependencies]
 forge-primitives = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 httpdate = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
