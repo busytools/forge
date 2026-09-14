@@ -5,7 +5,8 @@
 //! (`installed_plugins.json`) supplies installed-ness, version and the
 //! auto-dependency marker; `settings.json`'s `enabledPlugins` the
 //! enabled state; the marketplace manifests the latest version and LSP
-//! server names.
+//! server names; each plugin's own manifest its declared component
+//! paths.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -96,6 +97,23 @@ struct DirComponents {
     mcp: bool,
 }
 
+/// The component-path fields of `.claude-plugin/plugin.json`. The
+/// `claude` CLI resolves each as a string path or an array of paths,
+/// hooks and MCP servers additionally as inline objects.
+#[derive(Deserialize, Default)]
+struct PluginManifest {
+    #[serde(default)]
+    skills: Option<serde_json::Value>,
+    #[serde(default)]
+    agents: Option<serde_json::Value>,
+    #[serde(default)]
+    commands: Option<serde_json::Value>,
+    #[serde(default)]
+    hooks: Option<serde_json::Value>,
+    #[serde(rename = "mcpServers", default)]
+    mcp_servers: Option<serde_json::Value>,
+}
+
 /// Read and parse a JSON file. All three outcomes return `None`, so the
 /// caller cannot tell them apart from the value; the warn carries the
 /// difference: a missing file is the expected fresh-install case and
@@ -151,53 +169,192 @@ fn read_component_dir(dir: &Path, gated: bool) -> Result<Option<DirComponents>, 
     if gated && !is_regular_file(&dir.join(".claude-plugin/plugin.json"))? {
         return Ok(None);
     }
-    let skills = list_subdirs(&dir.join("skills"));
-    let agents = list_md_files(&dir.join("agents"));
-    let commands = list_md_files(&dir.join("commands"));
-    let hooks_path = dir.join("hooks/hooks.json");
+    let PluginManifest {
+        skills: declared_skills,
+        agents: declared_agents,
+        commands: declared_commands,
+        hooks: declared_hooks,
+        mcp_servers: declared_mcp,
+    } = read_plugin_manifest(dir).unwrap_or_default();
+    let mut skills = list_subdirs(&dir.join("skills"));
+    if let Some(declared) = declared_skills {
+        for path in declared_paths("skills", &declared) {
+            skills.extend(declared_skill_names(&dir.join(&path)));
+        }
+        skills.sort();
+        skills.dedup();
+    }
     // A hooks or MCP file that cannot be stat'd costs the plugin that
     // component, not its row: failing the whole row would hide whatever
     // the sibling reads did return.
-    let hooks = match is_regular_file(&hooks_path) {
-        Ok(true) => match read_json(&hooks_path) {
-            Some(doc) => doc.get("hooks").and_then(|hooks| hooks.as_object()).map_or_else(
-                || {
+    let agents = md_component_names(dir, "agents", declared_agents, &dir.join("agents"));
+    let commands = md_component_names(dir, "commands", declared_commands, &dir.join("commands"));
+    let hooks = hook_trigger_names(dir, declared_hooks.as_ref());
+    let mcp = mcp_present(dir, declared_mcp.as_ref());
+    Ok(Some(DirComponents { skills, agents, commands, hooks, mcp }))
+}
+
+/// The plugin's own manifest, read for its declared component paths.
+/// Missing reads as undeclared in silence; unreadable or unparseable
+/// warns and reads as undeclared too.
+fn read_plugin_manifest(dir: &Path) -> Option<PluginManifest> {
+    let path = dir.join(".claude-plugin/plugin.json");
+    read_json(&path).and_then(|doc| match serde_json::from_value::<PluginManifest>(doc) {
+        Ok(manifest) => Some(manifest),
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_agent::userdata::plugins",
+                path = %path.display(),
+                error = %error,
+                "plugin manifest declares no component paths forge can read; they read as undeclared",
+            );
+            None
+        }
+    })
+}
+
+/// The paths one manifest component key declares: a string is one path,
+/// an array a list; another shape warns and reads as undeclared.
+fn declared_paths(kind: &str, value: &serde_json::Value) -> Vec<String> {
+    match value {
+        serde_json::Value::String(path) => vec![path.clone()],
+        serde_json::Value::Array(items) => {
+            items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect()
+        }
+        _ => {
+            tracing::warn!(
+                target: "forge_agent::userdata::plugins",
+                kind = %kind,
+                "the manifest's component declaration is neither a string nor an array; it reads as undeclared",
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// The skill names one declared path contributes: a dir with its own
+/// SKILL.md is one skill, another dir a container of skills, a file its
+/// stem.
+fn declared_skill_names(path: &Path) -> Vec<String> {
+    if is_regular_file(&path.join("SKILL.md")).unwrap_or(false) {
+        return vec![path.file_name().unwrap_or_default().to_string_lossy().into_owned()];
+    }
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => list_subdirs(path),
+        Ok(_) => vec![path.file_stem().unwrap_or_default().to_string_lossy().into_owned()],
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Command or agent names: the manifest's declaration replaces the
+/// conventional dir, whose undeclared entries then count nothing; each
+/// declared path is a dir of .md files or one file.
+fn md_component_names(
+    dir: &Path,
+    kind: &str,
+    declared: Option<serde_json::Value>,
+    conventional: &Path,
+) -> Vec<String> {
+    let Some(declared) = declared else { return list_md_files(conventional) };
+    let mut names = Vec::new();
+    for path in declared_paths(kind, &declared) {
+        let path = dir.join(path);
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => names.extend(list_md_files(&path)),
+            Ok(_) => {
+                names.push(path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
+            }
+            Err(_) => {}
+        }
+    }
+    names.sort();
+    names
+}
+
+/// Hook trigger names over the default hooks/hooks.json plus whatever
+/// the manifest declares; a declaration adds sources, it never
+/// suppresses the default.
+fn hook_trigger_names(dir: &Path, declared: Option<&serde_json::Value>) -> Vec<String> {
+    let mut files = vec![dir.join("hooks/hooks.json")];
+    if let Some(declared) = declared {
+        match declared {
+            serde_json::Value::String(path) => files.push(dir.join(path)),
+            serde_json::Value::Array(items) => files
+                .extend(items.iter().filter_map(|item| item.as_str()).map(|path| dir.join(path))),
+            serde_json::Value::Object(config) => {
+                return config.keys().cloned().chain(hook_trigger_names(dir, None)).collect();
+            }
+            _ => {
+                tracing::warn!(
+                    target: "forge_agent::userdata::plugins",
+                    "the manifest's hooks declaration is neither paths nor an inline object; it reads as undeclared",
+                );
+            }
+        }
+    }
+    let mut triggers = Vec::new();
+    for hooks_path in &files {
+        match is_regular_file(hooks_path) {
+            Ok(true) => {
+                let Some(doc) = read_json(hooks_path) else { continue };
+                let Some(hooks) = doc.get("hooks").and_then(|hooks| hooks.as_object()) else {
                     tracing::warn!(
                         target: "forge_agent::userdata::plugins",
                         path = %hooks_path.display(),
                         "hooks.json names no hooks object; its triggers are not shown",
                     );
-                    Vec::new()
-                },
-                |hooks| hooks.keys().cloned().collect::<Vec<_>>(),
-            ),
-            None => Vec::new(),
-        },
-        Ok(false) => Vec::new(),
-        Err(error) => {
-            tracing::warn!(
-                target: "forge_agent::userdata::plugins",
-                path = %hooks_path.display(),
-                error = %error,
-                "hooks.json cannot be read; its triggers are not shown",
-            );
-            Vec::new()
+                    continue;
+                };
+                triggers.extend(hooks.keys().cloned());
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_agent::userdata::plugins",
+                    path = %hooks_path.display(),
+                    error = %error,
+                    "hooks.json cannot be read; its triggers are not shown",
+                );
+            }
         }
-    };
-    let mcp_path = dir.join(".mcp.json");
-    let mcp = match is_regular_file(&mcp_path) {
+    }
+    triggers
+}
+
+/// Whether the plugin carries MCP config: the default `.mcp.json`, plus
+/// whatever the manifest declares, an inline object counting as present.
+fn mcp_present(dir: &Path, declared: Option<&serde_json::Value>) -> bool {
+    let mcp_file = |path: &Path| match is_regular_file(path) {
         Ok(present) => present,
         Err(error) => {
             tracing::warn!(
                 target: "forge_agent::userdata::plugins",
-                path = %mcp_path.display(),
+                path = %path.display(),
                 error = %error,
                 "the plugin's MCP config cannot be read; the row's MCP flag is not set",
             );
             false
         }
     };
-    Ok(Some(DirComponents { skills, agents, commands, hooks, mcp }))
+    let mut mcp = mcp_file(&dir.join(".mcp.json"));
+    if let Some(declared) = declared {
+        match declared {
+            serde_json::Value::Object(_) => mcp = true,
+            serde_json::Value::String(path) => mcp |= mcp_file(&dir.join(path)),
+            serde_json::Value::Array(items) => {
+                for path in items.iter().filter_map(|item| item.as_str()) {
+                    mcp |= mcp_file(&dir.join(path));
+                }
+            }
+            _ => {
+                tracing::warn!(
+                    target: "forge_agent::userdata::plugins",
+                    "the manifest's MCP server declaration is neither paths nor an inline object; it reads as undeclared",
+                );
+            }
+        }
+    }
+    mcp
 }
 
 /// The reason shown for a registered install whose dir is unusable. A
@@ -1176,6 +1333,68 @@ mod tests {
         let lsponly = cache.join("probe-market").join("lsponly").join("1.0.0");
         write(&lsponly.join("README.md"), "# lsp only");
 
+        // custom: manifest declares a ui-ux-pro-max-shaped skills
+        // container plus array agents/commands and inline MCP; its
+        // conventional dirs carry UNDECLARED extras that must not count,
+        // and hooks is [] beside a populated hooks/hooks.json.
+        let custom = cache.join("probe-market").join("custom").join("1.0.0");
+        write(
+            &custom.join(".claude-plugin/plugin.json"),
+            r#"{"name":"custom","version":"1.0.0",
+                "skills":"./meta/skills/",
+                "agents":["./meta/agents/one.md","./meta/agents/two.md"],
+                "commands":["./meta/commands/c.md"],
+                "hooks":[],
+                "mcpServers":{"db":{"command":"db"}}}"#,
+        );
+        skill(&custom.join("skills/conv/SKILL.md"));
+        skill(&custom.join("meta/skills/meta-a/SKILL.md"));
+        skill(&custom.join("meta/skills/meta-b/SKILL.md"));
+        write(&custom.join("meta/agents/one.md"), "# one");
+        write(&custom.join("meta/agents/two.md"), "# two");
+        write(&custom.join("meta/commands/c.md"), "# c");
+        write(&custom.join("agents/undeclared.md"), "# undeclared");
+        write(&custom.join("commands/undeclared.md"), "# undeclared");
+        write(&custom.join("hooks/hooks.json"), r#"{"hooks":{"SessionStart":[],"Stop":[]}}"#);
+
+        // hookpath: a declared hooks file merges with the default one.
+        let hookpath = cache.join("probe-market").join("hookpath").join("1.0.0");
+        write(
+            &hookpath.join(".claude-plugin/plugin.json"),
+            r#"{"name":"hookpath","version":"1.0.0","hooks":"./extra-hooks.json"}"#,
+        );
+        write(&hookpath.join("hooks/hooks.json"), r#"{"hooks":{"Default":[]}}"#);
+        write(&hookpath.join("extra-hooks.json"), r#"{"hooks":{"Extra":[]}}"#);
+
+        // skillarray: an element carrying SKILL.md is one skill; one
+        // without is a container of skills.
+        let skillarray = cache.join("probe-market").join("skillarray").join("1.0.0");
+        write(
+            &skillarray.join(".claude-plugin/plugin.json"),
+            r#"{"name":"skillarray","version":"1.0.0",
+                "skills":["./meta/one-skill","./meta/skill-container"]}"#,
+        );
+        skill(&skillarray.join("meta/one-skill/SKILL.md"));
+        skill(&skillarray.join("meta/skill-container/sub-a/SKILL.md"));
+        skill(&skillarray.join("meta/skill-container/sub-b/SKILL.md"));
+
+        // tornmanifest: a cache leftover whose manifest does not parse
+        // reads as undeclared and scans conventionally.
+        let tornmanifest = cache.join("probe-market").join("tornmanifest").join("1.0.0");
+        write(&tornmanifest.join(".claude-plugin/plugin.json"), "{ torn");
+        skill(&tornmanifest.join("skills/a/SKILL.md"));
+
+        // regcustom: a registered install whose manifest declares the
+        // commands dir as a string, shadowing an undeclared conventional
+        // command.
+        let regcustom = cache.join("probe-market").join("regcustom").join("1.0.0");
+        write(
+            &regcustom.join(".claude-plugin/plugin.json"),
+            r#"{"name":"regcustom","version":"1.0.0","commands":"./meta/cmds/"}"#,
+        );
+        write(&regcustom.join("meta/cmds/declared.md"), "# declared");
+        write(&regcustom.join("commands/undeclared.md"), "# undeclared");
+
         // unreadable: registered with a real dir whose permissions one
         // test strips; mode 000 still passes is_dir, so only a
         // readability probe catches it.
@@ -1204,6 +1423,7 @@ mod tests {
                 "full@probe-market":[{"scope":"user","installPath":"CACHE_FULL","version":"1.2.3","installedAt":"","lastUpdated":""}],
                 "off@probe-market":[{"scope":"user","installPath":"CACHE_OFF","version":"3.0.0","installedAt":"","lastUpdated":"","auto":true}],
                 "lsponly@probe-market":[{"scope":"user","installPath":"CACHE_LSPONLY","version":"1.0.0","installedAt":"","lastUpdated":""}],
+                "regcustom@probe-market":[{"scope":"user","installPath":"CACHE_REGCUSTOM","version":"1.0.0","installedAt":"","lastUpdated":""}],
                 "unreadable@probe-market":[{"scope":"user","installPath":"CACHE_UNREADABLE","version":"1.0.0","installedAt":"","lastUpdated":""}],
                 "nopath@probe-market":[{"scope":"user","version":"1.0.0","installedAt":"","lastUpdated":""}],
                 "filed@probe-market":[{"scope":"user","installPath":"CACHE_FILED","version":"1.0.0","installedAt":"","lastUpdated":""}],
@@ -1212,6 +1432,7 @@ mod tests {
             .replace("CACHE_FULL", &full.to_string_lossy())
             .replace("CACHE_OFF", &off.to_string_lossy())
             .replace("CACHE_LSPONLY", &lsponly.to_string_lossy())
+            .replace("CACHE_REGCUSTOM", &regcustom.to_string_lossy())
             .replace("CACHE_UNREADABLE", &unreadable.to_string_lossy())
             .replace("CACHE_FILED", &filed.to_string_lossy())
             .replace("CACHE_GHOSTED", &ghosted.join("missing-dir").to_string_lossy())
@@ -2022,6 +2243,118 @@ mod tests {
         );
     }
 
+    /// A manifest-declared skills directory is a container of skills
+    /// (the ui-ux-pro-max shape), scanned alongside the conventional
+    /// `skills/`, deduped by name.
+    #[test]
+    fn a_declared_skills_container_scans_alongside_the_conventional_dir() {
+        let fixture = fixture();
+        let rows = scan_fixture(&fixture);
+        let custom = by_plugin(&rows, "custom@probe-market");
+        assert_eq!(
+            custom.skills,
+            vec!["conv", "meta-a", "meta-b"],
+            "the container's skills join the conventional one: {custom:?}"
+        );
+    }
+
+    /// Declared agents and commands REPLACE the conventional dirs: an
+    /// undeclared sibling .md in the conventional dir must not count.
+    #[test]
+    fn declared_agents_and_commands_replace_the_conventional_dirs() {
+        let fixture = fixture();
+        let rows = scan_fixture(&fixture);
+        let custom = by_plugin(&rows, "custom@probe-market");
+        assert_eq!(custom.agents, vec!["one", "two"], "only the declared agents list: {custom:?}");
+        assert_eq!(custom.commands, vec!["c"], "only the declared commands list: {custom:?}");
+    }
+
+    /// An empty hooks declaration suppresses nothing: the default
+    /// hooks/hooks.json triggers survive (the conserve/herald/oracle
+    /// shape), named exactly.
+    #[test]
+    fn an_empty_hooks_declaration_leaves_the_default_triggers_listed() {
+        let fixture = fixture();
+        let rows = scan_fixture(&fixture);
+        let custom = by_plugin(&rows, "custom@probe-market");
+        assert_eq!(
+            custom.hooks,
+            vec!["SessionStart", "Stop"],
+            "the default hooks.json still lists despite hooks: []: {custom:?}"
+        );
+    }
+
+    /// An inline mcpServers declaration is MCP config present, without
+    /// a .mcp.json on disk.
+    #[test]
+    fn an_inline_mcp_declaration_sets_the_flag() {
+        let fixture = fixture();
+        let rows = scan_fixture(&fixture);
+        let custom = by_plugin(&rows, "custom@probe-market");
+        assert!(custom.mcp, "inline mcpServers is MCP present: {custom:?}");
+    }
+
+    /// A declared hooks file merges with the default hooks/hooks.json.
+    #[test]
+    fn a_declared_hooks_path_merges_with_the_default() {
+        let fixture = fixture();
+        let rows = scan_fixture(&fixture);
+        let hookpath = by_plugin(&rows, "hookpath@probe-market");
+        assert_eq!(
+            hookpath.hooks,
+            vec!["Default", "Extra"],
+            "both files' triggers list: {hookpath:?}"
+        );
+    }
+
+    /// A skills array element carrying SKILL.md is one skill; an element
+    /// without one is a container of skills (the leyline/pensive arrays
+    /// vs the ui-ux string).
+    #[test]
+    fn a_skills_array_element_is_one_skill_or_a_container() {
+        let fixture = fixture();
+        let rows = scan_fixture(&fixture);
+        let skillarray = by_plugin(&rows, "skillarray@probe-market");
+        assert_eq!(
+            skillarray.skills,
+            vec!["one-skill", "sub-a", "sub-b"],
+            "the SKILL.md element counts once, the container's children each: {skillarray:?}"
+        );
+    }
+
+    /// A plugin manifest that does not parse reads as undeclared: the
+    /// conventional scan stands and the parse failure is warned.
+    #[test]
+    fn an_unparseable_plugin_manifest_falls_back_to_the_conventional_scan() {
+        let fixture = fixture();
+        let mut rows = Vec::new();
+        let log = capture_logs(|| rows = scan_fixture(&fixture));
+        let torn = by_plugin(&rows, "tornmanifest@probe-market");
+        assert_eq!(
+            torn.skills,
+            vec!["a"],
+            "the conventional skills/ scan stands without a readable manifest: {torn:?}"
+        );
+        assert!(
+            log.contains("does not parse"),
+            "the torn manifest is warned, not swallowed: {log}"
+        );
+    }
+
+    /// A registered install whose manifest declares a component dir as
+    /// a string shadows the conventional dir of that kind.
+    #[test]
+    fn a_registered_string_dir_declaration_shadows_the_conventional_dir() {
+        let fixture = fixture();
+        let rows = scan_fixture(&fixture);
+        let regcustom = by_plugin(&rows, "regcustom@probe-market");
+        assert_eq!(
+            regcustom.commands,
+            vec!["declared"],
+            "the declared commands dir replaces the conventional one: {regcustom:?}"
+        );
+    }
+
     // -- scan_marketplaces -----------------------------------------------
 
     #[test]
@@ -2354,7 +2687,10 @@ mod tests {
             "the read arm's own phrase is used: {log}"
         );
         assert!(
-            !log.contains("does not parse"),
+            !log.lines().any(|line| {
+                line.contains(&path.to_string_lossy().into_owned())
+                    && line.contains("does not parse")
+            }),
             "a read failure is not reported as a parse failure: {log}"
         );
         assert!(
@@ -2453,7 +2789,10 @@ mod tests {
             "the warn names the hooks path, not another file's: {log}"
         );
         assert!(
-            !log.contains("does not parse"),
+            !log.lines().any(|line| {
+                line.contains(&hooks.to_string_lossy().into_owned())
+                    && line.contains("does not parse")
+            }),
             "a read failure is not reported as a parse failure: {log}"
         );
     }
