@@ -44,11 +44,15 @@ pub fn splice_model(
     Ok((rewritten, model))
 }
 
+/// The located top-level model: its byte span (excluding the quotes)
+/// and its content.
+type ModelSpan = ((usize, usize), String);
+
 /// Locate the top-level `"model"` string value: its byte span
 /// (excluding the quotes) and its content. Scans with a string/escape
 /// state machine so a `"model"` that is only a nested key or a value
 /// elsewhere is skipped.
-fn find_top_level_model(body: &[u8]) -> Result<Option<((usize, usize), String)>, SpliceError> {
+fn find_top_level_model(body: &[u8]) -> Result<Option<ModelSpan>, SpliceError> {
     let mut depth: usize = 0;
     let mut in_string = false;
     let mut escaped = false;

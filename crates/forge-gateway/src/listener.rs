@@ -107,11 +107,15 @@ pub fn text_response(
     status: hyper::StatusCode,
     body: impl Into<Bytes>,
 ) -> hyper::Response<StreamBody> {
-    hyper::Response::builder()
-        .status(status)
-        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(BoxBody::new(http_body_util::Full::new(body.into()).map_err(|never| match never {})))
-        .expect("static response parts always build")
+    let mut response = hyper::Response::new(BoxBody::new(
+        http_body_util::Full::new(body.into()).map_err(|never| match never {}),
+    ));
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    response
 }
 
 #[cfg(test)]

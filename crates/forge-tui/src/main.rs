@@ -93,6 +93,11 @@ fn run() -> anyhow::Result<()> {
         // forge-tui's connect path.
         workspace.start_account_loading_tasks();
 
+        // Bind the gateway's inference listener and open the boot gate
+        // for it. Every spawned session's base URL names this port, so
+        // preflight stays shut until the bind succeeds.
+        workspace.start_gateway_listener();
+
         // Fetch, verify and load the dictation models, on the same
         // preflight screen as the accounts. No-op unless `[dictate]
         // enabled` is set: a 3 GB download is opt-in.

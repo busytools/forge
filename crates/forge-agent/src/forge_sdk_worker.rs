@@ -191,6 +191,21 @@ fn build_forge_system_prompt(
     out
 }
 
+/// Layer per-spawn env overrides over the account env: a present key
+/// replaces, an absent key keeps, and a key mapped to an empty string
+/// removes the variable entirely - removal is what makes an
+/// overridden-away credential actually absent rather than
+/// present-but-blank.
+fn apply_env_overrides(env: &mut HashMap<String, String>, overrides: &HashMap<String, String>) {
+    for (key, value) in overrides {
+        if value.is_empty() {
+            env.remove(key);
+        } else {
+            env.insert(key.clone(), value.clone());
+        }
+    }
+}
+
 /// Spawn a fresh `Client` for `bridge` and start the reader subtask.
 /// Builds `Options` from `launch_settings` (mode, model, effort,
 /// `can_use_tool` callback). When `resume_id` is `Some`, passes the
@@ -226,7 +241,11 @@ pub(crate) async fn spawn_session(
     let extra_mcp_servers = bridge.extra_mcp_servers();
     let sdk_server_names: Vec<String> =
         extra_mcp_servers.iter().map(|(name, _)| name.clone()).collect();
-    let account_env = bridge.env();
+    let account_env = {
+        let mut env = bridge.env();
+        apply_env_overrides(&mut env, &launch_settings.env_overrides);
+        env
+    };
     let options = build_options_with_callback(
         cwd,
         resume_id,
@@ -2247,6 +2266,32 @@ mod tests {
             Some("haiku"),
             "sibling settings survive the mode arm"
         );
+    }
+
+    /// The composition rule the gateway's env set relies on for
+    /// respawns: replace, keep, and remove - the last being what makes
+    /// an overridden-away credential actually absent.
+    #[test]
+    fn env_overrides_replace_keep_and_remove() {
+        let mut env = HashMap::from([
+            ("KEEP".to_owned(), "kept".to_owned()),
+            ("REPLACE".to_owned(), "old".to_owned()),
+            ("REMOVE".to_owned(), "gone".to_owned()),
+        ]);
+        let overrides = HashMap::from([
+            ("REPLACE".to_owned(), "new".to_owned()),
+            ("REMOVE".to_owned(), String::new()),
+            ("NEW".to_owned(), "added".to_owned()),
+        ]);
+        super::apply_env_overrides(&mut env, &overrides);
+        assert_eq!(
+            env.get("KEEP").map(String::as_str),
+            Some("kept"),
+            "an absent key keeps its value"
+        );
+        assert_eq!(env.get("REPLACE").map(String::as_str), Some("new"), "a present key replaces");
+        assert!(!env.contains_key("REMOVE"), "an empty override removes the variable");
+        assert_eq!(env.get("NEW").map(String::as_str), Some("added"), "a fresh key is added");
     }
 
     /// Launch settings without a `defaultMode` leave the builder at its

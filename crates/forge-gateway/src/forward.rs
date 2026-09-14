@@ -31,6 +31,9 @@ use crate::splice::splice_model;
 /// host is what they have always used.
 const ANTHROPIC_UPSTREAM: &str = "https://api.anthropic.com";
 
+/// The error type a streamed body yields.
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
 /// The gateway's route handler: bindings + the account pool + the
 /// upstream client.
 pub struct Gateway {
@@ -106,11 +109,10 @@ impl RouteHandler for Gateway {
             );
         };
 
-        let query = request
-            .uri()
-            .query()
-            .map(|q| format!("?{q}"))
-            .unwrap_or_else(|| "?beta=true".to_owned());
+        let query = match request.uri().query() {
+            Some(q) => format!("?{q}"),
+            None => "?beta=true".to_owned(),
+        };
         let body = request.into_body();
         let (spliced, _model) = match splice_model(&body, None) {
             Ok(spliced) => spliced,
@@ -150,7 +152,6 @@ impl RouteHandler for Gateway {
         if let Some(content_type) = content_type {
             response = response.header(CONTENT_TYPE, content_type);
         }
-        type BoxError = Box<dyn std::error::Error + Send + Sync>;
         let stream: std::pin::Pin<
             Box<dyn futures_util::Stream<Item = Result<Frame<Bytes>, BoxError>> + Send + Sync>,
         > = Box::pin(
@@ -160,7 +161,12 @@ impl RouteHandler for Gateway {
         );
         let streamed: StreamBody =
             http_body_util::combinators::BoxBody::new(http_body_util::StreamBody::new(stream));
-        response.body(streamed).expect("response parts already validated")
+        match response.body(streamed) {
+            Ok(response) => response,
+            Err(error) => {
+                text_response(StatusCode::BAD_GATEWAY, format!("response build failed: {error}"))
+            }
+        }
     }
 }
 
@@ -355,7 +361,7 @@ mod tests {
             "the real credential rides the auth header",
         );
         assert_eq!(recorded.x_api_key, None, "x-api-key is stripped, never forwarded");
-        assert!(!recorded.body.contains(DUMMY_CREDENTIAL), "the dummy never reaches the upstream",);
+        assert!(!recorded.body.contains(DUMMY_CREDENTIAL), "the dummy never reaches the upstream");
     }
 
     #[tokio::test]

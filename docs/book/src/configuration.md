@@ -194,6 +194,14 @@ Failures here are non-fatal and warn rather than refusing to boot:
 
 The inline `[projects.<name>.env]` table wins over `env_file` per key.
 
+## `[gateway]`
+
+The inference listener every spawned `claude` session is pointed at.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `port` | integer | `8787` | The port the gateway's listener binds on `127.0.0.1`. There is no fallback to an OS-assigned port: if the port is taken, the gateway fails to start and preflight stays shut, because every session's base URL names this port and a silent drift would point children at an address nothing serves. |
+
 ## Environment layering
 
 Three layers merge per key, narrowest winning:

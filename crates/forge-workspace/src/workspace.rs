@@ -286,6 +286,15 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
+    /// The gateway's listener + session bindings. Children are stamped
+    /// with a base URL that names this listener, and every spawn
+    /// registers here.
+    pub(crate) gateway: Arc<forge_gateway::forward::Gateway>,
+    /// `true` once the listener's port is bound. The boot gate stays
+    /// shut until it is, because every session's base URL names it.
+    gateway_ready: std::sync::atomic::AtomicBool,
+    /// The port the listener binds: `[gateway] port` or the default.
+    gateway_port: u16,
     /// Guards against double-spawning the cron scheduler (mirrors
     /// `usage_poller_started`). Started once at boot from the binary.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
@@ -435,8 +444,8 @@ pub struct Workspace {
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>`, the account key
-/// the subprocess is bound to, and the permission mode that spawn
-/// resolved for its project.
+/// the subprocess is bound to, the permission mode that spawn resolved
+/// for its project, and the session registration a respawn re-sends.
 pub(crate) struct PooledAgent {
     pub handle: Arc<AgentHandle>,
     /// The account the subprocess is bound to, resolved at spawn.
@@ -446,6 +455,10 @@ pub(crate) struct PooledAgent {
     /// launcher default applied. The dispatch path reads it to stamp
     /// the same mode onto `/new` and `/resume` re-spawns.
     pub permission_mode: Option<forge_primitives::permission::PermissionMode>,
+    /// The session's registration, captured at spawn; a `/new` or
+    /// `/resume` respawn re-registers it so the fresh child gets a
+    /// fresh binding and env set.
+    pub registration: Option<forge_gateway::binding::Registration>,
 }
 
 /// Why `insert_live_worker_if_label_absent` refused an insert. Decided
@@ -1052,7 +1065,8 @@ impl Workspace {
         // gate on `catalog_loaded` via `wait_catalog_ready`.
         let catalog = Arc::new(Mutex::new(HashMap::new()));
 
-        let accounts = forge_gateway::AccountPool::new(&config.accounts);
+        let accounts = Arc::new(forge_gateway::AccountPool::new(&config.accounts));
+        let gateway = Arc::new(forge_gateway::forward::Gateway::new(Arc::clone(&accounts)));
 
         // Seed account usage from the machine-local store so the
         // launchpad picker has tier data immediately at cold boot.
@@ -1073,6 +1087,7 @@ impl Workspace {
         // the effective style.
         config.ui.spinner = crate::ui::resolve_spinner(state.spinner, config.ui.spinner);
 
+        let gateway_port = config.gateway_port;
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
@@ -1096,7 +1111,10 @@ impl Workspace {
             config,
             catalog,
             pool: Mutex::new(HashMap::new()),
-            accounts: Arc::new(accounts),
+            accounts,
+            gateway,
+            gateway_ready: std::sync::atomic::AtomicBool::new(false),
+            gateway_port,
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
@@ -1483,8 +1501,28 @@ impl Workspace {
         };
         let project = self.project_for_target(&target);
         apply_project_permission_mode(project.as_ref(), &mut settings);
-        let project_permission_mode = project.map(|project| project.permission_mode);
-        let session_env = self.session_env_for(&target, &account_env);
+        let project_permission_mode = project.as_ref().map(|project| project.permission_mode);
+        // Register the session and let the gateway stamp the child's
+        // env: the base URL names this listener, the credential the
+        // child holds is a dummy, and the real one stays in the
+        // gateway. A spawn that resolves to no project stays on the
+        // direct account env.
+        let registration = project.as_ref().map(|project| forge_gateway::binding::Registration {
+            org: project.org.clone(),
+            project: project.name.clone(),
+            session: session_key.as_str().to_owned(),
+            account: account_key.clone(),
+            provider: self.accounts.state().provider_or_anthropic(&account_key),
+        });
+        let spawned_env = match &registration {
+            Some(registration) => self
+                .gateway
+                .bindings
+                .register(registration, &self.gateway_listener_url(), &account_env)
+                .into_map(),
+            None => account_env,
+        };
+        let session_env = self.session_env_for(&target, &spawned_env);
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
         // per-session peer-MCP server's CallerKeyResolver can read
@@ -1663,6 +1701,7 @@ impl Workspace {
                     handle: Arc::clone(&arc),
                     account: account_key.clone(),
                     permission_mode: project_permission_mode,
+                    registration: registration.clone(),
                 },
             );
         }
@@ -1851,16 +1890,25 @@ impl Workspace {
         &self.accounts
     }
 
+    /// The base URL children are stamped with: the listener's address,
+    /// before the three routing segments.
+    fn gateway_listener_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.gateway_port)
+    }
+
     /// `true` when every `[[accounts]]` entry has reached a terminal
-    /// `LoadingState`. The launchpad reads this to decide whether
-    /// project rows are clickable - clicking before all accounts
-    /// resolve means the spawn-time picker falls back to round-robin
-    /// (with potentially-undesirable account choice) instead of the
-    /// deterministic plan. Public so forge-tui can gate keyboard +
-    /// mouse handlers on it without reaching into the crate-private
-    /// account map.
+    /// `LoadingState` AND the gateway's listener is bound. The
+    /// launchpad reads this to decide whether project rows are
+    /// clickable - clicking before all accounts resolve means the
+    /// spawn-time picker falls back to round-robin (with
+    /// potentially-undesirable account choice) instead of the
+    /// deterministic plan, and spawning before the listener is bound
+    /// stamps a base URL nothing answers. Public so forge-tui can gate
+    /// keyboard + mouse handlers on it without reaching into the
+    /// crate-private account map.
     pub fn all_accounts_loaded(&self) -> bool {
         self.accounts.state().all_loaded()
+            && self.gateway_ready.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// `true` when the assignment plan is populated AND has at least
@@ -2534,6 +2582,39 @@ impl Workspace {
             }
             .instrument(span),
         );
+    }
+
+    /// Bind the gateway's inference listener and open the boot gate
+    /// once the port is ours. Called once at boot, from the TUI's
+    /// connect path. A taken port is an error that leaves the gate
+    /// shut - spawning before the listener exists stamps a base URL
+    /// nothing answers.
+    pub fn start_gateway_listener(self: &Arc<Self>) {
+        let port = self.gateway_port;
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let Some(workspace) = weak.upgrade() else { return };
+            match forge_gateway::listener::GatewayListener::bind(port).await {
+                Ok(listener) => {
+                    workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
+                    tracing::info!(
+                        target: "forge_workspace::workspace",
+                        port,
+                        "gateway listener bound",
+                    );
+                    let handler: Arc<dyn forge_gateway::listener::RouteHandler> =
+                        workspace.gateway.clone();
+                    listener.run(handler).await;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        target: "forge_workspace::workspace",
+                        error = %error,
+                        "the gateway listener could not start; the boot gate stays shut",
+                    );
+                }
+            }
+        });
     }
 
     pub fn start_usage_poller(self: &Arc<Self>) {
@@ -3354,8 +3435,11 @@ impl Workspace {
             if let Command::NewSession { launch_settings, .. }
             | Command::ResumeSession { launch_settings, .. } = &mut cmd
             {
-                let pooled =
-                    self.pool.lock().get(&key).map(|p| (p.permission_mode, p.account.0.clone()));
+                let pooled = self
+                    .pool
+                    .lock()
+                    .get(&key)
+                    .map(|p| (p.permission_mode, p.registration.clone(), p.account.clone()));
                 match pooled {
                     None => tracing::warn!(
                         target: "forge_workspace::workspace",
@@ -3363,14 +3447,38 @@ impl Workspace {
                         "permission_mode stamp skipped: respawn routed but no pool entry \
                          (release_session teardown window)",
                     ),
-                    Some((None, account)) => tracing::debug!(
-                        target: "forge_workspace::workspace",
-                        key = %key.as_str(),
-                        account,
-                        "respawn keeps the launcher default: no project resolved for this \
-                         session, so there is no permission mode to stamp",
-                    ),
-                    Some((Some(mode), _)) => spawn::stamp_permission_mode(launch_settings, mode),
+                    Some((mode, registration, account)) => {
+                        if let Some(mode) = mode {
+                            spawn::stamp_permission_mode(launch_settings, mode);
+                        } else {
+                            tracing::debug!(
+                                target: "forge_workspace::workspace",
+                                key = %key.as_str(),
+                                account = %account.0,
+                                "respawn keeps the launcher default: no project resolved for \
+                                 this session, so there is no permission mode to stamp",
+                            );
+                        }
+                        // Re-register the session with the gateway so
+                        // the respawned child answers to this
+                        // generation: a fresh binding plus a fresh env
+                        // set as per-spawn overrides, not the previous
+                        // process's base URL and credential.
+                        if let Some(registration) = registration {
+                            let account_env = self
+                                .accounts
+                                .state()
+                                .env(&registration.account)
+                                .cloned()
+                                .unwrap_or_default();
+                            let env_set = self.gateway.bindings.register(
+                                &registration,
+                                &self.gateway_listener_url(),
+                                &account_env,
+                            );
+                            launch_settings.env_overrides = env_set.into_map();
+                        }
+                    }
                 }
             }
             let senders = self.command_senders.lock();
@@ -6826,6 +6934,7 @@ mod tests {
                 handle: Arc::clone(&arc_b),
                 account: AccountKey("B".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         ws.command_senders.lock().insert(key.clone(), tx);
@@ -7968,6 +8077,7 @@ SOLO_TOKEN = "solo-secret"
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         ws.mark_session_connected_for_test(&key, "q-uuid");
@@ -8007,6 +8117,7 @@ SOLO_TOKEN = "solo-secret"
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -8072,6 +8183,7 @@ SOLO_TOKEN = "solo-secret"
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -8124,6 +8236,7 @@ SOLO_TOKEN = "solo-secret"
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -8317,6 +8430,7 @@ SOLO_TOKEN = "solo-secret"
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -8619,6 +8733,44 @@ provider = "anthropic"
     }
 
     #[tokio::test]
+    async fn a_fresh_spawn_stamps_the_gateway_base_url_and_dummy_credential() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        // The listener's own tests cover the socket; this one pins what
+        // the child is stamped with, so the boot gate is opened by hand.
+        workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
+
+        let handle = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .expect("spawn");
+        let env = handle.env();
+        let base = env
+            .get("ANTHROPIC_BASE_URL")
+            .expect("the gateway stamps a base URL on every registered spawn");
+        assert!(
+            base.starts_with("http://127.0.0.1:") && base.contains("/Default/forge/"),
+            "the base URL names the listener and the three routing segments: {base}",
+        );
+        assert_eq!(
+            env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
+            Some(forge_gateway::binding::DUMMY_CREDENTIAL),
+            "the child's credential variable carries the dummy, not the real token",
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some(""),
+            "an API-key source is forced empty so the CLI cannot ship a foreign credential",
+        );
+
+        let session_key = workspace.resolve_target(&SessionTarget::Default).expect("resolves");
+        assert_eq!(
+            workspace.gateway.bindings.binding_for("Default", "forge", session_key.as_str()),
+            Some(AccountKey("Stargate".to_owned())),
+            "the spawn registered the session with the gateway",
+        );
+    }
+
+    #[tokio::test]
     async fn pool_records_picked_account() {
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
@@ -8880,6 +9032,13 @@ provider = "anthropic"
                 handle: Arc::new(handle),
                 account: AccountKey("Openrouter".to_owned()),
                 permission_mode: Some(PermissionMode::BypassPermissions),
+                registration: Some(forge_gateway::binding::Registration {
+                    org: "Busytools".to_owned(),
+                    project: "forge".to_owned(),
+                    session: key.as_str().to_owned(),
+                    account: AccountKey("Openrouter".to_owned()),
+                    provider: forge_primitives::account::Provider::Openrouter,
+                }),
             },
         );
 
@@ -8930,6 +9089,20 @@ provider = "anthropic"
             Some("bypassPermissions"),
             "/resume must carry the pooled session's mode, not the TUI session default",
         );
+        // The respawn also re-registers with the gateway: the fresh env
+        // set rides the launch settings as overrides, so the respawned
+        // child is pointed at this generation's listener.
+        assert_eq!(
+            new.get("env_overrides")
+                .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
+                .and_then(serde_json::Value::as_str),
+            Some(format!(
+                "http://127.0.0.1:{}/Busytools/forge/respawn-mode-test",
+                workspace.gateway_port
+            ))
+            .as_deref(),
+            "a respawn re-registers and stamps a fresh base URL",
+        );
     }
 
     /// A session that spawned with no project mode must not gain a
@@ -8946,6 +9119,7 @@ provider = "anthropic"
                 handle: Arc::new(handle),
                 account: AccountKey("Plain".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
 
@@ -9006,6 +9180,7 @@ provider = "anthropic"
                 handle: Arc::clone(&arc),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
@@ -9795,6 +9970,7 @@ provider = "anthropic"
                 handle: Arc::new(handle),
                 account: AccountKey("acct".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
@@ -9845,6 +10021,7 @@ provider = "anthropic"
                 handle: Arc::new(handle),
                 account: AccountKey("acct".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
@@ -12494,6 +12671,7 @@ mod async_worker_spawn_failure_tests {
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         key
@@ -12719,6 +12897,7 @@ mod async_worker_spawn_failure_tests {
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
@@ -12808,6 +12987,7 @@ mod async_worker_spawn_failure_tests {
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);

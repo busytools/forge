@@ -1985,6 +1985,7 @@ mod tests {
                 handle: Arc::clone(&handle),
                 account: forge_gateway::AccountKey("Acct".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -2038,6 +2039,7 @@ mod tests {
                 handle: Arc::clone(&handle),
                 account: forge_gateway::AccountKey("Acct".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -2087,6 +2089,7 @@ mod tests {
                 handle: Arc::clone(&handle),
                 account: forge_gateway::AccountKey("Acct".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -3058,6 +3061,7 @@ mod tests {
                 handle: Arc::clone(&arc),
                 account: forge_gateway::AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         let domain = workspace.register_domain_session(key.clone(), Some(Arc::clone(&arc)));

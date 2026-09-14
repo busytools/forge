@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use forge_primitives as types;
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +41,14 @@ pub struct SessionLaunchSettings {
     /// sent to `claude`. Defaults `false`; only the boot dispatch sets it.
     #[serde(skip)]
     pub force_new: bool,
+    /// Per-spawn env overrides layered over the account env this
+    /// session spawns under. A present key replaces, an absent key
+    /// keeps, and a key mapped to an empty string removes the variable.
+    /// Empty by default, which is exactly the previous behaviour: this
+    /// is how per-spawn env reaches a respawned child without mutating
+    /// the previous generation's Agent.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env_overrides: HashMap<String, String>,
 }
 
 impl SessionLaunchSettings {
