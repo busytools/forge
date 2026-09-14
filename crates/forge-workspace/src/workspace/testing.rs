@@ -279,7 +279,6 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_ready_account(&self, account: &str) {
         self.accounts
-            .state()
             .set_loading(&AccountKey(account.to_owned()), forge_gateway::LoadingState::Ready);
         self.recompute_plan_if_ready();
     }
@@ -289,7 +288,7 @@ impl Workspace {
     /// loader. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_account_state(&self, account: &str, state: forge_gateway::LoadingState) {
-        self.accounts.state().set_loading(&AccountKey(account.to_owned()), state);
+        self.accounts.set_loading(&AccountKey(account.to_owned()), state);
     }
 
     /// Record a probe failure on `account`, so a cross-crate test can
@@ -300,7 +299,7 @@ impl Workspace {
         account: &str,
         status: forge_gateway::UsageFetchStatus,
     ) {
-        self.accounts.state().set_last_error(&AccountKey(account.to_owned()), status, None);
+        self.accounts.set_last_error(&AccountKey(account.to_owned()), status, None);
     }
 
     /// Replace the dictation preflight snapshot, so a cross-crate test

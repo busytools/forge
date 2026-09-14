@@ -29,7 +29,7 @@ use forge_gateway::ProbeError;
 use forge_primitives::usage::UsageSnapshot;
 use forge_primitives::usage::oauth::OauthUsageError;
 
-use forge_gateway::{AccountKey, AccountStateMap, LoadingState};
+use forge_gateway::{AccountKey, AccountPool, LoadingState};
 
 use crate::workspace::Workspace;
 
@@ -38,20 +38,20 @@ use crate::workspace::Workspace;
 /// terminal in this single pass; healing is the usage poller's
 /// schedule.
 fn settle_probe_result(
-    states: &mut AccountStateMap,
+    pool: &AccountPool,
     key: &AccountKey,
     result: &Result<UsageSnapshot, ProbeError>,
 ) -> LoadingState {
     match result {
         Ok(snapshot) => {
-            states.set_usage(key, snapshot.clone());
+            pool.set_usage(key, snapshot.clone());
             LoadingState::Ready
         }
         Err(ProbeError::Unmappable(_)) => {
             // Response-shape drift is not an account fault: records no
             // error; any stale record clears with the bail.
-            states.clear_last_error(key);
-            states.set_loading(key, LoadingState::Bailed);
+            pool.clear_last_error(key);
+            pool.set_loading(key, LoadingState::Bailed);
             LoadingState::Bailed
         }
         Err(err) => {
@@ -60,10 +60,10 @@ fn settle_probe_result(
                 ProbeError::Fetch(OauthUsageError::RateLimited { retry_after }) => *retry_after,
                 _ => None,
             };
-            states.set_last_error(key, failure_class, retry_after);
+            pool.set_last_error(key, failure_class, retry_after);
             // set_last_error bails only on the auth classes; the
             // transient ones need the explicit terminal settle.
-            states.set_loading(key, LoadingState::Bailed);
+            pool.set_loading(key, LoadingState::Bailed);
             LoadingState::Bailed
         }
     }
@@ -80,13 +80,9 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
         // Workspace dropped during shutdown; exit cleanly.
         return;
     };
-    let (provider, account_env) = {
-        let accounts = workspace.account_pool().state();
-        (
-            accounts.provider_or_anthropic(&account_key),
-            accounts.env(&account_key).cloned().unwrap_or_default(),
-        )
-    };
+    let pool = workspace.account_pool();
+    let provider = pool.provider_or_anthropic(&account_key);
+    let account_env = pool.env(&account_key).unwrap_or_default();
     // The backend owns the probe; the settle helper owns the verdict
     // against the state machine.
     let probe_result = crate::provider_probe::probe_via_backend(provider, &account_env).await;
@@ -103,10 +99,7 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
             "boot probe failed; account settled Bailed; the usage poller will re-probe it",
         ),
     }
-    {
-        let mut states = workspace.account_pool().state();
-        settle_probe_result(&mut states, &account_key, &probe_result);
-    }
+    settle_probe_result(pool, &account_key, &probe_result);
     workspace.recompute_plan_if_ready();
 }
 
@@ -115,14 +108,14 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
 mod tests {
     use super::*;
     use forge_gateway::ProbeError;
-    use forge_gateway::{AccountStateMap, UsageFetchStatus};
+    use forge_gateway::UsageFetchStatus;
     use forge_primitives::usage::oauth::OauthUsageError;
     use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     // Mirrors the `make_account` helper idiom in `account::tests`.
-    fn states_with_one_account() -> AccountStateMap {
-        AccountStateMap::new(&[crate::config::LoadedAccount {
+    fn states_with_one_account() -> AccountPool {
+        AccountPool::new(&[crate::config::LoadedAccount {
             display_name: "test".to_owned(),
             config_dir: std::path::PathBuf::from("/fake/test"),
             provider: forge_primitives::account::Provider::Anthropic,
@@ -155,10 +148,10 @@ mod tests {
 
     #[test]
     fn settle_probe_result_bails_rate_limited_with_status_and_retry_after() {
-        let mut states = states_with_one_account();
+        let states = states_with_one_account();
         let key = AccountKey("test".to_owned());
         let state = settle_probe_result(
-            &mut states,
+            &states,
             &key,
             &Err(ProbeError::Fetch(OauthUsageError::RateLimited {
                 retry_after: Some(Duration::from_secs(3600)),
@@ -171,7 +164,7 @@ mod tests {
             "the terminal settle is stored, not just returned",
         );
         assert_eq!(
-            states.usage_error(&key),
+            states.usage_error("test"),
             Some(UsageFetchStatus::RateLimited),
             "the rate-limit class is recorded for the row's reason text",
         );
@@ -179,11 +172,7 @@ mod tests {
         // the 10-minute ceiling); the local exponential default would
         // be 30 s, so a ten-minute gap proves the server value was
         // honoured, not discarded.
-        let gap = states
-            .by_key
-            .get(&key)
-            .and_then(|s| s.next_probe_at)
-            .map(|t| t.saturating_duration_since(Instant::now()));
+        let gap = states.next_probe_after(&key);
         assert!(
             gap.is_some_and(|g| g > Duration::from_secs(599) && g <= Duration::from_secs(601)),
             "Retry-After retained (clamped) in the probe schedule; got {gap:?}",
@@ -192,10 +181,10 @@ mod tests {
 
     #[test]
     fn settle_probe_result_bails_unauthorized_with_its_status() {
-        let mut states = states_with_one_account();
+        let states = states_with_one_account();
         let key = AccountKey("test".to_owned());
         let state = settle_probe_result(
-            &mut states,
+            &states,
             &key,
             &Err(ProbeError::Fetch(OauthUsageError::Unauthorized(401))),
         );
@@ -205,18 +194,18 @@ mod tests {
             LoadingState::Bailed,
             "the terminal settle is stored, not just returned",
         );
-        assert_eq!(states.usage_error(&key), Some(UsageFetchStatus::Unauthorized),);
+        assert_eq!(states.usage_error("test"), Some(UsageFetchStatus::Unauthorized),);
     }
 
     #[test]
     fn settle_probe_result_bails_unmappable_without_an_error_record() {
-        let mut states = states_with_one_account();
+        let states = states_with_one_account();
         let key = AccountKey("test".to_owned());
         // A stale record from an earlier probe must not survive the
         // shape-drift bail - the bail records nothing and clears.
         states.set_last_error(&key, UsageFetchStatus::RateLimited, None);
         let state = settle_probe_result(
-            &mut states,
+            &states,
             &key,
             &Err(ProbeError::Unmappable("shape drift".to_owned())),
         );
@@ -227,22 +216,22 @@ mod tests {
             "the terminal settle is stored, not just returned",
         );
         assert!(
-            states.usage_error(&key).is_none(),
+            states.usage_error("test").is_none(),
             "Unmappable records no error, preserving today's nuance",
         );
     }
 
     #[test]
     fn settle_probe_result_settles_successful_probe_ready() {
-        let mut states = states_with_one_account();
+        let states = states_with_one_account();
         let key = AccountKey("test".to_owned());
-        let state = settle_probe_result(&mut states, &key, &Ok(snapshot()));
+        let state = settle_probe_result(&states, &key, &Ok(snapshot()));
         assert_eq!(state, LoadingState::Ready);
         assert_eq!(
             states.loading_state(&key),
             LoadingState::Ready,
             "the terminal settle is stored, not just returned",
         );
-        assert!(states.usage(&key).is_some(), "the snapshot is cached");
+        assert!(states.usage("test").is_some(), "the snapshot is cached");
     }
 }

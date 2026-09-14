@@ -116,6 +116,34 @@ impl Bindings {
             .get(&(org.to_owned(), project.to_owned(), session.to_owned()))
             .cloned()
     }
+
+    /// Bind a selected account to the three routing segments.
+    pub fn bind(&self, org: &str, project: &str, session: &str, account: AccountKey) {
+        self.by_session
+            .lock()
+            .insert((org.to_owned(), project.to_owned(), session.to_owned()), account);
+    }
+
+    /// Drop the binding, so the session's next request selects again.
+    pub fn unbind(&self, org: &str, project: &str, session: &str) {
+        self.by_session.lock().remove(&(org.to_owned(), project.to_owned(), session.to_owned()));
+    }
+
+    /// Remove and return the binding whose session segment matches,
+    /// however the first two segments read. The CLI's rate-limit
+    /// reports arrive on a stream that knows only its session id.
+    pub fn unbind_for_session(&self, session: &str) -> Option<AccountKey> {
+        let mut map = self.by_session.lock();
+        let triple = map.keys().find(|key| key.2 == session)?.clone();
+        map.remove(&triple)
+    }
+
+    /// Drop every binding onto `account`, so those sessions select
+    /// again. The usage probe knows only the account it proved
+    /// exhausted.
+    pub fn unbind_for_account(&self, account: &AccountKey) {
+        self.by_session.lock().retain(|_, bound| bound != account);
+    }
 }
 
 /// The four gateway-owned keys, stamped fresh for `registration`:

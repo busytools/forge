@@ -24,6 +24,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use forge_primitives::GotifyConfig;
 use forge_primitives::account::Provider;
@@ -116,6 +117,15 @@ struct GatewaySettings {
     /// The inference listener's port. Fixed by default.
     #[serde(default)]
     port: Option<u16>,
+    /// How many consecutive 429s from one account fire a rotation.
+    #[serde(default)]
+    streak_count: Option<u32>,
+    /// The window the 429 streak is counted over, in seconds.
+    #[serde(default)]
+    streak_window_secs: Option<u64>,
+    /// The cooldown when no reset time is known, in seconds.
+    #[serde(default)]
+    no_reset_cooldown_secs: Option<u64>,
 }
 
 impl GatewaySettings {
@@ -128,6 +138,68 @@ impl GatewaySettings {
             Some(port) => Ok(port),
             None => Ok(DEFAULT_GATEWAY_PORT),
         }
+    }
+
+    /// The resolved rotation numbers, refusing 0 on any of them: each
+    /// 0 would silently disable the mechanism it configures, which
+    /// reads as a bug rather than a choice. A magnitude above u32
+    /// seconds is refused the same way - silently mapping it to the
+    /// default is the substitution this refusal exists to prevent.
+    fn resolved_rotation(
+        &self,
+        path: &Path,
+    ) -> Result<forge_gateway::rotation::RotationNumbers, WorkspaceError> {
+        fn refused_u32(
+            path: &Path,
+            key: &'static str,
+            value: Option<u32>,
+            default: u32,
+        ) -> Result<u32, WorkspaceError> {
+            match value {
+                Some(0) => {
+                    Err(WorkspaceError::GatewayRotationInvalid { path: path.to_path_buf(), key })
+                }
+                Some(v) => Ok(v),
+                None => Ok(default),
+            }
+        }
+        fn refused_duration(
+            path: &Path,
+            key: &'static str,
+            value: Option<u64>,
+            default: Duration,
+        ) -> Result<Duration, WorkspaceError> {
+            match value {
+                Some(0) => {
+                    Err(WorkspaceError::GatewayRotationInvalid { path: path.to_path_buf(), key })
+                }
+                Some(v) => u32::try_from(v).map(u64::from).map(Duration::from_secs).map_err(|_| {
+                    WorkspaceError::GatewayRotationInvalid { path: path.to_path_buf(), key }
+                }),
+                None => Ok(default),
+            }
+        }
+        let defaults = forge_gateway::rotation::RotationNumbers::default();
+        Ok(forge_gateway::rotation::RotationNumbers {
+            streak_count: refused_u32(
+                path,
+                "streak_count",
+                self.streak_count,
+                defaults.streak_count,
+            )?,
+            streak_window: refused_duration(
+                path,
+                "streak_window_secs",
+                self.streak_window_secs,
+                defaults.streak_window,
+            )?,
+            no_reset_cooldown: refused_duration(
+                path,
+                "no_reset_cooldown_secs",
+                self.no_reset_cooldown_secs,
+                defaults.no_reset_cooldown,
+            )?,
+        })
     }
 }
 
@@ -259,6 +331,8 @@ pub(crate) struct LoadedConfig {
     /// The port the gateway's inference listener binds. Absent
     /// `[gateway]` section keeps the default.
     pub gateway_port: u16,
+    /// The gateway's rotation numbers. Absent keys keep the defaults.
+    pub gateway_rotation: forge_gateway::rotation::RotationNumbers,
 }
 
 /// The port the gateway's listener binds when `[gateway] port` is
@@ -352,6 +426,7 @@ impl LoadedConfig {
             slack: Vec::new(),
             plugins: PluginSettings::default(),
             gateway_port: DEFAULT_GATEWAY_PORT,
+            gateway_rotation: forge_gateway::rotation::RotationNumbers::default(),
         }
     }
 }
@@ -595,6 +670,10 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         Some(gateway) => gateway.resolved_port(&path)?,
         None => DEFAULT_GATEWAY_PORT,
     };
+    let gateway_rotation = match &parsed.gateway {
+        Some(gateway) => gateway.resolved_rotation(&path)?,
+        None => forge_gateway::rotation::RotationNumbers::default(),
+    };
 
     Ok(LoadedConfig {
         projects,
@@ -606,6 +685,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         slack: parsed.slack,
         plugins: parsed.plugins,
         gateway_port,
+        gateway_rotation,
     })
 }
 
@@ -774,6 +854,85 @@ port = 0
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("absent section loads");
         assert_eq!(config.gateway_port, DEFAULT_GATEWAY_PORT);
+    }
+
+    #[test]
+    fn gateway_rotation_numbers_default_when_keys_are_absent() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("absent keys load");
+        assert_eq!(config.gateway_rotation, forge_gateway::rotation::RotationNumbers::default(),);
+    }
+
+    #[test]
+    fn gateway_rotation_numbers_parse_from_the_section() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test-config-stargate"
+provider = "anthropic"
+
+[gateway]
+streak_count = 3
+streak_window_secs = 45
+no_reset_cooldown_secs = 90
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("section loads");
+        assert_eq!(config.gateway_rotation.streak_count, 3);
+        assert_eq!(config.gateway_rotation.streak_window, Duration::from_secs(45));
+        assert_eq!(config.gateway_rotation.no_reset_cooldown, Duration::from_secs(90));
+    }
+
+    #[test]
+    fn gateway_rotation_zero_keys_are_refused_at_load() {
+        // An absurd magnitude is refused with the same error: silently
+        // mapping it to the default would substitute the user's value.
+        let values = [
+            ("streak_count", "0"),
+            ("streak_window_secs", "0"),
+            ("streak_window_secs", "99999999999"),
+            ("no_reset_cooldown_secs", "0"),
+            ("no_reset_cooldown_secs", "99999999999"),
+        ];
+        for (key, value) in values {
+            let dir = tempdir().expect("tempdir");
+            write_config(
+                dir.path(),
+                &format!(
+                    r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test-config-stargate"
+provider = "anthropic"
+
+[gateway]
+{key} = {value}
+"#
+                ),
+            );
+            let err = load_from_dir(dir.path()).expect_err("an unusable key must not load");
+            assert!(err.to_string().contains(key), "the error names the unusable key, got: {err}");
+        }
     }
 
     #[test]

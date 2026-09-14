@@ -67,6 +67,12 @@ pub enum WorkspaceError {
     GatewayPortInvalid { path: PathBuf },
 
     #[error(
+        "gateway key '{key}' = 0 in forge.toml at {} is not usable; 0 would silently disable the mechanism it configures",
+        path.display()
+    )]
+    GatewayRotationInvalid { path: PathBuf, key: &'static str },
+
+    #[error(
         "account '{name}' in forge.toml at {} declares a base-url provider but has no ANTHROPIC_BASE_URL in [accounts.env]",
         path.display()
     )]
