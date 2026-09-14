@@ -14,8 +14,8 @@ use crate::mcp::peers::types::{
     AskChannel, CorrelationId, InflightAsk, ReplyRouting, WrappedKind, WrappedPrompt,
 };
 use crate::mcp::workers::facade::{
-    DespawnOutcome, LEAD_LABEL, WorkerDeliverError, WorkerDespawnError, WorkerFacade,
-    WorkerLeadDeliverError, WorkerSpawnError, WorkerUpdateError,
+    DespawnOutcome, LEAD_LABEL, WorkerCapSource, WorkerDeliverError, WorkerDespawnError,
+    WorkerFacade, WorkerLeadDeliverError, WorkerSpawnError, WorkerUpdateError,
 };
 
 pub mod facade;
@@ -52,11 +52,12 @@ pub(crate) fn add_tools(
 ) -> McpServerBuilder {
     let spawn = Spawn { facade: facade.clone(), caller_key: caller_key.clone() };
     let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
+    let capacity = Capacity { facade: facade.clone(), caller_key: caller_key.clone() };
     let tell = Tell { facade: facade.clone(), caller_key: caller_key.clone() };
     let ask = Ask { facade: facade.clone(), caller_key: caller_key.clone() };
     let despawn = Despawn { facade: facade.clone(), caller_key: caller_key.clone() };
     let update = Update { facade, caller_key };
-    builder.tool(spawn).tool(list).tool(tell).tool(ask).tool(despawn).tool(update)
+    builder.tool(spawn).tool(list).tool(capacity).tool(tell).tool(ask).tool(despawn).tool(update)
 }
 
 /// `workers__spawn` - lead-only. Allocates a new SessionTask in the
@@ -473,6 +474,64 @@ impl Tool for List {
         match serde_json::to_string_pretty(&workers) {
             Ok(json) => ToolOutput::text(json),
             Err(err) => tool_error(format!("worker-list serialization failed: {err}")),
+        }
+    }
+}
+
+/// `workers__capacity` - any-caller aggregate read of the caller's
+/// project worker capacity. One JSON object rather than the
+/// per-worker snapshots `workers__list` returns.
+pub(crate) struct Capacity {
+    pub(crate) facade: Arc<dyn WorkerFacade>,
+    pub(crate) caller_key: CallerKeyResolver,
+}
+
+#[async_trait::async_trait]
+impl Tool for Capacity {
+    fn name(&self) -> &'static str {
+        "workers__capacity"
+    }
+
+    fn description(&self) -> &'static str {
+        "Report the worker capacity of YOUR project: the configured \
+         cap, how many workers are live, and how many slots are free. \
+         Use it before spawning to see whether a spawn would hit the \
+         limit. The cap is the project's forge.toml \
+         [projects.<name>] max_workers when set, else forge's \
+         default; cap_source names which. Takes no arguments."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, _input: ToolInput) -> ToolOutput {
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
+        let Some(capacity) = self.facade.capacity(&caller_key) else {
+            return tool_error(
+                "could not resolve caller to a known project (forge bug)".to_owned(),
+            );
+        };
+        let json = serde_json::json!({
+            "project": capacity.project,
+            "cap": capacity.cap,
+            "live": capacity.live,
+            "available": capacity.cap.saturating_sub(capacity.live),
+            "cap_source": match capacity.cap_source {
+                WorkerCapSource::ProjectMaxWorkers => "max_workers",
+                WorkerCapSource::Default => "default",
+            },
+        });
+        match serde_json::to_string_pretty(&json) {
+            Ok(json) => ToolOutput::text(json),
+            Err(err) => tool_error(format!("worker-capacity serialization failed: {err}")),
         }
     }
 }
@@ -1051,7 +1110,9 @@ fn format_update_error(err: &WorkerUpdateError) -> String {
 mod tests {
     use super::*;
     use crate::SessionKey;
-    use crate::mcp::workers::facade::{CallerProject, MockWorkerFacade};
+    use crate::mcp::workers::facade::{
+        CallerProject, MockWorkerFacade, WorkerCapSource, WorkerCapacity,
+    };
     use crate::protocol::WorkerSpawnReply;
 
     fn fake_key(s: &str) -> SessionKey {
@@ -2001,6 +2062,62 @@ mod tests {
     }
 
     #[test]
+    fn capacity_metadata_shape() {
+        let mock = MockWorkerFacade::new();
+        let facade = mock.into_arc();
+        let tool = Capacity { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        assert_eq!(tool.name(), "workers__capacity");
+        assert!(tool.description().to_lowercase().contains("capacity"));
+        let schema = tool.input_schema();
+        assert_eq!(schema["properties"], serde_json::json!({}));
+        assert_eq!(schema["additionalProperties"], false);
+    }
+
+    #[tokio::test]
+    async fn capacity_call_renders_project_cap_live_available_and_source() {
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+        *mock.capacity_reply.lock() = Some(WorkerCapacity {
+            project: "forge".into(),
+            cap: 3,
+            live: 1,
+            cap_source: WorkerCapSource::ProjectMaxWorkers,
+        });
+        let facade = mock.into_arc();
+        let tool =
+            Capacity { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!output.is_error, "capacity happy path should not error: {:?}", output.blocks);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        assert_eq!(parsed["project"], "forge");
+        assert_eq!(parsed["cap"], 3);
+        assert_eq!(parsed["live"], 1);
+        assert_eq!(parsed["available"], 2);
+        assert_eq!(parsed["cap_source"], "max_workers");
+    }
+
+    #[tokio::test]
+    async fn capacity_available_saturates_at_zero() {
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+        *mock.capacity_reply.lock() = Some(WorkerCapacity {
+            project: "forge".into(),
+            cap: 1,
+            live: 2,
+            cap_source: WorkerCapSource::Default,
+        });
+        let facade = mock.into_arc();
+        let tool =
+            Capacity { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        assert_eq!(parsed["available"], 0, "available must saturate, not underflow");
+        assert_eq!(parsed["cap_source"], "default");
+    }
+
+    #[test]
     fn build_server_registers_all_workers_tools() {
         let mock = MockWorkerFacade::new();
         let facade = mock.into_arc();
@@ -2009,6 +2126,7 @@ mod tests {
         for expected in [
             "workers__spawn",
             "workers__list",
+            "workers__capacity",
             "workers__tell",
             "workers__ask",
             "workers__despawn",

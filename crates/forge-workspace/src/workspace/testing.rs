@@ -233,6 +233,17 @@ impl Workspace {
     /// to drive the Connected-hook worker-spawn trigger without
     /// writing a real `forge.toml`. Test-only.
     pub fn seed_test_project(&self, name: &str, path: &str) {
+        self.seed_test_project_inner(name, path, None);
+    }
+
+    /// [`Workspace::seed_test_project`] with a
+    /// `[projects.<name>] max_workers` override, so facade tests can
+    /// exercise the override arm of the capacity read. Test-only.
+    pub fn seed_test_project_with_max_workers(&self, name: &str, path: &str, max_workers: usize) {
+        self.seed_test_project_inner(name, path, Some(max_workers));
+    }
+
+    fn seed_test_project_inner(&self, name: &str, path: &str, max_workers: Option<usize>) {
         self.test_extra_projects.lock().push(crate::config::LoadedProject {
             name: name.to_owned(),
             path: std::path::PathBuf::from(path),
@@ -242,7 +253,7 @@ impl Workspace {
             fallback_accounts: Vec::new(),
             auto_start: false,
             env: std::collections::HashMap::new(),
-            max_workers: None,
+            max_workers,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
         });
     }
