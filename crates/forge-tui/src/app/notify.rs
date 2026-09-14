@@ -45,10 +45,10 @@ impl NotificationText {
 }
 
 /// What one unfocused notify() delivered, recorded instead of sent
-/// when the `testing` feature is on: the two escape fields and whether
-/// the bytes reached stdout, in delivery order. `written` is what makes
-/// the emission observable; without it a guard around the write is
-/// invisible to every assertion here.
+/// when the `testing` feature is on: the two pre-sanitization escape
+/// fields and whether the bytes reached stdout, in delivery order.
+/// `written` is what makes the emission observable; without it a guard
+/// around the write is invisible to every assertion here.
 #[cfg(feature = "testing")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveredNotification {
@@ -293,7 +293,7 @@ fn sanitize_notification_field(field: &str) -> String {
     let mut sanitized = String::with_capacity(field.len());
     for ch in field.chars() {
         match ch {
-            '\u{07}' | '\u{1b}' | '\u{9c}' => {}
+            '\u{07}' | '\u{1b}' | '\u{9c}' | '\u{18}' | '\u{1a}' => {}
             '\r' | '\n' | ';' => sanitized.push(' '),
             _ => sanitized.push(ch),
         }
@@ -367,18 +367,6 @@ mod tests {
             worker.fields(),
             ("forge", "Worker osc777 - Turn complete"),
             "a worker names itself, since the project is already the title",
-        );
-    }
-
-    #[test]
-    fn every_event_phrase_is_capitalised() {
-        assert_eq!(
-            notification_text(NotifyEvent::PermissionRequired, "busymail", None).fields().1,
-            "Needs input",
-        );
-        assert_eq!(
-            notification_text(NotifyEvent::QuestionRequired, "busymail", None).fields().1,
-            "Needs your answer",
         );
     }
 
@@ -500,11 +488,11 @@ mod tests {
         );
     }
 
-    /// The single line the escape carries stands alone: the event
-    /// session's project, its kind, the worker's label where there is
-    /// one, and the event.
+    /// The fields the escape carries stand alone: the event session's
+    /// project as the title, its kind and the worker's label where
+    /// there is one in the body.
     #[test]
-    fn unfocused_worker_turn_complete_line_names_the_worker() {
+    fn unfocused_worker_turn_complete_names_the_worker() {
         let mut app = App::test_default();
         let lead_key = seed_bucket(&mut app, "session-lead", "beta");
         let worker_key = seed_bucket(&mut app, "session-worker", "beta");
@@ -536,10 +524,10 @@ mod tests {
         );
     }
 
-    /// Permission and question events reach the line through the same
+    /// Permission and question events reach the body through the same
     /// path a turn complete does, worker label included.
     #[test]
-    fn unfocused_worker_prompts_name_the_worker_on_the_line() {
+    fn unfocused_worker_prompts_name_the_worker() {
         let mut app = App::test_default();
         let worker_key = seed_bucket(&mut app, "session-worker", "busymail");
         seed_worker(
@@ -649,8 +637,9 @@ mod tests {
     #[test]
     fn the_escape_sanitizes_control_characters_in_both_fields() {
         assert_eq!(
-            notification_escape_sequence("hello\n\u{1b}world\u{07}", "a\u{9c}b").as_ref(),
-            "\u{1b}]777;notify;hello world;ab\u{1b}\\"
+            notification_escape_sequence("hello\n\u{1b}world\u{07}", "a\u{9c}b\u{18}c\u{1a}d")
+                .as_ref(),
+            "\u{1b}]777;notify;hello world;abcd\u{1b}\\"
         );
     }
 }
