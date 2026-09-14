@@ -173,6 +173,8 @@ pub(crate) enum SlackAttachmentError {
     UnknownWorkspace,
     /// The Web API or the transfer failed.
     Fetch(String),
+    /// The `dir` a fetch should land in exists but is not a directory.
+    NotADirectory(std::path::PathBuf),
 }
 
 /// A file name that came from Slack is untrusted input: it is whatever the
@@ -618,6 +620,16 @@ impl SlackFacade for ProdSlackFacade {
         let label = resolve_label(&ws.slack, request.workspace.as_deref())
             .ok_or(SlackAttachmentError::UnknownWorkspace)?;
         let api = ws.slack.client(&label).ok_or(SlackAttachmentError::UnknownWorkspace)?;
+
+        // The directory is checked and created before Slack is contacted,
+        // so a bad `dir` costs no round trips.
+        if let Ok(meta) = std::fs::metadata(&request.dir)
+            && !meta.is_dir()
+        {
+            return Err(SlackAttachmentError::NotADirectory(request.dir.clone()));
+        }
+        std::fs::create_dir_all(&request.dir)
+            .map_err(|err| SlackAttachmentError::Io(format!("{}: {err}", request.dir.display())))?;
 
         let file = api
             .file_info(&request.file_id)
@@ -1317,6 +1329,67 @@ mod tests {
             std::fs::read(&existing).expect("read back"),
             b"precious",
             "and the existing file is untouched",
+        );
+    }
+
+    /// A fetch into a directory that does not exist yet just works: the
+    /// directory is created, however many levels are missing.
+    #[tokio::test]
+    async fn a_fetch_creates_a_missing_target_directory() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_file("F1", "notes.txt", b"attachment body");
+        let root = tempdir().expect("tempdir");
+        let dir = root.path().join("fresh/deeper");
+
+        let path = facade.fetch_attachment(fetch_request("F1", &dir)).await.expect("fetched");
+        assert_eq!(
+            path.parent(),
+            Some(dir.as_path()),
+            "the file lands in the directory that was created: {path:?}",
+        );
+        assert_eq!(std::fs::read(&path).expect("read back"), b"attachment body");
+    }
+
+    /// A `dir` that exists but is a file is refused with the typed error
+    /// before Slack is contacted: `F1` is unseeded here, so an error other
+    /// than `NotADirectory` means the fetch reached Slack first.
+    #[tokio::test]
+    async fn a_fetch_rejects_a_dir_that_is_a_file() {
+        let (facade, _ws, _api, _rx) = facade_with_recording_slack();
+        let root = tempdir().expect("tempdir");
+        let not_a_dir = root.path().join("plain-file");
+        std::fs::write(&not_a_dir, b"data").expect("write the file");
+
+        let err = facade
+            .fetch_attachment(fetch_request("F1", &not_a_dir))
+            .await
+            .expect_err("a file is not a directory");
+        assert_eq!(
+            err,
+            SlackAttachmentError::NotADirectory(not_a_dir.clone()),
+            "the error carries the path the caller chose",
+        );
+    }
+
+    /// When the write still fails after the checks, the error names the
+    /// directory the caller chose instead of a bare errno.
+    #[tokio::test]
+    async fn a_fetch_failure_names_the_path() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_file("F1", "notes.txt", b"body");
+        let root = tempdir().expect("tempdir");
+        let block = root.path().join("plain-file");
+        std::fs::write(&block, b"data").expect("write the file");
+        let dir = block.join("sub");
+
+        let err =
+            facade.fetch_attachment(fetch_request("F1", &dir)).await.expect_err("cannot land");
+        let SlackAttachmentError::Io(message) = err else {
+            panic!("expected the io error, got {err:?}");
+        };
+        assert!(
+            message.contains(&dir.display().to_string()),
+            "the error names the directory: {message}",
         );
     }
 

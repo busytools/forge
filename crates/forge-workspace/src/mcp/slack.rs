@@ -806,6 +806,9 @@ fn format_attachment_error(err: &SlackAttachmentError) -> String {
             "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
         }
         SlackAttachmentError::Fetch(message) => format!("Slack request failed: {message}"),
+        SlackAttachmentError::NotADirectory(path) => {
+            format!("`dir` is a file, not a directory: {}", path.display())
+        }
     }
 }
 
@@ -1735,6 +1738,28 @@ mod tests {
         );
         assert!(mock.fetch_calls.lock().is_empty(), "nothing reaches the facade");
         assert!(mock.upload_calls.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn slack_attachment_names_the_directory_when_it_is_a_file() {
+        let mock = Arc::new(MockSlackFacade::new());
+        let offender = std::env::temp_dir().join("slack-attachment-not-a-dir");
+        *mock.fetch_result.lock() =
+            Some(Err(SlackAttachmentError::NotADirectory(offender.clone())));
+        let tool = Attachment { facade: mock.clone(), caller_key: resolver() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "file_id": "F1",
+                "dir": offender.display().to_string(),
+            })))
+            .await;
+        assert!(out.is_error, "a file in the dir slot is an error: {}", out.blocks[0].text);
+        assert!(
+            out.blocks[0].text.contains(&offender.display().to_string()),
+            "the rendered error names the path the caller chose: {}",
+            out.blocks[0].text,
+        );
     }
 
     #[tokio::test]
