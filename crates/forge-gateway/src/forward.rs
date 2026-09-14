@@ -488,7 +488,10 @@ mod tests {
     }
 
     /// Stub upstream + gateway listener + one registered session whose
-    /// account's upstream is the stub.
+    /// account's upstream is the stub. The pool holds one account per
+    /// family, both with the stub as their upstream, so a test that
+    /// asserts "no upstream request" is airtight whichever account a
+    /// broken selection could have picked.
     async fn harness(chunk_delay: Duration) -> Harness {
         let script: ScriptHandle =
             Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
@@ -505,17 +508,31 @@ mod tests {
         tokio::spawn(async move { stub_listener.run(stub_handler).await });
 
         let account_env = HashMap::from([
-            ("ANTHROPIC_BASE_URL".to_owned(), stub_url),
+            ("ANTHROPIC_BASE_URL".to_owned(), stub_url.clone()),
             ("ANTHROPIC_AUTH_TOKEN".to_owned(), "real-openrouter-key".to_owned()),
             ("ANTHROPIC_API_KEY".to_owned(), String::new()),
         ]);
-        let pool = Arc::new(crate::AccountPool::new(&[forge_primitives::account::LoadedAccount {
-            display_name: "OpenRouter".to_owned(),
-            config_dir: std::path::PathBuf::from("/cfg/openrouter"),
-            provider: forge_primitives::account::Provider::Openrouter,
-            env: account_env.clone(),
-            experimental: false,
-        }]));
+        let anthropic_env = HashMap::from([
+            ("ANTHROPIC_BASE_URL".to_owned(), stub_url),
+            ("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "real-oauth-token".to_owned()),
+            ("ANTHROPIC_API_KEY".to_owned(), String::new()),
+        ]);
+        let pool = Arc::new(crate::AccountPool::new(&[
+            forge_primitives::account::LoadedAccount {
+                display_name: "OpenRouter".to_owned(),
+                config_dir: std::path::PathBuf::from("/cfg/openrouter"),
+                provider: forge_primitives::account::Provider::Openrouter,
+                env: account_env.clone(),
+                experimental: false,
+            },
+            forge_primitives::account::LoadedAccount {
+                display_name: "Anthropic".to_owned(),
+                config_dir: std::path::PathBuf::from("/cfg/anthropic"),
+                provider: forge_primitives::account::Provider::Anthropic,
+                env: anthropic_env,
+                experimental: false,
+            },
+        ]));
         let gateway = Arc::new(Gateway::new(Arc::clone(&pool)));
 
         let listener_port = free_port().await;
@@ -697,19 +714,21 @@ mod tests {
     #[tokio::test]
     async fn a_model_no_account_serves_is_a_loud_503_and_never_reaches_the_upstream() {
         let harness = harness(Duration::ZERO).await;
-        // The pin's only account is Anthropic; a non-claude model has
-        // no eligible account in this org.
+        // The pin's only account is Anthropic and that account is
+        // Ready; a non-claude model has no eligible account in this
+        // org. The refusal is the family gate's, not a loading state
+        // or an unknown name.
         harness.gateway.set_org_pins([(
             "Busytools".to_owned(),
             crate::selection::OrgPin {
-                accounts: vec!["Openrouter".to_owned()],
+                accounts: vec!["Anthropic".to_owned()],
                 fallback_accounts: Vec::new(),
             },
         )]);
         harness
             .gateway
             .pool
-            .set_loading(&AccountKey("Openrouter".to_owned()), crate::LoadingState::Ready);
+            .set_loading(&AccountKey("Anthropic".to_owned()), crate::LoadingState::Ready);
 
         let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
         let response = reqwest::Client::new()
@@ -728,6 +747,49 @@ mod tests {
         assert!(
             harness.requests.lock().is_empty(),
             "an unselectable request must not construct an upstream request",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_claude_model_in_a_non_anthropic_org_binds_and_forwards() {
+        let harness = harness(Duration::ZERO).await;
+        // Mirror of the family-gate refusal: the org's one account is
+        // the OpenRouter one, glm is its family, so the same route
+        // that refused above selects, binds, and forwards.
+        harness.gateway.set_org_pins([(
+            "Busytools".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["OpenRouter".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        harness
+            .gateway
+            .pool
+            .set_loading(&AccountKey("OpenRouter".to_owned()), crate::LoadingState::Ready);
+
+        let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
+        let response = reqwest::Client::new()
+            .post(format!("{ghost_url}/v1/messages?beta=true"))
+            .header(CONTENT_TYPE, "application/json")
+            .body(r#"{"model":"glm-5.3-flash","messages":[]}"#)
+            .send()
+            .await
+            .expect("gateway responds");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the family gate admits the model to its own family's account",
+        );
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "ghost"),
+            Some(AccountKey("OpenRouter".to_owned())),
+            "the route binds what the family gate admitted",
+        );
+        assert_eq!(
+            harness.requests.lock().len(),
+            1,
+            "the forwarded request reached the bound account's upstream",
         );
     }
 
