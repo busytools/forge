@@ -160,25 +160,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     match (key.code, key.modifiers) {
-        // The Mcps tab keeps the MCP page's own keys: Up/Down select,
-        // Enter opens the server's actions, r refreshes the snapshot.
-        (KeyCode::Up | KeyCode::Down, KeyModifiers::NONE)
-            if app.plugins.active_tab == ExtensionsTab::Mcps =>
-        {
-            crate::app::config::mcp::handle_mcp_key(app, key)
-        }
-        (KeyCode::Enter, _)
-            if app.plugins.active_tab == ExtensionsTab::Mcps && !app.plugins.search_focused =>
-        {
-            crate::app::config::mcp::handle_mcp_key(app, key)
-        }
-        (KeyCode::Char(ch), modifiers)
-            if matches!(ch, 'r' | 'R')
-                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
-                && app.plugins.active_tab == ExtensionsTab::Mcps =>
-        {
-            crate::app::config::mcp::handle_mcp_key(app, key)
-        }
         (KeyCode::Left, KeyModifiers::NONE) => {
             app.plugins.active_tab = app.plugins.active_tab.prev();
             app.plugins.search_focused = false;
@@ -244,8 +225,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             | ExtensionsTab::Commands
             | ExtensionsTab::Hooks
             | ExtensionsTab::Lsp => installed::open_component_actions_overlay(app),
-            // The Mcps tab's actions arrive with its tab render.
-            ExtensionsTab::Mcps => true,
+            ExtensionsTab::Mcps => {
+                crate::app::config::mcp::open_selected_mcp_server_details(app);
+                true
+            }
             ExtensionsTab::Marketplaces => open_marketplace_overlay(app),
         },
         (KeyCode::Backspace, KeyModifiers::NONE) => {
@@ -703,6 +686,16 @@ pub(crate) fn clamp_selection(app: &mut App) {
         app.plugins.set_selected_index_for(tab, clamp_index(selected, len));
         clamp_scroll(app, tab);
     }
+}
+
+/// Clamp the Mcps tab's shared selection and scroll after an MCP
+/// snapshot lands: the server list may have shrunk under it.
+pub(crate) fn clamp_mcps_selection(app: &mut App) {
+    let tab = ExtensionsTab::Mcps;
+    let len = visible_row_count(app, tab);
+    let selected = app.plugins.selected_index_for(tab);
+    app.plugins.set_selected_index_for(tab, clamp_index(selected, len));
+    clamp_scroll(app, tab);
 }
 
 /// Re-seat the tab's scroll offset so its selection stays inside the
@@ -2948,6 +2941,35 @@ mod tests {
             overlay.plugin_id, "blabbermouth@claude-night-market",
             "the picker targets the selected plugin"
         );
+    }
+
+    /// Enter on the Mcps tab opens the selected server's details
+    /// overlay, resolved through the tab's SHARED selection.
+    #[test]
+    fn mcps_tab_enter_opens_the_selected_servers_details() {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = ExtensionsTab::Mcps;
+        app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        let server = |name: &str| forge_primitives::McpServerStatus {
+            name: name.to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: Some(
+                serde_json::json!({"type": "stdio", "command": "npx", "args": [], "env": {}}),
+            ),
+            scope: Some("user".to_owned()),
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        };
+        app.mcp_mut().expect("active session").servers = vec![server("alpha"), server("beta")];
+        app.plugins.set_selected_index_for(ExtensionsTab::Mcps, 1);
+
+        assert!(press(&mut app, KeyCode::Enter));
+        let overlay = app.config.mcp_details_overlay().expect("the details overlay opens");
+        assert_eq!(overlay.server_name, "beta", "the SHARED selection resolves the server");
     }
 
     /// The available stream renders by default on component tabs,

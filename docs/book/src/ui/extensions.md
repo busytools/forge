@@ -10,7 +10,7 @@ On the Installed and component tabs, every count describes the tab's INSTALLED r
 
 ## Row grammar
 
-Every tab but MCPs and Marketplaces renders one row per extension over the same grammar - state glyph, name, source, installed-vs-available status, badges, action - as aligned columns: the state, name, source and status columns each hold one width for the whole tab (derived from the tab's content, capped), so the rows read as a table. Nothing wraps: a long name, source or status truncates with an ellipsis instead of shifting the columns, and the row's action right-aligns at the pane edge.
+Every tab but Marketplaces renders one row per extension over the same grammar - state glyph, name, source, installed-vs-available status, badges, action - as aligned columns: the state, name, source and status columns each hold one width for the whole tab (derived from the tab's content, capped), so the rows read as a table. Nothing wraps: a long name, source or status truncates with an ellipsis instead of shifting the columns, and the row's action right-aligns at the pane edge.
 
 - State glyphs and colours: `✓` green for installed, `⚠` warning for an available update, `-` blue for available-not-installed, `✗` red for disabled or failed, and `✓` dim for a plugin installed as an auto-dependency.
 - Bracketed badges ride the row where they apply: `[auto-installed]` on a plugin the registry installed as someone's dependency, `[restart required]` on a plugin whose update applied but is not live until a restart consumes it.
@@ -28,7 +28,7 @@ Every tab's list scrolls. The list renders a window of rows starting at the tab'
 - **Skills / Agents / Commands** - one row per INSTALLED component of that kind, sourced by its plugin. The available stream's components of the same kind render after the installed rows by default, dim, with an `Install` action; the Available toggle hides them.
 - **Hooks** - one row per installed plugin hook set with its trigger events. Available hook sets render after them the same way.
 - **LSP** - one row per server the installed plugins' manifests declare, with the binary check. Available servers the marketplaces declare render after them the same way.
-- **MCPs** - the MCP page's content unchanged: the status-badge summary line, then one row per server (name, status badge, scope badge, transport badge, dim summary), with the same details overlay and actions the standalone view had.
+- **MCPs** - one row per live session server over the shared grammar: the state glyph from the connection status, the server name, the scope as source (`user`, `project`, `plugin`), the status in the status column (`connected`, `needs auth`, `pending`, `disabled`, `failed`), the transport as a bracketed badge, and the dim detail carrying the tool count and the command or URL. There is no summary band: the rows carry the state and the tab chip carries the count. Enter opens the per-server details overlay - status, enabled, scope, transport, tools, the server's configuration, and the Refresh / Reconnect / Disable actions - and Esc closes it.
 - **Marketplaces** - one row per configured marketplace: `healthy · N plugins` in green when the manifest loads, otherwise the drift notice (`registry drift - installLocation outside the config dir`), the load failure reason, or a dim `scan pending` when the pane's first disk scan has not landed yet - with the Repair action offered on drift and load failures.
 
 ## The Available toggle

@@ -871,11 +871,13 @@ mod tests {
         assert!(rendered.contains("Enter confirm"), "the help: {rendered}");
     }
 
-    /// The Mcps tab hosts the MCP page's content: the same summary
-    /// and server rows the standalone /mcp view rendered.
+    /// The Mcps tab renders its servers over the shared grammar: the
+    /// state glyph, the name, scope as source, the status column, the
+    /// transport badge and the summary as detail - and no summary
+    /// band, which the rows make redundant.
     #[test]
     fn the_mcps_tab_renders_the_existing_mcp_rows() {
-        let backend = TestBackend::new(100, 24);
+        let backend = TestBackend::new(140, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
 
@@ -919,7 +921,32 @@ mod tests {
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("context7"), "the server row: {rendered}");
         assert!(rendered.contains("1 tool"), "the tool count detail: {rendered}");
-        assert!(rendered.contains("total 1"), "the summary line: {rendered}");
+        assert!(rendered.contains("user"), "the scope rides as source: {rendered}");
+        assert!(rendered.contains("[stdio]"), "the transport rides as a badge: {rendered}");
+        assert!(
+            !rendered.contains("total 1"),
+            "the summary band is gone: the rows carry the state: {rendered}"
+        );
+    }
+
+    /// Without a session the Mcps tab names what is missing instead of
+    /// rendering an empty list.
+    #[test]
+    fn the_mcps_tab_without_a_session_names_it() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Extensions;
+        app.plugins.active_tab = crate::app::extensions::ExtensionsTab::Mcps;
+
+        terminal
+            .draw(|frame| {
+                super::render_extensions(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Open or resume a session"), "the no-session copy: {rendered}");
     }
 
     /// A drifted marketplace names its problem on the tab and offers

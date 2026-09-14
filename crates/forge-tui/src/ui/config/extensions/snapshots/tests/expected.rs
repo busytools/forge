@@ -305,12 +305,12 @@ pub(crate) const MCPS: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
+│  >✓ plugin:context7:context7  user        connected                 [stdio]  Context7 1.0.0  |  1 tool  |  cmd npx
 │
 │
-│     total 1   connected 1   needs auth 0   pending 0   disabled 0   failed 0
 │
-│    > plugin:context7:context7   connected   user   stdio
-│      Context7 1.0.0  |  1 tool  |  cmd npx
+│
+│
 │
 │
 │

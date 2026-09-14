@@ -12,8 +12,10 @@
 //! to the installed tiers.
 
 use forge_primitives::plugins::{ExtensionRow, RowState};
+use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::ui::theme;
@@ -54,6 +56,146 @@ pub fn render_extension_rows(rows: &[&ExtensionRow], width: usize) -> Vec<Line<'
     rows.iter().map(|row| extension_row_line(row, &columns, width)).collect()
 }
 
+/// One line per MCP server over the shared grammar: state glyph from
+/// the connection status, name, scope as source, the status column,
+/// transport as a bracketed badge, summary as detail.
+pub(crate) fn render_mcp_rows(servers: &[McpServerStatus], width: usize) -> Vec<Line<'static>> {
+    let triples: Vec<(String, String, String)> = servers
+        .iter()
+        .map(|server| {
+            (
+                server.name.clone(),
+                server.scope.clone().unwrap_or_else(|| "session".to_owned()),
+                mcp_status_label(server.status).to_owned(),
+            )
+        })
+        .collect();
+    let columns = compute_columns(&triples, width);
+    servers.iter().map(|server| mcp_row_line(server, &columns, width)).collect()
+}
+
+fn mcp_row_line(server: &McpServerStatus, columns: &ColumnWidths, width: usize) -> Line<'static> {
+    let (glyph, color) = mcp_state_glyph(server.status);
+    let scope = server.scope.clone().unwrap_or_else(|| "session".to_owned());
+    let status = mcp_status_label(server.status);
+
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(glyph.to_owned(), Style::default().fg(color)),
+        Span::raw(" "),
+        Span::styled(
+            pad(&truncate_to_width(&server.name, columns.name), columns.name),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            pad(&truncate_to_width(&scope, columns.source), columns.source),
+            Style::default().fg(theme::DIM),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            pad(&truncate_to_width(status, columns.status), columns.status),
+            Style::default().fg(color),
+        ),
+        Span::styled(
+            format!("  [{}]", transport_label(server.config.as_ref())),
+            Style::default().fg(theme::DIM),
+        ),
+    ];
+
+    let detail = server_summary_line(server);
+    let budget = width.saturating_sub(spans_width(&spans) + 2);
+    if budget > 4 && !detail.is_empty() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            truncate_to_width(&detail, budget),
+            Style::default().fg(theme::DIM),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn mcp_state_glyph(status: McpServerConnectionStatus) -> (&'static str, Color) {
+    match status {
+        McpServerConnectionStatus::Connected => (theme::ICON_COMPLETED, theme::REVIEW_RESOLVED),
+        McpServerConnectionStatus::NeedsAuth => (ICON_WARNING, theme::STATUS_WARNING),
+        McpServerConnectionStatus::Pending => ("-", theme::DIM),
+        McpServerConnectionStatus::Disabled | McpServerConnectionStatus::Failed => {
+            (theme::ICON_FAILED, theme::STATUS_ERROR)
+        }
+    }
+}
+
+/// The out-of-date marker the update report already uses.
+const ICON_WARNING: &str = "\u{26a0}";
+
+/// The human label of a connection status; shared with the details
+/// overlay.
+pub(crate) fn mcp_status_label(status: McpServerConnectionStatus) -> &'static str {
+    match status {
+        McpServerConnectionStatus::Connected => "connected",
+        McpServerConnectionStatus::Failed => "failed",
+        McpServerConnectionStatus::NeedsAuth => "needs auth",
+        McpServerConnectionStatus::Pending => "pending",
+        McpServerConnectionStatus::Disabled => "disabled",
+    }
+}
+
+/// The transport a server's config names, or unknown; shared with the
+/// details overlay.
+pub(crate) fn transport_label(config: Option<&Value>) -> &'static str {
+    match config.and_then(|c| c.get("type")).and_then(Value::as_str) {
+        Some("stdio") => "stdio",
+        Some("sse") => "sse",
+        Some("http") => "http",
+        Some("sdk") => "sdk",
+        Some("claudeai-proxy") => "claudeai-proxy",
+        _ => "unknown",
+    }
+}
+
+/// The row's summary: the error when present, else server info, tool
+/// count and the command or URL; shared with the details overlay.
+pub(crate) fn server_summary_line(server: &McpServerStatus) -> String {
+    if let Some(error) = server.error.as_deref()
+        && !error.trim().is_empty()
+    {
+        return error.to_owned();
+    }
+
+    let mut parts = Vec::new();
+    if let Some(info) = server.server_info.as_ref() {
+        parts.push(format!("{} {}", info.name, info.version));
+    }
+    let tool_count = server.tools.as_deref().map_or(0, <[_]>::len);
+    parts.push(tool_summary_line(tool_count));
+    if let Some(config) = server.config.as_ref() {
+        match config.get("type").and_then(Value::as_str) {
+            Some("stdio") => {
+                if let Some(cmd) = config.get("command").and_then(Value::as_str) {
+                    parts.push(format!("cmd {cmd}"));
+                }
+            }
+            Some("sse" | "http" | "claudeai-proxy") => {
+                if let Some(url) = config.get("url").and_then(Value::as_str) {
+                    parts.push(url.to_owned());
+                }
+            }
+            Some("sdk") => {
+                if let Some(name) = config.get("name").and_then(Value::as_str) {
+                    parts.push(format!("sdk {name}"));
+                }
+            }
+            _ => {}
+        }
+    }
+    parts.join("  |  ")
+}
+
+fn tool_summary_line(count: usize) -> String {
+    crate::ui::format::tool_summary(count)
+}
+
 /// One width per column for the whole tab: content-sized between the
 /// floor and the cap, shrinking together when the pane is narrow.
 struct ColumnWidths {
@@ -63,15 +205,27 @@ struct ColumnWidths {
 }
 
 fn column_widths(rows: &[&ExtensionRow], width: usize) -> ColumnWidths {
+    let triples: Vec<(String, String, String)> = rows
+        .iter()
+        .map(|row| {
+            let source_display = row.source.split_once('@').map_or(row.source.as_str(), |(n, _)| n);
+            (row.name.clone(), source_display.to_owned(), status_text(row))
+        })
+        .collect();
+    compute_columns(&triples, width)
+}
+
+/// One width per column for a tab's rows, content-sized between the
+/// floor and the cap, shrinking together when the pane is narrow.
+fn compute_columns(triples: &[(String, String, String)], width: usize) -> ColumnWidths {
     let clamp = |value: usize, min: usize, max: usize| value.clamp(min, max);
     let mut name = 0;
     let mut source = 0;
     let mut status = 0;
-    for row in rows {
-        let source_display = row.source.split_once('@').map_or(row.source.as_str(), |(n, _)| n);
-        name = name.max(row.name.width());
+    for (row_name, source_display, status_text) in triples {
+        name = name.max(row_name.width());
         source = source.max(source_display.width());
-        status = status.max(status_text(row).width());
+        status = status.max(status_text.width());
     }
     let mut widths = ColumnWidths {
         name: clamp(name, MIN_NAME_COLUMN, MAX_NAME_COLUMN),
@@ -165,9 +319,6 @@ fn pad(text: &str, width: usize) -> String {
     let pad = width.saturating_sub(text.width());
     format!("{text}{}", " ".repeat(pad))
 }
-
-/// The out-of-date marker the update report already uses.
-const ICON_WARNING: &str = "\u{26a0}";
 
 fn state_glyph(row: &ExtensionRow) -> (&'static str, Color) {
     match row.state {
@@ -401,6 +552,88 @@ mod tests {
         assert!(
             text.contains("twelve-chara  "),
             "the name column keeps its floor; the source column shrinks first: {text:?}"
+        );
+    }
+
+    /// An MCP server row renders the grammar columns: the state glyph
+    /// from the connection status, the server name, scope as source,
+    /// the status column, the transport badge and the summary as
+    /// detail.
+    #[test]
+    fn mcp_rows_render_the_grammar_columns() {
+        use forge_primitives::McpServerConnectionStatus;
+        let stdio = forge_primitives::McpServerStatus {
+            name: "playwright".to_owned(),
+            status: McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: Some(serde_json::json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@playwright/mcp@latest"],
+                "env": {},
+            })),
+            scope: Some("user".to_owned()),
+            tools: Some(
+                vec!["t1", "t2", "t3"]
+                    .into_iter()
+                    .map(|name| forge_primitives::McpToolInfo {
+                        name: name.to_owned(),
+                        description: None,
+                        annotations: None,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            sampling_configured: None,
+            sampling_required: None,
+        };
+        let failed = forge_primitives::McpServerStatus {
+            name: "broken".to_owned(),
+            status: McpServerConnectionStatus::Failed,
+            server_info: None,
+            error: Some("connection refused".to_owned()),
+            config: Some(serde_json::json!({
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+            })),
+            scope: Some("project".to_owned()),
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        };
+        let servers = vec![stdio, failed];
+
+        let lines = render_mcp_rows(&servers, 120);
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(text.len(), 2, "one row per server: {text:?}");
+        assert!(
+            text[0].starts_with(" \u{2713} playwright"),
+            "connected wears the ok glyph and the gutter: {text:?}"
+        );
+        assert!(text[0].contains("user"), "scope renders as source: {text:?}");
+        assert!(text[0].contains("connected"), "the status column names the state: {text:?}");
+        assert!(text[0].contains("[stdio]"), "transport rides as a badge: {text:?}");
+        assert!(
+            text[0].contains("3 tools") && text[0].contains("cmd npx"),
+            "the summary detail carries tools and command: {text:?}"
+        );
+        assert!(text[1].starts_with(" \u{2717} broken"), "failed wears the failed glyph: {text:?}");
+        assert!(
+            text[1].contains("failed") && text[1].contains("connection refused"),
+            "the failure reason rides the status or detail: {text:?}"
+        );
+        assert!(text[1].contains("[http]"), "{text:?}");
+        let source_offset = |line: &str| line.find("user").or_else(|| line.find("project"));
+        let status_offset = |line: &str| line.find("connected").or_else(|| line.find("failed"));
+        assert_eq!(
+            source_offset(text[0].as_str()),
+            source_offset(text[1].as_str()),
+            "the source column aligns across the tab: {text:?}"
+        );
+        assert_eq!(
+            status_offset(text[0].as_str()),
+            status_offset(text[1].as_str()),
+            "the status column aligns across the tab: {text:?}"
         );
     }
 

@@ -5,63 +5,14 @@ use super::overlay::{
 use super::theme;
 use crate::app::App;
 use crate::app::config::{available_mcp_actions, is_mcp_action_available};
+use crate::app::extensions::skills::{mcp_status_label, transport_label};
 use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use serde_json::Value;
-
-pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let content_area = area.inner(Margin { vertical: 1, horizontal: 2 });
-    if content_area.width == 0 || content_area.height == 0 {
-        return;
-    }
-
-    let summary = summary_lines(app);
-    let summary_height =
-        wrapped_height(Text::from(summary.clone()), content_area.width).min(content_area.height);
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(summary_height), Constraint::Min(1)])
-        .split(content_area);
-    frame.render_widget(Paragraph::new(summary).wrap(Wrap { trim: false }), sections[0]);
-
-    if app.session_id().is_none() {
-        render_message(
-            frame,
-            sections[1],
-            "No active session",
-            "Open or resume a session to inspect MCP servers from the live SDK session.",
-        );
-        return;
-    }
-
-    let Some(mcp) = app.mcp() else {
-        return;
-    };
-
-    if mcp.in_flight && mcp.servers.is_empty() {
-        render_message(
-            frame,
-            sections[1],
-            "Loading MCP status",
-            "Waiting for the current session to return MCP server state.",
-        );
-        return;
-    }
-
-    if mcp.servers.is_empty() {
-        let body = mcp.last_error.as_deref().unwrap_or(
-            "The current session did not report any MCP servers. This view only shows live session-backed MCP state.",
-        );
-        render_message(frame, sections[1], "No MCP servers", body);
-        return;
-    }
-
-    render_server_list(frame, sections[1], app);
-}
 
 pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
     let Some(overlay) = app.config.mcp_details_overlay() else {
@@ -109,87 +60,10 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(action_lines).wrap(Wrap { trim: false }), sections[2]);
 }
 
-fn render_server_list(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(mcp) = app.mcp() else {
-        return;
-    };
-    let items = mcp.servers.iter().enumerate().map(|(index, server)| {
-        let selected = index == app.config.mcp_selected_server_index;
-        ListItem::new(server_list_lines(server, selected)).style(server_row_style(selected))
-    });
-
-    let mut state = ListState::default().with_selected(Some(app.config.mcp_selected_server_index));
-    frame.render_stateful_widget(List::new(items).highlight_symbol(""), area, &mut state);
-}
-
-fn summary_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(mcp) = app.mcp() else {
-        return Vec::new();
-    };
-    let counts = status_counts(app);
-    let mut stats_spans = vec![
-        badge_span(&format!("total {}", mcp.servers.len()), Color::Black, Color::White),
-        Span::styled(" ", Style::default()),
-        badge_span(&format!("connected {}", counts.connected), Color::Black, theme::RUST_ORANGE),
-        Span::styled(" ", Style::default()),
-        badge_span(
-            &format!("needs auth {}", counts.needs_auth),
-            Color::Black,
-            theme::STATUS_WARNING,
-        ),
-        Span::styled(" ", Style::default()),
-        badge_span(&format!("pending {}", counts.pending), Color::Black, Color::Cyan),
-        Span::styled(" ", Style::default()),
-        badge_span(&format!("disabled {}", counts.disabled), Color::White, Color::DarkGray),
-        Span::styled(" ", Style::default()),
-        badge_span(&format!("failed {}", counts.failed), Color::White, theme::STATUS_ERROR),
-    ];
-    if mcp.in_flight {
-        stats_spans.push(Span::styled(" ", Style::default()));
-        stats_spans.push(badge_span("refreshing", Color::Black, Color::Cyan));
-    }
-
-    let mut lines = vec![Line::default(), Line::from(stats_spans), Line::default()];
-
-    if let Some(error) = mcp.last_error.as_deref() {
-        lines.push(Line::from(Span::styled(
-            format!("Last MCP error: {error}"),
-            Style::default().fg(theme::STATUS_ERROR),
-        )));
-        lines.push(Line::default());
-    }
-
-    lines
-}
-
-fn server_list_lines(server: &McpServerStatus, selected: bool) -> Vec<Line<'static>> {
-    let marker = if selected { ">" } else { " " };
-    vec![
-        Line::from(vec![
-            Span::styled(format!("{marker} {}", server.name), list_title_style(selected)),
-            Span::styled("  ", Style::default()),
-            badge_span(
-                status_label(server.status),
-                status_badge_fg(server.status),
-                status_color(server.status),
-            ),
-            Span::styled(" ", Style::default()),
-            badge_span(server.scope.as_deref().unwrap_or("session"), Color::White, Color::DarkGray),
-            Span::styled(" ", Style::default()),
-            badge_span(transport_label(server.config.as_ref()), Color::Black, Color::White),
-        ]),
-        Line::from(Span::styled(
-            format!("  {}", server_summary_line(server)),
-            server_secondary_style(server),
-        )),
-        Line::default(),
-    ]
-}
-
 fn server_detail_lines(server: &McpServerStatus) -> Vec<Line<'static>> {
     let mut lines = vec![
         section_heading("Status"),
-        detail_kv("Status", status_label(server.status), status_color(server.status)),
+        detail_kv("Status", mcp_status_label(server.status), status_color(server.status)),
         detail_kv(
             "Enabled",
             if matches!(server.status, McpServerConnectionStatus::Disabled) { "No" } else { "Yes" },
@@ -310,21 +184,6 @@ fn config_lines(config: &Value) -> Vec<Line<'static>> {
     }
 }
 
-fn render_message(frame: &mut Frame, area: Rect, title: &str, body: &str) {
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                title,
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            )),
-            Line::default(),
-            Line::from(Span::styled(body, Style::default().fg(theme::DIM))),
-        ])
-        .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
 fn detail_kv(key: &str, value: &str, value_color: Color) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{key}: "), Style::default().fg(theme::DIM)),
@@ -353,63 +212,6 @@ fn wrapped_height(text: Text<'static>, width: u16) -> u16 {
         .max(1)
 }
 
-fn list_title_style(selected: bool) -> Style {
-    let base = Style::default().fg(Color::White);
-    if selected {
-        base.fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-    } else {
-        base.add_modifier(Modifier::BOLD)
-    }
-}
-
-fn server_row_style(selected: bool) -> Style {
-    if selected { Style::default().bg(theme::USER_MSG_BG) } else { Style::default() }
-}
-
-fn server_secondary_style(server: &McpServerStatus) -> Style {
-    if server.error.as_deref().is_some_and(|error| !error.trim().is_empty()) {
-        Style::default().fg(theme::STATUS_ERROR)
-    } else {
-        Style::default().fg(theme::DIM)
-    }
-}
-
-fn server_summary_line(server: &McpServerStatus) -> String {
-    if let Some(error) = server.error.as_deref()
-        && !error.trim().is_empty()
-    {
-        return error.to_owned();
-    }
-
-    let mut parts = Vec::new();
-    if let Some(info) = server.server_info.as_ref() {
-        parts.push(format!("{} {}", info.name, info.version));
-    }
-    let tool_count = server.tools.as_deref().map_or(0, <[_]>::len);
-    parts.push(crate::ui::format::tool_summary(tool_count));
-    if let Some(config) = server.config.as_ref() {
-        match config.get("type").and_then(Value::as_str) {
-            Some("stdio") => {
-                if let Some(cmd) = config.get("command").and_then(Value::as_str) {
-                    parts.push(format!("cmd {cmd}"));
-                }
-            }
-            Some("sse" | "http" | "claudeai-proxy") => {
-                if let Some(url) = config.get("url").and_then(Value::as_str) {
-                    parts.push(url.to_owned());
-                }
-            }
-            Some("sdk") => {
-                if let Some(name) = config.get("name").and_then(Value::as_str) {
-                    parts.push(format!("sdk {name}"));
-                }
-            }
-            _ => {}
-        }
-    }
-    parts.join("  |  ")
-}
-
 fn status_color(status: McpServerConnectionStatus) -> Color {
     match status {
         McpServerConnectionStatus::Connected => theme::RUST_ORANGE,
@@ -417,155 +219,5 @@ fn status_color(status: McpServerConnectionStatus) -> Color {
         McpServerConnectionStatus::Pending => Color::Cyan,
         McpServerConnectionStatus::Disabled => Color::DarkGray,
         McpServerConnectionStatus::Failed => theme::STATUS_ERROR,
-    }
-}
-
-fn status_badge_fg(status: McpServerConnectionStatus) -> Color {
-    match status {
-        McpServerConnectionStatus::Connected
-        | McpServerConnectionStatus::NeedsAuth
-        | McpServerConnectionStatus::Pending => Color::Black,
-        McpServerConnectionStatus::Disabled | McpServerConnectionStatus::Failed => Color::White,
-    }
-}
-
-fn status_label(status: McpServerConnectionStatus) -> &'static str {
-    match status {
-        McpServerConnectionStatus::Connected => "connected",
-        McpServerConnectionStatus::Failed => "failed",
-        McpServerConnectionStatus::NeedsAuth => "needs auth",
-        McpServerConnectionStatus::Pending => "pending",
-        McpServerConnectionStatus::Disabled => "disabled",
-    }
-}
-
-fn transport_label(config: Option<&Value>) -> &'static str {
-    match config.and_then(|c| c.get("type")).and_then(Value::as_str) {
-        Some("stdio") => "stdio",
-        Some("sse") => "sse",
-        Some("http") => "http",
-        Some("sdk") => "sdk",
-        Some("claudeai-proxy") => "claudeai-proxy",
-        _ => "unknown",
-    }
-}
-
-fn status_counts(app: &App) -> StatusCounts {
-    let Some(mcp) = app.mcp() else {
-        return StatusCounts::default();
-    };
-    mcp.servers.iter().fold(StatusCounts::default(), |mut counts, server| {
-        match server.status {
-            McpServerConnectionStatus::Connected => counts.connected += 1,
-            McpServerConnectionStatus::NeedsAuth => counts.needs_auth += 1,
-            McpServerConnectionStatus::Pending => counts.pending += 1,
-            McpServerConnectionStatus::Disabled => counts.disabled += 1,
-            McpServerConnectionStatus::Failed => counts.failed += 1,
-        }
-        counts
-    })
-}
-
-#[derive(Default)]
-struct StatusCounts {
-    connected: usize,
-    needs_auth: usize,
-    pending: usize,
-    disabled: usize,
-    failed: usize,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    fn render_mcp(app: &App, width: u16, height: u16) -> String {
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| {
-                super::render(frame, frame.area(), app);
-            })
-            .expect("draw");
-        let buffer = terminal.backend().buffer().clone();
-        buffer
-            .content
-            .chunks(usize::from(buffer.area.width))
-            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn renders_no_session_state_without_session_id_header() {
-        let app = App::test_default();
-        let rendered = render_mcp(&app, 120, 28);
-        assert!(rendered.contains("MCP servers"));
-        assert!(rendered.contains("No active session"));
-        assert!(!rendered.contains("Session:"));
-    }
-
-    #[test]
-    fn renders_live_server_snapshot_as_list_only() {
-        let mut app = App::test_default();
-        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
-        app.mcp_mut().expect("active session").servers = vec![
-            McpServerStatus {
-                name: "notion".to_owned(),
-                status: McpServerConnectionStatus::NeedsAuth,
-                server_info: None,
-                error: None,
-                config: Some(serde_json::json!({
-                    "type": "http",
-                    "url": "https://mcp.notion.com/mcp",
-                    "headers": {},
-                })),
-                scope: Some("user".to_owned()),
-                tools: Some(vec![]),
-                sampling_configured: None,
-                sampling_required: None,
-            },
-            McpServerStatus {
-                name: "filesystem".to_owned(),
-                status: McpServerConnectionStatus::Connected,
-                server_info: Some(forge_primitives::McpServerInfo {
-                    name: "Filesystem".to_owned(),
-                    version: "1.2.3".to_owned(),
-                }),
-                error: None,
-                config: Some(serde_json::json!({
-                    "type": "stdio",
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-filesystem"],
-                    "env": {},
-                })),
-                scope: Some("project".to_owned()),
-                tools: Some(vec![forge_primitives::McpToolInfo {
-                    name: "read_file".to_owned(),
-                    description: Some("Read a file".to_owned()),
-                    annotations: Some(forge_primitives::McpToolAnnotations {
-                        read_only: Some(true),
-                        destructive: Some(false),
-                        open_world: Some(false),
-                    }),
-                }]),
-                sampling_configured: None,
-                sampling_required: None,
-            },
-        ];
-        app.config.mcp_selected_server_index = 1;
-
-        let rendered = render_mcp(&app, 120, 30);
-        assert!(rendered.contains("total 2"));
-        assert!(rendered.contains("connected 1"));
-        assert!(rendered.contains("needs auth 1"));
-        assert!(rendered.contains("filesystem"));
-        assert!(rendered.contains("project"));
-        assert!(rendered.contains("Filesystem 1.2.3"));
-        assert!(rendered.contains("1 tool"));
-        assert!(!rendered.contains("Details"));
-        assert!(!rendered.contains("Servers"));
     }
 }

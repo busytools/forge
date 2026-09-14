@@ -1230,9 +1230,9 @@ fn apply_mcp_snapshot_presentation(
         return false;
     };
     if changed && is_active {
-        let server_len = app.mcp().map_or(0, |mcp| mcp.servers.len());
-        app.config.mcp_selected_server_index =
-            app.config.mcp_selected_server_index.min(server_len.saturating_sub(1));
+        // The Mcps tab's selection lives in the shared per-tab state;
+        // a snapshot that shrank the server list must not strand it.
+        crate::app::extensions::clamp_mcps_selection(app);
     }
     tracing::info!(
         target: crate::logging::targets::APP_CONFIG,

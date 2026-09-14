@@ -5,7 +5,7 @@
 
 use super::theme;
 use crate::app::App;
-use crate::app::extensions::skills::render_extension_rows;
+use crate::app::extensions::skills::{render_extension_rows, render_mcp_rows};
 use crate::app::extensions::{
     ExtensionsTab, PANEL_ROW_CAP, available_count_for_tab, count_for_tab, panel_block_height,
     search_enabled, tab_takes_available, update_all_count, updates, visible_rows, window_offset,
@@ -128,49 +128,48 @@ fn action_row_line(app: &App) -> Line<'static> {
 fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
     let list_area =
         if area.width > 1 { area.inner(Margin { vertical: 0, horizontal: 1 }) } else { area };
-    match app.plugins.active_tab {
-        // The MCP page moves under this tab unchanged in behaviour:
-        // its own summary, list, states and actions render here.
-        ExtensionsTab::Mcps => {
-            super::mcp::render(frame, list_area, app);
-            return;
-        }
-        ExtensionsTab::Marketplaces => {
-            frame.render_widget(
-                Paragraph::new(marketplace_lines(app, list_area.width)).wrap(Wrap { trim: false }),
-                list_area,
-            );
-            return;
-        }
-        _ => {}
+    if app.plugins.active_tab == ExtensionsTab::Marketplaces {
+        frame.render_widget(
+            Paragraph::new(marketplace_lines(app, list_area.width)).wrap(Wrap { trim: false }),
+            list_area,
+        );
+        return;
     }
     let tab = app.plugins.active_tab;
+    let width = usize::from(list_area.width.max(1));
     let rows = visible_rows(app, tab);
-    let rendered = if rows.is_empty() {
+    let lines = if tab == ExtensionsTab::Mcps {
+        mcp_list_lines(app, width)
+    } else if rows.is_empty() {
         empty_tab_lines(app, tab)
     } else {
-        let selected = if app.plugins.search_focused {
-            None
-        } else {
-            Some(app.plugins.selected_index_for(tab))
-        };
-        render_extension_rows(&rows, usize::from(list_area.width.max(1)))
-            .into_iter()
-            .enumerate()
-            .map(|(index, mut line)| {
-                if Some(index) == selected
-                    && let Some(span) = line.spans.first_mut()
-                {
-                    // The row's leading gutter takes the marker in
-                    // place, so the columns never shift.
-                    span.content = ">".into();
-                    span.style =
-                        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
-                }
-                line
-            })
-            .collect::<Vec<_>>()
+        render_extension_rows(&rows, width)
     };
+    // Empty-state copy is not a row: nothing is selectable then.
+    let selectable = match tab {
+        ExtensionsTab::Mcps => app.mcp().is_some_and(|mcp| !mcp.servers.is_empty()),
+        _ => !rows.is_empty(),
+    };
+    let selected = if app.plugins.search_focused || !selectable {
+        None
+    } else {
+        Some(app.plugins.selected_index_for(tab))
+    };
+    let rendered: Vec<_> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut line)| {
+            if Some(index) == selected
+                && let Some(span) = line.spans.first_mut()
+            {
+                // The row's leading gutter takes the marker in
+                // place, so the columns never shift.
+                span.content = ">".into();
+                span.style = Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
+            }
+            line
+        })
+        .collect();
     // The tab's scroll offset windows the list; re-derived against the
     // true viewport here so the selection can never leave the screen.
     let height = usize::from(list_area.height);
@@ -182,6 +181,33 @@ fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
     );
     let windowed: Vec<_> = rendered.into_iter().skip(offset).take(height).collect();
     frame.render_widget(Paragraph::new(windowed).wrap(Wrap { trim: false }), list_area);
+}
+
+/// The Mcps tab's rows: one grammar row per live server, or the
+/// session-state copy when there is nothing to list yet.
+fn mcp_list_lines(app: &App, width: usize) -> Vec<ratatui::text::Line<'static>> {
+    if app.session_id().is_none() {
+        return vec![Line::from(Span::styled(
+            "Open or resume a session to inspect MCP servers from the live SDK session.",
+            Style::default().fg(theme::DIM),
+        ))];
+    }
+    let Some(mcp) = app.mcp() else {
+        return Vec::new();
+    };
+    if mcp.in_flight && mcp.servers.is_empty() {
+        return vec![Line::from(Span::styled(
+            "Loading MCP status...",
+            Style::default().fg(theme::DIM),
+        ))];
+    }
+    if mcp.servers.is_empty() {
+        let body = mcp.last_error.as_deref().unwrap_or(
+            "The current session did not report any MCP servers. This view only shows live session-backed MCP state.",
+        );
+        return vec![Line::from(Span::styled(body.to_owned(), Style::default().fg(theme::DIM)))];
+    }
+    render_mcp_rows(&mcp.servers, width)
 }
 
 /// The docked Updates panel at the page's bottom: one row per action
