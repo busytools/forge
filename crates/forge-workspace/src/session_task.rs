@@ -700,7 +700,7 @@ impl SessionTask {
             return;
         };
         let rotated = {
-            let mut states = workspace.account_states().lock();
+            let mut states = workspace.account_pool().state();
             let tracked = states.config_dir(account).is_some();
             if tracked {
                 states.set_last_error(account, UsageFetchStatus::RateLimited, hit.retry_after);
@@ -2335,13 +2335,13 @@ mod tests {
         use forge_gateway::AccountKey;
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let key = AccountKey("Acct".to_owned());
-        assert!(workspace.account_states().lock().is_account_usable(&key), "usable before the 429");
+        assert!(workspace.account_pool().state().is_account_usable(&key), "usable before the 429");
 
         let task = session_task_for(&workspace, Some(key.clone()));
         task.note_rate_limit_from_message(&api_retry(429, "rate_limit"));
 
         assert!(
-            !workspace.account_states().lock().is_account_usable(&key),
+            !workspace.account_pool().state().is_account_usable(&key),
             "a 429 on the session rotates its own account off",
         );
     }
@@ -2353,13 +2353,13 @@ mod tests {
         use forge_gateway::AccountKey;
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-test-rl-other");
         let key = AccountKey("Acct".to_owned());
-        assert!(workspace.account_states().lock().is_account_usable(&key));
+        assert!(workspace.account_pool().state().is_account_usable(&key));
 
         let task = session_task_for(&workspace, None);
         task.note_rate_limit_from_message(&api_retry(429, "rate_limit"));
 
         assert!(
-            workspace.account_states().lock().is_account_usable(&key),
+            workspace.account_pool().state().is_account_usable(&key),
             "a 429 on an account-less session must not rotate an unrelated one",
         );
     }
@@ -2385,17 +2385,17 @@ mod tests {
             Arc::new(crate::Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let session_account = AccountKey("Acct".to_owned());
         let sibling = AccountKey("Sibling".to_owned());
-        assert!(workspace.account_states().lock().is_account_usable(&sibling));
+        assert!(workspace.account_pool().state().is_account_usable(&sibling));
 
         let task = session_task_for(&workspace, Some(session_account.clone()));
         task.note_rate_limit_from_message(&api_retry(429, "rate_limit"));
 
         assert!(
-            !workspace.account_states().lock().is_account_usable(&session_account),
+            !workspace.account_pool().state().is_account_usable(&session_account),
             "the session's own account takes the 429 mark",
         );
         assert!(
-            workspace.account_states().lock().is_account_usable(&sibling),
+            workspace.account_pool().state().is_account_usable(&sibling),
             "the sibling sharing the config dir stays usable",
         );
     }

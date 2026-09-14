@@ -20,6 +20,7 @@ mod codex;
 pub mod helpers;
 pub mod model_catalog;
 mod openrouter;
+pub mod pool;
 mod zai;
 
 use std::collections::HashMap;
@@ -40,6 +41,7 @@ pub use crate::account::{
 pub use crate::anthropic::{Anthropic, CLAUDE_CODE_OAUTH_TOKEN_ENV, token_bearer};
 pub use crate::codex::Codex;
 pub use crate::openrouter::Openrouter;
+pub use crate::pool::AccountPool;
 pub use crate::zai::Zai;
 
 /// Everything a backend may read about one account. `env` is the
