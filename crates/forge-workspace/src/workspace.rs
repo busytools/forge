@@ -1475,21 +1475,26 @@ impl Workspace {
         spawn_key: Option<SessionKey>,
         forced_account: Option<(AccountKey, PathBuf)>,
     ) -> Result<Arc<AgentHandle>> {
+        let is_account_switch = forced_account.is_some();
+        let session_key = self.resolve_target(&target)?;
         // The boot gate is a spawn precondition, not just a launchpad
         // decoration: a child stamped before the listener is bound
-        // points at a base URL nothing answers.
-        if !self.gateway_ready.load(std::sync::atomic::Ordering::Acquire) {
+        // points at a base URL nothing answers. It applies only to
+        // spawns that would be stamped - a non-opted project's direct
+        // spawn never consults the listener.
+        if self.routes_through_gateway(&target)
+            && !self.gateway_ready.load(std::sync::atomic::Ordering::Acquire)
+        {
             return Err(forge_sdk::Error::Connection {
                 reason: format!(
-                    "the gateway listener on port {} is not ready; the boot gate is shut, so \
-                     the session would be stamped at a base URL nothing serves",
+                    "the gateway listener on port {} is not ready; this project routes \
+                     through the gateway, so the spawn would be stamped at a base URL \
+                     nothing serves",
                     self.gateway_port
                 ),
             }
             .into());
         }
-        let is_account_switch = forced_account.is_some();
-        let session_key = self.resolve_target(&target)?;
 
         // Fast path: cache hit. When `spawn_key` was provided AND a
         // DomainSession is buffered there (a delivery path parks its payload at
@@ -1555,18 +1560,24 @@ impl Workspace {
         // while it still holds the dummy credential - the silent bypass
         // the stamp exists to close, reopened one layer up.
         let merged_env = self.session_env_for(&target, &account_env);
-        // Register the session and let the gateway stamp the child's
-        // env: the base URL names this listener, the credential the
-        // child holds is a dummy, and the real one stays in the
-        // gateway. A spawn that resolves to no project stays on the
-        // direct account env.
-        let registration = project.as_ref().map(|project| forge_gateway::binding::Registration {
-            org: project.org.clone(),
-            project: project.name.clone(),
-            session: session_key.as_str().to_owned(),
-            account: account_key.clone(),
-            provider: self.accounts.provider_or_anthropic(&account_key),
-        });
+        // Phase 3 routing: an opted-in project registers the session
+        // and lets the gateway stamp the child's env - the base URL
+        // names this listener, the credential the child holds is a
+        // dummy, and the real one stays in the gateway. Every other
+        // spawn keeps the direct account path: the merged env carries
+        // the account's real credential, and no registration exists,
+        // which is what keeps the session's respawns direct too.
+        let registration = if self.routes_through_gateway(&target) {
+            project.as_ref().map(|project| forge_gateway::binding::Registration {
+                org: project.org.clone(),
+                project: project.name.clone(),
+                session: session_key.as_str().to_owned(),
+                account: account_key.clone(),
+                provider: self.accounts.provider_or_anthropic(&account_key),
+            })
+        } else {
+            None
+        };
         let session_env = match &registration {
             Some(registration) => self
                 .gateway
@@ -3049,6 +3060,15 @@ impl Workspace {
              [projects.<name>.env] contributed, empty when it declares none",
         );
         crate::config::session_env(&project, account_env)
+    }
+
+    /// Phase 3 routing: does this spawn target's project route through
+    /// the gateway? A target resolving to no project is always direct
+    /// (cron, Gotify, peer and raw session-id spawns have no project to
+    /// opt in, and the gateway's selection needs the org from the
+    /// path).
+    fn routes_through_gateway(&self, target: &SessionTarget) -> bool {
+        self.project_for_target(target).is_some_and(|project| project.gateway_routing)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
@@ -6496,6 +6516,7 @@ mod account_stamp_tests {
             accounts: vec!["Stargate".to_owned()],
             fallback_accounts: Vec::new(),
             auto_start: false,
+            gateway_routing: false,
             env: HashMap::new(),
             max_workers: None,
             permission_mode,
@@ -8667,6 +8688,21 @@ provider = "anthropic"
         );
     }
 
+    /// Append the Phase 3 opt-in key to a fixture's `forge` project.
+    /// TOML allows the parent `[projects.forge]` header after a
+    /// `[projects.forge.env]` sub-table.
+    fn opt_fixture_project_into_gateway(dir: &tempfile::TempDir) {
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            format!(
+                "{}\n[projects.forge]\ngateway = true\n",
+                std::fs::read_to_string(forge_toml_path(dir.path()))
+                    .expect("read the fixture toml")
+            ),
+        )
+        .expect("write forge.toml");
+    }
+
     fn make_workspace_dir_with_two_accounts() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
         fs::write(
@@ -8699,6 +8735,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_fresh_spawn_stamps_the_gateway_base_url_and_dummy_credential() {
         let dir = make_workspace_dir_with_two_accounts();
+        opt_fixture_project_into_gateway(&dir);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         // The listener's own tests cover the socket; this one pins what
         // the child is stamped with, so the boot gate is opened by hand.
@@ -8767,6 +8804,7 @@ CLAUDE_CODE_API_BASE_URL = "http://169.254.10.10:9999"
 "#,
         )
         .expect("write forge.toml");
+        opt_fixture_project_into_gateway(&dir);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
 
@@ -8793,6 +8831,7 @@ CLAUDE_CODE_API_BASE_URL = "http://169.254.10.10:9999"
     #[tokio::test]
     async fn a_closed_boot_gate_refuses_spawns_naming_the_port() {
         let dir = make_workspace_dir_with_two_accounts();
+        opt_fixture_project_into_gateway(&dir);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.gateway_ready.store(false, std::sync::atomic::Ordering::Release);
 
@@ -8800,15 +8839,28 @@ CLAUDE_CODE_API_BASE_URL = "http://169.254.10.10:9999"
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
         {
             Err(error) => error.to_string(),
-            Ok(_) => panic!("a shut boot gate refuses spawns"),
+            Ok(_) => panic!("a shut boot gate refuses an opted-in project's spawn"),
         };
         assert!(
             message.contains("8787") || message.contains("port"),
             "the refusal names the port, got: {message}",
         );
         assert!(
-            message.contains("not ready") || message.contains("boot gate"),
+            message.contains("not ready") || message.contains("routes"),
             "the refusal says the gateway is the cause, got: {message}",
+        );
+
+        // The direct path never consults the listener: the same shut
+        // gate lets a non-opted project's spawn through.
+        let dir = make_workspace_dir_with_two_accounts();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.gateway_ready.store(false, std::sync::atomic::Ordering::Release);
+        let handle = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .expect("a non-opted project spawns direct with the listener down");
+        assert!(
+            handle.env().get("ANTHROPIC_BASE_URL").is_none(),
+            "the direct spawn carries no listener base URL",
         );
     }
 
@@ -13585,6 +13637,131 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
         dir
+    }
+
+    /// The Phase 3 opt-in fixture: the same config with the project's
+    /// `gateway = true` set, so routing tests read the flag for real.
+    fn make_workspace_dir_gateway_opted_in() -> tempfile::TempDir {
+        let dir = make_workspace_dir_246();
+        opt_fixture_project_into_gateway(&dir);
+        dir
+    }
+
+    /// Append the Phase 3 opt-in key to a fixture's `forge` project,
+    /// after the fact. TOML allows the parent `[projects.forge]`
+    /// header after a `[projects.forge.env]` sub-table.
+    fn opt_fixture_project_into_gateway(dir: &tempfile::TempDir) {
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            format!(
+                "{}\n[projects.forge]\ngateway = true\n",
+                std::fs::read_to_string(forge_toml_path(dir.path()))
+                    .expect("read the fixture toml")
+            ),
+        )
+        .expect("write forge.toml");
+    }
+
+    #[test]
+    fn the_routing_decision_reads_the_project_flag() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let target = SessionTarget::Named("forge".to_owned());
+        assert!(!workspace.routes_through_gateway(&target), "a project with no flag spawns direct",);
+
+        let dir = make_workspace_dir_gateway_opted_in();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let target = SessionTarget::Named("forge".to_owned());
+        assert!(
+            workspace.routes_through_gateway(&target),
+            "gateway = true routes the project's spawns through the listener",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_opted_project_spawn_keeps_the_direct_account_env() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let account_env = std::collections::HashMap::from([(
+            "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            "real-token".to_owned(),
+        )]);
+        let target = SessionTarget::Named("forge".to_owned());
+        let env = workspace.session_env_for(&target, &account_env);
+        assert_eq!(
+            env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
+            Some("real-token"),
+            "the direct path's child carries the account's real credential",
+        );
+        assert!(
+            !env.contains_key("ANTHROPIC_BASE_URL"),
+            "no listener base URL is stamped for a direct spawn",
+        );
+    }
+
+    #[test]
+    fn the_boot_gate_scopes_to_opted_in_projects() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        // Test workspaces initialize gateway_ready to true (the 2b
+        // spawn premise); force the listener down for this one.
+        workspace.gateway_ready.store(false, std::sync::atomic::Ordering::Release);
+        let target = SessionTarget::Named("forge".to_owned());
+        assert!(
+            !workspace.routes_through_gateway(&target),
+            "a non-opted project spawns direct, so the gate does not apply",
+        );
+        // The opted-in sibling fixture under the same down listener IS
+        // gated: the decision flips with the flag, not with readiness.
+        let dir = make_workspace_dir_gateway_opted_in();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.gateway_ready.store(false, std::sync::atomic::Ordering::Release);
+        let target = SessionTarget::Named("forge".to_owned());
+        assert!(
+            workspace.routes_through_gateway(&target),
+            "an opted-in project's spawn is exactly the one the down listener gates",
+        );
+    }
+
+    /// A respawn follows the original spawn's routing through the
+    /// pooled registration: the gateway arm re-stamps the four
+    /// gateway-owned keys, the direct arm applies none. The respawn
+    /// site at the Command dispatch reads exactly this Option.
+    #[tokio::test]
+    async fn a_respawn_follows_the_original_spawn_routing() {
+        let dir = make_workspace_dir_gateway_opted_in();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let target = SessionTarget::Named("forge".to_owned());
+        assert!(workspace.routes_through_gateway(&target), "fixture premise");
+
+        // The opted-in arm: the spawn records a registration, and the
+        // respawn re-stamps from it.
+        let registration = forge_gateway::binding::Registration {
+            org: "Busytools".to_owned(),
+            project: "forge".to_owned(),
+            session: "s1".to_owned(),
+            account: AccountKey("Stargate".to_owned()),
+            provider: forge_primitives::account::Provider::Anthropic,
+        };
+        let overrides = workspace
+            .gateway
+            .bindings
+            .respawn_env_overrides(&registration, &workspace.gateway_listener_url());
+        assert!(
+            overrides.contains_key("ANTHROPIC_BASE_URL"),
+            "a gateway spawn's respawn is re-stamped with the listener URL",
+        );
+        assert_eq!(
+            workspace.gateway.bindings.binding_for("Busytools", "forge", "s1"),
+            Some(AccountKey("Stargate".to_owned())),
+            "the respawn re-registered the binding for this generation",
+        );
+
+        // The direct arm: no registration was recorded at spawn, so
+        // the respawn site's `if let Some(registration)` never fires
+        // and no gateway key reaches the child.
+        let direct: Option<forge_gateway::binding::Registration> = None;
+        assert!(direct.is_none(), "a direct spawn's respawn applies no overrides");
     }
 
     /// Like `make_workspace_dir_246` without `auto_start`, so a test can

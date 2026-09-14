@@ -267,6 +267,7 @@ impl Workspace {
             accounts: vec!["acct-a".to_owned()],
             fallback_accounts: Vec::new(),
             auto_start: false,
+            gateway_routing: false,
             env: std::collections::HashMap::new(),
             max_workers,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,

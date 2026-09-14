@@ -107,6 +107,11 @@ struct ProjectSettings {
     /// spawns. Absent resolves to `auto`.
     #[serde(default)]
     permission_mode: Option<String>,
+    /// Phase 3 opt-in: route this project's new sessions through the
+    /// gateway listener instead of the direct account path. Absent or
+    /// `false` keeps the direct path. Temporary - Phase 4 deletes it.
+    #[serde(default)]
+    gateway: Option<bool>,
 }
 
 /// One `[gateway]` table. Unknown fields are rejected so a mistyped
@@ -362,6 +367,10 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
+    /// Phase 3 opt-in: this project's new spawns register with the
+    /// gateway and its child is stamped with the listener URL. Absent
+    /// key means the direct account path.
+    pub gateway_routing: bool,
     /// Per-project environment from `[projects.<name>.env]`, layered
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
     /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
@@ -609,16 +618,21 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
-            let (env, max_workers, permission_mode) = match project_env_tables
-                .remove(&project_entry.name)
-            {
-                Some(table) => {
-                    let permission_mode = table.permission_mode(&path, &project_entry.name)?;
-                    let max_workers = table.max_workers;
-                    (resolve_project_env(&project_entry.name, table), max_workers, permission_mode)
-                }
-                None => (HashMap::new(), None, PermissionMode::Auto),
-            };
+            let (env, max_workers, permission_mode, gateway_routing) =
+                match project_env_tables.remove(&project_entry.name) {
+                    Some(table) => {
+                        let permission_mode = table.permission_mode(&path, &project_entry.name)?;
+                        let max_workers = table.max_workers;
+                        let gateway_routing = table.gateway.unwrap_or(false);
+                        (
+                            resolve_project_env(&project_entry.name, table),
+                            max_workers,
+                            permission_mode,
+                            gateway_routing,
+                        )
+                    }
+                    None => (HashMap::new(), None, PermissionMode::Auto, false),
+                };
             projects.push(LoadedProject {
                 name: project_entry.name,
                 path: expand_home(&project_entry.path),
@@ -627,6 +641,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 accounts: org_entry.accounts.clone(),
                 fallback_accounts: org_entry.fallback_accounts.clone(),
                 auto_start: project_entry.auto_start,
+                gateway_routing,
                 env,
                 max_workers,
                 permission_mode,
@@ -933,6 +948,47 @@ provider = "anthropic"
             let err = load_from_dir(dir.path()).expect_err("an unusable key must not load");
             assert!(err.to_string().contains(key), "the error names the unusable key, got: {err}");
         }
+    }
+
+    #[test]
+    fn gateway_routing_defaults_to_false_and_parses_true() {
+        let base = |flag: &str| {
+            format!(
+                r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[orgs.projects]]
+name = "other"
+path = "~/Projects/other"
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test-config-stargate"
+provider = "anthropic"
+{flag}
+"#,
+                flag = flag
+            )
+        };
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &base(""));
+        let config = load_from_dir(dir.path()).expect("absent key loads");
+        let forge = config.projects.iter().find(|p| p.name == "forge").expect("forge");
+        assert!(!forge.gateway_routing, "absent key means the direct path");
+        let other = config.projects.iter().find(|p| p.name == "other").expect("other");
+        assert!(!other.gateway_routing, "a project with no flag at all is direct");
+
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &base("\n[projects.forge]\ngateway = true\n"));
+        let config = load_from_dir(dir.path()).expect("flag parses");
+        let forge = config.projects.iter().find(|p| p.name == "forge").expect("forge");
+        assert!(forge.gateway_routing, "gateway = true opts the project in");
     }
 
     #[test]
