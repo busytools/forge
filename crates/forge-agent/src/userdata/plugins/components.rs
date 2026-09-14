@@ -1386,6 +1386,15 @@ mod tests {
         skill(&skillarray.join("meta/skill-container/sub-a/SKILL.md"));
         skill(&skillarray.join("meta/skill-container/sub-b/SKILL.md"));
 
+        // mcppath: the manifest's MCP declaration is a path, not an
+        // inline object.
+        let mcppath = cache.join("probe-market").join("mcppath").join("1.0.0");
+        write(
+            &mcppath.join(".claude-plugin/plugin.json"),
+            r#"{"name":"mcppath","version":"1.0.0","mcpServers":"./mcp.json"}"#,
+        );
+        write(&mcppath.join("mcp.json"), r#"{"mcpServers":{}}"#);
+
         // tornmanifest: a cache leftover whose manifest does not parse
         // reads as undeclared and scans conventionally.
         let tornmanifest = cache.join("probe-market").join("tornmanifest").join("1.0.0");
@@ -2300,6 +2309,16 @@ mod tests {
         let rows = scan_fixture(&fixture);
         let custom = by_plugin(&rows, "custom@probe-market");
         assert!(custom.mcp, "inline mcpServers is MCP present: {custom:?}");
+    }
+
+    /// A manifest MCP declaration that is a path sets the flag when
+    /// that file exists.
+    #[test]
+    fn a_declared_mcp_path_sets_the_flag() {
+        let fixture = fixture();
+        let rows = scan_fixture(&fixture);
+        let mcppath = by_plugin(&rows, "mcppath@probe-market");
+        assert!(mcppath.mcp, "the declared MCP file is present: {mcppath:?}");
     }
 
     /// A declared hooks file merges with the default hooks/hooks.json.
