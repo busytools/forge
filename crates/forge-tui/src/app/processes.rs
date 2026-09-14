@@ -570,10 +570,6 @@ fn overflow_row(hidden: usize, depth: u8, ancestor_has_more: Vec<bool>) -> Proce
     }
 }
 
-/// The alive wire tool call whose `command` substring-matches `entry`'s
-/// cmdline, if any. Shared by [`build_row_for_entry`], the tier in
-/// `sort_siblings_inplace`, and the `MCP SERVERS` join (a wire-matched
-/// process is tracked work, never a server's backing process).
 /// Live wire tool calls prepared for cmdline matching: each command is
 /// normalized once, so a scan over N processes and M calls pays M
 /// normalizations instead of N x M.
@@ -605,6 +601,9 @@ impl<'a> WireMatcher<'a> {
     /// The first prepared call whose command appears in `process_cmd`, in
     /// `wire_alive` order.
     pub(crate) fn matched(&self, process_cmd: &str) -> Option<&'a ToolCallInfo> {
+        if self.needles.is_empty() {
+            return None;
+        }
         let haystack = cmdline_haystack(process_cmd);
         self.needles
             .iter()
