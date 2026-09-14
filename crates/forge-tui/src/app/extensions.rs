@@ -2979,8 +2979,8 @@ mod tests {
     }
 
     /// `r` on the Mcps tab also re-asks for the MCP snapshot - the
-    /// refresh clears the held server list and marks the request in
-    /// flight. On other tabs the MCP state is untouched.
+    /// refresh clears the held server list and dispatches the
+    /// re-request. On other tabs the MCP state is untouched.
     #[test]
     fn the_r_key_refreshes_the_mcp_snapshot_on_the_mcps_tab() {
         let mut app = crate::app::App::test_default();
