@@ -1959,6 +1959,12 @@ impl Workspace {
         self.gateway_bind_error.lock().clone()
     }
 
+    /// Whether the gateway listener has bound its port. The preflight
+    /// screen's gateway row renders this.
+    pub fn gateway_ready(&self) -> bool {
+        self.gateway_ready.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// The port the gateway's listener binds.
     pub fn gateway_port(&self) -> u16 {
         self.gateway_port

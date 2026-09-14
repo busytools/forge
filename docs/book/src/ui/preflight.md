@@ -38,6 +38,9 @@ The assignment plan needs settled accounts and does not need the dictation weigh
           <span class="dim">(cohere-transcribe-03-2026-Q4_K_M)</span>
         <span class="rust-orange">⠹</span> normalization model                   <span class="dim">   verifying</span>
           <span class="dim">(s1-mini-f16)</span>
+
+        <span class="dim bold">Gateway</span>
+        <span style="color:#7eb87a">●</span> inference listener                 <span class="dim"> bound :8787</span>
       <span class="dim">────────────────────────────────────────────────────────</span>
 
  <span class="dim">ctrl+q  quit</span></pre>
@@ -51,7 +54,9 @@ The assignment plan needs settled accounts and does not need the dictation weigh
 | `auth failed` | `⚠` red | rejected or expired credentials |
 | `unreachable`, `fetch error`, `rate limited` | `⚠` yellow | transient failures the pollers heal (`fetch error` is a classed-but-unrecognised failure: a 5xx proxy, a body that will not decode, a 200 mapping to nothing) |
 | Model states | | `queued`, `downloading`, `resuming` (picked up a `.part`), `verifying`, `ready`, `loading`, then `ready`; a failure reads `bad hash` or `cancelled`; a row nothing will now start reads `not started` |
+| Gateway states | | `binding` while the listener task runs, `bound :<port>` once ready, `failed :<port>` with the error on a dim continuation line beneath when the bind failed |
 
+- The gateway row shows the inference listener's bind state. A failure is the legible form of the boot gate: a project with `gateway = true` refuses to spawn while the listener cannot bind its port, and this row - not a log file - is where that refusal explains itself.
 - The spinner is the configured `[ui] spinner` style at its own cadence, shared with every other animated surface.
 - <kbd>Esc</kbd> cancels an in-flight model download, which quits forge; <kbd>Ctrl+Q</kbd> quits. Every other key is consumed silently - the projects view underneath is not reachable yet.
 - The hand-over is latched: a mid-session Ready → Bailed → Loading flip never throws you back onto this screen - the launchpad's own gate covers the window.

@@ -236,6 +236,8 @@ fn panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         }
     }
 
+    lines.extend(gateway_rows(app, width));
+
     if let Some(bailed) = accounts.iter().find(|row| row.state == LoadingState::Bailed) {
         lines.push(Line::default());
         lines.extend(bail_detail(app, bailed, width));
@@ -251,6 +253,53 @@ fn panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
 fn is_transferring(model: &DictateModel) -> bool {
     matches!(model.state, DictateModelState::Downloading { .. })
+}
+
+/// The gateway section: the inference listener's bind state. The
+/// failed state is the legible form of the boot gate - a project with
+/// `gateway = true` refuses to spawn while the listener cannot bind,
+/// and this row names the port and error instead of leaving the cause
+/// in a log file.
+fn gateway_rows(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return Vec::new();
+    };
+    let port = workspace.gateway_port();
+    let (glyph, color, state, state_style) = match workspace.gateway_bind_error() {
+        Some(error) => {
+            return vec![
+                Line::default(),
+                heading_row("Gateway", width),
+                status_row(
+                    "\u{26a0}",
+                    Color::Red,
+                    "inference listener",
+                    Style::default(),
+                    &format!("failed :{port}"),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    width,
+                ),
+                file_row(&error, width),
+            ];
+        }
+        None if workspace.gateway_ready() => {
+            ("\u{25cf}", Color::Green, format!("bound :{port}"), dim())
+        }
+        None => ("\u{25cb}", Color::Yellow, "binding".to_owned(), dim()),
+    };
+    vec![
+        Line::default(),
+        heading_row("Gateway", width),
+        status_row(
+            glyph,
+            color,
+            "inference listener",
+            Style::default(),
+            &state,
+            state_style,
+            width,
+        ),
+    ]
 }
 
 /// A transfer that started from nothing, as opposed to one picking up a
