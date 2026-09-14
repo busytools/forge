@@ -531,6 +531,58 @@ mod tests {
         assert!(!text.contains(&first), "the top rows scrolled out: {text}");
     }
 
+    /// The shared scroll window covers the non-row-backed tabs too:
+    /// a long MCP server list and a long marketplace list both scroll
+    /// their last row into view.
+    #[test]
+    fn the_mcps_and_marketplaces_tabs_scroll_their_last_rows_into_view() {
+        use forge_primitives::McpServerConnectionStatus;
+        let server = |n: usize| forge_primitives::McpServerStatus {
+            name: format!("server-{n:02}"),
+            status: McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: Some(
+                serde_json::json!({"type": "stdio", "command": "npx", "args": [], "env": {}}),
+            ),
+            scope: Some("user".to_owned()),
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        };
+        let source = |n: usize| crate::app::extensions::MarketplaceSourceEntry {
+            name: format!("market-{n:02}"),
+            source: Some("github".to_owned()),
+            repo: None,
+            install_location: None,
+        };
+        let health = |n: usize| crate::app::extensions::MarketplaceHealth {
+            name: format!("market-{n:02}"),
+            source: "github".to_owned(),
+            available: 1,
+            load_error: None,
+            install_location: std::path::PathBuf::default(),
+            drifted: false,
+        };
+
+        let mut app = snapshot_app();
+        app.plugins.active_tab = ExtensionsTab::Mcps;
+        app.mcp_mut().expect("active session").servers = (0..30).map(server).collect();
+        app.plugins.set_selected_index_for(ExtensionsTab::Mcps, 29);
+        let text = render_frame_at(app, 160, 12).join("\n");
+        assert!(text.contains("server-29"), "the selected last server renders: {text}");
+        assert!(!text.contains("server-00 "), "the top servers scrolled out: {text}");
+
+        let mut app = snapshot_app();
+        app.plugins.active_tab = ExtensionsTab::Marketplaces;
+        app.plugins.marketplaces = (0..30).map(source).collect();
+        app.plugins.health = (0..30).map(health).collect();
+        app.plugins.set_selected_index_for(ExtensionsTab::Marketplaces, 30);
+        let text = render_frame_at(app, 160, 12).join("\n");
+        assert!(text.contains("market-29"), "the last marketplace renders: {text}");
+        assert!(!text.contains("market-00 "), "the top marketplaces scrolled out: {text}");
+    }
+
     #[test]
     fn the_installed_tab_renders_the_updates_panel() {
         let mut app = snapshot_app();
