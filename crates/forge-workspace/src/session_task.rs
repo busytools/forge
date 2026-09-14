@@ -602,6 +602,23 @@ impl SessionTask {
                 self.emit(SessionUpdate::McpSnapshot { session_id, servers, error });
             }
             AgentEvent::SdkMessage { session_id, msg } => {
+                // A rate-limit window that is not `allowed` proves the
+                // bound account exhausted: report it so the gateway
+                // cools the account down and drops this session's
+                // binding - the CLI's next request re-selects. Both
+                // this task's key and its pre-rename spawn key are
+                // tried, since the binding is keyed by whichever one
+                // the child's base URL was stamped with.
+                if let forge_primitives::Message::RateLimitEvent { rate_limit_info, .. } = &msg
+                    && rate_limit_info.status != forge_primitives::RateLimitStatus::Allowed
+                    && let Some(workspace) = self.workspace.upgrade()
+                {
+                    let reset_at = rate_limit_info.resets_at.and_then(|t| u64::try_from(t).ok());
+                    workspace.gateway.report_rate_limit(self.key.as_str(), reset_at);
+                    if let Some(spawn_key) = &self.spawn_key {
+                        workspace.gateway.report_rate_limit(spawn_key.as_str(), reset_at);
+                    }
+                }
                 // Clear the turn-commit marker on the turn boundary so
                 // the `/account` backstop stops refusing once the turn
                 // ends. `Message::Result` is the SDK's signal that the

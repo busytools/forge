@@ -8,23 +8,27 @@
 //!   auth.
 //! - `<segments>/v1/messages` (query ignored) resolves the binding and
 //!   forwards to the bound account's upstream with the real credential
-//!   attached and the CLI's dummy stripped.
-//! - An unregistered session is a loud 503 naming the session; the
-//!   upstream leg is never constructed for it. Account selection
-//!   arrives in 2c and turns this failure into the selection path.
+//!   attached and the CLI's dummy stripped. An unbound session selects
+//!   an account now, from the model in its own body.
+//! - The failing response streams back to the CLI untouched, but the
+//!   triggers it carries mark the account exhausted and rotate the
+//!   binding, so the CLI's retry lands on the next account with
+//!   nothing replayed.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use futures_util::StreamExt;
 use hyper::body::Frame;
 use hyper::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
-use hyper::{Method, Request, StatusCode};
+use hyper::{HeaderMap, Method, Request, StatusCode};
 
 use crate::account::AccountKey;
 use crate::binding::{AUTH_TOKEN_VARIABLE, Bindings, DUMMY_CREDENTIAL, OAUTH_VARIABLE};
 use crate::listener::{RouteHandler, StreamBody, text_response};
+use crate::rotation::{NO_RESET_COOLDOWN, RotationState};
 use crate::splice::splice_model;
 
 /// The upstream an account with no base URL of its own talks to: the
@@ -43,8 +47,8 @@ enum SelectFailure {
     NoEligibleAccount { model: String, org: String },
 }
 
-/// The gateway's route handler: bindings + the account pool + the
-/// upstream client.
+/// The gateway's route handler: bindings + the account pool +
+/// rotation state + the upstream client.
 pub struct Gateway {
     pub bindings: Bindings,
     pool: Arc<crate::AccountPool>,
@@ -52,6 +56,9 @@ pub struct Gateway {
     /// Each org's walk order, from the config the caller loaded. Read
     /// when a session has no binding and selection must run.
     org_pins: parking_lot::Mutex<HashMap<String, crate::selection::OrgPin>>,
+    /// Exhaustion marks and cooldowns, shared with the workspace's
+    /// `rate_limit_event` reports.
+    rotation: RotationState,
 }
 
 impl Gateway {
@@ -61,6 +68,7 @@ impl Gateway {
             pool,
             client: reqwest::Client::new(),
             org_pins: parking_lot::Mutex::new(HashMap::new()),
+            rotation: RotationState::new(),
         }
     }
 
@@ -73,7 +81,8 @@ impl Gateway {
 
     /// Select the account for an unbound session: the model's family
     /// decides the eligible set, the org's walk order decides which of
-    /// those wins. Binds the result so the session keeps it.
+    /// those wins, and accounts inside a rotation cooldown are skipped.
+    /// Binds the result so the session keeps it.
     fn select_and_bind(
         &self,
         org: &str,
@@ -84,17 +93,22 @@ impl Gateway {
         let Some(pin) = self.org_pins.lock().get(org).cloned() else {
             return Err(SelectFailure::UnknownOrg { org: org.to_owned() });
         };
-        let state = self.pool.state();
-        let account = match crate::selection::select_account(&state, &pin, org, model) {
+        let now = SystemTime::now();
+        let cooling = |name: &String| self.rotation.is_cooling_down(&AccountKey(name.clone()), now);
+        let pin = crate::selection::OrgPin {
+            accounts: pin.accounts.into_iter().filter(|name| !cooling(name)).collect(),
+            fallback_accounts: pin
+                .fallback_accounts
+                .into_iter()
+                .filter(|name| !cooling(name))
+                .collect(),
+        };
+        let account = match self.pool.select_account(&pin, org, model) {
             Ok(account) => account,
-            // UnknownOrg cannot occur here: the pin was already looked
-            // up, so the only failure the walk can produce is that no
-            // account in it serves the model.
             Err(crate::selection::SelectionError::NoEligibleAccount { model, org }) => {
                 return Err(SelectFailure::NoEligibleAccount { model, org });
             }
         };
-        drop(state);
         self.bindings.bind(org, project, session, account.clone());
         Ok(account)
     }
@@ -103,22 +117,111 @@ impl Gateway {
     /// account's env. `None` when the account carries no credential in
     /// the variable its provider authenticates with.
     fn credential_for(&self, account: &AccountKey) -> Option<(String, String)> {
-        let state = self.pool.state();
-        let account_state = state.by_key.get(account)?;
-        let provider = account_state.provider;
+        let (provider, env) = self.pool.provider_and_env(account)?;
         let variable = if provider.uses_base_url() { AUTH_TOKEN_VARIABLE } else { OAUTH_VARIABLE };
-        let credential = account_state.env.get(variable)?.trim().to_owned();
+        let credential = env.get(variable)?.trim().to_owned();
         if credential.is_empty() || credential == DUMMY_CREDENTIAL {
             return None;
         }
-        let upstream = account_state
-            .env
+        let upstream = env
             .get("ANTHROPIC_BASE_URL")
             .map(|v| v.trim().trim_end_matches('/').to_owned())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| ANTHROPIC_UPSTREAM.to_owned());
         Some((upstream, credential))
     }
+
+    /// Apply the rotation triggers the held response proves, then
+    /// stream it back untouched - the CLI's retry carries the same
+    /// session id, so rotating the binding here is what routes the
+    /// retry to the next account.
+    fn note_response(
+        &self,
+        account: &AccountKey,
+        org: &str,
+        project: &str,
+        session: &str,
+        status: StatusCode,
+        headers: &HeaderMap,
+    ) {
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            let now = SystemTime::now();
+            if self.rotation.record_429(account, now) {
+                let cooldown = retry_after(headers).unwrap_or(NO_RESET_COOLDOWN);
+                self.rotate_off(account, org, project, session, now + cooldown);
+            }
+        } else {
+            if !status.is_success()
+                && (header_value_is(headers, "anthropic-ratelimit-unified-status", "rejected")
+                    || header_value_is(
+                        headers,
+                        "anthropic-ratelimit-unified-overage-status",
+                        "rejected",
+                    ))
+            {
+                let now = SystemTime::now();
+                let cooldown = retry_after(headers).unwrap_or(NO_RESET_COOLDOWN);
+                self.rotate_off(account, org, project, session, now + cooldown);
+            }
+            if status.is_success() {
+                self.rotation.reset_streak(account);
+            }
+        }
+    }
+
+    /// Mark `account` exhausted until `until` and drop the session's
+    /// binding, so the next request for it re-selects with the
+    /// exhausted account skipped.
+    fn rotate_off(
+        &self,
+        account: &AccountKey,
+        org: &str,
+        project: &str,
+        session: &str,
+        until: SystemTime,
+    ) {
+        self.rotation.cool_down(account, until);
+        self.bindings.unbind(org, project, session);
+    }
+
+    /// The workspace's `rate_limit_event` report: the CLI told us the
+    /// bound account's window is not `allowed`, and the frame's reset
+    /// time is the cooldown. Both the exhausted account and the probe
+    /// agree on a reset time or its absence; nothing else is read.
+    /// A session with no binding (gateway not in use) has nothing to
+    /// rotate.
+    pub fn report_rate_limit(&self, session: &str, reset_at: Option<u64>) {
+        let Some(account) = self.bindings.unbind_for_session(session) else {
+            return;
+        };
+        let now = SystemTime::now();
+        let until = reset_at.map_or(now + NO_RESET_COOLDOWN, crate::rotation::reset_instant);
+        self.rotation.cool_down(&account, until);
+    }
+
+    /// The usage probe's verdict: a snapshot with any window at the
+    /// cap and a reset ahead proves exhaustion until that reset. Every
+    /// session bound to the account rotates.
+    pub fn report_probe_limit(&self, account: &AccountKey, reset_at: Option<u64>) {
+        let now = SystemTime::now();
+        let until = reset_at.map_or(now + NO_RESET_COOLDOWN, crate::rotation::reset_instant);
+        self.rotation.cool_down(account, until);
+        self.bindings.unbind_for_account(account);
+    }
+}
+
+/// The `Retry-After` header, as seconds.
+fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+    headers
+        .get(hyper::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
+/// Case-insensitive header comparison against a wire literal.
+fn header_value_is(headers: &HeaderMap, name: &str, value: &str) -> bool {
+    headers.get(name).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case(value))
 }
 
 #[async_trait::async_trait]
@@ -229,6 +332,8 @@ impl RouteHandler for Gateway {
         // pacing. Framing headers are omitted: hyper re-frames the
         // streamed body itself.
         let status = upstream_response.status();
+        let response_headers = upstream_response.headers().clone();
+        self.note_response(&account, org, project, session, status, &response_headers);
         let mut response = hyper::Response::builder()
             .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY));
         for (name, value) in upstream_response.headers() {
@@ -293,7 +398,12 @@ mod tests {
     struct RecordingUpstream {
         requests: Arc<parking_lot::Mutex<Vec<Recorded>>>,
         chunk_delay: Duration,
+        /// One scripted (status, extra headers) pair per request.
+        script: ScriptHandle,
     }
+
+    type ScriptHandle =
+        Arc<parking_lot::Mutex<std::collections::VecDeque<(u16, Vec<(String, String)>)>>>;
 
     #[async_trait::async_trait]
     impl RouteHandler for RecordingUpstream {
@@ -312,6 +422,13 @@ mod tests {
                 headers,
                 body: String::from_utf8_lossy(request.body()).into_owned(),
             });
+            // Each scripted (status, headers) pair answers one request;
+            // unscripted requests get the healthy default. A scripted
+            // header overrides its default rather than stacking a
+            // second value under the same name.
+            let (status, extra) =
+                self.script.lock().pop_front().unwrap_or((StatusCode::OK.as_u16(), Vec::new()));
+            let scripted = |name: &str| extra.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
             let delay = self.chunk_delay;
             let stream = futures_util::stream::unfold(
                 (0u8, delay),
@@ -335,12 +452,20 @@ mod tests {
                     }
                 },
             );
-            hyper::Response::builder()
-                .status(StatusCode::OK)
+            let mut builder = hyper::Response::builder()
+                .status(StatusCode::from_u16(status).expect("test status"))
                 .header(CONTENT_TYPE, "text/event-stream")
-                .header("retry-after", "30")
-                .header("anthropic-ratelimit-unified-status", "allowed")
-                .header("request-id", "req-test")
+                .header("request-id", "req-test");
+            if !scripted("retry-after") {
+                builder = builder.header("retry-after", "30");
+            }
+            if !scripted("anthropic-ratelimit-unified-status") {
+                builder = builder.header("anthropic-ratelimit-unified-status", "allowed");
+            }
+            for (name, value) in extra {
+                builder = builder.header(name, value);
+            }
+            builder
                 .body(http_body_util::combinators::BoxBody::new(http_body_util::StreamBody::new(
                     stream,
                 )))
@@ -359,16 +484,20 @@ mod tests {
         client_url: String,
         gateway: Arc<Gateway>,
         requests: Arc<parking_lot::Mutex<Vec<Recorded>>>,
+        script: ScriptHandle,
     }
 
     /// Stub upstream + gateway listener + one registered session whose
     /// account's upstream is the stub.
     async fn harness(chunk_delay: Duration) -> Harness {
+        let script: ScriptHandle =
+            Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
+        let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let upstream = Arc::new(RecordingUpstream {
-            requests: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            requests: Arc::clone(&requests),
             chunk_delay,
+            script: Arc::clone(&script),
         });
-        let requests = Arc::clone(&upstream.requests);
         let stub_port = free_port().await;
         let stub_listener = GatewayListener::bind(stub_port).await.expect("stub bind");
         let stub_url = format!("http://127.0.0.1:{stub_port}");
@@ -408,7 +537,7 @@ mod tests {
             &account_env,
         );
 
-        Harness { client_url, gateway, requests }
+        Harness { client_url, gateway, requests, script }
     }
 
     /// A CLI-shaped POST: the dummy credential in the auth variable's
@@ -531,7 +660,6 @@ mod tests {
         harness
             .gateway
             .pool
-            .state()
             .set_loading(&AccountKey("OpenRouter".to_owned()), crate::LoadingState::Ready);
 
         let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
@@ -581,7 +709,6 @@ mod tests {
         harness
             .gateway
             .pool
-            .state()
             .set_loading(&AccountKey("Openrouter".to_owned()), crate::LoadingState::Ready);
 
         let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
@@ -625,5 +752,171 @@ mod tests {
         let second = response.chunk().await.expect("a second chunk").expect("chunk bytes");
         assert!(!second.is_empty());
         assert!(started.elapsed() >= Duration::from_millis(1000), "the tail respects the gap");
+    }
+
+    #[tokio::test]
+    async fn the_fifth_429_rotates_the_binding_and_the_cooled_account_is_skipped() {
+        let harness = harness(Duration::ZERO).await;
+        harness.gateway.set_org_pins([(
+            "Busytools".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["OpenRouter".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        for _ in 0..4 {
+            harness
+                .script
+                .lock()
+                .push_back((429, vec![("retry-after".to_owned(), "30".to_owned())]));
+            let response =
+                post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
+        // Four transient 429s: retried in place, the binding holds.
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            Some(AccountKey("OpenRouter".to_owned())),
+            "transient 429s do not rotate",
+        );
+        harness.script.lock().push_back((429, vec![("retry-after".to_owned(), "30".to_owned())]));
+        let response = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        // The streak fired: the binding is gone and the account cools,
+        // so the CLI's retry cannot come back to it.
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            None,
+            "the fifth 429 drops the binding",
+        );
+        let retry = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(
+            retry.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the cooled account is skipped and nothing else can serve the session",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_unified_status_header_rotates_on_the_first_response() {
+        let harness = harness(Duration::ZERO).await;
+        harness.gateway.set_org_pins([(
+            "Busytools".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["OpenRouter".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        harness.script.lock().push_back((
+            StatusCode::PAYMENT_REQUIRED.as_u16(),
+            vec![
+                ("retry-after".to_owned(), "45".to_owned()),
+                ("anthropic-ratelimit-unified-status".to_owned(), "rejected".to_owned()),
+            ],
+        ));
+        let response = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            None,
+            "proven exhaustion drops the binding without waiting for a streak",
+        );
+        let retry = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(retry.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn a_success_resets_the_429_streak() {
+        let harness = harness(Duration::ZERO).await;
+        for _ in 0..4 {
+            harness
+                .script
+                .lock()
+                .push_back((429, vec![("retry-after".to_owned(), "30".to_owned())]));
+            post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        }
+        // The healthy response lands between the streaks.
+        harness.script.lock().push_back((StatusCode::OK.as_u16(), Vec::new()));
+        let response = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        harness.script.lock().push_back((429, vec![("retry-after".to_owned(), "30".to_owned())]));
+        post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            Some(AccountKey("OpenRouter".to_owned())),
+            "the streak counts consecutive 429s; one 429 after a success does not rotate",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_report_cools_the_bound_account_until_the_reset() {
+        let harness = harness(Duration::ZERO).await;
+        harness.gateway.set_org_pins([(
+            "Busytools".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["OpenRouter".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        let reset = std::time::SystemTime::now() + Duration::from_secs(120);
+        let reset_secs = reset
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("future reset")
+            .as_secs();
+        harness.gateway.report_rate_limit("session-1", Some(reset_secs));
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            None,
+            "the report drops the binding",
+        );
+        let retry = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(
+            retry.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the account is cooling until the frame's reset time",
+        );
+        // An unbound session has nothing to rotate and must not panic.
+        harness.gateway.report_rate_limit("ghost", None);
+    }
+
+    #[tokio::test]
+    async fn a_probe_report_cools_the_account_and_unbinds_every_session_on_it() {
+        let harness = harness(Duration::ZERO).await;
+        harness.gateway.set_org_pins([(
+            "Busytools".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["OpenRouter".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        // A second session on the same account, plus the harness's own.
+        harness.gateway.bindings.bind(
+            "Busytools",
+            "forge",
+            "session-2",
+            AccountKey("OpenRouter".to_owned()),
+        );
+        let reset = std::time::SystemTime::now() + Duration::from_secs(300);
+        let reset_secs = reset
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("future reset")
+            .as_secs();
+        harness.gateway.report_probe_limit(&AccountKey("OpenRouter".to_owned()), Some(reset_secs));
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
+            None,
+            "the probe's verdict rotates every session on the account",
+        );
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "session-2"),
+            None,
+            "the probe's verdict rotates every session on the account",
+        );
+        let retry = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(
+            retry.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the cooled account cannot be re-selected until its reset",
+        );
     }
 }
