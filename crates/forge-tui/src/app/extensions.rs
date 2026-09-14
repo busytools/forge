@@ -63,11 +63,11 @@ pub struct PluginsState {
     pub update_availability: Vec<PluginUpdateAvailability>,
     /// The pane's two row streams from the last inventory refresh,
     /// kept separate so a tab's count describes its installed rows
-    /// even with the Available toggle showing more than that: the
+    /// even with the available stream rendering after it: the
     /// INSTALLED rows (registry installs, their components, the
     /// load-failure rows), and the AVAILABLE rows (the marketplace
-    /// catalog plus the cache leftovers), which render only behind the
-    /// Available toggle.
+    /// catalog plus the cache leftovers), which the Available toggle
+    /// can hide.
     pub installed_rows: Vec<ExtensionRow>,
     pub available_rows: Vec<ExtensionRow>,
     /// The Available toggle as a hide: the available stream renders by
