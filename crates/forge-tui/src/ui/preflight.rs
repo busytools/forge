@@ -256,10 +256,9 @@ fn is_transferring(model: &DictateModel) -> bool {
 }
 
 /// The gateway section: the inference listener's bind state. The
-/// failed state is the legible form of the boot gate - a project with
-/// `gateway = true` refuses to spawn while the listener cannot bind,
-/// and this row names the port and error instead of leaving the cause
-/// in a log file.
+/// failed state is the legible form of the boot gate - no session
+/// spawns while the listener cannot bind, and this row names the port
+/// and error instead of leaving the cause in a log file.
 fn gateway_rows(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(workspace) = app.workspace.as_ref() else {
         return Vec::new();

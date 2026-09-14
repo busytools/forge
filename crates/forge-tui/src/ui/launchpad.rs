@@ -106,7 +106,7 @@ fn effective_click_intent(
     let Some(workspace) = app.workspace.as_ref() else {
         return click_intent(lifecycle);
     };
-    if !workspace.launchpad_gate_open() {
+    if !workspace.all_accounts_loaded() {
         return ClickIntent::Block;
     }
     // Resolve the project's pool through the assignment plan. The
@@ -547,7 +547,7 @@ fn build_picker_content(
         // stays unclickable via `effective_click_intent`'s Block
         // downgrade; the hint explains why.
         if let Some(workspace) = app.workspace.as_ref()
-            && workspace.launchpad_gate_open()
+            && workspace.all_accounts_loaded()
             && project_view
                 .as_ref()
                 .is_some_and(|p| !workspace.project_has_assigned_account(&p.key))
@@ -956,19 +956,15 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {
 }
 
 /// The footer's Enter-action label: the focused row's click intent,
-/// overridden by the two gate states - a listener bind failure (only
-/// when a project opted in) reads as a permanent failure, and a
-/// still-settling pool reads as a one-off wait.
+/// overridden by the two gate states - a listener bind failure reads
+/// as a permanent failure, and a still-settling pool reads as a
+/// one-off wait.
 fn footer_enter_label(app: &App, selected_row: Option<&PickerRow>) -> String {
-    let gateway_error = app
-        .workspace
-        .as_ref()
-        .filter(|w| w.any_project_routes_through_gateway())
-        .and_then(|w| w.gateway_bind_error());
+    let gateway_error = app.workspace.as_ref().and_then(|w| w.gateway_bind_error());
     let loading = app
         .workspace
         .as_ref()
-        .is_some_and(|w| w.gateway_bind_error().is_none() && !w.launchpad_gate_open());
+        .is_some_and(|w| w.gateway_bind_error().is_none() && !w.all_accounts_loaded());
     if let Some(error) = gateway_error {
         format!("enter  ⛔ gateway failed: {error}")
     } else if loading {
@@ -1219,32 +1215,27 @@ mod tests {
         assert_eq!(truncate_to("service-api-extended", 10), "service-a…");
     }
 
+    /// The listener's half of the gate, pinned end to end: with the
+    /// pool settled, a seeded bind failure still blocks the row and
+    /// the footer names the gateway failure - the one state where
+    /// "wait" would be the wrong message, because the gate will not
+    /// open this run.
     #[test]
-    fn selectable_row_count_zero_when_no_workspace() {
-        let mut app = App::test_default();
-        app.workspace = None;
-        assert_eq!(selectable_row_count(&app), 0);
-    }
-
-    /// A workspace over a one-project forge.toml, with the account and
-    /// the plan seeded so the row's click intent reaches the gate
-    /// itself. `opted_in` appends the Phase 3 key; `ready` seeds the
-    /// listener's state.
-    fn gate_app(opted_in: bool, ready: bool) -> (App, tempfile::TempDir, tempfile::TempDir) {
+    fn a_bind_failure_blocks_a_settled_row_and_names_the_gateway() {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         let forge = config_dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge/ dir");
         let project_path = project_dir.path().to_string_lossy().replace('\\', "/");
-        let mut toml = format!(
-            "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
-             [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
-             [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-launchpad-stargate\"\nprovider = \"anthropic\"\n"
-        );
-        if opted_in {
-            toml.push_str("\n[projects.picker]\ngateway = true\n");
-        }
-        std::fs::write(forge.join("forge.toml"), toml).expect("write forge.toml");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
+                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
+                 [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-launchpad-stargate\"\nprovider = \"anthropic\"\n"
+            ),
+        )
+        .expect("write forge.toml");
 
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
             .expect("workspace");
@@ -1252,65 +1243,31 @@ mod tests {
         workspace.seed_test_dynamic_worker(&project.key, "reviewer");
         workspace.seed_test_ready_account("Stargate");
         workspace.seed_test_worker_assignment(&project.key, "reviewer");
-        workspace.seed_test_gateway_ready(ready);
+        workspace.seed_test_gateway_ready(false);
+        workspace.seed_test_gateway_bind_error(Some("Address already in use".to_owned()));
+
         let mut app = App::test_default();
         app.workspace = Some(std::sync::Arc::new(workspace));
-        (app, config_dir, project_dir)
-    }
+        let rows = build_picker_rows(&app);
 
-    fn picker_row_for(app: &App, name: &str) -> PickerRow {
-        build_picker_rows(app)
-            .into_iter()
-            .find(|r| r.project_name == name)
-            .unwrap_or_else(|| panic!("no picker row for {name}"))
-    }
-
-    /// The scoped gate: with no opted-in project the listener's state
-    /// gates nothing - the row stays clickable and a bind failure does
-    /// not become a permanent "gateway failed" footer.
-    #[test]
-    fn the_launchpad_gate_opens_without_an_opted_in_project() {
-        let (app, _config_dir, _project_dir) = gate_app(false, false);
-        let row = picker_row_for(&app, "picker");
-        let intent = effective_click_intent(&app, &row.project_name, row.lifecycle);
-        assert_ne!(
-            intent,
-            ClickIntent::Block,
-            "a non-opted project's row is not gated on the listener",
-        );
-        // A bind failure with nothing opted in is preflight's row to
-        // name, not the launchpad's footer.
-        if let Some(workspace) = app.workspace.as_ref() {
-            workspace.seed_test_gateway_bind_error(Some("Address already in use".to_owned()));
-        }
-        let label = footer_enter_label(&app, Some(&picker_row_for(&app, "picker")));
-        assert!(
-            !label.contains("gateway failed"),
-            "no opted-in project means no gateway footer: {label}"
-        );
-    }
-
-    /// An opted-in project under a dead listener holds the gate shut
-    /// and the footer names the failure - the spawn would be stamped
-    /// at a base URL nothing serves.
-    #[test]
-    fn the_launchpad_gate_stays_shut_for_an_opted_in_project_when_the_listener_is_down() {
-        let (app, _config_dir, _project_dir) = gate_app(true, false);
-        if let Some(workspace) = app.workspace.as_ref() {
-            workspace.seed_test_gateway_bind_error(Some("Address already in use".to_owned()));
-        }
-        let row = picker_row_for(&app, "picker");
-        let intent = effective_click_intent(&app, &row.project_name, row.lifecycle);
+        let intent = effective_click_intent(&app, &rows[0].project_name, rows[0].lifecycle);
         assert_eq!(
             intent,
             ClickIntent::Block,
-            "an opted-in project's row is gated on the listener",
+            "a settled pool does not lift the listener's half of the gate",
         );
-        let label = footer_enter_label(&app, Some(&row));
+        let label = footer_enter_label(&app, Some(&rows[0]));
         assert!(
             label.contains("gateway failed") && label.contains("Address already in use"),
-            "the footer names the bind failure: {label}"
+            "the footer names the bind failure, not a wait: {label}"
         );
+    }
+
+    #[test]
+    fn selectable_row_count_zero_when_no_workspace() {
+        let mut app = App::test_default();
+        app.workspace = None;
+        assert_eq!(selectable_row_count(&app), 0);
     }
 
     fn fixture_rows() -> Vec<PickerRow> {
