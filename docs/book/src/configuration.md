@@ -158,6 +158,7 @@ table fails the load loudly instead of quietly applying nothing.
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
 | `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
 | `permission_mode` | string | `auto` | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate. |
+| `gateway` | boolean | `false` | Routes this project's NEW sessions through the gateway listener instead of the direct account path. Spawns for an opted-in project refuse while the listener cannot bind its port; sessions of every other project keep the direct account path and never touch the listener. Respawns follow the original spawn's routing. Temporary: the flag exists only long enough to test the gateway on real traffic, and it is deleted together with the direct path - a config carrying it after that fails the load. |
 
 `permission_mode` stamps a permission mode onto every session the
 project spawns, overriding the launcher's per-session default. A project
@@ -196,12 +197,12 @@ The inline `[projects.<name>.env]` table wins over `env_file` per key.
 
 ## `[gateway]`
 
-The inference listener that spawns resolving to a project are pointed
-at.
+The inference listener that an opted-in project's spawns are pointed
+at (the `[projects.<name>]` `gateway` key).
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `port` | integer | `8787` | The port the gateway's listener binds on `127.0.0.1`. There is no fallback to an OS-assigned port: if the port is taken, the gateway fails to start and preflight stays shut, because every session's base URL names this port and a silent drift would point children at an address nothing serves. `0` fails the load outright (`GatewayPortInvalid`) for the same reason - it reads as "pick one for me". |
+| `port` | integer | `8787` | The port the gateway's listener binds on `127.0.0.1`. There is no fallback to an OS-assigned port: if the port is taken, the gateway fails to start and the launchpad gate stays shut for opted-in projects (preflight's Gateway row names the failure), because an opted-in project's every session base URL names this port and a silent drift would point children at an address nothing serves. `0` fails the load outright (`GatewayPortInvalid`) for the same reason - it reads as "pick one for me". |
 | `streak_count` | integer | `5` | How many consecutive 429s from one account fire a rotation. `0` fails the load outright (`GatewayRotationInvalid`) - it would silently disable the streak. |
 | `streak_window_secs` | integer | `60` | The window the 429 streak is counted over, in seconds. `0` fails the load outright (`GatewayRotationInvalid`). |
 | `no_reset_cooldown_secs` | integer | `60` | The cooldown applied when neither the failing response nor the account's own usage probe reports a reset time, in seconds. `0` fails the load outright (`GatewayRotationInvalid`). |
@@ -219,12 +220,15 @@ applied at spawn rather than earlier, because one account serves many
 projects and merging sooner would leak one project's keys into every
 other project on that account.
 
-One carve-out applies to project spawns: after those layers compose,
-the gateway re-stamps four keys over the result - `ANTHROPIC_BASE_URL`
+One carve-out applies to an opted-in project's spawns (the
+`[projects.<name>]` `gateway` key): after those layers compose, the
+gateway re-stamps four keys over the result - `ANTHROPIC_BASE_URL`
 (the listener with the session's routing segments), the
 `CLAUDE_CODE_API_BASE_URL` slot, the account's credential variable, and
 `ANTHROPIC_API_KEY` (forced empty) - so no layer can point a child away
-from the listener while it holds only the dummy credential.
+from the listener while it holds only the dummy credential. Spawns of
+every other project compose the same layers and stop there: the child
+carries the account's real credential and no listener base URL.
 
 One key is reserved by forge: `CLAUDE_CONFIG_DIR`. Setting it in any
 env layer overrides forge's own stamp. The value still applies, since

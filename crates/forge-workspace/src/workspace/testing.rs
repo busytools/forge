@@ -267,10 +267,25 @@ impl Workspace {
             accounts: vec!["acct-a".to_owned()],
             fallback_accounts: Vec::new(),
             auto_start: false,
+            gateway_routing: false,
             env: std::collections::HashMap::new(),
             max_workers,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
         });
+    }
+
+    /// Set the gateway bind error, so a cross-crate test can render
+    /// the failed state of the preflight gateway row. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_gateway_bind_error(&self, error: Option<String>) {
+        *self.gateway_bind_error.lock() = error;
+    }
+
+    /// Set the gateway listener's ready flag, so a cross-crate test
+    /// can render each of the preflight gateway row's states. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_gateway_ready(&self, ready: bool) {
+        self.gateway_ready.store(ready, std::sync::atomic::Ordering::Release);
     }
 
     /// Mark `account` Ready and recompute the assignment plan, so a

@@ -70,6 +70,59 @@ fn account(name: &str, state: LoadingState) -> AccountLoadingRow {
     account_with(name, state, forge_workspace::AccountAuth::Token)
 }
 
+/// An `App` whose workspace carries `error` as the gateway bind error
+/// and `ready` as the listener's ready flag, for assertions on the
+/// gateway row's three states.
+fn app_with_gateway(error: Option<String>, ready: bool) -> App {
+    let config_dir = tempfile::tempdir().expect("tempdir");
+    let forge = config_dir.path().join("forge");
+    std::fs::create_dir_all(&forge).expect("forge/");
+    std::fs::write(
+        forge.join("forge.toml"),
+        "[[orgs]]\nname = \"Personal\"\naccounts = [\"Subspace\"]\n\n\
+         [[orgs.projects]]\nname = \"forge\"\npath = \"/tmp\"\n\n\
+         [[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"/tmp/forge-test/claude-subspace\"\nprovider = \"anthropic\"\n",
+    )
+    .expect("write forge.toml");
+    let workspace =
+        forge_workspace::Workspace::new_for_test(config_dir.path().to_owned()).expect("workspace");
+    workspace.seed_test_gateway_bind_error(error);
+    workspace.seed_test_gateway_ready(ready);
+    let mut app = App::test_default();
+    app.workspace = Some(std::sync::Arc::new(workspace));
+    app
+}
+
+/// The gateway row is the legible form of the boot gate: `binding`
+/// while the listener task runs, `bound` with the port once ready, and
+/// a failure naming the port and the error instead of leaving the
+/// cause in a log file (#1087).
+#[test]
+fn the_gateway_row_shows_the_bind_state() {
+    // Listener task running, not yet bound, no error -> binding.
+    let app = app_with_gateway(None, false);
+    let all_rows = rows(&app);
+    let gateway = row_containing(&all_rows, "inference listener");
+    assert!(gateway.contains("binding"), "an unbound, error-free listener is binding: {gateway}");
+
+    // A bind failure names the port and the error.
+    let app = app_with_gateway(Some("Address already in use".to_owned()), false);
+    let all_rows = rows(&app);
+    let gateway = row_containing(&all_rows, "inference listener");
+    assert!(gateway.contains(":8787"), "the failure names the port: {gateway}");
+    assert!(gateway.contains("failed"), "the failure reads failed: {gateway}");
+    assert!(
+        all_rows.iter().any(|r| r.contains("Address already in use")),
+        "the error is named on the row beneath: {all_rows:#?}",
+    );
+
+    // Ready and error-free reads bound with the port.
+    let app = app_with_gateway(None, true);
+    let all_rows = rows(&app);
+    let gateway = row_containing(&all_rows, "inference listener");
+    assert!(gateway.contains("bound :8787"), "a bound listener names its port: {gateway}");
+}
+
 fn account_with(
     name: &str,
     state: LoadingState,
