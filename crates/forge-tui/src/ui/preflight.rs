@@ -1,7 +1,8 @@
 //! Preflight - the first of the launchpad's two views.
 //!
-//! Two sibling sections, `Accounts` and `Dictation`, each row carrying
-//! its own state. Shown once per forge run, on every route; nothing
+//! Three sibling sections, `Accounts`, `Dictation` and `Gateway`, each
+//! row carrying its own state. Shown once per forge run, on every
+//! route; nothing
 //! proceeds until every account has settled and every configured model
 //! is loaded, so neither the project picker nor a chat session can be
 //! reached mid-load.

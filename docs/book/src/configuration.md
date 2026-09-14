@@ -158,6 +158,7 @@ table fails the load loudly instead of quietly applying nothing.
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
 | `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
 | `permission_mode` | string | `auto` | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate. |
+| `gateway` | boolean | `false` | Routes this project's NEW sessions through the gateway listener instead of the direct account path. Spawns for an opted-in project refuse while the listener cannot bind its port; sessions of every other project keep the direct account path and never touch the listener. Respawns follow the original spawn's routing. Temporary: the flag exists only long enough to test the gateway on real traffic, and Phase 4 deletes it together with the direct path. |
 
 `permission_mode` stamps a permission mode onto every session the
 project spawns, overriding the launcher's per-session default. A project
