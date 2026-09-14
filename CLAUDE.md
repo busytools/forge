@@ -535,9 +535,10 @@ inspected.
     payload doubled, the doubling being the one requirement `tmux.1`
     never states. screen forwards a bare DCS-wrapped OSC 9 with no
     opt-in and no doubling; that was measured with OSC 9, and the
-    777 form is unmeasured there. The screen half is measured; the
-    tmux half is read from source, at 3.7c except where an earlier
-    tag is named.
+    777 form is unmeasured there. shpool forwards the 777 form,
+    measured 2026-09-13 with both terminators. The screen half is
+    measured; the tmux half is read from source, at 3.7c except where
+    an earlier tag is named.
 
     **Where no multiplexer-independent path exists, state the
     requirement and detect its absence.** Depending on a sequence is

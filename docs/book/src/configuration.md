@@ -269,14 +269,14 @@ terminal, and no setting changes it. Ghostty with no multiplexer
 renders the banner, and so does Ghostty through shpool: shpool does
 not carry `TERM_PROGRAM` into the pane but forwards the escape
 (measured 2026-09-13, with both the `ST` and `BEL` terminators). Under
-zellij and GNU screen an escape emitted inside
-does not reach the outer pty (measured 2026-08-29 against OSC 9), so
-the banner does not appear there. tmux re-emits only the forms its
-terminfo carries - OSC 8 and the OSC 9;4 progress bar - so an OSC 777
-notification is not forwarded, and tmux substitutes `TERM_PROGRAM` and
-`TERM` with its own values besides. When the banner does arrive it
-shows while Ghostty is not the frontmost app, and is downgraded to a
-dock bounce when it is.
+zellij and GNU screen an escape emitted inside does not reach the
+outer pty, measured 2026-08-29 against OSC 9 with the 777 form
+unmeasured there, so the banner is not expected to appear. tmux
+re-emits only the forms its terminfo carries - OSC 8 and the OSC 9;4
+progress bar - so an OSC 777 notification is not forwarded, and tmux
+substitutes `TERM_PROGRAM` and `TERM` with its own values besides.
+When the banner does arrive it shows while Ghostty is not the
+frontmost app, and is downgraded to a dock bounce when it is.
 
 `launchpad_spinner` is accepted as an alias for `spinner`.
 
