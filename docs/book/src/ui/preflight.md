@@ -56,7 +56,7 @@ The assignment plan needs settled accounts and does not need the dictation weigh
 | Model states | | `queued`, `downloading`, `resuming` (picked up a `.part`), `verifying`, `ready`, `loading`, then `ready`; a failure reads `bad hash` or `cancelled`; a row nothing will now start reads `not started` |
 | Gateway states | | `binding` while the listener task runs, `bound :<port>` once ready, `failed :<port>` with the error on a dim continuation line beneath when the bind failed. A failed row follows the account bail's grammar: the name bolds and the state carries the red. |
 
-- The gateway row shows the inference listener's bind state, rendered whenever forge runs - the listener always starts, so the row is not gated on the `[projects.<name>]` `gateway` key. A failure is the legible form of the boot gate: a project with `gateway = true` refuses to spawn while the listener cannot bind its port, and this row - not a log file - is where that refusal explains itself.
+- The gateway row shows the inference listener's bind state, rendered whenever forge runs. A failure is the legible form of the boot gate: no session spawns while the listener cannot bind its port, and this row - not a log file - is where that refusal explains itself.
 - The spinner is the configured `[ui] spinner` style at its own cadence, shared with every other animated surface.
 - <kbd>Esc</kbd> cancels an in-flight model download, which quits forge; <kbd>Ctrl+Q</kbd> quits. Every other key is consumed silently - the projects view underneath is not reachable yet.
 - The hand-over is latched: a mid-session Ready → Bailed → Loading flip never throws you back onto this screen - the launchpad's own gate covers the window.
