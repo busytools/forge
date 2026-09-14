@@ -1473,7 +1473,7 @@ impl Workspace {
         target: SessionTarget,
         mut settings: SessionLaunchSettings,
         spawn_key: Option<SessionKey>,
-        forced_account: Option<(AccountKey, PathBuf)>,
+        forced_account: Option<AccountKey>,
     ) -> Result<Arc<AgentHandle>> {
         // The boot gate is a spawn precondition, not just a launchpad
         // decoration: a child stamped before the listener is bound
@@ -1490,6 +1490,10 @@ impl Workspace {
         }
         let is_account_switch = forced_account.is_some();
         let session_key = self.resolve_target(&target)?;
+        // One shared config dir: every account's child reads the same
+        // MCP servers, plugins and settings, so the per-account dir is
+        // gone along with the field that carried it.
+        let account_dir = self.config_dir.clone();
 
         // Fast path: cache hit. When `spawn_key` was provided AND a
         // DomainSession is buffered there (a delivery path parks its payload at
@@ -1525,13 +1529,17 @@ impl Workspace {
         //    fires), or the target couldn't be resolved to a known
         //    project. Preserves the pre-#246 behaviour for cold-
         //    boot and unforeseen paths.
-        let (account_key, account_dir) = forced_account.unwrap_or_else(|| {
-            self.plan_assignment(&target, spawn_key.as_ref()).unwrap_or_else(|| {
-                let project_account_pin = self.project_accounts_for(&target);
-                let fallback_pin = self.project_fallback_accounts_for(&target);
-                self.accounts.pick_for_project(&project_account_pin, &fallback_pin)
-            })
-        });
+        let (account_key, account_dir) = match forced_account {
+            Some(key) => (key, account_dir),
+            None => {
+                let key = self.plan_assignment(&target, spawn_key.as_ref()).unwrap_or_else(|| {
+                    let project_account_pin = self.project_accounts_for(&target);
+                    let fallback_pin = self.project_fallback_accounts_for(&target);
+                    self.accounts.pick_for_project(&project_account_pin, &fallback_pin)
+                });
+                (key, account_dir)
+            }
+        };
         tracing::info!(
             target: "forge_workspace::account",
             session = %session_key.as_str(),
@@ -1560,12 +1568,15 @@ impl Workspace {
         // child holds is a dummy, and the real one stays in the
         // gateway. A spawn that resolves to no project stays on the
         // direct account env.
-        let registration = project.as_ref().map(|project| forge_gateway::binding::Registration {
-            org: project.org.clone(),
-            project: project.name.clone(),
-            session: session_key.as_str().to_owned(),
-            account: account_key.clone(),
-            provider: self.accounts.provider_or_anthropic(&account_key),
+        let registration = project.as_ref().and_then(|project| {
+            let provider = self.accounts.provider(&account_key)?;
+            Some(forge_gateway::binding::Registration {
+                org: project.org.clone(),
+                project: project.name.clone(),
+                session: session_key.as_str().to_owned(),
+                account: account_key.clone(),
+                provider,
+            })
         });
         let session_env = match &registration {
             Some(registration) => self
@@ -2174,7 +2185,7 @@ impl Workspace {
         &self,
         target: &SessionTarget,
         spawn_key: Option<&SessionKey>,
-    ) -> Option<(AccountKey, std::path::PathBuf)> {
+    ) -> Option<AccountKey> {
         let (project_key, label) = self.plan_lookup_keys(target, spawn_key)?;
         // `__resume_` synth keys are exactly the flows that pass
         // `--resume` (lead drilldown + worker respawn); every other
@@ -2193,8 +2204,7 @@ impl Workspace {
         } else {
             self.accounts.plan_lookup(&project_key, &label)?
         };
-        let dir = self.accounts.config_dir(&account_key)?;
-        Some((account_key, dir))
+        Some(account_key)
     }
 
     /// Resume re-tier: a resumed session is not a running one, so the
@@ -2833,13 +2843,12 @@ impl Workspace {
     /// config_dir)` for the `/account` switch re-spawn. `None` when the
     /// name isn't a configured account (defensive - the picker only
     /// offers known accounts).
-    pub(crate) fn resolve_account_for_switch(
-        &self,
-        display_name: &str,
-    ) -> Option<(AccountKey, PathBuf)> {
-        let key = AccountKey(display_name.to_owned());
-        let config_dir = self.accounts.config_dir(&key)?;
-        Some((key, config_dir))
+    pub(crate) fn resolve_account_for_switch(&self, display_name: &str) -> Option<AccountKey> {
+        // The auth read is the existence check: the switch targets a
+        // configured account, and one shared config dir means there is
+        // no per-account directory left to resolve.
+        self.accounts.auth(display_name)?;
+        Some(AccountKey(display_name.to_owned()))
     }
 
     /// Snapshot the accounts a project may switch to, in allow-list
@@ -2876,27 +2885,21 @@ impl Workspace {
                 names.push(name.clone());
             }
         }
-        for name in self.accounts.experimental_names() {
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
         let mut rows: Vec<crate::AccountRow> = names
             .into_iter()
             .filter_map(|name| {
                 let key = AccountKey(name.clone());
-                let config_dir = self.accounts.config_dir(&key)?;
+                let config_dir = self.config_dir.clone();
                 let unusable = self.accounts.unusable_reason(&key);
                 let is_current = current_account == Some(name.as_str());
-                let experimental = self.accounts.is_experimental(&key);
                 // A dual-listed account is primary-tier: the pin's
                 // membership wins over the fallback list. An empty pin
                 // means every account is primary (the un-pinned shape).
                 let in_pin = allowed_accounts.is_empty() || allowed_accounts.contains(&name);
-                let fallback = fallback_accounts.contains(&name) && !in_pin && !experimental;
+                let fallback = fallback_accounts.contains(&name) && !in_pin;
                 let budget = account_budget(
                     &name,
-                    self.accounts.provider_or_anthropic(&key),
+                    self.accounts.provider(&key)?,
                     self.accounts.usage(&name).as_ref(),
                 );
                 Some(crate::AccountRow {
@@ -2905,15 +2908,14 @@ impl Workspace {
                     is_current,
                     unusable,
                     budget,
-                    experimental,
                     fallback,
                 })
             })
             .collect();
-        // Stable-sort into [regular..., fallback..., experimental...],
-        // matching the picker's group order. `false` sorts before
-        // `true`, and the sort preserves within-group order.
-        rows.sort_by_key(|row| (row.experimental, row.fallback));
+        // Stable-sort the fallback group last, matching the picker's
+        // group order. `false` sorts before `true`, and the sort
+        // preserves within-group order.
+        rows.sort_by_key(|row| row.fallback);
         rows
     }
 
@@ -3879,16 +3881,14 @@ impl Workspace {
         };
         let workspace = Arc::clone(self);
         let tag_cache = std::sync::Arc::new(load_session_tag_cache(self.db.lock().as_ref()));
-        let config_dirs = {
-            let mut dirs = self.accounts.config_dirs();
-            if !dirs.contains(&self.config_dir) {
-                dirs.push(self.config_dir.clone());
-            }
-            dirs
-        };
+        let config_dir = self.config_dir.clone();
         handle.spawn(async move {
-            let resume_map =
-                scan_worker_resume_map(&config_dirs, &project_dir, Some(&tag_cache)).await;
+            let resume_map = scan_worker_resume_map(
+                std::slice::from_ref(&config_dir),
+                &project_dir,
+                Some(&tag_cache),
+            )
+            .await;
             persist_session_tag_cache(workspace.db.lock().as_ref(), &tag_cache);
             tracing::info!(
                 target: "forge_workspace::workers",
@@ -3926,14 +3926,14 @@ impl Workspace {
         label: &str,
     ) -> Option<String> {
         let tag_cache = std::sync::Arc::new(load_session_tag_cache(self.db.lock().as_ref()));
-        let config_dirs = {
-            let mut dirs = self.accounts.config_dirs();
-            if !dirs.contains(&self.config_dir) {
-                dirs.push(self.config_dir.clone());
-            }
-            dirs
-        };
-        let resume_map = scan_worker_resume_map(&config_dirs, project_dir, Some(&tag_cache)).await;
+        // One shared config dir: every account's sessions live under
+        // the workspace's own config dir.
+        let resume_map = scan_worker_resume_map(
+            std::slice::from_ref(&self.config_dir),
+            project_dir,
+            Some(&tag_cache),
+        )
+        .await;
         persist_session_tag_cache(self.db.lock().as_ref(), &tag_cache);
         resume_map.get(label).cloned()
     }
@@ -4623,7 +4623,9 @@ impl Workspace {
             .env(&key)
             .and_then(|env| env.get("ANTHROPIC_BASE_URL").map(|value| value.trim().to_owned()))
             .unwrap_or_default();
-        let provider = self.accounts.provider_or_anthropic(&key);
+        let Some(provider) = self.accounts.provider(&key) else {
+            return discovered;
+        };
         let Some(catalog) = forge_gateway::backend(provider)
             .and_then(forge_gateway::ProviderBackend::model_catalog)
         else {
@@ -6615,17 +6617,19 @@ mod tests {
             let mut map = AccountStateMap::new(&[
                 crate::config::LoadedAccount {
                     display_name: "A".to_owned(),
-                    config_dir: PathBuf::from("/cfg/A"),
                     provider: forge_primitives::account::Provider::Anthropic,
+                    base_url: None,
+                    models: vec!["claude-sonnet-5".to_owned()],
+                    model_slugs: std::collections::HashMap::new(),
                     env: std::collections::HashMap::new(),
-                    experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
-                    config_dir: PathBuf::from("/cfg/B"),
                     provider: forge_primitives::account::Provider::Anthropic,
+                    base_url: None,
+                    models: vec!["claude-sonnet-5".to_owned()],
+                    model_slugs: std::collections::HashMap::new(),
                     env: std::collections::HashMap::new(),
-                    experimental: false,
                 },
             ]);
             // A: 5h saturated (100%, future reset) -> rate limited; 7d 63%.
@@ -6651,6 +6655,10 @@ mod tests {
         // reset ETA.
         assert!(rows[0].is_current, "A is the session's active account");
         assert_eq!(
+            rows[0].config_dir, ws.config_dir,
+            "one shared config dir: every row names the workspace's own",
+        );
+        assert_eq!(
             rows[0].unusable,
             Some(forge_gateway::Unusable::Saturated),
             "A saturated on 5h -> Saturated, not a probe failure",
@@ -6667,7 +6675,7 @@ mod tests {
             }
             ref other => panic!("a window-billed account renders as a subscription, got {other:?}"),
         }
-        assert_eq!(rows[0].config_dir, PathBuf::from("/cfg/A"));
+        assert_eq!(rows[0].config_dir, ws.config_dir);
 
         // B: not current + under cap -> usable, no reset ETA.
         assert!(!rows[1].is_current);
@@ -6681,81 +6689,6 @@ mod tests {
         }
     }
 
-    /// Experimental accounts are globally selectable: they appear in the
-    /// picker snapshot even when the project's org allow-list does NOT
-    /// pin them, flagged experimental and sorted after the regular rows.
-    #[test]
-    fn project_accounts_snapshot_includes_experimental_globally() {
-        let (ws, _rx) = Workspace::testing_stub();
-        {
-            let mut map = AccountStateMap::new(&[
-                crate::config::LoadedAccount {
-                    display_name: "A".to_owned(),
-                    config_dir: PathBuf::from("/cfg/A"),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    env: std::collections::HashMap::new(),
-                    experimental: false,
-                },
-                crate::config::LoadedAccount {
-                    display_name: "Exp".to_owned(),
-                    config_dir: PathBuf::from("/cfg/Exp"),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    env: std::collections::HashMap::new(),
-                    experimental: true,
-                },
-            ]);
-            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            ws.accounts.replace_state_for_test(map);
-        }
-
-        // Allow-list pins only "A"; "Exp" is a different org's account.
-        let rows = ws.project_accounts_snapshot(&["A".to_owned()], &[], Some("A"));
-
-        assert_eq!(rows.len(), 2, "experimental Exp is unioned in despite not being pinned");
-        assert_eq!(rows[0].display_name, "A", "regular allow-list rows come first");
-        assert!(!rows[0].experimental, "A is a regular account");
-        assert_eq!(rows[1].display_name, "Exp", "experimental rows sorted last");
-        assert!(rows[1].experimental, "Exp is flagged experimental");
-    }
-
-    /// An experimental account that also happens to sit in the project's
-    /// allow-list renders exactly once (deduped), flagged experimental.
-    #[test]
-    fn project_accounts_snapshot_dedups_experimental_in_allowlist() {
-        let (ws, _rx) = Workspace::testing_stub();
-        {
-            let mut map = AccountStateMap::new(&[
-                crate::config::LoadedAccount {
-                    display_name: "A".to_owned(),
-                    config_dir: PathBuf::from("/cfg/A"),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    env: std::collections::HashMap::new(),
-                    experimental: false,
-                },
-                crate::config::LoadedAccount {
-                    display_name: "Exp".to_owned(),
-                    config_dir: PathBuf::from("/cfg/Exp"),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    env: std::collections::HashMap::new(),
-                    experimental: true,
-                },
-            ]);
-            map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            ws.accounts.replace_state_for_test(map);
-        }
-
-        // "Exp" is BOTH pinned by the allow-list AND experimental.
-        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "Exp".to_owned()], &[], None);
-
-        assert_eq!(rows.len(), 2, "no duplicate row for the already-pinned experimental account");
-        let exp_rows: Vec<&crate::AccountRow> =
-            rows.iter().filter(|r| r.display_name == "Exp").collect();
-        assert_eq!(exp_rows.len(), 1, "Exp appears exactly once");
-        assert!(exp_rows[0].experimental, "the deduped Exp row stays flagged experimental");
-    }
-
     /// An empty allow-list (project pins no accounts) falls back to
     /// every configured account in definition order; a `None`
     /// current-account marks no row.
@@ -6766,17 +6699,19 @@ mod tests {
             let mut map = AccountStateMap::new(&[
                 crate::config::LoadedAccount {
                     display_name: "One".to_owned(),
-                    config_dir: PathBuf::from("/c/One"),
                     provider: forge_primitives::account::Provider::Anthropic,
+                    base_url: None,
+                    models: vec!["claude-sonnet-5".to_owned()],
+                    model_slugs: std::collections::HashMap::new(),
                     env: std::collections::HashMap::new(),
-                    experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "Two".to_owned(),
-                    config_dir: PathBuf::from("/c/Two"),
                     provider: forge_primitives::account::Provider::Anthropic,
+                    base_url: None,
+                    models: vec!["claude-sonnet-5".to_owned()],
+                    model_slugs: std::collections::HashMap::new(),
                     env: std::collections::HashMap::new(),
-                    experimental: false,
                 },
             ]);
             map.set_usage(&AccountKey("One".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -6792,53 +6727,41 @@ mod tests {
     }
 
     /// Fallback rows are flagged against the org `fallback_accounts`
-    /// list the caller passes in, and an account that is BOTH fallback
-    /// and experimental stays experimental - that is the group it
-    /// renders in, matching its exclusion from every auto tier.
+    /// list the caller passes in.
     #[test]
-    fn project_accounts_snapshot_flags_fallback_rows_and_experimental_wins() {
+    fn project_accounts_snapshot_flags_fallback_rows() {
         let (ws, _rx) = Workspace::testing_stub();
         {
             let mut map = AccountStateMap::new(&[
                 crate::config::LoadedAccount {
                     display_name: "A".to_owned(),
-                    config_dir: PathBuf::from("/cfg/A"),
                     provider: forge_primitives::account::Provider::Anthropic,
+                    base_url: None,
+                    models: vec!["claude-sonnet-5".to_owned()],
+                    model_slugs: std::collections::HashMap::new(),
                     env: std::collections::HashMap::new(),
-                    experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
-                    config_dir: PathBuf::from("/cfg/B"),
                     provider: forge_primitives::account::Provider::Anthropic,
+                    base_url: None,
+                    models: vec!["claude-sonnet-5".to_owned()],
+                    model_slugs: std::collections::HashMap::new(),
                     env: std::collections::HashMap::new(),
-                    experimental: false,
-                },
-                crate::config::LoadedAccount {
-                    display_name: "Exp".to_owned(),
-                    config_dir: PathBuf::from("/cfg/Exp"),
-                    provider: forge_primitives::account::Provider::Anthropic,
-                    env: std::collections::HashMap::new(),
-                    experimental: true,
                 },
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
             map.set_usage(&AccountKey("B".to_owned()), account_usage_snapshot(10.0, 10.0, None));
-            map.set_usage(&AccountKey("Exp".to_owned()), account_usage_snapshot(10.0, 10.0, None));
             ws.accounts.replace_state_for_test(map);
         }
 
-        let rows = ws.project_accounts_snapshot(
-            &["A".to_owned()],
-            &["B".to_owned(), "Exp".to_owned()],
-            Some("A"),
-        );
+        let rows = ws.project_accounts_snapshot(&["A".to_owned()], &["B".to_owned()], Some("A"));
 
         assert_eq!(rows[0].display_name, "A", "regular rows lead");
         assert!(!rows[0].fallback, "a primary row is not flagged fallback");
         let fallbacks: Vec<&str> =
             rows.iter().filter(|r| r.fallback).map(|r| r.display_name.as_str()).collect();
-        assert_eq!(fallbacks, vec!["B"], "only the non-experimental fallback row is flagged");
+        assert_eq!(fallbacks, vec!["B"], "the fallback row is flagged");
     }
 
     /// An account sitting in BOTH the allow-list and the fallback list
@@ -6851,17 +6774,19 @@ mod tests {
             let mut map = AccountStateMap::new(&[
                 crate::config::LoadedAccount {
                     display_name: "A".to_owned(),
-                    config_dir: PathBuf::from("/cfg/A"),
                     provider: forge_primitives::account::Provider::Anthropic,
+                    base_url: None,
+                    models: vec!["claude-sonnet-5".to_owned()],
+                    model_slugs: std::collections::HashMap::new(),
                     env: std::collections::HashMap::new(),
-                    experimental: false,
                 },
                 crate::config::LoadedAccount {
                     display_name: "B".to_owned(),
-                    config_dir: PathBuf::from("/cfg/B"),
                     provider: forge_primitives::account::Provider::Anthropic,
+                    base_url: None,
+                    models: vec!["claude-sonnet-5".to_owned()],
+                    model_slugs: std::collections::HashMap::new(),
                     env: std::collections::HashMap::new(),
-                    experimental: false,
                 },
             ]);
             map.set_usage(&AccountKey("A".to_owned()), account_usage_snapshot(10.0, 10.0, None));
@@ -7181,10 +7106,11 @@ mod tests {
         ws.accounts.replace_state_for_test(forge_gateway::AccountStateMap::new(&[
             crate::config::LoadedAccount {
                 display_name: display_name.to_owned(),
-                config_dir: PathBuf::from(format!("/cfg/{display_name}")),
                 provider,
+                base_url: None,
+                models: vec!["claude-sonnet-5".to_owned()],
+                model_slugs: std::collections::HashMap::new(),
                 env,
-                experimental: false,
             },
         ]));
     }
@@ -7460,19 +7386,23 @@ auto_start = true
 
 [[accounts]]
 display_name = "Gateway"
-config_dir = "/tmp/wt-acct-cfg/gateway"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [[accounts]]
 display_name = "Gateway1"
-config_dir = "/tmp/wt-acct-cfg/gateway1"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [[accounts]]
 display_name = "Personal"
-config_dir = "/tmp/wt-acct-cfg/personal"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/wt-acct-cfg/stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#;
 
@@ -7534,7 +7464,8 @@ name = "solo"
 path = "{root}"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/applied-record-cfg"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [projects.solo.env]
@@ -7594,7 +7525,8 @@ path = "{solo}"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/ambig-cfg"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [projects.twin-a.env]
@@ -8504,7 +8436,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -8618,7 +8551,8 @@ path = "~/Projects/dotfiles"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -8654,7 +8588,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -8689,12 +8624,14 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Gateway"
-config_dir = "/tmp/forge-test/claude-gateway"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -8759,12 +8696,14 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Gateway"
-config_dir = "/tmp/forge-test/claude-gateway"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [projects.forge.env]
@@ -8886,17 +8825,20 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Gateway"
-config_dir = "/tmp/forge-test/claude-gateway"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Personal"
-config_dir = "/tmp/forge-test/claude-second"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -9402,7 +9344,8 @@ name = "companies"
 path = "{root}"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/respawn-retire-cfg"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
                 root = root.display()
@@ -9678,11 +9621,9 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "TokenAcct"
-config_dir = "/tmp/forge-test/claude"
+token = "setup-token"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
-
-  [accounts.env]
-  CLAUDE_CODE_OAUTH_TOKEN = "setup-token"
 "#,
         )
         .expect("write forge.toml");
@@ -9723,7 +9664,8 @@ auto_start = false
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -10555,7 +10497,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -11716,10 +11659,10 @@ path = "{project_path}"
 
 [[accounts]]
 display_name = "acct-a"
-config_dir = "{}"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
-"#,
-                cfg.path().to_string_lossy().replace('\\', "/"),
+"#
             ),
         )
         .expect("write forge.toml");
@@ -11983,10 +11926,11 @@ path = "{project_path}"
 
 [[accounts]]
 display_name = "acct-a"
-config_dir = "{}"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
-                cfg.path().to_string_lossy().replace('\\', "/"),
+                project_path = project_path,
             ),
         )
         .expect("write forge.toml");
@@ -12244,10 +12188,11 @@ path = "{project_path}"
 
 [[accounts]]
 display_name = "acct-a"
-config_dir = "{}"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
-                cfg.path().to_string_lossy().replace('\\', "/"),
+                project_path = project_path,
             ),
         )
         .expect("write forge.toml");
@@ -13596,7 +13541,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -13643,7 +13589,8 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -13672,12 +13619,14 @@ auto_start = true
 
 [[accounts]]
 display_name = "Alpha"
-config_dir = "/tmp/forge-test/claude-alpha"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Beta"
-config_dir = "/tmp/forge-test/claude-beta"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -13705,12 +13654,14 @@ auto_start = true
 
 [[accounts]]
 display_name = "Alpha"
-config_dir = "/tmp/forge-test/claude-alpha"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Beta"
-config_dir = "/tmp/forge-test/claude-beta"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -13737,12 +13688,14 @@ auto_start = true
 
 [[accounts]]
 display_name = "Sub"
-config_dir = "/tmp/forge-test/claude-sub"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Api"
-config_dir = "/tmp/forge-test/claude-api"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -13769,17 +13722,20 @@ auto_start = true
 
 [[accounts]]
 display_name = "Sub"
-config_dir = "/tmp/forge-test/claude-sub"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Api1"
-config_dir = "/tmp/forge-test/claude-api1"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Api2"
-config_dir = "/tmp/forge-test/claude-api2"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -13810,8 +13766,7 @@ provider = "anthropic"
         );
         let lead_account = workspace
             .plan_assignment(&SessionTarget::Named("forge".to_owned()), None)
-            .expect("the lead resolves through the plan")
-            .0;
+            .expect("the lead resolves through the plan");
 
         // A worker earns its plan row by spawning, so give it one the way
         // a spawn does before resuming it.
@@ -13838,15 +13793,14 @@ provider = "anthropic"
 
         let assigned = workspace
             .plan_assignment(&SessionTarget::Session(worker_key), Some(&resume_spawn_key))
-            .expect("a resumed worker resolves through the registry")
-            .0;
+            .expect("a resumed worker resolves through the registry");
 
         assert_eq!(
             assigned,
             AccountKey("Beta".to_owned()),
             "the worker draws its own plan row, not the lead's",
         );
-        assert_ne!(assigned, lead_account, "lead and worker are on different accounts here");
+        assert_ne!(assigned, lead_account, "lead and worker are on different accounts here",);
     }
 
     /// A resumed session is not a running one, so the frozen overlay
@@ -13876,8 +13830,7 @@ provider = "anthropic"
         let resume_spawn_key = SessionKey::from_session_id("__resume_lead-uuid__".to_owned());
         let recorded = workspace
             .plan_assignment(&lead_target, Some(&resume_spawn_key))
-            .expect("the resume resolves through the plan")
-            .0;
+            .expect("the resume resolves through the plan");
         assert_eq!(recorded, AccountKey("Sub".to_owned()), "boot recorded the primary");
 
         // The primary hits its cap while the fallback stays healthy.
@@ -13885,8 +13838,7 @@ provider = "anthropic"
 
         let re_tiered = workspace
             .plan_assignment(&lead_target, Some(&resume_spawn_key))
-            .expect("the resume still resolves")
-            .0;
+            .expect("the resume still resolves");
         assert_eq!(
             re_tiered,
             AccountKey("Api".to_owned()),
@@ -13902,8 +13854,7 @@ provider = "anthropic"
         // A second resume with the recorded account already best keeps it.
         let kept = workspace
             .plan_assignment(&lead_target, Some(&resume_spawn_key))
-            .expect("the resume still resolves")
-            .0;
+            .expect("the resume still resolves");
         assert_eq!(
             kept,
             AccountKey("Api".to_owned()),
@@ -13942,8 +13893,7 @@ provider = "anthropic"
         let resume_spawn_key = SessionKey::from_session_id("__resume_lead-uuid__".to_owned());
         let re_tiered = workspace
             .plan_assignment(&lead_target, Some(&resume_spawn_key))
-            .expect("the resume resolves")
-            .0;
+            .expect("the resume resolves");
         assert_eq!(re_tiered, AccountKey("Api1".to_owned()), "the lead re-tiers to the fallback");
 
         let row = |label: &str| -> Option<AccountKey> {
@@ -14020,7 +13970,6 @@ provider = "anthropic"
             workspace
                 .plan_assignment(&target, Some(&spawn_key))
                 .expect("the worker resume resolves")
-                .0
         };
         let w1 = resume(&workspace, "w1-uuid");
         let w2 = resume(&workspace, "w2-uuid");
@@ -14062,7 +14011,7 @@ provider = "anthropic"
             .expect("the degraded resolution still answers");
         assert_eq!(
             assigned,
-            (AccountKey("Sub".to_owned()), std::path::PathBuf::from("/tmp/forge-test/claude-sub")),
+            AccountKey("Sub".to_owned()),
             "the spawn keeps the recorded lead lookup",
         );
         let lead_row = workspace
@@ -14077,41 +14026,6 @@ provider = "anthropic"
             Some(AccountKey("Sub".to_owned())),
             "the lead's plan row was not rewritten by a worker's resume",
         );
-    }
-
-    /// An experimental account defined FIRST (Exp), a regular account
-    /// second (Alpha), both pinned by the org, project with no
-    /// allow-list. Without the experimental exclusion the lead would
-    /// bind to definition-order pool[0] = Exp; the exclusion forces it
-    /// onto Alpha.
-    fn make_workspace_dir_experimental() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            forge_toml_path(dir.path()),
-            r#"
-[[orgs]]
-name = "Default"
-accounts = ["Exp", "Alpha"]
-
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-auto_start = true
-
-[[accounts]]
-display_name = "Exp"
-config_dir = "/tmp/forge-test/claude-exp"
-provider = "anthropic"
-experimental = true
-
-[[accounts]]
-display_name = "Alpha"
-config_dir = "/tmp/forge-test/claude-alpha"
-provider = "anthropic"
-"#,
-        )
-        .expect("write forge.toml");
-        dir
     }
 
     #[tokio::test]
@@ -14153,57 +14067,73 @@ provider = "anthropic"
         );
     }
 
+    /// Round-robin rotation across two cold-cache spawns of two
+    /// same-org projects: the bindings map is the observable. The
+    /// first spawn binds Alpha, the second rotates to Beta - the
+    /// registration is what routes each session to its own account.
     #[tokio::test]
-    async fn recompute_plan_if_ready_excludes_experimental_from_pool() {
-        // Exp is defined first and pinned by the org, but marked
-        // experimental. The assignment-plan pool must skip it: the
-        // lead binds to Alpha (the non-experimental account), never to
-        // definition-order pool[0] = Exp.
-        let dir = make_workspace_dir_experimental();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        for name in ["Exp", "Alpha"] {
-            let snapshot = forge_primitives::usage::UsageSnapshot {
-                source: forge_primitives::usage::UsageSourceKind::Oauth,
-                fetched_at: std::time::SystemTime::UNIX_EPOCH,
-                five_hour: None,
-                seven_day: None,
-                seven_day_opus: None,
-                seven_day_sonnet: None,
-                extra_usage: None,
-                spend: None,
-                balance: None,
-            };
-            pool.set_usage(&AccountKey(name.to_owned()), snapshot);
-        }
+    async fn cold_cache_dual_spawns_rotate_across_allow_list() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Alpha", "Beta"]
 
-        workspace.recompute_plan_if_ready();
-        let plan = pool.plan_for_test();
-        let plan = plan.as_ref().expect("plan populates once all_loaded fires");
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[orgs.projects]]
+name = "forge2"
+path = "~/Projects/forge2"
+
+[[accounts]]
+display_name = "Alpha"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[[accounts]]
+display_name = "Beta"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+
+        let h1 = workspace
+            .get_agent_handle(
+                SessionTarget::Named("forge".to_owned()),
+                SessionLaunchSettings::default(),
+            )
+            .expect("first spawn");
+        let h2 = workspace
+            .get_agent_handle(
+                SessionTarget::Named("forge2".to_owned()),
+                SessionLaunchSettings::default(),
+            )
+            .expect("second spawn");
+        drop(h1);
+        drop(h2);
+
+        let key_a =
+            workspace.resolve_target(&SessionTarget::Named("forge".to_owned())).expect("resolves");
+        let key_b =
+            workspace.resolve_target(&SessionTarget::Named("forge2".to_owned())).expect("resolves");
         assert_eq!(
-            plan.lookup(&project_key, &"lead".to_owned()).cloned(),
+            workspace.gateway.bindings.binding_for("Default", "forge", key_a.as_str()),
             Some(AccountKey("Alpha".to_owned())),
-            "experimental Exp is excluded from the pool; the lead binds to Alpha",
+            "the first spawn registers Alpha",
         );
-    }
-
-    #[tokio::test]
-    async fn resolve_account_for_switch_resolves_experimental_account() {
-        // The /account manual switch must be able to resolve an
-        // experimental account - it is the only way one ever gets used.
-        // resolve_account_for_switch feeds forced_account, which bypasses
-        // the picker/plan entirely.
-        let dir = make_workspace_dir_experimental();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let resolved = workspace.resolve_account_for_switch("Exp");
         assert_eq!(
-            resolved.map(|(key, _)| key),
-            Some(AccountKey("Exp".to_owned())),
-            "an experimental account still resolves for the /account switch",
+            workspace.gateway.bindings.binding_for("Default", "forge2", key_b.as_str()),
+            Some(AccountKey("Beta".to_owned())),
+            "the second spawn rotates to Beta",
         );
     }
 
@@ -14986,7 +14916,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
             project_path.display()
@@ -15290,7 +15221,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
             project_path.display()
@@ -15360,7 +15292,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-workspace-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
             project_path.display()

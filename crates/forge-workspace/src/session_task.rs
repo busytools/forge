@@ -1452,7 +1452,7 @@ mod tests {
     }
 
     fn workspace_with_account_config_dir(
-        config_dir: &str,
+        _config_dir: &str,
     ) -> (tempfile::TempDir, Arc<crate::Workspace>) {
         let dir = tempfile::tempdir().expect("tempdir");
         let forge = dir.path().join("forge");
@@ -1462,7 +1462,7 @@ mod tests {
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Acct\"]\n\n\
                  [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
-                 [[accounts]]\ndisplay_name = \"Acct\"\nconfig_dir = \"{config_dir}\"\nprovider = \"anthropic\"\n"
+                 [[accounts]]\ndisplay_name = \"Acct\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
             ),
         )
         .expect("write forge.toml");

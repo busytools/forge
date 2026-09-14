@@ -130,10 +130,11 @@ async fn capture_a_real_messages_request_body() {
     ]);
     let pool = Arc::new(forge_gateway::AccountPool::new(&[LoadedAccount {
         display_name: "Capture".to_owned(),
-        config_dir: PathBuf::from("/tmp/forge-capture-config"),
         provider: Provider::Anthropic,
+        base_url: None,
+        models: vec!["claude-sonnet-5".to_owned()],
+        model_slugs: std::collections::HashMap::new(),
         env: account_env.clone(),
-        experimental: false,
     }]));
     let gateway = Arc::new(Gateway::new(Arc::clone(&pool)));
 

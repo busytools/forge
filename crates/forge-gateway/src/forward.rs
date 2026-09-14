@@ -183,12 +183,10 @@ impl Gateway {
             .unwrap_or_else(|| self.rotation.lock().no_reset_cooldown())
     }
 
-    /// Whether the bound account's family serves `model`. An unknown
-    /// account serves nothing: the binding is stale and re-selects.
+    /// Whether the bound account declares `model`. An unknown account
+    /// serves nothing: the binding is stale and re-selects.
     fn binding_serves(&self, account: &AccountKey, model: &str) -> bool {
-        self.pool
-            .provider_and_env(account)
-            .is_some_and(|(provider, _)| crate::selection::family_matches(provider, model))
+        self.pool.declares(account, model)
     }
 
     /// Selection, or the loud response its failure produces.
@@ -624,17 +622,19 @@ mod tests {
         let pool = Arc::new(crate::AccountPool::new(&[
             forge_primitives::account::LoadedAccount {
                 display_name: "OpenRouter".to_owned(),
-                config_dir: std::path::PathBuf::from("/cfg/openrouter"),
                 provider: forge_primitives::account::Provider::Openrouter,
+                base_url: None,
+                models: vec!["glm-5.3-flash".to_owned()],
+                model_slugs: std::collections::HashMap::new(),
                 env: account_env.clone(),
-                experimental: false,
             },
             forge_primitives::account::LoadedAccount {
                 display_name: "Anthropic".to_owned(),
-                config_dir: std::path::PathBuf::from("/cfg/anthropic"),
                 provider: forge_primitives::account::Provider::Anthropic,
+                base_url: None,
+                models: vec!["claude-sonnet-5".to_owned(), "claude-opus-5".to_owned()],
+                model_slugs: std::collections::HashMap::new(),
                 env: anthropic_env,
-                experimental: false,
             },
         ]));
         let gateway = Arc::new(Gateway::new(Arc::clone(&pool)));

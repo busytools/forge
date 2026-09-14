@@ -81,7 +81,9 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
         return;
     };
     let pool = workspace.account_pool();
-    let provider = pool.provider_or_anthropic(&account_key);
+    let Some(provider) = pool.provider(&account_key) else {
+        return;
+    };
     let account_env = pool.env(&account_key).unwrap_or_default();
     // The backend owns the probe; the settle helper owns the verdict
     // against the state machine.
@@ -117,10 +119,11 @@ mod tests {
     fn states_with_one_account() -> AccountPool {
         AccountPool::new(&[crate::config::LoadedAccount {
             display_name: "test".to_owned(),
-            config_dir: std::path::PathBuf::from("/fake/test"),
             provider: forge_primitives::account::Provider::Anthropic,
+            base_url: None,
+            models: vec!["claude-sonnet-5".to_owned()],
+            model_slugs: std::collections::HashMap::new(),
             env: std::collections::HashMap::new(),
-            experimental: false,
         }])
     }
 

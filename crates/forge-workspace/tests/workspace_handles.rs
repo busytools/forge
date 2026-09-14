@@ -25,63 +25,6 @@ fn forge_toml_path(config_dir: &std::path::Path) -> PathBuf {
 }
 
 #[tokio::test]
-async fn cold_cache_dual_spawns_rotate_across_allow_list() {
-    // Round-robin cursor advances per pick - under a cold usage
-    // cache (both accounts in tier 0 / Usable), the first spawn
-    // picks Stargate (cursor=0 → first allow-list entry) and the
-    // second rotates to Gateway (cursor=1). Spreads load across
-    // healthy accounts instead of always hammering the first.
-    let dir = tempdir().expect("tempdir");
-    fs::write(
-        forge_toml_path(dir.path()),
-        r#"
-[[orgs]]
-name = "Default"
-accounts = ["Stargate", "Gateway"]
-
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-auto_start = true
-
-[[accounts]]
-display_name = "Stargate"
-config_dir = "/tmp/forge-test-stargate"
-provider = "anthropic"
-
-[[accounts]]
-display_name = "Gateway"
-config_dir = "/tmp/forge-test-gateway"
-provider = "anthropic"
-"#,
-    )
-    .expect("write forge.toml");
-
-    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-
-    let h1 = workspace
-        .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-        .expect("first spawn");
-    assert_eq!(
-        h1.config_dir(),
-        PathBuf::from("/tmp/forge-test-stargate"),
-        "first spawn (cursor=0) binds to Stargate's config_dir (first usable in allow-list)",
-    );
-
-    // Second spawn under a distinct SessionTarget - same allow-list,
-    // cursor advances to 1, rotates to Gateway.
-    let other = SessionKey::from_str_for_test("dual-account-other");
-    let h2 = workspace
-        .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
-        .expect("second spawn");
-    assert_eq!(
-        h2.config_dir(),
-        PathBuf::from("/tmp/forge-test-gateway"),
-        "second spawn (cursor=1) rotates to Gateway's config_dir (round-robin)",
-    );
-}
-
-#[tokio::test]
 async fn picker_display_name_reaches_bridge() {
     let dir = tempdir().expect("tempdir");
     fs::write(
@@ -98,12 +41,14 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-display-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Gateway"
-config_dir = "/tmp/forge-test-display-gateway"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
     )
@@ -166,7 +111,8 @@ path = "~/Projects/airmail"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-env-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [accounts.env]
 ACCOUNT_KEY = "account-value"

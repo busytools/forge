@@ -114,14 +114,8 @@ pub struct AccountRow {
     pub unusable: Option<forge_gateway::Unusable>,
     /// What this account has left, in whatever terms its backend bills.
     pub budget: AccountBudget,
-    /// `true` for an `experimental = true` account. The picker renders
-    /// these in a separate `EXPERIMENTAL` group with an amber tag; they
-    /// are offered globally (regardless of the project's org pin)
-    /// because they are excluded from every auto-assignment path.
-    pub experimental: bool,
     /// `true` when the account is in the active session's org
-    /// `fallback_accounts`. Renders in the `FALLBACK` group; an
-    /// experimental account is never flagged (its own group wins).
+    /// `fallback_accounts`. Renders in the `FALLBACK` group.
     pub fallback: bool,
 }
 

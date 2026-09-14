@@ -73,10 +73,34 @@ pub enum WorkspaceError {
     GatewayRotationInvalid { path: PathBuf, key: &'static str },
 
     #[error(
-        "account '{name}' in forge.toml at {} declares a base-url provider but has no ANTHROPIC_BASE_URL in [accounts.env]",
+        "account '{name}' in forge.toml at {} declares a base-url provider but has no base_url key",
         path.display()
     )]
     AccountProviderNeedsBaseUrl { path: PathBuf, name: String },
+
+    #[error(
+        "account '{name}' in forge.toml at {} is missing the required token key",
+        path.display()
+    )]
+    AccountTokenRequired { path: PathBuf, name: String },
+
+    #[error(
+        "account '{name}' in forge.toml at {} declares no models; every account must list the models it serves",
+        path.display()
+    )]
+    AccountModelsRequired { path: PathBuf, name: String },
+
+    #[error(
+        "account in forge.toml at {} maps slug '{slug}' that is not in its models list",
+        path.display()
+    )]
+    AccountSlugUndeclared { path: PathBuf, slug: String },
+
+    #[error(
+        "account '{name}' in forge.toml at {} sets gateway keys ({keys}) in [accounts.env]; declare them as the flat base_url and token keys instead",
+        path.display()
+    )]
+    AccountEnvCarriesGatewayKeys { path: PathBuf, name: String, keys: String },
 
     #[error("duplicate org name '{name}' in forge.toml at {}", path.display())]
     DuplicateOrg { path: PathBuf, name: String },

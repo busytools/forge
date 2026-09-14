@@ -33,8 +33,6 @@
 //! user can manually broaden the allow-list or wait for the window
 //! to reset.
 
-use std::path::PathBuf;
-
 use forge_primitives::usage::{UsageSnapshot, UsageWindow};
 
 use forge_primitives::account::LoadedAccount;
@@ -107,20 +105,21 @@ pub enum LoadingState {
 
 #[derive(Debug, Clone)]
 pub struct AccountState {
-    pub config_dir: PathBuf,
     /// Declared backend from `[[accounts]] provider`. Decides which
     /// endpoint the usage probe hits and which credential it carries.
     pub provider: forge_primitives::account::Provider,
-    /// Per-account environment from `[accounts.env]`. Stamped onto the
-    /// account's `claude` subprocess at spawn, and read by the usage
-    /// probe for the `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` a
-    /// base-url provider authenticates with.
+    /// The canonical model names the account serves. Selection and
+    /// the route's model gate match against this list.
+    pub models: Vec<String>,
+    /// Canonical name -> upstream slug, only where the spellings
+    /// differ. The forward splices the slug into the request body.
+    pub model_slugs: std::collections::HashMap<String, String>,
+    /// Per-account environment: provider-behaviour extras plus the
+    /// derived credential and base-url variable stamps. Stamped onto
+    /// the account's `claude` subprocess at spawn, and read by the
+    /// usage probe for the `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`
+    /// a base-url provider authenticates with.
     pub env: std::collections::HashMap<String, String>,
-    /// When true, the account is excluded from every auto-assignment
-    /// path (the assignment plan and the round-robin fallback) but
-    /// stays globally selectable in the `/account` picker. Mirrors the
-    /// `[[accounts]] experimental = true` toggle in forge.toml.
-    pub experimental: bool,
     /// Latest usage snapshot fetched by the workspace's background
     /// poller. `None` until the first successful fetch. Drives the
     /// picker's order; also surfaced to the TUI's bottom panel via
@@ -200,10 +199,10 @@ impl AccountStateMap {
             by_key.insert(
                 key,
                 AccountState {
-                    config_dir: account.config_dir.clone(),
                     provider: account.provider,
+                    models: account.models.clone(),
+                    model_slugs: account.model_slugs.clone(),
                     env: account.env.clone(),
-                    experimental: account.experimental,
                     usage: None,
                     last_error: None,
                     next_probe_at: None,
@@ -245,14 +244,6 @@ impl AccountStateMap {
         out
     }
 
-    /// Look up the on-disk config_dir for `key`. Used by the
-    /// background poller (which reads OAuth credentials from disk
-    /// without spawning an Agent) and by the spawn path (which
-    /// hands the dir to `Agent::spawn` as `CLAUDE_CONFIG_DIR`).
-    pub fn config_dir(&self, key: &AccountKey) -> Option<&PathBuf> {
-        self.by_key.get(key).map(|s| &s.config_dir)
-    }
-
     /// The account's env map: global `[env]` extended by its own
     /// `[accounts.env]`. Consumed by the spawn path (stamped onto the
     /// child) and the usage poller / loader (base url, bearer, setup
@@ -267,24 +258,6 @@ impl AccountStateMap {
         self.by_key.get(key).map(|s| s.provider)
     }
 
-    /// [`Self::provider`] for a key that came out of this map, so a miss
-    /// means the map changed underneath the caller. Anthropic is the
-    /// safe default - it probes the official API rather than an
-    /// endpoint derived from an env this account may not have - but it
-    /// is the wrong answer for a base-url account, whose repair copy
-    /// would then name the wrong env key. Warn rather than pick
-    /// silently.
-    pub fn provider_or_anthropic(&self, key: &AccountKey) -> forge_primitives::account::Provider {
-        self.provider(key).unwrap_or_else(|| {
-            tracing::warn!(
-                target: "forge_workspace::account",
-                account = %key.0,
-                "no provider for a key taken from the account map; assuming anthropic",
-            );
-            forge_primitives::account::Provider::Anthropic
-        })
-    }
-
     /// How the account proves who it is, which is the only thing that
     /// changes what an auth-repair hint tells the user to do. Base-url
     /// wins: such an account re-keys its env token, whatever else the
@@ -296,27 +269,6 @@ impl AccountStateMap {
             return Some(forge_primitives::account::AccountAuth::BaseUrl);
         }
         Some(forge_primitives::account::AccountAuth::Token)
-    }
-
-    /// Distinct on-disk config_dirs across every known account. Used by
-    /// the worker-resume scan, which must look under every account a
-    /// worker could have been spawned under (the assignment-plan
-    /// rotation distributes workers across accounts).
-    pub fn config_dirs(&self) -> Vec<PathBuf> {
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        for state in self.by_key.values() {
-            if !dirs.contains(&state.config_dir) {
-                dirs.push(state.config_dir.clone());
-            }
-        }
-        dirs
-    }
-
-    /// Whether `key` is an experimental account (excluded from
-    /// auto-assignment, picker-only). Returns `false` for unknown
-    /// keys.
-    pub fn is_experimental(&self, key: &AccountKey) -> bool {
-        self.by_key.get(key).is_some_and(|s| s.experimental)
     }
 
     /// Replace the cached usage snapshot for `key` and clear any
@@ -595,11 +547,7 @@ impl AccountStateMap {
     /// resolve to a key in `by_key` (config-load enforces both
     /// invariants). The defensive `unwrap_or_else` keeps the path
     /// out of an unreachable `panic!` form.
-    pub fn pick_for_project(
-        &self,
-        allowed: &[String],
-        fallbacks: &[String],
-    ) -> (AccountKey, PathBuf) {
+    pub fn pick_for_project(&self, allowed: &[String], fallbacks: &[String]) -> AccountKey {
         debug_assert!(!allowed.is_empty(), "pick_for_project requires a non-empty allow list");
         // Resolve a pin to known keys, preserving pin order. Carry
         // usage + last_error + loading so unusable_reason can see the
@@ -611,9 +559,6 @@ impl AccountStateMap {
             names
                 .iter()
                 .filter_map(|name| self.ordered_keys.iter().find(|k| k.0 == *name))
-                // Experimental accounts are picker-only: never
-                // auto-assigned, even when pinned by a pin.
-                .filter(|k| !self.is_experimental(k))
                 .map(|k| {
                     let state = self.by_key.get(k);
                     (
@@ -667,14 +612,7 @@ impl AccountStateMap {
                 target: "forge_workspace::account",
                 "pick_for_project: candidates resolved to empty; allow list = {allowed:?}, fallbacks = {fallbacks:?}",
             );
-            // Last resort still skips experimental accounts, so
-            // an all-experimental pin falls onto the first
-            // non-experimental account rather than assigning one.
-            self.ordered_keys
-                .iter()
-                .find(|k| !self.is_experimental(k))
-                .cloned()
-                .unwrap_or(AccountKey(String::new()))
+            self.ordered_keys.first().cloned().unwrap_or(AccountKey(String::new()))
         };
         // Diagnostic log - one line per pick decision listing the
         // tier and probe state of every candidate so a future
@@ -708,8 +646,7 @@ impl AccountStateMap {
             allowed = ?allowed,
             candidates = ?decision_summary,
         );
-        let dir = self.by_key.get(&picked).map_or_else(PathBuf::new, |s| s.config_dir.clone());
-        (picked, dir)
+        picked
     }
 }
 
@@ -807,10 +744,11 @@ mod tests {
     fn make_account(name: &str) -> LoadedAccount {
         LoadedAccount {
             display_name: name.to_owned(),
-            config_dir: PathBuf::from(format!("/fake/{name}")),
             provider: forge_primitives::account::Provider::Anthropic,
+            base_url: None,
+            models: vec!["claude-sonnet-5".to_owned()],
+            model_slugs: std::collections::HashMap::new(),
             env: std::collections::HashMap::new(),
-            experimental: false,
         }
     }
 
@@ -844,19 +782,6 @@ mod tests {
             spend: None,
             balance: None,
         }
-    }
-
-    #[test]
-    fn is_experimental_reflects_account_flag() {
-        let mut exp = make_account("Exp");
-        exp.experimental = true;
-        let map = AccountStateMap::new(&[make_account("Regular"), exp]);
-        assert!(map.is_experimental(&AccountKey("Exp".to_owned())));
-        assert!(!map.is_experimental(&AccountKey("Regular".to_owned())));
-        assert!(
-            !map.is_experimental(&AccountKey("Unknown".to_owned())),
-            "unknown key is not experimental",
-        );
     }
 
     #[test]
@@ -1020,7 +945,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(80.0), Some(60.0)));
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(10.0), Some(20.0)));
-        let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
         assert_eq!(picked.0, "Stargate", "first pin entry wins when both are healthy");
     }
 
@@ -1032,7 +957,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(10.0), Some(90.0)));
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
         assert_eq!(picked.0, "Stargate", "pin order over utilisation");
     }
 
@@ -1044,7 +969,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(0.0), Some(100.0)));
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(80.0), Some(80.0)));
-        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
         assert_eq!(picked.0, "Stargate");
     }
 
@@ -1056,7 +981,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(100.0), Some(0.0)));
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(80.0), Some(80.0)));
-        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
         assert_eq!(picked.0, "Stargate");
     }
 
@@ -1071,7 +996,7 @@ mod tests {
             make_account("Personal"),
         ]);
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(10.0), Some(20.0)));
-        let (picked, _) = map.pick_for_project(
+        let picked = map.pick_for_project(
             &["Gateway".to_owned(), "Stargate".to_owned(), "Personal".to_owned()],
             &[],
         );
@@ -1086,7 +1011,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(100.0), Some(100.0)));
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
         assert_eq!(picked.0, "Gateway");
     }
 
@@ -1097,7 +1022,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(100.0)));
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(99.9), Some(99.9)));
-        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
         assert_eq!(picked.0, "Stargate");
     }
 
@@ -1114,7 +1039,7 @@ mod tests {
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(50.0), Some(50.0)));
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(70.0), Some(70.0)));
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(0.0), Some(0.0)));
-        let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
         assert_eq!(picked.0, "Stargate");
         assert_ne!(picked.0, "Personal");
     }
@@ -1127,7 +1052,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(50.0), Some(70.0)));
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(30.0)));
-        let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
         assert_eq!(picked.0, "Stargate", "pin order over 7d util");
     }
 
@@ -1138,7 +1063,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(50.0), Some(50.0)));
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
         assert_eq!(picked.0, "Stargate");
     }
 
@@ -1151,7 +1076,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(30.0), Some(30.0)));
         map.set_last_error(&AccountKey("Personal".to_owned()), UsageFetchStatus::RateLimited, None);
-        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
         assert_eq!(picked.0, "Gateway", "available account must beat probe-rate-limited one");
     }
 
@@ -1164,8 +1089,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Gateway1"), make_account("Personal")]);
         map.set_last_error(&AccountKey("Gateway1".to_owned()), UsageFetchStatus::Expired, None);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let (picked, _) =
-            map.pick_for_project(&["Gateway1".to_owned(), "Personal".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway1".to_owned(), "Personal".to_owned()], &[]);
         assert_eq!(picked.0, "Gateway1", "all-unusable falls back to pin order");
     }
 
@@ -1176,7 +1100,7 @@ mod tests {
         // healthy usage. Pin order decides → Gateway wins.
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
-        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
         assert_eq!(picked.0, "Gateway", "both usable → pin order");
     }
 
@@ -1194,7 +1118,7 @@ mod tests {
             None,
         );
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
         assert_eq!(picked.0, "Gateway", "transient network error doesn't demote - pin order wins");
     }
 
@@ -1210,7 +1134,7 @@ mod tests {
             make_account("Personal"),
         ]);
         let allow = ["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()];
-        let picks: Vec<String> = (0..4).map(|_| map.pick_for_project(&allow, &[]).0.0).collect();
+        let picks: Vec<String> = (0..4).map(|_| map.pick_for_project(&allow, &[]).0).collect();
         assert_eq!(
             picks,
             vec![
@@ -1238,7 +1162,7 @@ mod tests {
         map.set_usage(&AccountKey("Gateway1".to_owned()), snapshot(Some(20.0), Some(20.0)));
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
         let allow = ["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()];
-        let picks: Vec<String> = (0..4).map(|_| map.pick_for_project(&allow, &[]).0.0).collect();
+        let picks: Vec<String> = (0..4).map(|_| map.pick_for_project(&allow, &[]).0).collect();
         assert_eq!(
             picks,
             vec![
@@ -1264,10 +1188,10 @@ mod tests {
         // Pick: A (cursor=0 → Gateway), B (cursor=1 → Gateway1),
         //       A (cursor=2 → Gateway), B (cursor=3 → Gateway1).
         let picks = vec![
-            map.pick_for_project(&project_a, &[]).0.0,
-            map.pick_for_project(&project_b, &[]).0.0,
-            map.pick_for_project(&project_a, &[]).0.0,
-            map.pick_for_project(&project_b, &[]).0.0,
+            map.pick_for_project(&project_a, &[]).0,
+            map.pick_for_project(&project_b, &[]).0,
+            map.pick_for_project(&project_a, &[]).0,
+            map.pick_for_project(&project_b, &[]).0,
         ];
         assert_eq!(
             picks,
@@ -1296,7 +1220,7 @@ mod tests {
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
         let allow = ["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()];
         for _ in 0..5 {
-            let (picked, _) = map.pick_for_project(&allow, &[]);
+            let picked = map.pick_for_project(&allow, &[]);
             assert_eq!(picked.0, "Gateway");
         }
     }
@@ -1371,14 +1295,6 @@ mod tests {
         assert!(!map.should_probe_now(&key));
         map.set_usage(&key, snapshot(Some(10.0), Some(10.0)));
         assert!(map.should_probe_now(&key), "successful probe clears the backoff gate");
-    }
-
-    #[test]
-    fn config_dir_lookup_returns_path() {
-        let mut map = AccountStateMap::new(&[make_account("Stargate")]);
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(0.0), Some(0.0)));
-        let dir = map.config_dir(&AccountKey("Stargate".to_owned()));
-        assert_eq!(dir, Some(&PathBuf::from("/fake/Stargate")));
     }
 
     #[test]
@@ -1751,7 +1667,7 @@ mod tests {
         // Stargate stays healthy (snapshot helper sets resets_at in
         // the future so 100% IS still limited for Stargate).
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
         assert_eq!(picked.0, "Gateway", "stale-reset Gateway usable; live-capped Stargate not");
     }
 
@@ -1935,7 +1851,7 @@ mod tests {
         // Personal: bailed via direct set_loading, no associated
         // last_error.
         map.set_loading(&key("Personal"), LoadingState::Bailed);
-        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
         assert_eq!(
             picked.0, "Gateway",
             "pick_for_project must skip Bailed even without a recent last_error",
@@ -1949,7 +1865,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Sub"), make_account("Api")]);
         map.set_usage(&key("Sub"), snapshot(Some(100.0), Some(100.0)));
         map.set_usage(&key("Api"), snapshot(Some(10.0), Some(20.0)));
-        let (picked, _) = map.pick_for_project(&["Sub".to_owned()], &["Api".to_owned()]);
+        let picked = map.pick_for_project(&["Sub".to_owned()], &["Api".to_owned()]);
         assert_eq!(picked.0, "Api", "a usable fallback outranks a saturated primary");
     }
 
@@ -1960,7 +1876,7 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Sub"), make_account("Api")]);
         map.set_usage(&key("Sub"), snapshot(Some(100.0), Some(100.0)));
         map.set_usage(&key("Api"), snapshot(Some(100.0), Some(100.0)));
-        let (picked, _) = map.pick_for_project(&["Sub".to_owned()], &["Api".to_owned()]);
+        let picked = map.pick_for_project(&["Sub".to_owned()], &["Api".to_owned()]);
         assert_eq!(picked.0, "Sub", "a saturated primary outranks a saturated fallback");
     }
 
@@ -1973,43 +1889,8 @@ mod tests {
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         map.set_loading(&key("Gateway"), LoadingState::Bailed);
         map.set_loading(&key("Personal"), LoadingState::Bailed);
-        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
+        let picked = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
         assert_eq!(picked.0, "Gateway");
-    }
-
-    #[test]
-    fn pick_for_project_excludes_experimental_even_when_only_usable() {
-        // Exp is experimental AND the only usable account; Regular is
-        // Bailed. The picker must still refuse Exp and fall back to the
-        // non-experimental candidate rather than assign an experimental
-        // account. Experimental accounts are picker-only.
-        let mut exp = make_account("Exp");
-        exp.experimental = true;
-        let mut map = AccountStateMap::new(&[make_account("Regular"), exp]);
-        map.set_loading(&key("Regular"), LoadingState::Bailed);
-        map.set_usage(&key("Exp"), snapshot(Some(10.0), Some(10.0)));
-        let (picked, _) = map.pick_for_project(&["Regular".to_owned(), "Exp".to_owned()], &[]);
-        assert_eq!(
-            picked.0, "Regular",
-            "experimental account is never auto-assigned, even as the only usable one",
-        );
-    }
-
-    #[test]
-    fn pick_for_project_never_returns_experimental_as_last_resort() {
-        // The allow-list contains ONLY an experimental account. It is
-        // filtered out entirely, so the last-resort fallback skips it
-        // and returns the first non-experimental account instead.
-        let mut exp = make_account("Exp");
-        exp.experimental = true;
-        let mut map = AccountStateMap::new(&[exp, make_account("Regular")]);
-        map.set_usage(&key("Exp"), snapshot(Some(10.0), Some(10.0)));
-        map.set_usage(&key("Regular"), snapshot(Some(10.0), Some(10.0)));
-        let (picked, _) = map.pick_for_project(&["Exp".to_owned()], &[]);
-        assert_eq!(
-            picked.0, "Regular",
-            "experimental never returned; last-resort skips to a non-experimental account",
-        );
     }
 
     #[test]

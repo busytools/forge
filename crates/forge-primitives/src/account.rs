@@ -49,15 +49,22 @@ impl Provider {
 #[derive(Debug)]
 pub struct LoadedAccount {
     pub display_name: String,
-    pub config_dir: std::path::PathBuf,
     /// Declared backend. Drives the usage probe and the billing shape.
     /// See [`Provider`].
     pub provider: Provider,
-    /// Per-account environment from `[accounts.env]`, stamped onto the
-    /// spawned `claude` subprocess.
+    /// The flat `base_url` key. `None` for an Anthropic account: the
+    /// gateway constant is its upstream.
+    pub base_url: Option<String>,
+    /// The canonical model names the account serves. Drives selection
+    /// and the picker.
+    pub models: Vec<String>,
+    /// Canonical name -> upstream slug, only where the spellings
+    /// differ. Keys are always members of [`Self::models`].
+    pub model_slugs: std::collections::HashMap<String, String>,
+    /// Provider-behaviour extras (timeouts, context caps, fallback
+    /// switches) plus the derived credential and base-url variable
+    /// stamps the gateway and the child read.
     pub env: std::collections::HashMap<String, String>,
-    /// Excluded from auto-assignment, picker-only.
-    pub experimental: bool,
 }
 
 /// How an account proves who it is, which is the only thing that
