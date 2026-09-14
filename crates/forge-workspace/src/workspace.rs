@@ -8865,7 +8865,7 @@ CLAUDE_CODE_API_BASE_URL = "http://169.254.10.10:9999"
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("a non-opted project spawns direct with the listener down");
         assert!(
-            handle.env().get("ANTHROPIC_BASE_URL").is_none(),
+            !handle.env().contains_key("ANTHROPIC_BASE_URL"),
             "the direct spawn carries no listener base URL",
         );
     }
@@ -13673,7 +13673,7 @@ provider = "anthropic"
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let target = SessionTarget::Named("forge".to_owned());
-        assert!(!workspace.routes_through_gateway(&target), "a project with no flag spawns direct",);
+        assert!(!workspace.routes_through_gateway(&target), "a project with no flag spawns direct");
 
         let dir = make_workspace_dir_gateway_opted_in();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));

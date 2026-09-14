@@ -972,8 +972,7 @@ display_name = "Stargate"
 config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 {flag}
-"#,
-                flag = flag
+"#
             )
         };
         let dir = tempdir().expect("tempdir");
