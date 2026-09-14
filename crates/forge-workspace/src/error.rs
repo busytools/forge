@@ -97,6 +97,18 @@ pub enum WorkspaceError {
     AccountSlugUndeclared { path: PathBuf, slug: String },
 
     #[error(
+        "account in forge.toml at {} maps a blank slug for '{slug}'",
+        path.display()
+    )]
+    AccountSlugBlank { path: PathBuf, slug: String },
+
+    #[error(
+        "project '{name}' in forge.toml at {} sets model '{model}' that no account in its org declares; every session's first request would fail",
+        path.display()
+    )]
+    ProjectModelUndeclared { path: PathBuf, name: String, model: String },
+
+    #[error(
         "account '{name}' in forge.toml at {} sets gateway keys ({keys}) in [accounts.env]; declare them as the flat base_url and token keys instead",
         path.display()
     )]

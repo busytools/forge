@@ -15,10 +15,9 @@
 //! ready-saturated, then degraded; `assignment_plan.rs` documents the
 //! tiers. Each project takes an offset from its position in the
 //! project list and a session lands on
-//! `pool[(offset + session_n) % pool.len()]`. `experimental` accounts
-//! are excluded from the pool entirely. Utilization is never compared
-//! between accounts; it collapses to one boolean per account. A
-//! round-robin cursor over the same pool is the fallback for spawns
+//! `pool[(offset + session_n) % pool.len()]`. Utilization is never
+//! compared between accounts; it collapses to one boolean per account.
+//! A round-robin cursor over the same pool is the fallback for spawns
 //! that happen before the plan exists.
 
 use std::collections::HashMap;
@@ -538,23 +537,28 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             });
         };
         let mut env = global_env.clone();
-        // Check the gateway keys BEFORE the env is consumed: the flat
-        // base_url and token keys are the only place these belong, and
-        // an env-carried copy would sit beside its flat twin and
-        // silently lose or win depending on layering.
-        let gateway_keys: Vec<String> = entry
-            .env
-            .keys()
+        // The gateway keys are the flat keys' job, in every env layer:
+        // a base_url, credential or API key carried in [env] or
+        // [accounts.env] would sit beside its flat twin and silently
+        // lose or win depending on layering. Each conflict is named.
+        let gateway_keys = [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+        ];
+        let gateway_conflicts: Vec<String> = gateway_keys
+            .iter()
             .filter(|k| {
-                matches!(
-                    k.as_str(),
-                    "ANTHROPIC_BASE_URL" | "ANTHROPIC_AUTH_TOKEN" | "CLAUDE_CODE_OAUTH_TOKEN"
-                )
+                let present = |env: &HashMap<String, String>| {
+                    env.get(**k).is_some_and(|v| !v.trim().is_empty())
+                };
+                present(&entry.env) || present(&global_env)
             })
-            .cloned()
+            .map(|k| (*k).to_owned())
             .collect();
-        if !gateway_keys.is_empty() {
-            let keys = gateway_keys.join(", ");
+        if !gateway_conflicts.is_empty() {
+            let keys = gateway_conflicts.join(", ");
             return Err(WorkspaceError::AccountEnvCarriesGatewayKeys {
                 path,
                 name: entry.display_name.clone(),
@@ -578,9 +582,12 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         if entry.models.is_empty() {
             return Err(WorkspaceError::AccountModelsRequired { path, name: entry.display_name });
         }
-        for slug_key in entry.model_slugs.keys() {
+        for (slug_key, slug_value) in &entry.model_slugs {
             if !entry.models.contains(slug_key) {
                 return Err(WorkspaceError::AccountSlugUndeclared { path, slug: slug_key.clone() });
+            }
+            if slug_value.trim().is_empty() {
+                return Err(WorkspaceError::AccountSlugBlank { path, slug: slug_key.clone() });
             }
         }
         let base_url =
@@ -690,18 +697,36 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                     None => (HashMap::new(), None, PermissionMode::Auto, None),
                 };
             projects.push(LoadedProject {
-                name: project_entry.name,
+                name: project_entry.name.clone(),
                 path: expand_home(&project_entry.path),
                 display_path: project_entry.path,
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
                 fallback_accounts: org_entry.fallback_accounts.clone(),
                 auto_start: project_entry.auto_start,
-                model,
+                model: model.clone(),
                 env,
                 max_workers,
                 permission_mode,
             });
+            // The project model must be served by at least one account
+            // the org can reach: a typo would boot clean, stamp all the
+            // CLI slots, and then 503 every session's first request.
+            if let Some(model) = &model {
+                let served =
+                    org_entry.accounts.iter().chain(&org_entry.fallback_accounts).any(|name| {
+                        accounts
+                            .iter()
+                            .any(|a| a.display_name == *name && a.models.iter().any(|m| m == model))
+                    });
+                if !served {
+                    return Err(WorkspaceError::ProjectModelUndeclared {
+                        path,
+                        name: project_entry.name.clone(),
+                        model: model.clone(),
+                    });
+                }
+            }
         }
     }
 
@@ -1112,6 +1137,91 @@ provider = "codex"
     /// account - which stops forge starting. Catch the base at load
     /// instead, where the user can act on it.
     #[test]
+    fn a_blank_slug_value_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+[accounts.model_slugs]
+"claude-sonnet-5" = "   "
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a blank slug value must not load");
+        let message = err.to_string();
+        assert!(message.contains("blank slug"), "the error names the blank slug, got: {message}",);
+    }
+
+    #[test]
+    fn a_project_model_no_account_declares_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+
+[projects.forge]
+model = "gpt-5.6-luna"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("an undeclared project model must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("gpt-5.6-luna") && message.contains("forge"),
+            "the error names the project and the model, got: {message}",
+        );
+    }
+
+    #[test]
+    fn a_project_model_an_org_account_declares_loads() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+
+[projects.forge]
+model = "claude-sonnet-5"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("a declared model loads");
+        assert_eq!(config.projects[0].model.as_deref(), Some("claude-sonnet-5"));
+    }
+
+    #[test]
     fn openrouter_base_url_without_the_api_suffix_fails_the_load() {
         let dir = tempdir().expect("tempdir");
         write_config(
@@ -1275,13 +1385,12 @@ display_name = "Codex"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "codex"
-[accounts.env]
-ANTHROPIC_BASE_URL = "   "
+base_url = "   "
 "#,
         );
         let err =
             load_from_dir(dir.path()).expect_err("a blank base url must not satisfy the check");
-        assert!(err.to_string().contains("ANTHROPIC_BASE_URL"), "got: {err}");
+        assert!(err.to_string().contains("base_url"), "got: {err}");
     }
 
     #[test]
@@ -1298,6 +1407,149 @@ ANTHROPIC_BASE_URL = "   "
             "the flat token lands on the provider's credential variable",
         );
         assert_eq!(account.env.len(), 1, "nothing else is injected");
+    }
+
+    /// The boot gate for the real forge.toml: each of the four load
+    /// errors must fire and name what the user has to fix.
+    #[test]
+    fn an_account_env_carrying_gateway_keys_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+[accounts.env]
+ANTHROPIC_API_KEY = "sk-ant-123"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a gateway env key must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("ANTHROPIC_API_KEY"),
+            "the error names the offending key, got: {message}",
+        );
+    }
+
+    #[test]
+    fn a_global_env_gateway_key_fails_the_load_for_every_account() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[env]
+ANTHROPIC_BASE_URL = "https://proxy.example"
+
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a global gateway key must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("ANTHROPIC_BASE_URL"),
+            "the error names the offending global key, got: {message}",
+        );
+    }
+
+    #[test]
+    fn an_account_without_a_token_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+models = ["claude-sonnet-5"]
+provider = "codex"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a tokenless account must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("Codex") && message.contains("token"),
+            "the error names the account and the missing key, got: {message}",
+        );
+    }
+
+    #[test]
+    fn an_account_without_models_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+provider = "codex"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a modelless account must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("models"),
+            "the error names the missing declaration, got: {message}",
+        );
+    }
+
+    #[test]
+    fn a_slug_for_an_undeclared_model_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+[accounts.model_slugs]
+"deepseek/deepseek-v4.1-flash" = "deepseek/deepseek-v4.1-flash"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("an undeclared slug key must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("deepseek/deepseek-v4.1-flash"),
+            "the error names the undeclared slug key, got: {message}",
+        );
     }
 
     #[test]
