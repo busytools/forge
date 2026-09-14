@@ -1984,17 +1984,31 @@ impl Workspace {
     }
 
     /// `true` when every `[[accounts]]` entry has reached a terminal
-    /// `LoadingState` AND the gateway's listener is bound. The
-    /// launchpad reads this to decide whether project rows are
-    /// clickable - clicking before all accounts resolve means the
+    /// `LoadingState`. Clicking before all accounts resolve means the
     /// spawn-time picker falls back to round-robin (with
     /// potentially-undesirable account choice) instead of the
-    /// deterministic plan, and spawning before the listener is bound
-    /// stamps a base URL nothing answers. Public so forge-tui can gate
+    /// deterministic plan. Public so forge-tui can gate
     /// keyboard + mouse handlers on it without reaching into the
     /// crate-private account map.
     pub fn all_accounts_loaded(&self) -> bool {
-        self.accounts.all_loaded() && self.gateway_ready.load(std::sync::atomic::Ordering::Acquire)
+        self.accounts.all_loaded()
+    }
+
+    /// Whether any declared project routes through the gateway (the
+    /// `[projects.<name>]` `gateway` key). A forge with none is usable
+    /// without the listener.
+    pub fn any_project_routes_through_gateway(&self) -> bool {
+        self.config.projects.iter().any(|project| project.gateway_routing)
+    }
+
+    /// The launchpad's gate: accounts settled, and - only when some
+    /// project opted into the gateway - the listener bound. Without an
+    /// opted-in project no spawn consults the listener, so a bind
+    /// failure leaves forge usable.
+    pub fn launchpad_gate_open(&self) -> bool {
+        self.all_accounts_loaded()
+            && (!self.any_project_routes_through_gateway()
+                || self.gateway_ready.load(std::sync::atomic::Ordering::Acquire))
     }
 
     /// `true` when the assignment plan is populated AND has at least
@@ -3068,11 +3082,11 @@ impl Workspace {
         crate::config::session_env(&project, account_env)
     }
 
-    /// Phase 3 routing: does this spawn target's project route through
-    /// the gateway? A target resolving to no project is always direct
-    /// (cron, Gotify, peer and raw session-id spawns have no project to
-    /// opt in, and the gateway's selection needs the org from the
-    /// path).
+    /// Phase 3 routing: a spawn that resolves to an opted-in project
+    /// routes through the gateway; a spawn resolving to no project is
+    /// direct. Resolution is by project, so a cron wake, Gotify
+    /// delivery, peer auto-spawn or worker respawn of an opted-in
+    /// project routes exactly as that project's own entry point would.
     fn routes_through_gateway(&self, target: &SessionTarget) -> bool {
         self.project_for_target(target).is_some_and(|project| project.gateway_routing)
     }
@@ -9256,6 +9270,17 @@ provider = "anthropic"
             carried,
             Some("plan"),
             "a session with no project mode must keep the launcher's session default",
+        );
+        // The pool entry carries no registration, so the respawn stays
+        // direct: no gateway-owned key rides the overrides, and the
+        // child keeps whatever credential its launch settings compose.
+        let overrides_empty = launch_settings
+            .get("env_overrides")
+            .and_then(|e| e.as_object())
+            .is_none_or(serde_json::Map::is_empty);
+        assert!(
+            overrides_empty,
+            "a None-registration respawn applies no gateway overrides: {launch_settings}",
         );
     }
 

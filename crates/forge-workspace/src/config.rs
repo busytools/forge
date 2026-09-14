@@ -247,6 +247,7 @@ struct OrgEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProjectEntry {
     name: String,
     path: String,

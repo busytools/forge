@@ -106,7 +106,7 @@ fn effective_click_intent(
     let Some(workspace) = app.workspace.as_ref() else {
         return click_intent(lifecycle);
     };
-    if !workspace.all_accounts_loaded() {
+    if !workspace.launchpad_gate_open() {
         return ClickIntent::Block;
     }
     // Resolve the project's pool through the assignment plan. The
@@ -547,7 +547,7 @@ fn build_picker_content(
         // stays unclickable via `effective_click_intent`'s Block
         // downgrade; the hint explains why.
         if let Some(workspace) = app.workspace.as_ref()
-            && workspace.all_accounts_loaded()
+            && workspace.launchpad_gate_open()
             && project_view
                 .as_ref()
                 .is_some_and(|p| !workspace.project_has_assigned_account(&p.key))
@@ -949,11 +949,15 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {
     // understands the wait is a one-off, not per-row. A gateway bind
     // failure is NOT a wait: the gate will never open this run, so
     // the label says so and names the port instead of implying one.
-    let gateway_error = app.workspace.as_ref().and_then(|w| w.gateway_bind_error());
+    let gateway_error = app
+        .workspace
+        .as_ref()
+        .filter(|w| w.any_project_routes_through_gateway())
+        .and_then(|w| w.gateway_bind_error());
     let loading = app
         .workspace
         .as_ref()
-        .is_some_and(|w| w.gateway_bind_error().is_none() && !w.all_accounts_loaded());
+        .is_some_and(|w| w.gateway_bind_error().is_none() && !w.launchpad_gate_open());
     let enter_label = if let Some(error) = gateway_error {
         format!("enter  ⛔ gateway failed: {error}")
     } else if loading {
