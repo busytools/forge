@@ -266,12 +266,25 @@ fn normalize_ws(s: &str) -> String {
 ///
 /// Empty `tool_command` returns `false` (no useful match possible).
 pub fn process_cmdline_matches_tool_input(process_cmd: &str, tool_command: &str) -> bool {
-    let needle = tool_command.trim();
+    let needle = cmdline_needle(tool_command);
     if needle.is_empty() {
         return false;
     }
-    let haystack = extract_inner_command(process_cmd).unwrap_or_else(|| process_cmd.to_owned());
-    normalize_ws(&haystack).contains(&normalize_ws(needle))
+    cmdline_haystack(process_cmd).contains(&needle)
+}
+
+/// The normalized command text a wire-tracked tool call is matched on.
+/// `normalize_ws` already trims, so a whitespace-only command yields the
+/// empty string and the caller can treat that as "no needle".
+pub fn cmdline_needle(tool_command: &str) -> String {
+    normalize_ws(tool_command)
+}
+
+/// The normalized cmdline text a process is matched on: the unwrapped
+/// inner command for a shell wrapper, else the cmdline itself.
+pub fn cmdline_haystack(process_cmd: &str) -> String {
+    let inner = extract_inner_command(process_cmd).unwrap_or_else(|| process_cmd.to_owned());
+    normalize_ws(&inner)
 }
 
 /// Friendly display name + kind for a recognized known-infra process.
@@ -692,6 +705,61 @@ mod tests {
         // whitespace on both sides (after unwrapping) makes it match.
         let tool_command = "gh run watch 123\n  --exit-status";
         assert!(process_cmdline_matches_tool_input(REAL_WRAPPER, tool_command));
+    }
+
+    #[test]
+    fn the_split_predicate_matches_the_recorded_pre_change_behaviour() {
+        // Expected column captured from process_cmdline_matches_tool_input
+        // before the split. Literal on purpose: asserting the helpers compose
+        // to the predicate they are defined from would be one expression
+        // against itself.
+        let cases: [(&str, &str, bool); 10] = [
+            // The real wrapper unwraps to the eval'd command.
+            (REAL_WRAPPER, "gh run watch 123 --exit-status", true),
+            // Same wrapper, a command it does not carry.
+            (REAL_WRAPPER, "gh run watch 999", false),
+            // A bare non-wrapper cmdline matches itself.
+            ("rustc --crate-name forge_tui", "rustc --crate-name forge_tui", true),
+            // Whitespace-collapsed on both sides.
+            ("cargo  nextest\n run", "cargo nextest run", true),
+            ("cargo nextest run", "cargo\nnextest\nrun", true),
+            // A needle longer than the haystack never matches.
+            ("cargo nextest", "cargo nextest run", false),
+            // A wrapper the unwrap recognises for a different shape.
+            ("/bin/zsh -c -l source x && eval 'echo hi'", "echo hi", true),
+            // The `'"'"'` single-quote escape the wrapper applies.
+            (SINGLE_QUOTE_WRAPPER, "echo 'sq-marker'; sleep 40", true),
+            // Empty and whitespace-only commands match nothing.
+            ("anything", "", false),
+            ("anything", "   ", false),
+        ];
+        for (process_cmd, tool_command, expected) in cases {
+            let haystack = cmdline_haystack(process_cmd);
+            let needle = cmdline_needle(tool_command);
+            assert_eq!(
+                !needle.is_empty() && haystack.contains(&needle),
+                expected,
+                "haystack {haystack:?} / needle {needle:?} for {process_cmd:?} \
+                 vs {tool_command:?}",
+            );
+            assert_eq!(
+                process_cmdline_matches_tool_input(process_cmd, tool_command),
+                expected,
+                "the one-shot predicate drifted from the recorded behaviour for \
+                 {process_cmd:?} vs {tool_command:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_whitespace_only_command_has_no_needle() {
+        // The empty guard now lives in the needle, so a needle of "" must never
+        // be treated as a match. Both values are literals, not a round trip
+        // through the implementation.
+        assert_eq!(cmdline_needle("   \n\t "), "");
+        assert_eq!(cmdline_needle(""), "");
+        assert_eq!(cmdline_needle("cargo  nextest\n run"), "cargo nextest run");
+        assert_eq!(cmdline_haystack("cargo  nextest\n run"), "cargo nextest run");
     }
 
     #[test]
