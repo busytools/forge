@@ -18,18 +18,22 @@ Every tab but MCPs and Marketplaces renders one row per extension over the same 
 - Detail rides the row too, truncated before the action column: hook rows name their trigger events (`SessionStart, PreToolUse`), LSP rows state the binary check (`rust-analyzer: on PATH` / `gopls: missing`, resolved against `PATH` once per refresh), plugin rows carry their always-on token cost.
 - Component rows show the bare source plugin's name; plugin rows show their marketplace.
 
+## Scrolling
+
+Every tab's list scrolls. The list renders a window of rows starting at the tab's scroll offset, and the offset exists to keep the selection visible: <kbd>Up</kbd>/<kbd>Down</kbd> move the selection one row and the window follows when the selection would leave it, <kbd>PageUp</kbd>/<kbd>PageDown</kbd> move the selection by a page, and <kbd>Home</kbd>/<kbd>End</kbd> jump to the first and last row. The selection can never leave the visible window, whatever moves it. Typing in the filter resets the selection to the top row.
+
 ## Tabs
 
 - **Installed** - one row per registry-backed plugin, plus its always-on token cost when `claude plugin details` has reported one (fetched once per installed version, then cached). The marketplace catalog never renders here: an available plugin is not an install. A registered plugin renders here even when its own directory ships no components (the LSP-only plugins carry nothing but the server their marketplace manifest declares). A row that cannot load still renders, with its failure reason: an install whose directory is gone, unreadable, not a directory, or absent from the registry entry, or a marketplace whose manifest cannot be read or cannot be parsed.
-- **Skills / Agents / Commands** - one row per INSTALLED component of that kind, sourced by its plugin. The available stream's components of the same kind render only behind the Available toggle, dim, after the installed rows.
-- **Hooks** - one row per installed plugin hook set with its trigger events.
-- **LSP** - one row per server the installed plugins' manifests declare, with the binary check.
+- **Skills / Agents / Commands** - one row per INSTALLED component of that kind, sourced by its plugin. The available stream's components of the same kind render after the installed rows by default, dim, with an `Install` action; the Available toggle hides them.
+- **Hooks** - one row per installed plugin hook set with its trigger events. Available hook sets render after them the same way.
+- **LSP** - one row per server the installed plugins' manifests declare, with the binary check. Available servers the marketplaces declare render after them the same way.
 - **MCPs** - the MCP page's content unchanged: the status-badge summary line, then one row per server (name, status badge, scope badge, transport badge, dim summary), with the same details overlay and actions the standalone view had.
 - **Marketplaces** - one row per configured marketplace: `healthy · N plugins` in green when the manifest loads, otherwise the drift notice (`registry drift - installLocation outside the config dir`), the load failure reason, or a dim `scan pending` when the pane's first disk scan has not landed yet - with the Repair action offered on drift and load failures.
 
 ## The Available toggle
 
-The action row carries `Available (a) +N` on the component tabs, where `+N` is the available stream's row count for that tab. Pressing <kbd>a</kbd> appends the available stream's rows after the installed ones: dim names, blue statuses, a plain `Install` action - visually secondary, exactly like the marketplace rows in the catalog. The toggle is per-pane state, off by default, and never touches the Installed tab: that tab draws the installed stream alone, the registry installs plus the load-failure rows, never the catalog.
+The action row carries `Available (a) +N` on the component tabs, where `+N` is the available stream's row count for that tab. The available stream renders by default, after the installed rows: dim names, blue statuses, a plain `Install` action - visually secondary, exactly like the marketplace rows in the catalog. Pressing <kbd>a</kbd> hides it, and pressing <kbd>a</kbd> again shows it; the Installed tab never shows the catalog: that tab draws the installed stream alone, the registry installs plus the load-failure rows, never the catalog.
 
 <details>
 <summary>Actions, update-all, and the update report</summary>
