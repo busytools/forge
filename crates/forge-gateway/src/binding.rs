@@ -70,29 +70,43 @@ impl Bindings {
             (registration.org.clone(), registration.project.clone(), registration.session.clone());
         self.by_session.lock().insert(segments, registration.account.clone());
 
-        let base_url = format!(
-            "{}/{}/{}/{}",
-            listener_base, registration.org, registration.project, registration.session
-        );
-        let credential_variable = credential_variable_for(registration.provider);
-
         let mut env: Vec<(String, String)> = account_env
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
-            .filter(|(k, _)| k != BASE_URL_VARIABLE && k != ALT_BASE_URL_VARIABLE)
+            .filter(|(k, _)| {
+                k != BASE_URL_VARIABLE
+                    && k != ALT_BASE_URL_VARIABLE
+                    && k != OAUTH_VARIABLE
+                    && k != AUTH_TOKEN_VARIABLE
+                    && k != API_KEY_VARIABLE
+            })
             .collect();
-        let stamped = |env: &mut Vec<(String, String)>, key: &str, value: String| {
-            if let Some(slot) = env.iter_mut().find(|(k, _)| k == key) {
+        for (key, value) in stamped_gateway_keys(registration, listener_base) {
+            if let Some(slot) = env.iter_mut().find(|(k, _)| *k == key) {
                 slot.1 = value;
             } else {
-                env.push((key.to_owned(), value));
+                env.push((key, value));
             }
-        };
-        stamped(&mut env, BASE_URL_VARIABLE, base_url.clone());
-        stamped(&mut env, ALT_BASE_URL_VARIABLE, base_url);
-        stamped(&mut env, credential_variable, DUMMY_CREDENTIAL.to_owned());
-        stamped(&mut env, API_KEY_VARIABLE, String::new());
+        }
         EnvSet(env)
+    }
+
+    /// Re-register `registration` and return ONLY the four
+    /// gateway-owned keys for a respawn's launch-settings overrides:
+    /// the base URL naming this listener, the alt base-url slot, the
+    /// dummy in the account's credential variable, and the forced-empty
+    /// API key. The account and project env already live in the bridge
+    /// from the original spawn, so carrying the whole env here would
+    /// let a key declared in both layers revert to its account value.
+    pub fn respawn_env_overrides(
+        &self,
+        registration: &Registration,
+        listener_base: &str,
+    ) -> HashMap<String, String> {
+        let segments =
+            (registration.org.clone(), registration.project.clone(), registration.session.clone());
+        self.by_session.lock().insert(segments, registration.account.clone());
+        stamped_gateway_keys(registration, listener_base).into_iter().collect()
     }
 
     /// The account bound to the three routing segments, if any.
@@ -102,6 +116,23 @@ impl Bindings {
             .get(&(org.to_owned(), project.to_owned(), session.to_owned()))
             .cloned()
     }
+}
+
+/// The four gateway-owned keys, stamped fresh for `registration`:
+/// every other env key composes per the documented precedence, these
+/// four are the gateway's alone.
+fn stamped_gateway_keys(registration: &Registration, listener_base: &str) -> Vec<(String, String)> {
+    let base_url = format!(
+        "{}/{}/{}/{}",
+        listener_base, registration.org, registration.project, registration.session
+    );
+    let credential_variable = credential_variable_for(registration.provider);
+    vec![
+        (BASE_URL_VARIABLE.to_owned(), base_url.clone()),
+        (ALT_BASE_URL_VARIABLE.to_owned(), base_url),
+        (credential_variable.to_owned(), DUMMY_CREDENTIAL.to_owned()),
+        (API_KEY_VARIABLE.to_owned(), String::new()),
+    ]
 }
 
 /// The variable the account's real credential lives in, which is the
@@ -193,6 +224,29 @@ mod tests {
         assert!(
             !env_contains_secret(&env, "real-oauth-token"),
             "the real token never reaches the child"
+        );
+    }
+
+    #[test]
+    fn an_anthropic_account_never_passes_a_stray_auth_token_to_the_child() {
+        let bindings = Bindings::default();
+        let mut env = anthropic_env();
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "stray-base-url-key".to_owned());
+        let stamped =
+            bindings.register(&registration(Provider::Anthropic), "http://127.0.0.1:8787", &env);
+        assert_eq!(
+            stamped.get("ANTHROPIC_AUTH_TOKEN"),
+            None,
+            "the credential variable the account does not use is removed, not passed through",
+        );
+        assert!(
+            !env_contains_secret(&stamped, "stray-base-url-key"),
+            "a foreign credential never reaches the child",
+        );
+        assert_eq!(
+            stamped.get("CLAUDE_CODE_OAUTH_TOKEN"),
+            Some(DUMMY_CREDENTIAL),
+            "the account's own variable still carries the dummy",
         );
     }
 

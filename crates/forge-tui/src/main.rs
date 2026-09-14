@@ -94,8 +94,9 @@ fn run() -> anyhow::Result<()> {
         workspace.start_account_loading_tasks();
 
         // Bind the gateway's inference listener and open the boot gate
-        // for it. Every spawned session's base URL names this port, so
-        // preflight stays shut until the bind succeeds.
+        // for it. Every spawned session's base URL names this port: a
+        // failed bind holds the gate shut AND spawn attempts are
+        // refused at the spawn entries until forge restarts.
         workspace.start_gateway_listener();
 
         // Fetch, verify and load the dictation models, on the same

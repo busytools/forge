@@ -196,7 +196,8 @@ The inline `[projects.<name>.env]` table wins over `env_file` per key.
 
 ## `[gateway]`
 
-The inference listener every spawned `claude` session is pointed at.
+The inference listener that spawns resolving to a project are pointed
+at.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
@@ -376,7 +377,7 @@ being ignored. Keys an older forge read here (`trusted_marketplaces`,
 The top-level document does not reject unknown tables, so a section
 forge no longer reads is ignored rather than failing the load. The
 places that do reject unknown fields are `[[accounts]]`, `[[slack]]`,
-`[projects.<name>]`, `[dictate]` and `[plugins]`.
+`[projects.<name>]`, `[gateway]`, `[dictate]` and `[plugins]`.
 
 ## A complete example
 

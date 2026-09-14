@@ -167,38 +167,51 @@ fn unescape(raw: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Representative Messages request shapes, written to mirror the
-    /// captured 2.1.263 bodies: the tool array with the deferred-tool
-    /// placeholder, `context_management`, and a large tool schema.
-    fn captured_shape_body(model: &str) -> Vec<u8> {
-        let body = format!(
-            r#"{{"model":"{model}","max_tokens":32000,"system":[{{"type":"text","text":"You are Claude Code."}}],"tools":[{{"name":"ToolSearch","description":"deferred tool loading placeholder"}}],"context_management":{{"edits":[{{"type":"clear_tool_uses_20250919"}}]}},"messages":[{{"role":"user","content":"hi"}}]}}"#
-        );
-        body.into_bytes()
+    /// A real CLI-emitted request body, captured through the gateway
+    /// against a local 401 stub (nothing billed) and redacted of
+    /// session-local identifiers. Committed so the splice parser and
+    /// its pin share no blind spots: whatever the real body contains,
+    /// the test sees.
+    fn live_capture_body() -> Vec<u8> {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/messages_request.json");
+        std::fs::read(path).expect("the committed live capture is readable")
+    }
+
+    /// Small synthetic bodies for the failure arms, where the shape
+    /// must be exact.
+    fn tiny_body(model_json: Option<&str>) -> Vec<u8> {
+        match model_json {
+            Some(model) => format!(r#"{{"model":{model},"max_tokens":8}}"#).into_bytes(),
+            None => br#"{"max_tokens":8}"#.to_vec(),
+        }
     }
 
     #[test]
-    fn extracts_the_top_level_model_from_a_captured_shape() {
-        let body = captured_shape_body("claude-opus-5");
+    fn extracts_the_top_level_model_from_a_live_capture() {
+        let body = live_capture_body();
         let (_, model) = splice_model(&body, None).expect("splice");
-        assert_eq!(model, "claude-opus-5");
+        assert!(!model.is_empty(), "the real body's model is extracted");
     }
 
     #[test]
     fn a_rewrite_changes_only_the_model_and_fixes_the_length() {
-        let body = captured_shape_body("claude-opus-5");
-        let prefix = &body[..body.len()];
+        let body = live_capture_body();
         let (rewritten, model) =
             splice_model(&body, Some("deepseek/deepseek-v4.1-flash")).expect("splice");
-        assert_eq!(model, "claude-opus-5", "the extracted name is the old one");
+        assert_eq!(model, "glm-5.3-flash", "the extracted name is the old one");
         let text = String::from_utf8(rewritten.clone()).expect("utf8");
         assert!(text.contains("deepseek/deepseek-v4.1-flash"), "the new name is in");
-        assert!(!text.contains("\"claude-opus-5\""), "the old name is gone");
-        // Everything else is byte-identical: same tools, same system
-        // prompt, same trailing keys.
-        let old_text = String::from_utf8(prefix.to_vec()).expect("utf8");
-        for kept in ["ToolSearch", "context_management", "clear_tool_uses_20250919"] {
-            assert!(text.contains(kept) && old_text.contains(kept), "{kept} survives the splice");
+        assert!(!text.contains("\"glm-5.3-flash\""), "the old name is gone");
+        // The untouched bulk is byte-identical: same tool count, same
+        // system prompt bytes.
+        let original = live_capture_body();
+        let original_text = String::from_utf8(original).expect("utf8");
+        for kept in ["context_management", "output_config", "stream"] {
+            assert!(
+                text.contains(kept) && original_text.contains(kept),
+                "{kept} survives the splice",
+            );
         }
     }
 
@@ -214,14 +227,13 @@ mod tests {
 
     #[test]
     fn a_non_string_model_is_a_loud_failure() {
-        let body = br#"{"model":42,"messages":[]}"#;
-        assert_eq!(splice_model(body, None), Err(SpliceError::ModelNotAString));
+        let body = tiny_body(Some("42"));
+        assert_eq!(splice_model(&body, None), Err(SpliceError::ModelNotAString));
     }
 
     #[test]
     fn a_body_with_no_model_is_a_loud_failure() {
-        let body = br#"{"max_tokens":32,"messages":[]}"#;
-        assert_eq!(splice_model(body, None), Err(SpliceError::ModelMissing));
+        assert_eq!(splice_model(&tiny_body(None), None), Err(SpliceError::ModelMissing));
         assert_eq!(splice_model(b"[]", None), Err(SpliceError::ModelMissing));
         assert_eq!(splice_model(b"", None), Err(SpliceError::ModelMissing));
     }
@@ -232,5 +244,23 @@ mod tests {
         let (rewritten, model) = splice_model(body, Some("x")).expect("splice");
         assert_eq!(model, "claude-opus-5");
         assert!(String::from_utf8(rewritten).expect("utf8").contains("\"x\""));
+    }
+
+    #[test]
+    fn a_multi_byte_utf8_model_rewrites_without_corrupting_the_body() {
+        // The replacement is inserted as raw UTF-8 bytes; the byte-span
+        // arithmetic must not split a multi-byte sequence either in the
+        // replacement or in the keys around it. Values use unicode
+        // escapes so the source stays ASCII.
+        let model_value = "caf\u{e9}-latte";
+        let content = "union \u{2014} \u{7d75}\u{6587}\u{5b57}";
+        let body =
+            format!("{{\"model\":\"{model_value}\",\"messages\":[{{\"content\":\"{content}\"}}]}}");
+        let (rewritten, model) =
+            splice_model(body.as_bytes(), Some("glm-5.3-flash")).expect("splice");
+        assert_eq!(model, "caf\u{e9}-latte");
+        let text = String::from_utf8(rewritten).expect("the rewrite keeps the body valid UTF-8");
+        assert!(text.contains("\"glm-5.3-flash\""));
+        assert!(text.contains(content), "the multi-byte sibling content survives");
     }
 }

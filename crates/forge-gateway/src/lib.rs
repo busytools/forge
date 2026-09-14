@@ -1,6 +1,7 @@
 //! `forge-gateway` - the account pool: one backend per
 //! `forge.toml` `provider` token, plus account selection, health,
-//! probe scheduling and backoff.
+//! probe scheduling, backoff, and the inference listener spawned
+//! sessions route through.
 //!
 //! Each [`ProviderBackend`] owns credential resolution, the probe
 //! request and its payload mapping, the billing shape, and what repair
