@@ -16,6 +16,7 @@
 pub mod account;
 mod anthropic;
 pub mod assignment_plan;
+pub mod binding;
 mod codex;
 pub mod helpers;
 pub mod listener;
