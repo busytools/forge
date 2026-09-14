@@ -434,10 +434,10 @@ pub(crate) fn render_frame_at(mut app: App, width: u16, height: u16) -> Vec<Stri
 mod tests {
     use super::*;
 
-    fn snapshot(tab: ExtensionsTab, show_available: bool) -> Vec<String> {
+    fn snapshot(tab: ExtensionsTab, hide_available: bool) -> Vec<String> {
         let mut app = snapshot_app();
         app.plugins.active_tab = tab;
-        app.plugins.show_available = show_available;
+        app.plugins.hide_available = hide_available;
         render_frame(app)
     }
 
@@ -445,7 +445,7 @@ mod tests {
         let expected = match tab {
             "installed" => INSTALLED,
             "skills" => SKILLS,
-            "skills_available" => SKILLS_AVAILABLE,
+            "skills_hidden" => SKILLS_HIDDEN,
             "agents" => AGENTS,
             "commands" => COMMANDS,
             "hooks" => HOOKS,
@@ -468,14 +468,19 @@ mod tests {
         pinned("installed", &snapshot(ExtensionsTab::Installed, false));
     }
 
+    /// Decision 3 of the plan: the available stream renders by
+    /// default after the installed rows, so the page answers "what is
+    /// installed versus what I can install" with no toggle.
     #[test]
-    fn the_skills_tab_renders_installed_components_only_by_default() {
+    fn the_skills_tab_renders_the_available_stream_by_default() {
         pinned("skills", &snapshot(ExtensionsTab::Skills, false));
     }
 
+    /// The Available toggle survives as a hide: pressing a removes the
+    /// dim catalog rows and leaves the installed stream alone.
     #[test]
-    fn the_skills_toggle_reveals_the_available_catalog_dim() {
-        pinned("skills_available", &snapshot(ExtensionsTab::Skills, true));
+    fn the_skills_toggle_hides_the_available_stream() {
+        pinned("skills_hidden", &snapshot(ExtensionsTab::Skills, true));
     }
 
     #[test]

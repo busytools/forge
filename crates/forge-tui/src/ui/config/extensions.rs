@@ -96,10 +96,10 @@ fn action_row_line(app: &App) -> Line<'static> {
     if tab_takes_available(app.plugins.active_tab) {
         let available_count =
             available_count_for_tab(&app.plugins.available_rows, app.plugins.active_tab);
-        let toggle_style = if app.plugins.show_available {
-            Style::default().fg(Color::Black).bg(theme::AVAILABLE).add_modifier(Modifier::BOLD)
-        } else {
+        let toggle_style = if app.plugins.hide_available {
             Style::default().fg(theme::AVAILABLE)
+        } else {
+            Style::default().fg(Color::Black).bg(theme::AVAILABLE).add_modifier(Modifier::BOLD)
         };
         spans.push(Span::styled(format!(" Available (a) +{available_count} "), toggle_style));
     }

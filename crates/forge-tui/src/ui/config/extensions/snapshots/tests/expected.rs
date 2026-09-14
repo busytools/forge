@@ -45,7 +45,11 @@ pub(crate) const INSTALLED: &str = r"
 │Left/Right switch tab | Up filter | Up/Down move | Enter actions | u update all | c check updates | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
-pub(crate) const SKILLS: &str = r"
+// Justification: the Available toggle is now a hide (the available
+// stream renders by default after the installed rows), so the default
+// Skills pin is the former toggle-on render, and the toggle-on pin is
+// replaced by this toggle-off pin holding the former default render.
+pub(crate) const SKILLS_HIDDEN: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
@@ -87,7 +91,7 @@ pub(crate) const SKILLS: &str = r"
 │Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
-pub(crate) const SKILLS_AVAILABLE: &str = r"
+pub(crate) const SKILLS: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3

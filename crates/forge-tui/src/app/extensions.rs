@@ -70,9 +70,9 @@ pub struct PluginsState {
     /// Available toggle.
     pub installed_rows: Vec<ExtensionRow>,
     pub available_rows: Vec<ExtensionRow>,
-    /// The Available toggle: when set, component tabs append the
-    /// available stream's rows, dim, after the installed ones.
-    pub show_available: bool,
+    /// The Available toggle as a hide: the available stream renders by
+    /// default after the installed rows, and this flag removes it.
+    pub hide_available: bool,
     pub health: Vec<MarketplaceHealth>,
     /// Always-on token cost per installed plugin id, version-keyed:
     /// id -> (installed version, cost). A version change refetches.
@@ -227,8 +227,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::End, KeyModifiers::NONE) if !app.plugins.search_focused => {
             let len = visible_row_count(app, app.plugins.active_tab);
-            app.plugins
-                .set_selected_index_for(app.plugins.active_tab, len.saturating_sub(1));
+            app.plugins.set_selected_index_for(app.plugins.active_tab, len.saturating_sub(1));
             clamp_scroll(app, app.plugins.active_tab);
             true
         }
@@ -293,7 +292,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 && !app.plugins.search_focused
                 && tab_takes_available(app.plugins.active_tab) =>
         {
-            app.plugins.show_available = !app.plugins.show_available;
+            app.plugins.hide_available = !app.plugins.hide_available;
             reset_selection_for_active_tab(app);
             true
         }
@@ -689,7 +688,7 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     app.plugins.update_availability.clear();
     app.plugins.installed_rows.clear();
     app.plugins.available_rows.clear();
-    app.plugins.show_available = false;
+    app.plugins.hide_available = false;
     app.plugins.health.clear();
     app.plugins.token_costs.clear();
     app.plugins.lsp_commands.clear();
@@ -765,12 +764,12 @@ pub(crate) fn visible_row_count(app: &App, tab: ExtensionsTab) -> usize {
 }
 
 /// The rows a tab draws before filtering: the installed stream always,
-/// plus the available stream's rows on component tabs behind the
-/// Available toggle. The Installed tab never reveals the catalog - it
-/// draws the installed stream alone.
+/// plus the available stream's rows on component tabs unless the
+/// Available toggle has hidden them. The Installed tab never reveals
+/// the catalog - it draws the installed stream alone.
 pub(crate) fn tab_rows(app: &App, tab: ExtensionsTab) -> Vec<&ExtensionRow> {
     let mut rows = rows_for_tab(&app.plugins.installed_rows, tab);
-    if tab_takes_available(tab) && app.plugins.show_available {
+    if tab_takes_available(tab) && !app.plugins.hide_available {
         rows.extend(rows_for_tab(&app.plugins.available_rows, tab));
     }
     rows
@@ -2900,7 +2899,7 @@ mod tests {
             "Enter opens the installed plugin's actions, not an install overlay"
         );
 
-        // Behind the toggle, the Skills tab carries the catalog rows.
+        // On the Skills tab the catalog row rides the default view.
         assert!(visible_rows(&app, ExtensionsTab::Skills).is_empty());
         app.plugins.available_rows.push(ExtensionRow {
             id: "skill:gone:ghost-skill".to_owned(),
@@ -2912,17 +2911,56 @@ mod tests {
             state: RowState::AvailableNotInstalled,
             detail: None,
         });
-        app.plugins.show_available = true;
         assert_eq!(
             visible_rows(&app, ExtensionsTab::Skills)
                 .iter()
                 .map(|row| row.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["skill:gone:ghost-skill"],
-            "the toggle reveals the available stream on component tabs"
+            "the available stream renders on component tabs by default"
         );
-        app.plugins.show_available = false;
+        app.plugins.hide_available = true;
         assert!(visible_rows(&app, ExtensionsTab::Skills).is_empty());
+    }
+
+    /// The available stream renders by default on component tabs,
+    /// after the installed rows; `a` hides it and `a` again shows it.
+    #[test]
+    fn the_available_stream_renders_by_default_and_a_hides_it() {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = ExtensionsTab::Skills;
+        app.plugins.installed_rows = vec![ExtensionRow {
+            kind: ExtensionKind::Skill,
+            name: "brainstorming".to_owned(),
+            ..plugin_row("superpowers:brainstorming", RowState::Current)
+        }];
+        app.plugins.available_rows = vec![ExtensionRow {
+            kind: ExtensionKind::Skill,
+            name: "ghost-skill".to_owned(),
+            ..plugin_row("superpowers:ghost-skill", RowState::AvailableNotInstalled)
+        }];
+
+        let ids = |app: &crate::app::App| -> Vec<String> {
+            visible_rows(app, ExtensionsTab::Skills)
+                .into_iter()
+                .map(|row| row.name.clone())
+                .collect()
+        };
+        assert_eq!(
+            ids(&app),
+            vec!["brainstorming".to_owned(), "ghost-skill".to_owned()],
+            "available rows render after the installed rows without a toggle"
+        );
+
+        assert!(press(&mut app, KeyCode::Char('a')));
+        assert_eq!(ids(&app), vec!["brainstorming".to_owned()], "a hides the available stream");
+
+        assert!(press(&mut app, KeyCode::Char('a')));
+        assert_eq!(
+            ids(&app),
+            vec!["brainstorming".to_owned(), "ghost-skill".to_owned()],
+            "a again shows the available stream"
+        );
     }
 
     /// `a` flips the Available toggle on a component tab and resets the
@@ -2936,13 +2974,13 @@ mod tests {
         app.plugins.set_selected_index_for(ExtensionsTab::Skills, 0);
 
         assert!(press(&mut app, KeyCode::Char('a')));
-        assert!(app.plugins.show_available, "a reveals the available stream");
+        assert!(app.plugins.hide_available, "a hides the available stream");
         assert_eq!(app.plugins.selected_index_for(ExtensionsTab::Skills), 0);
 
         app.plugins.active_tab = ExtensionsTab::Installed;
-        app.plugins.show_available = false;
+        app.plugins.hide_available = false;
         assert!(press(&mut app, KeyCode::Char('a')));
-        assert!(!app.plugins.show_available, "the Installed tab has no Available toggle");
+        assert!(!app.plugins.hide_available, "the Installed tab has no Available toggle");
     }
 
     /// The partition is `installed || load_error.is_some()`: a refresh
@@ -3013,13 +3051,13 @@ mod tests {
         app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
         app.plugins.available_rows =
             vec![plugin_row("gone@claude-night-market", RowState::AvailableNotInstalled)];
-        app.plugins.show_available = true;
+        app.plugins.hide_available = true;
 
         reset_for_session_change(&mut app);
 
         assert!(app.plugins.installed_rows.is_empty(), "installed rows cleared");
         assert!(app.plugins.available_rows.is_empty(), "available rows cleared");
-        assert!(!app.plugins.show_available, "the toggle resets");
+        assert!(!app.plugins.hide_available, "the toggle resets to the shown default");
     }
 
     /// Enter on a load-failed plugin states the failure instead of
