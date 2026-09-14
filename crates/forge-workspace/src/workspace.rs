@@ -4792,13 +4792,23 @@ impl Workspace {
         if let Some(cap) = cap {
             let live = workers
                 .get(project_key)
-                .map_or(0, |entries| entries.iter().filter(|w| w.is_live()).count());
+                .map_or(0, |entries| crate::mcp::workers::types::live_worker_count(entries));
             if live >= cap {
                 return Err(LiveWorkerRefusal::AtCap { live, cap });
             }
         }
         workers.entry(project_key.clone()).or_default().push(entry);
         Ok(())
+    }
+
+    /// The project's cap-relevant worker count: the same number
+    /// `insert_live_worker_if_label_absent` enforces against, read for
+    /// `WorkerFacade::capacity`.
+    pub fn count_live_workers(&self, project_key: &ProjectKey) -> usize {
+        self.live_workers
+            .lock()
+            .get(project_key)
+            .map_or(0, |entries| crate::mcp::workers::types::live_worker_count(entries))
     }
 
     /// Remove the latest-spawned worker matching `label` from

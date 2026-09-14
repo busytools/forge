@@ -720,7 +720,7 @@ impl WorkerFacade for ProdWorkerFacade {
         Some(WorkerCapacity {
             project: cp.project_key.as_str().to_owned(),
             cap,
-            live: ws.list_live_workers(&cp.project_key).len(),
+            live: ws.count_live_workers(&cp.project_key),
             cap_source,
         })
     }
@@ -1358,6 +1358,45 @@ mod mock_tests {
         let res = mock.deliver_worker_prompt(&caller, "missing", wrapped);
         assert!(matches!(res, Err(WorkerDeliverError::UnknownLabel { .. })));
     }
+
+    #[test]
+    fn mock_capacity_fallback_derives_live_from_workers_map() {
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(
+            SessionKey::from_session_id("k1"),
+            CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
+        );
+        mock.workers.lock().insert(
+            "forge".into(),
+            vec![
+                WorkerStatus {
+                    label: "a".into(),
+                    charter: "c".into(),
+                    status: forge_primitives::WorkerLiveness::Running,
+                    session_id: "a-uuid".into(),
+                    spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                    spawned_by_session_id: "lead".into(),
+                    diagnostic: None,
+                    activity: None,
+                },
+                WorkerStatus {
+                    label: "b".into(),
+                    charter: "c".into(),
+                    status: forge_primitives::WorkerLiveness::Running,
+                    session_id: "b-uuid".into(),
+                    spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                    spawned_by_session_id: "lead".into(),
+                    diagnostic: None,
+                    activity: None,
+                },
+            ],
+        );
+        let capacity = mock.capacity(&SessionKey::from_session_id("k1")).expect("caller resolves");
+        assert_eq!(capacity.project, "forge");
+        assert_eq!(capacity.cap, crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT);
+        assert_eq!(capacity.cap_source, WorkerCapSource::Default);
+        assert_eq!(capacity.live, 2);
+    }
 }
 
 /// The `workers__list` read path is the only producer of
@@ -1492,6 +1531,41 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         let facade = ProdWorkerFacade::from_arc(&ws);
         assert!(facade.capacity(&SessionKey::from_session_id("ghost")).is_none());
+    }
+
+    #[test]
+    fn capacity_excludes_failed_workers_from_live_count() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_max_workers("forge", "/tmp/forge", 2);
+        let project = project_key_of(&ws, "forge");
+        let caller = SessionKey::from_session_id("worker-running");
+        ws.insert_live_worker(&project, entry("running", "worker-running"));
+        let mut failed = entry("failed", "worker-failed");
+        failed.status = WorkerLiveness::Failed;
+        ws.insert_live_worker(&project, failed);
+
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        let capacity = facade.capacity(&caller).expect("live worker resolves to its project");
+        assert_eq!(
+            capacity.live, 1,
+            "a Failed entry stays in the map but must not count against the cap"
+        );
+    }
+
+    #[test]
+    fn capacity_zero_live_workers_after_failure() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("forge", "/tmp/forge");
+        let project = project_key_of(&ws, "forge");
+        let caller = SessionKey::from_session_id("worker-only");
+        let mut failed = entry("only", "worker-only");
+        failed.status = WorkerLiveness::Failed;
+        ws.insert_live_worker(&project, failed);
+
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        let capacity = facade.capacity(&caller).expect("a Failed entry still resolves the project");
+        assert_eq!(capacity.live, 0);
+        assert_eq!(capacity.cap, crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT);
     }
 }
 

@@ -124,6 +124,13 @@ pub(crate) fn live_worker_with_label<'a>(
     entries.iter().find(|w| w.label == label && w.is_live())
 }
 
+/// Workers that count against the cap. The cap check and the
+/// `workers__capacity` read both go through here, so the reported
+/// number cannot drift from the enforced one.
+pub(crate) fn live_worker_count(entries: &[WorkerEntry]) -> usize {
+    entries.iter().filter(|w| w.is_live()).count()
+}
+
 #[cfg(test)]
 mod is_git_repo_at_spawn_tests {
     use super::*;
