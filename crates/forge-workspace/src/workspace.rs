@@ -1794,7 +1794,6 @@ impl Workspace {
                 domain,
                 update_tx: self.update_tx.clone(),
                 spawn_key,
-                account: Some(account_key),
                 // An account switch replaces a live session's agent, so
                 // the new task's first Connected must emit SessionReplaced
                 // (reset chat, then the --resume backfill re-seeds it).
@@ -9389,7 +9388,6 @@ provider = "anthropic"
             domain,
             update_tx,
             spawn_key: None,
-            account: None,
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };

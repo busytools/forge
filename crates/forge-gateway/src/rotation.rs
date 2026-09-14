@@ -73,12 +73,6 @@ impl RotationState {
     }
 }
 
-/// `true` when the model's family rule binds it to an Anthropic
-/// account.
-pub fn wants_anthropic(model: &str) -> bool {
-    model.starts_with("claude-")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,12 +109,5 @@ mod tests {
         state.cool_down(&key, Instant::now() + Duration::from_secs(60));
         assert!(state.is_cooling_down(&key, Instant::now()));
         assert!(!state.is_cooling_down(&key, Instant::now() + Duration::from_secs(61)));
-    }
-
-    #[test]
-    fn wants_anthropic_is_the_prefix_rule() {
-        assert!(wants_anthropic("claude-opus-5"));
-        assert!(!wants_anthropic("glm-5.3-flash"));
-        assert!(!wants_anthropic("claude"), "the settled rule is the claude- prefix");
     }
 }
