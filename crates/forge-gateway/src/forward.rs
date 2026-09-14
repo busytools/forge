@@ -13,6 +13,7 @@
 //!   upstream leg is never constructed for it. Account selection
 //!   arrives in 2c and turns this failure into the selection path.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -34,17 +35,68 @@ const ANTHROPIC_UPSTREAM: &str = "https://api.anthropic.com";
 /// The error type a streamed body yields.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Why a request could not be bound to an account.
+enum SelectFailure {
+    /// The org in the path is not in the config.
+    UnknownOrg { org: String },
+    /// Every account in the walk fails the family rule for the model.
+    NoEligibleAccount { model: String, org: String },
+}
+
 /// The gateway's route handler: bindings + the account pool + the
 /// upstream client.
 pub struct Gateway {
     pub bindings: Bindings,
     pool: Arc<crate::AccountPool>,
     client: reqwest::Client,
+    /// Each org's walk order, from the config the caller loaded. Read
+    /// when a session has no binding and selection must run.
+    org_pins: parking_lot::Mutex<HashMap<String, crate::selection::OrgPin>>,
 }
 
 impl Gateway {
     pub fn new(pool: Arc<crate::AccountPool>) -> Self {
-        Self { bindings: Bindings::default(), pool, client: reqwest::Client::new() }
+        Self {
+            bindings: Bindings::default(),
+            pool,
+            client: reqwest::Client::new(),
+            org_pins: parking_lot::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Publish each org's walk order (primary pin then fallbacks).
+    /// Called once at construction from the loaded config; the config
+    /// is boot-frozen, so the table never changes mid-run.
+    pub fn set_org_pins(&self, pins: impl IntoIterator<Item = (String, crate::selection::OrgPin)>) {
+        *self.org_pins.lock() = pins.into_iter().collect();
+    }
+
+    /// Select the account for an unbound session: the model's family
+    /// decides the eligible set, the org's walk order decides which of
+    /// those wins. Binds the result so the session keeps it.
+    fn select_and_bind(
+        &self,
+        org: &str,
+        project: &str,
+        session: &str,
+        model: &str,
+    ) -> Result<AccountKey, SelectFailure> {
+        let Some(pin) = self.org_pins.lock().get(org).cloned() else {
+            return Err(SelectFailure::UnknownOrg { org: org.to_owned() });
+        };
+        let state = self.pool.state();
+        let account = match crate::selection::select_account(&state, &pin, org, model) {
+            Ok(account) => account,
+            // UnknownOrg cannot occur here: the pin was already looked
+            // up, so the only failure the walk can produce is that no
+            // account in it serves the model.
+            Err(crate::selection::SelectionError::NoEligibleAccount { model, org }) => {
+                return Err(SelectFailure::NoEligibleAccount { model, org });
+            }
+        };
+        drop(state);
+        self.bindings.bind(org, project, session, account.clone());
+        Ok(account)
     }
 
     /// Read the real credential and upstream base out of the bound
@@ -89,14 +141,34 @@ impl RouteHandler for Gateway {
             return text_response(StatusCode::NOT_FOUND, "not found");
         }
 
-        let Some(account) = self.bindings.binding_for(org, project, session) else {
-            return text_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!(
-                    "session '{session}' is not registered with the gateway; its spawn has \
-                     not bound an account yet"
-                ),
-            );
+        let (spliced, model) = match splice_model(&body, None) {
+            Ok(spliced) => spliced,
+            Err(error) => return text_response(StatusCode::BAD_REQUEST, error.to_string()),
+        };
+
+        // A known binding is kept; an unbound session selects now, from
+        // the model in its own body and the org named in its path. The
+        // selection failure names both.
+        let account = match self.bindings.binding_for(org, project, session) {
+            Some(account) => account,
+            None => match self.select_and_bind(org, project, session, &model) {
+                Ok(account) => account,
+                Err(SelectFailure::UnknownOrg { org }) => {
+                    return text_response(
+                        StatusCode::NOT_FOUND,
+                        format!("org '{org}' is not known to the gateway"),
+                    );
+                }
+                Err(SelectFailure::NoEligibleAccount { model, org }) => {
+                    return text_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!(
+                            "no account in org '{org}' serves model '{model}'; the session is \
+                             unbound and nothing was forwarded"
+                        ),
+                    );
+                }
+            },
         };
         let Some((upstream, credential)) = self.credential_for(&account) else {
             return text_response(
@@ -112,10 +184,6 @@ impl RouteHandler for Gateway {
         let query = match parts.uri.query() {
             Some(q) => format!("?{q}"),
             None => "?beta=true".to_owned(),
-        };
-        let (spliced, _model) = match splice_model(&body, None) {
-            Ok(spliced) => spliced,
-            Err(error) => return text_response(StatusCode::BAD_REQUEST, error.to_string()),
         };
 
         let url = format!("{upstream}/v1/messages{query}");
@@ -289,6 +357,7 @@ mod tests {
     struct Harness {
         /// The URL a CLI was told to talk to.
         client_url: String,
+        gateway: Arc<Gateway>,
         requests: Arc<parking_lot::Mutex<Vec<Recorded>>>,
     }
 
@@ -339,7 +408,7 @@ mod tests {
             &account_env,
         );
 
-        Harness { client_url, requests }
+        Harness { client_url, gateway, requests }
     }
 
     /// A CLI-shaped POST: the dummy credential in the auth variable's
@@ -444,19 +513,94 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unregistered_session_is_a_loud_503_and_never_reaches_the_upstream() {
+    async fn an_unbound_session_selects_from_the_org_pin_and_binds() {
         let harness = harness(Duration::ZERO).await;
+        // The harness registered session-1 → Openrouter. A ghost
+        // session with no binding selects now: the model is
+        // non-claude, so the first non-Anthropic account in walk order
+        // wins, and the result is bound for the session's lifetime.
+        harness.gateway.set_org_pins([(
+            "Busytools".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["OpenRouter".to_owned(), "Stargate".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        // The harness pool's OpenRouter account defaults to Loading;
+        // selection skips non-terminal accounts.
+        harness
+            .gateway
+            .pool
+            .state()
+            .set_loading(&AccountKey("OpenRouter".to_owned()), crate::LoadingState::Ready);
+
         let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
+        let response = reqwest::Client::new()
+            .post(format!("{ghost_url}/v1/messages?beta=true"))
+            .header(CONTENT_TYPE, "application/json")
+            .body(r#"{"model":"glm-5.3-flash","messages":[]}"#)
+            .send()
+            .await
+            .expect("gateway responds");
+        let status = response.status();
+        let failure_body = response.text().await.expect("body");
+        assert_eq!(status, StatusCode::OK, "selection serves the request: {failure_body}");
+        assert_eq!(
+            harness.gateway.bindings.binding_for("Busytools", "forge", "ghost"),
+            Some(AccountKey("OpenRouter".to_owned())),
+            "the selected account is bound for the session's lifetime",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_org_is_a_loud_404_and_never_reaches_the_upstream() {
+        let harness = harness(Duration::ZERO).await;
+        let ghost_url = harness.client_url.replacen("/Busytools/", "/GhostOrg/", 1);
         let response = post_as_cli(&format!("{ghost_url}/v1/messages?beta=true")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response.text().await.expect("body");
+        assert!(body.contains("GhostOrg"), "the failure names the unknown org, got: {body}");
+        assert!(
+            harness.requests.lock().is_empty(),
+            "an unknown org must not construct an upstream request",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_no_account_serves_is_a_loud_503_and_never_reaches_the_upstream() {
+        let harness = harness(Duration::ZERO).await;
+        // The pin's only account is Anthropic; a non-claude model has
+        // no eligible account in this org.
+        harness.gateway.set_org_pins([(
+            "Busytools".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["Openrouter".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        harness
+            .gateway
+            .pool
+            .state()
+            .set_loading(&AccountKey("Openrouter".to_owned()), crate::LoadingState::Ready);
+
+        let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
+        let response = reqwest::Client::new()
+            .post(format!("{ghost_url}/v1/messages?beta=true"))
+            .header(CONTENT_TYPE, "application/json")
+            .body(r#"{"model":"glm-5.3-flash","messages":[]}"#)
+            .send()
+            .await
+            .expect("gateway responds");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = response.text().await.expect("body");
         assert!(
-            body.contains("ghost") && body.contains("not registered"),
-            "the failure names the session and says it is not registered, got: {body}",
+            body.contains("glm-5.3-flash") && body.contains("Busytools"),
+            "the failure names the model and the org, got: {body}",
         );
         assert!(
             harness.requests.lock().is_empty(),
-            "an unregistered session must not construct an upstream request",
+            "an unselectable request must not construct an upstream request",
         );
     }
 

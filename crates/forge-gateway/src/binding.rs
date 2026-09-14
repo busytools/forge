@@ -116,6 +116,13 @@ impl Bindings {
             .get(&(org.to_owned(), project.to_owned(), session.to_owned()))
             .cloned()
     }
+
+    /// Bind a selected account to the three routing segments.
+    pub fn bind(&self, org: &str, project: &str, session: &str, account: AccountKey) {
+        self.by_session
+            .lock()
+            .insert((org.to_owned(), project.to_owned(), session.to_owned()), account);
+    }
 }
 
 /// The four gateway-owned keys, stamped fresh for `registration`:

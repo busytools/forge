@@ -25,6 +25,8 @@ pub mod listener;
 pub mod model_catalog;
 mod openrouter;
 pub mod pool;
+pub mod rotation;
+pub mod selection;
 pub mod splice;
 mod zai;
 

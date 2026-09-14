@@ -1079,6 +1079,29 @@ impl Workspace {
 
         let accounts = Arc::new(forge_gateway::AccountPool::new(&config.accounts));
         let gateway = Arc::new(forge_gateway::forward::Gateway::new(Arc::clone(&accounts)));
+        // Hand the gateway each org's walk order so an unbound session
+        // can select an account from its path alone - the restart case,
+        // where the bindings are gone but the config is boot-frozen.
+        {
+            let mut pins: HashMap<String, forge_gateway::selection::OrgPin> = HashMap::new();
+            for project in &config.projects {
+                let pin = pins.entry(project.org.clone()).or_insert_with(|| {
+                    forge_gateway::selection::OrgPin {
+                        accounts: project.accounts.clone(),
+                        fallback_accounts: project.fallback_accounts.clone(),
+                    }
+                });
+                // Orgs are load-validated to share one pin; differing
+                // copies would mean a config bug, so the first wins and
+                // the rest are ignored the way duplicates elsewhere are.
+                debug_assert_eq!(pin.accounts, project.accounts, "org pin drifted");
+                debug_assert_eq!(
+                    pin.fallback_accounts, project.fallback_accounts,
+                    "org pin drifted"
+                );
+            }
+            gateway.set_org_pins(pins);
+        }
 
         // Seed account usage from the machine-local store so the
         // launchpad picker has tier data immediately at cold boot.
