@@ -85,7 +85,7 @@ impl SessionTask {
             tokio::select! {
                 maybe_event = event_rx.recv() => {
                     let Some(event) = maybe_event else { break; };
-                    let event = self.merge_catalog_models(event).await;
+                    let event = self.merge_catalog_models(event);
                     if !self.translate_event(event) {
                         break;
                     }
@@ -129,12 +129,12 @@ impl SessionTask {
     /// inline fetch delays this session's events once per base url -
     /// the failure marker written on a miss means every connect after
     /// that serves from the cache or the discovered list.
-    async fn merge_catalog_models(&self, event: AgentEvent) -> AgentEvent {
+    fn merge_catalog_models(&self, event: AgentEvent) -> AgentEvent {
         let AgentEvent::Connected {
             session_id,
             cwd,
             current_model,
-            available_models,
+            available_models: _,
             mode,
             history_updates,
             compaction_count,
@@ -146,7 +146,7 @@ impl SessionTask {
         // org's accounts' declared models, authored in forge.toml.
         let available_models = match self.workspace.upgrade() {
             Some(workspace) => workspace.declared_models_for_session(&self.key),
-            None => available_models,
+            None => Vec::new(),
         };
         AgentEvent::Connected {
             session_id,
@@ -1456,11 +1456,9 @@ mod tests {
         std::fs::create_dir_all(&forge).expect("forge dir");
         std::fs::write(
             forge.join("forge.toml"),
-            format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Acct\"]\n\n\
-                 [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
-                 [[accounts]]\ndisplay_name = \"Acct\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
-            ),
+            "[[orgs]]\nname = \"Default\"\naccounts = [\"Acct\"]\n\n\
+             [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
+             [[accounts]]\ndisplay_name = \"Acct\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
         )
         .expect("write forge.toml");
         let workspace =

@@ -1540,16 +1540,15 @@ impl Workspace {
         //    fires), or the target couldn't be resolved to a known
         //    project. Preserves the pre-#246 behaviour for cold-
         //    boot and unforeseen paths.
-        let (account_key, account_dir) = match forced_account {
-            Some(key) => (key, account_dir),
-            None => {
-                let key = self.plan_assignment(&target, spawn_key.as_ref()).unwrap_or_else(|| {
-                    let project_account_pin = self.project_accounts_for(&target);
-                    let fallback_pin = self.project_fallback_accounts_for(&target);
-                    self.accounts.pick_for_project(&project_account_pin, &fallback_pin)
-                });
-                (key, account_dir)
-            }
+        let (account_key, account_dir) = if let Some(key) = forced_account {
+            (key, account_dir)
+        } else {
+            let key = self.plan_assignment(&target, spawn_key.as_ref()).unwrap_or_else(|| {
+                let project_account_pin = self.project_accounts_for(&target);
+                let fallback_pin = self.project_fallback_accounts_for(&target);
+                self.accounts.pick_for_project(&project_account_pin, &fallback_pin)
+            });
+            (key, account_dir)
         };
         tracing::info!(
             target: "forge_workspace::account",
@@ -4649,8 +4648,7 @@ impl Workspace {
         let mut seen = std::collections::HashSet::new();
         let mut rows = Vec::new();
         for name in order {
-            let Some(account) = self.config.accounts.iter().find(|a| a.display_name == name)
-            else {
+            let Some(account) = self.config.accounts.iter().find(|a| a.display_name == name) else {
                 continue;
             };
             for model in &account.models {
@@ -6920,7 +6918,6 @@ mod tests {
     }
 
     // -- /model catalog merge (openrouter sessions) ------------------
-
 
     #[test]
     fn store_fresh_pricing_keeps_a_good_cache_on_a_garbage_response() {
@@ -11577,7 +11574,6 @@ token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
-                project_path = project_path,
             ),
         )
         .expect("write forge.toml");
@@ -11839,7 +11835,6 @@ token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
-                project_path = project_path,
             ),
         )
         .expect("write forge.toml");
@@ -13491,7 +13486,7 @@ provider = "anthropic"
             AccountKey("Beta".to_owned()),
             "the worker draws its own plan row, not the lead's",
         );
-        assert_ne!(assigned, lead_account, "lead and worker are on different accounts here",);
+        assert_ne!(assigned, lead_account, "lead and worker are on different accounts here");
     }
 
     /// A resumed session is not a running one, so the frozen overlay

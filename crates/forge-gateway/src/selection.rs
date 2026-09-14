@@ -101,11 +101,11 @@ mod tests {
         }
     }
 
-    /// `models` is what the account declares; the tests select those
-    /// exact strings.
-    fn pool_with(
-        accounts: &[(&str, Provider, LoadingState, Option<UsageFetchStatus>, Vec<&str>)],
-    ) -> AccountStateMap {
+    /// One fixture account: name, provider, loading state, last probe
+    /// error, and the models it declares.
+    type Spec<'a> = (&'a str, Provider, LoadingState, Option<UsageFetchStatus>, Vec<&'a str>);
+
+    fn pool_with(accounts: &[Spec<'_>]) -> AccountStateMap {
         let specs: Vec<forge_primitives::account::LoadedAccount> = accounts
             .iter()
             .map(|(name, provider, _, _, models)| forge_primitives::account::LoadedAccount {

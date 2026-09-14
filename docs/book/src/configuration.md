@@ -53,9 +53,6 @@ under. Rules enforced at load:
   accounts = [] list`.
 - A name that matches no `[[accounts]]` entry fails, and the error
   lists the valid names.
-- A list containing only accounts marked `experimental = true` fails,
-  because such an org would leave its projects with nothing to spawn
-  under.
 
 `fallback_accounts` is the org's second tier: assignment prefers a
 fallback over a saturated or down primary, and returns to the primary
@@ -85,14 +82,16 @@ An array of tables. At least one is required, or the load fails with
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `display_name` | string | yes | | Must be unique. This is the name orgs reference. |
-| `config_dir` | string | yes | | The `claude` config directory this account uses. `~/` is expanded. |
 | `provider` | string | yes | | One of `"anthropic"`, `"codex"`, `"openrouter"`, `"zai"`. Decides how the account is probed and how its usage reads. |
-| `experimental` | bool | no | `false` | Excludes the account from automatic assignment while leaving it selectable by hand. |
-| `env` | table | no | `{}` | Written as `[accounts.env]`. See [Environment layering](#environment-layering). |
+| `token` | string | yes | | The credential the gateway forwards, mapped onto the provider's own variable at spawn. Trimmed once at load. |
+| `base_url` | string | no | | The upstream base for base-url providers (`"codex"`, `"openrouter"`, `"zai"`); required for them and validated per provider. An `"anthropic"` account may omit it - the gateway constant is its upstream. |
+| `models` | list of strings | yes | | The canonical model names the account serves. Selection and the route's model gate match against this list; an empty list fails the load (`AccountModelsRequired`). |
+| `model_slugs` | table | no | `{}` | Canonical name -> upstream spelling, only where they differ. Every slug key must be in `models`, or the load fails (`AccountSlugUndeclared`). |
+| `env` | table | no | `{}` | Written as `[accounts.env]`. Provider-behaviour extras only - timeouts, context caps, fallback switches. Gateway keys (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`) are rejected here (`AccountEnvCarriesGatewayKeys`): the flat `base_url` and `token` keys own them. |
 
-`config_dir` is what forge exports as `CLAUDE_CONFIG_DIR` to the
-spawned `claude` subprocess, so each account reads and writes its own
-credentials, session history and settings tree.
+All accounts share one `claude` config directory, so MCP servers,
+plugins and settings are declared once for every account; what varies
+per account is exactly the flat block above.
 
 `provider` has no default. Accounts that omit it are named together in
 one load error listing the accepted values, so a first run does not
@@ -105,16 +104,10 @@ scopes every key after a table header into that table, so a `provider`
 written below one is read as an environment variable and the account
 still counts as missing it.
 
-`"anthropic"` authenticates with `CLAUDE_CODE_OAUTH_TOKEN` from its
-env (see [Environment layering](#environment-layering)) and probes the
-default host; an account declaring it without that token has no
-credential at all and bails its preflight with an auth failure.
-`"codex"`, `"openrouter"` and
-`"zai"` authenticate with the `ANTHROPIC_AUTH_TOKEN` beside their
-`ANTHROPIC_BASE_URL`, and an account declaring any of them without
-that base url fails the load naming the account and the missing key.
-Either key may come from the account's own `[accounts.env]` or from
-the global `[env]`, since the two are merged before the check runs.
+`"anthropic"` accounts may omit `base_url`: the gateway constant is
+their upstream. `"codex"`, `"openrouter"` and `"zai"` require it, and
+an account declaring any of them without a `base_url` fails the load
+naming the account and the missing key.
 
 For `"openrouter"` the base url must be the API root, `https://openrouter.ai/api`,
 and an account whose base does not end in `/api` fails the load. The
@@ -158,6 +151,7 @@ table fails the load loudly instead of quietly applying nothing.
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
 | `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
 | `permission_mode` | string | `auto` | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate. |
+| `model` | string | | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it), seeds the gateway's routing, and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails. Absent means the account's own default applies. |
 
 `permission_mode` stamps a permission mode onto every session the
 project spawns, overriding the launcher's per-session default. A project
@@ -240,17 +234,14 @@ or `ANTHROPIC_AUTH_TOKEN` at the *project* layer instead desynchronises
 forge's own accounting, because the usage probe, plan detection and the
 account picker all read the account map.
 
-A `CLAUDE_CODE_OAUTH_TOKEN` in an `"anthropic"` account's env - its
-own `[accounts.env]`, or the global `[env]` every account extends -
-makes the account token-mode: the token, minted by
-`claude setup-token`, is the credential, and several accounts can
-share one config dir. The usage endpoint
+An `"anthropic"` account's flat `token` - minted by
+`claude setup-token` - is its credential. The usage endpoint
 refuses setup tokens (they lack the `user:profile` scope), so a valid
 token is probed with a minimal billed messages call instead - its
 response headers carry the 5-hour and 7-day usage windows
 at roughly nine tokens per account per
 usage poll; a rejected token renders as an auth failure whose repair
-is a re-mint. Like every env key, it is read once at boot, so
+is a re-mint. Like every key, it is read once at boot, so
 replacing the token needs a restart.
 
 Only key names, never values, are recorded in forge's per-spawn log

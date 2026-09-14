@@ -89,7 +89,6 @@ fn credits_url(base_url: &str) -> String {
     format!("{}/v1/credits", base_url.trim_end_matches('/'))
 }
 
-
 /// One probe for a pay-per-token account: the per-key spend from
 /// `{base}/v1/key`, plus the account's credit pool from
 /// `{base}/v1/credits`. Shares [`OauthUsageError`] with the window

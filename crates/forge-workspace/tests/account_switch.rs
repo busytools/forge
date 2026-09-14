@@ -136,7 +136,7 @@ async fn switch_account_refused_while_a_turn_is_in_flight() {
         .expect("dispatch switch");
 
     // Refused: the session stays on account A and keeps its live agent.
-    assert!(workspace.has_agent_for(&key), "a busy session is NOT switched",);
+    assert!(workspace.has_agent_for(&key), "a busy session is NOT switched");
 
     // The idle notice was surfaced.
     let mut saw_notice = false;

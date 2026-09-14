@@ -39,7 +39,6 @@ pub use forge_primitives::usage::UsageSnapshot;
 pub use forge_primitives::usage::UsageSourceKind;
 pub use forge_primitives::usage::oauth::OauthUsageError;
 
-
 pub use crate::account::{
     AccountKey, AccountState, AccountStateMap, LoadingState, Unusable, UsageFetchStatus,
 };
