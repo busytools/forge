@@ -252,7 +252,9 @@ mod tests {
     use crate::app::{
         MessageBlock, MessageRole, SelectionKind, SelectionPoint, SystemSeverity, TextBlock,
     };
-    use crate::ui::chat::{chat_content_area, render_scrolled, update_visual_heights};
+    use crate::ui::chat::{
+        MeasureBudget, chat_content_area, render_scrolled, update_visual_heights,
+    };
     use crate::ui::message::SpinnerState;
     use pretty_assertions::assert_eq;
     use ratatui::Terminal;
@@ -292,6 +294,7 @@ mod tests {
                     &spinner,
                     content_area.width,
                     usize::from(content_area.height),
+                    MeasureBudget::per_frame(usize::from(content_area.height)),
                 );
                 app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
                 let total_h = app.viewport().expect("active session").total_message_height();
