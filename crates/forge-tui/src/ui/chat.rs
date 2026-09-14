@@ -44,10 +44,10 @@ pub(super) struct HeightUpdateStats {
 
 #[derive(Clone, Copy)]
 pub(super) struct MeasureBudget {
-    remaining_msgs: usize,
-    remaining_lines: usize,
-    remaining_cold_measures: usize,
-    deadline: Option<std::time::Instant>,
+    pub(super) remaining_msgs: usize,
+    pub(super) remaining_lines: usize,
+    pub(super) remaining_cold_measures: usize,
+    pub(super) deadline: Option<std::time::Instant>,
 }
 
 /// Wall-clock slice of one frame that cold body construction may take
@@ -1568,7 +1568,7 @@ mod tests {
                     &spinner,
                     content_area.width,
                     usize::from(content_area.height),
-                    MeasureBudget::per_frame(usize::from(content_area.height)),
+                    unbounded_budget(),
                 );
                 app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
                 let total_h = app.viewport().expect("active session").total_message_height();
