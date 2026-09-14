@@ -432,8 +432,14 @@ impl ChatViewport {
                 if measured { (sum + height, count + 1) } else { (sum, count) }
             },
         );
-        let estimate =
-            sum.checked_div(count).map_or(DEFAULT_MESSAGE_HEIGHT_ESTIMATE, |avg| avg.max(1));
+        let estimate = if count == 0 {
+            DEFAULT_MESSAGE_HEIGHT_ESTIMATE
+        } else {
+            // Ceil plus a default floor: a small tail sample under-estimates
+            // (the last message carries no separator) and drags the frame-1
+            // scroll offset toward 0.
+            sum.div_ceil(count).max(DEFAULT_MESSAGE_HEIGHT_ESTIMATE)
+        };
         let mut earliest = None;
         for idx in 0..self.message_heights.len() {
             // Never-measured means 0 AND stale: a chat-hidden message measures to

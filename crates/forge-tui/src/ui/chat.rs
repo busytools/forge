@@ -42,28 +42,40 @@ pub(super) struct HeightUpdateStats {
     reused_msgs: usize,
 }
 
-#[derive(Clone, Copy, Default)]
-struct RemeasureBudget {
-    remaining_msgs: usize,
-    remaining_lines: usize,
+#[derive(Clone, Copy)]
+pub(super) struct MeasureBudget {
+    pub(super) remaining_msgs: usize,
+    pub(super) remaining_lines: usize,
+    pub(super) remaining_cold_measures: usize,
+    pub(super) deadline: Option<std::time::Instant>,
 }
 
-impl RemeasureBudget {
-    fn new(viewport_height: usize) -> Self {
+/// Wall-clock slice of one frame that cold body construction may take
+/// before the remaining messages are left to converge on later frames.
+const MEASURE_TIME_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
+
+impl MeasureBudget {
+    pub(super) fn per_frame(viewport_height: usize) -> Self {
         let viewport_floor = viewport_height.max(12);
         Self {
             remaining_msgs: viewport_floor,
             remaining_lines: viewport_floor.saturating_mul(8).max(256),
+            remaining_cold_measures: usize::MAX,
+            deadline: Some(std::time::Instant::now() + MEASURE_TIME_BUDGET),
         }
     }
 
-    fn exhausted(self) -> bool {
-        self.remaining_msgs == 0 || self.remaining_lines == 0
+    fn exhausted(&self) -> bool {
+        self.remaining_msgs == 0
+            || self.remaining_lines == 0
+            || self.remaining_cold_measures == 0
+            || self.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
     }
 
     fn consume(&mut self, wrapped_lines: usize) {
         self.remaining_msgs = self.remaining_msgs.saturating_sub(1);
         self.remaining_lines = self.remaining_lines.saturating_sub(wrapped_lines.max(1));
+        self.remaining_cold_measures = self.remaining_cold_measures.saturating_sub(1);
     }
 }
 
@@ -130,6 +142,7 @@ pub(super) fn update_visual_heights(
     base: &SpinnerState,
     width: u16,
     viewport_height: usize,
+    mut budget: MeasureBudget,
 ) -> HeightUpdateStats {
     app.ensure_running_turn_spinner_anchor();
     let msg_count = app.messages().map_or(0, <[ChatMessage]>::len);
@@ -176,20 +189,23 @@ pub(super) fn update_visual_heights(
     //
     // Bootstrap degenerate case: with all heights == 0, prefix sums can't
     // locate the viewport. A resumed session opens pinned to the bottom
-    // (`auto_scroll`), so anchor the frame-1 measure window at the TAIL - the
-    // last viewport-worth of messages - and let the budgeted background loop
-    // converge the rest upward over later frames. Only fall back to the TOP
-    // when the user is not pinned to the bottom. Stays bounded to one
-    // viewport-worth either way.
+    // (`auto_scroll`), so frame 1 measures outward from the scroll anchor
+    // until REAL measured rows cover the viewport, and the budgeted
+    // background loop converges the rest over later frames. Only fall back
+    // to the TOP when the user is not pinned to the bottom.
     let bootstrap =
         app.viewport().is_none_or(|viewport| viewport.total_message_height() == 0) && msg_count > 0;
     let (visible_start, visible_end) = if bootstrap {
-        let last = msg_count.saturating_sub(1);
-        if app.viewport().is_some_and(|viewport| viewport.auto_scroll) {
-            (msg_count.saturating_sub(viewport_height.max(1)), last)
-        } else {
-            (0_usize, viewport_height.saturating_sub(1).min(last))
-        }
+        bootstrap_anchor_walk(
+            app,
+            base,
+            active_turn_assistant,
+            width,
+            viewport_height,
+            &invariants,
+            &mut stats,
+            &mut budget,
+        )
     } else {
         app.active_viewport_mut()
             .and_then(|viewport| viewport.current_visible_window(viewport_height))
@@ -217,6 +233,9 @@ pub(super) fn update_visual_heights(
             stats.reused_msgs += 1;
             continue;
         }
+        if budget.exhausted() {
+            break;
+        }
         measure_message_height_at(
             app,
             base,
@@ -225,6 +244,7 @@ pub(super) fn update_visual_heights(
             i,
             &invariants,
             &mut stats,
+            &mut budget,
         );
     }
 
@@ -242,6 +262,9 @@ pub(super) fn update_visual_heights(
             stats.reused_msgs += 1;
             continue;
         }
+        if budget.exhausted() {
+            break;
+        }
         measure_message_height_at(
             app,
             base,
@@ -250,12 +273,14 @@ pub(super) fn update_visual_heights(
             i,
             &invariants,
             &mut stats,
+            &mut budget,
         );
     }
 
     if is_streaming {
         let last = msg_count.saturating_sub(1);
-        if needs_height_measure(app, last, true, active_turn_assistant, true) {
+        if needs_height_measure(app, last, true, active_turn_assistant, true) && !budget.exhausted()
+        {
             measure_message_height_at(
                 app,
                 base,
@@ -264,6 +289,7 @@ pub(super) fn update_visual_heights(
                 last,
                 &invariants,
                 &mut stats,
+                &mut budget,
             );
         }
     }
@@ -279,7 +305,6 @@ pub(super) fn update_visual_heights(
     // to double the cost off-screen on the very first frame).
     let run_resize_loop = !bootstrap
         && app.viewport().is_some_and(|viewport| viewport.background_convergence_pending);
-    let mut budget = RemeasureBudget::new(viewport_height);
     while run_resize_loop
         && app.active_viewport_mut().is_some_and(|viewport| viewport.remeasure_active())
         && !budget.exhausted()
@@ -297,7 +322,6 @@ pub(super) fn update_visual_heights(
             stats.reused_msgs += 1;
             continue;
         }
-        let measured_lines_before = stats.measured_lines;
         measure_message_height_at(
             app,
             base,
@@ -306,8 +330,8 @@ pub(super) fn update_visual_heights(
             i,
             &invariants,
             &mut stats,
+            &mut budget,
         );
-        budget.consume(stats.measured_lines.saturating_sub(measured_lines_before));
     }
 
     // Fresh open: seed a running-average estimate into the still-unmeasured
@@ -321,6 +345,59 @@ pub(super) fn update_visual_heights(
         viewport.finalize_remeasure_if_clean();
     }
     stats
+}
+
+/// Cold-open bootstrap: measure outward from the scroll anchor until REAL
+/// measured rows cover the viewport or the frame budget runs out, and
+/// return the walked range. Walking on real heights (not estimates) keeps
+/// the frame-1 seeded average honest; anchor-first means a budget that
+/// runs out mid-walk leaves the far side unmeasured instead of the rows
+/// the first paint shows.
+fn bootstrap_anchor_walk(
+    app: &mut App,
+    base: &SpinnerState,
+    active_turn_assistant: Option<usize>,
+    width: u16,
+    viewport_height: usize,
+    invariants: &MeasureInvariants<'_>,
+    stats: &mut HeightUpdateStats,
+    budget: &mut MeasureBudget,
+) -> (usize, usize) {
+    let msg_count = app.messages().map_or(0, <[ChatMessage]>::len);
+    if msg_count == 0 {
+        return (0, 0);
+    }
+    let auto_scroll = app.viewport().is_some_and(|viewport| viewport.auto_scroll);
+    let last = msg_count - 1;
+    let (start, end, step): (usize, usize, isize) =
+        if auto_scroll { (last, 0, -1) } else { (0, last, 1) };
+    let needed = viewport_height.max(1);
+    let mut covered = 0usize;
+    let mut idx = start;
+    loop {
+        if needs_height_measure(app, idx, idx == last, active_turn_assistant, false) {
+            if budget.exhausted() {
+                break;
+            }
+            measure_message_height_at(
+                app,
+                base,
+                active_turn_assistant,
+                width,
+                idx,
+                invariants,
+                stats,
+                budget,
+            );
+        }
+        covered = covered
+            .saturating_add(app.viewport().map_or(0, |viewport| viewport.message_height(idx)));
+        if covered >= needed || idx == end {
+            return (start.min(idx), start.max(idx));
+        }
+        idx = if step < 0 { idx - 1 } else { idx + 1 };
+    }
+    (start.min(idx), start.max(idx))
 }
 
 fn needs_height_measure(
@@ -389,6 +466,7 @@ fn measure_message_height_at(
     idx: usize,
     invariants: &MeasureInvariants<'_>,
     stats: &mut HeightUpdateStats,
+    budget: &mut MeasureBudget,
 ) {
     let msg_count = app.messages().map_or(0, <[ChatMessage]>::len);
     let is_last_message = idx + 1 == msg_count;
@@ -438,6 +516,7 @@ fn measure_message_height_at(
         crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", measured.1);
         measured
     };
+    budget.consume(rendered_lines);
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
     stats.measured_lines += rendered_lines;
@@ -505,7 +584,13 @@ pub(super) fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &Spinner
             metrics.record_resize();
         }
     }
-    let height_stats = update_visual_heights(app, base_spinner, width, viewport_height);
+    let height_stats = update_visual_heights(
+        app,
+        base_spinner,
+        width,
+        viewport_height,
+        MeasureBudget::per_frame(viewport_height),
+    );
     crate::perf::mark_with(
         "chat::update_heights_measured_msgs",
         "msgs",
@@ -1399,11 +1484,11 @@ pub(super) fn render_lines_from_paragraph(
 #[cfg(test)]
 mod tests {
     use super::{
-        RenderWindow, SCROLLBAR_MIN_THUMB_HEIGHT, ScrolledRenderData, build_scrolled_render_data,
-        chat_content_area, clamp_scroll_to_content, paint_user_gutter, paragraph_scroll_offset,
-        render, render_culled_messages, render_lines_from_paragraph, render_message_range,
-        render_scrolled, render_tail_anchored, smooth_scrollbar_geometry, sync_chat_layout,
-        update_visual_heights,
+        MeasureBudget, RenderWindow, SCROLLBAR_MIN_THUMB_HEIGHT, ScrolledRenderData,
+        build_scrolled_render_data, chat_content_area, clamp_scroll_to_content, paint_user_gutter,
+        paragraph_scroll_offset, render, render_culled_messages, render_lines_from_paragraph,
+        render_message_range, render_scrolled, render_tail_anchored, smooth_scrollbar_geometry,
+        sync_chat_layout, update_visual_heights,
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
@@ -1483,6 +1568,7 @@ mod tests {
                     &spinner,
                     content_area.width,
                     usize::from(content_area.height),
+                    unbounded_budget(),
                 );
                 app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
                 let total_h = app.viewport().expect("active session").total_message_height();
@@ -1815,7 +1901,7 @@ mod tests {
                     app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
                     let total_h = app.viewport().expect("active session").total_message_height();
                     let start = std::time::Instant::now();
-                    update_visual_heights(&mut app, &spinner, cw, ch);
+                    update_visual_heights(&mut app, &spinner, cw, ch, unbounded_budget());
                     render_scrolled(frame, content_area, &mut app, &spinner, cw, total_h, ch);
                     if let Some(cost) = cost {
                         *cost = cost.min(start.elapsed().as_secs_f64() * 1000.0);
@@ -1980,7 +2066,7 @@ mod tests {
 
         let base = super::build_base_spinner(&app);
         let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
-        update_visual_heights(&mut app, &base, 80, 24);
+        update_visual_heights(&mut app, &base, 80, 24, unbounded_budget());
 
         assert_eq!(
             app.active_turn_assistant_idx(),
@@ -2014,7 +2100,7 @@ mod tests {
 
         let base = super::build_base_spinner(&app);
         let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
-        update_visual_heights(&mut app, &base, 80, 24);
+        update_visual_heights(&mut app, &base, 80, 24, unbounded_budget());
 
         let anchor = app.active_turn_assistant_idx().expect("anchor bound");
         assert_ne!(anchor, completed, "did not re-bind onto the completed bubble");
@@ -2037,7 +2123,7 @@ mod tests {
 
         let base = super::build_base_spinner(&app);
         let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
-        update_visual_heights(&mut app, &base, 80, 24);
+        update_visual_heights(&mut app, &base, 80, 24, unbounded_budget());
 
         let tail = app.messages().expect("active session").len() - 1;
         assert!(
@@ -2068,7 +2154,7 @@ mod tests {
         let _ = app.active_viewport_mut().expect("active session").on_frame(80, 8);
         let spinner = idle_spinner();
         for _ in 0..64 {
-            update_visual_heights(&mut app, &spinner, 80, 8);
+            update_visual_heights(&mut app, &spinner, 80, 8, unbounded_budget());
             app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
             if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
@@ -2093,7 +2179,7 @@ mod tests {
         let off_screen_idx = 12;
         app.invalidate_layout(InvalidationLevel::MessageChanged(off_screen_idx));
 
-        let frame = update_visual_heights(&mut app, &spinner, 80, 8);
+        let frame = update_visual_heights(&mut app, &spinner, 80, 8, unbounded_budget());
         assert_eq!(
             frame.measured_msgs, 0,
             "off-screen MessageChanged invalidate must not drive per-frame re-measurement; got measured={} reused={}",
@@ -2124,7 +2210,7 @@ mod tests {
         let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
         let spinner = idle_spinner();
         for _ in 0..32 {
-            update_visual_heights(&mut app, &spinner, 80, 24);
+            update_visual_heights(&mut app, &spinner, 80, 24, unbounded_budget());
             app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
             if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
@@ -2147,7 +2233,7 @@ mod tests {
         }
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(off_screen_idx));
-        let _ = update_visual_heights(&mut app, &spinner, 80, 24);
+        let _ = update_visual_heights(&mut app, &spinner, 80, 24, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         assert_eq!(
@@ -2175,7 +2261,7 @@ mod tests {
             vp.scroll_offset = 0;
         }
 
-        let frame = update_visual_heights(&mut app, &spinner, 80, 24);
+        let frame = update_visual_heights(&mut app, &spinner, 80, 24, unbounded_budget());
         assert!(
             frame.measured_msgs >= 1,
             "scrolling the stale message into the visible window must re-measure it; got measured={} reused={}",
@@ -2293,7 +2379,7 @@ mod tests {
 
         let _ = app.active_viewport_mut().expect("active session").on_frame(80, 24);
         let spinner = idle_spinner();
-        let stats = update_visual_heights(&mut app, &spinner, 80, 24);
+        let stats = update_visual_heights(&mut app, &spinner, 80, 24, unbounded_budget());
         assert!(stats.measured_msgs > 0, "must measure at least one message");
         assert!(
             stats.measured_msgs < 30,
@@ -2414,7 +2500,7 @@ mod tests {
             vec![assistant_text_message("anchor"), empty_placeholder_message()];
         let spinner = idle_spinner();
         let _ = app.active_viewport_mut().expect("active session").on_frame(80, 8);
-        update_visual_heights(&mut app, &spinner, 80, 8);
+        update_visual_heights(&mut app, &spinner, 80, 8, unbounded_budget());
         assert_eq!(app.active_viewport_mut().expect("active session").message_height(1), 0);
     }
 
@@ -2961,12 +3047,12 @@ mod tests {
         let _ = app.active_viewport_mut().expect("active session").on_frame(40, 8);
         let first_spinner =
             SpinnerState { glyph: '\u{280B}', show_thinking: true, ..idle_spinner() };
-        let first = update_visual_heights(&mut app, &first_spinner, 40, 8);
+        let first = update_visual_heights(&mut app, &first_spinner, 40, 8, unbounded_budget());
         assert_eq!(first.measured_msgs, 1);
 
         let second_spinner =
             SpinnerState { glyph: '\u{2819}', show_thinking: true, ..idle_spinner() };
-        let second = update_visual_heights(&mut app, &second_spinner, 40, 8);
+        let second = update_visual_heights(&mut app, &second_spinner, 40, 8, unbounded_budget());
         assert_eq!(second.measured_msgs, 0);
     }
 
@@ -3087,7 +3173,7 @@ mod tests {
         let _ = app.active_viewport_mut().expect("active session").on_frame(12, 8);
         let spinner = idle_spinner();
 
-        update_visual_heights(&mut app, &spinner, 12, 8);
+        update_visual_heights(&mut app, &spinner, 12, 8, unbounded_budget());
         let base_h = app.active_viewport_mut().expect("active session").message_height(0);
         assert!(base_h > 0);
 
@@ -3104,7 +3190,7 @@ mod tests {
         }
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
-        update_visual_heights(&mut app, &spinner, 12, 8);
+        update_visual_heights(&mut app, &spinner, 12, 8, unbounded_budget());
         assert!(
             app.active_viewport_mut().expect("active session").message_height(0) > base_h,
             "dirty non-tail message should be remeasured"
@@ -3131,7 +3217,7 @@ mod tests {
         let height = 60u16;
         let spinner = idle_spinner();
         let _ = app.active_viewport_mut().expect("active session").on_frame(width, height);
-        update_visual_heights(&mut app, &spinner, width, usize::from(height));
+        update_visual_heights(&mut app, &spinner, width, usize::from(height), unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         let measured_total = app.viewport().expect("active session").total_message_height();
         assert!(measured_total > 0, "the session must measure to a non-zero height");
@@ -3167,7 +3253,7 @@ mod tests {
         let _ = app.active_viewport_mut().expect("active session").on_frame(40, 8);
         let spinner = idle_spinner();
 
-        update_visual_heights(&mut app, &spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         assert_eq!(app.active_viewport_mut().expect("active session").message_height(0), 1);
@@ -3192,7 +3278,7 @@ mod tests {
         let spinner =
             SpinnerState { show_empty_thinking: true, live_turn_running: true, ..idle_spinner() };
 
-        update_visual_heights(&mut app, &spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         assert_eq!(
@@ -3225,14 +3311,14 @@ mod tests {
         let _ = app.active_viewport_mut().expect("active session").on_frame(40, 8);
         let spinner = idle_spinner();
 
-        update_visual_heights(&mut app, &spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         assert_eq!(app.active_viewport_mut().expect("active session").message_height(0), 1);
         assert_eq!(app.active_viewport_mut().expect("active session").total_message_height(), 1);
 
         app.push_message_tracked(user_message("follow-up"));
 
-        update_visual_heights(&mut app, &spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         assert_eq!(app.active_viewport_mut().expect("active session").message_height(0), 2);
         assert_eq!(app.active_viewport_mut().expect("active session").message_height(1), 2);
@@ -3249,7 +3335,7 @@ mod tests {
         let _ = app.active_viewport_mut().expect("active session").on_frame(40, 8);
         let spinner = idle_spinner();
 
-        update_visual_heights(&mut app, &spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         assert_eq!(app.active_viewport_mut().expect("active session").message_height(0), 2);
         assert_eq!(app.active_viewport_mut().expect("active session").message_height(1), 2);
@@ -3257,7 +3343,7 @@ mod tests {
         let removed = app.remove_message_tracked(1);
         assert!(removed.is_some());
 
-        update_visual_heights(&mut app, &spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         assert_eq!(app.active_viewport_mut().expect("active session").message_height(0), 1);
         assert_eq!(app.active_viewport_mut().expect("active session").total_message_height(), 1);
@@ -3275,7 +3361,7 @@ mod tests {
 
         let _ = app.active_viewport_mut().expect("active session").on_frame(48, 12);
         for _ in 0..16 {
-            update_visual_heights(&mut app, &spinner, 48, 12);
+            update_visual_heights(&mut app, &spinner, 48, 12, unbounded_budget());
             app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
             if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
@@ -3297,7 +3383,13 @@ mod tests {
             app.viewport().expect("active session").scroll_offset as f32;
 
         assert!(app.active_viewport_mut().expect("active session").on_frame(18, 12).width_changed);
-        update_visual_heights(&mut app, &spinner, 18, visible_rows);
+        update_visual_heights(
+            &mut app,
+            &spinner,
+            18,
+            visible_rows,
+            MeasureBudget::per_frame(visible_rows),
+        );
 
         assert_eq!(app.viewport().expect("active session").message_heights_width, 0);
         assert!(app.active_viewport_mut().expect("active session").remeasure_active());
@@ -3317,7 +3409,7 @@ mod tests {
         let spinner = idle_spinner();
 
         let _ = app.active_viewport_mut().expect("active session").on_frame(48, 12);
-        update_visual_heights(&mut app, &spinner, 48, 12);
+        update_visual_heights(&mut app, &spinner, 48, 12, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         let per_message_height =
             app.active_viewport_mut().expect("active session").message_height(0);
@@ -3329,7 +3421,13 @@ mod tests {
 
         assert!(app.active_viewport_mut().expect("active session").on_frame(18, 12).width_changed);
         for _ in 0..8 {
-            update_visual_heights(&mut app, &spinner, 18, per_message_height * 2);
+            update_visual_heights(
+                &mut app,
+                &spinner,
+                18,
+                per_message_height * 2,
+                unbounded_budget(),
+            );
             app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
             if !app.active_viewport_mut().expect("active session").remeasure_active() {
                 break;
@@ -3353,7 +3451,7 @@ mod tests {
         let spinner = idle_spinner();
 
         let _ = app.active_viewport_mut().expect("active session").on_frame(48, 12);
-        update_visual_heights(&mut app, &spinner, 48, 12);
+        update_visual_heights(&mut app, &spinner, 48, 12, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
         let per_message_height =
             app.active_viewport_mut().expect("active session").message_height(0);
@@ -3366,9 +3464,21 @@ mod tests {
         assert!(app.active_viewport_mut().expect("active session").on_frame(18, 12).width_changed);
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
-        let first = update_visual_heights(&mut app, &spinner, 18, per_message_height * 2);
+        let first = update_visual_heights(
+            &mut app,
+            &spinner,
+            18,
+            per_message_height * 2,
+            unbounded_budget(),
+        );
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
-        let second = update_visual_heights(&mut app, &spinner, 18, per_message_height * 2);
+        let second = update_visual_heights(
+            &mut app,
+            &spinner,
+            18,
+            per_message_height * 2,
+            unbounded_budget(),
+        );
 
         assert!(first.measured_msgs >= app.messages().expect("active session").len());
         assert_eq!(second.measured_msgs, 0);
@@ -3399,7 +3509,7 @@ mod tests {
 
         let _ =
             app.active_viewport_mut().expect("active session").on_frame(width, viewport_height_u16);
-        update_visual_heights(&mut app, &spinner, width, viewport_height);
+        update_visual_heights(&mut app, &spinner, width, viewport_height, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         let scroll = 60;
@@ -3459,7 +3569,7 @@ mod tests {
 
         let _ =
             app.active_viewport_mut().expect("active session").on_frame(width, viewport_height_u16);
-        update_visual_heights(&mut app, &spinner, width, viewport_height);
+        update_visual_heights(&mut app, &spinner, width, viewport_height, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         assert!(app.active_viewport_mut().expect("active session").message_height(0) >= 3);
@@ -3524,7 +3634,7 @@ mod tests {
 
         let _ =
             app.active_viewport_mut().expect("active session").on_frame(width, viewport_height_u16);
-        update_visual_heights(&mut app, &spinner, width, viewport_height);
+        update_visual_heights(&mut app, &spinner, width, viewport_height, unbounded_budget());
         app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
 
         assert!(app.active_viewport_mut().expect("active session").message_height(0) > 200);
@@ -3667,5 +3777,196 @@ mod tests {
         );
         assert!((viewport.scrollbar_thumb_top - 9.0).abs() < f32::EPSILON);
         assert!((viewport.scrollbar_thumb_size - 5.0).abs() < f32::EPSILON);
+    }
+
+    fn bounded_budget(cold_measures: usize) -> super::MeasureBudget {
+        super::MeasureBudget {
+            remaining_msgs: 100,
+            remaining_lines: 100_000,
+            remaining_cold_measures: cold_measures,
+            deadline: None,
+        }
+    }
+
+    fn unbounded_budget() -> super::MeasureBudget {
+        super::MeasureBudget {
+            remaining_msgs: usize::MAX,
+            remaining_lines: usize::MAX,
+            remaining_cold_measures: usize::MAX,
+            deadline: None,
+        }
+    }
+
+    fn large_session_app(message_count: usize) -> App {
+        let body = "line\nline\n";
+        let mut app = App::test_default();
+        *app.active_messages_mut().expect("active session") = (0..message_count)
+            .map(|i| assistant_text_message(&format!("msg {i}\n{body}")))
+            .collect();
+        app
+    }
+
+    /// Cold open of a large session: frame 1 must measure only a bounded,
+    /// anchor-tail slice and leave the rest to converge over later frames.
+    /// Removing the per-frame cold cap or re-widening the bootstrap window
+    /// back to a whole-session index walk reintroduces the #1080 stall.
+    #[test]
+    fn cold_bootstrap_measures_a_bounded_anchor_tail_then_converges() {
+        let mut app = large_session_app(60);
+
+        let stats = update_visual_heights(&mut app, &idle_spinner(), 80, 30, bounded_budget(5));
+        assert!(
+            stats.measured_msgs <= 5,
+            "frame 1 measured {} messages, budget allows 5",
+            stats.measured_msgs
+        );
+        assert!(stats.measured_msgs >= 1, "the anchor message must measure in frame 1");
+
+        let k = stats.measured_msgs;
+        let viewport = app.viewport().expect("active session");
+        for idx in 0..60 - k {
+            assert!(
+                !viewport.message_height_is_current(idx),
+                "idx {idx} measured in frame 1; only the bottom {k} may measure"
+            );
+        }
+        for idx in 60 - k..60 {
+            assert!(
+                viewport.message_height_is_current(idx),
+                "idx {idx} left stale; the anchor-tail slice must measure first"
+            );
+        }
+
+        for _ in 0..200 {
+            update_visual_heights(&mut app, &idle_spinner(), 80, 30, bounded_budget(5));
+            app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+            if !app.viewport().expect("active session").has_stale_message_heights() {
+                break;
+            }
+        }
+        assert!(
+            !app.viewport().expect("active session").has_stale_message_heights(),
+            "deferred messages must reach exact heights within 200 frames"
+        );
+    }
+
+    /// A session painted progressively over several budgeted frames must,
+    /// once converged, paint byte-identical rows to one measured fully in
+    /// frame 1 - the perf fix changes only when work happens, not output.
+    #[test]
+    fn progressive_convergence_paints_the_same_rows_as_a_full_first_measure() {
+        let mut full = large_session_app(60);
+        for _ in 0..200 {
+            update_visual_heights(&mut full, &idle_spinner(), 80, 30, unbounded_budget());
+            full.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+            if !full.viewport().expect("active session").has_stale_message_heights() {
+                break;
+            }
+        }
+        assert!(
+            !full.viewport().expect("active session").has_stale_message_heights(),
+            "the full-measure reference must converge"
+        );
+
+        let mut progressive = large_session_app(60);
+        for _ in 0..200 {
+            update_visual_heights(&mut progressive, &idle_spinner(), 80, 30, bounded_budget(5));
+            progressive.active_viewport_mut().expect("active session").rebuild_prefix_sums();
+            if !progressive.viewport().expect("active session").has_stale_message_heights() {
+                break;
+            }
+        }
+        assert!(
+            !progressive.viewport().expect("active session").has_stale_message_heights(),
+            "the progressive app must converge before the draw comparison"
+        );
+
+        assert_eq!(
+            draw_chat_rows(&mut full, 80, 30),
+            draw_chat_rows(&mut progressive, 80, 30),
+            "converged progressive paint must match the full first measure"
+        );
+    }
+
+    fn realistic_session_app(message_count: usize) -> App {
+        let bodies = [
+            String::from("ok"),
+            "word ".repeat(24),
+            format!("header\n{}", "detail line\n".repeat(18)),
+            format!("{}\n", "x".repeat(76)).repeat(56),
+        ];
+        let mut app = App::test_default();
+        *app.active_messages_mut().expect("active session") = (0..message_count)
+            .map(|i| {
+                let body = &bodies[i % bodies.len()];
+                assistant_text_message(&format!("msg {i}\n{body}"))
+            })
+            .collect();
+        app
+    }
+
+    /// Re-measure harness for #1080. The perf log only records frames at or
+    /// above SLOW_FRAME_THRESHOLD_MS (50ms), so a cold open of a large
+    /// session that stays under budget yields zero chat::update_heights
+    /// samples at all. The logger rides on `app.perf`, the same path the
+    /// render spans read, so an unwired logger cannot fake a clean run.
+    /// Ignored by default: wall-clock based; run in release with the perf
+    /// feature via
+    /// `cargo nextest run -p forge-tui --features perf --release --run-ignored ignored-only`.
+    #[test]
+    #[ignore = "wall-clock re-measure; run in release with --features perf"]
+    fn cold_open_of_a_large_session_records_no_slow_frames() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("perf.jsonl");
+        {
+            let mut app = realistic_session_app(2000);
+            let logger = crate::perf::PerfLogger::open(&log_path).expect("perf log opens");
+            app.perf = Some(logger);
+            let spinner = idle_spinner();
+            let area = Rect::new(0, 0, 80, 30);
+            for _ in 0..120 {
+                let _frame = app.perf.as_ref().map(|p| p.start("frame_total"));
+                let _ = sync_chat_layout(&mut app, area, &spinner);
+            }
+        }
+        let logged = std::fs::read_to_string(&log_path).expect("perf log readable");
+        let slow_update_heights = logged
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|v| v.get("metric").and_then(|m| m.as_str()) == Some("chat::update_heights"))
+            .count();
+        assert_eq!(slow_update_heights, 0, "slow frames recorded during cold open:\n{logged}");
+    }
+
+    /// Proves the harness above can record a slow frame: a deliberately
+    /// over-budget frame_total must land in the log through the same
+    /// `app.perf` route the render spans read. Without this the zero-sample
+    /// assertion cannot distinguish a clean run from an unwired logger.
+    #[test]
+    #[ignore = "wall-clock re-measure; run in release with --features perf"]
+    fn perf_log_captures_a_deliberately_slow_frame() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("perf.jsonl");
+        {
+            let mut app = App::test_default();
+            let logger = crate::perf::PerfLogger::open(&log_path).expect("perf log opens");
+            app.perf = Some(logger);
+            {
+                let _frame = app.perf.as_ref().map(|p| p.start("frame_total"));
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            }
+        }
+        let logged = std::fs::read_to_string(&log_path).expect("perf log readable");
+        let captured = logged
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|v| {
+                v.get("metric").and_then(|m| m.as_str()) == Some("frame_total")
+                    && v.get("duration_ms")
+                        .and_then(serde_json::Value::as_f64)
+                        .is_some_and(|d| d >= 50.0)
+            })
+            .is_some();
+        assert!(captured, "the deliberately slow frame was not captured: {logged}");
     }
 }

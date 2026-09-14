@@ -252,7 +252,9 @@ mod tests {
     use crate::app::{
         MessageBlock, MessageRole, SelectionKind, SelectionPoint, SystemSeverity, TextBlock,
     };
-    use crate::ui::chat::{chat_content_area, render_scrolled, update_visual_heights};
+    use crate::ui::chat::{
+        MeasureBudget, chat_content_area, render_scrolled, update_visual_heights,
+    };
     use crate::ui::message::SpinnerState;
     use pretty_assertions::assert_eq;
     use ratatui::Terminal;
@@ -274,6 +276,17 @@ mod tests {
         }
     }
 
+    /// Paint-only harness: strict determinism wants no wall-clock budget
+    /// expiring mid-draw on a loaded machine.
+    fn unbounded_budget() -> MeasureBudget {
+        MeasureBudget {
+            remaining_msgs: usize::MAX,
+            remaining_lines: usize::MAX,
+            remaining_cold_measures: usize::MAX,
+            deadline: None,
+        }
+    }
+
     /// Draw the chat once so the app holds the rendered area and viewport
     /// state the copy path snapshots from, exactly as the live render does.
     fn draw_chat(app: &mut App, width: u16, height: u16) {
@@ -292,6 +305,7 @@ mod tests {
                     &spinner,
                     content_area.width,
                     usize::from(content_area.height),
+                    unbounded_budget(),
                 );
                 app.active_viewport_mut().expect("active session").rebuild_prefix_sums();
                 let total_h = app.viewport().expect("active session").total_message_height();
