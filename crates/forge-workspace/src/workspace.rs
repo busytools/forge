@@ -2576,7 +2576,7 @@ impl Workspace {
     /// Bind the gateway's inference listener and open the boot gate
     /// once the port is ours. Called once at boot, from the TUI's
     /// connect path. On success the launchpad's gate opens; on failure
-    /// the gate STAYS SHUT and an opted-in project's spawn attempts
+    /// the gate STAYS SHUT and every spawn attempt
     /// are refused at the spawn entries with the reason attached - the
     /// refusal is the protection, not the log line.
     pub fn start_gateway_listener(self: &Arc<Self>) {
@@ -2603,7 +2603,7 @@ impl Workspace {
                         target: "forge_workspace::workspace",
                         error = %error,
                         "the gateway listener could not start; the boot gate stays shut and \
-                         opted-in projects' spawn attempts are refused until forge restarts",
+                         spawn attempts are refused until forge restarts",
                     );
                 }
             }
@@ -13602,6 +13602,28 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
         dir
+    }
+
+    /// A spawn resolving to no project keeps the direct account env:
+    /// no registration, no listener base URL, the account's real
+    /// credential intact.
+    #[tokio::test]
+    async fn a_no_project_spawn_keeps_the_direct_account_env() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let account_env =
+            HashMap::from([("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "real".to_owned())]);
+        let target = SessionTarget::Session(SessionKey::from_session_id("orphan-uuid"));
+        let env = workspace.session_env_for(&target, &account_env);
+        assert_eq!(
+            env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
+            Some("real"),
+            "a projectless spawn carries the account's real credential",
+        );
+        assert!(
+            !env.contains_key("ANTHROPIC_BASE_URL"),
+            "no listener base URL is stamped for a projectless spawn",
+        );
     }
 
     /// Like `make_workspace_dir_246` without `auto_start`, so a test can

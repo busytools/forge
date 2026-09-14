@@ -1132,8 +1132,8 @@ config_dir = "/tmp/forge-test/claude-unknown-key"
 provider = "anthropic"
 "#,
         );
-        // The near-miss matters: a gateway typo that loaded as nothing
-        // would silently keep the project on the direct path.
+        // The near-miss matters: a project key that loaded as nothing
+        // would silently drop whatever behaviour it configured.
         let err = load_from_dir(dir.path()).expect_err("a mistyped project key must not load");
         let message = err.to_string();
         assert!(

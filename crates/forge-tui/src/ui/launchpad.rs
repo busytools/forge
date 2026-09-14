@@ -956,9 +956,9 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {
 }
 
 /// The footer's Enter-action label: the focused row's click intent,
-/// overridden by the two gate states - a listener bind failure (only
-/// when a project opted in) reads as a permanent failure, and a
-/// still-settling pool reads as a one-off wait.
+/// overridden by the two gate states - a listener bind failure reads
+/// as a permanent failure, and a still-settling pool reads as a
+/// one-off wait.
 fn footer_enter_label(app: &App, selected_row: Option<&PickerRow>) -> String {
     let gateway_error = app.workspace.as_ref().and_then(|w| w.gateway_bind_error());
     let loading = app
@@ -1213,6 +1213,54 @@ mod tests {
     #[test]
     fn truncate_appends_ellipsis() {
         assert_eq!(truncate_to("service-api-extended", 10), "service-a…");
+    }
+
+    /// The listener's half of the gate, pinned end to end: with the
+    /// pool settled, a seeded bind failure still blocks the row and
+    /// the footer names the gateway failure - the one state where
+    /// "wait" would be the wrong message, because the gate will not
+    /// open this run.
+    #[test]
+    fn a_bind_failure_blocks_a_settled_row_and_names_the_gateway() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        let forge = config_dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/ dir");
+        let project_path = project_dir.path().to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
+                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
+                 [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-launchpad-stargate\"\nprovider = \"anthropic\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+
+        let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+            .expect("workspace");
+        let project = workspace.list_projects().into_iter().next().expect("one project");
+        workspace.seed_test_dynamic_worker(&project.key, "reviewer");
+        workspace.seed_test_ready_account("Stargate");
+        workspace.seed_test_worker_assignment(&project.key, "reviewer");
+        workspace.seed_test_gateway_ready(false);
+        workspace.seed_test_gateway_bind_error(Some("Address already in use".to_owned()));
+
+        let mut app = App::test_default();
+        app.workspace = Some(std::sync::Arc::new(workspace));
+        let rows = build_picker_rows(&app);
+
+        let intent = effective_click_intent(&app, &rows[0].project_name, rows[0].lifecycle);
+        assert_eq!(
+            intent,
+            ClickIntent::Block,
+            "a settled pool does not lift the listener's half of the gate",
+        );
+        let label = footer_enter_label(&app, Some(&rows[0]));
+        assert!(
+            label.contains("gateway failed") && label.contains("Address already in use"),
+            "the footer names the bind failure, not a wait: {label}"
+        );
     }
 
     #[test]
