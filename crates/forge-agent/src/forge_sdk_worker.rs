@@ -2207,9 +2207,10 @@ mod tests {
         assert_eq!(options.env.get("CLAUDE_CONFIG_DIR").map(String::as_str), Some("/cfg/override"));
     }
 
-    /// The workspace stamps an account's `permission_mode` into the
-    /// launch settings' `permissions.defaultMode`; this is the arm that
-    /// reads it, so the mode has to reach the OptionsBuilder from there.
+    /// The workspace stamps the session project's `permission_mode`
+    /// into the launch settings' `permissions.defaultMode`; this is the
+    /// arm that reads it, so the mode has to reach the OptionsBuilder
+    /// from there.
     #[test]
     fn launch_settings_default_mode_reaches_the_options_builder() {
         use crate::client::SessionLaunchSettings;
@@ -2249,8 +2250,8 @@ mod tests {
     }
 
     /// Launch settings without a `defaultMode` leave the builder at its
-    /// default - accounts (and callers) that never set the key spawn
-    /// exactly as before.
+    /// default - callers that never stamp a mode spawn exactly as
+    /// before.
     #[test]
     fn launch_settings_without_a_default_mode_leave_the_builder_default() {
         use crate::client::SessionLaunchSettings;

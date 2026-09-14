@@ -3369,8 +3369,8 @@ impl Workspace {
                         target: "forge_workspace::workspace",
                         key = %key.as_str(),
                         account,
-                        "respawn keeps the launcher default: the session's project resolved \
-                         to no permission mode",
+                        "respawn keeps the launcher default: no project resolved for this \
+                         session, so there is no permission mode to stamp",
                     ),
                     Some((Some(mode), _)) => spawn::stamp_permission_mode(launch_settings, mode),
                 }
