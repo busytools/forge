@@ -5,10 +5,12 @@
 
 use super::theme;
 use crate::app::App;
-use crate::app::extensions::skills::render_extension_rows;
+use crate::app::extensions::skills::{
+    render_extension_rows, render_marketplace_rows, render_mcp_rows,
+};
 use crate::app::extensions::{
-    ExtensionsTab, available_count_for_tab, count_for_tab, search_enabled, tab_takes_available,
-    update_all_count, updates, visible_rows,
+    ExtensionsTab, PANEL_ROW_CAP, available_count_for_tab, count_for_tab, panel_block_height,
+    search_enabled, tab_takes_available, update_all_count, updates, visible_rows, window_offset,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -80,7 +82,7 @@ fn tab_header_line(app: &App) -> Line<'static> {
 }
 
 /// The action row: the update-all button with its stale-row count, the
-/// Available toggle (component tabs only, carrying the tab's `+N` of
+/// Available toggle (every row-backed tab, carrying the tab's `+N` of
 /// available rows), and the focused filter field.
 fn action_row_line(app: &App) -> Line<'static> {
     let stale = update_all_count(&app.plugins.installed_rows);
@@ -96,10 +98,10 @@ fn action_row_line(app: &App) -> Line<'static> {
     if tab_takes_available(app.plugins.active_tab) {
         let available_count =
             available_count_for_tab(&app.plugins.available_rows, app.plugins.active_tab);
-        let toggle_style = if app.plugins.show_available {
-            Style::default().fg(Color::Black).bg(theme::AVAILABLE).add_modifier(Modifier::BOLD)
-        } else {
+        let toggle_style = if app.plugins.hide_available {
             Style::default().fg(theme::AVAILABLE)
+        } else {
+            Style::default().fg(Color::Black).bg(theme::AVAILABLE).add_modifier(Modifier::BOLD)
         };
         spans.push(Span::styled(format!(" Available (a) +{available_count} "), toggle_style));
     }
@@ -128,67 +130,83 @@ fn action_row_line(app: &App) -> Line<'static> {
 fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
     let list_area =
         if area.width > 1 { area.inner(Margin { vertical: 0, horizontal: 1 }) } else { area };
-    match app.plugins.active_tab {
-        // The MCP page moves under this tab unchanged in behaviour:
-        // its own summary, list, states and actions render here.
-        ExtensionsTab::Mcps => {
-            super::mcp::render(frame, list_area, app);
-            return;
-        }
-        ExtensionsTab::Marketplaces => {
-            frame.render_widget(
-                Paragraph::new(marketplace_lines(app, list_area.width)).wrap(Wrap { trim: false }),
-                list_area,
-            );
-            return;
-        }
-        _ => {}
-    }
     let tab = app.plugins.active_tab;
+    let width = usize::from(list_area.width.max(1));
     let rows = visible_rows(app, tab);
-    let rendered = if rows.is_empty() {
+    let lines = if tab == ExtensionsTab::Mcps {
+        mcp_list_lines(app, width)
+    } else if tab == ExtensionsTab::Marketplaces {
+        marketplace_list_lines(app, width)
+    } else if rows.is_empty() {
         empty_tab_lines(app, tab)
     } else {
-        let selected = if app.plugins.search_focused {
-            None
-        } else {
-            Some(app.plugins.selected_index_for(tab))
-        };
-        render_extension_rows(&rows, usize::from(list_area.width.max(1)))
-            .into_iter()
-            .enumerate()
-            .map(|(index, mut line)| {
-                if Some(index) == selected
-                    && let Some(span) = line.spans.first_mut()
-                {
-                    // The row's leading gutter takes the marker in
-                    // place, so the columns never shift.
-                    span.content = ">".into();
-                    span.style =
-                        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
-                }
-                line
-            })
-            .collect::<Vec<_>>()
+        render_extension_rows(&rows, width)
     };
-    frame.render_widget(Paragraph::new(rendered).wrap(Wrap { trim: false }), list_area);
+    // Empty-state copy is not a row: nothing is selectable then. The
+    // Marketplaces tab always keeps its add row.
+    let selectable = match tab {
+        ExtensionsTab::Mcps => app.mcp().is_some_and(|mcp| !mcp.servers.is_empty()),
+        ExtensionsTab::Marketplaces => true,
+        _ => !rows.is_empty(),
+    };
+    let selected = if app.plugins.search_focused || !selectable {
+        None
+    } else {
+        Some(app.plugins.selected_index_for(tab))
+    };
+    let rendered: Vec<_> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut line)| {
+            if Some(index) == selected
+                && let Some(span) = line.spans.first_mut()
+            {
+                // The row's leading gutter takes the marker in
+                // place, so the columns never shift.
+                span.content = ">".into();
+                span.style = Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
+            }
+            line
+        })
+        .collect();
+    // The tab's scroll offset windows the list; re-derived against the
+    // true viewport here so the selection can never leave the screen.
+    let height = usize::from(list_area.height);
+    let offset = window_offset(
+        app.plugins.selected_index_for(tab),
+        app.plugins.scroll_offset_for(tab),
+        rendered.len(),
+        height,
+    );
+    let windowed: Vec<_> = rendered.into_iter().skip(offset).take(height).collect();
+    frame.render_widget(Paragraph::new(windowed).wrap(Wrap { trim: false }), list_area);
 }
 
-/// Rows of the update panel shown at once; the rest collapse into a
-/// count line so the panel cannot eat the list.
-const PANEL_ROW_CAP: usize = 10;
-
-/// The docked panel's height; zero while no run is on the page.
-fn panel_block_height(app: &App) -> u16 {
-    let Some(run) = app.plugins.update_run.as_ref() else {
-        return 0;
-    };
-    let mut height = 2; // header + blank separator
-    height += u16::try_from(run.rows.len().min(PANEL_ROW_CAP)).unwrap_or(u16::MAX);
-    if run.rows.len() > PANEL_ROW_CAP {
-        height += 1;
+/// The Mcps tab's rows: one grammar row per live server, or the
+/// session-state copy when there is nothing to list yet.
+fn mcp_list_lines(app: &App, width: usize) -> Vec<ratatui::text::Line<'static>> {
+    if app.session_id().is_none() {
+        return vec![Line::from(Span::styled(
+            "Open or resume a session to inspect MCP servers from the live SDK session.",
+            Style::default().fg(theme::DIM),
+        ))];
     }
-    height
+    let Some(mcp) = app.mcp() else {
+        return Vec::new();
+    };
+    if mcp.in_flight && mcp.servers.is_empty() {
+        return vec![Line::from(Span::styled(
+            "Loading MCP status...",
+            Style::default().fg(theme::DIM),
+        ))];
+    }
+    if mcp.servers.is_empty() {
+        let body = mcp.last_error.as_deref().unwrap_or(
+            "The current session did not report any MCP servers. This view only shows live session-backed MCP state.",
+        );
+        return vec![Line::from(Span::styled(body.to_owned(), Style::default().fg(theme::DIM)))];
+    }
+    render_mcp_rows(&mcp.servers, width)
 }
 
 /// The docked Updates panel at the page's bottom: one row per action
@@ -270,74 +288,14 @@ fn empty_tab_lines(app: &App, tab: ExtensionsTab) -> Vec<Line<'static>> {
     vec![Line::from(Span::styled(text, Style::default().fg(theme::DIM)))]
 }
 
-/// The Marketplaces tab: one row per configured marketplace with its
-/// health from the scan - `healthy`, the drift notice, or the load
-/// error - plus the add row.
-fn marketplace_lines(app: &App, _viewport_width: u16) -> Vec<Line<'static>> {
-    let selected = app.plugins.selected_index_for(ExtensionsTab::Marketplaces);
-    let mut lines = Vec::new();
-    for (index, marketplace) in app.plugins.marketplaces.iter().enumerate() {
-        let selected = index == selected && !app.plugins.search_focused;
-        let mut line = Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                marketplace.name.clone(),
-                if selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(theme::RUST_ORANGE)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                },
-            ),
-        ]);
-        let health = app.plugins.health.iter().find(|health| health.name == marketplace.name);
-        match health {
-            Some(health) if health.drifted => {
-                line.spans.push(Span::styled(
-                    "  registry drift - installLocation outside the config dir",
-                    Style::default().fg(theme::STATUS_WARNING),
-                ));
-                line.spans.push(Span::styled("  Repair", Style::default().fg(theme::RUST_ORANGE)));
-            }
-            Some(health) if health.load_error.is_some() => {
-                let reason = health.load_error.clone().unwrap_or_default();
-                line.spans.push(Span::styled(
-                    format!("  load failed: {reason}"),
-                    Style::default().fg(theme::STATUS_ERROR),
-                ));
-                line.spans.push(Span::styled("  Repair", Style::default().fg(theme::RUST_ORANGE)));
-            }
-            Some(health) => {
-                line.spans.push(Span::styled(
-                    format!("  healthy \u{b7} {} plugins", health.available),
-                    Style::default().fg(theme::REVIEW_RESOLVED),
-                ));
-            }
-            // No health entry yet: the pane's first disk scan has not
-            // landed. Name it rather than rendering a bare name.
-            None => {
-                line.spans.push(Span::styled("  scan pending", Style::default().fg(theme::DIM)));
-            }
-        }
-        if let Some(source) = marketplace.source.as_deref() {
-            line.spans.push(Span::styled(format!("  {source}"), Style::default().fg(theme::DIM)));
-        }
-        if let Some(repo) = marketplace.repo.as_deref() {
-            line.spans.push(Span::styled(format!("  {repo}"), Style::default().fg(theme::DIM)));
-        }
-        lines.push(line);
-    }
-    let add_selected = selected == app.plugins.marketplaces.len() && !app.plugins.search_focused;
-    lines.push(Line::from(Span::styled(
-        "Add marketplace",
-        if add_selected {
-            Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::DIM)
-        },
-    )));
+/// The Marketplaces tab's rows: one grammar row per configured
+/// marketplace, plus the always-present add row.
+fn marketplace_list_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let mut lines = render_marketplace_rows(&app.plugins.marketplaces, &app.plugins.health, width);
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled("Add marketplace", Style::default().fg(theme::DIM)),
+    ]));
     lines
 }
 

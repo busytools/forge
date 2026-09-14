@@ -403,8 +403,14 @@ pub(crate) fn snapshot_app() -> App {
 /// The page rendered at 160x40, one string per frame row: trailing
 /// whitespace trimmed and the page scaffold's right box edge dropped,
 /// so a pin holds the page's own text and nothing else.
-pub(crate) fn render_frame(mut app: App) -> Vec<String> {
-    let backend = TestBackend::new(160, 40);
+pub(crate) fn render_frame(app: App) -> Vec<String> {
+    render_frame_at(app, 160, 40)
+}
+
+/// The page at an arbitrary geometry, for tests that exercise the
+/// list window rather than pin it.
+pub(crate) fn render_frame_at(mut app: App, width: u16, height: u16) -> Vec<String> {
+    let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
         .draw(|frame| {
@@ -428,10 +434,10 @@ pub(crate) fn render_frame(mut app: App) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn snapshot(tab: ExtensionsTab, show_available: bool) -> Vec<String> {
+    fn snapshot(tab: ExtensionsTab, hide_available: bool) -> Vec<String> {
         let mut app = snapshot_app();
         app.plugins.active_tab = tab;
-        app.plugins.show_available = show_available;
+        app.plugins.hide_available = hide_available;
         render_frame(app)
     }
 
@@ -439,7 +445,7 @@ mod tests {
         let expected = match tab {
             "installed" => INSTALLED,
             "skills" => SKILLS,
-            "skills_available" => SKILLS_AVAILABLE,
+            "skills_hidden" => SKILLS_HIDDEN,
             "agents" => AGENTS,
             "commands" => COMMANDS,
             "hooks" => HOOKS,
@@ -462,14 +468,19 @@ mod tests {
         pinned("installed", &snapshot(ExtensionsTab::Installed, false));
     }
 
+    /// Decision 3 of the plan: the available stream renders by
+    /// default after the installed rows, so the page answers "what is
+    /// installed versus what I can install" with no toggle.
     #[test]
-    fn the_skills_tab_renders_installed_components_only_by_default() {
+    fn the_skills_tab_renders_the_available_stream_by_default() {
         pinned("skills", &snapshot(ExtensionsTab::Skills, false));
     }
 
+    /// The Available toggle survives as a hide: pressing a removes the
+    /// dim catalog rows and leaves the installed stream alone.
     #[test]
-    fn the_skills_toggle_reveals_the_available_catalog_dim() {
-        pinned("skills_available", &snapshot(ExtensionsTab::Skills, true));
+    fn the_skills_toggle_hides_the_available_stream() {
+        pinned("skills_hidden", &snapshot(ExtensionsTab::Skills, true));
     }
 
     #[test]
@@ -500,6 +511,76 @@ mod tests {
     #[test]
     fn the_marketplaces_tab_snapshot() {
         pinned("marketplaces", &snapshot(ExtensionsTab::Marketplaces, false));
+    }
+
+    /// Selecting the last row scrolls the window so the selected row
+    /// renders: the list is a window over the tab's rows, not a
+    /// clipped paragraph.
+    #[test]
+    fn selecting_the_last_row_scrolls_it_into_view() {
+        let mut app = snapshot_app();
+        app.plugins.active_tab = ExtensionsTab::Skills;
+        let rows = crate::app::extensions::visible_rows(&app, ExtensionsTab::Skills);
+        let first = rows.first().map(|row| row.name.clone()).expect("rows");
+        let last = rows.last().map(|row| row.name.clone()).expect("rows");
+        app.plugins.set_selected_index_for(ExtensionsTab::Skills, rows.len() - 1);
+
+        let frame = render_frame_at(app, 160, 12);
+        let text = frame.join("\n");
+        assert!(text.contains(&last), "the selected last row renders: {text}");
+        assert!(!text.contains(&first), "the top rows scrolled out: {text}");
+    }
+
+    /// The shared scroll window covers the non-row-backed tabs too:
+    /// a long MCP server list and a long marketplace list both scroll
+    /// their last row into view.
+    #[test]
+    fn the_mcps_and_marketplaces_tabs_scroll_their_last_rows_into_view() {
+        use forge_primitives::McpServerConnectionStatus;
+        let server = |n: usize| forge_primitives::McpServerStatus {
+            name: format!("server-{n:02}"),
+            status: McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: Some(
+                serde_json::json!({"type": "stdio", "command": "npx", "args": [], "env": {}}),
+            ),
+            scope: Some("user".to_owned()),
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        };
+        let source = |n: usize| crate::app::extensions::MarketplaceSourceEntry {
+            name: format!("market-{n:02}"),
+            source: Some("github".to_owned()),
+            repo: None,
+            install_location: None,
+        };
+        let health = |n: usize| crate::app::extensions::MarketplaceHealth {
+            name: format!("market-{n:02}"),
+            source: "github".to_owned(),
+            available: 1,
+            load_error: None,
+            install_location: std::path::PathBuf::default(),
+            drifted: false,
+        };
+
+        let mut app = snapshot_app();
+        app.plugins.active_tab = ExtensionsTab::Mcps;
+        app.mcp_mut().expect("active session").servers = (0..30).map(server).collect();
+        app.plugins.set_selected_index_for(ExtensionsTab::Mcps, 29);
+        let text = render_frame_at(app, 160, 12).join("\n");
+        assert!(text.contains("server-29"), "the selected last server renders: {text}");
+        assert!(!text.contains("server-00 "), "the top servers scrolled out: {text}");
+
+        let mut app = snapshot_app();
+        app.plugins.active_tab = ExtensionsTab::Marketplaces;
+        app.plugins.marketplaces = (0..30).map(source).collect();
+        app.plugins.health = (0..30).map(health).collect();
+        app.plugins.set_selected_index_for(ExtensionsTab::Marketplaces, 30);
+        let text = render_frame_at(app, 160, 12).join("\n");
+        assert!(text.contains("market-29"), "the last marketplace renders: {text}");
+        assert!(!text.contains("market-00 "), "the top marketplaces scrolled out: {text}");
     }
 
     #[test]

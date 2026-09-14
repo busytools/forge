@@ -202,7 +202,6 @@ pub enum ConfigOverlayState {
 
 #[derive(Debug, Clone)]
 pub struct ConfigState {
-    pub mcp_selected_server_index: usize,
     pub overlay: Option<ConfigOverlayState>,
     pub committed_settings_document: Value,
     pub committed_local_settings_document: Value,
@@ -215,7 +214,6 @@ pub struct ConfigState {
 impl Default for ConfigState {
     fn default() -> Self {
         Self {
-            mcp_selected_server_index: 0,
             overlay: None,
             committed_settings_document: Value::Object(serde_json::Map::new()),
             committed_local_settings_document: Value::Object(serde_json::Map::new()),
@@ -341,7 +339,6 @@ impl ConfigState {
         self.committed_local_settings_document = loaded.local_settings_document;
         self.committed_preferences_document = loaded.preferences_document;
         self.overlay = None;
-        self.mcp_selected_server_index = 0;
         if !preserve_status {
             self.status_message = None;
             self.last_error = None;

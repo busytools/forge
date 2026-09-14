@@ -1,7 +1,7 @@
 //! The Extensions page's tab model and per-tab view state: which tab
 //! is open, each tab's filter and selection, and how a tab reads the
-//! pane's two row streams - installed, and available behind the
-//! Available toggle.
+//! pane's two row streams - the installed stream always, the available
+//! stream unless the Available toggle has hidden it.
 
 use crate::app::input::InputState;
 use forge_primitives::plugins::ExtensionRow;
@@ -96,9 +96,9 @@ impl ExtensionsTab {
 
 /// The kind-filtered rows of ONE stream: plugin rows only on the
 /// Installed tab, each component tab by its kind. The pane state holds
-/// two streams - installed and available - and a tab draws its rows
-/// from the installed one, joining the available one only behind the
-/// Available toggle.
+/// two streams - installed and available - and a tab draws the
+/// installed one with the available one appended, unless the Available
+/// toggle has hidden the latter.
 pub fn rows_for_tab(rows: &[ExtensionRow], tab: ExtensionsTab) -> Vec<&ExtensionRow> {
     use forge_primitives::plugins::ExtensionKind;
     match tab {
@@ -121,9 +121,10 @@ pub fn rows_for_tab(rows: &[ExtensionRow], tab: ExtensionsTab) -> Vec<&Extension
 }
 
 /// Whether the Available toggle can change what this tab renders:
-/// only the component tabs can reveal the available stream.
+/// every row-backed tab except MCPs and Marketplaces, which carry no
+/// available stream at all.
 pub const fn tab_takes_available(tab: ExtensionsTab) -> bool {
-    !matches!(tab, ExtensionsTab::Installed | ExtensionsTab::Mcps | ExtensionsTab::Marketplaces)
+    !matches!(tab, ExtensionsTab::Mcps | ExtensionsTab::Marketplaces)
 }
 
 /// A row matches the filter when its name or source carries the query
@@ -144,8 +145,8 @@ pub fn count_for_tab(installed_rows: &[ExtensionRow], tab: ExtensionsTab) -> usi
     rows_for_tab(installed_rows, tab).len()
 }
 
-/// The available rows a tab can reveal behind the Available toggle;
-/// the `+N` beside the toggle.
+/// The available rows a tab can show, hidden only while the Available
+/// toggle is pressed; the `+N` beside the toggle.
 pub fn available_count_for_tab(available_rows: &[ExtensionRow], tab: ExtensionsTab) -> usize {
     rows_for_tab(available_rows, tab).len()
 }
@@ -155,6 +156,10 @@ pub fn available_count_for_tab(available_rows: &[ExtensionRow], tab: ExtensionsT
 pub struct TabState {
     pub search_queries: Vec<InputState>,
     pub selected: Vec<usize>,
+    /// Per-tab scroll offset: the first row the tab's list renders.
+    /// Rendered through [`window_offset`], so the selection can never
+    /// leave the visible window.
+    pub scroll: Vec<usize>,
 }
 
 impl Default for TabState {
@@ -168,7 +173,26 @@ impl TabState {
         Self {
             search_queries: (0..tabs).map(|_| InputState::new()).collect(),
             selected: vec![0; tabs],
+            scroll: vec![0; tabs],
         }
+    }
+}
+
+/// The window top that keeps `selected` visible: `offset` as long as
+/// it already does, moved the minimum distance otherwise, and never
+/// past the last full window of `len` rows.
+pub fn window_offset(selected: usize, offset: usize, len: usize, height: usize) -> usize {
+    if len == 0 || height == 0 {
+        return 0;
+    }
+    let max_top = len.saturating_sub(height);
+    let offset = offset.min(max_top);
+    if selected < offset {
+        selected
+    } else if selected >= offset + height {
+        (selected + 1 - height).min(max_top)
+    } else {
+        offset
     }
 }
 
@@ -232,7 +256,7 @@ mod tests {
         assert_eq!(
             available_count_for_tab(&available, ExtensionsTab::Installed),
             0,
-            "the Installed tab never reveals the available stream"
+            "skill rows in the available stream are not Installed-tab rows: each helper reads its own stream argument, what joins them per tab is tab_rows"
         );
     }
 

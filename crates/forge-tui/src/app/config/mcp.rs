@@ -1,7 +1,5 @@
 use super::{ConfigOverlayState, ConfigState};
 use crate::app::App;
-use crate::app::view::ActiveView;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,45 +42,6 @@ impl ConfigState {
         } else {
             None
         }
-    }
-}
-
-/// The MCP surface is active: the Mcps tab of the Extensions page.
-fn mcp_surface_active(app: &App) -> bool {
-    app.active_view == ActiveView::Extensions
-        && app.plugins.active_tab == crate::app::extensions::ExtensionsTab::Mcps
-}
-
-pub(crate) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
-    if !mcp_surface_active(app) {
-        return false;
-    }
-
-    match (key.code, key.modifiers) {
-        (KeyCode::Char(ch), modifiers)
-            if matches!(ch, 'r' | 'R')
-                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
-        {
-            crate::app::session_runtime::request_runtime_reload(app);
-            refresh_mcp_snapshot(app);
-            true
-        }
-        (KeyCode::Enter, KeyModifiers::NONE) => {
-            open_selected_mcp_server_details(app);
-            true
-        }
-        (KeyCode::Up, KeyModifiers::NONE) => {
-            app.config.mcp_selected_server_index =
-                app.config.mcp_selected_server_index.saturating_sub(1);
-            true
-        }
-        (KeyCode::Down, KeyModifiers::NONE) => {
-            let last_index = app.mcp().map_or(0, |mcp| mcp.servers.len().saturating_sub(1));
-            app.config.mcp_selected_server_index =
-                (app.config.mcp_selected_server_index + 1).min(last_index);
-            true
-        }
-        _ => false,
     }
 }
 
@@ -265,10 +224,15 @@ pub(crate) fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: 
     }
 }
 
-fn open_selected_mcp_server_details(app: &mut App) {
+/// Enter on the Mcps tab: the details overlay for the server the tab's
+/// SHARED selection points at.
+pub(crate) fn open_selected_mcp_server_details(app: &mut App) {
     let Some(server_name) = app
         .mcp()
-        .and_then(|mcp| mcp.servers.get(app.config.mcp_selected_server_index))
+        .and_then(|mcp| {
+            mcp.servers
+                .get(app.plugins.selected_index_for(crate::app::extensions::ExtensionsTab::Mcps))
+        })
         .map(|server| server.name.clone())
     else {
         return;

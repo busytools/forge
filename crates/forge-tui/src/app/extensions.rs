@@ -25,7 +25,7 @@ pub mod updates;
 
 pub use state::{
     ExtensionsTab, TabState, available_count_for_tab, count_for_tab, row_matches, rows_for_tab,
-    tab_takes_available, update_all_count,
+    tab_takes_available, update_all_count, window_offset,
 };
 
 // Plugin registry types defined in forge_primitives::plugins;
@@ -63,16 +63,16 @@ pub struct PluginsState {
     pub update_availability: Vec<PluginUpdateAvailability>,
     /// The pane's two row streams from the last inventory refresh,
     /// kept separate so a tab's count describes its installed rows
-    /// even with the Available toggle showing more than that: the
+    /// even with the available stream rendering after it: the
     /// INSTALLED rows (registry installs, their components, the
     /// load-failure rows), and the AVAILABLE rows (the marketplace
-    /// catalog plus the cache leftovers), which render only behind the
-    /// Available toggle.
+    /// catalog plus the cache leftovers), which the Available toggle
+    /// can hide.
     pub installed_rows: Vec<ExtensionRow>,
     pub available_rows: Vec<ExtensionRow>,
-    /// The Available toggle: when set, component tabs append the
-    /// available stream's rows, dim, after the installed ones.
-    pub show_available: bool,
+    /// The Available toggle as a hide: the available stream renders by
+    /// default after the installed rows, and this flag removes it.
+    pub hide_available: bool,
     pub health: Vec<MarketplaceHealth>,
     /// Always-on token cost per installed plugin id, version-keyed:
     /// id -> (installed version, cost). A version change refetches.
@@ -95,6 +95,14 @@ impl PluginsState {
 
     pub fn set_selected_index_for(&mut self, tab: ExtensionsTab, index: usize) {
         self.tab_state.selected[tab.index()] = index;
+    }
+
+    pub fn scroll_offset_for(&self, tab: ExtensionsTab) -> usize {
+        self.tab_state.scroll[tab.index()]
+    }
+
+    pub fn set_scroll_offset_for(&mut self, tab: ExtensionsTab, offset: usize) {
+        self.tab_state.scroll[tab.index()] = offset;
     }
 
     pub fn search_query_for(&self, tab: ExtensionsTab) -> String {
@@ -152,25 +160,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     match (key.code, key.modifiers) {
-        // The Mcps tab keeps the MCP page's own keys: Up/Down select,
-        // Enter opens the server's actions, r refreshes the snapshot.
-        (KeyCode::Up | KeyCode::Down, KeyModifiers::NONE)
-            if app.plugins.active_tab == ExtensionsTab::Mcps =>
-        {
-            crate::app::config::mcp::handle_mcp_key(app, key)
-        }
-        (KeyCode::Enter, _)
-            if app.plugins.active_tab == ExtensionsTab::Mcps && !app.plugins.search_focused =>
-        {
-            crate::app::config::mcp::handle_mcp_key(app, key)
-        }
-        (KeyCode::Char(ch), modifiers)
-            if matches!(ch, 'r' | 'R')
-                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
-                && app.plugins.active_tab == ExtensionsTab::Mcps =>
-        {
-            crate::app::config::mcp::handle_mcp_key(app, key)
-        }
         (KeyCode::Left, KeyModifiers::NONE) => {
             app.plugins.active_tab = app.plugins.active_tab.prev();
             app.plugins.search_focused = false;
@@ -204,6 +193,25 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             }
             true
         }
+        (KeyCode::PageDown, KeyModifiers::NONE) if !app.plugins.search_focused => {
+            move_selection(app, page_size(app, app.plugins.active_tab).cast_signed());
+            true
+        }
+        (KeyCode::PageUp, KeyModifiers::NONE) if !app.plugins.search_focused => {
+            move_selection(app, -(page_size(app, app.plugins.active_tab).cast_signed()));
+            true
+        }
+        (KeyCode::Home, KeyModifiers::NONE) if !app.plugins.search_focused => {
+            app.plugins.set_selected_index_for(app.plugins.active_tab, 0);
+            clamp_scroll(app, app.plugins.active_tab);
+            true
+        }
+        (KeyCode::End, KeyModifiers::NONE) if !app.plugins.search_focused => {
+            let len = visible_row_count(app, app.plugins.active_tab);
+            app.plugins.set_selected_index_for(app.plugins.active_tab, len.saturating_sub(1));
+            clamp_scroll(app, app.plugins.active_tab);
+            true
+        }
         (KeyCode::Enter, _) if app.plugins.search_focused => {
             // Enter reaches the filter in several flavours, from the
             // \r newline to chords and paste-attached modifiers; none
@@ -217,8 +225,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             | ExtensionsTab::Commands
             | ExtensionsTab::Hooks
             | ExtensionsTab::Lsp => installed::open_component_actions_overlay(app),
-            // The Mcps tab's actions arrive with its tab render.
-            ExtensionsTab::Mcps => true,
+            ExtensionsTab::Mcps => {
+                crate::app::config::mcp::open_selected_mcp_server_details(app);
+                true
+            }
             ExtensionsTab::Marketplaces => open_marketplace_overlay(app),
         },
         (KeyCode::Backspace, KeyModifiers::NONE) => {
@@ -248,6 +258,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 && !app.plugins.search_focused =>
         {
             request_inventory_refresh_manual(app);
+            // On the Mcps tab a refresh also re-asks for the MCP
+            // snapshot: "refresh the server list now" is what the key
+            // is for there, not a wait on the background cadence.
+            if app.plugins.active_tab == ExtensionsTab::Mcps {
+                crate::app::config::mcp::refresh_mcp_snapshot(app);
+            }
             true
         }
         (KeyCode::Char(ch), modifiers)
@@ -265,7 +281,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 && !app.plugins.search_focused
                 && tab_takes_available(app.plugins.active_tab) =>
         {
-            app.plugins.show_available = !app.plugins.show_available;
+            app.plugins.hide_available = !app.plugins.hide_available;
             reset_selection_for_active_tab(app);
             true
         }
@@ -661,7 +677,7 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     app.plugins.update_availability.clear();
     app.plugins.installed_rows.clear();
     app.plugins.available_rows.clear();
-    app.plugins.show_available = false;
+    app.plugins.hide_available = false;
     app.plugins.health.clear();
     app.plugins.token_costs.clear();
     app.plugins.lsp_commands.clear();
@@ -674,7 +690,65 @@ pub(crate) fn clamp_selection(app: &mut App) {
         let len = visible_row_count(app, tab);
         let selected = app.plugins.selected_index_for(tab);
         app.plugins.set_selected_index_for(tab, clamp_index(selected, len));
+        clamp_scroll(app, tab);
     }
+}
+
+/// Clamp the Mcps tab's shared selection and scroll after an MCP
+/// snapshot lands: the server list may have shrunk under it.
+pub(crate) fn clamp_mcps_selection(app: &mut App) {
+    let tab = ExtensionsTab::Mcps;
+    let len = visible_row_count(app, tab);
+    let selected = app.plugins.selected_index_for(tab);
+    app.plugins.set_selected_index_for(tab, clamp_index(selected, len));
+    clamp_scroll(app, tab);
+}
+
+/// Re-seat the tab's scroll offset so its selection stays inside the
+/// rendered window. The render pass applies the same rule against the
+/// true viewport; this keeps the stored offset honest for paging.
+fn clamp_scroll(app: &mut App, tab: ExtensionsTab) {
+    let height = list_viewport_height(app, tab);
+    let offset = window_offset(
+        app.plugins.selected_index_for(tab),
+        app.plugins.scroll_offset_for(tab),
+        visible_row_count(app, tab),
+        height,
+    );
+    app.plugins.set_scroll_offset_for(tab, offset);
+}
+
+/// The rows one tab's list viewport holds at the current frame size:
+/// the page the PageUp/PageDown keys move by. The render pass's
+/// windowing stays the visibility authority even if the frame has not
+/// been painted at this size yet.
+fn list_viewport_height(app: &App, tab: ExtensionsTab) -> usize {
+    let top = u16::from(search_enabled(tab)) + 1;
+    let chrome = 6 + top + panel_block_height(app);
+    usize::from(app.cached_frame_area.height.saturating_sub(chrome))
+}
+
+/// Rows one PageUp/PageDown moves the selection by.
+fn page_size(app: &App, tab: ExtensionsTab) -> usize {
+    list_viewport_height(app, tab).max(1)
+}
+
+/// Rows of the update panel shown at once; the rest collapse into a
+/// count line so the panel cannot eat the list.
+pub(crate) const PANEL_ROW_CAP: usize = 10;
+
+/// The docked update panel's height; zero while no run is on the page.
+/// Shared by the render pass and the viewport estimate above.
+pub(crate) fn panel_block_height(app: &App) -> u16 {
+    let Some(run) = app.plugins.update_run.as_ref() else {
+        return 0;
+    };
+    let mut height = 2; // header + blank separator
+    height += u16::try_from(run.rows.len().min(PANEL_ROW_CAP)).unwrap_or(u16::MAX);
+    if run.rows.len() > PANEL_ROW_CAP {
+        height += 1;
+    }
+    height
 }
 
 /// The rows one tab renders: the flattened extension rows for the
@@ -689,12 +763,12 @@ pub(crate) fn visible_row_count(app: &App, tab: ExtensionsTab) -> usize {
 }
 
 /// The rows a tab draws before filtering: the installed stream always,
-/// plus the available stream's rows on component tabs behind the
-/// Available toggle. The Installed tab never reveals the catalog - it
-/// draws the installed stream alone.
+/// plus the available stream's rows on every row-backed tab - the
+/// Installed tab's catalog included - unless the Available toggle has
+/// hidden them.
 pub(crate) fn tab_rows(app: &App, tab: ExtensionsTab) -> Vec<&ExtensionRow> {
     let mut rows = rows_for_tab(&app.plugins.installed_rows, tab);
-    if tab_takes_available(tab) && app.plugins.show_available {
+    if tab_takes_available(tab) && !app.plugins.hide_available {
         rows.extend(rows_for_tab(&app.plugins.available_rows, tab));
     }
     rows
@@ -822,13 +896,17 @@ fn open_marketplace_overlay(app: &mut App) -> bool {
 /// `visible_rows` positionally, matched back to its plugin by id - so
 /// the overlay can never open a different plugin than the one
 /// highlighted. A load-failed row states its reason instead of
-/// opening an overlay nothing can act on.
+/// opening an overlay nothing can act on; an available catalog row
+/// opens the install scope picker for its plugin.
 fn open_installed_actions_overlay(app: &mut App) -> bool {
     let tab = ExtensionsTab::Installed;
     let selected = app.plugins.selected_index_for(tab);
     let Some(row) = visible_rows(app, tab).into_iter().nth(selected).cloned() else {
         return false;
     };
+    if row.state == RowState::AvailableNotInstalled {
+        return open_plugin_install_overlay(app, &row.id);
+    }
     if let RowState::LoadFailed(reason) = &row.state {
         // No overlay can act on a broken install; say why instead of
         // silently swallowing the keypress.
@@ -2458,6 +2536,7 @@ fn move_selection(app: &mut App, delta: isize) {
     let len = visible_row_count(app, tab);
     if len == 0 {
         app.plugins.set_selected_index_for(tab, 0);
+        clamp_scroll(app, tab);
         return;
     }
     let current = app.plugins.selected_index_for(tab);
@@ -2467,6 +2546,7 @@ fn move_selection(app: &mut App, delta: isize) {
         current.saturating_add(delta.cast_unsigned()).min(len.saturating_sub(1))
     };
     app.plugins.set_selected_index_for(tab, next);
+    clamp_scroll(app, tab);
 }
 
 fn clamp_index(current: usize, len: usize) -> usize {
@@ -2785,44 +2865,14 @@ mod tests {
         assert!(app.config.overlay.is_none());
     }
 
-    /// The streams stay separate: an available-not-installed plugin is
-    /// catalog, not install - it never renders on the Installed tab,
-    /// and Enter there can never open an install overlay for it. The
-    /// catalog's install seam is the component rows behind the
-    /// Available toggle.
+    /// The streams stay separate in the pane state, but the component
+    /// tabs draw both: the catalog row rides the Skills tab's default
+    /// view, and the Available toggle removes it.
     #[test]
-    fn the_installed_tab_never_renders_the_available_stream() {
+    fn the_component_tabs_render_the_available_stream_by_default() {
         let mut app = App::test_default();
-        app.plugins.installed.push(InstalledPluginEntry {
-            id: "superpowers@probe".to_owned(),
-            version: Some("6.3.0".to_owned()),
-            scope: "user".to_owned(),
-            enabled: true,
-            installed_at: None,
-            last_updated: None,
-            project_path: None,
-            capability: PluginCapability::Skill,
-        });
+        app.plugins.active_tab = ExtensionsTab::Skills;
         app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
-        app.plugins.available_rows =
-            vec![plugin_row("gone@claude-night-market", RowState::AvailableNotInstalled)];
-        app.plugins.set_selected_index_for(ExtensionsTab::Installed, 0);
-
-        assert_eq!(
-            visible_rows(&app, ExtensionsTab::Installed)
-                .iter()
-                .map(|row| row.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["superpowers@probe"],
-            "the catalog row stays off the Installed tab"
-        );
-        assert!(open_installed_actions_overlay(&mut app));
-        assert!(
-            app.config.installed_plugin_actions_overlay().is_some(),
-            "Enter opens the installed plugin's actions, not an install overlay"
-        );
-
-        // Behind the toggle, the Skills tab carries the catalog rows.
         assert!(visible_rows(&app, ExtensionsTab::Skills).is_empty());
         app.plugins.available_rows.push(ExtensionRow {
             id: "skill:gone:ghost-skill".to_owned(),
@@ -2834,37 +2884,198 @@ mod tests {
             state: RowState::AvailableNotInstalled,
             detail: None,
         });
-        app.plugins.show_available = true;
         assert_eq!(
             visible_rows(&app, ExtensionsTab::Skills)
                 .iter()
                 .map(|row| row.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["skill:gone:ghost-skill"],
-            "the toggle reveals the available stream on component tabs"
+            "the available stream renders on component tabs by default"
         );
-        app.plugins.show_available = false;
+        app.plugins.hide_available = true;
         assert!(visible_rows(&app, ExtensionsTab::Skills).is_empty());
     }
 
-    /// `a` flips the Available toggle on a component tab and resets the
-    /// selection; on the Installed tab it does nothing - the catalog
-    /// has no seam there.
+    /// The Installed tab renders the available catalog after the
+    /// installed rows - a row that cannot be told apart from an
+    /// install is the complaint being fixed.
     #[test]
-    fn the_available_toggle_key_flips_only_component_tabs() {
+    fn the_installed_tab_renders_the_available_catalog_after_the_installed_rows() {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = ExtensionsTab::Installed;
+        app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+        app.plugins.available_rows = vec![
+            plugin_row("blabbermouth@claude-night-market", RowState::AvailableNotInstalled),
+            plugin_row("sec-audit@trailofbits", RowState::AvailableNotInstalled),
+        ];
+
+        let names: Vec<String> = visible_rows(&app, ExtensionsTab::Installed)
+            .into_iter()
+            .map(|row| row.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["superpowers".to_owned(), "blabbermouth".to_owned(), "sec-audit".to_owned()],
+            "installed rows first, then the catalog"
+        );
+
+        assert!(press(&mut app, KeyCode::Char('a')));
+        assert_eq!(
+            visible_rows(&app, ExtensionsTab::Installed)
+                .into_iter()
+                .map(|row| row.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["superpowers".to_owned()],
+            "a hides the catalog on the Installed tab too"
+        );
+    }
+
+    /// Enter on an available Installed row opens the install scope
+    /// picker for that plugin, not the installed-actions overlay.
+    #[test]
+    fn installed_tab_enter_on_an_available_row_opens_the_install_overlay() {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = ExtensionsTab::Installed;
+        app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
+        app.plugins.available_rows =
+            vec![plugin_row("blabbermouth@claude-night-market", RowState::AvailableNotInstalled)];
+        app.plugins.set_selected_index_for(ExtensionsTab::Installed, 1);
+
+        assert!(open_installed_actions_overlay(&mut app));
+        let overlay = app.config.plugin_install_overlay().expect("the install scope picker opens");
+        assert_eq!(
+            overlay.plugin_id, "blabbermouth@claude-night-market",
+            "the picker targets the selected plugin"
+        );
+    }
+
+    /// Enter on the Mcps tab opens the selected server's details
+    /// overlay, resolved through the tab's SHARED selection.
+    #[test]
+    fn mcps_tab_enter_opens_the_selected_servers_details() {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = ExtensionsTab::Mcps;
+        app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        let server = |name: &str| forge_primitives::McpServerStatus {
+            name: name.to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: Some(
+                serde_json::json!({"type": "stdio", "command": "npx", "args": [], "env": {}}),
+            ),
+            scope: Some("user".to_owned()),
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        };
+        app.mcp_mut().expect("active session").servers = vec![server("alpha"), server("beta")];
+        app.plugins.set_selected_index_for(ExtensionsTab::Mcps, 1);
+
+        assert!(press(&mut app, KeyCode::Enter));
+        let overlay = app.config.mcp_details_overlay().expect("the details overlay opens");
+        assert_eq!(overlay.server_name, "beta", "the SHARED selection resolves the server");
+    }
+
+    /// `r` on the Mcps tab also re-asks for the MCP snapshot - the
+    /// refresh clears the held server list and marks the request in
+    /// flight. On other tabs the MCP state is untouched.
+    #[test]
+    fn the_r_key_refreshes_the_mcp_snapshot_on_the_mcps_tab() {
+        let mut app = crate::app::App::test_default();
+        app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        let server = || forge_primitives::McpServerStatus {
+            name: "alpha".to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: Some("user".to_owned()),
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        };
+        app.mcp_mut().expect("active session").servers = vec![server()];
+        app.plugins.active_tab = ExtensionsTab::Mcps;
+
+        assert!(press(&mut app, KeyCode::Char('r')));
+        assert!(
+            app.mcp().expect("active session").servers.is_empty(),
+            "the refresh cleared the held server list"
+        );
+
+        app.mcp_mut().expect("active session").servers = vec![server()];
+        app.plugins.active_tab = ExtensionsTab::Skills;
+        assert!(press(&mut app, KeyCode::Char('r')));
+        assert_eq!(
+            app.mcp().expect("active session").servers.len(),
+            1,
+            "the inventory refresh on other tabs leaves the MCP state alone"
+        );
+    }
+
+    /// The available stream renders by default on component tabs,
+    /// after the installed rows; `a` hides it and `a` again shows it.
+    #[test]
+    fn the_available_stream_renders_by_default_and_a_hides_it() {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = ExtensionsTab::Skills;
+        app.plugins.installed_rows = vec![ExtensionRow {
+            kind: ExtensionKind::Skill,
+            name: "brainstorming".to_owned(),
+            ..plugin_row("superpowers:brainstorming", RowState::Current)
+        }];
+        app.plugins.available_rows = vec![ExtensionRow {
+            kind: ExtensionKind::Skill,
+            name: "ghost-skill".to_owned(),
+            ..plugin_row("superpowers:ghost-skill", RowState::AvailableNotInstalled)
+        }];
+
+        let ids = |app: &crate::app::App| -> Vec<String> {
+            visible_rows(app, ExtensionsTab::Skills)
+                .into_iter()
+                .map(|row| row.name.clone())
+                .collect()
+        };
+        assert_eq!(
+            ids(&app),
+            vec!["brainstorming".to_owned(), "ghost-skill".to_owned()],
+            "available rows render after the installed rows without a toggle"
+        );
+
+        assert!(press(&mut app, KeyCode::Char('a')));
+        assert_eq!(ids(&app), vec!["brainstorming".to_owned()], "a hides the available stream");
+
+        assert!(press(&mut app, KeyCode::Char('a')));
+        assert_eq!(
+            ids(&app),
+            vec!["brainstorming".to_owned(), "ghost-skill".to_owned()],
+            "a again shows the available stream"
+        );
+    }
+
+    /// `a` flips the Available toggle on a row-backed tab and resets
+    /// the selection; on MCPs and Marketplaces it does nothing - those
+    /// tabs carry no available stream at all.
+    #[test]
+    fn the_available_toggle_key_flips_only_row_backed_tabs() {
         let mut app = app_with_focused_search(ExtensionsTab::Skills);
         app.plugins.search_focused = false;
         app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
         app.plugins.set_selected_index_for(ExtensionsTab::Skills, 0);
 
         assert!(press(&mut app, KeyCode::Char('a')));
-        assert!(app.plugins.show_available, "a reveals the available stream");
+        assert!(app.plugins.hide_available, "a hides the available stream");
         assert_eq!(app.plugins.selected_index_for(ExtensionsTab::Skills), 0);
 
-        app.plugins.active_tab = ExtensionsTab::Installed;
-        app.plugins.show_available = false;
-        assert!(press(&mut app, KeyCode::Char('a')));
-        assert!(!app.plugins.show_available, "the Installed tab has no Available toggle");
+        for tab in [ExtensionsTab::Mcps, ExtensionsTab::Marketplaces] {
+            app.plugins.active_tab = tab;
+            app.plugins.hide_available = false;
+            assert!(press(&mut app, KeyCode::Char('a')));
+            assert!(!app.plugins.hide_available, "{tab:?} has no Available toggle");
+        }
     }
 
     /// The partition is `installed || load_error.is_some()`: a refresh
@@ -2935,13 +3146,13 @@ mod tests {
         app.plugins.installed_rows = vec![plugin_row("superpowers@probe", RowState::Current)];
         app.plugins.available_rows =
             vec![plugin_row("gone@claude-night-market", RowState::AvailableNotInstalled)];
-        app.plugins.show_available = true;
+        app.plugins.hide_available = true;
 
         reset_for_session_change(&mut app);
 
         assert!(app.plugins.installed_rows.is_empty(), "installed rows cleared");
         assert!(app.plugins.available_rows.is_empty(), "available rows cleared");
-        assert!(!app.plugins.show_available, "the toggle resets");
+        assert!(!app.plugins.hide_available, "the toggle resets to the shown default");
     }
 
     /// Enter on a load-failed plugin states the failure instead of
@@ -3884,6 +4095,46 @@ mod tests {
 
     fn press(app: &mut crate::app::App, code: KeyCode) -> bool {
         handle_key(app, KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    /// PageUp/PageDown move the selection by a page and Home/End jump
+    /// to the ends; the scroll offset follows so the selection stays
+    /// inside the rendered window.
+    #[test]
+    fn the_page_and_end_keys_move_the_selection_and_the_window() {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = ExtensionsTab::Skills;
+        app.cached_frame_area = ratatui::layout::Rect::new(0, 0, 160, 40);
+        app.plugins.installed_rows = (0..60)
+            .map(|n| ExtensionRow {
+                kind: ExtensionKind::Skill,
+                name: format!("skill-{n:02}"),
+                ..plugin_row(&format!("superpowers:skill-{n:02}"), RowState::Current)
+            })
+            .collect();
+        let len = visible_row_count(&app, ExtensionsTab::Skills);
+        assert_eq!(len, 60);
+
+        assert!(press(&mut app, KeyCode::End));
+        assert_eq!(app.plugins.selected_index_for(ExtensionsTab::Skills), 59, "End jumps to last");
+
+        assert!(press(&mut app, KeyCode::PageUp));
+        assert_eq!(
+            app.plugins.selected_index_for(ExtensionsTab::Skills),
+            59 - page_size(&app, ExtensionsTab::Skills),
+            "PageUp moves back a page"
+        );
+
+        assert!(press(&mut app, KeyCode::PageDown));
+        assert_eq!(
+            app.plugins.selected_index_for(ExtensionsTab::Skills),
+            59,
+            "PageDown moves forward a page"
+        );
+
+        assert!(press(&mut app, KeyCode::Home));
+        assert_eq!(app.plugins.selected_index_for(ExtensionsTab::Skills), 0, "Home jumps to first");
+        assert_eq!(app.plugins.scroll_offset_for(ExtensionsTab::Skills), 0, "the window follows");
     }
 
     #[test]
