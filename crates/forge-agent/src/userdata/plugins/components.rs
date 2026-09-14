@@ -1336,7 +1336,8 @@ mod tests {
         // custom: manifest declares a ui-ux-pro-max-shaped skills
         // container plus array agents/commands and inline MCP; its
         // conventional dirs carry UNDECLARED extras that must not count,
-        // and hooks is [] beside a populated hooks/hooks.json.
+        // hooks is [] beside a populated hooks/hooks.json, and one skill
+        // sits on both sides to pin the union dedup.
         let custom = cache.join("probe-market").join("custom").join("1.0.0");
         write(
             &custom.join(".claude-plugin/plugin.json"),
@@ -1348,6 +1349,7 @@ mod tests {
                 "mcpServers":{"db":{"command":"db"}}}"#,
         );
         skill(&custom.join("skills/conv/SKILL.md"));
+        skill(&custom.join("meta/skills/conv/SKILL.md"));
         skill(&custom.join("meta/skills/meta-a/SKILL.md"));
         skill(&custom.join("meta/skills/meta-b/SKILL.md"));
         write(&custom.join("meta/agents/one.md"), "# one");
@@ -2245,16 +2247,16 @@ mod tests {
 
     /// A manifest-declared skills directory is a container of skills
     /// (the ui-ux-pro-max shape), scanned alongside the conventional
-    /// `skills/`, deduped by name.
+    /// `skills/`; a skill present on both sides counts once.
     #[test]
-    fn a_declared_skills_container_scans_alongside_the_conventional_dir() {
+    fn a_declared_skills_container_joins_the_conventional_dir_deduped() {
         let fixture = fixture();
         let rows = scan_fixture(&fixture);
         let custom = by_plugin(&rows, "custom@probe-market");
         assert_eq!(
             custom.skills,
             vec!["conv", "meta-a", "meta-b"],
-            "the container's skills join the conventional one: {custom:?}"
+            "the shared skill renders once, not once per side: {custom:?}"
         );
     }
 
