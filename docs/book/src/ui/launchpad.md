@@ -107,7 +107,7 @@ The launchpad blocks project-row clicks until every account reaches a terminal s
               <span class="dim">no usable accounts</span>
       <span class="dim">────────────────────────────────────────────────────────</span>
 
- <span class="dim">↑↓  navigate     enter  ⏳ loading accounts…     ?  help     ctrl+q  quit</span></pre>
+ <span class="dim">↑↓  navigate     enter  ⛔ gateway failed: gateway port 8787 is taken; forge cannot redirect session traffic without it     ?  help     ctrl+q  quit</span></pre>
 
 </div>
 
@@ -118,7 +118,7 @@ The launchpad blocks project-row clicks until every account reaches a terminal s
 | `⚠` red | Bailed on an auth failure (rejected or expired credentials; repair is an env edit plus a restart) |
 | `⚠` yellow | Bailed on a transient failure (rate limit, unreachable endpoint, malformed response; the pollers heal it) |
 
-A bailed chip appends its reason after the name - `- rate limited (retry after 3600s)`, `- unauthorized` for auth classes. While any account is non-terminal every project row downgrades to a blocked click and the footer reads `⏳ loading accounts...`; once the gate lifts rows un-dim and Enter resumes.
+A bailed chip appends its reason after the name - `- rate limited (retry after 3600s)`, `- unauthorized` for auth classes. While any account is non-terminal every project row downgrades to a blocked click and the footer reads `⏳ loading accounts...`; once the gate lifts rows un-dim and Enter resumes. The gate also covers the gateway's listener: when the port is taken the footer reads `⛔ gateway failed: ...` naming the port and the error instead, and it will not open this run - every spawned session's base URL names that port, so forge restarts rather than pointing children at an address nothing serves. Spawn attempts made while the gate is shut (boot-wave, workers, crons) are refused at the spawn entries with the reason attached.
 
 <details>
 <summary>Per-project pool and account chips</summary>

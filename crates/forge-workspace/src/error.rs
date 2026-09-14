@@ -61,6 +61,12 @@ pub enum WorkspaceError {
     ProjectInvalidPermissionMode { path: PathBuf, name: String, value: String },
 
     #[error(
+        "gateway port 0 in forge.toml at {} is not usable; the port is fixed, not OS-assigned",
+        path.display()
+    )]
+    GatewayPortInvalid { path: PathBuf },
+
+    #[error(
         "account '{name}' in forge.toml at {} declares a base-url provider but has no ANTHROPIC_BASE_URL in [accounts.env]",
         path.display()
     )]

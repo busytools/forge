@@ -645,6 +645,7 @@ mod tests {
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
 
@@ -893,6 +894,7 @@ mod tests {
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
 
@@ -931,6 +933,7 @@ mod tests {
                 handle: Arc::new(handle),
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
+                registration: None,
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");

@@ -145,12 +145,27 @@ impl Workspace {
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
+        let accounts = std::sync::Arc::new(forge_gateway::AccountPool::empty_for_test());
+        let gateway = std::sync::Arc::new(forge_gateway::forward::Gateway::new(
+            std::sync::Arc::clone(&accounts),
+        ));
         let workspace = Self {
             config_dir,
             config,
             catalog: Arc::new(Mutex::new(HashMap::new())),
             pool: Mutex::new(HashMap::new()),
-            accounts: std::sync::Arc::new(forge_gateway::AccountPool::empty_for_test()),
+            accounts,
+            gateway,
+            // A stub workspace pretends the listener is bound: the
+            // tests driving it never open a socket, and the boot gate
+            // must read open for spawns to proceed.
+            gateway_ready: std::sync::atomic::AtomicBool::new(true),
+            gateway_port: crate::config::DEFAULT_GATEWAY_PORT,
+            gateway_url: Mutex::new(Some(format!(
+                "http://127.0.0.1:{}",
+                crate::config::DEFAULT_GATEWAY_PORT
+            ))),
+            gateway_bind_error: Mutex::new(None),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),

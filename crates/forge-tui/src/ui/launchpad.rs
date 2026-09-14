@@ -946,16 +946,24 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {
     // currently-focused row. When the loading gate is down, every
     // row reads as Block - the label surfaces that as "loading
     // accounts" instead of the spawn-busy "spawning…" so the user
-    // understands the wait is a one-off, not per-row.
-    let loading = app.workspace.as_ref().is_some_and(|w| !w.all_accounts_loaded());
-    let enter_label = if loading {
-        "enter  ⏳ loading accounts…"
+    // understands the wait is a one-off, not per-row. A gateway bind
+    // failure is NOT a wait: the gate will never open this run, so
+    // the label says so and names the port instead of implying one.
+    let gateway_error = app.workspace.as_ref().and_then(|w| w.gateway_bind_error());
+    let loading = app
+        .workspace
+        .as_ref()
+        .is_some_and(|w| w.gateway_bind_error().is_none() && !w.all_accounts_loaded());
+    let enter_label = if let Some(error) = gateway_error {
+        format!("enter  ⛔ gateway failed: {error}")
+    } else if loading {
+        "enter  ⏳ loading accounts…".to_owned()
     } else {
         match selected_row.map(|r| effective_click_intent(app, &r.project_name, r.lifecycle)) {
-            Some(ClickIntent::SpawnAndWait) => "enter  start",
-            Some(ClickIntent::Block) => "enter  ⏳ spawning…",
-            Some(ClickIntent::Retry) => "r  retry",
-            Some(ClickIntent::EnterChat) | None => "enter  open",
+            Some(ClickIntent::SpawnAndWait) => "enter  start".to_owned(),
+            Some(ClickIntent::Block) => "enter  ⏳ spawning…".to_owned(),
+            Some(ClickIntent::Retry) => "r  retry".to_owned(),
+            Some(ClickIntent::EnterChat) | None => "enter  open".to_owned(),
         }
     };
     let hint = format!(" ↑↓  navigate     {enter_label}     ?  help     ctrl+q  quit");

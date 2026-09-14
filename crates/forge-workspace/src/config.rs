@@ -63,6 +63,9 @@ struct ForgeToml {
     /// Absent section → all defaults, which leaves auto-update off.
     #[serde(default)]
     plugins: PluginSettings,
+    /// Optional `[gateway]` section - the inference listener's port.
+    #[serde(default)]
+    gateway: Option<GatewaySettings>,
     /// Ghost of the deleted `[workers]` section: read only so a stale
     /// synced forge.toml still carrying it warns at load instead of
     /// sitting there silently ignored.
@@ -103,6 +106,29 @@ struct ProjectSettings {
     /// spawns. Absent resolves to `auto`.
     #[serde(default)]
     permission_mode: Option<String>,
+}
+
+/// One `[gateway]` table. Unknown fields are rejected so a mistyped
+/// key fails the load instead of being ignored.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GatewaySettings {
+    /// The inference listener's port. Fixed by default.
+    #[serde(default)]
+    port: Option<u16>,
+}
+
+impl GatewaySettings {
+    /// The resolved port, refusing 0: the port is fixed by design, and
+    /// a 0 here would ask the OS for an ephemeral port no child was
+    /// ever told about.
+    fn resolved_port(&self, path: &Path) -> Result<u16, WorkspaceError> {
+        match self.port {
+            Some(0) => Err(WorkspaceError::GatewayPortInvalid { path: path.to_path_buf() }),
+            Some(port) => Ok(port),
+            None => Ok(DEFAULT_GATEWAY_PORT),
+        }
+    }
 }
 
 impl ProjectSettings {
@@ -230,7 +256,15 @@ pub(crate) struct LoadedConfig {
     /// `[plugins]` section knobs. Absent section means auto-update is
     /// off.
     pub plugins: PluginSettings,
+    /// The port the gateway's inference listener binds. Absent
+    /// `[gateway]` section keeps the default.
+    pub gateway_port: u16,
 }
+
+/// The port the gateway's listener binds when `[gateway] port` is
+/// absent. Fixed, not OS-assigned: every session's base URL names it,
+/// so a drift would point children at an address nothing serves.
+pub const DEFAULT_GATEWAY_PORT: u16 = 8787;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedProject {
@@ -317,6 +351,7 @@ impl LoadedConfig {
             gotify: None,
             slack: Vec::new(),
             plugins: PluginSettings::default(),
+            gateway_port: DEFAULT_GATEWAY_PORT,
         }
     }
 }
@@ -556,6 +591,11 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         alpha.iter().copied().find(|&i| projects[i].auto_start).unwrap_or_else(|| alpha[0])
     };
 
+    let gateway_port = match &parsed.gateway {
+        Some(gateway) => gateway.resolved_port(&path)?,
+        None => DEFAULT_GATEWAY_PORT,
+    };
+
     Ok(LoadedConfig {
         projects,
         default_index,
@@ -565,6 +605,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         gotify: parsed.gotify,
         slack: parsed.slack,
         plugins: parsed.plugins,
+        gateway_port,
     })
 }
 
@@ -691,6 +732,48 @@ display_name = "Stargate"
 config_dir = "/tmp/forge-test-config-stargate"
 provider = "anthropic"
 "#
+    }
+
+    /// `[gateway] port = 0` is refused at load: the port is fixed, and
+    /// a 0 would ask the OS for an ephemeral port no child was told
+    /// about.
+    #[test]
+    fn gateway_port_zero_is_refused_at_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "/tmp/forge-test-config-stargate"
+provider = "anthropic"
+
+[gateway]
+port = 0
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("port 0 must not load");
+        assert!(
+            err.to_string().contains("port 0"),
+            "the error names the unusable port, got: {err}",
+        );
+    }
+
+    #[test]
+    fn gateway_port_defaults_when_the_section_is_absent() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("absent section loads");
+        assert_eq!(config.gateway_port, DEFAULT_GATEWAY_PORT);
     }
 
     #[test]
