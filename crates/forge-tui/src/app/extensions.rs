@@ -25,7 +25,7 @@ pub mod updates;
 
 pub use state::{
     ExtensionsTab, TabState, available_count_for_tab, count_for_tab, row_matches, rows_for_tab,
-    tab_takes_available, update_all_count,
+    tab_takes_available, update_all_count, window_offset,
 };
 
 // Plugin registry types defined in forge_primitives::plugins;
@@ -95,6 +95,14 @@ impl PluginsState {
 
     pub fn set_selected_index_for(&mut self, tab: ExtensionsTab, index: usize) {
         self.tab_state.selected[tab.index()] = index;
+    }
+
+    pub fn scroll_offset_for(&self, tab: ExtensionsTab) -> usize {
+        self.tab_state.scroll[tab.index()]
+    }
+
+    pub fn set_scroll_offset_for(&mut self, tab: ExtensionsTab, offset: usize) {
+        self.tab_state.scroll[tab.index()] = offset;
     }
 
     pub fn search_query_for(&self, tab: ExtensionsTab) -> String {
@@ -202,6 +210,26 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             } else {
                 move_selection(app, 1);
             }
+            true
+        }
+        (KeyCode::PageDown, KeyModifiers::NONE) if !app.plugins.search_focused => {
+            move_selection(app, page_size(app, app.plugins.active_tab).cast_signed());
+            true
+        }
+        (KeyCode::PageUp, KeyModifiers::NONE) if !app.plugins.search_focused => {
+            move_selection(app, -(page_size(app, app.plugins.active_tab).cast_signed()));
+            true
+        }
+        (KeyCode::Home, KeyModifiers::NONE) if !app.plugins.search_focused => {
+            app.plugins.set_selected_index_for(app.plugins.active_tab, 0);
+            clamp_scroll(app, app.plugins.active_tab);
+            true
+        }
+        (KeyCode::End, KeyModifiers::NONE) if !app.plugins.search_focused => {
+            let len = visible_row_count(app, app.plugins.active_tab);
+            app.plugins
+                .set_selected_index_for(app.plugins.active_tab, len.saturating_sub(1));
+            clamp_scroll(app, app.plugins.active_tab);
             true
         }
         (KeyCode::Enter, _) if app.plugins.search_focused => {
@@ -674,7 +702,55 @@ pub(crate) fn clamp_selection(app: &mut App) {
         let len = visible_row_count(app, tab);
         let selected = app.plugins.selected_index_for(tab);
         app.plugins.set_selected_index_for(tab, clamp_index(selected, len));
+        clamp_scroll(app, tab);
     }
+}
+
+/// Re-seat the tab's scroll offset so its selection stays inside the
+/// rendered window. The render pass applies the same rule against the
+/// true viewport; this keeps the stored offset honest for paging.
+fn clamp_scroll(app: &mut App, tab: ExtensionsTab) {
+    let height = list_viewport_height(app, tab);
+    let offset = window_offset(
+        app.plugins.selected_index_for(tab),
+        app.plugins.scroll_offset_for(tab),
+        visible_row_count(app, tab),
+        height,
+    );
+    app.plugins.set_scroll_offset_for(tab, offset);
+}
+
+/// The rows one tab's list viewport holds at the current frame size:
+/// the page the PageUp/PageDown keys move by. The render pass's
+/// windowing stays the visibility authority even if the frame has not
+/// been painted at this size yet.
+fn list_viewport_height(app: &App, tab: ExtensionsTab) -> usize {
+    let top = u16::from(search_enabled(tab)) + 1;
+    let chrome = 6 + top + panel_block_height(app);
+    usize::from(app.cached_frame_area.height.saturating_sub(chrome))
+}
+
+/// Rows one PageUp/PageDown moves the selection by.
+fn page_size(app: &App, tab: ExtensionsTab) -> usize {
+    list_viewport_height(app, tab).max(1)
+}
+
+/// Rows of the update panel shown at once; the rest collapse into a
+/// count line so the panel cannot eat the list.
+pub(crate) const PANEL_ROW_CAP: usize = 10;
+
+/// The docked update panel's height; zero while no run is on the page.
+/// Shared by the render pass and the viewport estimate above.
+pub(crate) fn panel_block_height(app: &App) -> u16 {
+    let Some(run) = app.plugins.update_run.as_ref() else {
+        return 0;
+    };
+    let mut height = 2; // header + blank separator
+    height += u16::try_from(run.rows.len().min(PANEL_ROW_CAP)).unwrap_or(u16::MAX);
+    if run.rows.len() > PANEL_ROW_CAP {
+        height += 1;
+    }
+    height
 }
 
 /// The rows one tab renders: the flattened extension rows for the
@@ -2458,6 +2534,7 @@ fn move_selection(app: &mut App, delta: isize) {
     let len = visible_row_count(app, tab);
     if len == 0 {
         app.plugins.set_selected_index_for(tab, 0);
+        clamp_scroll(app, tab);
         return;
     }
     let current = app.plugins.selected_index_for(tab);
@@ -2467,6 +2544,7 @@ fn move_selection(app: &mut App, delta: isize) {
         current.saturating_add(delta.cast_unsigned()).min(len.saturating_sub(1))
     };
     app.plugins.set_selected_index_for(tab, next);
+    clamp_scroll(app, tab);
 }
 
 fn clamp_index(current: usize, len: usize) -> usize {
@@ -3884,6 +3962,46 @@ mod tests {
 
     fn press(app: &mut crate::app::App, code: KeyCode) -> bool {
         handle_key(app, KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    /// PageUp/PageDown move the selection by a page and Home/End jump
+    /// to the ends; the scroll offset follows so the selection stays
+    /// inside the rendered window.
+    #[test]
+    fn the_page_and_end_keys_move_the_selection_and_the_window() {
+        let mut app = crate::app::App::test_default();
+        app.plugins.active_tab = ExtensionsTab::Skills;
+        app.cached_frame_area = ratatui::layout::Rect::new(0, 0, 160, 40);
+        app.plugins.installed_rows = (0..60)
+            .map(|n| ExtensionRow {
+                kind: ExtensionKind::Skill,
+                name: format!("skill-{n:02}"),
+                ..plugin_row(&format!("superpowers:skill-{n:02}"), RowState::Current)
+            })
+            .collect();
+        let len = visible_row_count(&app, ExtensionsTab::Skills);
+        assert_eq!(len, 60);
+
+        assert!(press(&mut app, KeyCode::End));
+        assert_eq!(app.plugins.selected_index_for(ExtensionsTab::Skills), 59, "End jumps to last");
+
+        assert!(press(&mut app, KeyCode::PageUp));
+        assert_eq!(
+            app.plugins.selected_index_for(ExtensionsTab::Skills),
+            59 - page_size(&app, ExtensionsTab::Skills),
+            "PageUp moves back a page"
+        );
+
+        assert!(press(&mut app, KeyCode::PageDown));
+        assert_eq!(
+            app.plugins.selected_index_for(ExtensionsTab::Skills),
+            59,
+            "PageDown moves forward a page"
+        );
+
+        assert!(press(&mut app, KeyCode::Home));
+        assert_eq!(app.plugins.selected_index_for(ExtensionsTab::Skills), 0, "Home jumps to first");
+        assert_eq!(app.plugins.scroll_offset_for(ExtensionsTab::Skills), 0, "the window follows");
     }
 
     #[test]

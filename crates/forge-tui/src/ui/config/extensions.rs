@@ -7,8 +7,8 @@ use super::theme;
 use crate::app::App;
 use crate::app::extensions::skills::render_extension_rows;
 use crate::app::extensions::{
-    ExtensionsTab, available_count_for_tab, count_for_tab, search_enabled, tab_takes_available,
-    update_all_count, updates, visible_rows,
+    ExtensionsTab, PANEL_ROW_CAP, available_count_for_tab, count_for_tab, panel_block_height,
+    search_enabled, tab_takes_available, update_all_count, updates, visible_rows, window_offset,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -171,24 +171,17 @@ fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
             })
             .collect::<Vec<_>>()
     };
-    frame.render_widget(Paragraph::new(rendered).wrap(Wrap { trim: false }), list_area);
-}
-
-/// Rows of the update panel shown at once; the rest collapse into a
-/// count line so the panel cannot eat the list.
-const PANEL_ROW_CAP: usize = 10;
-
-/// The docked panel's height; zero while no run is on the page.
-fn panel_block_height(app: &App) -> u16 {
-    let Some(run) = app.plugins.update_run.as_ref() else {
-        return 0;
-    };
-    let mut height = 2; // header + blank separator
-    height += u16::try_from(run.rows.len().min(PANEL_ROW_CAP)).unwrap_or(u16::MAX);
-    if run.rows.len() > PANEL_ROW_CAP {
-        height += 1;
-    }
-    height
+    // The tab's scroll offset windows the list; re-derived against the
+    // true viewport here so the selection can never leave the screen.
+    let height = usize::from(list_area.height);
+    let offset = window_offset(
+        app.plugins.selected_index_for(tab),
+        app.plugins.scroll_offset_for(tab),
+        rendered.len(),
+        height,
+    );
+    let windowed: Vec<_> = rendered.into_iter().skip(offset).take(height).collect();
+    frame.render_widget(Paragraph::new(windowed).wrap(Wrap { trim: false }), list_area);
 }
 
 /// The docked Updates panel at the page's bottom: one row per action

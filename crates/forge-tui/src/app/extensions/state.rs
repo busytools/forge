@@ -155,6 +155,10 @@ pub fn available_count_for_tab(available_rows: &[ExtensionRow], tab: ExtensionsT
 pub struct TabState {
     pub search_queries: Vec<InputState>,
     pub selected: Vec<usize>,
+    /// Per-tab scroll offset: the first row the tab's list renders.
+    /// Rendered through [`window_offset`], so the selection can never
+    /// leave the visible window.
+    pub scroll: Vec<usize>,
 }
 
 impl Default for TabState {
@@ -168,7 +172,26 @@ impl TabState {
         Self {
             search_queries: (0..tabs).map(|_| InputState::new()).collect(),
             selected: vec![0; tabs],
+            scroll: vec![0; tabs],
         }
+    }
+}
+
+/// The window top that keeps `selected` visible: `offset` as long as
+/// it already does, moved the minimum distance otherwise, and never
+/// past the last full window of `len` rows.
+pub fn window_offset(selected: usize, offset: usize, len: usize, height: usize) -> usize {
+    if len == 0 || height == 0 {
+        return 0;
+    }
+    let max_top = len.saturating_sub(height);
+    let offset = offset.min(max_top);
+    if selected < offset {
+        selected
+    } else if selected >= offset + height {
+        (selected + 1 - height).min(max_top)
+    } else {
+        offset
     }
 }
 

@@ -403,8 +403,14 @@ pub(crate) fn snapshot_app() -> App {
 /// The page rendered at 160x40, one string per frame row: trailing
 /// whitespace trimmed and the page scaffold's right box edge dropped,
 /// so a pin holds the page's own text and nothing else.
-pub(crate) fn render_frame(mut app: App) -> Vec<String> {
-    let backend = TestBackend::new(160, 40);
+pub(crate) fn render_frame(app: App) -> Vec<String> {
+    render_frame_at(app, 160, 40)
+}
+
+/// The page at an arbitrary geometry, for tests that exercise the
+/// list window rather than pin it.
+pub(crate) fn render_frame_at(mut app: App, width: u16, height: u16) -> Vec<String> {
+    let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
         .draw(|frame| {
@@ -500,6 +506,24 @@ mod tests {
     #[test]
     fn the_marketplaces_tab_snapshot() {
         pinned("marketplaces", &snapshot(ExtensionsTab::Marketplaces, false));
+    }
+
+    /// Selecting the last row scrolls the window so the selected row
+    /// renders: the list is a window over the tab's rows, not a
+    /// clipped paragraph.
+    #[test]
+    fn selecting_the_last_row_scrolls_it_into_view() {
+        let mut app = snapshot_app();
+        app.plugins.active_tab = ExtensionsTab::Skills;
+        let rows = crate::app::extensions::visible_rows(&app, ExtensionsTab::Skills);
+        let first = rows.first().map(|row| row.name.clone()).expect("rows");
+        let last = rows.last().map(|row| row.name.clone()).expect("rows");
+        app.plugins.set_selected_index_for(ExtensionsTab::Skills, rows.len() - 1);
+
+        let frame = render_frame_at(app, 160, 12);
+        let text = frame.join("\n");
+        assert!(text.contains(&last), "the selected last row renders: {text}");
+        assert!(!text.contains(&first), "the top rows scrolled out: {text}");
     }
 
     #[test]
