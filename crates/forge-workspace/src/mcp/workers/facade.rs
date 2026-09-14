@@ -226,6 +226,26 @@ pub struct WorkerIdentity {
     pub org: String,
 }
 
+/// Whether a project's worker cap came from its
+/// `[projects.<name>] max_workers` override or the built-in default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerCapSource {
+    ProjectMaxWorkers,
+    Default,
+}
+
+/// Point-in-time worker-capacity read for the caller's project: the
+/// cap the spawn path enforces, how many workers are live under it,
+/// and where the cap came from. Produced by
+/// [`WorkerFacade::capacity`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerCapacity {
+    pub project: String,
+    pub cap: usize,
+    pub live: usize,
+    pub cap_source: WorkerCapSource,
+}
+
 /// The narrow workspace-state surface workers MCP Tool impls
 /// depend on.
 ///
@@ -300,6 +320,14 @@ pub trait WorkerFacade: Send + Sync {
     /// Snapshot of every worker in the caller's project. Returns an
     /// empty Vec when the caller resolves to no project.
     fn list_workers(&self, caller: &SessionKey) -> Vec<WorkerStatus>;
+
+    /// The caller's project worker capacity: the cap the spawn path
+    /// enforces (`[projects.<name>] max_workers`, else
+    /// `DEFAULT_MAX_WORKERS_PER_PROJECT`) paired with the live count.
+    /// A plain data read - the same one the spawn path's cap check
+    /// performs. Returns `None` when the caller resolves to no
+    /// project.
+    fn capacity(&self, caller: &SessionKey) -> Option<WorkerCapacity>;
 
     /// Dispatch a worker-bound wrapped prompt. Returns immediately
     /// with `Delivered` (target was in `live_workers` and the
@@ -680,6 +708,23 @@ impl WorkerFacade for ProdWorkerFacade {
             .collect()
     }
 
+    fn capacity(&self, caller: &SessionKey) -> Option<WorkerCapacity> {
+        let cp = self.caller_project(caller)?;
+        let ws = self.workspace.upgrade()?;
+        let (cap, cap_source) = ws
+            .project_for_key(&cp.project_key)
+            .and_then(|project| {
+                project.max_workers.map(|cap| (cap, WorkerCapSource::ProjectMaxWorkers))
+            })
+            .unwrap_or((crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT, WorkerCapSource::Default));
+        Some(WorkerCapacity {
+            project: cp.project_key.as_str().to_owned(),
+            cap,
+            live: ws.list_live_workers(&cp.project_key).len(),
+            cap_source,
+        })
+    }
+
     fn deliver_worker_prompt(
         &self,
         caller: &SessionKey,
@@ -860,6 +905,10 @@ pub struct MockWorkerFacade {
     /// Pre-loaded outcome for `despawn_worker` on a known label. When
     /// `None`, defaults to `Despawned` with neither warning set.
     pub despawn_outcome: parking_lot::Mutex<Option<DespawnOutcome>>,
+    /// Pre-loaded reply for `capacity`. When `None`, the mock derives
+    /// it from the workers map: default cap, live count from the
+    /// caller's project's entries.
+    pub capacity_reply: parking_lot::Mutex<Option<WorkerCapacity>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -975,6 +1024,16 @@ impl WorkerFacade for MockWorkerFacade {
             return Vec::new();
         };
         self.workers.lock().get(cp.project_key.as_str()).cloned().unwrap_or_default()
+    }
+
+    fn capacity(&self, caller: &SessionKey) -> Option<WorkerCapacity> {
+        let cp = self.caller_project(caller)?;
+        Some(self.capacity_reply.lock().clone().unwrap_or(WorkerCapacity {
+            project: cp.project_key.as_str().to_owned(),
+            cap: crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT,
+            live: self.workers.lock().get(cp.project_key.as_str()).map_or(0, Vec::len),
+            cap_source: WorkerCapSource::Default,
+        }))
     }
 
     fn deliver_worker_prompt(
@@ -1356,6 +1415,83 @@ mod prod_list_workers_tests {
             Some(SessionLifecycleState::Running),
             "and it must be re-derived per call, not cached at spawn",
         );
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    use forge_primitives::WorkerLiveness;
+
+    fn entry(label: &str, session_id: &str) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: label.to_owned(),
+            charter: "test charter".into(),
+            session_key: SessionKey::from_session_id(session_id),
+            status: WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    fn project_key_of(ws: &Workspace, name: &str) -> crate::ProjectKey {
+        ws.list_projects().into_iter().find(|v| v.name == name).expect("seeded project present").key
+    }
+
+    #[test]
+    fn capacity_reports_project_override_when_set() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_max_workers("forge", "/tmp/forge", 1);
+        let project = project_key_of(&ws, "forge");
+        let caller = SessionKey::from_session_id("worker-uuid");
+        ws.insert_live_worker(&project, entry("implementer", "worker-uuid"));
+
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        let capacity = facade.capacity(&caller).expect("live worker resolves to its project");
+        assert_eq!(capacity.project, project.as_str());
+        assert_eq!(capacity.cap, 1);
+        assert_eq!(capacity.cap_source, WorkerCapSource::ProjectMaxWorkers);
+        assert_eq!(capacity.live, 1);
+    }
+
+    #[test]
+    fn capacity_falls_back_to_default_without_override() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("forge", "/tmp/forge");
+        let project = project_key_of(&ws, "forge");
+        let caller = SessionKey::from_session_id("worker-uuid");
+        ws.insert_live_worker(&project, entry("implementer", "worker-uuid"));
+
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        let capacity = facade.capacity(&caller).expect("live worker resolves to its project");
+        assert_eq!(capacity.cap, crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT);
+        assert_eq!(capacity.cap_source, WorkerCapSource::Default);
+        assert_eq!(capacity.live, 1);
+    }
+
+    #[test]
+    fn capacity_live_count_matches_project_workers() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("forge", "/tmp/forge");
+        let project = project_key_of(&ws, "forge");
+        let caller = SessionKey::from_session_id("worker-a");
+        ws.insert_live_worker(&project, entry("a", "worker-a"));
+        ws.insert_live_worker(&project, entry("b", "worker-b"));
+
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        let capacity = facade.capacity(&caller).expect("live worker resolves to its project");
+        assert_eq!(capacity.live, 2);
+    }
+
+    #[test]
+    fn capacity_none_for_unknown_caller() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let facade = ProdWorkerFacade::from_arc(&ws);
+        assert!(facade.capacity(&SessionKey::from_session_id("ghost")).is_none());
     }
 }
 
