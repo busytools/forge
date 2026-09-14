@@ -258,6 +258,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 && !app.plugins.search_focused =>
         {
             request_inventory_refresh_manual(app);
+            // On the Mcps tab a refresh also re-asks for the MCP
+            // snapshot: "refresh the server list now" is what the key
+            // is for there, not a wait on the background cadence.
+            if app.plugins.active_tab == ExtensionsTab::Mcps {
+                crate::app::config::mcp::refresh_mcp_snapshot(app);
+            }
             true
         }
         (KeyCode::Char(ch), modifiers)
@@ -757,9 +763,9 @@ pub(crate) fn visible_row_count(app: &App, tab: ExtensionsTab) -> usize {
 }
 
 /// The rows a tab draws before filtering: the installed stream always,
-/// plus the available stream's rows on component tabs unless the
-/// Available toggle has hidden them. The Installed tab never reveals
-/// the catalog - it draws the installed stream alone.
+/// plus the available stream's rows on every row-backed tab - the
+/// Installed tab's catalog included - unless the Available toggle has
+/// hidden them.
 pub(crate) fn tab_rows(app: &App, tab: ExtensionsTab) -> Vec<&ExtensionRow> {
     let mut rows = rows_for_tab(&app.plugins.installed_rows, tab);
     if tab_takes_available(tab) && !app.plugins.hide_available {
@@ -2970,6 +2976,44 @@ mod tests {
         assert!(press(&mut app, KeyCode::Enter));
         let overlay = app.config.mcp_details_overlay().expect("the details overlay opens");
         assert_eq!(overlay.server_name, "beta", "the SHARED selection resolves the server");
+    }
+
+    /// `r` on the Mcps tab also re-asks for the MCP snapshot - the
+    /// refresh clears the held server list and marks the request in
+    /// flight. On other tabs the MCP state is untouched.
+    #[test]
+    fn the_r_key_refreshes_the_mcp_snapshot_on_the_mcps_tab() {
+        let mut app = crate::app::App::test_default();
+        app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        let server = || forge_primitives::McpServerStatus {
+            name: "alpha".to_owned(),
+            status: forge_primitives::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: Some("user".to_owned()),
+            tools: None,
+            sampling_configured: None,
+            sampling_required: None,
+        };
+        app.mcp_mut().expect("active session").servers = vec![server()];
+        app.plugins.active_tab = ExtensionsTab::Mcps;
+
+        assert!(press(&mut app, KeyCode::Char('r')));
+        assert!(
+            app.mcp().expect("active session").servers.is_empty(),
+            "the refresh cleared the held server list"
+        );
+
+        app.mcp_mut().expect("active session").servers = vec![server()];
+        app.plugins.active_tab = ExtensionsTab::Skills;
+        assert!(press(&mut app, KeyCode::Char('r')));
+        assert_eq!(
+            app.mcp().expect("active session").servers.len(),
+            1,
+            "the inventory refresh on other tabs leaves the MCP state alone"
+        );
     }
 
     /// The available stream renders by default on component tabs,

@@ -1,7 +1,7 @@
 //! The Extensions page's tab model and per-tab view state: which tab
 //! is open, each tab's filter and selection, and how a tab reads the
-//! pane's two row streams - installed, and available behind the
-//! Available toggle.
+//! pane's two row streams - the installed stream always, the available
+//! stream unless the Available toggle has hidden it.
 
 use crate::app::input::InputState;
 use forge_primitives::plugins::ExtensionRow;
@@ -145,8 +145,8 @@ pub fn count_for_tab(installed_rows: &[ExtensionRow], tab: ExtensionsTab) -> usi
     rows_for_tab(installed_rows, tab).len()
 }
 
-/// The available rows a tab can reveal behind the Available toggle;
-/// the `+N` beside the toggle.
+/// The available rows a tab can show, hidden only while the Available
+/// toggle is pressed; the `+N` beside the toggle.
 pub fn available_count_for_tab(available_rows: &[ExtensionRow], tab: ExtensionsTab) -> usize {
     rows_for_tab(available_rows, tab).len()
 }

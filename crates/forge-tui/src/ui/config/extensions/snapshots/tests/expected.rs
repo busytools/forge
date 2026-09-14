@@ -3,6 +3,10 @@
 //! box edge and trailing whitespace dropped per row. These are the
 //! visual contract the snapshot tests enforce.
 
+// Justification: the Installed tab now carries the available catalog
+// after the installed rows (decision 3), so its pin gains the
+// fixture's two available plugin rows with Install actions, the +2
+// beside the Available chip, and the `a available` help segment.
 pub(crate) const INSTALLED: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
@@ -301,6 +305,11 @@ pub(crate) const LSP: &str = r"
 │Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
+// Justification: the Mcps tab joins the shared row grammar - one row
+// per server (state glyph from the connection status, name, scope as
+// source, status column, transport badge, summary as detail) with the
+// selection marker on the row's leading gutter, replacing the old
+// renderer's two-line rows and summary badge line.
 pub(crate) const MCPS: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
@@ -391,6 +400,10 @@ pub(crate) const MARKETPLACES: &str = r"
 │Left/Right switch tab | Up/Down move | Enter actions | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
+// Justification: this pin renders on the Installed tab, so it picks
+// up the same change as INSTALLED - the fixture's two available
+// plugin rows with Install actions, the +2 chip, and the `a available`
+// help segment - under the docked update panel.
 pub(crate) const UPDATES: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │

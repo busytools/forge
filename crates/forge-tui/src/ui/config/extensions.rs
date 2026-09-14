@@ -82,7 +82,7 @@ fn tab_header_line(app: &App) -> Line<'static> {
 }
 
 /// The action row: the update-all button with its stale-row count, the
-/// Available toggle (component tabs only, carrying the tab's `+N` of
+/// Available toggle (every row-backed tab, carrying the tab's `+N` of
 /// available rows), and the focused filter field.
 fn action_row_line(app: &App) -> Line<'static> {
     let stale = update_all_count(&app.plugins.installed_rows);
