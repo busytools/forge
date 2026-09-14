@@ -18,6 +18,7 @@ mod anthropic;
 pub mod assignment_plan;
 pub mod binding;
 mod codex;
+pub mod forward;
 pub mod helpers;
 pub mod listener;
 pub mod model_catalog;

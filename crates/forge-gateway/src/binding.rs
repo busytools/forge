@@ -19,8 +19,8 @@ use crate::account::AccountKey;
 /// nothing upstream; the gateway replaces it before forwarding.
 pub const DUMMY_CREDENTIAL: &str = "forge-gateway-unused";
 
-const OAUTH_VARIABLE: &str = "CLAUDE_CODE_OAUTH_TOKEN";
-const AUTH_TOKEN_VARIABLE: &str = "ANTHROPIC_AUTH_TOKEN";
+pub(crate) const OAUTH_VARIABLE: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+pub(crate) const AUTH_TOKEN_VARIABLE: &str = "ANTHROPIC_AUTH_TOKEN";
 const API_KEY_VARIABLE: &str = "ANTHROPIC_API_KEY";
 const ALT_BASE_URL_VARIABLE: &str = "CLAUDE_CODE_API_BASE_URL";
 const BASE_URL_VARIABLE: &str = "ANTHROPIC_BASE_URL";

@@ -24,6 +24,7 @@ bytes = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
+futures-util = { workspace = true }
 httpdate = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true }
