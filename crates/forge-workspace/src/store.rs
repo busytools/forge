@@ -23,7 +23,6 @@ use anyhow::Context;
 pub mod cron;
 pub mod dynamic_workers;
 pub mod gotify;
-pub mod model_catalog;
 pub mod plugins;
 pub mod pricing;
 pub mod review;
