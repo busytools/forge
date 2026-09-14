@@ -49,12 +49,18 @@ fn error_body() -> StreamBody {
     )
 }
 
-/// Capture-machine identifiers and long hex-shaped runs (UUIDs, the
-/// CLI's 64-hex device id, hashes) are capture-local; the body's
-/// structure and non-identifier content are what the tests pin.
+/// Capture-machine identifiers - the real name, home path, email,
+/// city, and long hex-shaped runs (UUIDs, the CLI's 64-hex device id,
+/// hashes) - are capture-local. The bare GitHub username, org, account
+/// and project names are public and stay.
 fn redact(text: &str) -> String {
     let mut out = text.to_owned();
-    for secret in ["/Users/vedhavyas", "7549475+vedhavyas@users.noreply.github.com"] {
+    for secret in [
+        "/Users/vedhavyas",
+        "7549475+vedhavyas@users.noreply.github.com",
+        "Vedhavyas Singareddi",
+        "Hyderabad",
+    ] {
         out = out.replace(secret, "<REDACTED>");
     }
     while let Some((start, len)) = find_hex_run(&out) {
