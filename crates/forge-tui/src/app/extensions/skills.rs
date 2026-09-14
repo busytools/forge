@@ -11,7 +11,9 @@
 //! columns. Available rows render dim over blue: visually secondary
 //! to the installed tiers.
 
-use forge_primitives::plugins::{ExtensionRow, RowState};
+use forge_primitives::plugins::{
+    ExtensionRow, MarketplaceHealth, MarketplaceSourceEntry, RowState,
+};
 use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -110,6 +112,120 @@ fn mcp_row_line(server: &McpServerStatus, columns: &ColumnWidths, width: usize) 
         spans.push(Span::styled(
             truncate_to_width(&detail, budget),
             Style::default().fg(theme::DIM),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// One line per configured marketplace over the shared grammar: the
+/// health as the state glyph, the name, the source kind as source,
+/// `healthy - N plugins` (or the drift notice / failure reason) as the
+/// status column, the repo as detail, and Repair right-aligned on the
+/// rows that qualify.
+pub(crate) fn render_marketplace_rows(
+    marketplaces: &[MarketplaceSourceEntry],
+    health: &[MarketplaceHealth],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let triples: Vec<(String, String, String)> = marketplaces
+        .iter()
+        .map(|marketplace| {
+            (
+                marketplace.name.clone(),
+                marketplace.source.clone().unwrap_or_default(),
+                marketplace_status_text(marketplace, health),
+            )
+        })
+        .collect();
+    let columns = compute_columns(&triples, width);
+    marketplaces
+        .iter()
+        .map(|marketplace| marketplace_row_line(marketplace, health, &columns, width))
+        .collect()
+}
+
+fn marketplace_health<'a>(
+    name: &str,
+    health: &'a [MarketplaceHealth],
+) -> Option<&'a MarketplaceHealth> {
+    health.iter().find(|health| health.name == name)
+}
+
+fn marketplace_status_text(
+    marketplace: &MarketplaceSourceEntry,
+    health: &[MarketplaceHealth],
+) -> String {
+    match marketplace_health(&marketplace.name, health) {
+        Some(health) if health.drifted => {
+            "registry drift - installLocation outside the config dir".to_owned()
+        }
+        Some(health) if health.load_error.is_some() => {
+            format!("failed: {}", health.load_error.clone().unwrap_or_default())
+        }
+        Some(health) => format!("healthy - {} plugins", health.available),
+        None => "scan pending".to_owned(),
+    }
+}
+
+fn marketplace_row_line(
+    marketplace: &MarketplaceSourceEntry,
+    health: &[MarketplaceHealth],
+    columns: &ColumnWidths,
+    width: usize,
+) -> Line<'static> {
+    let entry = marketplace_health(&marketplace.name, health);
+    let (glyph, color, repair) = match entry {
+        Some(health) if health.drifted => (ICON_WARNING, theme::STATUS_WARNING, true),
+        Some(health) if health.load_error.is_some() => {
+            (theme::ICON_FAILED, theme::STATUS_ERROR, true)
+        }
+        Some(_) => (theme::ICON_COMPLETED, theme::REVIEW_RESOLVED, false),
+        None => ("-", theme::DIM, false),
+    };
+
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(glyph.to_owned(), Style::default().fg(color)),
+        Span::raw(" "),
+        Span::styled(
+            pad(&truncate_to_width(&marketplace.name, columns.name), columns.name),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            pad(
+                &truncate_to_width(marketplace.source.as_deref().unwrap_or(""), columns.source),
+                columns.source,
+            ),
+            Style::default().fg(theme::DIM),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            pad(
+                &truncate_to_width(&marketplace_status_text(marketplace, health), columns.status),
+                columns.status,
+            ),
+            Style::default().fg(color),
+        ),
+    ];
+
+    if let Some(repo) = marketplace.repo.as_deref() {
+        let budget =
+            width.saturating_sub(spans_width(&spans) + 2 + if repair { ACTION_COLUMN } else { 0 });
+        if budget > 4 {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                truncate_to_width(repo, budget),
+                Style::default().fg(theme::DIM),
+            ));
+        }
+    }
+    if repair {
+        let fill = width.saturating_sub(spans_width(&spans) + "Repair".len());
+        spans.push(Span::raw(" ".repeat(fill)));
+        spans.push(Span::styled(
+            "Repair",
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ));
     }
     Line::from(spans)
@@ -553,6 +669,77 @@ mod tests {
             text.contains("twelve-chara  "),
             "the name column keeps its floor; the source column shrinks first: {text:?}"
         );
+    }
+
+    /// A Marketplaces row renders health as the glyph, the name, the
+    /// source kind, `healthy - N plugins` as the status column, the
+    /// repo as detail - and Repair right-aligned on the drift and
+    /// load-failure rows.
+    #[test]
+    fn marketplace_rows_render_health_and_repair() {
+        let source =
+            |name: &str, repo: Option<&str>| forge_primitives::plugins::MarketplaceSourceEntry {
+                name: name.to_owned(),
+                source: Some("github".to_owned()),
+                repo: repo.map(str::to_owned),
+                install_location: None,
+            };
+        let marketplaces = vec![
+            source("healthy-mkt", Some("anthropics/healthy")),
+            source("drifted-mkt", Some("athola/drifted")),
+            source("ghost-mkt", None),
+        ];
+        let health = vec![
+            forge_primitives::plugins::MarketplaceHealth {
+                name: "healthy-mkt".to_owned(),
+                source: "github".to_owned(),
+                available: 12,
+                load_error: None,
+                install_location: std::path::PathBuf::from(
+                    "/home/u/.claude/plugins/marketplaces/healthy-mkt",
+                ),
+                drifted: false,
+            },
+            forge_primitives::plugins::MarketplaceHealth {
+                name: "drifted-mkt".to_owned(),
+                source: "github".to_owned(),
+                available: 40,
+                load_error: None,
+                install_location: std::path::PathBuf::from("/external/drifted"),
+                drifted: true,
+            },
+            forge_primitives::plugins::MarketplaceHealth {
+                name: "ghost-mkt".to_owned(),
+                source: "github".to_owned(),
+                available: 0,
+                load_error: Some("no marketplace clone on disk".to_owned()),
+                install_location: std::path::PathBuf::from(
+                    "/home/u/.claude/plugins/marketplaces/ghost-mkt",
+                ),
+                drifted: false,
+            },
+        ];
+
+        let lines = render_marketplace_rows(&marketplaces, &health, 130);
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(text.len(), 3, "one row per marketplace: {text:?}");
+        assert!(
+            text[0].starts_with(" \u{2713} healthy-mkt")
+                && text[0].contains("healthy - 12 plugins"),
+            "healthy wears the ok glyph and the plugin count: {text:?}"
+        );
+        assert!(
+            text[1].starts_with(" \u{26a0} drifted-mkt") && text[1].contains("registry drift"),
+            "drift wears the warning glyph and the drift notice: {text:?}"
+        );
+        assert!(text[1].ends_with("Repair"), "Repair right-aligns on drift: {text:?}");
+        assert!(
+            text[2].starts_with(" \u{2717} ghost-mkt")
+                && text[2].contains("failed: no marketplace clone on disk"),
+            "a load failure wears the failed glyph and names the reason: {text:?}"
+        );
+        assert!(text[2].ends_with("Repair"), "Repair right-aligns on load failure: {text:?}");
+        assert!(text[0].contains("anthropics/healthy"), "the repo rides as detail: {text:?}");
     }
 
     /// An MCP server row renders the grammar columns: the state glyph

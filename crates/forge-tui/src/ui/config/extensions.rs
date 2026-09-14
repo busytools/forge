@@ -5,7 +5,9 @@
 
 use super::theme;
 use crate::app::App;
-use crate::app::extensions::skills::{render_extension_rows, render_mcp_rows};
+use crate::app::extensions::skills::{
+    render_extension_rows, render_marketplace_rows, render_mcp_rows,
+};
 use crate::app::extensions::{
     ExtensionsTab, PANEL_ROW_CAP, available_count_for_tab, count_for_tab, panel_block_height,
     search_enabled, tab_takes_available, update_all_count, updates, visible_rows, window_offset,
@@ -128,26 +130,23 @@ fn action_row_line(app: &App) -> Line<'static> {
 fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
     let list_area =
         if area.width > 1 { area.inner(Margin { vertical: 0, horizontal: 1 }) } else { area };
-    if app.plugins.active_tab == ExtensionsTab::Marketplaces {
-        frame.render_widget(
-            Paragraph::new(marketplace_lines(app, list_area.width)).wrap(Wrap { trim: false }),
-            list_area,
-        );
-        return;
-    }
     let tab = app.plugins.active_tab;
     let width = usize::from(list_area.width.max(1));
     let rows = visible_rows(app, tab);
     let lines = if tab == ExtensionsTab::Mcps {
         mcp_list_lines(app, width)
+    } else if tab == ExtensionsTab::Marketplaces {
+        marketplace_list_lines(app, width)
     } else if rows.is_empty() {
         empty_tab_lines(app, tab)
     } else {
         render_extension_rows(&rows, width)
     };
-    // Empty-state copy is not a row: nothing is selectable then.
+    // Empty-state copy is not a row: nothing is selectable then. The
+    // Marketplaces tab always keeps its add row.
     let selectable = match tab {
         ExtensionsTab::Mcps => app.mcp().is_some_and(|mcp| !mcp.servers.is_empty()),
+        ExtensionsTab::Marketplaces => true,
         _ => !rows.is_empty(),
     };
     let selected = if app.plugins.search_focused || !selectable {
@@ -289,74 +288,14 @@ fn empty_tab_lines(app: &App, tab: ExtensionsTab) -> Vec<Line<'static>> {
     vec![Line::from(Span::styled(text, Style::default().fg(theme::DIM)))]
 }
 
-/// The Marketplaces tab: one row per configured marketplace with its
-/// health from the scan - `healthy`, the drift notice, or the load
-/// error - plus the add row.
-fn marketplace_lines(app: &App, _viewport_width: u16) -> Vec<Line<'static>> {
-    let selected = app.plugins.selected_index_for(ExtensionsTab::Marketplaces);
-    let mut lines = Vec::new();
-    for (index, marketplace) in app.plugins.marketplaces.iter().enumerate() {
-        let selected = index == selected && !app.plugins.search_focused;
-        let mut line = Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                marketplace.name.clone(),
-                if selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(theme::RUST_ORANGE)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                },
-            ),
-        ]);
-        let health = app.plugins.health.iter().find(|health| health.name == marketplace.name);
-        match health {
-            Some(health) if health.drifted => {
-                line.spans.push(Span::styled(
-                    "  registry drift - installLocation outside the config dir",
-                    Style::default().fg(theme::STATUS_WARNING),
-                ));
-                line.spans.push(Span::styled("  Repair", Style::default().fg(theme::RUST_ORANGE)));
-            }
-            Some(health) if health.load_error.is_some() => {
-                let reason = health.load_error.clone().unwrap_or_default();
-                line.spans.push(Span::styled(
-                    format!("  load failed: {reason}"),
-                    Style::default().fg(theme::STATUS_ERROR),
-                ));
-                line.spans.push(Span::styled("  Repair", Style::default().fg(theme::RUST_ORANGE)));
-            }
-            Some(health) => {
-                line.spans.push(Span::styled(
-                    format!("  healthy \u{b7} {} plugins", health.available),
-                    Style::default().fg(theme::REVIEW_RESOLVED),
-                ));
-            }
-            // No health entry yet: the pane's first disk scan has not
-            // landed. Name it rather than rendering a bare name.
-            None => {
-                line.spans.push(Span::styled("  scan pending", Style::default().fg(theme::DIM)));
-            }
-        }
-        if let Some(source) = marketplace.source.as_deref() {
-            line.spans.push(Span::styled(format!("  {source}"), Style::default().fg(theme::DIM)));
-        }
-        if let Some(repo) = marketplace.repo.as_deref() {
-            line.spans.push(Span::styled(format!("  {repo}"), Style::default().fg(theme::DIM)));
-        }
-        lines.push(line);
-    }
-    let add_selected = selected == app.plugins.marketplaces.len() && !app.plugins.search_focused;
-    lines.push(Line::from(Span::styled(
-        "Add marketplace",
-        if add_selected {
-            Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::DIM)
-        },
-    )));
+/// The Marketplaces tab's rows: one grammar row per configured
+/// marketplace, plus the always-present add row.
+fn marketplace_list_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let mut lines = render_marketplace_rows(&app.plugins.marketplaces, &app.plugins.health, width);
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled("Add marketplace", Style::default().fg(theme::DIM)),
+    ]));
     lines
 }
 

@@ -599,7 +599,7 @@ mod tests {
     /// row beneath them.
     #[test]
     fn the_marketplaces_tab_renders_sources_and_the_add_row() {
-        let backend = TestBackend::new(100, 24);
+        let backend = TestBackend::new(140, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
 
@@ -1000,12 +1000,12 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(
-            rendered.contains("load failed: no marketplace.json found in the clone"),
-            "the failure reason renders: {rendered}"
+            rendered.contains("failed: no marketplace.json found in the clone"),
+            "the failure reason renders in the status column: {rendered}"
         );
         assert!(rendered.contains("Repair"), "the repair action: {rendered}");
         assert!(
-            rendered.contains("healthy \u{b7} 294 plugins"),
+            rendered.contains("healthy - 294 plugins"),
             "the healthy marketplace's count: {rendered}"
         );
     }

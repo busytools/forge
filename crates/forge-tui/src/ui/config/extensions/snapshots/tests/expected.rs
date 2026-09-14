@@ -343,14 +343,20 @@ pub(crate) const MCPS: &str = r"
 │Left/Right switch tab | Up/Down move | Enter actions | Esc close
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
+// Justification: the Marketplaces tab joins the shared row grammar -
+// health as the glyph, source kind as the source column,
+// `healthy - N plugins` (or the truncated drift notice / failure
+// reason) in the status column, Repair right-aligned on the rows that
+// qualify, the repo as dim detail, and the add row carrying a leading
+// gutter so the marker can take it in place.
 pub(crate) const MARKETPLACES: &str = r"
 ┌Extensions────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │
 │  Installed 6   Skills 10   Agents 2   Commands 3   Hooks 1   LSP 1   MCPs 1   Marketplaces 3
-│   superpowers-market  healthy · 12 plugins  github
-│   claude-night-market  registry drift - installLocation outside the config dir  Repair  github
-│   ghost-market  load failed: no marketplace clone on disk  Repair  github
-│  Add marketplace
+│  >✓ superpowers-market   github      healthy - 12 plugins
+│   ⚠ claude-night-market  github      registry drift - installLocation outside the config…                                                            Repair
+│   ✗ ghost-market         github      failed: no marketplace clone on disk                                                                            Repair
+│   Add marketplace
 │
 │
 │
