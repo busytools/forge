@@ -1165,10 +1165,15 @@ mod tests {
         let response = post_model(&ghost_url, "glm-5.3-flash").await;
         assert_eq!(response.status(), StatusCode::OK);
         let recorded = harness.requests.lock().first().expect("the upstream saw a request").clone();
-        assert!(
-            recorded.body.contains("zai-org/glm-5.3-flash"),
-            "the forwarded body carries the upstream slug: {}",
-            recorded.body,
+        // Parsed, not a substring: a re-introduced double-quote around
+        // the value would satisfy a contains check and still be
+        // invalid JSON (the exact bug this test guards).
+        let body: serde_json::Value =
+            serde_json::from_str(&recorded.body).expect("the forwarded body parses as JSON");
+        assert_eq!(
+            body.get("model").and_then(|m| m.as_str()),
+            Some("zai-org/glm-5.3-flash"),
+            "the forwarded body's model is exactly the upstream slug",
         );
     }
 
