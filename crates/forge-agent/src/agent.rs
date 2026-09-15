@@ -323,8 +323,8 @@ impl Agent {
     /// via [`crate::client::AgentEvent::StatusSnapshot`] so the TUI
     /// renders which forge-account the bridge is bound to. `env`
     /// carries the session's resolved forge.toml env - `[env]`, then
-    /// `[accounts.env]`, then the spawning project's
-    /// `[projects.<name>.env]` - stamped onto the spawned subprocess
+    /// `[accounts.env]`, then the spawning project's `[[orgs.projects]]`
+    /// `env` - stamped onto the spawned subprocess
     /// alongside `CLAUDE_CONFIG_DIR`. Returns a
     /// handle holding the command sender + events receiver + direct-
     /// accessor passthroughs.
