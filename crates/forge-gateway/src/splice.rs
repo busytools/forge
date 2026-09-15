@@ -32,11 +32,12 @@ pub fn splice_model(
     let rewritten = match replacement {
         None => body.to_vec(),
         Some(new_value) => {
-            let mut out = Vec::with_capacity(body.len() - (end - start) + new_value.len() + 2);
+            // The span excludes the quotes; body[..start] ends on the
+            // opening quote and body[end..] starts on the closing one,
+            // so the replacement lands between them untouched.
+            let mut out = Vec::with_capacity(body.len() - (end - start) + new_value.len());
             out.extend_from_slice(&body[..start]);
-            out.push(b'"');
             out.extend_from_slice(new_value.as_bytes());
-            out.push(b'"');
             out.extend_from_slice(&body[end..]);
             out
         }
@@ -210,9 +211,17 @@ mod tests {
         let (rewritten, model) =
             splice_model(&body, Some("deepseek/deepseek-v4.1-flash")).expect("splice");
         assert_eq!(model, "glm-5.3-flash", "the extracted name is the old one");
+        // The parse is the assertion: a splice that corrupted the body
+        // (double-quoted value, stray bytes) fails here, where a
+        // substring check against the corrupted text would pass.
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&rewritten).expect("the rewritten body parses as JSON");
+        assert_eq!(
+            parsed.get("model").and_then(|m| m.as_str()),
+            Some("deepseek/deepseek-v4.1-flash"),
+            "the top-level model is exactly the replacement",
+        );
         let text = String::from_utf8(rewritten.clone()).expect("utf8");
-        assert!(text.contains("deepseek/deepseek-v4.1-flash"), "the new name is in");
-        assert!(!text.contains("\"glm-5.3-flash\""), "the old name is gone");
         // The untouched bulk is byte-identical: same tool count, same
         // system prompt bytes.
         let original = live_capture_body();
@@ -223,6 +232,20 @@ mod tests {
                 "{kept} survives the splice",
             );
         }
+    }
+
+    /// The rewrite lands the value BETWEEN the existing quotes: a
+    /// double-quoted value (`""name""`) is invalid JSON that a
+    /// substring assertion cannot see.
+    #[test]
+    fn a_rewrite_never_doubles_the_quotes() {
+        let body = br#"{"model":"glm-5.3-flash","max_tokens":8}"#;
+        let (rewritten, _) = splice_model(body, Some("z-ai/glm-5.3-flash")).expect("splice");
+        let text = String::from_utf8(rewritten).expect("utf8");
+        assert_eq!(
+            text, r#"{"model":"z-ai/glm-5.3-flash","max_tokens":8}"#,
+            "the rewritten body is byte-exact",
+        );
     }
 
     #[test]
