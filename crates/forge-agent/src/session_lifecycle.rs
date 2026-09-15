@@ -276,11 +276,9 @@ pub fn resolve_current_model_from_inputs(
         if humanized_has_version { humanized } else { catalog_name.unwrap_or(humanized) }
     };
 
-    // The panel shows the canonical name the session asked for,
-    // exactly as forge.toml declares it. The resolved id is the CLI's
-    // own spelling: it carries the `[1m]` context marker and can name
-    // a model the session never asked for (a stray account default),
-    // so it never names the row while a requested model is known.
+    // The panel names the model the session asked for: the resolved id
+    // is the CLI's own spelling, carrying the `[1m]` marker and
+    // possibly a model the session never asked for.
     let display_name = requested_id.unwrap_or(display_name.as_str()).to_owned();
 
     CurrentModel {

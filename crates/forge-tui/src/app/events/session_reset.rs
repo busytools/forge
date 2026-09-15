@@ -29,12 +29,10 @@ fn reset_session_identity_state(
     app.set_session_id(Some(session_id));
     app.set_current_model(Some(current_model.clone()));
     app.set_mode(mode);
-    // The update carries forge's canonical model as the requested id
-    // (the model pinned at spawn), so the turn state names it too: the
-    // account panel then shows the canonical name rather than whatever
-    // id the CLI resolved on its own. Written unconditionally - a
-    // respawn with nothing pinned must clear the previous session's
-    // request rather than leave it labelling this one.
+    // The update's requested id is the model forge pinned, so the panel
+    // names it rather than the CLI's resolved id. Written
+    // unconditionally: a respawn that pins nothing must clear the
+    // previous session's request, not leave it labelling this one.
     let requested_id = current_model.requested_id.clone();
     app.with_turn_state_mut(|state| state.requested_model_id = requested_id);
     if let Some(options) = app.config_options_mut() {

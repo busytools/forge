@@ -1553,14 +1553,11 @@ impl Workspace {
         let declared_model = project.as_ref().and_then(|project| project.model.clone());
         let candidates = match (project.as_ref(), declared_model.as_deref()) {
             (Some(project), Some(model)) => {
-                // Narrow over the same project's own pin lists, the ones
-                // that supplied the model. Resolving the model and the
-                // pins separately can pair one project's model with
-                // another project's accounts - `project_accounts_for`
-                // falls back to the default project where
-                // `project_for_target` resolves the real one - and the
-                // refusal below would then name one project's org beside
-                // another org's accounts.
+                // Narrow over the same project's own pin lists:
+                // `project_accounts_for` falls back to the default
+                // project where `project_for_target` resolves the real
+                // one, so resolving them separately pairs a project's
+                // model with another's accounts.
                 let model_pin = OrgPin {
                     accounts: project.accounts.clone(),
                     fallback_accounts: project.fallback_accounts.clone(),
@@ -1669,14 +1666,10 @@ impl Workspace {
                 session_env.insert((*var).to_owned(), model.clone());
             }
         }
-        // The project's model is the session's model too: the CLI is
-        // told it explicitly, so it reports the canonical name back and
-        // sends that name through the gateway. Without this the CLI
-        // keeps the caller's pin - forge defaults it to the literal
-        // "opus" - and resolves it through whatever alias mapping the
-        // account happens to carry, or its own opus default where the
-        // account maps none, which leaves the session's primary model
-        // neither deterministic nor the one the project declares.
+        // Telling the CLI the project's model is what stops the
+        // caller's pin - forge defaults it to the literal "opus" - from
+        // resolving through an account's alias mapping into a model the
+        // project never declared.
         apply_project_model(project.as_ref(), &mut settings);
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
@@ -2387,13 +2380,11 @@ impl Workspace {
     /// order. `None` when nothing in the pin declares the model, which
     /// the caller must treat as fatal rather than bind a wrong account.
     ///
-    /// The fallback-only shape is resolved here rather than passed
-    /// through: the tier walk reads an empty primary list as "every
-    /// account", so an empty narrowed primary list followed by
-    /// declaring fallbacks would put a non-declaring account back in
-    /// the pool. The fallbacks become the candidate list instead, and
-    /// the walk's fallback flag then reads false for that pool - a
-    /// status flag rather than a routing input.
+    /// The fallback-only shape resolves to the narrowed fallbacks as
+    /// the candidate list: the tier walk reads an empty primary list as
+    /// "every account", which would put a non-declaring account back in
+    /// the pool. The walk's fallback flag then reads false for that
+    /// pool, a status flag rather than a routing input.
     fn candidates_for_model(
         &self,
         pin: &OrgPin,
@@ -2429,10 +2420,8 @@ impl Workspace {
     ) -> Option<AccountKey> {
         let (project_key, label) = self.plan_lookup_keys(target, spawn_key)?;
         // The same guard `plan_assignment` applies: a registry-lost
-        // worker resume resolves to the lead's label, and rewriting that
-        // row would move the lead's assignment and reset its rotation.
-        // The caller's direct pick over the candidates binds the worker
-        // without touching the row.
+        // worker resume resolves to the lead's label, so rewriting the
+        // row here would move the lead's assignment.
         if is_degraded_worker_resume(spawn_key, &label) {
             return None;
         }
@@ -3596,10 +3585,8 @@ impl Workspace {
                          (release_session teardown window)",
                     ),
                     Some((mode, registration, account)) => {
-                        // The respawned CLI runs the project's canonical
-                        // model too. This path bypasses the spawn-time
-                        // stamp, so the launch settings pick it up here
-                        // the way the mode is.
+                        // The respawned CLI runs the project's model too:
+                        // this path bypasses the spawn-time stamp.
                         let project = registration.as_ref().and_then(|registration| {
                             self.config
                                 .projects
