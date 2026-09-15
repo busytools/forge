@@ -24,8 +24,8 @@ forge-test-harness ─→ primitives + sdk + workspace
   session is a bug.
 - **`forge-gateway`** - the account pool: one backend per `forge.toml`
   provider token (credential resolution, the usage probe's HTTP +
-  payload mapping, billing shape, the OpenRouter model catalog), plus
-  account selection, account health, probe scheduling and backoff.
+  payload mapping, billing shape), plus account selection by declared
+  models, account health, probe scheduling and backoff.
   Depends on forge-primitives only; the `claude --version` user agent
   and the TLS-trust client arrive through the `ProviderHost` port
   forge-agent implements, so the crate stays HTTP + mapping and never

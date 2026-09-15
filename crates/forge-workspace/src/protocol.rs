@@ -403,10 +403,9 @@ pub enum Command {
     },
     /// Switch the live session `key` to `account_display_name`: tear
     /// down its current `claude` subprocess and re-spawn + resume the
-    /// SAME `session_id` under the picked account's `config_dir`. The
-    /// user's account config dirs share `~/.claude/projects` via
-    /// symlink, so `claude --resume` finds the same conversation - the
-    /// switch copies no session files. `launch_settings` carries the
+    /// SAME `session_id` under the workspace's shared config dir, so
+    /// `claude --resume` finds the same conversation - the switch
+    /// copies no session files. `launch_settings` carries the
     /// session's model / mode / effort so the switch preserves them
     /// (the TUI builds them the same way a resume does). App-level
     /// command (`key()` returns `None`); routed to

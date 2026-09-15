@@ -33,8 +33,8 @@ impl Provider {
     /// unusable declaration produces.
     pub const ACCEPTED: &'static str = "\"anthropic\", \"codex\", \"openrouter\", \"zai\"";
 
-    /// `true` when the account's credential is an `ANTHROPIC_AUTH_TOKEN`
-    /// beside an `ANTHROPIC_BASE_URL` in `[accounts.env]`. Both the probe
+    /// `true` when the account authenticates with a flat `token`
+    /// beside a flat `base_url` (a base-url provider). Both the probe
     /// and preflight's repair copy branch on this rather than on the
     /// provider itself. The billing model lives on the provider's
     /// forge-gateway backend instead.
@@ -49,15 +49,22 @@ impl Provider {
 #[derive(Debug)]
 pub struct LoadedAccount {
     pub display_name: String,
-    pub config_dir: std::path::PathBuf,
     /// Declared backend. Drives the usage probe and the billing shape.
     /// See [`Provider`].
     pub provider: Provider,
-    /// Per-account environment from `[accounts.env]`, stamped onto the
-    /// spawned `claude` subprocess.
+    /// The flat `base_url` key. `None` for an Anthropic account: the
+    /// gateway constant is its upstream.
+    pub base_url: Option<String>,
+    /// The canonical model names the account serves. Drives selection
+    /// and the picker.
+    pub models: Vec<String>,
+    /// Canonical name -> upstream slug, only where the spellings
+    /// differ. Keys are always members of [`Self::models`].
+    pub model_slugs: std::collections::HashMap<String, String>,
+    /// Provider-behaviour extras (timeouts, context caps, fallback
+    /// switches) plus the derived credential and base-url variable
+    /// stamps the gateway and the child read.
     pub env: std::collections::HashMap<String, String>,
-    /// Excluded from auto-assignment, picker-only.
-    pub experimental: bool,
 }
 
 /// How an account proves who it is, which is the only thing that
@@ -66,18 +73,17 @@ pub struct LoadedAccount {
 /// distinction and none of the secret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountAuth {
-    /// `ANTHROPIC_BASE_URL` in the account's `[accounts.env]`, so its
-    /// credential is the `ANTHROPIC_AUTH_TOKEN` beside it. Repaired by
-    /// editing the env, which needs a restart; the 60 s usage poll
+    /// The account authenticates with a flat `token` beside a flat
+    /// `base_url` (the base-url providers). Repaired by editing the
+    /// account block, which needs a restart; the 60 s usage poll
     /// recovers a transient bail.
     BaseUrl,
-    /// `CLAUDE_CODE_OAUTH_TOKEN` in the account's env (a setup token,
-    /// merged from global `[env]` and `[accounts.env]`) - the only
-    /// credential an Anthropic account has. Repaired by minting or
-    /// re-minting the token, which is an env edit and needs a restart;
-    /// the 60 s usage poll recovers a transient bail. An Anthropic
-    /// account whose env carries no token classifies here too: the
-    /// repair it needs is the same.
+    /// The account's credential is a setup token, stamped onto
+    /// `CLAUDE_CODE_OAUTH_TOKEN` - the only credential an Anthropic
+    /// account has. Repaired by minting or re-minting the token on the
+    /// account block, which needs a restart; the 60 s usage poll
+    /// recovers a transient bail. An account whose block carries no
+    /// token classifies here too: the repair it needs is the same.
     Token,
 }
 

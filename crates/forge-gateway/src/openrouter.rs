@@ -1,7 +1,6 @@
 //! The OpenRouter backend: the per-key spend probe against
 //! `{base}/v1/key` with the account credit pool from `{base}/v1/credits`
-//! alongside it, plus the public `/v1/models` catalog behind the
-//! [`ModelCatalog`] half. The configured base url already ends in
+//! alongside it. The configured base url already ends in
 //! `/api` (that is what the chat API wants), so only the `/v1/...`
 //! tails are appended; appending the documented site-relative paths
 //! yields `/api/api/...`, which 404s.
@@ -20,10 +19,6 @@ use crate::helpers::{
     BaseUrlCredential, MissingBase, OAUTH_TIMEOUT, base_url_credential, parse_retry_after,
     truncated_body_suffix,
 };
-use crate::model_catalog::{
-    self, CATALOG_TIMEOUT, CachedCatalog, CatalogDecision, CatalogModel, ModelCatalog,
-    ModelCatalogError,
-};
 use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, ProviderHost};
 
 /// The OpenRouter `[[accounts]] provider` token.
@@ -41,10 +36,6 @@ impl ProviderBackend for Openrouter {
 
     fn source(&self) -> UsageSourceKind {
         UsageSourceKind::OpenRouterKey
-    }
-
-    fn model_catalog(&self) -> Option<&'static dyn ModelCatalog> {
-        Some(&Openrouter)
     }
 
     async fn probe(
@@ -96,26 +87,6 @@ fn key_url(base_url: &str) -> String {
 /// as [`key_url`].
 fn credits_url(base_url: &str) -> String {
     format!("{}/v1/credits", base_url.trim_end_matches('/'))
-}
-
-#[async_trait]
-impl ModelCatalog for Openrouter {
-    async fn fetch(
-        &self,
-        base_url: &str,
-        host: &dyn ProviderHost,
-    ) -> Result<Vec<CatalogModel>, ModelCatalogError> {
-        let client = host.http_client(CATALOG_TIMEOUT).map_err(ModelCatalogError::Network)?;
-        model_catalog::fetch_catalog(&client, base_url).await
-    }
-
-    fn curated(&self, models: &[CatalogModel]) -> Vec<forge_primitives::AvailableModel> {
-        model_catalog::curated_available_models(models)
-    }
-
-    fn decision(&self, cached: Option<CachedCatalog>, now: SystemTime) -> CatalogDecision {
-        model_catalog::catalog_decision(cached, now)
-    }
 }
 
 /// One probe for a pay-per-token account: the per-key spend from

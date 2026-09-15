@@ -30,7 +30,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-smoke-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
     )

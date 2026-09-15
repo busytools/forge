@@ -18,11 +18,11 @@ use crate::helpers::{
 };
 use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, ProviderHost};
 
-/// `[accounts.env]` key carrying a per-account setup token (minted by
-/// `claude setup-token`). Its presence makes an Anthropic account
-/// token-mode: the token is the account's only credential. The value
-/// is trimmed once where it enters forge's config, so every reader
-/// sees the same credential.
+/// The variable the flat `token` key is stamped onto for an Anthropic
+/// account (minted by `claude setup-token`). Its presence makes the
+/// account token-mode: the token is the account's only credential.
+/// The value is trimmed once where it enters forge's config, so every
+/// reader sees the same credential.
 pub const CLAUDE_CODE_OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
 /// The setup token `env` carries, when non-empty. An empty value stays

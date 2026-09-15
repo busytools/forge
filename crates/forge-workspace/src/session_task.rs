@@ -85,7 +85,7 @@ impl SessionTask {
             tokio::select! {
                 maybe_event = event_rx.recv() => {
                     let Some(event) = maybe_event else { break; };
-                    let event = self.merge_catalog_models(event).await;
+                    let event = self.declared_models_for_session(event);
                     if !self.translate_event(event) {
                         break;
                     }
@@ -121,20 +121,16 @@ impl SessionTask {
         self.handle.disconnect().await;
     }
 
-    /// Swap an OpenRouter session's discovered `available_models` for
-    /// the curated catalog list before `translate_event` sees the
-    /// `Connected` event (covering both the `Connected` and
-    /// `SessionReplaced` emits). Awaited in the async run loop so
-    /// `translate_event` itself stays synchronous; on a cold cache the
-    /// inline fetch delays this session's events once per base url -
-    /// the failure marker written on a miss means every connect after
-    /// that serves from the cache or the discovered list.
-    async fn merge_catalog_models(&self, event: AgentEvent) -> AgentEvent {
+    /// Replace a Connected event's CLI-advertised `available_models`
+    /// with the session's org's declared models before `translate_event`
+    /// sees it (covering both the `Connected` and `SessionReplaced`
+    /// emits). Synchronous - the rows are read from config, not fetched.
+    fn declared_models_for_session(&self, event: AgentEvent) -> AgentEvent {
         let AgentEvent::Connected {
             session_id,
             cwd,
             current_model,
-            available_models,
+            available_models: _,
             mode,
             history_updates,
             compaction_count,
@@ -142,14 +138,11 @@ impl SessionTask {
         else {
             return event;
         };
+        // Declared models replace discovery: the picker rows are the
+        // org's accounts' declared models, authored in forge.toml.
         let available_models = match self.workspace.upgrade() {
-            Some(workspace) => match self.handle.display_name() {
-                Some(display_name) => {
-                    workspace.catalog_available_models(&display_name, available_models).await
-                }
-                None => available_models,
-            },
-            None => available_models,
+            Some(workspace) => workspace.declared_models_for_session(&self.key),
+            None => Vec::new(),
         };
         AgentEvent::Connected {
             session_id,
@@ -1452,18 +1445,16 @@ mod tests {
     }
 
     fn workspace_with_account_config_dir(
-        config_dir: &str,
+        _config_dir: &str,
     ) -> (tempfile::TempDir, Arc<crate::Workspace>) {
         let dir = tempfile::tempdir().expect("tempdir");
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge dir");
         std::fs::write(
             forge.join("forge.toml"),
-            format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Acct\"]\n\n\
-                 [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
-                 [[accounts]]\ndisplay_name = \"Acct\"\nconfig_dir = \"{config_dir}\"\nprovider = \"anthropic\"\n"
-            ),
+            "[[orgs]]\nname = \"Default\"\naccounts = [\"Acct\"]\n\n\
+             [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
+             [[accounts]]\ndisplay_name = \"Acct\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
         )
         .expect("write forge.toml");
         let workspace =

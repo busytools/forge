@@ -34,10 +34,10 @@ pub struct BaseUrlCredential {
 #[error("no usable ANTHROPIC_BASE_URL in the account env for the base-url plan")]
 pub struct MissingBase;
 
-/// The base-url credential shared by every provider that authenticates
-/// from `[accounts.env]`: `ANTHROPIC_BASE_URL` (trimmed, empty after
-/// trim = missing) and `ANTHROPIC_AUTH_TOKEN`, absent = empty bearer -
-/// a localhost proxy ignores the bearer and the probe must still fire.
+/// The base-url credential shared by every base-url provider: the
+/// stamped `ANTHROPIC_BASE_URL` (trimmed, empty after trim = missing)
+/// and `ANTHROPIC_AUTH_TOKEN`, absent = empty bearer - a localhost
+/// proxy ignores the bearer and the probe must still fire.
 pub fn base_url_credential<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
 ) -> Result<BaseUrlCredential, MissingBase> {

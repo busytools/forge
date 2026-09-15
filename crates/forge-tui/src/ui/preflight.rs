@@ -510,13 +510,13 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
             AccountAuth::BaseUrl => {
                 lines.push(text_row(
                     4,
-                    "ANTHROPIC_BASE_URL in [accounts.env], or the endpoint itself",
+                    "the account's base_url key, or the endpoint itself",
                     Style::default(),
                     width,
                 ));
             }
         }
-        // The account's env is read from forge.toml once at boot, so an
+        // The account block is read from forge.toml once at boot, so an
         // edited base url changes nothing for the pollers until restart.
         // Wrapped, never truncated: it is guidance the reader acts on.
         lines.extend(wrapped(
@@ -529,32 +529,28 @@ fn bail_detail(app: &App, row: &AccountLoadingRow, width: u16) -> Vec<Line<'stat
         lines.push(text_row(4, "Waiting clears it - the pollers keep retrying", dim(), width));
     } else {
         lines.push(text_row(2, "Fix the auth", head, width));
-        // The only thing that differs by account class: which env key
-        // the credential lives behind.
+        // The only thing that differs by account class: which flat keys
+        // the credential lives behind, and whether a re-mint command
+        // applies.
         match row.auth {
             AccountAuth::BaseUrl => {
                 lines.push(text_row(
                     4,
-                    "ANTHROPIC_AUTH_TOKEN in [accounts.env]",
+                    "the account's token and base_url keys",
                     Style::default(),
                     width,
                 ));
             }
             AccountAuth::Token => {
-                lines.push(text_row(
-                    4,
-                    "CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]",
-                    Style::default(),
-                    width,
-                ));
+                lines.push(text_row(4, "the account's token key", Style::default(), width));
                 lines.extend(command_rows(4, "claude setup-token", width));
             }
         }
         // Without this a reader who fixes their auth has no way of
-        // knowing whether to restart: the repaired token lives in
-        // [accounts.env], which is read once at boot, so the retry
+        // knowing whether to restart: the repaired token lives on the
+        // account block, which is read once at boot, so the retry
         // cannot see it until forge restarts.
-        lines.push(text_row(4, "editing [accounts.env] needs a restart", dim(), width));
+        lines.push(text_row(4, "editing forge.toml needs a restart", dim(), width));
     }
     lines.push(Line::default());
     lines.push(text_row(2, "Or drop the account", head, width));

@@ -15,10 +15,9 @@
 //! ready-saturated, then degraded; `assignment_plan.rs` documents the
 //! tiers. Each project takes an offset from its position in the
 //! project list and a session lands on
-//! `pool[(offset + session_n) % pool.len()]`. `experimental` accounts
-//! are excluded from the pool entirely. Utilization is never compared
-//! between accounts; it collapses to one boolean per account. A
-//! round-robin cursor over the same pool is the fallback for spawns
+//! `pool[(offset + session_n) % pool.len()]`. Utilization is never
+//! compared between accounts; it collapses to one boolean per account.
+//! A round-robin cursor over the same pool is the fallback for spawns
 //! that happen before the plan exists.
 
 use std::collections::HashMap;
@@ -107,6 +106,11 @@ struct ProjectSettings {
     /// spawns. Absent resolves to `auto`.
     #[serde(default)]
     permission_mode: Option<String>,
+    /// The project's model: the session default AND the value stamped
+    /// into every CLI model slot at spawn. Required to be declared by
+    /// at least one account in the org.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 /// One `[gateway]` table. Unknown fields are rejected so a mistyped
@@ -261,24 +265,33 @@ struct ProjectEntry {
 #[serde(deny_unknown_fields)]
 struct AccountEntry {
     display_name: String,
-    config_dir: String,
     /// Which backend this account talks to. Required: an account that
     /// does not say probes the wrong endpoint and bails at preflight,
     /// so silence is the dangerous answer. Held as `Option` only so the
     /// absent case can name the account; `None` is a load error.
     provider: Option<forge_primitives::account::Provider>,
-    /// Free-form environment stamped onto the account's `claude`
-    /// subprocess at spawn. Absent `[accounts.env]` table -> empty.
-    /// A base-url provider reads its `ANTHROPIC_BASE_URL` and
-    /// `ANTHROPIC_AUTH_TOKEN` from here.
+    /// The flat base URL. Required for base-url providers; an
+    /// Anthropic account may omit it (the gateway constant is its
+    /// upstream).
+    #[serde(default)]
+    base_url: Option<String>,
+    /// The credential the gateway forwards, mapped onto the right
+    /// variable per provider. Required.
+    #[serde(default)]
+    token: Option<String>,
+    /// The canonical model names the account serves. Required
+    /// non-empty.
+    #[serde(default)]
+    models: Vec<String>,
+    /// Canonical name -> upstream slug, only where the spellings
+    /// differ.
+    #[serde(default)]
+    model_slugs: HashMap<String, String>,
+    /// Provider-behaviour extras only - timeouts, context caps,
+    /// fallback switches. Base-url and credential keys are rejected:
+    /// they are the flat keys' job.
     #[serde(default)]
     env: HashMap<String, String>,
-    /// When true, the account is excluded from every auto-assignment
-    /// path (assignment plan + round-robin fallback) but stays
-    /// globally selectable in the `/account` picker. Defaults to
-    /// false so existing accounts keep rotating normally.
-    #[serde(default)]
-    experimental: bool,
 }
 
 // The loaded account shape lives in forge-primitives: the gateway
@@ -363,6 +376,11 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
+    /// The project's model: fills the CLI's model slots at spawn
+    /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
+    /// `CLAUDE_CODE_SUBAGENT_MODEL`). Absent means the account's own
+    /// default applies.
+    pub model: Option<String>,
     /// Per-project environment from `[projects.<name>.env]`, layered
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
     /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
@@ -486,7 +504,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     // Global `[env]` is the BASE each account's effective env starts
     // from; the account's own `[accounts.env]` extends it, so account
     // keys override global keys.
-    let global_env = parsed.env;
+    let mut global_env = parsed.env;
 
     // Drained per project as the org loop builds the project list;
     // whatever is left over named no declared project.
@@ -509,7 +527,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     }
 
     let mut accounts: Vec<LoadedAccount> = Vec::with_capacity(parsed.accounts.len());
-    for entry in parsed.accounts {
+    for mut entry in parsed.accounts {
         if !seen_account_names.insert(entry.display_name.clone()) {
             return Err(WorkspaceError::DuplicateAccount { path, name: entry.display_name });
         }
@@ -520,12 +538,74 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             });
         };
         let mut env = global_env.clone();
+        // The gateway keys are the flat keys' job, in every env layer:
+        // a base_url, credential or API key carried in [env] or
+        // [accounts.env] would sit beside its flat twin and silently
+        // lose or win depending on layering. Each conflict is named.
+        let gateway_keys = [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+        ];
+        let gateway_conflicts: Vec<String> = gateway_keys
+            .iter()
+            .filter(|k| {
+                let present = |env: &HashMap<String, String>| {
+                    env.get(**k).is_some_and(|v| !v.trim().is_empty())
+                };
+                present(&entry.env) || present(&global_env)
+            })
+            .map(|k| (*k).to_owned())
+            .collect();
+        if !gateway_conflicts.is_empty() {
+            let keys = gateway_conflicts.join(", ");
+            return Err(WorkspaceError::AccountEnvCarriesGatewayKeys {
+                path,
+                name: entry.display_name.clone(),
+                keys,
+            });
+        }
+        // A blank gateway key reads as absent for the conflict check
+        // and must read as absent downstream too: scrub it here rather
+        // than stamping an empty credential onto the child.
+        for key in gateway_keys {
+            for env in [&mut global_env, &mut entry.env] {
+                if env.get(key).is_some_and(|v| v.trim().is_empty()) {
+                    env.remove(key);
+                }
+            }
+        }
         env.extend(entry.env);
         trim_setup_token(&mut env);
-        // A base-url provider probes `{ANTHROPIC_BASE_URL}/...`, so an
-        // absent key would leave the probe pointed at Anthropic's host
-        // with the wrong bearer. Refuse at load rather than at preflight.
-        let base_url = env.get("ANTHROPIC_BASE_URL").map(|v| v.trim()).filter(|v| !v.is_empty());
+        // The flat credential: mapped onto the provider's own variable
+        // below, which is what the probe, the gateway forward and the
+        // child stamp all read.
+        let token = match entry.token.as_deref().map(str::trim) {
+            Some(t) if !t.is_empty() => t.to_owned(),
+            _ => {
+                return Err(WorkspaceError::AccountTokenRequired {
+                    path,
+                    name: entry.display_name,
+                });
+            }
+        };
+        if entry.models.is_empty() {
+            return Err(WorkspaceError::AccountModelsRequired { path, name: entry.display_name });
+        }
+        for (slug_key, slug_value) in &entry.model_slugs {
+            if !entry.models.contains(slug_key) {
+                return Err(WorkspaceError::AccountSlugUndeclared { path, slug: slug_key.clone() });
+            }
+            if slug_value.trim().is_empty() {
+                return Err(WorkspaceError::AccountSlugBlank { path, slug: slug_key.clone() });
+            }
+        }
+        let base_url =
+            entry.base_url.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
+        // A base-url provider probes `{base_url}/...`, so an absent key
+        // would leave the probe pointed at Anthropic's host with the
+        // wrong bearer. Refuse at load rather than at preflight.
         if provider.uses_base_url() && base_url.is_none() {
             return Err(WorkspaceError::AccountProviderNeedsBaseUrl {
                 path,
@@ -539,39 +619,44 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         // iteration cap and bail the account, stopping forge from
         // starting. Refuse the base here, where the message can say so.
         if provider == Provider::Openrouter
-            && !base_url.is_some_and(|v| v.trim_end_matches('/').ends_with("/api"))
+            && !base_url.as_deref().is_some_and(|v| v.trim_end_matches('/').ends_with("/api"))
         {
             return Err(WorkspaceError::OpenrouterBaseUrlNotApiRoot {
                 path,
                 name: entry.display_name,
             });
         }
-        // Legal but self-inconsistent: the env is still stamped on the
-        // spawned session, so chat goes to the proxy while usage probes
-        // the official API with the setup token. Before `provider`
-        // existed the combination could not be expressed, so warn
-        // rather than refuse.
+        // Legal but self-inconsistent: the base is still stamped on the
+        // spawned session, so chat goes to that endpoint while usage
+        // probes the official API with the setup token.
         if provider == Provider::Anthropic && base_url.is_some() {
             tracing::warn!(
                 target: "forge_workspace::config",
                 account = %entry.display_name,
-                "account sets provider = \"anthropic\" beside an ANTHROPIC_BASE_URL; sessions \
-                 will use that endpoint while usage probes the official API",
+                "anthropic account declares a base_url; sessions will use that endpoint \
+                 while usage probes the official API",
             );
         }
+        // Map the flat keys onto the provider's variables - what the
+        // probe, the gateway forward and the child stamp all read.
+        if let Some(base_url) = &base_url {
+            env.insert("ANTHROPIC_BASE_URL".to_owned(), base_url.clone());
+        }
+        let credential_variable = if provider.uses_base_url() {
+            "ANTHROPIC_AUTH_TOKEN"
+        } else {
+            "CLAUDE_CODE_OAUTH_TOKEN"
+        };
+        env.insert(credential_variable.to_owned(), token);
         accounts.push(LoadedAccount {
             display_name: entry.display_name,
-            config_dir: expand_home(&entry.config_dir),
             provider,
+            base_url,
+            models: entry.models,
+            model_slugs: entry.model_slugs,
             env,
-            experimental: entry.experimental,
         });
     }
-
-    // Experimental account names, for the "org lists only experimental
-    // accounts" validation below.
-    let experimental_account_names: std::collections::HashSet<String> =
-        accounts.iter().filter(|a| a.experimental).map(|a| a.display_name.clone()).collect();
 
     // Validate orgs + build the flat project list.
     let mut seen_org_names: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -597,12 +682,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 });
             }
         }
-        // An org whose accounts are all experimental leaves its projects
-        // with nothing assignable - the auto_start path would fall
-        // through to a foreign non-experimental account. Reject at load.
-        if org_entry.accounts.iter().all(|a| experimental_account_names.contains(a)) {
-            return Err(WorkspaceError::AllExperimentalOrgAccounts { path, org: org_entry.name });
-        }
         if org_entry.projects.is_empty() {
             return Err(WorkspaceError::EmptyOrg { path, org: org_entry.name });
         }
@@ -610,28 +689,52 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
-            let (env, max_workers, permission_mode) = match project_env_tables
-                .remove(&project_entry.name)
-            {
-                Some(table) => {
-                    let permission_mode = table.permission_mode(&path, &project_entry.name)?;
-                    let max_workers = table.max_workers;
-                    (resolve_project_env(&project_entry.name, table), max_workers, permission_mode)
-                }
-                None => (HashMap::new(), None, PermissionMode::Auto),
-            };
+            let (env, max_workers, permission_mode, model) =
+                match project_env_tables.remove(&project_entry.name) {
+                    Some(table) => {
+                        let permission_mode = table.permission_mode(&path, &project_entry.name)?;
+                        let max_workers = table.max_workers;
+                        let ProjectSettings { env, env_file, model, .. } = table;
+                        (
+                            resolve_project_env(&project_entry.name, env, env_file),
+                            max_workers,
+                            permission_mode,
+                            model,
+                        )
+                    }
+                    None => (HashMap::new(), None, PermissionMode::Auto, None),
+                };
             projects.push(LoadedProject {
-                name: project_entry.name,
+                name: project_entry.name.clone(),
                 path: expand_home(&project_entry.path),
                 display_path: project_entry.path,
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
                 fallback_accounts: org_entry.fallback_accounts.clone(),
                 auto_start: project_entry.auto_start,
+                model: model.clone(),
                 env,
                 max_workers,
                 permission_mode,
             });
+            // The project model must be served by at least one account
+            // the org can reach: a typo would boot clean, stamp all the
+            // CLI slots, and then 503 every session's first request.
+            if let Some(model) = &model {
+                let served =
+                    org_entry.accounts.iter().chain(&org_entry.fallback_accounts).any(|name| {
+                        accounts
+                            .iter()
+                            .any(|a| a.display_name == *name && a.models.iter().any(|m| m == model))
+                    });
+                if !served {
+                    return Err(WorkspaceError::ProjectModelUndeclared {
+                        path,
+                        name: project_entry.name.clone(),
+                        model: model.clone(),
+                    });
+                }
+            }
         }
     }
 
@@ -702,11 +805,15 @@ fn trim_setup_token<S: std::hash::BuildHasher>(env: &mut HashMap<String, String,
     }
 }
 
-fn resolve_project_env(project: &str, entry: ProjectSettings) -> HashMap<String, String> {
-    let mut env = entry.env_file.map(|path| read_env_file(project, &path)).unwrap_or_default();
-    env.extend(entry.env);
-    trim_setup_token(&mut env);
-    env
+fn resolve_project_env(
+    project: &str,
+    env: HashMap<String, String>,
+    env_file: Option<String>,
+) -> HashMap<String, String> {
+    let mut merged = env_file.map(|path| read_env_file(project, &path)).unwrap_or_default();
+    merged.extend(env);
+    trim_setup_token(&mut merged);
+    merged
 }
 
 /// Parse `KEY=value` lines, skipping blanks and `#` comments. Every way
@@ -810,7 +917,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#
     }
@@ -835,7 +943,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [gateway]
@@ -881,7 +990,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [gateway]
@@ -923,7 +1033,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [gateway]
@@ -937,7 +1048,7 @@ provider = "anthropic"
     }
 
     #[test]
-    fn parses_account_env_table() {
+    fn parses_the_flat_base_url_and_token_onto_the_provider_variables() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
@@ -950,11 +1061,10 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex"
+token = "unused"
+models = ["claude-sonnet-5"]
 provider = "codex"
-[accounts.env]
-ANTHROPIC_BASE_URL = "http://localhost:18765"
-ANTHROPIC_AUTH_TOKEN = "unused"
+base_url = "http://localhost:18765"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -963,8 +1073,13 @@ ANTHROPIC_AUTH_TOKEN = "unused"
         assert_eq!(
             account.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
             Some("http://localhost:18765"),
+            "the flat base_url stamps the provider's base-url variable",
         );
-        assert_eq!(account.env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str), Some("unused"));
+        assert_eq!(
+            account.env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
+            Some("unused"),
+            "the flat token stamps the provider's credential variable",
+        );
     }
 
     #[test]
@@ -981,7 +1096,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test/claude-no-provider"
+token = "t"
+models = ["claude-sonnet-5"]
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("absent provider must not load");
@@ -1010,14 +1126,15 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex-no-base"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "codex"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("codex without a base url must not load");
         let message = err.to_string();
         assert!(
-            message.contains("Codex") && message.contains("ANTHROPIC_BASE_URL"),
+            message.contains("Codex") && message.contains("base_url"),
             "the error has to name the account and the missing key, got: {message}",
         );
     }
@@ -1027,6 +1144,91 @@ provider = "codex"
     /// host reaches the decode arm, retries twelve times and bails the
     /// account - which stops forge starting. Catch the base at load
     /// instead, where the user can act on it.
+    #[test]
+    fn a_blank_slug_value_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+[accounts.model_slugs]
+"claude-sonnet-5" = "   "
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a blank slug value must not load");
+        let message = err.to_string();
+        assert!(message.contains("blank slug"), "the error names the blank slug, got: {message}");
+    }
+
+    #[test]
+    fn a_project_model_no_account_declares_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+
+[projects.forge]
+model = "gpt-5.6-luna"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("an undeclared project model must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("gpt-5.6-luna") && message.contains("forge"),
+            "the error names the project and the model, got: {message}",
+        );
+    }
+
+    #[test]
+    fn a_project_model_an_org_account_declares_loads() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+
+[projects.forge]
+model = "claude-sonnet-5"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("a declared model loads");
+        assert_eq!(config.projects[0].model.as_deref(), Some("claude-sonnet-5"));
+    }
+
     #[test]
     fn openrouter_base_url_without_the_api_suffix_fails_the_load() {
         let dir = tempdir().expect("tempdir");
@@ -1041,10 +1243,10 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Router"
-config_dir = "/tmp/forge-test/claude-router-bare-host"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "openrouter"
-[accounts.env]
-ANTHROPIC_BASE_URL = "https://openrouter.ai"
+base_url = "https://openrouter.ai"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("a bare host must not load");
@@ -1073,10 +1275,10 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Router"
-config_dir = "/tmp/forge-test/claude-router-ok"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "openrouter"
-[accounts.env]
-ANTHROPIC_BASE_URL = "https://openrouter.ai/api/"
+base_url = "https://openrouter.ai/api/"
 "#,
         );
         load_from_dir(dir.path()).expect("a trailing slash after /api is still the api base");
@@ -1096,7 +1298,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test/claude-unknown-key"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 providers = "anthropic"
 "#,
@@ -1128,7 +1331,8 @@ auto_start = true
 gatewy = true
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test/claude-unknown-key"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -1186,25 +1390,234 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex-blank-base"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "codex"
-[accounts.env]
-ANTHROPIC_BASE_URL = "   "
+base_url = "   "
 "#,
         );
         let err =
             load_from_dir(dir.path()).expect_err("a blank base url must not satisfy the check");
-        assert!(err.to_string().contains("ANTHROPIC_BASE_URL"), "got: {err}");
+        assert!(err.to_string().contains("base_url"), "got: {err}");
     }
 
     #[test]
-    fn account_without_env_table_is_empty() {
+    fn account_without_env_table_stamps_the_derived_credential() {
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("happy path");
         let account = &config.accounts[0];
-        assert!(account.env.is_empty(), "no [accounts.env] -> empty map");
-        assert!(!account.experimental, "absent experimental field defaults to false");
+        // The flat token maps onto the provider's credential variable -
+        // the only key an account without [accounts.env] carries.
+        assert_eq!(
+            account.env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
+            Some("t"),
+            "the flat token lands on the provider's credential variable",
+        );
+        assert_eq!(account.env.len(), 1, "nothing else is injected");
+    }
+
+    /// The boot gate for the real forge.toml: each of the four load
+    /// errors must fire and name what the user has to fix.
+    #[test]
+    fn an_account_env_carrying_gateway_keys_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+[accounts.env]
+ANTHROPIC_API_KEY = "sk-ant-123"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a gateway env key must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("ANTHROPIC_API_KEY"),
+            "the error names the offending key, got: {message}",
+        );
+    }
+
+    #[test]
+    fn a_whitespace_gateway_key_reads_as_absent() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+[accounts.env]
+ANTHROPIC_API_KEY = "   "
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("a blank gateway key is absent");
+        assert!(
+            config.accounts[0].env.get("ANTHROPIC_API_KEY").is_none_or(|v| v.trim().is_empty()),
+            "the blank key rides through as a blank value, not a rejection",
+        );
+    }
+
+    #[test]
+    fn two_conflicting_gateway_keys_are_both_named() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+[accounts.env]
+ANTHROPIC_API_KEY = "sk-1"
+ANTHROPIC_AUTH_TOKEN = "t2"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("two conflicts must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("ANTHROPIC_API_KEY") && message.contains("ANTHROPIC_AUTH_TOKEN"),
+            "the error names both conflicting keys, got: {message}",
+        );
+    }
+
+    #[test]
+    fn a_global_env_gateway_key_fails_the_load_for_every_account() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[env]
+ANTHROPIC_BASE_URL = "https://proxy.example"
+
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a global gateway key must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("ANTHROPIC_BASE_URL"),
+            "the error names the offending global key, got: {message}",
+        );
+    }
+
+    #[test]
+    fn an_account_without_a_token_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+models = ["claude-sonnet-5"]
+provider = "codex"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a tokenless account must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("Codex") && message.contains("token"),
+            "the error names the account and the missing key, got: {message}",
+        );
+    }
+
+    #[test]
+    fn an_account_without_models_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+provider = "codex"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a modelless account must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("models"),
+            "the error names the missing declaration, got: {message}",
+        );
+    }
+
+    #[test]
+    fn a_slug_for_an_undeclared_model_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+[accounts.model_slugs]
+"deepseek/deepseek-v4.1-flash" = "deepseek/deepseek-v4.1-flash"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("an undeclared slug key must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("deepseek/deepseek-v4.1-flash"),
+            "the error names the undeclared slug key, got: {message}",
+        );
     }
 
     #[test]
@@ -1233,7 +1646,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test/claude-mode-omitted"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [projects.forge]
 max_workers = 2
@@ -1261,7 +1675,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test/claude-mode-explicit"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [projects.forge]
 permission_mode = "bypassPermissions"
@@ -1289,7 +1704,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test/claude-mode-alias"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [projects.forge]
 permission_mode = "bypass_permissions"
@@ -1317,7 +1733,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test/claude-mode-bad"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [projects.forge]
 permission_mode = "yolo"
@@ -1349,7 +1766,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test/claude-mistyped-mode"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [projects.forge]
 permissionmode = "bypassPermissions"
@@ -1395,7 +1813,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -1424,13 +1843,15 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [accounts.env]
 CLAUDE_CODE_AUTO_COMPACT_WINDOW = "372000"
 [[accounts]]
 display_name = "Gateway"
-config_dir = "/tmp/forge-test/claude"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -1464,10 +1885,9 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "  sk-ant-oat01-stargate  "
+models = ["claude-sonnet-5"]
 provider = "anthropic"
-[accounts.env]
-CLAUDE_CODE_OAUTH_TOKEN = "  sk-ant-oat01-stargate  "
 [projects.forge.env]
 CLAUDE_CODE_OAUTH_TOKEN = "  sk-ant-oat01-project  "
 "#,
@@ -1508,19 +1928,20 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "codex"
-[accounts.env]
-ANTHROPIC_BASE_URL = "http://localhost:18765"
+base_url = "http://localhost:18765"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         let account = &config.accounts[0];
-        assert_eq!(account.env.len(), 1, "no [env] -> env is exactly the account's own");
+        assert_eq!(account.env.len(), 2, "no [env] -> env is exactly the derived stamps");
         assert_eq!(
             account.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
             Some("http://localhost:18765"),
         );
+        assert_eq!(account.env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str), Some("t"),);
     }
 
     /// One key per precedence boundary, so a test can assert a single
@@ -1542,7 +1963,8 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [accounts.env]
 ALL_THREE = "account"
@@ -1597,7 +2019,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [projects.forge]
@@ -1661,7 +2084,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [projects.forge]
@@ -1698,7 +2122,8 @@ name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [projects.forge.env]
@@ -1752,7 +2177,8 @@ name = "theta"
 path = "~/Projects/theta"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [projects.gamma.env]
@@ -1821,10 +2247,10 @@ path = "~/Projects/airmail"
 
 [[accounts]]
 display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "codex"
-[accounts.env]
-ANTHROPIC_BASE_URL = "http://localhost:18765"
+base_url = "http://localhost:18765"
 
 [projects.forge.env]
 AIRMAIL_TOKEN = "forge-only-secret"
@@ -1849,37 +2275,6 @@ AIRMAIL_TOKEN = "forge-only-secret"
             airmail_env, account.env,
             "a project declaring no env gets exactly the account env, nothing borrowed",
         );
-    }
-
-    #[test]
-    fn parses_account_experimental_flag() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex", "Gateway"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex"
-provider = "anthropic"
-experimental = true
-[[accounts]]
-display_name = "Gateway"
-config_dir = "/tmp/forge-test/claude"
-provider = "anthropic"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        let codex = config.accounts.iter().find(|a| a.display_name == "Codex").expect("Codex");
-        let gateway =
-            config.accounts.iter().find(|a| a.display_name == "Gateway").expect("Gateway");
-        assert!(codex.experimental, "experimental = true parsed");
-        assert!(!gateway.experimental, "account without the field defaults to false");
     }
 
     #[test]
@@ -2060,7 +2455,8 @@ provider = "anthropic"
             r#"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2080,7 +2476,8 @@ accounts = ["Stargate"]
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2104,7 +2501,8 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2128,7 +2526,8 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2167,12 +2566,14 @@ path = "~/Projects/spare"
 
 [[accounts]]
 display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Router"
-config_dir = "/tmp/forge-test/claude-router"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2203,7 +2604,8 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2215,71 +2617,6 @@ provider = "anthropic"
             }
             other => panic!("expected UnknownOrgAccount, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn all_experimental_org_accounts_errors() {
-        // An org whose entire account list is experimental would leave
-        // its auto_start project with no assignable account and silently
-        // bind to a foreign non-experimental account at runtime. Reject
-        // it at load.
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex"]
-
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-
-[[accounts]]
-display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex"
-provider = "anthropic"
-experimental = true
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("all-experimental org should error");
-        assert!(
-            matches!(err, WorkspaceError::AllExperimentalOrgAccounts { ref org, .. } if org == "Personal"),
-            "got {err:?}",
-        );
-    }
-
-    #[test]
-    fn org_with_a_non_experimental_account_loads() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex", "Gateway"]
-
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-
-[[accounts]]
-display_name = "Codex"
-config_dir = "/tmp/forge-test/claude-codex"
-provider = "anthropic"
-experimental = true
-
-[[accounts]]
-display_name = "Gateway"
-config_dir = "/tmp/forge-test/claude"
-provider = "anthropic"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("org with a non-experimental account loads");
-        assert_eq!(
-            config.default_project().accounts,
-            vec!["Codex".to_owned(), "Gateway".to_owned()]
-        );
     }
 
     #[test]
@@ -2304,7 +2641,8 @@ path = "~/Projects/aware"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2334,7 +2672,8 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2364,7 +2703,8 @@ name = "middle"
 path = "~/Projects/middle"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2390,7 +2730,8 @@ name = "alpha"
 path = "~/Projects/alpha"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2420,7 +2761,8 @@ path = "~/Projects/gamma"
 auto_start = true
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );
@@ -2462,11 +2804,13 @@ path = "~/Projects/forge"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-config-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test/claude-other"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         );

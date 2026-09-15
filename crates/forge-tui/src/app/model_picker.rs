@@ -1,13 +1,13 @@
 //! `/model` picker overlay: transient state + key handling.
 //!
 //! A centered overlay (rendered by [`crate::ui::model_picker`]) listing
-//! the session's available models - the curated OpenRouter catalog on an
-//! `openrouter` account, the CLI-advertised regular models elsewhere.
-//! `enter` switches the session to the highlighted model; `esc` closes
-//! without switching. Rows are snapshotted at open together with the
-//! session they came from; a commit whose session is no longer active is
-//! refused (the rows are stale), and a session reporting no models never
-//! opens the picker (the `/model` submit falls back to the current-model
+//! the session's declared models - the org's accounts' declared models,
+//! authored in forge.toml. `enter` switches the session to the
+//! highlighted model; `esc` closes without switching. Rows are
+//! snapshotted at open together with the session they came from; a
+//! commit whose session is no longer active is refused (the rows are
+//! stale), and a session reporting no models never opens the picker
+//! (the `/model` submit falls back to the current-model
 //! info line).
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -138,23 +138,23 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    /// The ten curated OpenRouter rows, shaped the way the
-    /// forge-gateway curated merge produces them.
-    fn curated_rows() -> Vec<model::AvailableModel> {
+    /// Ten declared-model rows shaped the way the session reports
+    /// them: bare canonical ids, no descriptions.
+    fn declared_rows() -> Vec<model::AvailableModel> {
         [
-            ("z-ai/glm-5.3", "Z.ai: GLM 5.3 (Opus-class)"),
-            ("deepseek/deepseek-v4-pro-0813", "DeepSeek: DeepSeek V4 Pro (Opus-class)"),
-            ("moonshotai/kimi-k3", "MoonshotAI: Kimi K3 (Opus-class)"),
-            ("z-ai/glm-5.3-flash", "Z.ai: GLM 5.3 Flash (Opus-class)"),
-            ("deepseek/deepseek-v4-flash", "DeepSeek: DeepSeek V4 Flash (Strong)"),
-            ("minimax/minimax-m3", "MiniMax: MiniMax M3 (Strong)"),
-            ("z-ai/glm-5.2", "Z.ai: GLM 5.2 (Strong)"),
-            ("google/gemini-2.5-flash", "Google: Gemini 2.5 Flash (Closed reference)"),
-            ("x-ai/grok-4.3", "xAI: Grok 4.3 (Closed reference)"),
-            ("deepseek/deepseek-v4-pro", "DeepSeek: DeepSeek V4 Pro (Closed reference)"),
+            "glm-5.3",
+            "deepseek-v4-pro-0813",
+            "kimi-k3",
+            "glm-5.3-flash",
+            "deepseek-v4.1-flash",
+            "minimax-m3",
+            "glm-5.2",
+            "gemini-2.5-flash",
+            "grok-4.3",
+            "deepseek-v4-pro",
         ]
         .into_iter()
-        .map(|(id, name)| model::AvailableModel::new(id, name).description("bench - price"))
+        .map(|id| model::AvailableModel::new(id, id))
         .collect()
     }
 
@@ -173,14 +173,14 @@ mod tests {
 
     #[test]
     fn model_submit_opens_the_picker_on_a_session_with_models() {
-        let mut app = app_with_rows(curated_rows());
+        let mut app = app_with_rows(declared_rows());
 
         let handled = crate::app::slash::try_handle_submit(&mut app, "/model");
 
         assert!(handled, "/model is handled locally");
         let picker = app.model_picker.expect("the picker opens after submitting /model");
         assert_eq!(picker.rows.len(), 10, "the picker lists every available model");
-        assert_eq!(picker.rows[0].id, "z-ai/glm-5.3");
+        assert_eq!(picker.rows[0].id, "glm-5.3");
     }
 
     #[test]
@@ -224,9 +224,9 @@ mod tests {
 
     #[test]
     fn open_seeds_the_highlight_to_the_current_model() {
-        let mut app = app_with_rows(curated_rows());
+        let mut app = app_with_rows(declared_rows());
         app.set_current_model(Some(model::CurrentModel::new(
-            "z-ai/glm-5.3-flash",
+            "glm-5.3-flash",
             "GLM 5.3 Flash",
             "GLM 5.3 Flash",
         )));
@@ -235,32 +235,32 @@ mod tests {
 
         let picker = app.model_picker.expect("picker open");
         assert_eq!(
-            picker.rows[picker.highlight].id, "z-ai/glm-5.3-flash",
+            picker.rows[picker.highlight].id, "glm-5.3-flash",
             "the highlight lands on the running model",
         );
     }
 
-    /// On OpenRouter the requested id and the resolved id genuinely
-    /// diverge (requested `z-ai/glm-5.3-flash`, resolved with a context
-    /// suffix), so the requested-id arm of the highlight match is live
-    /// in production: the highlight follows the requested id onto its
-    /// row, not the resolved one.
+    /// The requested id and the resolved id genuinely diverge when a
+    /// context suffix rides the resolved id (requested `glm-5.3-flash`,
+    /// resolved with `[1m]`), so the requested-id arm of the highlight
+    /// match is live in production: the highlight follows the requested
+    /// id onto its row, not the resolved one.
     #[test]
     fn open_seeds_the_highlight_from_the_requested_id_when_it_differs() {
-        let mut app = app_with_rows(curated_rows());
+        let mut app = app_with_rows(declared_rows());
         let current = model::CurrentModel::new(
-            "z-ai/glm-5.3-flash[1m]",
+            "glm-5.3-flash[1m]",
             "GLM 5.3 Flash [1M]",
             "GLM 5.3 Flash [1M]",
         )
-        .requested_id("z-ai/glm-5.3-flash");
+        .requested_id("glm-5.3-flash");
         app.set_current_model(Some(current));
 
         assert!(crate::app::slash::try_handle_submit(&mut app, "/model"));
 
         let picker = app.model_picker.expect("picker open");
         assert_eq!(
-            picker.rows[picker.highlight].id, "z-ai/glm-5.3-flash",
+            picker.rows[picker.highlight].id, "glm-5.3-flash",
             "the highlight follows the requested id",
         );
     }
@@ -269,9 +269,9 @@ mod tests {
     /// filter and the running dot.
     #[test]
     fn the_highlight_seeding_ignores_id_case() {
-        let mut app = app_with_rows(curated_rows());
+        let mut app = app_with_rows(declared_rows());
         app.set_current_model(Some(model::CurrentModel::new(
-            "Z-AI/GLM-5.3-FLASH",
+            "GLM-5.3-FLASH",
             "GLM 5.3 Flash",
             "GLM 5.3 Flash",
         )));
@@ -280,7 +280,7 @@ mod tests {
 
         let picker = app.model_picker.expect("picker open");
         assert_eq!(
-            picker.rows[picker.highlight].id, "z-ai/glm-5.3-flash",
+            picker.rows[picker.highlight].id, "glm-5.3-flash",
             "an upper-case running id still seeds its row",
         );
     }
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn up_down_move_the_highlight_and_wrap() {
-        let mut app = app_with_rows(curated_rows());
+        let mut app = app_with_rows(declared_rows());
         assert!(open(&mut app), "the test app has rows");
 
         handle_key(&mut app, key(KeyCode::Down));
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn enter_switches_to_the_highlighted_model_and_closes() {
-        let mut app = app_with_rows(curated_rows());
+        let mut app = app_with_rows(declared_rows());
         let _agent = app.install_testing_stub();
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();
@@ -324,12 +324,12 @@ mod tests {
         assert!(
             matches!(&dispatched[..],
                 [forge_workspace::Command::SetModel { model, .. }]
-                    if model == "deepseek/deepseek-v4-pro-0813"),
+                    if model == "deepseek-v4-pro-0813"),
             "enter dispatches SetModel for the highlighted row, got: {dispatched:?}",
         );
         assert_eq!(
             app.current_model().map(|current| current.resolved_id.as_str()),
-            Some("deepseek/deepseek-v4-pro-0813"),
+            Some("deepseek-v4-pro-0813"),
             "the optimistic apply already shows the committed model",
         );
     }
@@ -341,7 +341,7 @@ mod tests {
     /// session is now active.
     #[test]
     fn commit_after_a_session_switch_refuses_and_does_not_dispatch() {
-        let mut app = app_with_rows(curated_rows());
+        let mut app = app_with_rows(declared_rows());
         let _agent = app.install_testing_stub();
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn esc_closes_without_committing() {
-        let mut app = app_with_rows(curated_rows());
+        let mut app = app_with_rows(declared_rows());
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();
         }

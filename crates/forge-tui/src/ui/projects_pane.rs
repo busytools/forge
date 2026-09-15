@@ -1854,11 +1854,11 @@ fn usage_error_label(
     }
 }
 
-/// Where the repair lives, per account class: the env key the
+/// Where the repair lives, per account class: the flat key the
 /// credential sits behind.
 fn repair_hint(auth: forge_workspace::AccountAuth) -> &'static str {
     match auth {
-        forge_workspace::AccountAuth::BaseUrl => "[accounts.env]",
+        forge_workspace::AccountAuth::BaseUrl => "base_url + token",
         forge_workspace::AccountAuth::Token => "setup token",
     }
 }
@@ -3356,15 +3356,15 @@ mod tests {
     }
 
     #[test]
-    fn usage_error_label_base_url_account_names_accounts_env() {
+    fn usage_error_label_base_url_account_names_its_flat_keys() {
         let base_url = forge_workspace::AccountAuth::BaseUrl;
         assert_eq!(
             usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, false, base_url),
-            "⚠ unauthorized - [accounts.env]",
+            "⚠ unauthorized - base_url + token",
         );
         assert_eq!(
             usage_error_label(forge_workspace::UsageFetchStatus::Expired, false, base_url),
-            "⚠ expired - [accounts.env]",
+            "⚠ expired - base_url + token",
         );
     }
 

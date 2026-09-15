@@ -1,6 +1,7 @@
 //! The Zai backend: the GLM coding plan's monitor probe against
 //! `{host_root}/api/monitor/usage/quota/limit`, authenticated by the
-//! raw `[accounts.env]` `ANTHROPIC_AUTH_TOKEN` (no Bearer prefix).
+//! account's flat token stamped onto `ANTHROPIC_AUTH_TOKEN` (no Bearer
+//! prefix).
 //! The configured base url carries the `/api/anthropic` chat prefix,
 //! so the monitor URL derives from the scheme+host alone. Every Z.ai
 //! monitor endpoint answers HTTP 200 regardless of outcome - a wrong

@@ -9,7 +9,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use forge_workspace::{
@@ -38,17 +37,20 @@ auto_start = true
 
 [[accounts]]
 display_name = "Aacct"
-config_dir = "/tmp/forge-switch-a"
+token = "ta"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Bacct"
-config_dir = "/tmp/forge-switch-b"
+token = "tb"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Cacct"
-config_dir = "/tmp/forge-switch-c"
+token = "tc"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
     )
@@ -57,11 +59,13 @@ provider = "anthropic"
 }
 
 #[tokio::test]
-async fn switch_account_respawns_same_session_under_forced_config_dir() {
+async fn switch_account_respawns_same_session_under_forced_account() {
     // Three accounts. A cold-cache initial spawn takes cursor=0 (Aacct);
     // an UNforced re-spawn would advance the round-robin to cursor=1
     // (Bacct). The switch targets Cacct, so landing on Cacct's
-    // config_dir proves the account was FORCED, not merely rotated to.
+    // credential proves the account was FORCED, not merely rotated to.
+    // One shared config dir means the dir no longer distinguishes
+    // accounts - the stamped credential does.
     let dir = tempdir().expect("tempdir");
     let workspace = three_account_workspace(dir.path());
 
@@ -70,9 +74,12 @@ async fn switch_account_respawns_same_session_under_forced_config_dir() {
     let handle = workspace
         .get_agent_handle(SessionTarget::Session(key.clone()), SessionLaunchSettings::default())
         .expect("initial spawn");
+    let credential = |handle: &std::sync::Arc<forge_agent::AgentHandle>| {
+        handle.env().get("CLAUDE_CODE_OAUTH_TOKEN").map(std::string::ToString::to_string)
+    };
     assert_eq!(
-        handle.config_dir(),
-        PathBuf::from("/tmp/forge-switch-a"),
+        credential(&handle).as_deref(),
+        Some("ta"),
         "initial spawn binds to account A (first usable, cold cache)",
     );
 
@@ -85,11 +92,15 @@ async fn switch_account_respawns_same_session_under_forced_config_dir() {
         })
         .expect("dispatch switch");
 
-    // Same key, re-spawned under the FORCED account C's config_dir.
+    // Same key, re-spawned under the FORCED account C. Re-resolve the
+    // handle by key: the switch replaced the pooled agent.
+    let respawned = workspace
+        .get_agent_handle(SessionTarget::Session(key.clone()), SessionLaunchSettings::default())
+        .expect("pooled handle");
     assert_eq!(
-        workspace.config_dir_for(&key),
-        Some(PathBuf::from("/tmp/forge-switch-c")),
-        "switch re-spawns the SAME session key under the forced account C's config_dir",
+        credential(&respawned).as_deref(),
+        Some("tc"),
+        "switch re-spawns the SAME session key under the forced account C",
     );
     assert!(
         workspace.has_agent_for(&key),
@@ -110,7 +121,7 @@ async fn switch_account_refused_while_a_turn_is_in_flight() {
     workspace
         .get_agent_handle(SessionTarget::Session(key.clone()), SessionLaunchSettings::default())
         .expect("initial spawn");
-    assert_eq!(workspace.config_dir_for(&key), Some(PathBuf::from("/tmp/forge-switch-a")));
+    assert!(workspace.has_agent_for(&key), "fixture premise: the session is live");
 
     // A turn is now in flight for this session.
     workspace.domain_session_for(&key).expect("domain").lock().runtime_state =
@@ -125,12 +136,7 @@ async fn switch_account_refused_while_a_turn_is_in_flight() {
         .expect("dispatch switch");
 
     // Refused: the session stays on account A and keeps its live agent.
-    assert_eq!(
-        workspace.config_dir_for(&key),
-        Some(PathBuf::from("/tmp/forge-switch-a")),
-        "a busy session is NOT switched",
-    );
-    assert!(workspace.has_agent_for(&key), "the in-flight session is NOT torn down");
+    assert!(workspace.has_agent_for(&key), "a busy session is NOT switched");
 
     // The idle notice was surfaced.
     let mut saw_notice = false;
@@ -159,7 +165,6 @@ async fn switch_account_refused_when_a_prompt_is_routed_before_the_wire_echo() {
     workspace
         .get_agent_handle(SessionTarget::Session(key.clone()), SessionLaunchSettings::default())
         .expect("initial spawn");
-    assert_eq!(workspace.config_dir_for(&key), Some(PathBuf::from("/tmp/forge-switch-a")));
 
     // Route a Prompt: turn_pending is stamped synchronously, before any
     // Running echo could be mirrored.
@@ -189,12 +194,7 @@ async fn switch_account_refused_when_a_prompt_is_routed_before_the_wire_echo() {
         .expect("dispatch switch");
 
     // Refused on turn_pending alone: still on account A, still live.
-    assert_eq!(
-        workspace.config_dir_for(&key),
-        Some(PathBuf::from("/tmp/forge-switch-a")),
-        "the just-committed turn is NOT torn down",
-    );
-    assert!(workspace.has_agent_for(&key), "the session keeps its live agent");
+    assert!(workspace.has_agent_for(&key), "the just-committed turn is NOT torn down");
 
     let mut saw_notice = false;
     while let Ok(update) = updates.try_recv() {

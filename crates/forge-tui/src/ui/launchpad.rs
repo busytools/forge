@@ -1232,7 +1232,7 @@ mod tests {
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
                  [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
-                 [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-launchpad-stargate\"\nprovider = \"anthropic\"\n"
+                 [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
             ),
         )
         .expect("write forge.toml");
@@ -1338,7 +1338,7 @@ mod tests {
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
                  [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
-                 [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-launchpad-stargate\"\nprovider = \"anthropic\"\n"
+                 [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
             ),
         )
         .expect("write forge.toml");
@@ -1382,7 +1382,7 @@ mod tests {
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
                  [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
-                 [[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-launchpad-stargate\"\nprovider = \"anthropic\"\n"
+                 [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
             ),
         )
         .expect("write forge.toml");

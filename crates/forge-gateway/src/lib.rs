@@ -22,7 +22,6 @@ mod codex;
 pub mod forward;
 pub mod helpers;
 pub mod listener;
-pub mod model_catalog;
 mod openrouter;
 pub mod pool;
 pub mod rotation;
@@ -39,8 +38,6 @@ pub use forge_primitives::usage::AccountBudget;
 pub use forge_primitives::usage::UsageSnapshot;
 pub use forge_primitives::usage::UsageSourceKind;
 pub use forge_primitives::usage::oauth::OauthUsageError;
-
-pub use crate::model_catalog::ModelCatalog;
 
 pub use crate::account::{
     AccountKey, AccountState, AccountStateMap, LoadingState, Unusable, UsageFetchStatus,
@@ -194,12 +191,6 @@ pub trait ProviderBackend: Send + Sync {
                 }
             }
         }
-    }
-
-    /// The provider's model picker rows, or None to keep the
-    /// discovered list. Today: openrouter only.
-    fn model_catalog(&self) -> Option<&'static dyn ModelCatalog> {
-        None
     }
 }
 

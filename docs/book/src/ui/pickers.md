@@ -46,17 +46,17 @@
 
 ## Model picker (`/model`)
 
-`/model` (no arg) opens the overlay when the session advertises models - otherwise the info line stays - and `/model <id>` switches directly. Rows are the session's available models: the curated OpenRouter catalog on an `openrouter` account, the CLI-advertised models elsewhere; the pseudo `default` row is hidden. Opens with the highlight on the running model beside a `●` marker.
+`/model` (no arg) opens the overlay when the session advertises models - otherwise the info line stays - and `/model <id>` switches directly. Rows are the session's org's declared models, authored in forge.toml; the pseudo `default` row is hidden. Opens with the highlight on the running model beside a `●` marker.
 
 <div class="term">
 
   <pre class="indent">
                     <span class="dim">┌─ model ────────────────────────────────────────────────────────────────┐</span>
-                    <span class="dim">│</span> <span class="accent-bold">▶ Z.ai: GLM 5.3 (Opus-class)  SWE-bench V 97% (vals.ai) · $4.40/M</span>      <span class="dim">│</span>
-                    <span class="dim">│</span>   DeepSeek: DeepSeek V4 Pro 0813 (Opus-class)  <span class="dim">96.4% / 80.6% · $3.20/M</span> <span class="dim">│</span>
-                    <span class="dim">│</span>   MoonshotAI: Kimi K3 (Opus-class)  <span class="dim">SWE-bench V 93.4% (anotherwrapper)</span> <span class="dim">│</span>
-                    <span class="dim">│</span> <span class="accent">●</span> Z.ai: GLM 5.3 Flash (Opus-class)  <span class="dim">~93% (vals.ai, independent)</span>        <span class="dim">│</span>
-                    <span class="dim">│</span>   DeepSeek: DeepSeek V4 Flash (Strong)  <span class="dim">SWE-bench V 91% (vals.ai)</span>      <span class="dim">│</span>
+                    <span class="dim">│</span> <span class="accent-bold">▶ glm-5.3</span>                                                              <span class="dim">│</span>
+                    <span class="dim">│</span>   deepseek-v4-pro-0813                                                 <span class="dim">│</span>
+                    <span class="dim">│</span>   kimi-k3                                                              <span class="dim">│</span>
+                    <span class="dim">│</span> <span class="accent">●</span> glm-5.3-flash                                                        <span class="dim">│</span>
+                    <span class="dim">│</span>   deepseek-v4.1-flash                                                  <span class="dim">│</span>
                     <span class="dim">│</span>   <span class="dim">...</span>                                                                  <span class="dim">│</span>
                     <span class="dim">│</span>                                                                        <span class="dim">│</span>
                     <span class="dim">│</span> <span class="dim">↑↓ move   enter switch   esc cancel   ● current</span>                        <span class="dim">│</span>
@@ -81,13 +81,13 @@
 
 ## Account picker (`/account`)
 
-Idle-only - mid-turn it is a no-op with a red system notice ("Finish or cancel the current turn before switching accounts."). Switch the live session to a different account, keeping the SAME conversation. Rows: the project's allowed accounts, the org's fallbacks (dim `FALLBACK` group), and every `experimental = true` account (dim `EXPERIMENTAL` group - excluded from auto-assignment, offered here globally). Each row: the current `●` marker, the name, a budget block shaped by the billing kind, and a status tag - `usable` green, or red `limit hit` / `auth failed or expired`.
+Idle-only - mid-turn it is a no-op with a red system notice ("Finish or cancel the current turn before switching accounts."). Switch the live session to a different account, keeping the SAME conversation. Rows: the project's allowed accounts, the org's fallbacks (dim `FALLBACK` group). Each row: the current `●` marker, the name, a budget block shaped by the billing kind, and a status tag - `usable` green, or red `limit hit` / `auth failed or expired`.
 
 <div class="term">
 
   <pre class="indent">
        <span class="accent">┌──────────────────────────────────────────────────────────────┐</span>
-       <span class="accent">│</span> <span class="accent-bold">Switch account · forge</span>                            <span class="dim">7 accounts</span> <span class="accent">│</span>
+       <span class="accent">│</span> <span class="accent-bold">Switch account · forge</span>                            <span class="dim">4 accounts</span> <span class="accent">│</span>
        <span class="accent">│</span>                                                              <span class="accent">│</span>
        <span class="accent">│</span> <span class="accent">●</span> <span class="accent-bold">Gateway</span>    5h <span class="error">100%</span>  7d <span class="warning">63%</span>  <span class="warning">⟳ resets 1h 42m</span>      <span class="error">limit hit</span> <span class="accent">│</span>
        <span class="accent">│</span>   Gateway1   5h <span class="success">34%</span>  7d <span class="success">22%</span>                           <span class="success">usable</span> <span class="accent">│</span>
@@ -95,11 +95,6 @@ Idle-only - mid-turn it is a no-op with a red system notice ("Finish or cancel t
        <span class="accent">│</span>                                                              <span class="accent">│</span>
        <span class="accent">│</span>   <span class="dim bold">FALLBACK</span>                                                   <span class="accent">│</span>
        <span class="accent">│</span>   Router     <span class="success">$0.56</span> <span class="dim">d</span> <span class="success">$1.25</span> <span class="dim">w</span> <span class="success">$20.30</span> <span class="dim">m</span>      <span class="dim">fallback</span> <span class="dim">·</span> <span class="success">usable</span> <span class="accent">│</span>
-       <span class="accent">│</span>                                                              <span class="accent">│</span>
-       <span class="accent">│</span>   <span class="dim bold">EXPERIMENTAL</span>                                               <span class="accent">│</span>
-       <span class="accent">│</span>   Codex      5h <span class="success">20%</span>  7d <span class="success">8%</span>             <span class="experimental">experimental</span> <span class="dim">·</span> <span class="success">usable</span> <span class="accent">│</span>
-       <span class="accent">│</span>   OpenRouter <span class="success">$0.56</span> <span class="dim">d</span> <span class="success">$1.25</span> <span class="dim">w</span> <span class="success">$20.30</span> <span class="dim">m</span>  <span class="experimental">experimental</span> <span class="dim">·</span> <span class="success">usable</span> <span class="accent">│</span>
-       <span class="accent">│</span>   Boot       <span class="success">$-</span> <span class="dim">d</span> <span class="success">$-</span> <span class="dim">w</span> <span class="success">$-</span> <span class="dim">m</span>            <span class="experimental">experimental</span> <span class="dim">·</span> <span class="success">usable</span> <span class="accent">│</span>
        <span class="accent">│</span>                                                              <span class="accent">│</span>
        <span class="accent">│</span> <span class="dim">↑↓ move   enter switch   esc cancel   ● current</span>              <span class="accent">│</span>
        <span class="accent">└──────────────────────────────────────────────────────────────┘</span></pre>
@@ -117,11 +112,11 @@ Idle-only - mid-turn it is a no-op with a red system notice ("Finish or cancel t
 
 - A window-billed account (`anthropic`, `codex`, `zai`) renders `5h` + `7d` utilization coloured by proximity to the cap, plus a reset ETA shown only while at the cap. An API-billed one (`openrouter`) has no window, so it renders per-key spend `d` / `w` / `m`; account-wide balance is deliberately absent. Columns with no reading render `-` rather than a zero, following the billing model - an unprobed API account shows `$- d $- w $- m`.
 - The budget block follows the billing kind: `Unknown` when no snapshot has landed or the cached one was written under a different `provider` (that last case also logs a warning naming the account - a stale row survives a `forge.toml` edit and is re-seeded at every boot); `Subscription` carrying 5h/7d utilization plus the reset ETA; `Api` carrying the three spend figures. The three `-` states are not a measured zero: no snapshot yet, a snapshot carrying no figure for that column (documented on the proxy path; on the Anthropic path a 200 carrying only the session window), and the stale-provider case. The block degrades - dropping the reset ETA, then the repeated `$`, then the spacing, then to the monthly figure alone - rather than overflowing; the paragraph does not wrap and an overrun is cut with no ellipsis, and the grouped-row tag gives way only after the budget block and the name column.
-- Which red reason can apply is keyed on the billing kind: only a window-billed account can saturate (`limit hit`); a probe blocked or bailed account reads `auth failed or expired` either way. Experimental accounts are still probed, so a down one reads an unusable tag like any account.
-- Picking a row re-spawns the session under that account's `config_dir` and `claude --resume`s the same session id - the account config dirs share `~/.claude/projects` via symlink, so nothing is copied; the chat re-seeds and the account label refreshes. Picking the current account is a no-op close; an unusable one is shown red. Live workers and in-flight peer asks are not blocked - workers run their own accounts; peer asks to the switched session expire on reconnect and are re-askable.
+- Which red reason can apply is keyed on the billing kind: only a window-billed account can saturate (`limit hit`); a probe blocked or bailed account reads `auth failed or expired` either way.
+- Picking a row re-spawns the session under the shared config dir and `claude --resume`s the same session id - nothing is copied; the chat re-seeds and the account label refreshes. Picking the current account is a no-op close; an unusable one is shown red. Live workers and in-flight peer asks are not blocked - workers run their own accounts; peer asks to the switched session expire on reconnect and are re-askable.
 - Like both sibling pickers, the overlay is modal and keyboard-only; mouse-click selection is a possible follow-up.
 - Auto-switch on rate-limit is deferred; no account management or `forge.toml` editing from the picker.
-- Colors: border and title rust orange; account count, period letters, the empty `5h`/`7d` dashes, the `-` on an unprobed row and the hints dim (the `$-` of an empty spend column keeps the spend colour so the three periods stay one row); window percentages green under ~70, yellow under 100, red at the cap; spend amounts green flat - an uncapped key has no cap to be near; reset ETA yellow; `usable` green; both red reasons red; group headers dim bold; `fallback` dim; `experimental` amber.
+- Colors: border and title rust orange; account count, period letters, the empty `5h`/`7d` dashes, the `-` on an unprobed row and the hints dim (the `$-` of an empty spend column keeps the spend colour so the three periods stay one row); window percentages green under ~70, yellow under 100, red at the cap; spend amounts green flat - an uncapped key has no cap to be near; reset ETA yellow; `usable` green; both red reasons red; group headers dim bold; `fallback` dim.
 
 </details>
 

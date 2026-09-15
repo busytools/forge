@@ -12,9 +12,8 @@
 //! ([`dynamic_workers`]), review threads ([`review`]), forge state
 //! ([`state`], the spinner override + account-usage cache), the
 //! `/usage` view's per-file token summaries ([`token_usage`]), cached
-//! model pricing ([`pricing`]), cached OpenRouter model catalogs
-//! ([`model_catalog`]), plugin update history ([`plugins`]), and the
-//! catalog's per-file worker-tag scans ([`session_tags`]).
+//! model pricing ([`pricing`]), plugin update history ([`plugins`]),
+//! and the catalog's per-file worker-tag scans ([`session_tags`]).
 
 use std::path::Path;
 
@@ -23,7 +22,6 @@ use anyhow::Context;
 pub mod cron;
 pub mod dynamic_workers;
 pub mod gotify;
-pub mod model_catalog;
 pub mod plugins;
 pub mod pricing;
 pub mod review;

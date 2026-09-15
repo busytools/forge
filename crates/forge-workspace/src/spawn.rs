@@ -952,8 +952,7 @@ pub(crate) fn handle_spawn_session(
 
 /// Switch the live session `key` to `account_display_name`: tear down
 /// its current `claude` subprocess and re-spawn + resume the SAME
-/// `session_id` under the picked account's `config_dir`. The account
-/// config dirs share `~/.claude/projects` via symlink, so
+/// `session_id` under the workspace's shared config dir, so
 /// `claude --resume` finds the same conversation - nothing is copied.
 /// The forced-account re-spawn seeds `connected_once = true`, so its
 /// first `Connected` emits `SessionReplaced`: the chat resets, then the
@@ -1886,7 +1885,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-spawn-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -2123,7 +2123,8 @@ auto_start = false
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-spawn-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -2185,7 +2186,8 @@ auto_start = false
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-spawn-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
         )
@@ -2540,7 +2542,8 @@ path = "{notes_path}"
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-spawn-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 
 [projects.forge]
@@ -3146,7 +3149,7 @@ max_workers = {limit}
         std::fs::write(
             forge_toml_path(config.path()),
             format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge\"\npath = \"{repo_path_str}\"\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"/tmp/forge-test-spawn-conn-stargate\"\nprovider = \"anthropic\"\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge\"\npath = \"{repo_path_str}\"\n\n[[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
             ),
         )
         .expect("write forge.toml");
@@ -3743,7 +3746,8 @@ auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
-config_dir = "/tmp/forge-test-spawn-stargate"
+token = "t"
+models = ["claude-sonnet-5"]
 provider = "anthropic"
 "#,
             ),

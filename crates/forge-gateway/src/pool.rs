@@ -7,7 +7,6 @@
 //! without touching any call site.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -53,20 +52,12 @@ impl AccountPool {
         self.accounts.lock().auth(&AccountKey(display_name.to_owned()))
     }
 
-    pub fn config_dirs(&self) -> Vec<PathBuf> {
-        self.accounts.lock().config_dirs()
-    }
-
     pub fn env(&self, key: &AccountKey) -> Option<HashMap<String, String>> {
         self.accounts.lock().env(key).cloned()
     }
 
-    pub fn config_dir(&self, key: &AccountKey) -> Option<PathBuf> {
-        self.accounts.lock().config_dir(key).cloned()
-    }
-
-    pub fn provider_or_anthropic(&self, key: &AccountKey) -> forge_primitives::account::Provider {
-        self.accounts.lock().provider_or_anthropic(key)
+    pub fn provider(&self, key: &AccountKey) -> Option<forge_primitives::account::Provider> {
+        self.accounts.lock().provider(key)
     }
 
     pub fn loading_state(&self, key: &AccountKey) -> LoadingState {
@@ -83,10 +74,6 @@ impl AccountPool {
 
     pub fn unusable_reason(&self, key: &AccountKey) -> Option<Unusable> {
         self.accounts.lock().unusable_reason(key)
-    }
-
-    pub fn is_experimental(&self, key: &AccountKey) -> bool {
-        self.accounts.lock().is_experimental(key)
     }
 
     pub fn scheduler_should_probe(&self, key: &AccountKey) -> bool {
@@ -139,17 +126,6 @@ impl AccountPool {
         self.accounts.lock().ordered_keys.clone()
     }
 
-    /// The display names of the experimental accounts.
-    pub fn experimental_names(&self) -> Vec<String> {
-        let state = self.accounts.lock();
-        state
-            .ordered_keys
-            .iter()
-            .filter(|k| state.is_experimental(k))
-            .map(|k| k.0.clone())
-            .collect()
-    }
-
     /// How long until the account's next scheduled probe, when one is
     /// pending.
     pub fn next_probe_after(&self, key: &AccountKey) -> Option<Duration> {
@@ -161,21 +137,16 @@ impl AccountPool {
             .and_then(|t| t.checked_duration_since(std::time::Instant::now()))
     }
 
-    /// The keys the assignment paths may hand out: usable and not
-    /// experimental, in declaration order.
+    /// The keys the assignment paths may hand out: usable, in
+    /// declaration order.
     pub fn usable_account_keys(&self) -> std::collections::HashSet<AccountKey> {
         let state = self.accounts.lock();
-        state
-            .ordered_keys
-            .iter()
-            .filter(|k| state.is_account_usable(k) && !state.is_experimental(k))
-            .cloned()
-            .collect()
+        state.ordered_keys.iter().filter(|k| state.is_account_usable(k)).cloned().collect()
     }
 
-    /// The non-experimental ready / degraded / saturated sets the
-    /// assignment plan consumes, in declaration order. `None` while
-    /// any account is still loading.
+    /// The ready / degraded / saturated sets the assignment plan
+    /// consumes, in declaration order. `None` while any account is
+    /// still loading.
     pub fn health_sets(&self) -> Option<(Vec<AccountKey>, Vec<AccountKey>, Vec<AccountKey>)> {
         use LoadingState;
 
@@ -186,7 +157,6 @@ impl AccountPool {
         let ready: Vec<AccountKey> = state
             .ordered_keys
             .iter()
-            .filter(|k| !state.is_experimental(k))
             .filter(|k| {
                 state.by_key.get(*k).is_some_and(|s| matches!(s.loading, LoadingState::Ready))
             })
@@ -195,7 +165,6 @@ impl AccountPool {
         let degraded: Vec<AccountKey> = state
             .ordered_keys
             .iter()
-            .filter(|k| !state.is_experimental(k))
             .filter(|k| {
                 state.by_key.get(*k).is_some_and(|s| matches!(s.loading, LoadingState::Bailed))
             })
@@ -214,12 +183,9 @@ impl AccountPool {
             .ordered_keys
             .iter()
             .filter(|key| state.scheduler_should_probe(key))
-            .map(|key| {
-                (
-                    key.clone(),
-                    state.provider_or_anthropic(key),
-                    state.env(key).cloned().unwrap_or_default(),
-                )
+            .filter_map(|key| {
+                let provider = state.provider(key)?;
+                Some((key.clone(), provider, state.env(key).cloned().unwrap_or_default()))
             })
             .collect()
     }
@@ -235,15 +201,11 @@ impl AccountPool {
         }
     }
 
-    pub fn pick_for_project(
-        &self,
-        allowed: &[String],
-        fallbacks: &[String],
-    ) -> (AccountKey, PathBuf) {
+    pub fn pick_for_project(&self, allowed: &[String], fallbacks: &[String]) -> AccountKey {
         self.accounts.lock().pick_for_project(allowed, fallbacks)
     }
 
-    /// Run the family-and-health selection walk for one org pin.
+    /// Run the declared-model selection walk for one org pin.
     pub fn select_account(
         &self,
         pin: &crate::selection::OrgPin,
@@ -252,6 +214,32 @@ impl AccountPool {
     ) -> Result<AccountKey, crate::selection::SelectionError> {
         let state = self.accounts.lock();
         crate::selection::select_account(&state, pin, org, model)
+    }
+
+    /// `true` when the account declares `model`. An unknown account
+    /// declares nothing.
+    pub fn declares(&self, key: &AccountKey, model: &str) -> bool {
+        self.accounts
+            .lock()
+            .by_key
+            .get(key)
+            .is_some_and(|account| account.models.iter().any(|m| m == model))
+    }
+
+    /// The upstream slug the account maps `canonical` to, when the
+    /// account declares a different upstream spelling. `None` forwards
+    /// the canonical name unchanged.
+    pub fn model_slug_for(&self, key: &AccountKey, canonical: &str) -> Option<String> {
+        self.accounts.lock().by_key.get(key)?.model_slugs.get(canonical).cloned()
+    }
+
+    /// Set a slug mapping on one account. Test setup only - production
+    /// slugs arrive through the config-loaded state map.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_model_slug(&self, key: &AccountKey, canonical: &str, slug: &str) {
+        if let Some(account) = self.accounts.lock().by_key.get_mut(key) {
+            account.model_slugs.insert(canonical.to_owned(), slug.to_owned());
+        }
     }
 
     /// The provider and env of one account, for credential resolution.

@@ -2,16 +2,13 @@
 //! no binding for.
 //!
 //! The walk is the org's `accounts` list then `fallback_accounts`,
-//! filtered by the model's family: a model beginning `claude-` binds
-//! only to an Anthropic account, every other model binds only to a
-//! non-Anthropic account. Family matching is deliberately mechanical -
-//! `claude-` prefix, nothing else - until declared models arrive.
-//! Within the surviving set the first account in walk order wins,
-//! with saturation demoting an account to a later tier: ready beats
-//! saturated, and a Bailed account is the last resort (its 429 hit the
-//! usage probe, not inference).
+//! filtered by declared models: the first account whose `models` list
+//! includes the requested model wins. Within the surviving set the
+//! first account in walk order wins, with saturation demoting an
+//! account to a later tier: ready beats saturated, and a Bailed
+//! account is the last resort (its 429 hit the usage probe, not
+//! inference).
 
-use crate::Provider;
 use crate::account::{AccountKey, AccountStateMap, LoadingState};
 
 /// An org's walk order: the primary pin, then fallbacks.
@@ -29,20 +26,15 @@ pub enum SelectionError {
     NoEligibleAccount { model: String, org: String },
 }
 
-/// `true` when `provider` can serve `model` under the mechanical
-/// family rule.
-pub(crate) fn family_matches(provider: Provider, model: &str) -> bool {
-    if model.starts_with("claude-") {
-        provider == Provider::Anthropic
-    } else {
-        provider != Provider::Anthropic
-    }
+/// `true` when the account declares `model` among the models it
+/// serves.
+fn declares(state: &AccountStateMap, key: &AccountKey, model: &str) -> bool {
+    state.by_key.get(key).is_some_and(|account| account.models.iter().any(|m| m == model))
 }
 
-/// Pick the account for `model` out of `org`'s walk order. A `claude-`
-/// model binds only to an Anthropic account, every other model only to
-/// a non-Anthropic one; ready accounts beat saturated ones, and Bailed
-/// accounts are the last resort.
+/// Pick the account for `model` out of `org`'s walk order: the first
+/// account whose declared models include the model. Ready accounts
+/// beat saturated ones, and Bailed accounts are the last resort.
 pub fn select_account(
     state: &AccountStateMap,
     pin: &OrgPin,
@@ -58,7 +50,7 @@ pub fn select_account(
         let Some(account) = state.by_key.get(&key) else {
             continue;
         };
-        if !family_matches(account.provider, model) {
+        if !declares(state, &key, model) {
             continue;
         }
         match account.loading {
@@ -96,6 +88,7 @@ pub fn select_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Provider;
     use crate::account::UsageFetchStatus;
     use std::collections::HashMap;
     use std::time::Duration;
@@ -108,21 +101,24 @@ mod tests {
         }
     }
 
-    fn pool_with(
-        accounts: &[(&str, Provider, LoadingState, Option<UsageFetchStatus>)],
-    ) -> AccountStateMap {
+    /// One fixture account: name, provider, loading state, last probe
+    /// error, and the models it declares.
+    type Spec<'a> = (&'a str, Provider, LoadingState, Option<UsageFetchStatus>, Vec<&'a str>);
+
+    fn pool_with(accounts: &[Spec<'_>]) -> AccountStateMap {
         let specs: Vec<forge_primitives::account::LoadedAccount> = accounts
             .iter()
-            .map(|(name, provider, _, _)| forge_primitives::account::LoadedAccount {
+            .map(|(name, provider, _, _, models)| forge_primitives::account::LoadedAccount {
                 display_name: (*name).to_owned(),
-                config_dir: std::path::PathBuf::from(format!("/cfg/{name}")),
                 provider: *provider,
+                base_url: None,
+                models: models.iter().map(|m| (*m).to_owned()).collect(),
+                model_slugs: std::collections::HashMap::new(),
                 env: HashMap::new(),
-                experimental: false,
             })
             .collect();
         let mut state = AccountStateMap::new(&specs);
-        for (name, _, loading, error) in accounts {
+        for (name, _, loading, error, _) in accounts {
             let key = AccountKey((*name).to_owned());
             state.set_loading(&key, *loading);
             if let Some(error) = error {
@@ -140,10 +136,10 @@ mod tests {
     }
 
     #[test]
-    fn a_claude_model_never_binds_to_a_non_anthropic_account() {
+    fn only_an_account_declaring_the_model_is_selected() {
         let state = pool_with(&[
-            ("Openrouter", Provider::Openrouter, LoadingState::Ready, None),
-            ("Anthropic", Provider::Anthropic, LoadingState::Ready, None),
+            ("Openrouter", Provider::Openrouter, LoadingState::Ready, None, vec!["glm-5.3-flash"]),
+            ("Anthropic", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5"]),
         ]);
         let selected = select_account(
             &state,
@@ -151,23 +147,23 @@ mod tests {
             "Default",
             "claude-opus-5",
         )
-        .expect("an anthropic account is in the walk");
+        .expect("the anthropic account declares the model");
         assert_eq!(
             selected,
             AccountKey("Anthropic".to_owned()),
-            "the mechanical family rule never crosses",
+            "the walk skips accounts that do not declare the model",
         );
     }
 
     #[test]
-    fn a_non_claude_model_binds_to_the_first_non_anthropic_account_in_walk_order() {
+    fn the_first_account_declaring_the_model_wins() {
         let state = pool_with(&[
-            ("Zai", Provider::Zai, LoadingState::Ready, None),
-            ("Openrouter", Provider::Openrouter, LoadingState::Ready, None),
+            ("Zai", Provider::Zai, LoadingState::Ready, None, vec!["glm-5.3-flash"]),
+            ("Openrouter", Provider::Openrouter, LoadingState::Ready, None, vec!["glm-5.3-flash"]),
         ]);
         let selected =
             select_account(&state, &pin(&["Zai", "Openrouter"], &[]), "Default", "glm-5.3-flash")
-                .expect("non-anthropic accounts are in the walk");
+                .expect("both accounts declare the model");
         assert_eq!(
             selected,
             AccountKey("Zai".to_owned()),
@@ -176,22 +172,28 @@ mod tests {
     }
 
     #[test]
-    fn an_anthropic_account_is_skipped_for_a_non_claude_model() {
+    fn a_non_declaring_account_is_skipped() {
         let state = pool_with(&[
-            ("Anthropic", Provider::Anthropic, LoadingState::Ready, None),
-            ("Zai", Provider::Zai, LoadingState::Ready, None),
+            ("Anthropic", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5"]),
+            ("Zai", Provider::Zai, LoadingState::Ready, None, vec!["glm-5.3-flash"]),
         ]);
         let selected =
             select_account(&state, &pin(&["Anthropic", "Zai"], &[]), "Default", "glm-5.3-flash")
-                .expect("a non-anthropic account is in the walk");
+                .expect("a declaring account is in the walk");
         assert_eq!(selected, AccountKey("Zai".to_owned()));
     }
 
     #[test]
-    fn no_eligible_account_fails_naming_the_model_and_org() {
-        let state = pool_with(&[("Anthropic", Provider::Anthropic, LoadingState::Ready, None)]);
+    fn no_declaring_account_fails_naming_the_model_and_org() {
+        let state = pool_with(&[(
+            "Anthropic",
+            Provider::Anthropic,
+            LoadingState::Ready,
+            None,
+            vec!["claude-opus-5"],
+        )]);
         let error = select_account(&state, &pin(&["Anthropic"], &[]), "Default", "glm-5.3-flash")
-            .expect_err("no non-anthropic account exists");
+            .expect_err("no account declares the model");
         assert_eq!(
             error,
             SelectionError::NoEligibleAccount {
@@ -204,8 +206,8 @@ mod tests {
     #[test]
     fn saturated_accounts_are_demoted_but_not_dropped() {
         let mut state = pool_with(&[
-            ("Stargate", Provider::Anthropic, LoadingState::Ready, None),
-            ("Gateway", Provider::Anthropic, LoadingState::Ready, None),
+            ("Stargate", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5"]),
+            ("Gateway", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5"]),
         ]);
         // Push Stargate over the cap: a full window with a future reset.
         let key = AccountKey("Stargate".to_owned());
@@ -236,8 +238,8 @@ mod tests {
         // Same tier on both tiers of the pin: walk order decides, and
         // the primaries come first.
         let state = pool_with(&[
-            ("Primary", Provider::Anthropic, LoadingState::Bailed, None),
-            ("Fallback", Provider::Anthropic, LoadingState::Bailed, None),
+            ("Primary", Provider::Anthropic, LoadingState::Bailed, None, vec!["claude-opus-5"]),
+            ("Fallback", Provider::Anthropic, LoadingState::Bailed, None, vec!["claude-opus-5"]),
         ]);
         let selected =
             select_account(&state, &pin(&["Primary"], &["Fallback"]), "Default", "claude-opus-5")
@@ -248,8 +250,8 @@ mod tests {
         // tier, which is what sends a session to a live fallback
         // instead of a dead primary.
         let state = pool_with(&[
-            ("Primary", Provider::Anthropic, LoadingState::Bailed, None),
-            ("Fallback", Provider::Anthropic, LoadingState::Ready, None),
+            ("Primary", Provider::Anthropic, LoadingState::Bailed, None, vec!["claude-opus-5"]),
+            ("Fallback", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5"]),
         ]);
         let selected =
             select_account(&state, &pin(&["Primary"], &["Fallback"]), "Default", "claude-opus-5")
@@ -264,8 +266,8 @@ mod tests {
     #[test]
     fn loading_accounts_are_skipped_entirely() {
         let state = pool_with(&[
-            ("Stargate", Provider::Anthropic, LoadingState::Loading, None),
-            ("Gateway", Provider::Anthropic, LoadingState::Ready, None),
+            ("Stargate", Provider::Anthropic, LoadingState::Loading, None, vec!["claude-opus-5"]),
+            ("Gateway", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5"]),
         ]);
         let selected =
             select_account(&state, &pin(&["Stargate", "Gateway"], &[]), "Default", "claude-opus-5")
@@ -279,7 +281,13 @@ mod tests {
 
     #[test]
     fn an_unknown_account_name_in_the_pin_is_skipped() {
-        let state = pool_with(&[("Stargate", Provider::Anthropic, LoadingState::Ready, None)]);
+        let state = pool_with(&[(
+            "Stargate",
+            Provider::Anthropic,
+            LoadingState::Ready,
+            None,
+            vec!["claude-opus-5"],
+        )]);
         let selected =
             select_account(&state, &pin(&["Ghost", "Stargate"], &[]), "Default", "claude-opus-5")
                 .expect("the known account resolves");

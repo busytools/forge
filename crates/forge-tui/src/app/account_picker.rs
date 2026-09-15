@@ -160,7 +160,6 @@ mod tests {
                 seven_day_util: Some(5.0),
                 resets_at: None,
             },
-            experimental: false,
             fallback: false,
         }
     }
@@ -203,14 +202,14 @@ mod tests {
     }
 
     #[test]
-    fn selected_maps_across_the_experimental_boundary() {
+    fn selected_maps_across_the_fallback_boundary() {
         let mut app = App::test_default();
-        // Rows arrive pre-sorted [regular, experimental] from the
-        // snapshot; the dim EXPERIMENTAL header the render inserts does
-        // not shift the highlight index, so nav still spans both groups.
-        let exp = AccountRow {
-            display_name: "Exp".to_owned(),
-            config_dir: PathBuf::from("/cfg/Exp"),
+        // Rows arrive pre-sorted [regular, fallback] from the snapshot;
+        // the dim FALLBACK header the render inserts does not shift the
+        // highlight index, so nav still spans both groups.
+        let fb = AccountRow {
+            display_name: "Fb".to_owned(),
+            config_dir: PathBuf::from("/cfg/Fb"),
             is_current: false,
             unusable: None,
             budget: forge_workspace::AccountBudget::Subscription {
@@ -218,18 +217,13 @@ mod tests {
                 seven_day_util: Some(5.0),
                 resets_at: None,
             },
-            experimental: true,
-            fallback: false,
+            fallback: true,
         };
-        open(&mut app, vec![row("A", false), exp]);
+        open(&mut app, vec![row("A", false), fb]);
         handle_key(&mut app, key(KeyCode::Down));
         let state = app.account_picker.as_ref().expect("open");
         assert_eq!(state.highlight, 1);
-        assert_eq!(state.selected().map(|r| r.display_name.as_str()), Some("Exp"));
-        assert!(
-            state.selected().expect("selected").experimental,
-            "highlight lands on the experimental row across the boundary",
-        );
+        assert_eq!(state.selected().map(|r| r.display_name.as_str()), Some("Fb"));
     }
 
     #[test]
