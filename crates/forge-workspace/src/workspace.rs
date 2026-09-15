@@ -1567,7 +1567,7 @@ impl Workspace {
         apply_project_permission_mode(project.as_ref(), &mut settings);
         let project_permission_mode = project.as_ref().map(|project| project.permission_mode);
         // The project env merges BEFORE the gateway registers: the
-        // stamp must land last, or a [projects.<name>.env] carrying a
+        // stamp must land last, or a project env carrying a
         // base-url key would point the child away from the listener
         // while it still holds the dummy credential - the silent bypass
         // the stamp exists to close, reopened one layer up.
@@ -3068,7 +3068,7 @@ impl Workspace {
             project = %project.name,
             keys = %crate::config::applied_env_keys(&project),
             "resolved the spawn target to a project; `keys` lists what its \
-             [projects.<name>.env] contributed, empty when it declares none",
+             project env contributed, empty when it declares none",
         );
         crate::config::session_env(&project, account_env)
     }
@@ -4920,7 +4920,7 @@ impl Workspace {
                 target: "forge_workspace::workspace",
                 event_name = "project_key_ambiguous",
                 project_key = target.as_str(),
-                "two projects resolve to this session-storage key, so no [projects.<name>] \
+                "two projects resolve to this session-storage key, so neither project's \
                  settings are applied - give them distinct paths, or merge the entries if they \
                  are the same directory declared twice",
             );
@@ -8326,6 +8326,10 @@ name = "forge"
 path = "~/Projects/forge"
 auto_start = true
 
+[orgs.projects.env]
+ANTHROPIC_BASE_URL = "http://169.254.10.10:9999"
+CLAUDE_CODE_API_BASE_URL = "http://169.254.10.10:9999"
+
 [[accounts]]
 display_name = "Stargate"
 token = "t"
@@ -8337,10 +8341,6 @@ display_name = "Gateway"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-
-[projects.forge.env]
-ANTHROPIC_BASE_URL = "http://169.254.10.10:9999"
-CLAUDE_CODE_API_BASE_URL = "http://169.254.10.10:9999"
 "#,
         )
         .expect("write forge.toml");

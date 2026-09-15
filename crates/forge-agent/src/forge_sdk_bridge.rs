@@ -102,7 +102,7 @@ pub(crate) struct BridgeInner {
     extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
     /// The session's resolved forge.toml env - `[env]` merged with
     /// `[accounts.env]` and the spawning project's
-    /// `[projects.<name>.env]` - stamped onto the spawned `claude`
+    /// env - stamped onto the spawned `claude`
     /// subprocess by `forge_sdk_worker::build_options_with_callback`.
     /// Empty when `Agent::spawn` is called directly without a
     /// workspace (tests, smoke) or when no table declares anything.

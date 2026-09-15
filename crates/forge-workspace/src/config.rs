@@ -71,9 +71,14 @@ struct ForgeToml {
     /// sitting there silently ignored.
     #[serde(default)]
     workers: Option<toml::Value>,
+    /// Ghost of the deleted `[projects.<name>]` side tables: read only
+    /// so a pre-colocation forge.toml still carrying them warns at load
+    /// instead of silently dropping every per-project key.
+    #[serde(default)]
+    projects: Option<toml::Value>,
     /// Optional top-level `[env]` table - the BASE every session
     /// starts from, overridden per key by `[accounts.env]` and then by
-    /// `[projects.<name>.env]`. Merged into `LoadedAccount.env` at
+    /// the project's env. Merged into `LoadedAccount.env` at
     /// load; the project layer is applied at spawn. Absent -> empty.
     #[serde(default)]
     env: HashMap<String, String>,
@@ -304,7 +309,7 @@ pub struct PluginSettings {
 }
 
 /// Cap on a project's concurrently live dynamic workers when its
-/// `[projects.<name>] max_workers` override is absent.
+/// The project's `max_workers` override is absent.
 pub(crate) const DEFAULT_MAX_WORKERS_PER_PROJECT: usize = 2;
 
 #[derive(Debug)]
@@ -371,7 +376,7 @@ pub(crate) struct LoadedProject {
     /// `CLAUDE_CODE_SUBAGENT_MODEL`). Absent means the account's own
     /// default applies.
     pub model: Option<String>,
-    /// Per-project environment from `[projects.<name>.env]`, layered
+    /// Per-project environment from the entry's env table, layered
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
     /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
     /// usage probe, plan detection and the picker all read the ACCOUNT
@@ -385,7 +390,7 @@ pub(crate) struct LoadedProject {
     pub permission_mode: PermissionMode,
 }
 
-/// Complete `[env]` < `[accounts.env]` < `[projects.<name>.env]`,
+/// Complete `[env]` < `[accounts.env]` < the project's env,
 /// narrowest winning per key, over the already-merged `account_env`.
 /// Applied here rather than at load because one account serves many
 /// projects, so merging earlier would leak a project's keys into every
@@ -480,7 +485,18 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         tracing::warn!(
             target: "forge_workspace::config",
             event_name = "workers_section_ignored",
-            "[workers] is no longer read; use [projects.<name>] max_workers per project",
+            "[workers] is no longer read; set max_workers on the project's \
+             [[orgs.projects]] entry",
+        );
+    }
+
+    if parsed.projects.is_some() {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "projects_section_ignored",
+            "[projects.<name>] is no longer read; move model, permission_mode, \
+             max_workers and env onto the project's [[orgs.projects]] entry - \
+             this config's per-project keys are being silently dropped",
         );
     }
 
@@ -788,7 +804,7 @@ fn read_env_file(project: &str, raw_path: &str) -> HashMap<String, String> {
             path = raw_path,
             reason,
             detail,
-            "a [projects.<name>.env_file] entry did not fully apply",
+            "the project's env_file entry did not fully apply",
         );
     };
 
@@ -819,7 +835,7 @@ fn read_env_file(project: &str, raw_path: &str) -> HashMap<String, String> {
             Some((key, value)) if !key.trim().is_empty() => {
                 // Strip one matching pair of surrounding quotes, as
                 // dotenv and direnv do. TOML forces quoting, so a value
-                // moved out of `[projects.<name>.env]` arrives with
+                // moved out of the project's env table arrives with
                 // them, and keeping them yields a token silently longer
                 // than intended that fails far from the cause.
                 let value = value.trim();
@@ -1582,7 +1598,7 @@ base_url = "http://localhost:18765"
         assert_eq!(
             config.projects[0].permission_mode,
             PermissionMode::Auto,
-            "a project with no [projects.<name>] table at all still lands on auto",
+            "a project with no per-project keys at all still lands on auto",
         );
     }
 
@@ -2079,7 +2095,7 @@ provider = "anthropic"
         assert_eq!(
             project.env.get("AIRMAIL_MCP_URL").map(String::as_str),
             Some("https://mail.example/mcp"),
-            "[projects.<name>.env] lands on the named project",
+            "the project env block lands on the named project",
         );
     }
 
@@ -2160,6 +2176,65 @@ base_url = "http://localhost:18765"
         assert_eq!(
             airmail_env, account.env,
             "a project declaring no env gets exactly the account env, nothing borrowed",
+        );
+    }
+
+    /// The collocation's load-bearing mechanic: each block-form env
+    /// attaches to the most recent `[[orgs.projects]]` header, so two
+    /// env blocks under two entries land on their OWN projects. The
+    /// single-project form cannot pin this - with one project there is
+    /// nothing to mis-attach to.
+    #[test]
+    fn two_block_form_envs_attach_to_their_own_entries() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[orgs.projects.env]
+FORGE_KEY = "forge-secret"
+[[orgs.projects]]
+name = "airmail"
+path = "~/Projects/airmail"
+
+[orgs.projects.env]
+AIRMAIL_KEY = "airmail-secret"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let forge = config.projects.iter().find(|p| p.name == "forge").expect("forge");
+        let airmail = config.projects.iter().find(|p| p.name == "airmail").expect("airmail");
+        assert_eq!(
+            forge.env.get("FORGE_KEY").map(String::as_str),
+            Some("forge-secret"),
+            "the first entry's env block attaches to the first project",
+        );
+        assert!(
+            !forge.env.contains_key("AIRMAIL_KEY"),
+            "the second block must not leak onto the first project: {:?}",
+            forge.env,
+        );
+        assert_eq!(
+            airmail.env.get("AIRMAIL_KEY").map(String::as_str),
+            Some("airmail-secret"),
+            "the second entry's env block attaches to the second project",
+        );
+        assert!(
+            !airmail.env.contains_key("FORGE_KEY"),
+            "the first block must not leak onto the second project: {:?}",
+            airmail.env,
         );
     }
 

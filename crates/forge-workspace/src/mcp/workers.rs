@@ -496,9 +496,9 @@ impl Tool for Capacity {
         "Report the worker capacity of YOUR project: the configured \
          cap, how many workers are live, and how many slots are free. \
          Use it before spawning to see whether a spawn would hit the \
-         limit. The cap is the project's forge.toml \
-         [projects.<name>] max_workers when set, else forge's \
-         default; cap_source names which. Takes no arguments."
+         limit. The cap is the project's max_workers in forge.toml \
+         when set, else forge's default; cap_source names which. \
+         Takes no arguments."
     }
 
     fn input_schema(&self) -> serde_json::Value {

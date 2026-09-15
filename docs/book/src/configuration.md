@@ -148,7 +148,7 @@ quietly applying nothing.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `env` | table | `{}` | Written as `[orgs.projects.env]` directly under the entry, or inline as `env = { ... }`. |
+| `env` | table | `{}` | Written as `[orgs.projects.env]` directly under the entry, or inline as `env = { ... }`. The block form attaches to the MOST RECENT `[[orgs.projects]]` header - place it directly under its own entry, before the next header, or it lands on a different project. |
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
 | `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
 | `permission_mode` | string | `auto` | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate. |
@@ -205,6 +205,9 @@ Three layers merge per key, narrowest winning:
 ```
 [env]  <  [accounts.env]  <  [[orgs.projects]] env
 ```
+
+A project's env block attaches to the most recent `[[orgs.projects]]`
+header - place it directly under its own entry.
 
 The global and account layers merge at load. The project layer is
 applied at spawn rather than earlier, because one account serves many
@@ -416,6 +419,11 @@ accounts = ["Work"]
   [[orgs.projects]]
   name = "service"
   path = "~/Projects/service"
+  max_workers = 4
+  env_file = "~/.config/service/secrets.env"
+
+  [orgs.projects.env]
+  SERVICE_MCP_URL = "https://mcp.example/service"
 
 [[accounts]]
 display_name = "Personal"
@@ -441,14 +449,6 @@ models = ["claude-sonnet-5"]
 
   [accounts.env]
   CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = "1"
-
-# Per-project settings, keyed by the project's `name`.
-[projects.service]
-max_workers = 4
-env_file = "~/.config/service/secrets.env"
-
-  [projects.service.env]
-  SERVICE_MCP_URL = "https://mcp.example/service"
 
 [ui]
 spinner = "phase_of_moon"

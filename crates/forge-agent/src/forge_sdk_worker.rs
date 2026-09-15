@@ -868,8 +868,8 @@ fn is_reserved_env_key(key: &str) -> bool {
 /// Per-account spawn binding threaded into every `claude` subprocess:
 /// the account's `config_dir` (exported as `CLAUDE_CONFIG_DIR`) and the
 /// session's resolved env - `[env]` merged with `[accounts.env]` and the
-/// spawning project's `[projects.<name>.env]`. Both come from the
-/// bridge, distinct from the per-launch `SessionLaunchSettings`.
+/// spawning project's env. Both come from the bridge, distinct from the
+/// per-launch `SessionLaunchSettings`.
 pub(crate) struct AccountBinding<'a> {
     pub config_dir: &'a Path,
     pub env: &'a HashMap<String, String>,
@@ -1298,10 +1298,10 @@ fn build_options_with_callback(
 
     // The session's effective env from forge.toml (hand-authored,
     // trusted) - `[env]`, then `[accounts.env]`, then the spawning
-    // project's `[projects.<name>.env]`, narrowest winning - stamped
-    // onto the child so an account or project can point `claude` at an
-    // alternate endpoint or set any other env it needs. Runs after
-    // the `CLAUDE_CONFIG_DIR` stamp so a caller could override it
+    // project's env, narrowest winning - stamped onto the child so an
+    // account or project can point `claude` at an alternate endpoint
+    // or set any other env it needs. Runs after the
+    // `CLAUDE_CONFIG_DIR` stamp so a caller could override it
     // deliberately; process.rs stamps `CLAUDE_AGENT_SDK_VERSION` last
     // regardless.
     for (key, value) in binding.env {
@@ -1309,7 +1309,7 @@ fn build_options_with_callback(
             tracing::warn!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
                 key = %key,
-                "forge.toml [env] / [accounts.env] / [projects.<name>.env] sets a forge-reserved key; it overrides forge's own stamp",
+                "forge.toml [env] / [accounts.env] / the project's env sets a forge-reserved key; it overrides forge's own stamp",
             );
         }
         b = b.env(key, value);

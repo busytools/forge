@@ -1120,7 +1120,7 @@ fn synth_worker_key(project_key: &ProjectKey, label: &str, is_resume: bool) -> S
 pub(crate) fn worker_limit_reached_message(project: &str, live: usize, cap: usize) -> String {
     let workers = if live == 1 { "worker" } else { "workers" };
     format!(
-        "worker limit reached: project '{project}' has {live} {workers} live and its cap is {cap} (forge.toml [projects.<name>] max_workers, default {}); despawn one first, or raise/remove max_workers",
+        "worker limit reached: project '{project}' has {live} {workers} live and its cap is {cap} (the project's max_workers in forge.toml, default {}); despawn one first, or raise/remove max_workers",
         crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT
     )
 }
@@ -1214,7 +1214,7 @@ pub(crate) fn handle_spawn_worker(
     // re-spawn or an MCP `workers__spawn` - can double-insert and fork
     // two subprocesses onto one worktree, or overshoot the cap on
     // genuinely-concurrent dispatches. The cap is per project: the
-    // project's `[projects.<name>] max_workers` override, else the
+    // project's `max_workers` override, else the
     // default. Boot re-spawns pass no cap: they restore persisted
     // workers the user already had, and their spawn reply is dropped,
     // so a refusal there could never reach a caller.
@@ -2509,7 +2509,7 @@ provider = "anthropic"
     }
 
     /// Stub whose `forge.toml` caps the `forge` project at the given
-    /// override via `[projects.forge] max_workers`, loaded through the
+    /// override via the entry's `max_workers`, loaded through the
     /// real config path because the full spawn below reads
     /// `config.projects`. The `notes` project stays at the default.
     /// Projects point at throwaway dirs: a real repo path would make
@@ -2621,7 +2621,7 @@ provider = "anthropic"
 
     /// The cap is PER PROJECT: the gate counts only the spawning
     /// project's live workers, against that project's own
-    /// `[projects.<name>] max_workers` override, else the default of
+    /// `max_workers` override, else the default of
     /// 2. Workers live in other projects neither consume the budget
     /// nor raise it.
     #[tokio::test]
