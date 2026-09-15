@@ -227,7 +227,7 @@ pub struct WorkerIdentity {
 }
 
 /// Whether a project's worker cap came from its
-/// `[projects.<name>] max_workers` override or the built-in default.
+/// `[[orgs.projects]]` `max_workers` override or the built-in default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerCapSource {
     ProjectMaxWorkers,
@@ -322,8 +322,9 @@ pub trait WorkerFacade: Send + Sync {
     fn list_workers(&self, caller: &SessionKey) -> Vec<WorkerStatus>;
 
     /// The caller's project worker capacity: the cap the spawn path
-    /// enforces (`[projects.<name>] max_workers`, else
-    /// `DEFAULT_MAX_WORKERS_PER_PROJECT`) paired with the live count.
+    /// enforces (`max_workers` in the project's `[[orgs.projects]]`
+    /// entry, else `DEFAULT_MAX_WORKERS_PER_PROJECT`) paired with the
+    /// live count.
     /// A plain data read - the same one the spawn path's cap check
     /// performs. Returns `None` when the caller resolves to no
     /// project.
