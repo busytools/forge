@@ -252,7 +252,7 @@ impl Workspace {
     }
 
     /// [`Workspace::seed_test_project`] with a
-    /// `[projects.<name>] max_workers` override, so facade tests can
+    /// The project's `max_workers` override, so facade tests can
     /// exercise the override arm of the capacity read. Test-only.
     pub fn seed_test_project_with_max_workers(&self, name: &str, path: &str, max_workers: usize) {
         self.seed_test_project_inner(name, path, Some(max_workers));

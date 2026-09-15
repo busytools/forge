@@ -104,6 +104,7 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+env = { AIRMAIL_TOKEN = "forge-value" }
 
 [[orgs.projects]]
 name = "airmail"
@@ -116,9 +117,6 @@ models = ["claude-sonnet-5"]
 provider = "anthropic"
 [accounts.env]
 ACCOUNT_KEY = "account-value"
-
-[projects.forge.env]
-AIRMAIL_TOKEN = "forge-value"
 "#,
     )
     .expect("write forge.toml");
