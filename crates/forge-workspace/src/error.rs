@@ -136,6 +136,12 @@ pub enum WorkspaceError {
     EmptyOrgAccounts { path: PathBuf, org: String },
 
     #[error(
+        "no account in org '{org}' serves project '{project}' model '{model}'; \
+         accounts considered: {accounts}"
+    )]
+    NoAccountServesProjectModel { project: String, org: String, model: String, accounts: String },
+
+    #[error(
         "org '{org}' in forge.toml at {} references unknown account '{account}'; valid accounts: {valid}",
         path.display()
     )]
