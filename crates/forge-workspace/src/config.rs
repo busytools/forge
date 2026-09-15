@@ -383,7 +383,7 @@ pub(crate) struct LoadedProject {
     /// map, so they measure a different endpoint.
     pub env: HashMap<String, String>,
     /// Cap on this project's live dynamic workers; `None` keeps the
-    /// default. See `ProjectSettings::max_workers`.
+    /// default. See `ProjectEntry::max_workers`.
     pub max_workers: Option<usize>,
     /// CLI permission mode stamped onto every session this project
     /// spawns. Resolved once at load; absent key resolves to `auto`.
@@ -495,7 +495,8 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             target: "forge_workspace::config",
             event_name = "projects_section_ignored",
             "[projects.<name>] is no longer read; move model, permission_mode, \
-             max_workers and env onto the project's [[orgs.projects]] entry - \
+             max_workers, env and env_file onto the project's \
+             [[orgs.projects]] entry - \
              this config's per-project keys are being silently dropped",
         );
     }
