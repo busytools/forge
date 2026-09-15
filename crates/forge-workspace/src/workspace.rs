@@ -3575,6 +3575,17 @@ impl Workspace {
                          (release_session teardown window)",
                     ),
                     Some((mode, registration, account)) => {
+                        // The respawned CLI runs the project's canonical
+                        // model too. This path bypasses the spawn-time
+                        // stamp, so the launch settings pick it up here
+                        // the way the mode is.
+                        let project = registration.as_ref().and_then(|registration| {
+                            self.config
+                                .projects
+                                .iter()
+                                .find(|project| project.name == registration.project)
+                        });
+                        apply_project_model(project, launch_settings);
                         if let Some(mode) = mode {
                             spawn::stamp_permission_mode(launch_settings, mode);
                         } else {
@@ -8259,6 +8270,41 @@ provider = "anthropic"
         dir
     }
 
+    /// The project declares a model, so a respawn has a canonical name
+    /// to stamp over the caller's pin.
+    fn make_workspace_dir_declaring_model() -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Personal", "OpenRouter-TM"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "deepseek-v4.1-flash"
+
+[[accounts]]
+display_name = "Personal"
+token = "t"
+models = ["claude-opus-5"]
+provider = "anthropic"
+
+[[accounts]]
+display_name = "OpenRouter-TM"
+token = "t"
+models = ["deepseek-v4.1-flash"]
+provider = "openrouter"
+base_url = "https://openrouter.ai/api"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
     #[tokio::test]
     async fn new_for_test_opens_redb_under_the_tempdir() {
         let dir = make_workspace_dir();
@@ -8913,6 +8959,82 @@ provider = "anthropic"
         let overrides =
             new.get("env_overrides").and_then(|e| e.as_object()).expect("env overrides present");
         assert_eq!(overrides.len(), 4, "exactly the four gateway-owned keys");
+    }
+
+    /// `/new` and `/resume` re-spawn on the already-pooled handle, where
+    /// the spawn-path stamp never runs - the launch settings must pick
+    /// the project's canonical model up at dispatch instead, the way
+    /// they pick up the mode.
+    #[test]
+    fn respawn_commands_on_a_pooled_session_carry_the_project_model() {
+        let dir = make_workspace_dir_declaring_model();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let key = SessionKey::from_str_for_test("respawn-model-test");
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        workspace.pool.lock().insert(
+            key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("OpenRouter-TM".to_owned()),
+                permission_mode: None,
+                registration: Some(forge_gateway::binding::Registration {
+                    org: "Default".to_owned(),
+                    project: "forge".to_owned(),
+                    session: key.as_str().to_owned(),
+                    account: AccountKey("OpenRouter-TM".to_owned()),
+                    provider: forge_primitives::account::Provider::Openrouter,
+                }),
+            },
+        );
+
+        // The caller's pin is the literal opus - exactly the string the
+        // respawn must replace with the project's canonical model.
+        let caller_settings = || SessionLaunchSettings {
+            settings: Some(serde_json::json!({ "model": "opus" })),
+            ..SessionLaunchSettings::default()
+        };
+        workspace
+            .dispatch(Command::NewSession {
+                key: key.clone(),
+                cwd: "/tmp".to_owned(),
+                launch_settings: caller_settings(),
+            })
+            .expect("dispatch new");
+        workspace
+            .dispatch(Command::ResumeSession {
+                key: key.clone(),
+                session_id: "old-uuid".to_owned(),
+                cwd: "/tmp".to_owned(),
+                launch_settings: caller_settings(),
+            })
+            .expect("dispatch resume");
+
+        let carried_model = |value: &serde_json::Value| -> Option<String> {
+            value
+                .get("settings")
+                .and_then(|settings| settings.get("model"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let first = agent_rx.try_recv().expect("new session agent command");
+        let second = agent_rx.try_recv().expect("resume agent command");
+        let forge_primitives::AgentCommand::NewSession { launch_settings: new, .. } = first else {
+            panic!("expected a NewSession agent command");
+        };
+        let forge_primitives::AgentCommand::ResumeSession { launch_settings: resume, .. } = second
+        else {
+            panic!("expected a ResumeSession agent command");
+        };
+        assert_eq!(
+            carried_model(&new).as_deref(),
+            Some("deepseek-v4.1-flash"),
+            "/new must carry the project's canonical model, not the caller's pin",
+        );
+        assert_eq!(
+            carried_model(&resume).as_deref(),
+            Some("deepseek-v4.1-flash"),
+            "/resume must carry the project's canonical model, not the caller's pin",
+        );
     }
 
     /// A session that spawned with no project mode must not gain a
