@@ -77,40 +77,6 @@ struct ForgeToml {
     /// load; the project layer is applied at spawn. Absent -> empty.
     #[serde(default)]
     env: HashMap<String, String>,
-    /// `[projects.<name>]` tables keyed by project name, drained
-    /// into `LoadedProject` at load. A name no `[[orgs.projects]]`
-    /// declares is a load error, not a silent no-op.
-    #[serde(default)]
-    projects: HashMap<String, ProjectSettings>,
-}
-
-/// One `[projects.<name>]` table. Unknown fields are rejected so a
-/// mistyped inner table (`envs`) fails loudly instead of loading as
-/// an empty env.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProjectSettings {
-    #[serde(default)]
-    env: HashMap<String, String>,
-    /// Path to a `KEY=value` file whose entries join this project's env,
-    /// so a secret can live outside forge.toml. Read once at load, like
-    /// every other value here, so rotating it needs a forge restart.
-    #[serde(default)]
-    env_file: Option<String>,
-    /// Cap on this project's concurrently live dynamic workers. The
-    /// count is per project: the gate counts only this project's live
-    /// workers. Absent keeps the default.
-    #[serde(default)]
-    max_workers: Option<usize>,
-    /// CLI permission mode stamped onto every session this project
-    /// spawns. Absent resolves to `auto`.
-    #[serde(default)]
-    permission_mode: Option<String>,
-    /// The project's model: the session default AND the value stamped
-    /// into every CLI model slot at spawn. Required to be declared by
-    /// at least one account in the org.
-    #[serde(default)]
-    model: Option<String>,
 }
 
 /// One `[gateway]` table. Unknown fields are rejected so a mistyped
@@ -207,7 +173,7 @@ impl GatewaySettings {
     }
 }
 
-impl ProjectSettings {
+impl ProjectEntry {
     /// The resolved mode for the project. Absent is `auto`, not "no
     /// override": under account rotation a session can start on any
     /// account in its org's pool, so the project is the stable scope
@@ -256,6 +222,30 @@ struct ProjectEntry {
     /// is focused until the user picks one. Defaults to `false`.
     #[serde(default)]
     auto_start: bool,
+    /// The project's model: fills the CLI's model slots at spawn
+    /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
+    /// `CLAUDE_CODE_SUBAGENT_MODEL`). Required to be declared by at
+    /// least one account in the org.
+    #[serde(default)]
+    model: Option<String>,
+    /// CLI permission mode stamped onto every session this project
+    /// spawns. Absent resolves to `auto`.
+    #[serde(default)]
+    permission_mode: Option<String>,
+    /// Cap on this project's concurrently live dynamic workers.
+    /// Absent keeps the default.
+    #[serde(default)]
+    max_workers: Option<usize>,
+    /// Per-project environment entries, layered over the account's
+    /// env at spawn.
+    #[serde(default)]
+    env: HashMap<String, String>,
+    /// Path to a `KEY=value` file whose entries join this project's
+    /// env, so a secret can live outside forge.toml. Read once at
+    /// load, like every other value here, so rotating it needs a
+    /// forge restart.
+    #[serde(default)]
+    env_file: Option<String>,
 }
 
 /// Unknown fields are rejected so a near-miss key (`providers`) fails
@@ -506,10 +496,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     // keys override global keys.
     let mut global_env = parsed.env;
 
-    // Drained per project as the org loop builds the project list;
-    // whatever is left over named no declared project.
-    let mut project_env_tables = parsed.projects;
-
     // Validate accounts first - orgs cross-reference them.
     let mut seen_account_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
@@ -689,21 +675,9 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
-            let (env, max_workers, permission_mode, model) =
-                match project_env_tables.remove(&project_entry.name) {
-                    Some(table) => {
-                        let permission_mode = table.permission_mode(&path, &project_entry.name)?;
-                        let max_workers = table.max_workers;
-                        let ProjectSettings { env, env_file, model, .. } = table;
-                        (
-                            resolve_project_env(&project_entry.name, env, env_file),
-                            max_workers,
-                            permission_mode,
-                            model,
-                        )
-                    }
-                    None => (HashMap::new(), None, PermissionMode::Auto, None),
-                };
+            let permission_mode = project_entry.permission_mode(&path, &project_entry.name)?;
+            let env =
+                resolve_project_env(&project_entry.name, project_entry.env, project_entry.env_file);
             projects.push(LoadedProject {
                 name: project_entry.name.clone(),
                 path: expand_home(&project_entry.path),
@@ -712,15 +686,15 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 accounts: org_entry.accounts.clone(),
                 fallback_accounts: org_entry.fallback_accounts.clone(),
                 auto_start: project_entry.auto_start,
-                model: model.clone(),
+                model: project_entry.model.clone(),
                 env,
-                max_workers,
+                max_workers: project_entry.max_workers,
                 permission_mode,
             });
             // The project model must be served by at least one account
             // the org can reach: a typo would boot clean, stamp all the
             // CLI slots, and then 503 every session's first request.
-            if let Some(model) = &model {
+            if let Some(model) = &project_entry.model {
                 let served =
                     org_entry.accounts.iter().chain(&org_entry.fallback_accounts).any(|name| {
                         accounts
@@ -736,22 +710,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 }
             }
         }
-    }
-
-    // A `[projects.<name>]` table repeats a project name by hand,
-    // so a typo lands nowhere. Same treatment as an org naming an
-    // undeclared account: refuse to boot and list the valid names.
-    let mut unknown_env_projects: Vec<&str> =
-        project_env_tables.keys().map(String::as_str).collect();
-    unknown_env_projects.sort_unstable();
-    if !unknown_env_projects.is_empty() {
-        let mut valid: Vec<&str> = seen_project_names.iter().map(String::as_str).collect();
-        valid.sort_unstable();
-        return Err(WorkspaceError::UnknownProjectSettings {
-            projects: unknown_env_projects.join(", "),
-            valid: valid.join(", "),
-            path,
-        });
     }
 
     if projects.is_empty() {
@@ -1183,15 +1141,13 @@ accounts = ["Codex"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+model = "gpt-5.6-luna"
 [[accounts]]
 display_name = "Codex"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "codex"
 base_url = "http://localhost:18765"
-
-[projects.forge]
-model = "gpt-5.6-luna"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("an undeclared project model must not load");
@@ -1214,15 +1170,13 @@ accounts = ["Codex"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+model = "claude-sonnet-5"
 [[accounts]]
 display_name = "Codex"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "codex"
 base_url = "http://localhost:18765"
-
-[projects.forge]
-model = "claude-sonnet-5"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("a declared model loads");
@@ -1644,13 +1598,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+max_workers = 2
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-[projects.forge]
-max_workers = 2
 "#,
         );
         let config = load_from_dir(dir.path()).expect("a table without the key loads");
@@ -1673,13 +1626,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+permission_mode = "bypassPermissions"
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-[projects.forge]
-permission_mode = "bypassPermissions"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1702,13 +1654,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+permission_mode = "bypass_permissions"
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-[projects.forge]
-permission_mode = "bypass_permissions"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("the from_wire aliases still work");
@@ -1731,13 +1682,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+permission_mode = "yolo"
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-[projects.forge]
-permission_mode = "yolo"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("an invalid mode must not load");
@@ -1764,13 +1714,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+permissionmode = "bypassPermissions"
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-[projects.forge]
-permissionmode = "bypassPermissions"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("a mistyped project key must not load");
@@ -1883,13 +1832,15 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+
+[orgs.projects.env]
+CLAUDE_CODE_OAUTH_TOKEN = "  sk-ant-oat01-project  "
+
 [[accounts]]
 display_name = "Stargate"
 token = "  sk-ant-oat01-stargate  "
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-[projects.forge.env]
-CLAUDE_CODE_OAUTH_TOKEN = "  sk-ant-oat01-project  "
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -1960,6 +1911,7 @@ accounts = ["Codex"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+env = { ALL_THREE = "project", GLOBAL_PROJECT = "project", PROJECT_ONLY = "project" }
 
 [[accounts]]
 display_name = "Codex"
@@ -1968,11 +1920,6 @@ models = ["claude-sonnet-5"]
 provider = "anthropic"
 [accounts.env]
 ALL_THREE = "account"
-
-[projects.forge.env]
-ALL_THREE = "project"
-GLOBAL_PROJECT = "project"
-PROJECT_ONLY = "project"
 "#
     }
 
@@ -1992,7 +1939,7 @@ PROJECT_ONLY = "project"
     #[test]
     fn near_miss_env_declarations_are_rejected() {
         // (label, stanza appended to the base config, text the error must name)
-        let cases = [("mistyped inner table", "[projects.forge.envs]\nK = \"v\"\n", "envs")];
+        let cases = [("mistyped inner table", "envs = { K = \"v\" }\n", "envs")];
         for (label, stanza, needle) in cases {
             let dir = tempdir().expect("tempdir");
             write_config(dir.path(), &format!("{}\n{stanza}", minimal_config()));
@@ -2007,6 +1954,10 @@ PROJECT_ONLY = "project"
         let dir = tempdir().expect("tempdir");
         let file = dir.path().join("secrets.env");
         fs::write(&file, contents).expect("write env file");
+        // The inline parameter is an `env` entry fragment when set: the
+        // collocated shape carries the env inline table on the entry.
+        let inline_line =
+            if inline.is_empty() { String::new() } else { format!("\nenv = {{ {inline} }}") };
         write_config(
             dir.path(),
             &format!(
@@ -2017,15 +1968,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+env_file = "{file}"{inline_line}
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-
-[projects.forge]
-env_file = "{file}"
-{inline}
 "#,
                 file = file.display()
             ),
@@ -2061,7 +2009,7 @@ env_file = "{file}"
     fn the_inline_table_wins_over_the_env_file_per_key() {
         let dir = config_with_env_file(
             "SHARED = from-file\nFILE_ONLY = from-file\n",
-            "[projects.forge.env]\nSHARED = \"from-inline\"",
+            "SHARED = \"from-inline\"",
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         let env = &config.projects[0].env;
@@ -2082,14 +2030,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+env_file = "{}/nope.env"
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-
-[projects.forge]
-env_file = "{}/nope.env"
 "#,
                 dir.path().display()
             ),
@@ -2120,14 +2066,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+env = { AIRMAIL_MCP_URL = "https://mail.example/mcp" }
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-
-[projects.forge.env]
-AIRMAIL_MCP_URL = "https://mail.example/mcp"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -2144,62 +2088,6 @@ AIRMAIL_MCP_URL = "https://mail.example/mcp"
     /// account, which `load_from_dir` already refuses to boot on. A
     /// silently-ignored env block is the failure mode #551 exists to
     /// kill, so it must not load.
-    /// Project names here deliberately avoid `forge`: the message
-    /// contains the literal `forge.toml` and the interpolated path is
-    /// `<tempdir>/forge/forge.toml`, so asserting on `forge` would
-    /// pass with the valid-names listing dropped entirely.
-    #[test]
-    fn env_table_for_undeclared_project_is_rejected() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Stargate"]
-[[orgs.projects]]
-name = "alpha"
-path = "~/Projects/alpha"
-[[orgs.projects]]
-name = "beta"
-path = "~/Projects/beta"
-[[orgs.projects]]
-name = "kappa"
-path = "~/Projects/kappa"
-[[orgs.projects]]
-name = "omega"
-path = "~/Projects/omega"
-[[orgs.projects]]
-name = "sigma"
-path = "~/Projects/sigma"
-[[orgs.projects]]
-name = "theta"
-path = "~/Projects/theta"
-[[accounts]]
-display_name = "Stargate"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-
-[projects.gamma.env]
-AIRMAIL_TOKEN = "typo-in-the-project-name"
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("undeclared project name must not load");
-        let msg = err.to_string();
-        assert!(msg.contains("gamma"), "error names the offending project name, got: {msg}");
-        assert!(!msg.contains("delta"), "control: only the declared typo appears");
-        // Sortedness against the listing's own sorted form, over six
-        // names: a two-name literal passed half the time with the sort
-        // dropped, because `seen_project_names` is a HashSet.
-        let listed: Vec<&str> =
-            msg.split("valid projects: ").nth(1).expect("valid listing").split(", ").collect();
-        let mut sorted = listed.clone();
-        sorted.sort_unstable();
-        assert_eq!(listed, sorted, "the valid-name listing is sorted, got: {msg}");
-        assert_eq!(listed.len(), 6, "every declared project is listed, got: {msg}");
-    }
-
     /// One assertion per precedence boundary, so a reordering fails on
     /// the boundary it broke rather than on a single opaque test.
     #[test]
@@ -2241,6 +2129,7 @@ accounts = ["Codex"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+env = { AIRMAIL_TOKEN = "forge-only-secret" }
 [[orgs.projects]]
 name = "airmail"
 path = "~/Projects/airmail"
@@ -2251,9 +2140,6 @@ token = "t"
 models = ["claude-sonnet-5"]
 provider = "codex"
 base_url = "http://localhost:18765"
-
-[projects.forge.env]
-AIRMAIL_TOKEN = "forge-only-secret"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -2373,7 +2259,23 @@ AIRMAIL_TOKEN = "forge-only-secret"
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
-            &format!("{}\n[projects.forge]\nmax_workers = 4\n", minimal_config()),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+max_workers = 4
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         assert_eq!(config.default_project().max_workers, Some(4));
@@ -2392,7 +2294,22 @@ AIRMAIL_TOKEN = "forge-only-secret"
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
-            &format!("{}\n[projects.forge]\nmax_workers = -1\n", minimal_config()),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+max_workers = -1
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
         );
         let error = load_from_dir(dir.path()).expect_err("a bad value must fail loudly");
         assert!(error.to_string().contains("max_workers"), "names the key: {error}");

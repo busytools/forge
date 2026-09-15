@@ -72,7 +72,7 @@ description](./ui/launchpad.md) for the full tier order.
 | `auto_start` | bool | no | `false` | When true, the project's lead session spawns at forge launch. Any number of projects may set it. |
 
 Project names are the argument `forge <PROJECT>` takes, and the key
-`[projects.<name>]` env tables refer to.
+per-project settings hang off.
 
 ## `[[accounts]]`
 
@@ -139,15 +139,16 @@ spawned `claude` subprocess. Absent means empty.
 CLAUDE_CODE_AUTO_COMPACT_WINDOW = "950000"
 ```
 
-## `[projects.<name>]`
+## Per-project keys (inside `[[orgs.projects]]`)
 
-Per-project settings, keyed by a project's `name`. Unlike the
-top-level tables, this one rejects unknown fields, so a mistyped inner
-table fails the load loudly instead of quietly applying nothing.
+The per-project settings live directly on each `[[orgs.projects]]`
+entry, beside `name`, `path` and `auto_start`. The entry rejects
+unknown fields, so a mistyped key fails the load loudly instead of
+quietly applying nothing.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `env` | table | `{}` | Written as `[projects.<name>.env]`. |
+| `env` | table | `{}` | Written as `[orgs.projects.env]` directly under the entry, or inline as `env = { ... }`. |
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
 | `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
 | `permission_mode` | string | `auto` | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate. |
@@ -166,10 +167,7 @@ the CLI reports back on connect, and the `/mode` picker offers
 `bypassPermissions` only on sessions launched into it; the CLI refuses a
 mid-session switch to bypass.
 
-A `[projects.<name>]` block naming a project that no
-`[[orgs.projects]]` declares fails the load, and the error lists the
-declared project names. That is deliberate: the name is repeated by
-hand here, so a typo would otherwise land nowhere silently.
+
 
 ### `env_file`
 
@@ -186,7 +184,7 @@ Failures here are non-fatal and warn rather than refusing to boot:
 - A missing or unreadable file contributes no keys.
 - A line with no `=` is skipped; the rest of the file still applies.
 
-The inline `[projects.<name>.env]` table wins over `env_file` per key.
+The inline `env` table on the project entry wins over `env_file` per key.
 
 ## `[gateway]`
 
@@ -205,7 +203,7 @@ at.
 Three layers merge per key, narrowest winning:
 
 ```
-[env]  <  [accounts.env]  <  [projects.<name>.env]
+[env]  <  [accounts.env]  <  [[orgs.projects]] env
 ```
 
 The global and account layers merge at load. The project layer is
@@ -388,7 +386,7 @@ being ignored. Keys an older forge read here (`trusted_marketplaces`,
 The top-level document does not reject unknown tables, so a section
 forge no longer reads is ignored rather than failing the load. The
 places that do reject unknown fields are `[[accounts]]`, `[[slack]]`,
-`[projects.<name>]`, `[gateway]`, `[dictate]` and `[plugins]`.
+`[[orgs.projects]]`, `[gateway]`, `[dictate]` and `[plugins]`.
 
 ## A complete example
 

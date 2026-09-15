@@ -7099,14 +7099,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "solo"
 path = "{root}"
+env = {{ SOLO_TOKEN = "value-must-never-be-logged" }}
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-
-[projects.solo.env]
-SOLO_TOKEN = "value-must-never-be-logged"
 "#,
                 root = root.display()
             ),
@@ -7153,23 +7151,20 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "twin-a"
 path = "{shared}"
+env = {{ TWIN_TOKEN = "twin-a-secret" }}
 [[orgs.projects]]
 name = "twin-b"
 path = "{shared}"
 [[orgs.projects]]
 name = "solo"
 path = "{solo}"
+env = {{ SOLO_TOKEN = "solo-secret" }}
 
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-
-[projects.twin-a.env]
-TWIN_TOKEN = "twin-a-secret"
-[projects.solo.env]
-SOLO_TOKEN = "solo-secret"
 "#,
                 shared = shared.display(),
                 solo = solo.display()
@@ -13201,15 +13196,13 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-
-[projects.forge]
-model = "claude-sonnet-5"
 "#,
         )
         .expect("write forge.toml");

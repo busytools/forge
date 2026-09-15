@@ -2535,6 +2535,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{forge_path}"
+max_workers = {limit}
 
 [[orgs.projects]]
 name = "notes"
@@ -2545,9 +2546,6 @@ display_name = "Stargate"
 token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
-
-[projects.forge]
-max_workers = {limit}
 "#
             ),
         )
