@@ -292,8 +292,17 @@ mod tests {
         let (rewritten, model) =
             splice_model(body.as_bytes(), Some("glm-5.3-flash")).expect("splice");
         assert_eq!(model, "caf\u{e9}-latte");
+        // Parsed, not a substring: a re-introduced double-quote around
+        // the value would satisfy a contains check and still be
+        // invalid JSON.
+        let parsed: serde_json::Value = serde_json::from_slice(&rewritten)
+            .expect("the rewritten body parses as JSON");
+        assert_eq!(
+            parsed.get("model").and_then(|m| m.as_str()),
+            Some("glm-5.3-flash"),
+            "the top-level model is exactly the replacement",
+        );
         let text = String::from_utf8(rewritten).expect("the rewrite keeps the body valid UTF-8");
-        assert!(text.contains("\"glm-5.3-flash\""));
         assert!(text.contains(content), "the multi-byte sibling content survives");
     }
 }
