@@ -295,8 +295,8 @@ mod tests {
         // Parsed, not a substring: a re-introduced double-quote around
         // the value would satisfy a contains check and still be
         // invalid JSON.
-        let parsed: serde_json::Value = serde_json::from_slice(&rewritten)
-            .expect("the rewritten body parses as JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&rewritten).expect("the rewritten body parses as JSON");
         assert_eq!(
             parsed.get("model").and_then(|m| m.as_str()),
             Some("glm-5.3-flash"),
