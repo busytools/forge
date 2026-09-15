@@ -2316,7 +2316,19 @@ impl Workspace {
     fn best_tier_pool(&self, project_key: &ProjectKey) -> Option<BestTier> {
         let idx = self.project_index(project_key)?;
         let project = &self.config.projects[idx];
-        self.tier_pool_over(idx, &project.accounts, &project.fallback_accounts)
+        let (accounts, fallbacks) = match project.model.as_deref() {
+            Some(model) => {
+                // Same narrowing the spawn pick runs: a resume must not
+                // re-tier onto an account that cannot serve the model.
+                let pin = OrgPin {
+                    accounts: project.accounts.clone(),
+                    fallback_accounts: project.fallback_accounts.clone(),
+                };
+                self.candidates_for_model(&pin, model)?
+            }
+            None => (project.accounts.clone(), project.fallback_accounts.clone()),
+        };
+        self.tier_pool_over(idx, &accounts, &fallbacks)
     }
 
     /// `project_key`'s position in the config's project list.
@@ -14261,6 +14273,53 @@ base_url = "https://openrouter.ai/api"
             workspace.plan_assignment(&target, None).map(|key| key.0),
             Some("OpenRouter-TM".to_owned()),
             "the recorded row is rewritten so a resume agrees with the spawn",
+        );
+    }
+
+    /// A resume re-tiers onto an account that can serve the project's
+    /// model: the recorded row names a primary that cannot, and the
+    /// narrowed best pool makes the declaring account the only move.
+    #[tokio::test]
+    async fn resume_retiers_onto_an_account_that_serves_the_project_model() {
+        let dir = make_workspace_dir_model_split();
+        let workspace = model_aware_workspace(&dir);
+
+        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
+        );
+        // Seed the catalog so the lead's Session target resolves to its
+        // project the way a drilldown resume needs.
+        workspace.record_connected_session(&project_path, "lead-uuid", None);
+        assert_eq!(
+            workspace
+                .account_pool()
+                .plan_for_test()
+                .expect("plan")
+                .lookup(&project_key, &"lead".to_owned())
+                .cloned(),
+            Some(AccountKey("Personal".to_owned())),
+            "boot recorded the primary that cannot serve the project's model",
+        );
+
+        let lead_target = SessionTarget::Session(SessionKey::from_session_id("lead-uuid"));
+        let resume_spawn_key = SessionKey::from_session_id("__resume_lead-uuid__".to_owned());
+        let re_tiered = workspace
+            .plan_assignment(&lead_target, Some(&resume_spawn_key))
+            .expect("the resume resolves through the plan");
+        assert_eq!(
+            re_tiered,
+            AccountKey("OpenRouter-TM".to_owned()),
+            "the resume re-tiers onto the account that declares the model",
+        );
+        assert_eq!(
+            workspace
+                .account_pool()
+                .plan_for_test()
+                .expect("plan")
+                .lookup(&project_key, &"lead".to_owned()),
+            Some(&AccountKey("OpenRouter-TM".to_owned())),
+            "the plan row records the re-tiered account",
         );
     }
 
