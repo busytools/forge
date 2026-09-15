@@ -1550,30 +1550,29 @@ impl Workspace {
             accounts: self.project_accounts_for(&target),
             fallback_accounts: self.project_fallback_accounts_for(&target),
         };
-        let candidates = match project.as_ref().and_then(|p| p.model.as_deref()) {
-            Some(model) => match self.candidates_for_model(&pin, model) {
-                Some(candidates) => Some(candidates),
-                // Defence in depth: the load gate refuses a project whose
-                // model nothing in its org declares (ProjectModelUndeclared),
-                // so this fires only if the loaded accounts and the pin
-                // ever drift apart.
-                None => {
-                    return Err(WorkspaceError::NoAccountServesProjectModel {
-                        project: project.as_ref().map_or_else(String::new, |p| p.name.clone()),
-                        org: project.as_ref().map_or_else(String::new, |p| p.org.clone()),
-                        model: model.to_owned(),
-                        accounts: pin
-                            .accounts
-                            .iter()
-                            .chain(pin.fallback_accounts.iter())
-                            .cloned()
-                            .collect::<Vec<String>>()
-                            .join(", "),
+        let declared_model = project.as_ref().and_then(|project| project.model.clone());
+        let candidates = match (project.as_ref(), declared_model.as_deref()) {
+            (Some(project), Some(model)) => {
+                match self.candidates_for_model(&pin, model) {
+                    Some(candidates) => Some(candidates),
+                    None => {
+                        return Err(WorkspaceError::NoAccountServesProjectModel {
+                            project: project.name.clone(),
+                            org: project.org.clone(),
+                            model: model.to_owned(),
+                            accounts: pin
+                                .accounts
+                                .iter()
+                                .chain(pin.fallback_accounts.iter())
+                                .cloned()
+                                .collect::<Vec<String>>()
+                                .join(", "),
+                        }
+                        .into());
                     }
-                    .into());
                 }
-            },
-            None => None,
+            }
+            _ => None,
         };
         let (account_key, account_dir) = if let Some(key) = forced_account {
             (key, account_dir)
@@ -2273,9 +2272,7 @@ impl Workspace {
         // registry lost the worker and the lookup degraded - re-tiering
         // would rewrite the LEAD's row, so the spawn keeps the recorded
         // lookup instead.
-        let degraded_worker_resume = spawn_key
-            .is_some_and(|k| k.as_str().starts_with("__resume_worker_"))
-            && label == "lead";
+        let degraded_worker_resume = is_degraded_worker_resume(spawn_key, &label);
         let account_key = if is_resume && !degraded_worker_resume {
             self.retier_on_resume(&project_key, &label)?
         } else {
@@ -2405,8 +2402,8 @@ impl Workspace {
     /// Recompute the plan row for `target`'s `(project, label)` over the
     /// given candidate lists and rewrite it, so a later resume agrees
     /// with the spawn that used them. `None` while accounts are still
-    /// loading or when no tier lands, leaving the caller its
-    /// round-robin fallback.
+    /// loading, when no tier lands, or when the lookup degraded to the
+    /// lead's row - leaving the caller its round-robin fallback.
     fn reassign_over(
         &self,
         target: &SessionTarget,
@@ -2415,6 +2412,14 @@ impl Workspace {
         fallbacks: &[String],
     ) -> Option<AccountKey> {
         let (project_key, label) = self.plan_lookup_keys(target, spawn_key)?;
+        // The same guard `plan_assignment` applies: a registry-lost
+        // worker resume resolves to the lead's label, and rewriting that
+        // row would move the lead's assignment and reset its rotation.
+        // The caller's direct pick over the candidates binds the worker
+        // without touching the row.
+        if is_degraded_worker_resume(spawn_key, &label) {
+            return None;
+        }
         let idx = self.project_index(&project_key)?;
         let best = self.tier_pool_over(idx, accounts, fallbacks)?;
         self.accounts.retier_assignment(
@@ -6413,6 +6418,14 @@ async fn tag_session_with_retry(
             format!("session {session_id} not found after {max_attempts} attempts"),
         ))
     }))
+}
+
+/// `true` when a `__resume_worker_` spawn key resolves to the lead
+/// label: the registry lost the worker and the lookup degraded, so the
+/// row it names is the LEAD's - rewriting it would move the lead's
+/// assignment and reset its rotation.
+fn is_degraded_worker_resume(spawn_key: Option<&SessionKey>, label: &str) -> bool {
+    spawn_key.is_some_and(|key| key.as_str().starts_with("__resume_worker_")) && label == "lead"
 }
 
 /// Stamp the project's `permission_mode` into the launch settings'
@@ -14483,6 +14496,49 @@ base_url = "https://openrouter.ai/api"
             bare_settings.settings.expect("document")["model"],
             serde_json::json!("opus"),
             "a project that declares no model leaves the caller's pin alone",
+        );
+    }
+
+    /// A worker resume whose registry entry is gone resolves to the
+    /// lead's label. The spawn must apply the same guard
+    /// `plan_assignment` does, or its reassign path rewrites the LEAD's
+    /// row, resets the lead's rotation and binds the worker to the
+    /// account it just gave the lead.
+    #[tokio::test]
+    async fn a_degraded_worker_resume_spawn_never_rewrites_the_lead_row() {
+        let dir = make_workspace_dir_model_split();
+        let workspace = model_aware_workspace(&dir);
+        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
+        );
+        assert_eq!(
+            workspace
+                .account_pool()
+                .plan_for_test()
+                .expect("plan")
+                .lookup(&project_key, &"lead".to_owned())
+                .cloned(),
+            Some(AccountKey("Personal".to_owned())),
+            "precondition: the lead's row records the non-declaring primary",
+        );
+
+        let spawn_key = SessionKey::from_str_for_test("__resume_worker_forge_x_dead-worker-uuid__");
+        let _ = workspace.get_agent_handle_with_spawn_key(
+            SessionTarget::Named("forge".to_owned()),
+            SessionLaunchSettings::default(),
+            Some(spawn_key),
+            None,
+        );
+
+        assert_eq!(
+            workspace
+                .account_pool()
+                .plan_for_test()
+                .expect("plan")
+                .lookup(&project_key, &"lead".to_owned()),
+            Some(&AccountKey("Personal".to_owned())),
+            "a degraded worker resume must leave the lead's row alone",
         );
     }
 
