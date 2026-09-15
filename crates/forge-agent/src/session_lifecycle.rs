@@ -415,18 +415,16 @@ mod tests {
 
     /// The panel shows the canonical model name exactly as forge.toml
     /// declares it (Ved, 2026-09-15): the name the session asked for,
-    /// never the id the CLI resolved on its own.
+    /// never a humanised label or the id the CLI resolved. A known
+    /// family is the discriminating case - without the rule it renders
+    /// as "Opus 5".
     #[test]
     fn the_panel_shows_the_canonical_model_name_verbatim() {
-        let cm = resolve_current_model_from_inputs(
-            "deepseek-v4.1-flash",
-            Some("deepseek-v4.1-flash"),
-            None,
-            &[],
-        );
+        let cm =
+            resolve_current_model_from_inputs("claude-opus-5", Some("claude-opus-5"), None, &[]);
         assert_eq!(
-            cm.display_name_long, "deepseek-v4.1-flash",
-            "the panel shows the canonical name"
+            cm.display_name_long, "claude-opus-5",
+            "the panel shows the canonical name, not the humanised label"
         );
     }
 

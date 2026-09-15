@@ -4791,8 +4791,6 @@ impl Workspace {
         }
     }
 
-    /// The `/model` picker rows for a session: the declared models of
-    /// the session's org's accounts, in pin order, deduped.
     /// The canonical model forge stamped for `key`'s session: the
     /// project's declared `model`. `None` when the session has no
     /// project registration or the project declares no model.
@@ -4810,6 +4808,8 @@ impl Workspace {
             .and_then(|project| project.model.clone())
     }
 
+    /// The `/model` picker rows for a session: the declared models of
+    /// the session's org's accounts, in pin order, deduped.
     pub(crate) fn declared_models_for_session(
         &self,
         key: &SessionKey,
