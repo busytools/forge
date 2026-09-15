@@ -309,7 +309,7 @@ pub struct PluginSettings {
 }
 
 /// Cap on a project's concurrently live dynamic workers when its
-/// The project's `max_workers` override is absent.
+/// `max_workers` override is absent.
 pub(crate) const DEFAULT_MAX_WORKERS_PER_PROJECT: usize = 2;
 
 #[derive(Debug)]
