@@ -15,11 +15,10 @@ const ANTHROPIC_DEFAULT_OPUS_MODEL_ENV: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsPaths {
-    /// `None` when no session is bound. The file lives in the session's
-    /// per-account config dir, and nothing can name that before a
-    /// spawn; the default dir's file is a different account's. There is
-    /// deliberately no fallback: this path is also what a saved setting
-    /// is written back to.
+    /// `None` when no session is bound. The file lives in the
+    /// workspace's shared config dir, and nothing can name that before
+    /// a spawn. There is deliberately no fallback: this path is also
+    /// what a saved setting is written back to.
     pub settings: Option<PathBuf>,
     /// `None` when no project root resolved, which is the launchpad
     /// boot. There is deliberately no fallback path: a cwd-derived one

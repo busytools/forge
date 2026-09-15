@@ -51,8 +51,8 @@ pub enum UsageFetchStatus {
     /// multiple forge instances poll from the same machine).
     RateLimited,
     /// The account's credential is dead or absent (expired, or no
-    /// token in env at all). Repair is minting the setup token in
-    /// `[accounts.env]` plus a restart.
+    /// token at all). Repair is minting the setup token on the account
+    /// block plus a restart.
     Expired,
     /// API returned 401/403 - token rejected (may be revoked).
     Unauthorized,
@@ -260,8 +260,8 @@ impl AccountStateMap {
 
     /// How the account proves who it is, which is the only thing that
     /// changes what an auth-repair hint tells the user to do. Base-url
-    /// wins: such an account re-keys its env token, whatever else the
-    /// env carries. Every other account's credential is its setup
+    /// wins: such an account authenticates with the flat token beside
+    /// its base_url. Every other account's credential is its setup
     /// token, so both its token-mode and its token-less shapes repair
     /// the same way. `None` for unknown keys.
     pub fn auth(&self, key: &AccountKey) -> Option<forge_primitives::account::AccountAuth> {
@@ -540,8 +540,8 @@ impl AccountStateMap {
     /// unusable, a usable fallback outranks a saturated primary - the
     /// same order the assignment plan's tier walk runs.
     ///
-    /// Returns the picked key + its config_dir. The caller's spawn
-    /// path uses the dir to seed `CLAUDE_CONFIG_DIR`.
+    /// Returns the picked key; the caller's spawn path stamps the
+    /// child from the shared config dir.
     ///
     /// Panics: `allowed` must be non-empty AND every name must
     /// resolve to a key in `by_key` (config-load enforces both

@@ -736,11 +736,10 @@ fn open_db(app_support: &Path) -> Option<crate::store::Db> {
 /// are filtered out. Untagged or `forge:lead`-tagged sessions are
 /// filtered out by the tag-prefix check.
 ///
-/// Scans every account's `config_dir` (one per distinct physical
-/// `projects` tree, carrying the redb tag cache so already-scanned
-/// transcripts are not re-read): workers pick their account from the
-/// assignment-plan rotation, so a prior worker session can live under
-/// any account, not just the workspace's canonical dir.
+/// Scans the config dirs the caller passes (one shared dir today;
+/// carrying the redb tag cache so already-scanned transcripts are not
+/// re-read): workers pick their account from the assignment-plan
+/// rotation, so a prior worker session can live under any account.
 async fn scan_worker_resume_map(
     config_dirs: &[PathBuf],
     project_dir: &std::path::Path,
@@ -833,8 +832,8 @@ fn build_resume_map_from_sessions(
     is_git_repo: bool,
 ) -> HashMap<String, String> {
     // Most-recently-modified session per label wins, including across
-    // sessions merged from multiple account config_dirs (list_sessions
-    // sorts within one account, not across the merge).
+    // sessions merged from multiple config dirs (list_sessions sorts
+    // within one dir, not across the merge).
     let mut ordered: Vec<&SDKSessionInfo> = sessions.iter().collect();
     ordered.sort_by_key(|s| std::cmp::Reverse(s.last_modified));
     let mut resume_map: HashMap<String, String> = HashMap::new();
@@ -1472,9 +1471,9 @@ impl Workspace {
     /// `UiSession` map atomically. `None` for re-entrant callers (the
     /// pooled handle path) where no key migration is needed.
     ///
-    /// `forced_account` pins the spawn to a specific `(AccountKey,
-    /// config_dir)` instead of running the assignment-plan /
-    /// round-robin picker. Only the `/account` switch supplies it (via
+    /// `forced_account` pins the spawn to a specific `AccountKey`
+    /// instead of running the assignment-plan / round-robin picker.
+    /// Only the `/account` switch supplies it (via
     /// `handle_switch_account`); a forced account always re-spawns a
     /// live session, so the new `SessionTask` seeds `connected_once =
     /// true` and its first `Connected` emits `SessionReplaced` (the
@@ -1557,10 +1556,10 @@ impl Workspace {
             "spawn bound to account",
         );
 
-        // Slow path: spawn fresh Agent bound to the picked account's
-        // config_dir. The Agent stores it as a typed field; every
-        // in-process accessor (oauth, settings, catalog scans) reads
-        // it from there, and the spawned `claude` subprocess
+        // Slow path: spawn a fresh Agent bound to the workspace's
+        // shared config_dir. The Agent stores it as a typed field;
+        // every in-process accessor (oauth, settings, catalog scans)
+        // reads it from there, and the spawned `claude` subprocess
         // inherits it as `CLAUDE_CONFIG_DIR` so each session reads/
         // writes the right account's user-data tree.
         let account_env = self.accounts.env(&account_key).unwrap_or_default();
@@ -4619,8 +4618,7 @@ impl Workspace {
     }
 
     /// The `/model` picker rows for a session: the declared models of
-    /// the session's org's accounts, in pin order, deduped. Authored
-    /// config replaces the discovered catalog.
+    /// the session's org's accounts, in pin order, deduped.
     pub(crate) fn declared_models_for_session(
         &self,
         key: &SessionKey,
@@ -5203,9 +5201,8 @@ impl Workspace {
         else {
             return;
         };
-        // Resolve the per-account config_dir for this session via the
-        // bridge so the tag-write lands under the right account's
-        // projects/ tree.
+        // Resolve the config_dir for this session via the bridge so
+        // the tag-write lands under the workspace's projects/ tree.
         let Some(config_dir) = self.config_dir_for(session_key) else {
             tracing::warn!(
                 target: "forge_workspace::workspace",
@@ -5589,18 +5586,18 @@ impl Workspace {
 }
 
 /// The repair line the 60 s poller logs under an auth-classified
-/// failure, keyed on how the account authenticates. Env credentials
-/// are boot-frozen, so both classes point at the env edit, never a
-/// re-authentication of the shared config dir.
+/// failure, keyed on how the account authenticates. Credentials are
+/// boot-frozen, so both classes point at the flat-key edit on the
+/// account block, never a re-authentication of the shared config dir.
 ///
 /// The base-url test must stay first: a global `[env]` setup token
 /// reaches base-url accounts too, and the re-mint advice is for a
 /// credential that account never reads.
 fn auth_repair_hint(provider: forge_primitives::account::Provider) -> &'static str {
     if provider.uses_base_url() {
-        "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in [accounts.env] and restart forge"
+        "usage_poll fetch failed with auth error; fix the account's token and base_url keys and restart forge"
     } else {
-        "usage_poll fetch failed with auth error; mint the setup token in [accounts.env] (claude setup-token) and restart forge"
+        "usage_poll fetch failed with auth error; mint the setup token on the account block (claude setup-token) and restart forge"
     }
 }
 
@@ -6450,22 +6447,22 @@ mod tests {
         for provider in [Provider::Codex, Provider::Openrouter, Provider::Zai] {
             assert_eq!(
                 auth_repair_hint(provider),
-                "usage_poll fetch failed with auth error; fix ANTHROPIC_AUTH_TOKEN in \
-                 [accounts.env] and restart forge",
-                "{provider:?} is repaired by an env token edit",
+                "usage_poll fetch failed with auth error; fix the account's token and \
+                 base_url keys and restart forge",
+                "{provider:?} is repaired by a flat-key edit",
             );
         }
 
         assert_eq!(
             auth_repair_hint(Provider::Anthropic),
-            "usage_poll fetch failed with auth error; mint the setup token in [accounts.env] \
-             (claude setup-token) and restart forge",
+            "usage_poll fetch failed with auth error; mint the setup token on the account \
+             block (claude setup-token) and restart forge",
             "an anthropic account repairs through its setup token, token or not",
         );
     }
 
     /// `project_accounts_snapshot` returns one row per allow-list entry
-    /// in order, each carrying the account's config_dir, is_current
+    /// in order, each carrying the shared config_dir, is_current
     /// marker, unusable reason, 5h/7d utilization, and a reset ETA only
     /// while the account is at its cap.
     #[test]
@@ -9242,7 +9239,7 @@ provider = "anthropic"
         );
     }
 
-    /// An Anthropic account (setup token in `[accounts.env]`) derives
+    /// An Anthropic account (setup token on its account block) derives
     /// the token auth class, whose bailed-row repair copy names the
     /// token and never a re-authentication of the shared config dir.
     #[tokio::test]
@@ -12108,8 +12105,8 @@ mod build_resume_map_tests {
         assert_eq!(map.get("planner"), Some(&"ours".to_owned()));
     }
 
-    /// Across sessions merged from multiple account config_dirs the
-    /// newest session per label wins, regardless of concat order.
+    /// Across sessions merged from multiple config dirs the newest
+    /// session per label wins, regardless of concat order.
     #[test]
     fn build_resume_map_keeps_newest_session_per_label() {
         let project_dir = std::path::Path::new("/Users/me/Projects/forge");

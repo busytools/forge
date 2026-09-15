@@ -249,7 +249,7 @@ fn a_bailed_account_names_both_exits() {
         text.contains("Or drop the account") && text.contains("[[accounts]]"),
         "exit two is removing the account from forge.toml; got:\n{text}",
     );
-    // The repair is an env edit, so the screen must say it needs a
+    // The repair is a config edit, so the screen must say it needs a
     // restart - a reader who fixes their auth otherwise cannot tell
     // whether the retrying poller will pick it up on its own.
     assert!(
@@ -307,7 +307,7 @@ fn the_repair_and_retry_lines_differ_by_account_class() {
     assert!(
         token.contains("editing forge.toml needs a restart")
             && !token.contains("no restart needed"),
-        "an env edit is boot-frozen and must not promise an in-place retry; got:\n{token}",
+        "a config edit is boot-frozen and must not promise an in-place retry; got:\n{token}",
     );
     assert!(
         base_url.contains("token and base_url keys") && !base_url.contains("claude setup-token"),
@@ -553,7 +553,7 @@ fn a_bailed_token_account_names_the_re_mint_not_login() {
     );
     assert!(
         text.contains("restart forge to pick"),
-        "a token repair is an env edit, so the head line cannot promise in-place recovery; got:\n{text}",
+        "a token repair is a config edit, so the head line cannot promise in-place recovery; got:\n{text}",
     );
     assert!(
         !text.contains("/login"),
@@ -566,7 +566,7 @@ fn a_bailed_token_account_names_the_re_mint_not_login() {
     assert!(text.contains("claude setup-token"), "the re-mint command is the repair; got:\n{text}");
     assert!(
         text.contains("editing forge.toml needs a restart"),
-        "an env repair is boot-frozen until restart - the screen has to say so; got:\n{text}",
+        "a config repair is boot-frozen until restart - the screen has to say so; got:\n{text}",
     );
 }
 

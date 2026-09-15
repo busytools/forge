@@ -1,8 +1,9 @@
 //! The Codex backend: a base-url proxy serving Anthropic's windowed
-//! `/api/oauth/usage` shape, authenticated by the `[accounts.env]`
-//! `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` pair. The response
-//! always maps leniently - a proxy emits each window on its own and
-//! `{}` is the cold steady state, not a malformed response.
+//! `/api/oauth/usage` shape, authenticated by the account's flat
+//! `base_url` + `token` pair stamped onto `ANTHROPIC_BASE_URL` +
+//! `ANTHROPIC_AUTH_TOKEN`. The response always maps leniently - a
+//! proxy emits each window on its own and `{}` is the cold steady
+//! state, not a malformed response.
 
 use async_trait::async_trait;
 

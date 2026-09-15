@@ -146,7 +146,7 @@ mod tests {
             "deepseek-v4-pro-0813",
             "kimi-k3",
             "glm-5.3-flash",
-            "deepseek-v4-flash",
+            "deepseek-v4.1-flash",
             "minimax-m3",
             "glm-5.2",
             "gemini-2.5-flash",

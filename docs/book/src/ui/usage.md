@@ -6,7 +6,7 @@ A pinned summary header - lifetime tokens and one notional cost, today / week / 
 
 The table is responsive: the label column fits the longest name (full model ids and long project names never truncate when they fit) and the six numeric columns spread across the remaining width. The notional caption sits right-justified on the summary's first row.
 
-All accounts pool into one aggregate (the per-account config dirs share one projects pool, so per-account is not separable), deduped by message id; worktree and sub-path slugs fold into their parent repo and `/tmp` folds to a single **scratch** bucket. The dollar column is **notional** - at API pricing, not a bill; GPT/Codex rows are flagged `(GPT approx)`; an unpriced model shows its tokens with a `-` cost.
+All accounts pool into one aggregate, deduped by message id; worktree and sub-path slugs fold into their parent repo and `/tmp` folds to a single **scratch** bucket. The dollar column is **notional** - at API pricing, not a bill; GPT/Codex rows are flagged `(GPT approx)`; an unpriced model shows its tokens with a `-` cost.
 
 Pricing is fetched at runtime and cached (no bundled table) - the first open with an empty cache shows tokens with a blank cost until the fetch lands, then re-prices; the cache refreshes about once a day. The scan is cached incrementally per file, so reopening is fast. While no pricing is loaded the header caption switches to a yellow `pricing pending or failed` and the LIFETIME headline cost blanks to `-`, so an unpriced report never shows a misleading `$0.00`.
 

@@ -504,7 +504,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     // Global `[env]` is the BASE each account's effective env starts
     // from; the account's own `[accounts.env]` extends it, so account
     // keys override global keys.
-    let global_env = parsed.env;
+    let mut global_env = parsed.env;
 
     // Drained per project as the org loop builds the project list;
     // whatever is left over named no declared project.
@@ -527,7 +527,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     }
 
     let mut accounts: Vec<LoadedAccount> = Vec::with_capacity(parsed.accounts.len());
-    for entry in parsed.accounts {
+    for mut entry in parsed.accounts {
         if !seen_account_names.insert(entry.display_name.clone()) {
             return Err(WorkspaceError::DuplicateAccount { path, name: entry.display_name });
         }
@@ -565,6 +565,16 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 name: entry.display_name.clone(),
                 keys,
             });
+        }
+        // A blank gateway key reads as absent for the conflict check
+        // and must read as absent downstream too: scrub it here rather
+        // than stamping an empty credential onto the child.
+        for key in gateway_keys {
+            for env in [&mut global_env, &mut entry.env] {
+                if env.get(key).is_some_and(|v| v.trim().is_empty()) {
+                    env.remove(key);
+                }
+            }
         }
         env.extend(entry.env);
         trim_setup_token(&mut env);
