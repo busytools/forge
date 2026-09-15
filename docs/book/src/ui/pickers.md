@@ -46,7 +46,7 @@
 
 ## Model picker (`/model`)
 
-`/model` (no arg) opens the overlay when the session advertises models - otherwise the info line stays - and `/model <id>` switches directly. Rows are the session's available models: the curated OpenRouter catalog on an `openrouter` account, the CLI-advertised models elsewhere; the pseudo `default` row is hidden. Opens with the highlight on the running model beside a `●` marker.
+`/model` (no arg) opens the overlay when the session advertises models - otherwise the info line stays - and `/model <id>` switches directly. Rows are the session's org's declared models, authored in forge.toml; the pseudo `default` row is hidden. Opens with the highlight on the running model beside a `●` marker.
 
 <div class="term">
 
@@ -81,13 +81,13 @@
 
 ## Account picker (`/account`)
 
-Idle-only - mid-turn it is a no-op with a red system notice ("Finish or cancel the current turn before switching accounts."). Switch the live session to a different account, keeping the SAME conversation. Rows: the project's allowed accounts, the org's fallbacks (dim `FALLBACK` group), and every `experimental = true` account (dim `EXPERIMENTAL` group - excluded from auto-assignment, offered here globally). Each row: the current `●` marker, the name, a budget block shaped by the billing kind, and a status tag - `usable` green, or red `limit hit` / `auth failed or expired`.
+Idle-only - mid-turn it is a no-op with a red system notice ("Finish or cancel the current turn before switching accounts."). Switch the live session to a different account, keeping the SAME conversation. Rows: the project's allowed accounts, the org's fallbacks (dim `FALLBACK` group). Each row: the current `●` marker, the name, a budget block shaped by the billing kind, and a status tag - `usable` green, or red `limit hit` / `auth failed or expired`.
 
 <div class="term">
 
   <pre class="indent">
        <span class="accent">┌──────────────────────────────────────────────────────────────┐</span>
-       <span class="accent">│</span> <span class="accent-bold">Switch account · forge</span>                            <span class="dim">7 accounts</span> <span class="accent">│</span>
+       <span class="accent">│</span> <span class="accent-bold">Switch account · forge</span>                            <span class="dim">4 accounts</span> <span class="accent">│</span>
        <span class="accent">│</span>                                                              <span class="accent">│</span>
        <span class="accent">│</span> <span class="accent">●</span> <span class="accent-bold">Gateway</span>    5h <span class="error">100%</span>  7d <span class="warning">63%</span>  <span class="warning">⟳ resets 1h 42m</span>      <span class="error">limit hit</span> <span class="accent">│</span>
        <span class="accent">│</span>   Gateway1   5h <span class="success">34%</span>  7d <span class="success">22%</span>                           <span class="success">usable</span> <span class="accent">│</span>
@@ -95,11 +95,6 @@ Idle-only - mid-turn it is a no-op with a red system notice ("Finish or cancel t
        <span class="accent">│</span>                                                              <span class="accent">│</span>
        <span class="accent">│</span>   <span class="dim bold">FALLBACK</span>                                                   <span class="accent">│</span>
        <span class="accent">│</span>   Router     <span class="success">$0.56</span> <span class="dim">d</span> <span class="success">$1.25</span> <span class="dim">w</span> <span class="success">$20.30</span> <span class="dim">m</span>      <span class="dim">fallback</span> <span class="dim">·</span> <span class="success">usable</span> <span class="accent">│</span>
-       <span class="accent">│</span>                                                              <span class="accent">│</span>
-       <span class="accent">│</span>   <span class="dim bold">EXPERIMENTAL</span>                                               <span class="accent">│</span>
-       <span class="accent">│</span>   Codex      5h <span class="success">20%</span>  7d <span class="success">8%</span>             <span class="experimental">experimental</span> <span class="dim">·</span> <span class="success">usable</span> <span class="accent">│</span>
-       <span class="accent">│</span>   OpenRouter <span class="success">$0.56</span> <span class="dim">d</span> <span class="success">$1.25</span> <span class="dim">w</span> <span class="success">$20.30</span> <span class="dim">m</span>  <span class="experimental">experimental</span> <span class="dim">·</span> <span class="success">usable</span> <span class="accent">│</span>
-       <span class="accent">│</span>   Boot       <span class="success">$-</span> <span class="dim">d</span> <span class="success">$-</span> <span class="dim">w</span> <span class="success">$-</span> <span class="dim">m</span>            <span class="experimental">experimental</span> <span class="dim">·</span> <span class="success">usable</span> <span class="accent">│</span>
        <span class="accent">│</span>                                                              <span class="accent">│</span>
        <span class="accent">│</span> <span class="dim">↑↓ move   enter switch   esc cancel   ● current</span>              <span class="accent">│</span>
        <span class="accent">└──────────────────────────────────────────────────────────────┘</span></pre>
@@ -121,7 +116,7 @@ Idle-only - mid-turn it is a no-op with a red system notice ("Finish or cancel t
 - Picking a row re-spawns the session under that account's `config_dir` and `claude --resume`s the same session id - the account config dirs share `~/.claude/projects` via symlink, so nothing is copied; the chat re-seeds and the account label refreshes. Picking the current account is a no-op close; an unusable one is shown red. Live workers and in-flight peer asks are not blocked - workers run their own accounts; peer asks to the switched session expire on reconnect and are re-askable.
 - Like both sibling pickers, the overlay is modal and keyboard-only; mouse-click selection is a possible follow-up.
 - Auto-switch on rate-limit is deferred; no account management or `forge.toml` editing from the picker.
-- Colors: border and title rust orange; account count, period letters, the empty `5h`/`7d` dashes, the `-` on an unprobed row and the hints dim (the `$-` of an empty spend column keeps the spend colour so the three periods stay one row); window percentages green under ~70, yellow under 100, red at the cap; spend amounts green flat - an uncapped key has no cap to be near; reset ETA yellow; `usable` green; both red reasons red; group headers dim bold; `fallback` dim; `experimental` amber.
+- Colors: border and title rust orange; account count, period letters, the empty `5h`/`7d` dashes, the `-` on an unprobed row and the hints dim (the `$-` of an empty spend column keeps the spend colour so the three periods stay one row); window percentages green under ~70, yellow under 100, red at the cap; spend amounts green flat - an uncapped key has no cap to be near; reset ETA yellow; `usable` green; both red reasons red; group headers dim bold; `fallback` dim.
 
 </details>
 

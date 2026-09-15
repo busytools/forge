@@ -2414,10 +2414,9 @@ impl Workspace {
     /// call, and the usage poller's success arm calls it when a
     /// clean probe heals a Bailed account. The frozen-overlay merge
     /// preserves existing assignments while extending the pools with
-    /// newly-recovered accounts.
-    /// The non-experimental ready / degraded / saturated account sets
-    /// the assignment plan consumes, in forge.toml definition order.
-    /// `None` while any account is still loading.
+    /// newly-recovered accounts. The ready / degraded / saturated
+    /// account sets the assignment plan consumes, in forge.toml
+    /// definition order. `None` while any account is still loading.
     fn account_health_sets(&self) -> Option<(Vec<AccountKey>, Vec<AccountKey>, Vec<AccountKey>)> {
         self.accounts.health_sets()
     }

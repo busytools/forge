@@ -46,7 +46,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 enum SelectFailure {
     /// The org in the path is not in the config.
     UnknownOrg { org: String },
-    /// Every account in the walk fails the family rule for the model.
+    /// No account in the walk declares the model.
     NoEligibleAccount { model: String, org: String },
     /// The whole walk is inside a rotation cooldown: they serve the
     /// model, they are cooling until `reset_in`.
@@ -93,9 +93,10 @@ impl Gateway {
         *self.org_pins.lock() = pins.into_iter().collect();
     }
 
-    /// Select the account for an unbound session: the model's family
-    /// decides the eligible set, the org's walk order decides which of
-    /// those wins, and accounts inside a rotation cooldown are skipped.
+    /// Select the account for an unbound session: only accounts that
+    /// declare the model are eligible, the org's walk order decides
+    /// which of those wins, and accounts inside a rotation cooldown
+    /// are skipped.
     /// Binds the result so the session keeps it.
     fn select_and_bind(
         &self,
@@ -130,8 +131,8 @@ impl Gateway {
             // The walk emptied. When cooling accounts were filtered out,
             // the real cause is exhaustion: they DO serve the model,
             // they are cooling until a knowable time, and the budget
-            // failure says so. Only a walk empty without cooling is the
-            // family rule refusing the model.
+            // failure says so. A walk empty without cooling is a
+            // declared-model miss.
             Err(crate::selection::SelectionError::NoEligibleAccount { model, org }) => {
                 if let Some(reset) = rotation.soonest_reset(now).filter(|_| !cooled.is_empty()) {
                     return Err(SelectFailure::BudgetExhausted {
@@ -601,7 +602,7 @@ mod tests {
 
     /// Stub upstream + gateway listener + one registered session whose
     /// account's upstream is the stub. The pool holds one account per
-    /// family, both with the stub as their upstream, so a test that
+    /// provider, both with the stub as their upstream, so a test that
     /// asserts "no upstream request" is airtight whichever account a
     /// broken selection could have picked.
     async fn harness(chunk_delay: Duration) -> Harness {
@@ -680,8 +681,8 @@ mod tests {
     /// `ANTHROPIC_API_KEY` set would produce.
     async fn post_as_cli(url: &str) -> reqwest::Response {
         // The harness session is bound to the OpenRouter account, so
-        // the body carries that account's family: a claude model here
-        // would rotate the binding instead of forwarding.
+        // the body carries a model that account declares: a claude
+        // model here would rotate the binding instead of forwarding.
         reqwest::Client::new()
             .post(url)
             .header(hyper::header::AUTHORIZATION, "Bearer forge-gateway-unused")
@@ -836,8 +837,8 @@ mod tests {
         let harness = harness(Duration::ZERO).await;
         // The pin's only account is Anthropic and that account is
         // Ready; a non-claude model has no eligible account in this
-        // org. The refusal is the family gate's, not a loading state
-        // or an unknown name.
+        // org. The refusal is the declared-model gate's, not a loading
+        // state or an unknown name.
         harness.gateway.set_org_pins([(
             "Busytools".to_owned(),
             crate::selection::OrgPin {
@@ -873,9 +874,9 @@ mod tests {
     #[tokio::test]
     async fn a_non_claude_model_in_a_non_anthropic_org_binds_and_forwards() {
         let harness = harness(Duration::ZERO).await;
-        // Mirror of the family-gate refusal: the org's one account is
-        // the OpenRouter one, glm is its family, so the same route
-        // that refused above selects, binds, and forwards.
+        // Mirror of the refusal above: the org's one account is the
+        // OpenRouter one, glm is in its declared models, so the same
+        // route selects, binds, and forwards.
         harness.gateway.set_org_pins([(
             "Busytools".to_owned(),
             crate::selection::OrgPin {
@@ -899,12 +900,12 @@ mod tests {
         assert_eq!(
             response.status(),
             StatusCode::OK,
-            "the family gate admits the model to its own family's account",
+            "the model gate admits the model to a declaring account",
         );
         assert_eq!(
             harness.gateway.bindings.binding_for("Busytools", "forge", "ghost"),
             Some(AccountKey("OpenRouter".to_owned())),
-            "the route binds what the family gate admitted",
+            "the route binds what the declared-model gate admitted",
         );
         assert_eq!(
             harness.requests.lock().len(),
@@ -1184,7 +1185,7 @@ mod tests {
         }
         // The bound account rotated off on the streak; a fresh session
         // finds the whole walk cooling, which is budget exhaustion, not
-        // a family miss.
+        // a declared-model miss.
         let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
         let response = post_model(&ghost_url, "glm-5.3-flash").await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1200,7 +1201,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_family_miss_stays_a_family_miss_with_an_unrelated_cooldown_live() {
+    async fn a_declared_model_miss_stays_a_declared_model_miss_with_an_unrelated_cooldown_live() {
         let harness = harness(Duration::ZERO).await;
         pin_only(&harness, "Anthropic");
         harness
@@ -1208,8 +1209,8 @@ mod tests {
             .pool
             .set_loading(&AccountKey("Anthropic".to_owned()), crate::LoadingState::Ready);
         // An account OUTSIDE the walk is cooling; the walk itself holds
-        // nothing cooling, so the walk emptied on the family rule and
-        // the failure must keep saying so.
+        // nothing cooling, so the walk emptied on the declared-model
+        // gate and the failure must keep saying so.
         let reset = SystemTime::now() + Duration::from_secs(600);
         let reset_secs =
             reset.duration_since(SystemTime::UNIX_EPOCH).expect("future reset").as_secs();
@@ -1220,7 +1221,7 @@ mod tests {
         let body = response.text().await.expect("body");
         assert!(
             body.contains("no account in org 'Busytools' serves model 'glm-5.3-flash'"),
-            "a family miss keeps the family message even with an unrelated cooldown live, got: {body}",
+            "a declared-model miss keeps the declared-model message even with an unrelated cooldown live, got: {body}",
         );
     }
 
@@ -1311,9 +1312,9 @@ mod tests {
             .gateway
             .pool
             .set_loading(&AccountKey("OpenRouter".to_owned()), crate::LoadingState::Ready);
-        // Bound to OpenRouter and asking for claude: the family gate
-        // refuses the re-selection instead of forwarding to an account
-        // that cannot answer it.
+        // Bound to OpenRouter and asking for claude: the declared-model
+        // gate refuses the re-selection instead of forwarding to an
+        // account that cannot answer it.
         let response = post_model(&harness.client_url, "claude-sonnet-5").await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = response.text().await.expect("body");
@@ -1352,7 +1353,7 @@ mod tests {
         assert_eq!(
             harness.gateway.bindings.binding_for("Busytools", "forge", "session-2"),
             Some(AccountKey("OpenRouter".to_owned())),
-            "the family gate is symmetric across both directions",
+            "the declared-model gate is symmetric across both directions",
         );
     }
 }

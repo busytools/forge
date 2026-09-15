@@ -82,6 +82,11 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
     };
     let pool = workspace.account_pool();
     let Some(provider) = pool.provider(&account_key) else {
+        tracing::warn!(
+            target: "forge_workspace::account_loader",
+            account = %account_key.0,
+            "no provider for the account key; skipping its boot probe",
+        );
         return;
     };
     let account_env = pool.env(&account_key).unwrap_or_default();

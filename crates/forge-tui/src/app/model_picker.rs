@@ -1,13 +1,13 @@
 //! `/model` picker overlay: transient state + key handling.
 //!
 //! A centered overlay (rendered by [`crate::ui::model_picker`]) listing
-//! the session's available models - the curated OpenRouter catalog on an
-//! `openrouter` account, the CLI-advertised regular models elsewhere.
-//! `enter` switches the session to the highlighted model; `esc` closes
-//! without switching. Rows are snapshotted at open together with the
-//! session they came from; a commit whose session is no longer active is
-//! refused (the rows are stale), and a session reporting no models never
-//! opens the picker (the `/model` submit falls back to the current-model
+//! the session's declared models - the org's accounts' declared models,
+//! authored in forge.toml. `enter` switches the session to the
+//! highlighted model; `esc` closes without switching. Rows are
+//! snapshotted at open together with the session they came from; a
+//! commit whose session is no longer active is refused (the rows are
+//! stale), and a session reporting no models never opens the picker
+//! (the `/model` submit falls back to the current-model
 //! info line).
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -138,8 +138,8 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    /// The ten curated OpenRouter rows, shaped the way the
-    /// forge-gateway curated merge produces them.
+    /// Ten declared-model rows shaped the way the session reports
+    /// them.
     fn curated_rows() -> Vec<model::AvailableModel> {
         [
             ("z-ai/glm-5.3", "Z.ai: GLM 5.3 (Opus-class)"),

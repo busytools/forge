@@ -28,9 +28,9 @@ entry containing one [[orgs.projects]] entry
 ## The shape
 
 Two things are required: at least one org, and at least one account.
-Orgs hold projects. Accounts describe the `claude` config directories
-forge can spawn a session under. An org names the subset of accounts
-its projects are allowed to use.
+Orgs hold projects. Accounts are the provider endpoints and
+credentials forge can spawn a session under. An org names the subset
+of accounts its projects are allowed to use.
 
 Everything else is optional.
 
@@ -151,7 +151,7 @@ table fails the load loudly instead of quietly applying nothing.
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
 | `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
 | `permission_mode` | string | `auto` | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate. |
-| `model` | string | | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it), seeds the gateway's routing, and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails. Absent means the account's own default applies. |
+| `model` | string | | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Absent means the account's own default applies. |
 
 `permission_mode` stamps a permission mode onto every session the
 project spawns, overriding the launcher's per-session default. A project
@@ -225,14 +225,16 @@ env layer overrides forge's own stamp. The value still applies, since
 `forge.toml` is treated as trusted, but forge logs a warning naming the
 key.
 
-An `ANTHROPIC_BASE_URL` under `[accounts.env]` is where a `"codex"`,
-`"openrouter"` or `"zai"` account's endpoint lives, alongside the
-`ANTHROPIC_AUTH_TOKEN` it authenticates with. It does not decide how
-the account is probed - `provider` does, and this is only read once
-that has already chosen a base-url account. Setting `ANTHROPIC_BASE_URL`
-or `ANTHROPIC_AUTH_TOKEN` at the *project* layer instead desynchronises
-forge's own accounting, because the usage probe, plan detection and the
-account picker all read the account map.
+A base-url account's endpoint and credential are its flat `base_url`
+and `token` keys, mapped onto the CLI's variable names at load.
+`[accounts.env]` carries only provider-behaviour extras - timeouts,
+context caps, fallback switches; declaring a base-url or credential key
+in any env layer, global or per-account, fails the load, because it
+would sit beside its flat twin and silently lose or win depending on
+layering. Setting `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` at the
+*project* layer instead desynchronises forge's own accounting, because
+the usage probe, plan detection and the account picker all read the
+account map.
 
 An `"anthropic"` account's flat `token` - minted by
 `claude setup-token` - is its credential. The usage endpoint
@@ -419,25 +421,28 @@ accounts = ["Work"]
 
 [[accounts]]
 display_name = "Personal"
-config_dir = "~/.claude"
+token = "personal-setup-token"
+models = ["claude-opus-5", "claude-sonnet-5"]
 provider = "anthropic"
 
 [[accounts]]
 display_name = "Work"
-config_dir = "~/.claude-work"
+token = "work-setup-token"
+models = ["claude-opus-5", "claude-sonnet-5"]
 provider = "anthropic"
 
-# Talks to a local endpoint. The provider line has to come before
-# [accounts.env], or TOML reads it as an env key.
+# Talks to a local endpoint: the flat base_url and token keys carry
+# the endpoint and credential; [accounts.env] stays for
+# provider-behaviour extras only.
 [[accounts]]
 display_name = "Scratch"
-config_dir = "~/.claude-scratch"
 provider = "codex"
-experimental = true
+base_url = "http://localhost:18765"
+token = "scratch-token"
+models = ["claude-sonnet-5"]
 
   [accounts.env]
-  ANTHROPIC_BASE_URL = "http://localhost:18765"
-  ANTHROPIC_AUTH_TOKEN = "unused"
+  CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = "1"
 
 # Per-project settings, keyed by the project's `name`.
 [projects.service]
@@ -504,8 +509,8 @@ Everything mutable lives in a single embedded redb database at
 `<app-support>/db.redb`: durable crons, Gotify subscriptions, Slack
 subscriptions and the sweep watermarks beside them, dynamic workers
 spawned at runtime, review threads, the `/spinner` override, the
-per-account usage cache, cached model pricing, cached OpenRouter model
-catalogs, and the `/usage` view's per-file token summaries.
+per-account usage cache, cached model pricing, and the `/usage` view's
+per-file token summaries.
 
 The one counterexample is dictation diagnostics: with dictation
 enabled, each take's audio and transcripts are kept as plain files

@@ -103,7 +103,8 @@ impl ProjectView {
 pub struct AccountRow {
     /// forge.toml `[[accounts]]` display name.
     pub display_name: String,
-    /// On-disk config dir seeding `CLAUDE_CONFIG_DIR` for this account.
+    /// The workspace's shared config dir, seeding the child's
+    /// `CLAUDE_CONFIG_DIR` (one shared dir for every account).
     pub config_dir: PathBuf,
     /// `true` when this is the session's active account.
     pub is_current: bool,

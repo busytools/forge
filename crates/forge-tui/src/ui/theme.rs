@@ -46,8 +46,8 @@ pub const COMPLETION: Color = REVIEW_RESOLVED;
 // user's own turn).
 pub const REVIEW_ADDRESSED: Color = Color::Rgb(97, 160, 224);
 
-// Amber accent for the `/account` picker's experimental tag. Distinct
-// from the yellow reset-ETA (STATUS_WARNING) so the two never blur.
+// Amber accent for the `/usage` view's GPT rows. Distinct from the
+// yellow reset-ETA (STATUS_WARNING) so the two never blur.
 pub const EXPERIMENTAL: Color = Color::Rgb(201, 161, 59);
 
 // Gotify external-notification accent - the ◈ gotify glyph + the `Gotify`

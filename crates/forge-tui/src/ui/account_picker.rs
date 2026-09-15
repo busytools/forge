@@ -109,11 +109,11 @@ fn account_row_line(row: &AccountRow, selected: bool, inner_w: usize) -> Line<'s
     }
     used += 2;
 
-    // Status tag, right-aligned. Grouped rows (experimental, fallback)
-    // prefix their group's tag + a dim separator so the reason they sit
-    // apart is legible even without the section header. Measured before
-    // the name, because on a narrow row the name is what gives way to
-    // keep it.
+    // Status tag, right-aligned. A grouped row (fallback) prefixes its
+    // group's tag + a dim separator so the reason it sits apart is
+    // legible even without the section header. Measured before the
+    // name, because on a narrow row the name is what gives way to keep
+    // it.
     let prefix = if row.fallback { Some(("fallback", theme::DIM)) } else { None };
     let (tag, tag_color) = match row.unusable {
         None => ("usable", Color::Green),
@@ -546,7 +546,7 @@ mod tests {
     }
 
     /// The layout property, over every budget variant crossed with the
-    /// three tags and both experimental flags: a row never exceeds the
+    /// three tags and both fallback flags: a row never exceeds the
     /// width it is given, and its status tag survives intact with a gap
     /// before it.
     ///
@@ -709,11 +709,11 @@ mod tests {
         );
     }
 
-    /// An API budget under the widest tag block, `experimental` plus
-    /// `auth failed or expired`. Reachable on any spend value, because
-    /// a 429 from the key endpoint preserves the snapshot; on a spend
-    /// row this is the only unusable shape there is, since spend carries
-    /// no window to saturate.
+    /// An API budget under the widest tag block, `auth failed or
+    /// expired`. Reachable on any spend value, because a 429 from the
+    /// key endpoint preserves the snapshot; on a spend row this is the
+    /// only unusable shape there is, since spend carries no window to
+    /// saturate.
     #[test]
     fn the_widest_api_row_keeps_its_tag_separate_and_uncut() {
         let mut app = App::test_default();
@@ -733,10 +733,6 @@ mod tests {
         assert!(
             row.contains("auth failed or expired"),
             "the status tag must not be clipped off the end: {row}",
-        );
-        assert!(
-            !row.contains("mexperimental"),
-            "the tag must not weld onto the budget block: {row}",
         );
     }
 

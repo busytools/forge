@@ -376,8 +376,9 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
-    /// The project's model: fills the CLI's model slots at spawn and
-    /// seeds the gateway's routing. Absent means the account's own
+    /// The project's model: fills the CLI's model slots at spawn
+    /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
+    /// `CLAUDE_CODE_SUBAGENT_MODEL`). Absent means the account's own
     /// default applies.
     pub model: Option<String>,
     /// Per-project environment from `[projects.<name>.env]`, layered
@@ -671,9 +672,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 });
             }
         }
-        // An org whose accounts are all experimental leaves its projects
-        // with nothing assignable - the auto_start path would fall
-        // through to a foreign non-experimental account. Reject at load.
         if org_entry.projects.is_empty() {
             return Err(WorkspaceError::EmptyOrg { path, org: org_entry.name });
         }
@@ -1160,7 +1158,7 @@ base_url = "http://localhost:18765"
         );
         let err = load_from_dir(dir.path()).expect_err("a blank slug value must not load");
         let message = err.to_string();
-        assert!(message.contains("blank slug"), "the error names the blank slug, got: {message}",);
+        assert!(message.contains("blank slug"), "the error names the blank slug, got: {message}");
     }
 
     #[test]

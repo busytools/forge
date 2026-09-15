@@ -85,7 +85,7 @@ impl SessionTask {
             tokio::select! {
                 maybe_event = event_rx.recv() => {
                     let Some(event) = maybe_event else { break; };
-                    let event = self.merge_catalog_models(event);
+                    let event = self.declared_models_for_session(event);
                     if !self.translate_event(event) {
                         break;
                     }
@@ -121,15 +121,11 @@ impl SessionTask {
         self.handle.disconnect().await;
     }
 
-    /// Swap an OpenRouter session's discovered `available_models` for
-    /// the curated catalog list before `translate_event` sees the
-    /// `Connected` event (covering both the `Connected` and
-    /// `SessionReplaced` emits). Awaited in the async run loop so
-    /// `translate_event` itself stays synchronous; on a cold cache the
-    /// inline fetch delays this session's events once per base url -
-    /// the failure marker written on a miss means every connect after
-    /// that serves from the cache or the discovered list.
-    fn merge_catalog_models(&self, event: AgentEvent) -> AgentEvent {
+    /// Replace a Connected event's CLI-advertised `available_models`
+    /// with the session's org's declared models before `translate_event`
+    /// sees it (covering both the `Connected` and `SessionReplaced`
+    /// emits). Synchronous - the rows are read from config, not fetched.
+    fn declared_models_for_session(&self, event: AgentEvent) -> AgentEvent {
         let AgentEvent::Connected {
             session_id,
             cwd,
