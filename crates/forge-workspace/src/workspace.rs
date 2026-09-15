@@ -1553,17 +1553,33 @@ impl Workspace {
         let declared_model = project.as_ref().and_then(|project| project.model.clone());
         let candidates = match (project.as_ref(), declared_model.as_deref()) {
             (Some(project), Some(model)) => {
-                match self.candidates_for_model(&pin, model) {
+                // Narrow over the same project's own pin lists, the ones
+                // that supplied the model. Resolving the model and the
+                // pins separately can pair one project's model with
+                // another project's accounts - `project_accounts_for`
+                // falls back to the default project where
+                // `project_for_target` resolves the real one - and the
+                // refusal below would then name one project's org beside
+                // another org's accounts.
+                let model_pin = OrgPin {
+                    accounts: project.accounts.clone(),
+                    fallback_accounts: project.fallback_accounts.clone(),
+                };
+                match self.candidates_for_model(&model_pin, model) {
                     Some(candidates) => Some(candidates),
+                    // Defence in depth: the load gate refuses a project
+                    // whose model nothing in its org declares
+                    // (ProjectModelUndeclared), so this fires only if the
+                    // loaded accounts and the pin ever drift apart.
                     None => {
                         return Err(WorkspaceError::NoAccountServesProjectModel {
                             project: project.name.clone(),
                             org: project.org.clone(),
                             model: model.to_owned(),
-                            accounts: pin
+                            accounts: model_pin
                                 .accounts
                                 .iter()
-                                .chain(pin.fallback_accounts.iter())
+                                .chain(model_pin.fallback_accounts.iter())
                                 .cloned()
                                 .collect::<Vec<String>>()
                                 .join(", "),
@@ -14399,6 +14415,89 @@ base_url = "https://openrouter.ai/api"
         )
         .expect("write forge.toml");
         dir
+    }
+
+    /// Two orgs: the default project's org cannot serve the other
+    /// project's model, so a `__fresh__:<other>` target pins the model
+    /// resolution and the pin resolution apart.
+    fn make_workspace_dir_two_orgs() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Personal"]
+
+[[orgs.projects]]
+name = "alpha"
+path = "~/Projects/alpha"
+auto_start = true
+
+[[orgs]]
+name = "Other"
+accounts = ["OpenRouter-TM"]
+
+[[orgs.projects]]
+name = "other"
+path = "~/Projects/other"
+model = "deepseek-v4.1-flash"
+
+[[accounts]]
+display_name = "Personal"
+token = "t"
+models = ["claude-opus-5"]
+provider = "anthropic"
+
+[[accounts]]
+display_name = "OpenRouter-TM"
+token = "t"
+models = ["deepseek-v4.1-flash"]
+provider = "openrouter"
+base_url = "https://openrouter.ai/api"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    /// The model and the pin must come from the same project. On a
+    /// `__fresh__:<project_key>` target the model resolves to that
+    /// project while the pin resolution falls back to the default
+    /// project's org, so narrowing over the pin's lists would refuse a
+    /// spawn the config accepts, naming the wrong org's accounts.
+    #[tokio::test]
+    async fn a_fresh_key_target_narrows_over_the_model_projects_own_accounts() {
+        let dir = make_workspace_dir_two_orgs();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let pool = workspace.account_pool();
+        pool.set_usage(&AccountKey("Personal".to_owned()), usage_at(10.0));
+        pool.set_usage(&AccountKey("OpenRouter-TM".to_owned()), usage_at(10.0));
+        workspace.recompute_plan_if_ready();
+
+        let other_path = workspace
+            .config
+            .projects
+            .iter()
+            .find(|project| project.name == "other")
+            .expect("other project")
+            .path
+            .to_string_lossy()
+            .into_owned();
+        let project_key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&other_path));
+        let target = SessionTarget::Session(SessionKey::from_str_for_test(&format!(
+            "__fresh__:{project_key}"
+        )));
+
+        let handle = workspace
+            .get_agent_handle(target, SessionLaunchSettings::default())
+            .expect("the model's own project supplies the accounts, so the spawn resolves");
+        assert_eq!(
+            handle.display_name().as_deref(),
+            Some("OpenRouter-TM"),
+            "the spawn lands on the account that serves the other project's model",
+        );
     }
 
     /// Both accounts Ready and the plan computed, for the spawn tests.
