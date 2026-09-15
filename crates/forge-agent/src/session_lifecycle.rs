@@ -276,6 +276,13 @@ pub fn resolve_current_model_from_inputs(
         if humanized_has_version { humanized } else { catalog_name.unwrap_or(humanized) }
     };
 
+    // The panel shows the canonical name the session asked for,
+    // exactly as forge.toml declares it. The resolved id is the CLI's
+    // own spelling: it carries the `[1m]` context marker and can name
+    // a model the session never asked for (a stray account default),
+    // so it never names the row while a requested model is known.
+    let display_name = requested_id.unwrap_or(display_name.as_str()).to_owned();
+
     CurrentModel {
         requested_id: requested_id.map(str::to_owned),
         resolved_id: resolved_id.clone(),
@@ -404,6 +411,66 @@ mod tests {
         assert_eq!(cm.resolved_id, "claude-sonnet-4-6");
         assert_eq!(cm.display_name_short, "Sonnet 4.6");
         assert!(cm.is_authoritative);
+    }
+
+    /// The panel shows the canonical model name exactly as forge.toml
+    /// declares it (Ved, 2026-09-15): the name the session asked for,
+    /// never the id the CLI resolved on its own.
+    #[test]
+    fn the_panel_shows_the_canonical_model_name_verbatim() {
+        let cm = resolve_current_model_from_inputs(
+            "deepseek-v4.1-flash",
+            Some("deepseek-v4.1-flash"),
+            None,
+            &[],
+        );
+        assert_eq!(
+            cm.display_name_long, "deepseek-v4.1-flash",
+            "the panel shows the canonical name"
+        );
+    }
+
+    /// Captured live (2026-09-15 trial): a forge-project session whose
+    /// wire carried deepseek resolved its init to claude-opus-5[1m],
+    /// and the account panel named a model the session never asked for.
+    #[test]
+    fn a_resolved_model_the_session_never_asked_for_does_not_name_the_row() {
+        let cm = resolve_current_model_from_inputs(
+            "claude-opus-5[1m]",
+            Some("deepseek-v4.1-flash"),
+            None,
+            &[],
+        );
+        assert_eq!(
+            cm.display_name_long, "deepseek-v4.1-flash",
+            "the row names the model the session runs on, not the CLI's stray resolution",
+        );
+    }
+
+    /// The canonical name is shown verbatim even when a catalogue entry
+    /// exists with a prettier display name, and a `[1m]` marker the
+    /// user's canonical name never carried does not appear.
+    #[test]
+    fn a_catalogue_display_name_does_not_rename_the_canonical_model() {
+        let catalog = vec![AvailableModel {
+            id: "deepseek-v4.1-flash[1m]".to_owned(),
+            display_name: "DeepSeek Flash".to_owned(),
+            description: None,
+            supports_effort: false,
+            supported_effort_levels: vec![],
+            supports_adaptive_thinking: None,
+            supports_auto_mode: None,
+        }];
+        let cm = resolve_current_model_from_inputs(
+            "deepseek-v4.1-flash[1m]",
+            Some("deepseek-v4.1-flash"),
+            None,
+            &catalog,
+        );
+        assert_eq!(
+            cm.display_name_long, "deepseek-v4.1-flash",
+            "the canonical name is not renamed by the catalogue or the context marker",
+        );
     }
 
     #[test]

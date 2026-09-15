@@ -1654,6 +1654,15 @@ impl Workspace {
                 session_env.insert((*var).to_owned(), model.clone());
             }
         }
+        // The project's model is the session's model too: the CLI is
+        // told it explicitly, so it reports the canonical name back and
+        // sends that name through the gateway. Without this the CLI
+        // keeps the caller's pin - forge defaults it to the literal
+        // "opus" - and resolves it through whatever alias mapping the
+        // account happens to carry, or its own opus default where the
+        // account maps none, which leaves the session's primary model
+        // neither deterministic nor the one the project declares.
+        apply_project_model(project.as_ref(), &mut settings);
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
         // per-session peer-MCP server's CallerKeyResolver can read
@@ -4752,6 +4761,23 @@ impl Workspace {
 
     /// The `/model` picker rows for a session: the declared models of
     /// the session's org's accounts, in pin order, deduped.
+    /// The canonical model forge stamped for `key`'s session: the
+    /// project's declared `model`. `None` when the session has no
+    /// project registration or the project declares no model.
+    pub(crate) fn canonical_model_for_session(&self, key: &SessionKey) -> Option<String> {
+        let project_name = self
+            .pool
+            .lock()
+            .get(key)
+            .and_then(|entry| entry.registration.as_ref())
+            .map(|registration| registration.project.clone())?;
+        self.config
+            .projects
+            .iter()
+            .find(|project| project.name == project_name)
+            .and_then(|project| project.model.clone())
+    }
+
     pub(crate) fn declared_models_for_session(
         &self,
         key: &SessionKey,
@@ -6388,6 +6414,29 @@ fn apply_project_permission_mode(
     if let Some(mode) = project.map(|project| project.permission_mode) {
         spawn::stamp_permission_mode(settings, mode);
     }
+}
+
+/// Stamp the project's canonical `model` into the launch settings, which
+/// is how the session's model reaches the CLI. A project that declares
+/// no model stamps nothing, so the caller's pin (forge defaults it to
+/// the literal "opus") stands.
+fn apply_project_model(
+    project: Option<&crate::config::LoadedProject>,
+    settings: &mut SessionLaunchSettings,
+) {
+    if let Some(model) = project.and_then(|project| project.model.as_deref()) {
+        settings.settings = Some(pin_model_into_settings(settings.settings.take(), model));
+    }
+}
+
+/// `settings` with `model` pinned to `model`, every other key kept.
+fn pin_model_into_settings(settings: Option<serde_json::Value>, model: &str) -> serde_json::Value {
+    let mut document = match settings {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    document.insert("model".to_owned(), serde_json::Value::String(model.to_owned()));
+    serde_json::Value::Object(document)
 }
 
 /// Test helper: ensure `forge/` exists and return the production
@@ -14273,6 +14322,45 @@ base_url = "https://openrouter.ai/api"
             workspace.plan_assignment(&target, None).map(|key| key.0),
             Some("OpenRouter-TM".to_owned()),
             "the recorded row is rewritten so a resume agrees with the spawn",
+        );
+    }
+
+    /// The spawn pins the project's canonical model into the launch
+    /// settings - which is how the session's model reaches the CLI - and
+    /// a project that declares no model leaves the caller's pin alone.
+    #[test]
+    fn the_project_model_is_pinned_into_the_launch_settings() {
+        let dir = make_workspace_dir_model_split();
+        let config = crate::config::load_from_dir(dir.path()).expect("load");
+        let project = config.projects.iter().find(|p| p.name == "forge").expect("forge project");
+        let mut settings = SessionLaunchSettings {
+            settings: Some(serde_json::json!({"effortLevel": "max", "model": "opus"})),
+            ..SessionLaunchSettings::default()
+        };
+        apply_project_model(Some(project), &mut settings);
+        let document = settings.settings.expect("document");
+        assert_eq!(
+            document["model"],
+            serde_json::json!("deepseek-v4.1-flash"),
+            "the canonical model replaces the caller's pin",
+        );
+        assert_eq!(
+            document["effortLevel"],
+            serde_json::json!("max"),
+            "the other settings keys survive the pin",
+        );
+
+        let bare_dir = make_workspace_dir_lead_and_worker();
+        let bare_config = crate::config::load_from_dir(bare_dir.path()).expect("load");
+        let mut bare_settings = SessionLaunchSettings {
+            settings: Some(serde_json::json!({"model": "opus"})),
+            ..SessionLaunchSettings::default()
+        };
+        apply_project_model(bare_config.projects.first(), &mut bare_settings);
+        assert_eq!(
+            bare_settings.settings.expect("document")["model"],
+            serde_json::json!("opus"),
+            "a project that declares no model leaves the caller's pin alone",
         );
     }
 

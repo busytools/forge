@@ -29,6 +29,13 @@ fn reset_session_identity_state(
     app.set_session_id(Some(session_id));
     app.set_current_model(Some(current_model.clone()));
     app.set_mode(mode);
+    // The update carries forge's canonical model as the requested id
+    // (the model pinned at spawn), so the turn state names it too: the
+    // account panel then shows the canonical name rather than whatever
+    // id the CLI resolved on its own.
+    if let Some(requested_id) = current_model.requested_id.clone() {
+        app.with_turn_state_mut(|state| state.requested_model_id = Some(requested_id));
+    }
     if let Some(options) = app.config_options_mut() {
         options.clear();
         if let Some(requested_id) = current_model.requested_id {

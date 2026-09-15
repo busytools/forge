@@ -140,9 +140,25 @@ impl SessionTask {
         };
         // Declared models replace discovery: the picker rows are the
         // org's accounts' declared models, authored in forge.toml.
-        let available_models = match self.workspace.upgrade() {
-            Some(workspace) => workspace.declared_models_for_session(&self.key),
-            None => Vec::new(),
+        let (available_models, canonical_model) = match self.workspace.upgrade() {
+            Some(workspace) => (
+                workspace.declared_models_for_session(&self.key),
+                workspace.canonical_model_for_session(&self.key),
+            ),
+            None => (Vec::new(), None),
+        };
+        // The project's declared model names the session: it is what
+        // forge stamped into the CLI's model slots and what every
+        // model-name surface must show, rather than the id the CLI
+        // resolved on its own.
+        let current_model = match canonical_model {
+            Some(model) => forge_primitives::CurrentModel {
+                requested_id: Some(model.clone()),
+                display_name_short: model.clone(),
+                display_name_long: model,
+                ..current_model
+            },
+            None => current_model,
         };
         AgentEvent::Connected {
             session_id,
