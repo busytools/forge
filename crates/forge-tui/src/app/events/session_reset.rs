@@ -29,6 +29,12 @@ fn reset_session_identity_state(
     app.set_session_id(Some(session_id));
     app.set_current_model(Some(current_model.clone()));
     app.set_mode(mode);
+    // The update's requested id is the model forge pinned, so the panel
+    // names it rather than the CLI's resolved id. Written
+    // unconditionally: a respawn that pins nothing must clear the
+    // previous session's request, not leave it labelling this one.
+    let requested_id = current_model.requested_id.clone();
+    app.with_turn_state_mut(|state| state.requested_model_id = requested_id);
     if let Some(options) = app.config_options_mut() {
         options.clear();
         if let Some(requested_id) = current_model.requested_id {
@@ -2114,5 +2120,31 @@ mod tests {
         let bucket = app.sessions.get(&active).expect("active bucket after reset");
         assert!(bucket.background_tasks.is_empty(), "roster cleared on reset too");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared on reset too");
+    }
+
+    /// A respawn whose update carries no pinned model must clear the
+    /// previous session's request: the row would otherwise name a model
+    /// this process was never told to run.
+    #[test]
+    fn a_respawn_without_a_pinned_model_clears_the_requested_model() {
+        use super::reset_for_new_session;
+        use crate::agent::model;
+
+        let mut app = App::test_default();
+        app.with_turn_state_mut(|state| state.requested_model_id = Some("sonnet".to_owned()));
+
+        reset_for_new_session(
+            &mut app,
+            model::SessionId::new("reset-model-target"),
+            model::CurrentModel::new("m", "m", "m"),
+            None,
+            false,
+        );
+
+        assert_eq!(
+            app.with_turn_state(|state| state.requested_model_id.clone()),
+            None,
+            "a respawn with nothing pinned must not keep the old request on the row",
+        );
     }
 }

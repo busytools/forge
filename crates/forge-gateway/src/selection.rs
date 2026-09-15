@@ -85,6 +85,20 @@ pub fn select_account(
     })
 }
 
+/// The org's walk order narrowed to the accounts that declare `model`,
+/// preserving pin order. Both lists can come back empty; the caller
+/// decides whether that is fatal.
+pub fn org_lists_for_model(state: &AccountStateMap, pin: &OrgPin, model: &str) -> OrgPin {
+    let keep = |names: &[String]| {
+        names
+            .iter()
+            .filter(|name| declares(state, &AccountKey((*name).clone()), model))
+            .cloned()
+            .collect::<Vec<String>>()
+    };
+    OrgPin { accounts: keep(&pin.accounts), fallback_accounts: keep(&pin.fallback_accounts) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +306,48 @@ mod tests {
             select_account(&state, &pin(&["Ghost", "Stargate"], &[]), "Default", "claude-opus-5")
                 .expect("the known account resolves");
         assert_eq!(selected, AccountKey("Stargate".to_owned()));
+    }
+
+    #[test]
+    fn org_lists_for_model_keeps_only_declaring_accounts_in_order() {
+        let state = pool_with(&[
+            ("Personal", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5"]),
+            (
+                "OpenRouter-TM",
+                Provider::Openrouter,
+                LoadingState::Ready,
+                None,
+                vec!["deepseek-v4.1-flash"],
+            ),
+            (
+                "OpenRouter",
+                Provider::Openrouter,
+                LoadingState::Ready,
+                None,
+                vec!["deepseek-v4.1-flash"],
+            ),
+        ]);
+        let pin = OrgPin {
+            accounts: vec!["Personal".into(), "OpenRouter-TM".into()],
+            fallback_accounts: vec!["OpenRouter".into()],
+        };
+        let filtered = org_lists_for_model(&state, &pin, "deepseek-v4.1-flash");
+        assert_eq!(filtered.accounts, vec!["OpenRouter-TM".to_owned()]);
+        assert_eq!(filtered.fallback_accounts, vec!["OpenRouter".to_owned()]);
+    }
+
+    #[test]
+    fn org_lists_for_model_is_empty_when_nothing_declares_the_model() {
+        let state = pool_with(&[(
+            "Personal",
+            Provider::Anthropic,
+            LoadingState::Ready,
+            None,
+            vec!["claude-opus-5"],
+        )]);
+        let pin = OrgPin { accounts: vec!["Personal".into()], fallback_accounts: vec![] };
+        let filtered = org_lists_for_model(&state, &pin, "deepseek-v4.1-flash");
+        assert!(filtered.accounts.is_empty(), "no account declares the model");
+        assert!(filtered.fallback_accounts.is_empty(), "no fallback declares the model");
     }
 }

@@ -31,7 +31,7 @@ Wide (160 cols up): 32ch inline pane. Medium (120-159): 24ch, truncated. Narrow 
   <span class="dim">Org    </span>  Autonomys
   <span class="dim">ID     </span>  <span class="dim">550e8400</span>         <span class="user-band"> ⧉  </span> 
   <span class="dim">Mode   </span>  <span class="warning">[Auto]</span>
-  <span class="dim">Model  </span>  Claude Opus 4.7
+  <span class="dim">Model  </span>  claude-opus-5
   <span class="dim">Effort </span>  Max
 
   <span class="dim">Ctx</span>  <span class="success">▓▓▓▓▓</span><span class="warning">▓▓</span><span class="dim">░░░░░░░░░░░░</span>   39%
@@ -92,7 +92,7 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 | Profile / Org | Account name and organization; dim `-` until the SDK reports one | |
 | ID | First 8 chars of the session id | `⧉` copies the full id to the OS clipboard |
 | Mode | Permission badge: `auto` / `acceptEdits` yellow, `plan` blue, `bypassPermissions` / `dontAsk` red, `default` dim | |
-| Model | Long display name, `(... context)` folded - `Sonnet (200K context)` renders `Sonnet 200K` | |
+| Model | The canonical model the session runs on, exactly as `forge.toml` declares it - the project's `model`, or the name picked at `/model`, rendered verbatim: no humanised label, no `[1m]` marker, no account slug. A project that declares no model pins nothing, so its row falls back to the resolved name, which the catalogue or the humanised id supplies (`Opus 5`) | |
 | Effort | Always on its own row | |
 | Ctx / 5h / 7d | Bars for the session's context %, the 5h and 7d windows; they stretch to the content width (19 cells Wide, 11 at Medium). `Ctx` adds the raw context window (`1M` / `200K`) and a compaction count (hidden at zero; survives resume and restart); `5h` / `7d` add the remaining time (`1h 48m` / `4d 4h`) | |
 | Spend (API-billed) | `day` / `week` / `month` carry this key's spend; `balance` is the account-wide pool (inference stops at zero); `cap` fills a bar against it, `$<n> left · <cadence>` beneath - or `not set`, no bar. An expiry displaces the cadence with `expires <when>` | |
@@ -185,7 +185,7 @@ The overlay's body is the same tree full-width (banner and rule span the overlay
 <span class="dim">  Org      </span>Autonomys
 <span class="dim">  ID       </span><span class="dim">550e8400</span>                             <span class="dim"> ⧉ </span>
 <span class="dim">  Mode     </span><span class="warning">[Auto]</span>
-<span class="dim">  Model    </span>Claude Opus 4.7
+<span class="dim">  Model    </span>claude-opus-5
 <span class="dim">  Effort   </span>Max
 
 <span class="dim">  Ctx   </span><span class="success">▓▓▓</span><span class="warning">▓▓</span><span class="dim">░░░░░░░</span>  39%
