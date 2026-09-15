@@ -1439,6 +1439,66 @@ ANTHROPIC_API_KEY = "sk-ant-123"
     }
 
     #[test]
+    fn a_whitespace_gateway_key_reads_as_absent() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+[accounts.env]
+ANTHROPIC_API_KEY = "   "
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("a blank gateway key is absent");
+        assert!(
+            config.accounts[0].env.get("ANTHROPIC_API_KEY").is_none_or(|v| v.trim().is_empty()),
+            "the blank key rides through as a blank value, not a rejection",
+        );
+    }
+
+    #[test]
+    fn two_conflicting_gateway_keys_are_both_named() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Codex"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Codex"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "codex"
+base_url = "http://localhost:18765"
+[accounts.env]
+ANTHROPIC_API_KEY = "sk-1"
+ANTHROPIC_AUTH_TOKEN = "t2"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("two conflicts must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("ANTHROPIC_API_KEY") && message.contains("ANTHROPIC_AUTH_TOKEN"),
+            "the error names both conflicting keys, got: {message}",
+        );
+    }
+
+    #[test]
     fn a_global_env_gateway_key_fails_the_load_for_every_account() {
         let dir = tempdir().expect("tempdir");
         write_config(

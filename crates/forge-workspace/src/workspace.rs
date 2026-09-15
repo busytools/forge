@@ -764,10 +764,10 @@ async fn scan_worker_resume_map(
     build_resume_map_from_sessions(&sessions, project_dir, is_git_repo)
 }
 
-/// One config_dir per distinct physical `projects` tree. Accounts'
-/// config dirs commonly symlink `projects` back to one shared tree, so
-/// scanning per account would read the same transcripts once per
-/// prefix; a dir with no projects tree is skipped, as before.
+/// Canonicalize each config dir's `projects` tree to one root per
+/// distinct physical directory, so a symlinked shared tree is scanned
+/// once rather than once per alias; a dir with no projects tree is
+/// skipped, as before.
 fn distinct_catalog_roots(config_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut roots: Vec<PathBuf> = Vec::new();
@@ -2890,9 +2890,6 @@ impl Workspace {
         // back to every configured account when the project pins none.
         // Fallback names then join (deduped) - usually accounts the pin
         // does not name, since the org never rotates through them.
-        // Experimental accounts are unioned in last regardless of the
-        // org pin (deduped) - they are excluded from auto-assignment
-        // but globally selectable in the picker.
         let mut names: Vec<String> = if allowed_accounts.is_empty() {
             self.accounts.account_names()
         } else {
@@ -4441,8 +4438,8 @@ impl Workspace {
     pub fn scan_usage(&self) -> forge_primitives::token_usage::UsageReport {
         use forge_agent::env::{timezone, token_usage};
         use time_tz::OffsetDateTimeExt;
-        // Per-account config dirs symlink their `projects` to one shared
-        // pool; canonicalize so the scan reads it once, not once each.
+        // Canonicalize so a symlinked projects tree is read once, not
+        // once per alias.
         let projects_dir = forge_sdk::projects_dir_for(&self.config_dir);
         let projects_dir = std::fs::canonicalize(&projects_dir).unwrap_or(projects_dir);
         // Resolve the system timezone once so days bucket on the user's
@@ -6916,7 +6913,7 @@ mod tests {
         assert!(!ws.pricing_is_fresh(), "a two-day-old fetch is stale and re-fetched");
     }
 
-    // -- /model catalog merge (openrouter sessions) ------------------
+    // -- /model pricing cache ----------------------------------------
 
     #[test]
     fn store_fresh_pricing_keeps_a_good_cache_on_a_garbage_response() {

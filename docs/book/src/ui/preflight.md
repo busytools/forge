@@ -89,9 +89,9 @@ Rides along as degraded - the row clears on a config edit plus a restart, or whe
         <span class="error">the re-mint up.</span>
 
         <span class="bold">Fix the auth</span>
-          CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]
+          the account's token key
           claude setup-token
-          <span class="dim">editing [accounts.env] needs a restart</span>
+          <span class="dim">editing forge.toml needs a restart</span>
 
         <span class="bold">Or drop the account</span>
           delete its [[accounts]] block from
@@ -105,8 +105,8 @@ Rides along as degraded - the row clears on a config edit plus a restart, or whe
 <details>
 <summary>Bail classes and repair paths</summary>
 
-- The restart note exists because the env is read once at boot - the pollers keep probing what they loaded until forge restarts - and the screen states it without a number because the pollers run under probe backoff and no single interval would be true.
-- A base-url account (`codex`, `openrouter` or `zai`) keeps its credential in `ANTHROPIC_AUTH_TOKEN` beside its base url. An `anthropic` account's credential is its setup token - `CLAUDE_CODE_OAUTH_TOKEN`, from its `[accounts.env]` or the global `[env]` - and its repair is a mint or re-mint. Re-authenticating the config dir is never the repair: it would authenticate whichever account owns the shared dir, not the one that failed. The branch is on the account class, not on whether `ANTHROPIC_BASE_URL` is set.
+- The restart note exists because the account block is read once at boot - the pollers keep probing what they loaded until forge restarts - and the screen states it without a number because the pollers run under probe backoff and no single interval would be true.
+- Every account's credential is its flat `token` key; a base-url account also carries the flat `base_url`. The repair is a mint or re-mint. Re-authenticating the config dir is never the repair: it would authenticate whichever account owns the shared dir, not the one that failed. The branch is on the account class, not on whether `base_url` is set.
 - A token-mode account that is valid never reaches this screen: the usage endpoint refuses a setup token (it lacks the `user:profile` scope), so the token arm probes a minimal billed messages call whose response headers carry the 5-hour and 7-day windows. A 401 is a genuinely rejected token, and only that bails.
 - An endpoint that never answered reads `unreachable` or `fetch error`, the repair aimed at the endpoint rather than the token; a `rate limited` bail has no repair beyond waiting - the pollers keep retrying. forge does not hold boot for any of them.
 - Model verify failure: both digests are cut to twelve hex characters a side; a size mismatch is a different error with the crate's own wording, reading as a truncated download rather than corruption.
@@ -119,8 +119,8 @@ The token-path screens:
 
   <pre class="indent">
         <span class="bold">Fix the auth</span>
-          ANTHROPIC_AUTH_TOKEN in [accounts.env]
-          <span class="dim">editing [accounts.env] needs a restart</span>
+          the account's token key
+          <span class="dim">editing forge.toml needs a restart</span>
 
         <span class="bold">Or drop the account</span>
           delete its [[accounts]] block from
@@ -136,9 +136,9 @@ The token-path screens:
         <span style="color:#cf6171">the re-mint up.</span>
 
         <span class="bold">Fix the auth</span>
-          CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]
+          the account's token key
           claude setup-token
-          <span class="dim">editing [accounts.env] needs a restart</span>
+          <span class="dim">editing forge.toml needs a restart</span>
 
         <span class="bold">Or drop the account</span>
           delete its [[accounts]] block from
@@ -162,7 +162,7 @@ An endpoint that never answered is a different failure, and the row says so:
         <span class="error">it and keeps retrying.</span>
 
         <span class="bold">Check the endpoint</span>
-          ANTHROPIC_BASE_URL in [accounts.env], or the
+          the account's base_url key, or the
           endpoint itself
           <span class="dim">editing forge.toml needs a restart; fixing the</span>
           <span class="dim">endpoint does not</span>

@@ -952,8 +952,7 @@ pub(crate) fn handle_spawn_session(
 
 /// Switch the live session `key` to `account_display_name`: tear down
 /// its current `claude` subprocess and re-spawn + resume the SAME
-/// `session_id` under the picked account's `config_dir`. The account
-/// config dirs share `~/.claude/projects` via symlink, so
+/// `session_id` under the workspace's shared config dir, so
 /// `claude --resume` finds the same conversation - nothing is copied.
 /// The forced-account re-spawn seeds `connected_once = true`, so its
 /// first `Connected` emits `SessionReplaced`: the chat resets, then the

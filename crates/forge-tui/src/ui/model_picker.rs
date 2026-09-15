@@ -1,10 +1,10 @@
 //! `/model` picker overlay render.
 //!
 //! A centered modal listing the session's declared models (the org's
-//! accounts' declared models, authored in forge.toml), each row showing
-//! the display name and its DIM description, the highlighted row
-//! accented and the running model dotted, plus a key-hints footer.
-//! State + key handling live in [`crate::app::model_picker`].
+//! accounts' declared models, authored in forge.toml), one bare model
+//! id per row, the highlighted row accented and the running model
+//! dotted, plus a key-hints footer. State + key handling live in
+//! [`crate::app::model_picker`].
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

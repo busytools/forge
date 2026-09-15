@@ -242,8 +242,8 @@ fn a_bailed_account_names_both_exits() {
         "exit one is minting the setup token, with the command; got:\n{text}",
     );
     assert!(
-        text.contains("CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]"),
-        "the repair line names the env key the token lives behind; got:\n{text}",
+        text.contains("the account's token key"),
+        "the repair line names the flat key the token lives behind; got:\n{text}",
     );
     assert!(
         text.contains("Or drop the account") && text.contains("[[accounts]]"),
@@ -253,7 +253,7 @@ fn a_bailed_account_names_both_exits() {
     // restart - a reader who fixes their auth otherwise cannot tell
     // whether the retrying poller will pick it up on its own.
     assert!(
-        text.contains("editing [accounts.env] needs a restart"),
+        text.contains("editing forge.toml needs a restart"),
         "the repair exit says the edit needs a restart; got:\n{text}",
     );
     // And it must not name an interval. The pollers run under probe
@@ -301,19 +301,17 @@ fn the_repair_and_retry_lines_differ_by_account_class() {
         "collapsing the classes shows one arm's repair instruction to both; got:\n{token}",
     );
     assert!(
-        token.contains("CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]")
-            && !token.contains("ANTHROPIC_AUTH_TOKEN"),
+        token.contains("the account's token key") && !token.contains("base_url"),
         "a token account is repaired through its setup token; got:\n{token}",
     );
     assert!(
-        token.contains("editing [accounts.env] needs a restart")
+        token.contains("editing forge.toml needs a restart")
             && !token.contains("no restart needed"),
         "an env edit is boot-frozen and must not promise an in-place retry; got:\n{token}",
     );
     assert!(
-        base_url.contains("ANTHROPIC_AUTH_TOKEN in [accounts.env]")
-            && !base_url.contains("CLAUDE_CODE_OAUTH_TOKEN"),
-        "a base-url account's credential is the ANTHROPIC_AUTH_TOKEN; got:\n{base_url}",
+        base_url.contains("token and base_url keys") && !base_url.contains("claude setup-token"),
+        "a base-url account's repair names both its keys, no re-mint; got:\n{base_url}",
     );
     assert!(
         token.contains("Or drop the account") && base_url.contains("Or drop the account"),
@@ -459,7 +457,7 @@ fn an_unreachable_bail_names_the_endpoint_not_the_auth() {
         "and that forge no longer holds boot for it; got:\n{text}",
     );
     assert!(
-        text.contains("ANTHROPIC_BASE_URL") && !text.contains("Fix the auth"),
+        text.contains("base_url key") && !text.contains("Fix the auth"),
         "the repair is the endpoint, never the auth; got:\n{text}",
     );
     assert!(
@@ -499,7 +497,7 @@ fn a_bailed_base_url_account_promises_a_restart_not_in_place_recovery() {
     );
     assert!(
         !text.contains("recovers in place"),
-        "the repaired token lives in [accounts.env], read once at boot; got:\n{text}",
+        "the repaired token lives on the account block, read once at boot; got:\n{text}",
     );
 }
 
@@ -533,8 +531,8 @@ fn an_erroring_endpoint_is_not_an_auth_failure_either() {
     );
 }
 
-/// A bailed token account's credential is the setup token in its
-/// `[accounts.env]`. The repair is a mint or re-mint, and it is an env
+/// A bailed token account's credential is the setup token on its
+/// account block. The repair is a mint or re-mint, and it is a config
 /// edit, so it needs a restart.
 #[test]
 fn a_bailed_token_account_names_the_re_mint_not_login() {
@@ -562,12 +560,12 @@ fn a_bailed_token_account_names_the_re_mint_not_login() {
         "re-authenticating the shared config dir is never the repair; got:\n{text}",
     );
     assert!(
-        text.contains("CLAUDE_CODE_OAUTH_TOKEN in [accounts.env]"),
+        text.contains("the account's token key"),
         "the credential's home is named; got:\n{text}",
     );
     assert!(text.contains("claude setup-token"), "the re-mint command is the repair; got:\n{text}");
     assert!(
-        text.contains("editing [accounts.env] needs a restart"),
+        text.contains("editing forge.toml needs a restart"),
         "an env repair is boot-frozen until restart - the screen has to say so; got:\n{text}",
     );
 }
@@ -598,9 +596,9 @@ fn a_rate_limited_bail_tells_the_reader_to_wait() {
 }
 
 /// The unreachable repair line is class-shaped like the auth one: a
-/// token account has no base url to check, so naming
-/// `ANTHROPIC_BASE_URL` at it would send a reader hunting for a key
-/// their forge.toml does not have.
+/// token account has no base url to check, so naming the `base_url`
+/// key at it would send a reader hunting for a key their forge.toml
+/// does not have.
 ///
 /// **Asserted as a DIFFERENCE, not as two independent contents**, for
 /// the same reason the auth repair is: two `contains` checks would both
@@ -624,11 +622,11 @@ fn the_unreachable_repair_differs_by_account_class() {
         "collapsing the classes shows one arm's repair line to both; got:\n{token}",
     );
     assert!(
-        token.contains("Anthropic API") && !token.contains("ANTHROPIC_BASE_URL"),
+        token.contains("Anthropic API") && !token.contains("base_url key"),
         "a token account has no base url to check; got:\n{token}",
     );
     assert!(
-        base_url.contains("ANTHROPIC_BASE_URL") && !base_url.contains("Anthropic API"),
+        base_url.contains("base_url key") && !base_url.contains("Anthropic API"),
         "a base-url account's endpoint is the thing to check; got:\n{base_url}",
     );
 }
