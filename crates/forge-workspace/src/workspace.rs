@@ -1494,7 +1494,7 @@ impl Workspace {
             }
             .into());
         }
-        let session_key = self.resolve_target(&target)?;
+        let session_key = self.resolve_target(&target, settings.force_new)?;
         // One shared config dir: every account's child reads the same
         // MCP servers, plugins and settings, so the per-account dir is
         // gone along with the field that carried it.
@@ -1670,11 +1670,17 @@ impl Workspace {
                 Self::apply_lead_delegation(&mut settings, session_kind);
                 let cwd = project.path.to_string_lossy().to_string();
                 let resume_target = self.lead_session_to_resume(project, settings.force_new);
-                if let Some(lead) = resume_target {
-                    handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
-                } else {
-                    let id = self.mint_lead_session_id(project);
-                    handle.new_session(Some(id), cwd, settings)?;
+                match resume_target {
+                    Some(lead) => {
+                        handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
+                    }
+                    // The mint happened in `resolve_target`, which is why
+                    // this already holds the id the child will adopt. It
+                    // is not re-minted: that would hand the CLI an id the
+                    // pool is not keyed under.
+                    None => {
+                        handle.new_session(Some(session_key.as_str().to_owned()), cwd, settings)?;
+                    }
                 }
             }
             SessionTarget::Named(name) => {
@@ -1682,11 +1688,13 @@ impl Workspace {
                 Self::apply_lead_delegation(&mut settings, session_kind);
                 let cwd = project.path.to_string_lossy().to_string();
                 let resume_target = self.lead_session_to_resume(project, settings.force_new);
-                if let Some(lead) = resume_target {
-                    handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
-                } else {
-                    let id = self.mint_lead_session_id(project);
-                    handle.new_session(Some(id), cwd, settings)?;
+                match resume_target {
+                    Some(lead) => {
+                        handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
+                    }
+                    None => {
+                        handle.new_session(Some(session_key.as_str().to_owned()), cwd, settings)?;
+                    }
                 }
             }
             SessionTarget::Session(key) => {
@@ -2564,46 +2572,41 @@ impl Workspace {
     }
 
     /// Resolves a `SessionTarget` to the `SessionKey` used to look up
-    /// the pool. For project-rooted targets (`Default` / `Named`) with
-    /// no on-disk session for the project, returns a project-keyed
-    /// placeholder (`__fresh__:<project_key>`) so re-entry stays
-    /// idempotent against the same fresh-session intent. For `Named`
-    /// with no matching project, returns
+    /// the pool. A project-rooted target resolves to the id its lead will
+    /// run under - the stored one, or a freshly minted one, recorded
+    /// before the spawn - so the pool key IS the session id and nothing
+    /// has to move later. For `Named` with no matching project, returns
     /// [`WorkspaceError::ProjectNotFound`].
-    fn resolve_target(&self, target: &SessionTarget) -> Result<SessionKey, WorkspaceError> {
+    fn resolve_target(
+        &self,
+        target: &SessionTarget,
+        force_new: bool,
+    ) -> Result<SessionKey, WorkspaceError> {
         match target {
-            SessionTarget::Default => Ok(self.lead_session_key_for(self.config.default_project())),
+            SessionTarget::Default => {
+                Ok(self.lead_session_key_for(self.config.default_project(), force_new))
+            }
             SessionTarget::Named(name) => {
                 let project = self.find_project_by_name(name)?;
-                Ok(self.lead_session_key_for(project))
+                Ok(self.lead_session_key_for(project, force_new))
             }
             SessionTarget::Session(key) => Ok(key.clone()),
             SessionTarget::FreshInProject { synth_key, .. } => Ok(synth_key.clone()),
         }
     }
 
-    /// The project a spawn under `target` belongs to. Resolves through
-    /// `cwd_for_session`, not `session_cwd_for`: the latter misses every
-    /// worker (the catalog holds no worker rows).
+    /// The project a spawn under `target` belongs to. A project-rooted
+    /// target names it directly; a specific session resolves by cwd, and
+    /// through `cwd_for_session` rather than `session_cwd_for` because
+    /// the latter misses every worker (the catalog holds no worker rows).
     fn project_for_target(&self, target: &SessionTarget) -> Option<LoadedProject> {
         match target {
             SessionTarget::Default => Some(self.config.default_project().clone()),
             SessionTarget::Named(name) => self.find_project_view_by_name(name),
-            // A project-rooted target with nothing on disk yet routes
-            // through `__fresh__:<project_key>`, which matches no catalog
-            // row and no worker, so resolving by cwd alone would drop the
-            // project's env.
-            SessionTarget::Session(key) => key
-                .as_str()
-                .strip_prefix("__fresh__:")
-                .and_then(|project_key| {
-                    self.project_for_key(&ProjectKey::new(project_key.to_owned()))
-                })
-                .or_else(|| {
-                    self.cwd_for_session(key)
-                        .and_then(|cwd| self.project_name_for_path(&cwd))
-                        .and_then(|name| self.find_project_view_by_name(&name))
-                }),
+            SessionTarget::Session(key) => self
+                .cwd_for_session(key)
+                .and_then(|cwd| self.project_name_for_path(&cwd))
+                .and_then(|name| self.find_project_view_by_name(&name)),
             SessionTarget::FreshInProject { project_key, .. } => self.project_for_key(project_key),
         }
     }
@@ -2620,17 +2623,14 @@ impl Workspace {
         })
     }
 
-    /// Map a project to the `SessionKey` of its lead (most-recent)
-    /// session, or to a `__fresh__:<project_key>` placeholder when the
-    /// project has nothing on disk yet.
-    fn lead_session_key_for(&self, project: &LoadedProject) -> SessionKey {
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                &project.path.to_string_lossy(),
-            )));
-        self.try_lead_session_id_for(project).unwrap_or_else(|| {
-            SessionKey::from_session_id(format!("__fresh__:{}", project_key.as_str()))
-        })
+    /// Map a project to the `SessionKey` of its lead: the id the store
+    /// holds, the catalog's on a boot that finds no row, or a freshly
+    /// minted one when there is nothing to resume - recorded under the
+    /// slot before the spawn, so the key is the id from the first
+    /// instant rather than something to be renamed onto it later.
+    fn lead_session_key_for(&self, project: &LoadedProject, force_new: bool) -> SessionKey {
+        self.lead_session_to_resume(project, force_new)
+            .unwrap_or_else(|| SessionKey::from_session_id(self.mint_lead_session_id(project)))
     }
 
     /// Return the project's lead (most-recent) session id when the
@@ -5400,10 +5400,9 @@ impl Workspace {
     /// `from` to `to`. Called by the per-session task actor on
     /// `Connected` / `SessionReplaced` when the pool key it was
     /// registered under differs from the real claude-issued session
-    /// UUID - i.e., the `/new` / `/resume` / first-Connect-of-a-fresh-
-    /// project paths where the pool key was a placeholder (a previous
-    /// session's id or `__fresh__:<project_key>`) and the actual
-    /// session UUID isn't known until the bridge fires `init`.
+    /// UUID - i.e., the `/new` / `/resume` paths where the pool key was
+    /// the id the CLI has just replaced, and the new one is not known
+    /// until the bridge fires `init`.
     ///
     /// Atomically moves the entries in `pool`, `command_senders`, and
     /// `domain_handles` (and rewrites the moved `DomainSession.key`
@@ -6798,8 +6797,9 @@ provider = "anthropic"
     /// neither can be told apart: an ambiguous target resolves to NO
     /// project rather than the first match's, which is what refuses the
     /// spawn rather than handing it one twin's env and the other's pin.
-    /// Second assertion covers the `__fresh__:` key a project-rooted
-    /// target mints, which resolves via the same lookup.
+    /// Second assertion is the control: an unambiguous project still
+    /// resolves, so the refusal above is about the twins and not about
+    /// the lookup being broken for every target.
     #[test]
     fn an_ambiguous_storage_key_resolves_to_no_project() {
         let dir = tempdir().expect("tempdir");
@@ -6856,14 +6856,46 @@ provider = "anthropic"
             "an ambiguous key must resolve to neither twin, which refuses the spawn",
         );
 
-        let fresh = SessionTarget::Session(SessionKey::from_session_id(format!(
-            "__fresh__:{}",
-            key(&solo).as_str()
-        )));
+        let solo_target = SessionTarget::Named("solo".to_owned());
         assert_eq!(
-            ws.project_for_target(&fresh).map(|project| project.name),
+            ws.project_for_target(&solo_target).map(|project| project.name),
             Some("solo".to_owned()),
-            "an unambiguous key still resolves, including through a __fresh__: placeholder",
+            "an unambiguous project still resolves with nothing on disk yet",
+        );
+    }
+
+    /// The case where cwd has nothing to read: a resume of a session
+    /// whose transcript is gone. The catalog the spawn reads still knows
+    /// the session, so the project resolves from that entry - there is no
+    /// key prefix left to carry it.
+    #[test]
+    fn a_resume_with_no_transcript_resolves_its_project() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("gone", "/tmp/gone");
+        let project =
+            ws.list_projects().into_iter().find(|v| v.name == "gone").expect("seeded project");
+        let key = SessionKey::from_session_id("resumed-uuid");
+        ws.catalog.lock().insert(
+            project.key.clone(),
+            vec![forge_primitives::SDKSessionInfo {
+                session_id: "resumed-uuid".to_owned(),
+                summary: String::new(),
+                last_modified: 0,
+                file_size: None,
+                custom_title: None,
+                first_prompt: None,
+                git_branch: None,
+                cwd: Some("/tmp/gone".to_owned()),
+                storage_key: String::new(),
+                tag: None,
+                created_at: None,
+            }],
+        );
+
+        assert_eq!(
+            ws.project_for_target(&SessionTarget::Session(key)).map(|p| p.name),
+            Some("gone".to_owned()),
+            "the project resolves from the catalog entry, with no prefix to read",
         );
     }
 
@@ -8144,7 +8176,8 @@ provider = "anthropic"
             "an API-key source is forced empty so the CLI cannot ship a foreign credential",
         );
 
-        let session_key = workspace.resolve_target(&SessionTarget::Default).expect("resolves");
+        let session_key =
+            workspace.resolve_target(&SessionTarget::Default, false).expect("resolves");
         assert_eq!(
             workspace.gateway.bindings.binding_for("Default", "forge", session_key.as_str()),
             Some(AccountKey("Stargate".to_owned())),
@@ -8945,7 +8978,8 @@ provider = "anthropic"
         ws.record_connected_session(&root.to_string_lossy(), lead.as_str(), None);
         let _cmd_rx = install_fake_session_task(&ws, &lead);
         assert_eq!(
-            ws.resolve_target(&SessionTarget::Named("companies".to_owned())).expect("resolves"),
+            ws.resolve_target(&SessionTarget::Named("companies".to_owned()), false)
+                .expect("resolves"),
             lead,
             "precondition: the project resolves to the lead this fixture pooled",
         );
@@ -10821,7 +10855,6 @@ mod worker_respawn_tests {
             SessionKey::from_session_id("__spawn_forge__"),
             SessionKey::from_session_id("__spawn_worker_foo__"),
             SessionKey::from_session_id("__resume_worker_forge_implementer_abc123__"),
-            SessionKey::from_session_id("__fresh__:forge"),
         ] {
             assert_eq!(
                 ws.session_kind_for_spawn(Some(crate::mcp::SessionKind::Lead), &key),
@@ -13911,8 +13944,8 @@ provider = "anthropic"
     /// A spawn dispatched while the background catalog scan is still
     /// running must not decide the resume against an empty catalog:
     /// it is parked, then re-dispatched once the scan lands, and the
-    /// re-dispatched spawn keys to the lead's session id - not the
-    /// `__fresh__:` fallback a gate-less spawn would produce. The
+    /// re-dispatched spawn keys to the lead's session id - not a
+    /// freshly minted one a gate-less spawn would produce. The
     /// dispatch intercept catches the re-dispatched commands so the
     /// assertion does not race the ConnectionFailed release of a spawn
     /// that cannot complete (no `claude` binary, as on CI).
@@ -13970,7 +14003,7 @@ provider = "anthropic"
         // is the lookup `get_agent_handle_with_spawn_key` pools under.
         assert_eq!(
             workspace
-                .resolve_target(&SessionTarget::Named("proj".to_owned()))
+                .resolve_target(&SessionTarget::Named("proj".to_owned()), false)
                 .expect("project resolves")
                 .as_str(),
             LEAD_UUID,
@@ -14078,9 +14111,12 @@ provider = "anthropic"
             })
             .expect("dispatch");
 
+        let keys: Vec<String> =
+            workspace.pool.lock().keys().map(|key| key.as_str().to_owned()).collect();
+        assert_eq!(keys.len(), 1, "a --new spawn runs immediately, unparked");
         assert!(
-            workspace.pool.lock().keys().any(|key| key.as_str().starts_with("__fresh__:")),
-            "a --new spawn runs immediately, unparked",
+            uuid::Uuid::parse_str(&keys[0]).is_ok(),
+            "and under the id it minted, not a placeholder or a catalog lead: {keys:?}",
         );
     }
 

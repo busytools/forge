@@ -225,10 +225,9 @@ impl SessionTask {
                 // (`pool`, `command_senders`, `domain_handles`) onto
                 // the real session UUID. `get_agent_handle` registered
                 // them under the pool key returned by
-                // `resolve_target` - usually the lead session id, but
-                // a placeholder (`__fresh__:<project_key>`) for a
-                // project with no on-disk sessions, or the previous
-                // session's id on a `/new` flow. Without this, the
+                // `resolve_target` - the lead session id the store or
+                // the catalog gave, or the previous session's id on a
+                // `/new` flow. Without this, the
                 // TUI's `active_session_key` flips to `real_key` after
                 // `Connected` and every subsequent `Command::Prompt`
                 // falls off `dispatch`'s key lookup with `UnknownSession`.
