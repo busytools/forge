@@ -40,9 +40,8 @@ fn follow_binding(app: &mut App, workspace: &forge_workspace::Workspace) {
     }
     app.set_active_account_display_name(Some(bound.0.clone()));
     app.sync_welcome_snapshot();
-    // The read below marks a redraw only when the figures move, so a
-    // re-key onto an account whose windows match the old one's would
-    // otherwise leave the stale name painted.
+    // The read below only marks a redraw when the figures move, so a
+    // re-key onto matching windows would leave the stale name painted.
     app.needs_redraw = true;
 }
 
@@ -139,12 +138,13 @@ mod tests {
         }
     }
 
-    /// The measured case: the gateway re-selected the session onto
-    /// another account while the panel kept naming the one it spawned
-    /// on. One tick has to re-key the row and take the serving
-    /// account's windows with it.
-    #[test]
-    fn a_tick_follows_the_session_onto_the_account_the_gateway_serves_it_with() {
+    /// The measured case's starting state: the gateway has moved the
+    /// session to `OpenRouter-TM` while the panel still names
+    /// `Granite`, the account it spawned on. The caller plants the
+    /// panel's windows, since which figures the two accounts report is
+    /// what separates the cases below. The tempdir comes back with the
+    /// app so it outlives the workspace.
+    fn app_showing_the_spawn_time_account() -> (App, tempfile::TempDir) {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let forge = config_dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge/");
@@ -166,8 +166,16 @@ mod tests {
         let mut app = App::test_default();
         app.workspace = Some(std::sync::Arc::new(workspace));
         app.set_active_account_display_name(Some("Granite".to_owned()));
-        app.usage_mut().expect("active session").snapshot = Some(usage_snapshot(88.0, 99.0));
         app.needs_redraw = false;
+        (app, config_dir)
+    }
+
+    /// One tick has to re-key the row and take the serving account's
+    /// windows with it, leaving the spawn-time account's behind.
+    #[test]
+    fn a_tick_follows_the_session_onto_the_account_the_gateway_serves_it_with() {
+        let (mut app, _dir) = app_showing_the_spawn_time_account();
+        app.usage_mut().expect("active session").snapshot = Some(usage_snapshot(88.0, 99.0));
 
         request_refresh_if_needed(&mut app);
 
@@ -185,6 +193,24 @@ mod tests {
                 .map(|window| window.utilization),
             Some(11.0),
             "the windows under the row are the serving account's, not the spawn-time one's",
+        );
+    }
+
+    /// A re-key repaints on its own. The usage read that follows only
+    /// marks a redraw when the figures move, so a session moved onto an
+    /// account reporting the windows already on screen is the one shape
+    /// where nothing else asks for the frame.
+    #[test]
+    fn a_rekey_repaints_even_when_both_accounts_report_the_same_windows() {
+        let (mut app, _dir) = app_showing_the_spawn_time_account();
+        app.usage_mut().expect("active session").snapshot = Some(usage_snapshot(11.0, 22.0));
+
+        request_refresh_if_needed(&mut app);
+
+        assert_eq!(
+            app.active_account_display_name().as_deref(),
+            Some("OpenRouter-TM"),
+            "the row still follows the binding",
         );
         assert!(
             app.needs_redraw,
