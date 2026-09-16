@@ -132,7 +132,55 @@ check-release:
     RUSTFLAGS="-D warnings" cargo check --release --workspace --all-targets --all-features
 
 # Full pre-commit / pre-PR verification loop.
-check: fmt-check unicode-punct-check clippy test-all doc
+#
+# A script rather than a recipe with these five as dependencies, because
+# a failing dependency aborts just before any recipe body runs, and the
+# verdict is printed by the body.
+#
+# The verdict line is the point. A caller piping this through `tail -N`
+# reads the pipe's exit status, not this recipe's, so a red gate can read
+# green; leaving the result on the last line means a truncated read still
+# carries it. `[no-exit-message]` keeps just's own error line from
+# landing after the verdict, and the EXIT trap covers an interrupted run,
+# so the last line is a verdict on that path too.
+#
+# Fail-fast and exit-code preserving, as the dependency form was: the
+# failing step's own status is what this recipe exits with.
+[no-exit-message]
+check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    steps=(fmt-check unicode-punct-check clippy test-all doc)
+    verdict=""
+
+    on_exit() {
+        status=$?
+        if [ -z "$verdict" ]; then
+            echo "[ERROR] check: no verdict, the run ended early (exit $status)"
+        fi
+    }
+    trap on_exit EXIT
+
+    for i in "${!steps[@]}"; do
+        step="${steps[$i]}"
+        echo "[..] check: $step"
+        status=0
+        just --justfile "{{justfile()}}" "$step" || status=$?
+        if [ "$status" -ne 0 ]; then
+            later="${steps[*]:i+1}"
+            if [ -n "$later" ]; then
+                verdict="[ERROR] check: $step failed; not run: $later"
+            else
+                verdict="[ERROR] check: $step failed"
+            fi
+            echo "$verdict"
+            exit "$status"
+        fi
+    done
+
+    verdict="[OK] check: fmt, unicode punctuation, clippy, nextest and docs all green"
+    echo "$verdict"
 
 # Deliberately not a bare `gh run watch`. Piping it masks the exit code
 # AND truncates the log, losing both signals to one pipe - the failure

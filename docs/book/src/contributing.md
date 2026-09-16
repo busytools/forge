@@ -16,6 +16,11 @@ denied, `cargo nextest run --workspace --all-features`, and
 `cargo doc`. CI's set minus its `cargo check --release` job. Green
 before you open a pull request.
 
+The last line it prints is its verdict, `[OK] check: ...` or
+`[ERROR] check: <step> failed`, and the run stops at the first failing
+step. Read that line rather than a pipeline's exit status: piping
+`just check` through `tail` reports tail's status, not the recipe's.
+
 ## The book's own gate
 
 `docs/book/ui-word-count.sh` holds every `docs/book/src/ui/` page under

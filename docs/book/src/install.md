@@ -72,6 +72,13 @@ Run it before opening a pull request. It is CI's set minus one job: CI
 also runs `cargo check --release`, which `just check` deliberately
 leaves out.
 
+The run ends on a verdict line naming its own result, `[OK] check: ...`
+or `[ERROR] check: <step> failed`, and stops at the first failing step,
+naming the ones it did not reach. That line is deliberately the last one
+written: piping the output through `tail` reports tail's exit status
+rather than the recipe's, so a red gate reads green to whoever ran it
+unless the result travels in the text.
+
 Individual pieces, if you want a faster loop:
 
 ```bash
