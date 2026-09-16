@@ -416,6 +416,12 @@ mod tests {
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.command=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.input=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("bridge.lifecycle=debug"));
+        // `app.tool` and `agent.env_git` are the two targets whose
+        // records were demoted out of WARN; dropping them from this set
+        // would silence a session's own tool failure and the git probe
+        // miss entirely, which is the state the levels moved away from.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.tool=debug"));
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
         // tui_markdown emits per-frame WARN events for every HTML
         // tag + unknown code-block language during streaming markdown
         // rendering. Pinning to `error` rejects them at the filter
