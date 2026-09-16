@@ -103,7 +103,7 @@ pub enum WorkspaceError {
     AccountSlugBlank { path: PathBuf, slug: String },
 
     #[error(
-        "account in forge.toml at {} declares aliases for '{alias}' that is not in its models list",
+        "account in forge.toml at {} declares model_aliases for '{alias}', which is not one of its models",
         path.display()
     )]
     AccountAliasUndeclared { path: PathBuf, alias: String },
