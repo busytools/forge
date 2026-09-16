@@ -1411,7 +1411,7 @@ mod tests {
         let selected = gateway
             .select_for("Default", "claude-sonnet-5")
             .expect("the ready account serves the model");
-        assert_eq!(selected, AccountKey("Ready".to_owned()), "the walk skips a cooling account",);
+        assert_eq!(selected, AccountKey("Ready".to_owned()), "the walk skips a cooling account");
         assert_eq!(
             gateway.bindings.binding_for("Default", "project", "session"),
             None,
