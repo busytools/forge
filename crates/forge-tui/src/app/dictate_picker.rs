@@ -1,7 +1,7 @@
 //! `/dictate` overlay: transient state + key handling.
 //!
 //! A centered overlay (rendered by [`crate::ui::dictate_picker`])
-//! following the `/account` picker idiom: arrows move the highlight,
+//! following the picker idiom: arrows move the highlight,
 //! enter sets the highlighted row, esc closes. Enter never closes -
 //! the dialog is a set of choices made in one visit, and reset
 //! deliberately stays open so fine-tuning can continue. The rows are

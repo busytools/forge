@@ -208,12 +208,12 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     // Forge group: commands that forge handles itself (either fully
     // implemented in-process or wrappers around upstream CLI semantics).
     let mut forge: BTreeMap<String, String> = BTreeMap::new();
-    forge.insert("/account".into(), "Switch the active account".into());
     forge.insert("/compact".into(), "Compact session context".into());
     forge.insert("/dictate".into(), "Set how dictation is cleaned up, for this session".into());
     forge.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
     forge.insert("/effort".into(), "Show / set thinking effort".into());
     forge.insert("/extensions".into(), "Open extensions".into());
+    forge.insert("/gateway".into(), "Inspect the gateway's orgs and accounts".into());
     forge.insert("/launchpad".into(), "Return to project picker".into());
     forge.insert("/mode".into(), "Show / set session mode".into());
     forge.insert("/model".into(), "Show / set session model".into());

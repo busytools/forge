@@ -64,7 +64,7 @@ pub enum UsageFetchStatus {
     Other,
 }
 
-/// Why the `/account` picker holds an account out of the usable tier.
+/// Why an account is held out of the usable tier.
 /// Which reason can apply is keyed on the account's billing kind: only
 /// a window-billed account can saturate, so on a spend row an unusable
 /// account can only be probe-blocked. A snapshot whose source is not

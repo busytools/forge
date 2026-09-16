@@ -19,8 +19,8 @@ pub(super) const MOUSE_SCROLL_LINES: usize = 3;
 fn modal_picker_open(app: &App) -> bool {
     app.model_picker.is_some()
         || app.spinner_picker.is_some()
-        || app.account_picker.is_some()
         || app.dictate_picker.is_some()
+        || app.gateway_view.is_some()
 }
 
 /// OS mouse-pointer shapes forge requests via OSC 22. Only the three

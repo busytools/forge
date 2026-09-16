@@ -401,20 +401,6 @@ pub enum Command {
         team_role: Option<String>,
         notification: crate::mcp::gotify::types::GotifyNotification,
     },
-    /// Switch the live session `key` to `account_display_name`: tear
-    /// down its current `claude` subprocess and re-spawn + resume the
-    /// SAME `session_id` under the workspace's shared config dir, so
-    /// `claude --resume` finds the same conversation - the switch
-    /// copies no session files. `launch_settings` carries the
-    /// session's model / mode / effort so the switch preserves them
-    /// (the TUI builds them the same way a resume does). App-level
-    /// command (`key()` returns `None`); routed to
-    /// `spawn::handle_switch_account`.
-    SwitchAccount {
-        key: SessionKey,
-        account_display_name: String,
-        launch_settings: SessionLaunchSettings,
-    },
     /// Begin dictating into the composer at `key`. App-level command
     /// carrying the origin key, like `DeliverPeerPrompt`: the
     /// microphone is process-global, so the recording lifecycle lives
@@ -530,7 +516,6 @@ impl Command {
             | Self::DeliverWorkerPrompt { .. }
             | Self::DeliverWorkerPromptToLead { .. }
             | Self::DeliverGotifyMessage { .. }
-            | Self::SwitchAccount { .. }
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
@@ -660,11 +645,6 @@ impl std::fmt::Debug for Command {
                 .field("team_role", team_role)
                 .field("app", &notification.app)
                 .field("priority", &notification.priority)
-                .finish_non_exhaustive(),
-            Self::SwitchAccount { key, account_display_name, .. } => f
-                .debug_struct("SwitchAccount")
-                .field("key", key)
-                .field("account_display_name", account_display_name)
                 .finish_non_exhaustive(),
             Self::OpenUrl { url } => f.debug_struct("OpenUrl").field("url", url).finish(),
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),

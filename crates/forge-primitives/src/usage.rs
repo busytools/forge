@@ -162,8 +162,8 @@ impl UsageSnapshot {
 
     /// When a rate-limited account unlocks: the latest `resets_at` among
     /// windows currently at-or-over the cap (per `is_currently_limited`).
-    /// `None` when no window is currently capped, so the `/account`
-    /// picker shows a reset ETA only on rate-limited rows.
+    /// `None` when no window is currently capped, so a reset ETA is shown
+    /// only on rate-limited rows.
     pub fn binding_reset_at(&self) -> Option<std::time::SystemTime> {
         [
             self.five_hour.as_ref(),
