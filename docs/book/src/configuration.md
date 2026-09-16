@@ -87,11 +87,22 @@ An array of tables. At least one is required, or the load fails with
 | `base_url` | string | no | | The upstream base for base-url providers (`"codex"`, `"openrouter"`, `"zai"`); required for them and validated per provider. An `"anthropic"` account may omit it - the gateway constant is its upstream. |
 | `models` | list of strings | yes | | The canonical model names the account serves. Selection and the route's model gate match against this list; an empty list fails the load (`AccountModelsRequired`). |
 | `model_slugs` | table | no | `{}` | Canonical name -> upstream spelling, only where they differ. Every slug key must be in `models`, or the load fails (`AccountSlugUndeclared`). |
+| `model_aliases` | table | no | `{}` | Written as `[accounts.model_aliases]`. Canonical name -> the other names a request may arrive under for that model. Every key must be in `models`, or the load fails (`AccountAliasUndeclared`); an empty list fails (`AccountAliasEmpty`). |
 | `env` | table | no | `{}` | Written as `[accounts.env]`. Provider-behaviour extras only - timeouts, context caps, fallback switches. Gateway keys (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) are rejected here and in the global `[env]` layer (`AccountEnvCarriesGatewayKeys`): the flat `base_url` and `token` keys own them. |
 
 All accounts share one `claude` config directory, so MCP servers,
 plugins and settings are declared once for every account; what varies
 per account is exactly the flat block above.
+
+`model_aliases` covers the case where the name the gateway sees is not
+the name you configured. Long-context models are the usual reason: the
+`claude` CLI is handed `claude-opus-5[1m]`, and the request body it
+then sends carries the plain `claude-opus-5`. Matching the body's model
+against `models` alone would refuse that request, so the plain spelling
+is declared as an alias of the marker. A request naming any member of a
+model's set - the declared name or any alias of it - matches the
+account, so one account serves both spellings. forge never interprets
+the names; an alias is matched as data.
 
 `provider` has no default. Accounts that omit it are named together in
 one load error listing the accepted values, so a first run does not

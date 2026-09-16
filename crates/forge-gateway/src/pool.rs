@@ -13,7 +13,9 @@ use parking_lot::Mutex;
 use crate::Provider;
 
 use crate::UsageSnapshot;
-use crate::account::{AccountKey, AccountStateMap, LoadingState, Unusable, UsageFetchStatus};
+use crate::account::{
+    AccountKey, AccountStateMap, LoadingState, Unusable, UsageFetchStatus, account_serves,
+};
 
 /// The account state map, behind one handle.
 pub struct AccountPool {
@@ -175,14 +177,14 @@ impl AccountPool {
         crate::selection::org_lists_for_model(&state, pin, model)
     }
 
-    /// `true` when the account declares `model`. An unknown account
-    /// declares nothing.
+    /// `true` when the account serves `model`. An unknown account
+    /// serves nothing.
     pub fn declares(&self, key: &AccountKey, model: &str) -> bool {
         self.accounts
             .lock()
             .by_key
             .get(key)
-            .is_some_and(|account| account.models.iter().any(|m| m == model))
+            .is_some_and(|account| account_serves(&account.models, &account.model_aliases, model))
     }
 
     /// The upstream slug the account maps `canonical` to, when the
