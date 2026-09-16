@@ -2548,6 +2548,20 @@ impl Workspace {
         self.accounts.usage(display_name)
     }
 
+    /// The account the gateway is serving `key`'s session with right
+    /// now, which a re-selection may have moved off the spawn-time
+    /// pick. The lookup goes through the pooled registration: bindings
+    /// are keyed by the segment the child's base URL was stamped with,
+    /// which survives the rename that re-keys the session.
+    pub fn bound_account_for(&self, key: &SessionKey) -> Option<AccountKey> {
+        let (org, project, session) = {
+            let pool = self.pool.lock();
+            let registration = pool.get(key).and_then(|entry| entry.registration.as_ref())?;
+            (registration.org.clone(), registration.project.clone(), registration.session.clone())
+        };
+        self.gateway.bindings.binding_for(&org, &project, &session)
+    }
+
     /// Read the last poll-attempt failure for an account, if any.
     /// `None` when the most recent poll succeeded (or no attempt
     /// has been made yet). The TUI bottom panel renders a DIM hint
@@ -8601,6 +8615,65 @@ provider = "anthropic"
         assert!(
             !workspace.command_senders.lock().contains_key(&key),
             "command sender must be released when the SessionTask exits",
+        );
+    }
+
+    /// A binding is keyed by the segment the child's base URL was
+    /// stamped with, and a rename leaves that segment behind: the
+    /// session's own key stops matching after `KeyRenamed`, so a
+    /// lookup on it returns None exactly where the panel is rendered.
+    #[test]
+    fn the_bound_account_survives_a_rename_and_follows_a_rebind() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let spawn_key = SessionKey::from_session_id("__fresh__:forge");
+        let real_key = SessionKey::from_session_id("real-uuid");
+        install_fake_session_task(&workspace, &spawn_key);
+        workspace.pool.lock().get_mut(&spawn_key).expect("pooled").registration =
+            Some(forge_gateway::binding::Registration {
+                org: "Org".to_owned(),
+                project: "forge".to_owned(),
+                session: spawn_key.as_str().to_owned(),
+                account: AccountKey("A".to_owned()),
+                provider: forge_primitives::account::Provider::Anthropic,
+            });
+        workspace.gateway.bindings.bind(
+            "Org",
+            "forge",
+            spawn_key.as_str(),
+            AccountKey("A".to_owned()),
+        );
+
+        assert_eq!(
+            workspace.bound_account_for(&spawn_key),
+            Some(AccountKey("A".to_owned())),
+            "the spawn key is what the binding is keyed by",
+        );
+
+        assert!(workspace.migrate_session_task(&spawn_key, &real_key), "the rename migrates");
+        assert_eq!(
+            workspace.gateway.bindings.binding_for("Org", "forge", real_key.as_str()),
+            None,
+            "precondition: the rename does not re-key the binding",
+        );
+        assert_eq!(
+            workspace.bound_account_for(&real_key),
+            Some(AccountKey("A".to_owned())),
+            "the renamed session still resolves to its stamped segment's binding",
+        );
+
+        // The gateway re-selecting on the next request is the whole
+        // point: the registration's own account is the spawn-time pick
+        // and stays "A" here.
+        workspace.gateway.bindings.bind(
+            "Org",
+            "forge",
+            spawn_key.as_str(),
+            AccountKey("B".to_owned()),
+        );
+        assert_eq!(
+            workspace.bound_account_for(&real_key),
+            Some(AccountKey("B".to_owned())),
+            "the read follows the live binding, not the spawn-time pick",
         );
     }
 
