@@ -1,14 +1,17 @@
-//! Account selection, health and probe scheduling.
+//! Account state, health and probe scheduling.
 //!
-//! The workspace consults `pick_for_project` on every spawn; the
-//! chosen `AccountKey` becomes the spawned Agent's `CLAUDE_CONFIG_DIR`
-//! override.
+//! The per-account state map every selection reads: it holds each
+//! account's declared models, its `LoadingState`, its latest usage
+//! snapshot and its last probe outcome. The walk that turns that into
+//! a picked account lives in `selection.rs`; this module owns the
+//! state and the classification the walk and the `/gateway` view both
+//! read.
 //!
-//! **Policy - two-tier filter + global round-robin:**
+//! **Two-tier classification:**
 //!
 //! 1. **Usable** - usage is unknown, OR usage shows under 100% on
 //!    both windows, OR last probe failed transiently (network /
-//!    other HTTP). The picker can try this account; the spawned
+//!    other HTTP). A session can try this account; the spawned
 //!    `claude` either succeeds or surfaces its own rate-limit error
 //!    we can react to.
 //! 2. **Unusable** - usage shows 100% on at least one window, OR
@@ -16,22 +19,11 @@
 //!    unauthorized. Known to be either at the cap or unable to
 //!    authenticate.
 //!
-//! Within the usable tier, a single global round-robin counter
-//! rotates picks across every healthy account in the project's
-//! `accounts` allow-list. The counter is shared across all projects
-//! (one increment per pick) so concurrent spawns from different
-//! projects continue rotating instead of all hammering whichever
-//! account happens to be first in their respective lists. Counter
-//! is in-memory only; resets to 0 on forge restart (no persistence).
-//!
-//! If every account in the allow-list is Unusable, the picker falls
-//! back to the first entry so the spawn doesn't fail outright - the
-//! user gets visible feedback from the spawned subprocess's own
-//! 401/429 rather than from forge silently refusing.
+//! Saturation and probe failures are classification only - they feed
+//! the walk's preference order and the `/gateway` view's reasons.
 //!
 //! Rate-limited accounts are visible in the bottom-panel bars so the
-//! user can manually broaden the allow-list or wait for the window
-//! to reset.
+//! user can wait for the window to reset.
 
 use forge_primitives::usage::{UsageSnapshot, UsageWindow};
 
@@ -160,8 +152,8 @@ pub struct AccountState {
     pub override_armed: bool,
     /// Where this account sits in the boot-time loading state
     /// machine. The launchpad's "all accounts loaded" gate consults
-    /// this across every account; the assignment plan only includes
-    /// accounts whose state is `Ready`.
+    /// this across every account; the selection walk only considers
+    /// accounts whose state is `Ready` (or a saturated `Ready`).
     pub loading: LoadingState,
 }
 
@@ -169,25 +161,15 @@ pub struct AccountState {
 pub struct AccountStateMap {
     pub ordered_keys: Vec<AccountKey>, // forge.toml definition order
     pub by_key: std::collections::HashMap<AccountKey, AccountState>,
-    /// Global round-robin cursor for `pick_for_project`. Each pick
-    /// in the usable tier reads `cursor % usable_len`, then bumps
-    /// the cursor. Shared across all projects so rotation spans the
-    /// whole spawn stream, not just per-project. In-memory only -
-    /// resets to 0 on forge restart.
-    rr_cursor: std::sync::atomic::AtomicUsize,
 }
 
 impl AccountStateMap {
     /// Empty map for the `testing` feature's `Workspace::testing_stub`.
-    /// Production code paths reach this map only via account pickers
-    /// (`pick_for_project`), which a test fixture should never exercise.
+    /// Production code paths reach this map only through the gateway's
+    /// selection walk, which a test fixture should never exercise.
     #[cfg(any(test, feature = "testing"))]
     pub fn empty_for_test() -> Self {
-        Self {
-            ordered_keys: Vec::new(),
-            by_key: std::collections::HashMap::new(),
-            rr_cursor: std::sync::atomic::AtomicUsize::new(0),
-        }
+        Self { ordered_keys: Vec::new(), by_key: std::collections::HashMap::new() }
     }
 
     pub fn new(accounts: &[LoadedAccount]) -> Self {
@@ -212,7 +194,7 @@ impl AccountStateMap {
                 },
             );
         }
-        Self { ordered_keys, by_key, rr_cursor: std::sync::atomic::AtomicUsize::new(0) }
+        Self { ordered_keys, by_key }
     }
 
     /// Seed the in-memory map from a previously-persisted cache.
@@ -353,7 +335,7 @@ impl AccountStateMap {
             // restart. Other statuses leave
             // `loading` alone (a transient `RateLimited` or
             // `NetworkFailed` is not auth-related; the cache stays
-            // and the account remains Ready for the assignment plan).
+            // and the account remains Ready for the walk).
             // Replaces the PR #238 `consecutive_unauthorized` 3-strike
             // counter.
             if matches!(status, UsageFetchStatus::Unauthorized | UsageFetchStatus::Expired) {
@@ -417,22 +399,14 @@ impl AccountStateMap {
     /// the plan cap - the same saturation signal `unusable_reason`
     /// classifies on. A Ready-but-saturated account logs in
     /// fine but trips the rate limit on its next request, so the
-    /// assignment plan prefers other accounts when one is available.
+    /// selection walk prefers other accounts when one is available.
     pub fn is_saturated(&self, key: &AccountKey) -> bool {
         self.by_key.get(key).and_then(|s| s.usage.as_ref()).is_some_and(is_rate_limited)
     }
 
-    /// `true` when `key` is currently pickable for a fresh assignment:
-    /// tier-0 (not at the usage cap, not probe-blocked by a
-    /// 429/expired/unauthorized) and not `Bailed`. Single source of
-    /// truth for the usable filter shared by `pick_for_project` and the
-    /// ad-hoc assignment guard.
-    pub fn is_account_usable(&self, key: &AccountKey) -> bool {
-        self.unusable_reason(key).is_none()
-    }
-
-    /// Why `key` is out of the usable tier, `None` when pickable - the
-    /// per-key shape behind [`Self::is_account_usable`]. `Bailed`
+    /// Why `key` is out of the usable tier, `None` when pickable: what
+    /// the `/gateway` view renders as a row's reason and what the walk
+    /// reads to demote an account. `Bailed`
     /// outranks the probe classes: it is the loading task's terminal
     /// verdict, and a bailed account has no cached windows to saturate
     /// with. A snapshot whose source is not the account backend's is
@@ -533,131 +507,13 @@ impl AccountStateMap {
             state.last_error = None;
         }
     }
-
-    /// Pick an account within the project's `allowed` subset using
-    /// tier-gated round-robin (see module docs). `fallbacks` is the
-    /// org's `fallback_accounts` pin: when every `allowed` entry is
-    /// unusable, a usable fallback outranks a saturated primary - the
-    /// same order the assignment plan's tier walk runs.
-    ///
-    /// Returns the picked key; the caller's spawn path stamps the
-    /// child from the shared config dir.
-    ///
-    /// Panics: `allowed` must be non-empty AND every name must
-    /// resolve to a key in `by_key` (config-load enforces both
-    /// invariants). The defensive `unwrap_or_else` keeps the path
-    /// out of an unreachable `panic!` form.
-    pub fn pick_for_project(&self, allowed: &[String], fallbacks: &[String]) -> AccountKey {
-        debug_assert!(!allowed.is_empty(), "pick_for_project requires a non-empty allow list");
-        // Resolve a pin to known keys, preserving pin order. Carry
-        // usage + last_error + loading so unusable_reason can see the
-        // full picture - an account whose boot-time loading task ended
-        // in `Bailed` must NOT be picked even if its last_error is
-        // None - unusable_reason's existing inputs wouldn't catch a
-        // Bailed-without-recent-error case.
-        let resolve = |names: &[String]| {
-            names
-                .iter()
-                .filter_map(|name| self.ordered_keys.iter().find(|k| k.0 == *name))
-                .map(|k| {
-                    let state = self.by_key.get(k);
-                    (
-                        k,
-                        state.and_then(|s| s.usage.as_ref()),
-                        state.and_then(|s| s.last_error),
-                        state.map_or(LoadingState::Loading, |s| s.loading),
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        let candidates = resolve(allowed);
-        let fallback_candidates = resolve(fallbacks);
-        // Usable subsets, in pin order. Round-robin rotates across the
-        // filtered list so saturated / expired / bailed accounts never
-        // get picked even when their slot in the cursor cycle comes up.
-        let usable: Vec<&AccountKey> = candidates
-            .iter()
-            .filter(|(k, _, _, _)| self.is_account_usable(k))
-            .map(|(k, _, _, _)| *k)
-            .collect();
-        let fallback_usable: Vec<&AccountKey> = fallback_candidates
-            .iter()
-            .filter(|(k, _, _, _)| self.is_account_usable(k))
-            .map(|(k, _, _, _)| *k)
-            .collect();
-        // `Relaxed` is sufficient: the cursor only needs to advance
-        // monotonically; the exact interleaving with other shared-state
-        // reads is irrelevant for load balancing.
-        let rotate = |list: &[&AccountKey]| {
-            let idx =
-                self.rr_cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % list.len();
-            list[idx].clone()
-        };
-        let picked = if !usable.is_empty() {
-            // Tier 1: a usable primary.
-            rotate(&usable)
-        } else if !fallback_usable.is_empty() {
-            // Tier 2: a usable fallback outranks a saturated primary.
-            rotate(&fallback_usable)
-        } else if let Some((k, _, _, _)) = candidates.first() {
-            // Tier 3: the first existing primary - the historical
-            // all-unusable fallback, so the user sees the spawned
-            // subprocess's own 401/429 rather than forge refusing.
-            (*k).clone()
-        } else if let Some((k, _, _, _)) = fallback_candidates.first() {
-            // Tier 4: the first existing fallback.
-            (*k).clone()
-        } else {
-            tracing::error!(
-                target: "forge_workspace::account",
-                "pick_for_project: candidates resolved to empty; allow list = {allowed:?}, fallbacks = {fallbacks:?}",
-            );
-            self.ordered_keys.first().cloned().unwrap_or(AccountKey(String::new()))
-        };
-        // Diagnostic log - one line per pick decision listing the
-        // tier and probe state of every candidate so a future
-        // "why was account X picked?" triage can correlate from
-        // logs without re-running with extra instrumentation.
-        let decision_summary: Vec<String> = candidates
-            .iter()
-            .chain(fallback_candidates.iter())
-            .map(|(k, u, e, l)| {
-                let reason = unusable_reason(*u, *e);
-                let usage_state = match u {
-                    None => "no-snapshot".to_owned(),
-                    // A diagnostic line, so an absent window reads as 0
-                    // here deliberately rather than widening the format.
-                    Some(s) => format!(
-                        "5h={:.0}%/7d={:.0}%",
-                        s.five_hour_util().unwrap_or(0.0),
-                        s.seven_day_util().unwrap_or(0.0),
-                    ),
-                };
-                let err_state = e.map_or("none".to_owned(), |e| format!("{e:?}"));
-                format!("{}={reason:?}({usage_state},err={err_state},loading={l:?})", k.0)
-            })
-            .collect();
-        tracing::debug!(
-            target: "forge_workspace::account",
-            event_name = "account_picked",
-            message = "account picker decision",
-            outcome = "picked",
-            picked = %picked.0,
-            allowed = ?allowed,
-            candidates = ?decision_summary,
-        );
-        picked
-    }
 }
 
-/// The tier classification behind [`AccountStateMap::unusable_reason`]
-/// for a key already resolved to its inputs. `None` is tier-0
-/// (usable): usage unknown, or under 100% on every window, or the last
-/// probe failed transiently (network / unknown HTTP - we just don't
-/// know yet). `Some` is tier-1: at the cap, or unable to
-/// authenticate. Round-robin rotates among the `None` entries; the
-/// `Some` tier is only used when no usable candidate exists (the
-/// all-unusable fallback path).
+/// The classification behind [`AccountStateMap::unusable_reason`] for a
+/// key already resolved to its inputs. `None` means usable: usage
+/// unknown, or under 100% on every window, or the last probe failed
+/// transiently (network / unknown HTTP - we just don't know yet).
+/// `Some` means at the cap, or unable to authenticate.
 ///
 /// Saturation outranks a failed probe: the windows came from a
 /// successful read, and on an at-cap account the failed probe usually
@@ -834,50 +690,6 @@ mod tests {
     }
 
     #[test]
-    fn is_account_usable_covers_tier_and_loading_table() {
-        let mut map = AccountStateMap::new(&[
-            make_account("ready-low"),
-            make_account("saturated"),
-            make_account("probe-rate-limited"),
-            make_account("probe-expired"),
-            make_account("probe-unauthorized"),
-            make_account("bailed"),
-        ]);
-
-        // tier-0 + Ready -> usable.
-        map.set_usage(&AccountKey("ready-low".to_owned()), snapshot(Some(10.0), Some(20.0)));
-        // Saturated usage (100%) -> unusable even though loading is Ready.
-        map.set_usage(&AccountKey("saturated".to_owned()), snapshot(Some(100.0), None));
-        // Probe errors -> unusable. RateLimited leaves loading alone;
-        // Expired / Unauthorized also flip loading to Bailed.
-        map.set_last_error(
-            &AccountKey("probe-rate-limited".to_owned()),
-            UsageFetchStatus::RateLimited,
-            None,
-        );
-        map.set_last_error(
-            &AccountKey("probe-expired".to_owned()),
-            UsageFetchStatus::Expired,
-            None,
-        );
-        map.set_last_error(
-            &AccountKey("probe-unauthorized".to_owned()),
-            UsageFetchStatus::Unauthorized,
-            None,
-        );
-        // Bailed with clear usage + no last_error -> unusable purely on
-        // the loading axis (set_loading(Bailed) clears usage, so tier is 0).
-        map.set_loading(&AccountKey("bailed".to_owned()), LoadingState::Bailed);
-
-        assert!(map.is_account_usable(&AccountKey("ready-low".to_owned())));
-        assert!(!map.is_account_usable(&AccountKey("saturated".to_owned())));
-        assert!(!map.is_account_usable(&AccountKey("probe-rate-limited".to_owned())));
-        assert!(!map.is_account_usable(&AccountKey("probe-expired".to_owned())));
-        assert!(!map.is_account_usable(&AccountKey("probe-unauthorized".to_owned())));
-        assert!(!map.is_account_usable(&AccountKey("bailed".to_owned())));
-    }
-
-    #[test]
     fn unusable_reason_names_why_the_account_is_out() {
         let mut map = AccountStateMap::new(&[
             make_account("saturated"),
@@ -933,296 +745,6 @@ mod tests {
             Some(Unusable::ProbeBlocked),
             "the stale snapshot falls through to the probe class",
         );
-    }
-
-    #[test]
-    fn priority_order_picks_first_in_pin_when_both_available() {
-        // Stargate: 5h=80%
-        // Gateway:  5h=10%
-        // Both under 100% on both windows → tier 2. Priority-order
-        // policy: first in pin order wins regardless of utilisation
-        // (the user's pin expresses intent; the picker respects it).
-        let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(80.0), Some(60.0)));
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(10.0), Some(20.0)));
-        let picked = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
-        assert_eq!(picked.0, "Stargate", "first pin entry wins when both are healthy");
-    }
-
-    #[test]
-    fn priority_order_respects_pin_order_when_first_pin_has_higher_seven_day() {
-        // Stargate: 5h=10%, 7d=90% - high 7d but still under 100%
-        // Gateway:  5h=50%, 7d=50%
-        // Both tier 2. Priority-order: first in pin wins.
-        let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(10.0), Some(90.0)));
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let picked = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
-        assert_eq!(picked.0, "Stargate", "pin order over utilisation");
-    }
-
-    #[test]
-    fn rate_limited_account_excluded_in_favour_of_available_one() {
-        // Gateway: 5h=0%, 7d=100% - RATE LIMITED on 7d.
-        // Stargate: 5h=80%, 7d=80% - heavily used but neither at 100%.
-        // Picker must exclude Gateway even though its 5h is lower.
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(0.0), Some(100.0)));
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(80.0), Some(80.0)));
-        let picked = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
-        assert_eq!(picked.0, "Stargate");
-    }
-
-    #[test]
-    fn rate_limited_account_excluded_on_five_hour_too() {
-        // Gateway: 5h=100%, 7d=0% - rate limited on 5h.
-        // Stargate: 5h=80%, 7d=80% - available.
-        // Must pick Stargate.
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(100.0), Some(0.0)));
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(80.0), Some(80.0)));
-        let picked = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
-        assert_eq!(picked.0, "Stargate");
-    }
-
-    #[test]
-    fn unknown_usage_sorts_first_in_definition_order() {
-        // Stargate has data; Gateway + Personal don't.
-        // Picker picks Gateway (first unknown in definition order)
-        // to warm the cache, even when Stargate looks healthy.
-        let mut map = AccountStateMap::new(&[
-            make_account("Gateway"),
-            make_account("Stargate"),
-            make_account("Personal"),
-        ]);
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(10.0), Some(20.0)));
-        let picked = map.pick_for_project(
-            &["Gateway".to_owned(), "Stargate".to_owned(), "Personal".to_owned()],
-            &[],
-        );
-        assert_eq!(picked.0, "Gateway");
-    }
-
-    #[test]
-    fn all_rate_limited_falls_back_to_definition_order() {
-        // Every pinned account hit at least one limit. Picker still
-        // returns something (the spawn must not fail) - definition
-        // order picks the first one.
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let picked = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
-        assert_eq!(picked.0, "Gateway");
-    }
-
-    #[test]
-    fn available_wins_over_rate_limited_regardless_of_pin_order() {
-        // Gateway is first in the pin AND rate-limited; Stargate is
-        // second AND available. Tier sort must lift Stargate ahead.
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(100.0)));
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(99.9), Some(99.9)));
-        let picked = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
-        assert_eq!(picked.0, "Stargate");
-    }
-
-    #[test]
-    fn pin_restricts_pool_to_subset() {
-        // Three accounts globally; pin only two. Personal has the
-        // most remaining (100%) but it's NOT in the pin - must be
-        // excluded.
-        let mut map = AccountStateMap::new(&[
-            make_account("Stargate"),
-            make_account("Gateway"),
-            make_account("Personal"),
-        ]);
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(70.0), Some(70.0)));
-        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(0.0), Some(0.0)));
-        let picked = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
-        assert_eq!(picked.0, "Stargate");
-        assert_ne!(picked.0, "Personal");
-    }
-
-    #[test]
-    fn priority_order_ignores_seven_day_difference_when_both_available() {
-        // Both at 5h=50, different 7d. Old policy used 7d as a
-        // tiebreaker; the priority-order policy respects pin order
-        // - Stargate first → Stargate wins even with worse 7d.
-        let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(50.0), Some(70.0)));
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(30.0)));
-        let picked = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
-        assert_eq!(picked.0, "Stargate", "pin order over 7d util");
-    }
-
-    #[test]
-    fn definition_order_final_tiebreak() {
-        // Identical 5h + 7d → definition order. Stargate first in
-        // the allow list wins.
-        let mut map = AccountStateMap::new(&[make_account("Stargate"), make_account("Gateway")]);
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let picked = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()], &[]);
-        assert_eq!(picked.0, "Stargate");
-    }
-
-    #[test]
-    fn known_available_account_beats_probe_failed_account() {
-        // Gateway has a fresh successful probe (tier 1, 30% used);
-        // Personal's probe keeps returning 429 (last_error =
-        // RateLimited, usage still None → tier 3, probe rate-limited).
-        // Gateway wins.
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(30.0), Some(30.0)));
-        map.set_last_error(&AccountKey("Personal".to_owned()), UsageFetchStatus::RateLimited, None);
-        let picked = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
-        assert_eq!(picked.0, "Gateway", "available account must beat probe-rate-limited one");
-    }
-
-    #[test]
-    fn expired_creds_and_saturated_both_unusable_pin_order_decides() {
-        // Both accounts are unusable in different ways: Gateway1's
-        // OAuth has expired, Personal is fully rate-limited. Under
-        // the two-tier model both fall into tier 1 (Unusable) so
-        // pin order decides - Gateway1 wins as first in pin.
-        let mut map = AccountStateMap::new(&[make_account("Gateway1"), make_account("Personal")]);
-        map.set_last_error(&AccountKey("Gateway1".to_owned()), UsageFetchStatus::Expired, None);
-        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let picked = map.pick_for_project(&["Gateway1".to_owned(), "Personal".to_owned()], &[]);
-        assert_eq!(picked.0, "Gateway1", "all-unusable falls back to pin order");
-    }
-
-    #[test]
-    fn unknown_and_available_both_usable_pin_order_decides() {
-        // Both accounts are in tier 0 (Usable) under the two-tier
-        // model - Gateway is unprobed (unknown), Personal has known
-        // healthy usage. Pin order decides → Gateway wins.
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
-        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
-        let picked = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
-        assert_eq!(picked.0, "Gateway", "both usable → pin order");
-    }
-
-    #[test]
-    fn network_failure_treated_as_usable_pin_order_decides() {
-        // Gateway's probe failed transiently (network error) - we
-        // don't actually know it's saturated, so the two-tier model
-        // keeps it in tier 0 (Usable). Personal has a healthy probe
-        // also in tier 0. Both usable → pin order wins → Gateway
-        // (first in pin).
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
-        map.set_last_error(
-            &AccountKey("Gateway".to_owned()),
-            UsageFetchStatus::NetworkFailed,
-            None,
-        );
-        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let picked = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
-        assert_eq!(picked.0, "Gateway", "transient network error doesn't demote - pin order wins");
-    }
-
-    #[test]
-    fn round_robin_rotates_across_consecutive_picks() {
-        // Three healthy accounts in the allow-list, all tier 0.
-        // First pick (cursor=0) → first usable, second (cursor=1) →
-        // second usable, third (cursor=2) → third usable, fourth
-        // wraps back to first (cursor=3, 3 % 3 = 0).
-        let map = AccountStateMap::new(&[
-            make_account("Gateway"),
-            make_account("Gateway1"),
-            make_account("Personal"),
-        ]);
-        let allow = ["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()];
-        let picks: Vec<String> = (0..4).map(|_| map.pick_for_project(&allow, &[]).0).collect();
-        assert_eq!(
-            picks,
-            vec![
-                "Gateway".to_owned(),
-                "Gateway1".to_owned(),
-                "Personal".to_owned(),
-                "Gateway".to_owned(),
-            ],
-            "round-robin must rotate through the usable subset and wrap",
-        );
-    }
-
-    #[test]
-    fn round_robin_skips_unusable_in_rotation() {
-        // Gateway is rate-limited (tier 1); Gateway1 + Personal are
-        // tier 0. Rotation must alternate between the TWO usable
-        // entries and never land on Gateway even though it's first
-        // in the allow-list.
-        let mut map = AccountStateMap::new(&[
-            make_account("Gateway"),
-            make_account("Gateway1"),
-            make_account("Personal"),
-        ]);
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        map.set_usage(&AccountKey("Gateway1".to_owned()), snapshot(Some(20.0), Some(20.0)));
-        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
-        let allow = ["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()];
-        let picks: Vec<String> = (0..4).map(|_| map.pick_for_project(&allow, &[]).0).collect();
-        assert_eq!(
-            picks,
-            vec![
-                "Gateway1".to_owned(),
-                "Personal".to_owned(),
-                "Gateway1".to_owned(),
-                "Personal".to_owned(),
-            ],
-            "round-robin must skip Gateway (tier 1) and alternate between the two usable accounts",
-        );
-    }
-
-    #[test]
-    fn round_robin_cursor_is_global_across_projects() {
-        // Two projects share the SAME AccountStateMap (the cursor is
-        // a single field on the map, not per-project). Interleaved
-        // picks from project A and project B share the cursor, so
-        // each pick advances the shared cursor regardless of which
-        // project asked.
-        let map = AccountStateMap::new(&[make_account("Gateway"), make_account("Gateway1")]);
-        let project_a = ["Gateway".to_owned(), "Gateway1".to_owned()];
-        let project_b = ["Gateway".to_owned(), "Gateway1".to_owned()];
-        // Pick: A (cursor=0 → Gateway), B (cursor=1 → Gateway1),
-        //       A (cursor=2 → Gateway), B (cursor=3 → Gateway1).
-        let picks = vec![
-            map.pick_for_project(&project_a, &[]).0,
-            map.pick_for_project(&project_b, &[]).0,
-            map.pick_for_project(&project_a, &[]).0,
-            map.pick_for_project(&project_b, &[]).0,
-        ];
-        assert_eq!(
-            picks,
-            vec![
-                "Gateway".to_owned(),
-                "Gateway1".to_owned(),
-                "Gateway".to_owned(),
-                "Gateway1".to_owned(),
-            ],
-            "cursor must be shared across projects, not reset per project",
-        );
-    }
-
-    #[test]
-    fn round_robin_with_single_usable_account_always_picks_it() {
-        // Only Gateway is usable; the other two are saturated. Every
-        // pick lands on Gateway - `cursor % 1 == 0` collapses the
-        // rotation to a single account.
-        let mut map = AccountStateMap::new(&[
-            make_account("Gateway"),
-            make_account("Gateway1"),
-            make_account("Personal"),
-        ]);
-        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(10.0), Some(10.0)));
-        map.set_usage(&AccountKey("Gateway1".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let allow = ["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()];
-        for _ in 0..5 {
-            let picked = map.pick_for_project(&allow, &[]);
-            assert_eq!(picked.0, "Gateway");
-        }
     }
 
     #[test]
@@ -1654,23 +1176,6 @@ mod tests {
         assert!(!map.scheduler_should_probe(&k), "OR false when both sides are false");
     }
 
-    #[test]
-    fn pick_returns_account_once_cached_window_reset_passes() {
-        // Cached snapshot says 100% but the resets_at has come and gone
-        // (no fresh probe has overwritten the cache yet). The picker
-        // must put the account back into the usable tier rather than
-        // hold it out indefinitely.
-        let past = SystemTime::now() - std::time::Duration::from_secs(60);
-        let stale_snap = snapshot_with_resets(Some((100.0, Some(past))), Some((100.0, Some(past))));
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
-        map.set_usage(&AccountKey("Gateway".to_owned()), stale_snap);
-        // Stargate stays healthy (snapshot helper sets resets_at in
-        // the future so 100% IS still limited for Stargate).
-        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let picked = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()], &[]);
-        assert_eq!(picked.0, "Gateway", "stale-reset Gateway usable; live-capped Stargate not");
-    }
-
     // ---------------------------------------------------------------
     // #246: LoadingState gates the launchpad + drives assignment plan.
     //
@@ -1835,62 +1340,6 @@ mod tests {
     fn all_loaded_false_when_any_loading() {
         let map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         assert!(!map.all_loaded(), "fresh accounts start in Loading; gate must stay closed");
-    }
-
-    #[test]
-    fn pick_for_project_skips_bailed_accounts() {
-        // Bailed account is in the allow list with no last_error (the
-        // boot loader's retry-cap force-bail transitions via
-        // set_loading, not set_last_error). Without the LoadingState
-        // filter, unusable_reason would classify it as usable because
-        // both usage and last_error are None. The picker must NOT
-        // return it; the Ready account must win.
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
-        // Gateway: ready
-        map.set_usage(&key("Gateway"), snapshot(Some(20.0), Some(20.0)));
-        // Personal: bailed via direct set_loading, no associated
-        // last_error.
-        map.set_loading(&key("Personal"), LoadingState::Bailed);
-        let picked = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
-        assert_eq!(
-            picked.0, "Gateway",
-            "pick_for_project must skip Bailed even without a recent last_error",
-        );
-    }
-
-    #[test]
-    fn pick_for_project_falls_to_a_usable_fallback_before_a_saturated_primary() {
-        // Sub saturated, Api usable: the degenerate picker honors the
-        // tier order - a usable fallback outranks a saturated primary.
-        let mut map = AccountStateMap::new(&[make_account("Sub"), make_account("Api")]);
-        map.set_usage(&key("Sub"), snapshot(Some(100.0), Some(100.0)));
-        map.set_usage(&key("Api"), snapshot(Some(10.0), Some(20.0)));
-        let picked = map.pick_for_project(&["Sub".to_owned()], &["Api".to_owned()]);
-        assert_eq!(picked.0, "Api", "a usable fallback outranks a saturated primary");
-    }
-
-    #[test]
-    fn pick_for_project_prefers_a_saturated_primary_over_a_saturated_fallback() {
-        // Both at their caps: tier 3 before tier 4 - the pinned
-        // primary is still the first choice among the unusable.
-        let mut map = AccountStateMap::new(&[make_account("Sub"), make_account("Api")]);
-        map.set_usage(&key("Sub"), snapshot(Some(100.0), Some(100.0)));
-        map.set_usage(&key("Api"), snapshot(Some(100.0), Some(100.0)));
-        let picked = map.pick_for_project(&["Sub".to_owned()], &["Api".to_owned()]);
-        assert_eq!(picked.0, "Sub", "a saturated primary outranks a saturated fallback");
-    }
-
-    #[test]
-    fn pick_for_project_all_bailed_falls_back_to_first() {
-        // Every allow-list entry is Bailed. The fallback path still
-        // returns the first allow-list entry so spawn proceeds and
-        // the user sees the spawned subprocess's own error rather
-        // than forge silently refusing.
-        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
-        map.set_loading(&key("Gateway"), LoadingState::Bailed);
-        map.set_loading(&key("Personal"), LoadingState::Bailed);
-        let picked = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()], &[]);
-        assert_eq!(picked.0, "Gateway");
     }
 
     #[test]

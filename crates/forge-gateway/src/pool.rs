@@ -63,10 +63,6 @@ impl AccountPool {
         self.accounts.lock().is_saturated(key)
     }
 
-    pub fn is_account_usable(&self, key: &AccountKey) -> bool {
-        self.accounts.lock().is_account_usable(key)
-    }
-
     pub fn unusable_reason(&self, key: &AccountKey) -> Option<Unusable> {
         self.accounts.lock().unusable_reason(key)
     }
@@ -156,10 +152,6 @@ impl AccountPool {
                 state.disarm_override(key);
             }
         }
-    }
-
-    pub fn pick_for_project(&self, allowed: &[String], fallbacks: &[String]) -> AccountKey {
-        self.accounts.lock().pick_for_project(allowed, fallbacks)
     }
 
     /// Run the declared-model selection walk for one org pin.
