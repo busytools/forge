@@ -577,10 +577,8 @@ fn log_tool_call_update_applied(
     // not repeat it; and re-emitting a failure on the replay walk
     // reports an event that has already been reported once, at the time
     // it happened.
-    if matches!(
-        log_spec.event_name,
-        "tool_call_failed" | "tool_call_killed" | "tool_call_timeout"
-    ) && (tc.is_execute_tool() || super::skip_operational_log_during_replay(app))
+    if matches!(log_spec.event_name, "tool_call_failed" | "tool_call_killed" | "tool_call_timeout")
+        && (tc.is_execute_tool() || super::skip_operational_log_during_replay(app))
     {
         return;
     }

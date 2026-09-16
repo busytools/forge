@@ -1393,9 +1393,8 @@ pub(crate) fn handle_despawn_worker(
     // below deletes hundreds of thousands of files and can run for
     // minutes. Nothing else on this path is slow, so these phase records
     // are what tells a long close apart from a hung one (#1113).
-    let worktree_display = worktree_path
-        .as_ref()
-        .map_or_else(|| "none".to_owned(), |path| path.display().to_string());
+    let worktree_display =
+        worktree_path.as_ref().map_or_else(|| "none".to_owned(), |path| path.display().to_string());
     tracing::info!(
         target: "forge_workspace::spawn",
         project = %project_key.as_str(),
