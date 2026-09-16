@@ -1741,29 +1741,11 @@ impl Workspace {
                         path: crate::config::forge_data_dir(&self.config_dir).join("forge.toml"),
                     })?;
                 let cwd = project.path.to_string_lossy().to_string();
-                // The worker's label is the registry's own field: its
-                // entry lands before the spawn, keyed by this session.
-                let id = if let Some(label) = self.worker_label_for_session(&session_key) {
-                    let id = uuid::Uuid::new_v4().to_string();
-                    self.record_session_id(&project.org, &project.name, &label, &id);
-                    Some(id)
-                } else {
-                    // No label means the row this worker would be keyed by
-                    // has no name: the CLI picks the id as it always did,
-                    // and nothing durable points at the session. A worker
-                    // spawn with no registry entry is an invariant
-                    // violation, not an ordinary state.
-                    tracing::warn!(
-                        target: "forge_workspace::spawn",
-                        org = %project.org,
-                        project = %project.name,
-                        session = %session_key.as_str(),
-                        "fresh worker spawn with no live-worker entry; the CLI picks the id \
-                         and no row records it",
-                    );
-                    None
-                };
-                handle.new_session(id, cwd, settings)?;
+                // The id came in on the target: the caller minted it,
+                // recorded it under the worker's slot, and keyed the
+                // registry entry by it, so the pool key is the id the
+                // child adopts and nothing moves on `Connected`.
+                handle.new_session(Some(session_key.as_str().to_owned()), cwd, settings)?;
             }
         }
         // The session is up; whatever is buffered on it belongs to the live
@@ -2622,7 +2604,9 @@ impl Workspace {
                 Ok(self.lead_session_key_for(project, force_new))
             }
             SessionTarget::Session(key) => Ok(key.clone()),
-            SessionTarget::FreshInProject { synth_key, .. } => Ok(synth_key.clone()),
+            SessionTarget::FreshInProject { session_id, .. } => {
+                Ok(SessionKey::from_session_id(session_id.clone()))
+            }
         }
     }
 
@@ -3332,7 +3316,7 @@ impl Workspace {
                         &label,
                         charter,
                         spawned_by_session_id,
-                        resume_existing,
+                        resume_existing.as_deref(),
                         kick,
                         interactive,
                         from_boot_respawn,
@@ -5415,9 +5399,10 @@ impl Workspace {
     }
 
     /// Migrate an existing `DomainSession` registration from `from` to
-    /// `to`. Used by the TUI's `set_session_id` migration when the
-    /// pre-Connect synthetic key gets replaced with the real
-    /// claude-issued session id. No-op when `from` is not registered.
+    /// `to`. Called by the TUI's `Connected` reducer when it moves a
+    /// bucket the workspace still holds under the spawn key onto the id
+    /// the event carried, and by `set_session_id`. No-op when `from` is
+    /// not registered.
     pub fn rekey_domain_session(&self, from: &SessionKey, to: SessionKey) {
         let mut handles = self.domain_handles.lock();
         if let Some(domain) = handles.remove(from) {
@@ -6879,7 +6864,7 @@ provider = "anthropic"
 
         let ambiguous = SessionTarget::FreshInProject {
             project_key: key(&shared),
-            synth_key: SessionKey::from_session_id("__spawn_twin__"),
+            session_id: "minted-twin-id".to_owned(),
         };
         assert!(
             ws.project_for_target(&ambiguous).is_none(),

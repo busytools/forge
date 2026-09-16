@@ -28,9 +28,8 @@ pub enum SessionTarget {
     /// Spawn a FRESH session in the project identified by `project_key`,
     /// bypassing the lead-resume path. Used by the workers MCP so a
     /// worker is always a brand-new session, not a resume of the
-    /// project's existing lead. The pool key is the caller-supplied
-    /// synthetic spawn key (the same one passed via `spawn_key`); the
-    /// SessionTask rekeys onto the real claude-issued UUID on its
-    /// first `Connected`.
-    FreshInProject { project_key: ProjectKey, synth_key: SessionKey },
+    /// project's existing lead. `session_id` is the id the caller minted
+    /// and recorded for it, so the pool key is the id the child will run
+    /// under and nothing has to move on `Connected`.
+    FreshInProject { project_key: ProjectKey, session_id: String },
 }

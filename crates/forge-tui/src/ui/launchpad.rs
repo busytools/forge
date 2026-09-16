@@ -1071,18 +1071,18 @@ pub fn retry_selected_project(app: &mut App) {
 
 /// Switch the active session to `project_name` and transition to
 /// `ActiveView::Chat`. If no live bucket exists, dispatch a fresh
-/// `SpawnProject` first. Mirror of the mouse-click flow in
-/// `events/mouse.rs::switch_to_project_lead`; duplicated here rather
-/// than refactored because the mouse path threads through hit-target
-/// math that the keyboard path doesn't need.
+/// `SpawnProject` first.
+///
+/// The bucket is resolved by the same rule the Projects pane and the
+/// mouse click use, which prefers the active session's bucket when two
+/// sit on one cwd. This path used to scan by cwd alone, so a launchpad
+/// Enter could land on the wrong one.
 fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
-    let project_info = app.workspace.as_ref().and_then(|w| {
-        w.list_projects()
-            .into_iter()
-            .find(|p| p.name == project_name)
-            .map(|p| (p.name.clone(), p.path.clone(), p.sessions))
-    });
-    let Some((resolved_name, project_path, catalog_sessions)) = project_info else {
+    let view = app
+        .workspace
+        .as_ref()
+        .and_then(|w| w.list_projects().into_iter().find(|p| p.name == project_name));
+    let Some(view) = view else {
         // The picker shouldn't be able to surface an unknown
         // project name, so log + bail rather than ignoring silently.
         tracing::warn!(
@@ -1092,20 +1092,12 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
         );
         return;
     };
-    // Running bucket match by cwd - matches an auto_start project
-    // whose session has already connected.
-    let path_str = project_path.to_string_lossy();
-    if let Some(key) = app.find_running_bucket_for_path(path_str.as_ref()) {
-        app.switch_active_session(key);
-        set_active_view(app, ActiveView::Chat);
-        return;
-    }
-
-    // Catalog lead - switch if pooled, else dispatch SpawnProject.
-    let lead_key = catalog_sessions.into_iter().next().map(|s| s.session);
-    if let Some(key) = lead_key
-        && app.sessions.contains_key(&key)
-    {
+    let running = {
+        let path_str = view.path.to_string_lossy();
+        let workers = super::projects_pane::live_worker_keys(app);
+        super::projects_pane::live_lead_key(app, &view, path_str.as_ref(), &workers)
+    };
+    if let Some(key) = running {
         app.switch_active_session(key);
         set_active_view(app, ActiveView::Chat);
         return;
@@ -1114,12 +1106,12 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
     // Cold spawn - dispatch and transition. The bucket appears in
     // `app.sessions` on the next event tick, once the workspace's
     // SessionTask emits `SessionUpdate::Spawning` under the id it minted.
-    // Until then the chat renders with no session focused, matching the
-    // mouse-click flow in `events/mouse.rs::switch_to_project_lead`.
+    // Until then the chat renders with no session focused, the same as
+    // the mouse-click flow in `events/mouse.rs::switch_to_project_lead`.
     if let Some(workspace) = app.workspace.as_ref() {
         let launch_settings = crate::app::connect::session_launch_settings_for_startup(app);
         if let Err(err) = workspace.dispatch(forge_workspace::Command::SpawnProject {
-            project_name: resolved_name,
+            project_name: view.name.clone(),
             launch_settings,
         }) {
             tracing::warn!(

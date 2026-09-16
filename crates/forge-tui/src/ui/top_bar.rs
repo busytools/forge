@@ -112,10 +112,18 @@ fn active_project_label(app: &App) -> Option<String> {
 }
 
 /// Compact representation of the active session for the top-bar
-/// strip. Prefers the on-disk `SessionView::label` when one exists;
-/// falls back to a short-form session UUID; finally `None` when no
-/// session is focused or its bucket has no id yet.
+/// strip. Prefers the on-disk `SessionView::label` when one exists, says
+/// `waking` while the bucket has not connected, and falls back to a
+/// short-form session UUID.
 fn active_session_label(app: &App) -> Option<String> {
+    // A bucket mid-wake has no id and no catalog row yet; say what is
+    // happening rather than leaving the strip blank until `Connected`.
+    if let Some(active_key) = app.active_session_key.as_ref()
+        && let Some(bucket) = app.sessions.get(active_key)
+        && bucket.lifecycle_state == forge_primitives::SessionLifecycleState::Spawning
+    {
+        return Some("waking".to_owned());
+    }
     if let Some(active_key) = app.active_session_key.as_ref()
         && let Some(workspace) = app.workspace.as_ref()
     {

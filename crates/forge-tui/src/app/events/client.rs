@@ -3377,11 +3377,11 @@ mod tests {
 
     /// A background spawn wake (cron, peer prompt, gotify or slack delivery) landing while the
     /// user's own click-woken spawn is mid-boot must not steal the
-    /// landing. Project B's earlier spawn failed and left its
-    /// `__spawn_b__` stub behind; when B is woken again in the
-    /// background, the existing-bucket branch used to switch focus
-    /// unconditionally - so the click on A landed the user on B's
-    /// rename chain instead, and a second click was needed to enter A.
+    /// landing. Project B's earlier spawn failed and left its stub
+    /// bucket behind; when B is woken again in the background, the
+    /// existing-bucket branch used to switch focus unconditionally - so
+    /// the click on A landed the user on B's stub instead, and a second
+    /// click was needed to enter A.
     #[test]
     fn background_spawn_wake_does_not_hijack_the_clicked_projects_landing() {
         let mut app = App::test_default();

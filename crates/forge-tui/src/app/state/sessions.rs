@@ -52,9 +52,10 @@ impl super::App {
         self.sessions.get_mut(key)
     }
 
-    /// Find the LEAD session bucket whose `cwd_raw` matches `path`.
-    /// Used by the launchpad-click and projects-pane-click handlers to
-    /// land the user on the resumed bucket for a project.
+    /// Find the LEAD session bucket whose `cwd_raw` matches `path`, with no
+    /// tie-break when two share it. Callers that can land on two - the
+    /// launchpad and the pane click - resolve through the Projects pane's
+    /// `live_lead_key` instead, which prefers the active session's bucket.
     ///
     /// Workers spawned via mcp__forge__workers__spawn share the
     /// project's `cwd_raw`, so a naive iter().find() can return a

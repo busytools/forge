@@ -1003,22 +1003,6 @@ pub(crate) fn handle_start_default(
     }
 }
 
-/// Synthesize a unique pool key for a not-yet-spawned worker. The v4
-/// uuid suffix keeps concurrent same-label spawns from colliding on the
-/// pool / command_senders / domain_handles maps (only one would
-/// survive); the resume path uses a distinct `__resume_worker_` prefix
-/// so it's separable from the fresh case in tracing.
-fn synth_worker_key(project_key: &ProjectKey, label: &str, is_resume: bool) -> SessionKey {
-    let synth_prefix = if is_resume { "__resume_worker_" } else { "__spawn_worker_" };
-    SessionKey::from_session_id(format!(
-        "{}{}_{}_{}__",
-        synth_prefix,
-        project_key.as_str(),
-        label,
-        uuid::Uuid::new_v4().simple()
-    ))
-}
-
 /// The caller-facing refusal for an at-cap worker spawn. One source so
 /// the classifier pin in the facade tests tracks the real text.
 pub(crate) fn worker_limit_reached_message(project: &str, live: usize, cap: usize) -> String {
@@ -1051,7 +1035,7 @@ pub(crate) fn handle_spawn_worker(
     label: &str,
     charter: String,
     spawned_by_session_id: String,
-    resume_existing: Option<String>,
+    resume_existing: Option<&str>,
     kick: Option<String>,
     interactive: bool,
     from_boot_respawn: bool,
@@ -1069,12 +1053,19 @@ pub(crate) fn handle_spawn_worker(
     };
     let is_git = forge_agent::env::worktree::is_git_repo(&view.path);
 
-    // Synthesize a pool key for the not-yet-spawned worker. The
-    // SessionTask rekeys this onto the real claude-issued UUID on
-    // first Connected; migrate_session_task also rewrites the
-    // matching WorkerEntry's session_key in lockstep.
+    // The pool key a fresh worker spawns under: an id minted here and
+    // recorded under the worker's slot before the child starts, so the
+    // pool, the registry entry, the gateway binding and the CLI's own
+    // `--session-id` all name the same string and nothing has to move on
+    // `Connected`. A resume keys on the id being resumed instead.
     let is_resume = resume_existing.is_some();
-    let synth_key = synth_worker_key(&project_key, label, is_resume);
+    let session_key = if let Some(resuming) = resume_existing {
+        SessionKey::from_session_id(resuming.to_owned())
+    } else {
+        let id = uuid::Uuid::new_v4().to_string();
+        workspace.record_session_id(&view.org, &view.name, label, &id);
+        SessionKey::from_session_id(id)
+    };
     let tag = forge_primitives::worker_tag(label);
 
     // Insert WorkerEntry as Spawning BEFORE the agent spawn so the
@@ -1086,25 +1077,14 @@ pub(crate) fn handle_spawn_worker(
     // whose tag matches `forge:worker:<label>` so this invariant is
     // guaranteed by the caller).
     //
-    // #222: for resume, seed `session_key` with the REAL session_id
-    // (from `resume_existing`) rather than the synth key. The fresh
-    // spawn path needs the synth-key placeholder because the real
-    // session_id isn't known until claude's first `system/init` event;
-    // `migrate_session_task` rewrites the WorkerEntry alongside the
-    // pool maps when Connected fires (workspace.rs:2620-2633). The
-    // resume path knows the real session_id up front, so workspace
-    // keys the SessionTask under the real id directly + `rekey_to`
-    // becomes a no-op on Connected + `migrate_session_task` never
-    // fires + the synth-key WorkerEntry would never get rekeyed.
-    // Result: workers stuck visible-as-synth-key in workers__list and
-    // TUI bucket lookups failing with "bucket not yet present".
+    // The entry is keyed by the id the worker will run under, fresh or
+    // resumed: a fresh one was minted and recorded just above, so the
+    // pool, the registry and the child's `--session-id` agree from the
+    // first instant and `Connected` has nothing to move.
     let entry = crate::mcp::workers::types::WorkerEntry {
         label: label.to_owned(),
         charter: charter.clone(),
-        session_key: match &resume_existing {
-            Some(real) => SessionKey::from_session_id(real.clone()),
-            None => synth_key.clone(),
-        },
+        session_key: session_key.clone(),
         status: forge_primitives::WorkerLiveness::Spawning,
         spawned_at: std::time::SystemTime::now(),
         spawned_by_session_id,
@@ -1193,17 +1173,18 @@ pub(crate) fn handle_spawn_worker(
         extra_args: build_worker_extra_args(is_git, label, interactive),
         ..Default::default()
     };
-    let target = match resume_existing {
-        Some(session_id) => SessionTarget::Session(SessionKey::from_session_id(session_id)),
-        None => SessionTarget::FreshInProject {
+    let target = if resume_existing.is_some() {
+        SessionTarget::Session(session_key.clone())
+    } else {
+        SessionTarget::FreshInProject {
             project_key: project_key.clone(),
-            synth_key: synth_key.clone(),
-        },
+            session_id: session_key.as_str().to_owned(),
+        }
     };
     match workspace.get_agent_handle_with_spawn_key(
         target,
         settings,
-        Some(synth_key.clone()),
+        None,
         &crate::protocol::SpawnRole::Worker(label.to_owned()),
     ) {
         Ok(handle) => {
@@ -1211,7 +1192,7 @@ pub(crate) fn handle_spawn_worker(
                 target: "forge_workspace::spawn",
                 project = %project_key.as_str(),
                 label = %label,
-                spawn_key = %synth_key.as_str(),
+                session_id = %session_key.as_str(),
                 "spawn dispatched for worker"
             );
             // The walk lands on a saturated or bailed account only when
@@ -1220,12 +1201,12 @@ pub(crate) fn handle_spawn_worker(
             // worker stalls on a 429.
             let rate_limited_account =
                 handle.display_name().and_then(|name| workspace.degraded_account_name(&name));
-            // Reply to the LLM optimistically with the synth key.
-            // The LLM addresses subsequent calls by label; the
-            // session_id field is informational. Real session UUID
-            // lands on Connected via the rekey machinery.
+            // Reply to the LLM with the id the worker runs under. The
+            // LLM addresses subsequent calls by label; the session_id
+            // field is informational, and it is no longer a placeholder
+            // the rekey machinery has to correct.
             let _ = return_to.send(Ok(WorkerSpawnReply {
-                session_id: synth_key.as_str().to_owned(),
+                session_id: session_key.as_str().to_owned(),
                 tag,
                 rate_limited_account,
                 // The MCP facade fills this after its post-reply persist;
@@ -2288,6 +2269,71 @@ provider = "anthropic"
     /// lingers with no session behind it. The failure is the same
     /// `FreshInProject` miss the project-spawn arm hits: the overlay satisfies
     /// `list_projects` but not the config lookup inside the spawn.
+    /// A fresh worker is keyed by the id it will run under: minted and
+    /// recorded before the child starts, so the registry entry, the pool
+    /// and the child's `--session-id` all name one string and `Connected`
+    /// has nothing to move. Verified on a worker rather than a lead,
+    /// because the worker used to be the path that spawned under a
+    /// placeholder and rekeyed later.
+    #[tokio::test]
+    async fn a_fresh_worker_is_keyed_by_the_id_it_runs_under() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path());
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        handle_spawn_worker(
+            &ws,
+            key,
+            "tester",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+
+        let reply = rx.await.expect("spawn replies").expect("spawn succeeds");
+        assert!(
+            uuid::Uuid::parse_str(&reply.session_id).is_ok(),
+            "the worker is told the id it runs under, not a placeholder: {}",
+            reply.session_id,
+        );
+        let entry = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .and_then(|view| ws.list_live_workers(&view.key).into_iter().next())
+            .expect("the worker is registered");
+        assert_eq!(
+            entry.session_key.as_str(),
+            reply.session_id,
+            "the registry entry is keyed by that same id",
+        );
+        assert!(
+            ws.pool.lock().contains_key(&SessionKey::from_session_id(reply.session_id.clone())),
+            "and so is the pool",
+        );
+        let stored = {
+            let db = ws.db.lock();
+            let db = db.as_ref().expect("db");
+            crate::store::sessions::get(db, "Default", "forge", "tester")
+                .expect("read")
+                .and_then(|row| row.session_id)
+        };
+        assert_eq!(stored.as_deref(), Some(reply.session_id.as_str()), "and the store row");
+    }
+
     #[tokio::test]
     async fn a_failed_worker_spawn_rolls_the_live_entry_back() {
         let dir = tempdir().expect("tempdir");
@@ -2333,7 +2379,6 @@ provider = "anthropic"
         write_forge_toml(dir.path());
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
-        let synth_key = SessionKey::from_session_id("__spawn_missing__");
         ws.park_slack(
             &crate::parked::Slot::lead("Default", "missing"),
             slack_msg("parked while asleep"),
@@ -2342,10 +2387,10 @@ provider = "anthropic"
         let result = ws.get_agent_handle_with_spawn_key(
             crate::target::SessionTarget::FreshInProject {
                 project_key: crate::ProjectKey::new_for_test("not-in-config"),
-                synth_key: synth_key.clone(),
+                session_id: "minted-worker-id".to_owned(),
             },
             forge_agent::client::SessionLaunchSettings::default(),
-            Some(synth_key.clone()),
+            None,
             &crate::protocol::SpawnRole::Worker("reviewer".to_owned()),
         );
 
@@ -3718,30 +3763,6 @@ provider = "anthropic"
             1,
             "prompt parked for the worker's Connected drain, not dropped"
         );
-    }
-
-    /// Regression for C2: concurrent spawns of the same label must
-    /// produce different synth_keys. The synth_key formula mixes a
-    /// v4 uuid suffix into the label so collisions on the
-    /// pool / command_senders / domain_handles maps cannot happen.
-    /// We probe the formula directly because the full spawn path
-    /// requires a real claude subprocess; the formula is the
-    /// invariant the rest of the spawn handler relies on.
-    #[test]
-    fn synth_key_for_duplicate_label_is_unique() {
-        let project = ProjectKey::new("forge");
-        let a = synth_worker_key(&project, "reviewer", false);
-        let b = synth_worker_key(&project, "reviewer", false);
-        assert_ne!(
-            a.as_str(),
-            b.as_str(),
-            "two same-label spawns must produce different synth keys"
-        );
-        assert!(a.as_str().starts_with("__spawn_worker_forge_reviewer_"));
-        assert!(b.as_str().starts_with("__spawn_worker_forge_reviewer_"));
-        // Resume path uses the distinct prefix.
-        let r = synth_worker_key(&project, "reviewer", true);
-        assert!(r.as_str().starts_with("__resume_worker_forge_reviewer_"));
     }
 
     /// `handle_deliver_worker_prompt` for a worker carrying

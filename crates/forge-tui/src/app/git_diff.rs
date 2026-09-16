@@ -417,9 +417,9 @@ mod tests {
         assert!(!app.needs_redraw);
     }
 
-    /// `request_refresh` early-returns when an empty cwd is passed
-    /// (guards against the synthetic `__spawn_<name>__` bucket whose
-    /// `cwd_raw` is empty until Connected fires).
+    /// `request_refresh` early-returns when an empty cwd is passed: a
+    /// bucket whose `cwd_raw` has not been stamped yet has no directory
+    /// to diff.
     #[test]
     fn request_refresh_skips_when_cwd_empty() {
         // No tokio runtime needed: we only exercise the synchronous

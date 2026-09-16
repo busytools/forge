@@ -724,11 +724,9 @@ pub enum DictateOutcome {
 ///
 /// Both the session's tool surface and its slot's label come from this
 /// one value, so they cannot disagree - a caller that says `Worker`
-/// gives a worker's tool surface AND a worker's slot.
-///
-/// A spawn whose caller cannot state a role passes `None` instead (a
-/// re-spawn of whatever session the user has focused); the live-worker
-/// registry answers both questions for those.
+/// gives a worker's tool surface AND a worker's slot. Every spawn states
+/// one: there is no keyless form, because a role forge cannot state is
+/// one it would have to guess, and the guess is the lead's slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpawnRole {
     Lead,
