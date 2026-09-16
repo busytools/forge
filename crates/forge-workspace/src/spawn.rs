@@ -2653,6 +2653,43 @@ provider = "anthropic"
         }
     }
 
+    /// The notice the lead reads: a worker spawned onto an account the
+    /// walk had to take while it was bailed comes back named in the
+    /// reply, so the lead hears it at spawn rather than when the worker
+    /// stalls. The join from the spawned handle's account to the reply
+    /// is the whole mechanism, and a regression there would drop the
+    /// notice silently.
+    #[tokio::test]
+    async fn a_worker_spawned_onto_a_degraded_account_reports_it() {
+        let (workspace, _config_dir) = stub_with_project_cap(2);
+        let project = seeded_project(&workspace);
+        workspace.account_pool().set_loading(
+            &forge_gateway::AccountKey("Stargate".to_owned()),
+            forge_gateway::LoadingState::Bailed,
+        );
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w1",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("reply").expect("the spawn is admitted");
+        assert_eq!(
+            reply.rate_limited_account.as_deref(),
+            Some("Stargate"),
+            "the bailed account is named in the reply, which is what raises the notice",
+        );
+        workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+    }
+
     /// The atomicity pin, at the layer it lives: concurrent
     /// `insert_live_worker_if_label_absent` calls at cap 1 admit
     /// exactly one and refuse the rest, whatever order the lock grants.

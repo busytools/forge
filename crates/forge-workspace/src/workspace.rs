@@ -13027,6 +13027,21 @@ provider = "anthropic"
             "a bailed account is still picked when nothing else declares the model, \
              so the row stays clickable",
         );
+
+        // Agent-cooling, which is the one settled state the walk refuses:
+        // it is what renders the launchpad's dim hint on a project that
+        // does declare a model.
+        workspace.seed_test_ready_account("Stargate");
+        let an_hour_out = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_secs()
+            + 3600;
+        workspace.gateway.report_probe_limit(&AccountKey("Stargate".to_owned()), Some(an_hour_out));
+        assert!(
+            !workspace.project_would_bind(&project.key),
+            "every declaring account cooling is nothing to spawn on, so the row blocks",
+        );
     }
 
     /// The spawn's notice: an account the walk had to take while

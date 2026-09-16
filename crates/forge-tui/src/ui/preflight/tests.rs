@@ -321,9 +321,9 @@ fn the_repair_and_retry_lines_differ_by_account_class() {
 
 /// An account whose endpoint is down settles `Bailed` in the loader's
 /// single pass. Holding preflight after that buys nothing: the
-/// launchpad's gate already counts `Bailed` as terminal, the plan
-/// excludes the account, and the pollers keep re-probing, so degraded
-/// rides along instead of holding boot.
+/// launchpad's gate already counts `Bailed` as terminal, the walk keeps
+/// the account as a last resort, and the pollers keep re-probing, so
+/// degraded rides along instead of holding boot.
 #[tokio::test]
 async fn preflight_hands_over_when_an_account_settles_bailed() {
     let config_dir = tempfile::tempdir().expect("tempdir");
