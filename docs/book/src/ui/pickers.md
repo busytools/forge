@@ -86,24 +86,24 @@ Read-only, open any time including mid-turn. It shows what the gateway holds: ev
 <div class="term">
 
   <pre class="indent">
-       <span class="accent">┌────────────────────────────────────────────────────────────────┐</span>
-       <span class="accent">│</span> <span class="accent-bold">Gateway · 2 orgs</span>                                               <span class="accent">│</span>
-       <span class="accent">│</span>                                                                <span class="accent">│</span>
-       <span class="accent">│</span> <span class="bold">  Busytools</span>                                                    <span class="accent">│</span>
-       <span class="accent">│</span> <span class="dim">  primary   Zai, Personal, OpenRouter-TM</span>                       <span class="accent">│</span>
-       <span class="accent">│</span> <span class="dim">  fallback  OpenRouter</span>                                         <span class="accent">│</span>
-       <span class="accent">│</span>     Zai  zai  5h 100%  7d 63%  resets 1h 42m  <span class="error">limit hit</span>        <span class="accent">│</span>
-       <span class="accent">│</span>     Personal  anthropic  5h 34%  7d 22%  <span class="success">usable</span>                <span class="accent">│</span>
-       <span class="accent">│</span>     OpenRouter-TM  openrouter  day $0.56  week $1.25  month $20.30  <span class="success">usable</span> <span class="accent">│</span>
-       <span class="accent">│</span>     OpenRouter <span class="dim">fallback</span>  openrouter  -  <span class="error">auth failed or expired</span> <span class="accent">│</span>
-       <span class="accent">│</span>                                                                <span class="accent">│</span>
-       <span class="accent">│</span> <span class="bold">  Subspace</span>                                                      <span class="accent">│</span>
-       <span class="accent">│</span> <span class="dim">  primary   Subspace</span>                                            <span class="accent">│</span>
-       <span class="accent">│</span> <span class="dim">  fallback  -</span>                                                   <span class="accent">│</span>
-       <span class="accent">│</span>     Subspace  anthropic  5h 12%  7d 9%  <span class="success">usable</span>                  <span class="accent">│</span>
-       <span class="accent">│</span>                                                                <span class="accent">│</span>
-       <span class="accent">│</span> <span class="dim">esc close   read-only: the spawn pick decides every session's account</span> <span class="accent">│</span>
-       <span class="accent">└────────────────────────────────────────────────────────────────┘</span></pre>
+       <span class="accent">┌──────────────────────────────────────────────────────────────┐</span>
+       <span class="accent">│</span> <span class="accent-bold">Gateway · 2 orgs</span>                                             <span class="accent">│</span>
+       <span class="accent">│</span>                                                              <span class="accent">│</span>
+       <span class="accent">│</span> <span class="bold">  Busytools</span>                                                  <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">  primary   Zai, Personal</span>                                    <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">  fallback  OpenRouter</span>                                       <span class="accent">│</span>
+       <span class="accent">│</span>     Zai             zai  5h 100%  7d 63%             <span class="error">limit hit</span><span class="accent">│</span>
+       <span class="accent">│</span>     Personal        anthropic  5h 34%  7d 22%           <span class="success">usable</span><span class="accent">│</span>
+       <span class="accent">│</span>     OpenRouter-TM   openrouter  $20.30 m             <span class="error">limit hit</span><span class="accent">│</span>
+       <span class="accent">│</span>     OpenRouter     <span class="dim">fallback</span>  openrouter <span class="error">auth failed or expired</span><span class="accent">│</span>
+       <span class="accent">│</span>                                                              <span class="accent">│</span>
+       <span class="accent">│</span> <span class="bold">  Subspace</span>                                                    <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">  primary   Subspace</span>                                          <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">  fallback  -</span>                                                 <span class="accent">│</span>
+       <span class="accent">│</span>     Subspace        anthropic  5h 12%  7d 9%            <span class="success">usable</span><span class="accent">│</span>
+       <span class="accent">│</span>                                                              <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">esc close   read-only: the spawn pick decides every account</span>   <span class="accent">│</span>
+       <span class="accent">└──────────────────────────────────────────────────────────────┘</span></pre>
 
 </div>
 
@@ -117,7 +117,8 @@ Read-only, open any time including mid-turn. It shows what the gateway holds: ev
 - The snapshot comes from one `Workspace` query, not a `Command`: query refreshes are direct methods under the MVVM contract, and this is a read of state the gateway already holds. Every other key is inert while the overlay is open - it consumes them so the chat beneath never sees them, and it acts on none of them but the close.
 - An org with no fallbacks renders `-` rather than a blank: the empty list is the normal shape, not a missing value. A fallback-only account carries a dim `fallback` suffix on its line, because the pins above it already say which list it came from.
 - The budget follows the billing kind, compactly: a window-billed account (`anthropic`, `codex`, `zai`) renders `5h` + `7d` utilization, with `resets <when>` while it is at its cap; an API-billed one (`openrouter`) renders its per-key `day` / `week` / `month` spend. A column with no reading renders `-` rather than a zero, and an account with no snapshot at all renders a single `-`.
-- The state tag is the pool's own verdict: `usable` green, `limit hit` red for a capped window, `auth failed or expired` red for a blocked probe or a bail.
+- The rows are built to the overlay's inner width (62 columns), because the paragraph does not wrap and an overrun is cut with no ellipsis. A row that does not fit degrades in place: the reset ETA goes before the window figures, the period words before the figures, then the figures down to the monthly one, and the provider alone before nothing - so the state tag, the one column the view exists to show, is always the last thing on the row and never the thing that is cut.
+- The state tag is the pool's own verdict: `loading` dim while the boot probe has not settled, `usable` green, `limit hit` red for a capped window, `auth failed or expired` red for a blocked probe or a bail.
 - Colors: border, title and the org count rust orange; org names bold; the pins, the hints and the `fallback` suffix dim; account names bold; the budget figures plain, since the state tag at the end of the line is what carries the verdict; `usable` green; both red reasons red.
 
 </details>
