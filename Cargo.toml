@@ -41,8 +41,8 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-toml = "0.8"
-dirs = "6"
+toml = "1.1"
+dirs = "7"
 # Pinned exactly, not caret. ratatui-core 0.1.2 moved a blocking cursor
 # read into `Terminal::clear`, which a caret range let an unlocked
 # `cargo install` pick up and ship a crash with. This pin freezes the
@@ -75,11 +75,11 @@ tui-textarea = { package = "tui-textarea-2", version = "0.10" }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 base64 = "0.22"
-sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 futures = "0.3.31"
 arboard = { version = "3.6.1", features = ["image-data"] }
 which = "8.0.2"
-rlimit = "0.10"
+rlimit = "0.11"
 # Default features carry openmp, which has no system library to link
 # against on a stock macOS toolchain.
 llama-cpp-2 = { version = "0.1.154", default-features = false }
