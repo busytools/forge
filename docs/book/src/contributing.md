@@ -16,6 +16,13 @@ denied, `cargo nextest run --workspace --all-features`, and
 `cargo doc`. CI's set minus its `cargo check --release` job. Green
 before you open a pull request.
 
+The last line it prints is its verdict, `[OK] check: ...` or
+`[ERROR] check: <step> failed`, the latter with a `; not run: <later
+steps>` clause when the step that failed was not the last one. The run
+stops at the first failing step. Read that line rather than a pipeline's
+exit status: piping `just check` through `tail` reports tail's status,
+not the recipe's.
+
 ## The book's own gate
 
 `docs/book/ui-word-count.sh` holds every `docs/book/src/ui/` page under
@@ -36,8 +43,9 @@ surface page.
   does claim a problem names the session, the org, the model, the
   account or the path, whichever apply, and carries an `event_name`.
 - **No em-dashes, en-dashes, horizontal bars or curly quotes** across
-  the scanned source and docs file types. CI rejects them. Ellipsis is
-  allowed. `just unicode-punct-check` shows what would be flagged.
+  the scanned source, docs and config file types. CI rejects them.
+  Ellipsis is allowed. `just unicode-punct-check` shows what would be
+  flagged.
 - **New wire surface ships with a captured baseline.** See
   [the wire contract](./wire-contract.md).
 - **UI changes update the [UI surface pages](./ui/workspace.md) in the

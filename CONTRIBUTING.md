@@ -26,6 +26,13 @@ set (with and without `--all-features`),
 green before you open a pull request. It is CI's set minus one job:
 CI also runs `cargo check --release`.
 
+The last line it prints is its verdict, `[OK] check: ...` or
+`[ERROR] check: <step> failed`, the latter with a `; not run: <later
+steps>` clause when the step that failed was not the last one. The run
+stops at the first failing step. Read that line rather than a pipeline's
+exit status: piping `just check` through `tail` reports tail's status,
+not the recipe's.
+
 The toolchain comes from `rust-toolchain.toml`; rustup applies it
 automatically. Tests run through `cargo nextest`, not `cargo test`.
 
@@ -43,10 +50,11 @@ rather than a fix.
 `foo.rs` alongside `foo/`.
 
 **Unicode punctuation is gated in CI.** Em-dashes, en-dashes,
-horizontal bars and curly quotes are rejected across the source and
-docs file types; `scripts/check_no_unicode_punctuation.py` carries the
-current list. Use a spaced hyphen, a comma, or two sentences.
-Ellipsis is allowed, because the TUI needs it as a truncation glyph.
+horizontal bars and curly quotes are rejected across the source, docs
+and config file types; `scripts/check_no_unicode_punctuation.py`
+carries the current list. Use a spaced hyphen, a comma, or two
+sentences. Ellipsis is allowed, because the TUI needs it as a
+truncation glyph.
 When a banned codepoint is genuinely required, write the escape form
 (`"\u{2014}"`) rather than the literal character. Run
 `just unicode-punct-check` to see what it would flag.

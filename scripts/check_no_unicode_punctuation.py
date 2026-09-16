@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Forbid em-dash / en-dash / horizontal-bar / curly quotes in forge-authored
-source. Ellipsis U+2026 is ALLOWED (legitimate truncation glyph in TUI
-render). The captured test baselines are excluded - they mirror upstream
-wire payloads byte-for-byte and may legitimately carry Unicode prose from
-the CLI's own logs. Nothing else is: forge-authored prose that happens to
-sit beside captured data is still scanned. Files git
-ignores (.gitignore / .git/info/exclude, e.g. local audit scratch) are
-skipped too: the gate polices committable forge source, not whatever
-scratch happens to sit in the working tree.
+Forbid em-dash / en-dash / horizontal-bar / curly quotes in
+forge-authored source, docs and config. Ellipsis U+2026 is ALLOWED
+(legitimate truncation glyph in TUI render). The captured test baselines
+are excluded - they mirror upstream wire payloads byte-for-byte and may
+legitimately carry Unicode prose from the CLI's own logs. Nothing else
+is: forge-authored prose that happens to sit beside captured data is
+still scanned. Files git ignores (.gitignore / .git/info/exclude, e.g.
+local audit scratch) are skipped too: the gate polices committable forge
+files, not whatever scratch happens to sit in the working tree.
 
 When a banned codepoint is functionally required (render glyph,
 ASCII-art element, legitimate punctuation in test fixtures), use an
@@ -46,7 +46,7 @@ from pathlib import Path
 # line, so a banned character added elsewhere in this file is still caught.
 BANNED = re.compile("[\u2013\u2014\u2015\u2018\u2019\u201C\u201D]")
 
-INCLUDE_SUFFIXES = (".rs", ".toml", ".md", ".html", ".sh", ".py")
+INCLUDE_SUFFIXES = (".rs", ".toml", ".md", ".html", ".sh", ".py", ".yml", ".yaml")
 
 # Files with no suffix at all, which a suffix list cannot reach.
 INCLUDE_NAMES = ("justfile", "Justfile")
