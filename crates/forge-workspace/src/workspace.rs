@@ -24,7 +24,6 @@ use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
 use crate::protocol::{Command, DispatchError, SessionUpdate};
 use crate::session_task::SessionTask;
-use crate::session_task::parse_worker_synth_key;
 use crate::spawn;
 use crate::store::sessions::LEAD_LABEL;
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
@@ -1712,10 +1711,11 @@ impl Workspace {
                         path: crate::config::forge_data_dir(&self.config_dir).join("forge.toml"),
                     })?;
                 let cwd = project.path.to_string_lossy().to_string();
-                // The worker's label rides its synthetic key, which this
-                // change leaves in place. Without one there is no row to
-                // key by, so the CLI picks the id as it always did.
-                let id = parse_worker_synth_key(&session_key).map(|(_, label)| {
+                // The worker's label is the registry's own field: its
+                // entry lands before the spawn, keyed by this session.
+                // Without a label there is no row to key by, so the CLI
+                // picks the id as it always did.
+                let id = self.worker_label_for_session(&session_key).map(|label| {
                     let id = uuid::Uuid::new_v4().to_string();
                     self.record_session_id(&project.org, &project.name, &label, &id);
                     id
@@ -4581,6 +4581,15 @@ impl Workspace {
     /// test overlay, like every other project lookup - a resolution
     /// that saw only `config.projects` would return `None` for a seeded
     /// project and make an absence assertion pass vacuously.
+    /// The registry key for a project, resolved from its `forge.toml`
+    /// name. `None` when the config no longer names it.
+    pub(crate) fn project_key_for_name(&self, name: &str) -> Option<ProjectKey> {
+        let project = self.find_project_view_by_name(name)?;
+        Some(ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+            Some(&project.path.to_string_lossy()),
+        )))
+    }
+
     pub(crate) fn project_for_key(&self, target: &ProjectKey) -> Option<LoadedProject> {
         let derive_key = |project: &LoadedProject| {
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -4709,6 +4718,7 @@ impl Workspace {
     /// [`classify_worker_spawn_failure`]: crate::mcp::workers::facade::classify_worker_spawn_failure
     pub(crate) fn handle_async_worker_spawn_failure(
         self: &Arc<Self>,
+        slot: &crate::parked::Owner,
         session_key: &SessionKey,
         message: &str,
     ) -> bool {
@@ -4726,23 +4736,24 @@ impl Workspace {
             })
         };
         // A failed RESUME-path worker spawn emits ConnectionFailed keyed
-        // by the synth spawn key, but the entry was registered under the
-        // real session id being resumed - the direct match above misses,
-        // the label stays "already live" until restart, and asks wait
-        // the full timeout. Fall back to matching by (project_key,
-        // label) parsed off the synth key.
+        // by the spawn key, but the entry was registered under the real
+        // session id being resumed - the direct match above misses, the
+        // label stays "already live" until restart, and asks wait the
+        // full timeout. The slot names the worker in that case: its label
+        // is the worker's and its project locates the registry.
         let (project_key, entry, matched_directly) = if let Some(hit) = direct {
             (hit.0, hit.1, true)
         } else {
-            match parse_worker_synth_key(session_key).and_then(|(project_key, label)| {
+            let Some(label) = slot.2.as_deref() else { return false };
+            let Some(project_key) = self.project_key_for_name(&slot.1) else { return false };
+            let entry = {
                 let workers = self.live_workers.lock();
-                let project_key = ProjectKey::new(project_key);
-                let entry = workers.get(&project_key)?.iter().find(|e| e.label == label)?.clone();
-                Some((project_key, entry))
-            }) {
-                Some((project_key, entry)) => (project_key, entry, false),
-                None => return false,
-            }
+                match workers.get(&project_key).and_then(|e| e.iter().find(|w| w.label == label)) {
+                    Some(entry) => entry.clone(),
+                    None => return false,
+                }
+            };
+            (project_key, entry, false)
         };
         if !matched_directly {
             // The direct match missed, so `session_key` is the dead
@@ -12218,6 +12229,11 @@ mod async_worker_spawn_failure_tests {
         );
     }
 
+    /// The slot a failing worker spawn acts for.
+    fn worker_slot(project: &str, label: &str) -> crate::parked::Owner {
+        ("TestOrg".to_owned(), project.to_owned(), Some(label.to_owned()))
+    }
+
     /// #146: async worktree-creation failure → notice envelope
     /// dispatched to the lead's chat AND the WorkerEntry rolled
     /// back. Verifies both effects in one go.
@@ -12234,6 +12250,7 @@ mod async_worker_spawn_failure_tests {
         let lead_key = install_lead_in_pool(&workspace, lead_id);
 
         let handled = workspace.handle_async_worker_spawn_failure(
+            &worker_slot("proj-x", "reviewer"),
             &SessionKey::from_session_id(synth_key),
             "fatal: 'reviewer' is already used by worktree at /a/b/c",
         );
@@ -12275,6 +12292,7 @@ mod async_worker_spawn_failure_tests {
         install_lead_in_pool(&workspace, lead_id);
 
         let handled = workspace.handle_async_worker_spawn_failure(
+            &worker_slot("proj-x", "reviewer"),
             &SessionKey::from_session_id(synth_key),
             "agent spawn failed: subprocess exited with code 2",
         );
@@ -12306,7 +12324,11 @@ mod async_worker_spawn_failure_tests {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         let unknown = SessionKey::from_session_id("not-a-worker");
-        let handled = workspace.handle_async_worker_spawn_failure(&unknown, "some unrelated error");
+        let handled = workspace.handle_async_worker_spawn_failure(
+            &worker_slot("proj-x", "reviewer"),
+            &unknown,
+            "some unrelated error",
+        );
         assert!(!handled);
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
@@ -12351,12 +12373,20 @@ mod async_worker_spawn_failure_tests {
             "test fixture must classify as worktree failure to exercise the removal path",
         );
 
-        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &worker_slot("proj-x", "reviewer"),
+            &session_key,
+            worktree_msg
+        ));
         let _ = workspace.drain_test_dispatch_buffer();
 
         // Second call: WorkerEntry already gone, returns false, no
         // new dispatch.
-        assert!(!workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(!workspace.handle_async_worker_spawn_failure(
+            &worker_slot("proj-x", "reviewer"),
+            &session_key,
+            worktree_msg
+        ));
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
 
@@ -12418,7 +12448,11 @@ mod async_worker_spawn_failure_tests {
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
 
         let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
-        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &worker_slot("proj-x", "reviewer"),
+            &session_key,
+            worktree_msg
+        ));
 
         assert!(
             persisted_labels(&workspace, "proj-x").is_empty(),
@@ -12459,7 +12493,11 @@ mod async_worker_spawn_failure_tests {
             ),
             "the fixture must drive a real worktree-creation failure",
         );
-        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &worker_slot("proj-x", "reviewer"),
+            &session_key,
+            worktree_msg
+        ));
 
         let mut dispositions = Vec::new();
         while let Ok(update) = update_rx.try_recv() {
@@ -12478,15 +12516,16 @@ mod async_worker_spawn_failure_tests {
 
     /// A failed RESUME-path worker spawn arrives keyed by the synth
     /// spawn key, but the entry was registered under the real session
-    /// id being resumed. The direct session_key match misses; the
-    /// (project_key, label) fallback must still transition the entry
-    /// to Failed and release the synth-keyed registrations, or the
-    /// label is locked as "already live" until restart.
+    /// id being resumed. The direct session_key match misses; the slot's
+    /// label must still find the entry, transition it to Failed and
+    /// release the dead spawn's registrations, or the label is locked as
+    /// "already live" until restart.
     #[tokio::test]
-    async fn resume_spawn_failure_matches_worker_entry_by_synth_key_fallback() {
+    async fn resume_spawn_failure_matches_the_worker_entry_by_its_slot() {
         let (workspace, _update_rx) = Workspace::testing_stub();
 
-        let project_key = ProjectKey::new("proj-x");
+        workspace.seed_test_project("proj-x", "/tmp/proj-x");
+        let project_key = workspace.project_key_for_name("proj-x").expect("seeded project");
         let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
         let real_id = "real-worker-uuid";
         // Resume spawn: the entry sits under the REAL session id.
@@ -12508,9 +12547,12 @@ mod async_worker_spawn_failure_tests {
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
 
         assert!(
-            workspace
-                .handle_async_worker_spawn_failure(&session_key, "resume failed: stale session"),
-            "the synth-key fallback must find the entry the direct match missed"
+            workspace.handle_async_worker_spawn_failure(
+                &worker_slot("proj-x", "reviewer"),
+                &session_key,
+                "resume failed: stale session"
+            ),
+            "the slot lookup must find the entry the direct match missed"
         );
 
         let entries = workspace.list_live_workers(&project_key);
@@ -12554,10 +12596,11 @@ mod async_worker_spawn_failure_tests {
         );
 
         let session_key = SessionKey::from_session_id(synth_key);
-        assert!(
-            workspace
-                .handle_async_worker_spawn_failure(&session_key, "subprocess exited with code 2")
-        );
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &worker_slot("proj-x", "reviewer"),
+            &session_key,
+            "subprocess exited with code 2"
+        ));
 
         assert_eq!(
             persisted_labels(&workspace, "proj-x"),
@@ -12656,7 +12699,11 @@ mod async_worker_spawn_failure_tests {
             },
         );
 
-        workspace.handle_async_worker_spawn_failure(&session_key, "resume failed: boom");
+        workspace.handle_async_worker_spawn_failure(
+            &worker_slot("proj-x", "builder"),
+            &session_key,
+            "resume failed: boom",
+        );
         assert!(
             !workspace.inflight_asks.lock().contains_key(&id),
             "buffered worker ask expired on spawn failure"
@@ -12723,6 +12770,7 @@ mod async_worker_spawn_failure_tests {
         // DELIBERATELY skip install_lead_in_pool - lead is "gone".
 
         let handled = workspace.handle_async_worker_spawn_failure(
+            &worker_slot("proj-x", "reviewer"),
             &SessionKey::from_session_id(synth_key),
             "fatal: 'reviewer' is already used by worktree at /a",
         );

@@ -340,22 +340,20 @@ impl SessionTask {
                 } else {
                     self.rekey_to(&real_key);
                     self.connected_once = true;
-                    // When the lead's synth key names a project with
-                    // persisted workers and none are live yet, dispatch
+                    // When the connecting session is a project's lead and
+                    // persists workers that are not live yet, dispatch
                     // one SpawnWorker per row. Idempotent via the
                     // live_workers gate - a reconnect after a transient
                     // failure skips re-spawn.
-                    if let Some(spawn_key) = self.spawn_key.as_ref()
-                        && let Some(workspace) = self.workspace.upgrade()
-                    {
+                    if let Some(workspace) = self.workspace.upgrade() {
                         let force_new = self.domain.lock().spawned_force_new;
                         maybe_respawn_workers_on_connected(
                             &workspace,
-                            spawn_key,
+                            &self.owner,
                             real_key.as_str(),
                             force_new,
                         );
-                        maybe_kick_worker_on_connected(&workspace, spawn_key, real_key.as_str());
+                        maybe_kick_worker_on_connected(&workspace, &self.owner, real_key.as_str());
                     }
                     // First Connected: emit KeyRenamed { from:
                     // spawn_key, to: real_key } so the TUI migrates
@@ -444,7 +442,7 @@ impl SessionTask {
                     // handle_spawn_worker). Lead-session and
                     // non-worker callers see no behavioural change
                     // - this branch is a no-op for them.
-                    workspace.handle_async_worker_spawn_failure(&key, &message);
+                    workspace.handle_async_worker_spawn_failure(&self.owner, &key, &message);
                 }
                 self.emit(SessionUpdate::ConnectionFailed {
                     key: key.clone(),
@@ -1054,50 +1052,32 @@ impl Drop for SessionTask {
     }
 }
 
-/// Parse a synthetic spawn key. Project lead spawn keys have shape
-/// `__spawn_<project_name>__`; worker spawn keys have shape
-/// `__spawn_worker_<project_key>_<label>_<uuid>__` (at least four
-/// underscore-separated segments after the `worker_` prefix).
-/// Returns the project name iff `key` is a lead spawn key, `None`
-/// for workers or any other shape. A literal project name starting
-/// with `worker_` only false-classifies when its segment count
-/// happens to match the worker shape; the common short cases
-/// (`worker_foo`, `worker_my_proj`) parse correctly as leads.
-fn parse_project_lead_synth_key(key: &SessionKey) -> Option<String> {
-    let s = key.as_str();
-    let inner = s.strip_prefix("__spawn_")?.strip_suffix("__")?;
-    if inner.starts_with("worker_") && inner.split('_').count() >= 4 {
-        return None;
-    }
-    Some(inner.to_owned())
-}
-
-/// Shared worker Connected hook: if `spawn_key` is a project-lead synth
-/// key and no live workers exist for the project yet, (re-)spawn its
-/// workers - one `SpawnWorker` per persisted worker row. Called from
-/// `SessionTask::translate_event` (production) and `on_connected_for_test`
-/// (tests). Idempotent; safe to call multiple times for the same session -
-/// the `live_workers.is_empty()` gate guards against double-spawn on
-/// `/new` reconnects or transient retries, and
-/// `respawn_workers_for_lead` no-ops when the project has no
-/// worker rows.
+/// Shared worker Connected hook: when the session that connected is a
+/// project's lead and no live workers exist for the project yet,
+/// (re-)spawn its workers - one `SpawnWorker` per persisted worker row.
+/// Called from `SessionTask::translate_event` (production) and
+/// `on_connected_for_test` (tests). Idempotent; safe to call multiple
+/// times for the same session - the `live_workers.is_empty()` gate
+/// guards against double-spawn on `/new` reconnects or transient
+/// retries, and `respawn_workers_for_lead` no-ops when the project has
+/// no worker rows.
+///
+/// The slot's label carries the role: only a lead (`None`) owns a team.
 fn maybe_respawn_workers_on_connected(
     workspace: &Arc<crate::Workspace>,
-    spawn_key: &SessionKey,
+    slot: &crate::parked::Owner,
     real_session_id: &str,
     force_new: bool,
 ) {
-    let Some(project_name) = parse_project_lead_synth_key(spawn_key) else {
+    if slot.2.is_some() {
+        return;
+    }
+    let Some(project) = workspace.find_project_view_by_name(&slot.1) else {
         return;
     };
-    let Some(project) = workspace.find_project_view_by_name(&project_name) else {
+    let Some(project_key) = workspace.project_key_for_name(&slot.1) else {
         return;
     };
-    let project_key = crate::target::ProjectKey::new(
-        forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-            &project.path.to_string_lossy(),
-        )),
-    );
     if !workspace.list_live_workers(&project_key).is_empty() {
         return;
     }
@@ -1116,34 +1096,9 @@ fn maybe_respawn_workers_on_connected(
     );
 }
 
-/// Parse a worker synthetic spawn key into `(project_key, label)`.
-/// Recognises both:
-///
-/// - `__spawn_worker_<project>_<label>_<uuid>__` (fresh-spawn shape,
-///   `handle_spawn_worker` with `resume_existing = None`)
-/// - `__resume_worker_<project>_<label>_<uuid>__` (resume shape,
-///   `handle_spawn_worker` with `resume_existing = Some(...)`)
-///
-/// `None` for lead synth keys or any other shape. Project keys are
-/// alphanumeric+dash only (no underscores) and uuids are hex (no
-/// underscores), so on the "<project>_<label>_<uuid>" remainder the
-/// project ends at the FIRST underscore and the uuid starts after the
-/// LAST. Everything between is the label, which is therefore free to
-/// contain underscores of its own (`code_review`). The project_key
-/// segment is what the kick hook scopes its live-worker lookup by.
-pub(crate) fn parse_worker_synth_key(key: &SessionKey) -> Option<(String, String)> {
-    let s = key.as_str();
-    let inner =
-        s.strip_prefix("__spawn_").or_else(|| s.strip_prefix("__resume_"))?.strip_suffix("__")?;
-    let after_worker = inner.strip_prefix("worker_")?;
-    let (project_key, rest) = after_worker.split_once('_')?;
-    let (label, _uuid) = rest.rsplit_once('_')?;
-    Some((project_key.to_owned(), label.to_owned()))
-}
-
-/// Shared worker-kick hook: if `spawn_key` is a worker synth key,
+/// Shared worker-kick hook: when the session that connected is a worker,
 /// dispatch a `Command::Prompt` carrying the live worker's stored kick
-/// to the freshly-Connected worker. Claude sessions don't act until a
+/// to it. Claude sessions don't act until a
 /// user-turn arrives, so without this kick a worker would sit idle
 /// indefinitely after spawn (its charter would shape behaviour IF
 /// prompted, but nothing prompts it).
@@ -1159,14 +1114,14 @@ pub(crate) fn parse_worker_synth_key(key: &SessionKey) -> Option<(String, String
 /// translate_event returns.
 fn maybe_kick_worker_on_connected(
     workspace: &Arc<crate::Workspace>,
-    spawn_key: &SessionKey,
+    slot: &crate::parked::Owner,
     real_session_id: &str,
 ) {
-    let Some((project_key, label)) = parse_worker_synth_key(spawn_key) else {
+    // The label is the worker's; a lead has none and gets no kick.
+    let Some(label) = slot.2.as_deref() else {
         return;
     };
-    let Some(view) = workspace.list_projects().into_iter().find(|v| v.key.as_str() == project_key)
-    else {
+    let Some(project_key) = workspace.project_key_for_name(&slot.1) else {
         return;
     };
     // `handle_spawn_worker` inserts the entry as Spawning before the agent
@@ -1174,7 +1129,7 @@ fn maybe_kick_worker_on_connected(
     // violation rather than a kick-less worker. Kept apart from `None`
     // kick, which is the ordinary silent case.
     let Some(entry) =
-        workspace.list_live_workers(&view.key).into_iter().rev().find(|w| w.label == label)
+        workspace.list_live_workers(&project_key).into_iter().rev().find(|w| w.label == label)
     else {
         tracing::warn!(
             target: "forge_workspace::workers",
@@ -1203,17 +1158,17 @@ fn maybe_kick_worker_on_connected(
 /// `maybe_kick_worker_on_connected` (worker path) directly without
 /// constructing a `SessionTask` or pumping through the actor - the
 /// `connected_hook_tests` module uses this to assert the trigger logic.
-/// Only one hook fires per call: the spawn_key's shape selects.
+/// Only one hook fires per call: the slot's label selects.
 #[cfg(test)]
 fn on_connected_for_test(
     workspace: &Arc<crate::Workspace>,
-    synth_key: &SessionKey,
+    slot: &crate::parked::Owner,
     real_session_id: &str,
 ) {
     // Normal (non-`--new`) Connected simulation; the force-new cascade
     // is exercised directly against respawn_workers_for_lead.
-    maybe_respawn_workers_on_connected(workspace, synth_key, real_session_id, false);
-    maybe_kick_worker_on_connected(workspace, synth_key, real_session_id);
+    maybe_respawn_workers_on_connected(workspace, slot, real_session_id, false);
+    maybe_kick_worker_on_connected(workspace, slot, real_session_id);
 }
 
 /// Forward a `Command` straight to `handle`. Pure transport - no
@@ -3222,8 +3177,10 @@ mod connected_hook_tests {
     use crate::protocol::Command;
     use crate::target::ProjectKey;
 
-    fn synth_lead_key(project_name: &str) -> SessionKey {
-        SessionKey::from_session_id(format!("__spawn_{project_name}__"))
+    /// A project's lead slot: the label is what marks the role, so a
+    /// project whose name looks worker-shaped is still a lead.
+    fn lead_slot(project_name: &str) -> crate::parked::Owner {
+        ("TestOrg".to_owned(), project_name.to_owned(), None)
     }
 
     /// Seed `proj-x` with one persisted worker row and return the
@@ -3259,7 +3216,7 @@ mod connected_hook_tests {
         let _db = seed_project_with_one_worker_row(&workspace, "implementer");
         workspace.enable_test_dispatch_intercept();
 
-        on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
+        on_connected_for_test(&workspace, &lead_slot("proj-x"), "lead-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         let spawns: Vec<&Command> =
@@ -3286,22 +3243,18 @@ mod connected_hook_tests {
         workspace.enable_test_dispatch_intercept();
         workspace.seed_test_project("proj-y", "/tmp/proj-y");
 
-        on_connected_for_test(&workspace, &synth_lead_key("proj-y"), "lead-uuid");
+        on_connected_for_test(&workspace, &lead_slot("proj-y"), "lead-uuid");
 
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
 
-    /// A worker synth key does NOT trigger the respawn hook - the
-    /// `worker_`-prefix guard in `parse_project_lead_synth_key` is what
-    /// stops it.
+    /// A worker's Connected does NOT trigger the respawn hook - the
+    /// slot's label is what stops it.
     ///
-    /// The fixture names the project exactly what a guard-less parse
-    /// would extract, so the name resolves and the guard is the only
-    /// thing left between the key and a dispatch. Naming it anything
-    /// else makes the assertion hold for the wrong reason: the lookup
-    /// is an exact match, so an unresolvable name returns before the
-    /// hook could dispatch, and deleting the guard still passes. A
-    /// persisted row is necessary for this to have teeth and is not
+    /// The project's name is the one a key-shaped parse would have read
+    /// as a worker, so a reintroduced parse would classify the project
+    /// itself and the hook would have to be stopped by the label alone.
+    /// A persisted row is necessary for this to have teeth and is not
     /// sufficient.
     #[test]
     fn worker_connected_does_not_trigger_respawn() {
@@ -3310,7 +3263,7 @@ mod connected_hook_tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        // What `__spawn_worker_wp_planner_abc__` parses to without the guard.
+        // A project named like the worker key shape the old parse read.
         let lookalike = "worker_wp_planner_abc";
         workspace.seed_test_project(lookalike, "/tmp/wp");
         let project_key = ProjectKey::new(
@@ -3326,13 +3279,13 @@ mod connected_hook_tests {
         });
         workspace.enable_test_dispatch_intercept();
 
-        let worker_synth = SessionKey::from_session_id(format!("__spawn_{lookalike}__"));
-        on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
+        let worker = ("TestOrg".to_owned(), lookalike.to_owned(), Some("planner".to_owned()));
+        on_connected_for_test(&workspace, &worker, "worker-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         assert!(
             dispatched.iter().all(|c| !matches!(c, Command::SpawnWorker { .. })),
-            "the worker-shaped key must not be parsed as a lead",
+            "a worker's own Connected does not respawn the team",
         );
     }
 
@@ -3346,10 +3299,10 @@ mod connected_hook_tests {
         let _db = seed_project_with_one_worker_row(&workspace, "implementer");
         workspace.enable_test_dispatch_intercept();
 
-        let lead_synth = synth_lead_key("proj-x");
+        let lead = lead_slot("proj-x");
 
         // First Connected: triggers the respawn (1 SpawnWorker).
-        on_connected_for_test(&workspace, &lead_synth, "lead-uuid");
+        on_connected_for_test(&workspace, &lead, "lead-uuid");
         let after_first = workspace.drain_test_dispatch_buffer();
         let first_spawns: usize =
             after_first.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).count();
@@ -3379,7 +3332,7 @@ mod connected_hook_tests {
         );
 
         // Second Connected: gate trips, no new SpawnWorker.
-        on_connected_for_test(&workspace, &lead_synth, "lead-uuid");
+        on_connected_for_test(&workspace, &lead, "lead-uuid");
         let after_second = workspace.drain_test_dispatch_buffer();
         let second_spawns: usize =
             after_second.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).count();
@@ -3387,13 +3340,13 @@ mod connected_hook_tests {
     }
 
     /// Helper: insert a live ad-hoc worker carrying `kick` under the
-    /// seeded project, returning its synth key for `on_connected_for_test`.
+    /// seeded project, returning its slot for `on_connected_for_test`.
     #[cfg(test)]
     fn seed_adhoc_worker_with_kick(
         workspace: &Arc<Workspace>,
         label: &str,
         kick: Option<String>,
-    ) -> SessionKey {
+    ) -> crate::parked::Owner {
         workspace.seed_test_project("forge", "/tmp/forge");
         let project_key = workspace
             .list_projects()
@@ -3416,10 +3369,7 @@ mod connected_hook_tests {
                 kick,
             },
         );
-        SessionKey::from_session_id(format!(
-            "__spawn_worker_{}_{label}_abc__",
-            project_key.as_str()
-        ))
+        ("TestOrg".to_owned(), "forge".to_owned(), Some(label.to_owned()))
     }
 
     /// A worker spawned with `workers__spawn(kick=...)` gets that kick
@@ -3513,18 +3463,10 @@ mod connected_hook_tests {
         workspace.start_kick_dispatcher();
         // One live worker, carrying a kick, under a DIFFERENT label.
         seed_adhoc_worker_with_kick(&workspace, "other", Some("not yours".into()));
-        let project_key = workspace
-            .list_projects()
-            .into_iter()
-            .find(|v| v.name == "forge")
-            .expect("seeded project")
-            .key;
-        let worker_synth = SessionKey::from_session_id(format!(
-            "__spawn_worker_{}_scratchpad_abc__",
-            project_key.as_str()
-        ));
+        // A label with no entry of its own, in the same project.
+        let other_label = ("TestOrg".to_owned(), "forge".to_owned(), Some("scratchpad".to_owned()));
 
-        on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
+        on_connected_for_test(&workspace, &other_label, "worker-uuid");
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
 
@@ -3536,77 +3478,25 @@ mod connected_hook_tests {
     }
 
     /// The guard directly, with no preconditions to decay: a lead key
-    /// yields its project name, a worker-shaped key yields nothing. The
-    /// second case is what the hook relies on, and unlike the fixture
-    /// test it cannot be defeated by a project that fails to resolve.
-    #[test]
-    fn parse_project_lead_synth_key_rejects_the_worker_shape() {
-        let lead = SessionKey::from_session_id("__spawn_forge__");
-        assert_eq!(parse_project_lead_synth_key(&lead).as_deref(), Some("forge"));
+    /// A label may contain underscores, and the kick hook matches on the
+    /// label as a whole string rather than on any parse of it.
+    #[tokio::test(start_paused = true)]
+    async fn a_worker_label_with_an_underscore_keeps_its_kick() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+        let slot = seed_adhoc_worker_with_kick(&workspace, "code_review", Some("go".into()));
 
-        let worker = SessionKey::from_session_id("__spawn_worker_wp_planner_abc__");
-        assert_eq!(parse_project_lead_synth_key(&worker), None);
-    }
+        on_connected_for_test(&workspace, &slot, "worker-uuid");
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
 
-    /// The boundary the doc claims: a project literally named `worker_*`
-    /// parses as a lead until its segment count reaches the worker
-    /// shape. Nothing else checks this, so the doc was the only record.
-    #[test]
-    fn parse_project_lead_synth_key_keeps_a_short_worker_prefixed_name() {
-        let short = SessionKey::from_session_id("__spawn_worker_foo__");
-        assert_eq!(parse_project_lead_synth_key(&short).as_deref(), Some("worker_foo"));
-    }
-
-    #[test]
-    fn parse_worker_synth_key_extracts_project_and_label_for_canonical_shape() {
-        let key = SessionKey::from_session_id("__spawn_worker_forge_planner_abc123__");
-        assert_eq!(parse_worker_synth_key(&key), Some(("forge".to_owned(), "planner".to_owned())));
-    }
-
-    #[test]
-    fn parse_worker_synth_key_rejects_lead_synth_keys() {
-        let key = SessionKey::from_session_id("__spawn_forge__");
-        assert_eq!(parse_worker_synth_key(&key), None);
-    }
-
-    #[test]
-    fn parse_worker_synth_key_rejects_unrelated_shapes() {
-        assert_eq!(parse_worker_synth_key(&SessionKey::from_session_id("not-a-synth-key")), None);
-        assert_eq!(
-            parse_worker_synth_key(&SessionKey::from_session_id("__spawn_worker__")),
-            None,
-            "worker prefix with no project/label/uuid segments must reject",
-        );
-    }
-
-    /// #157: the resume-shaped worker synth key
-    /// (`__resume_worker_<project>_<label>_<uuid>__`) parses the same as
-    /// the fresh shape - the parser accepts both.
-    #[test]
-    fn parse_worker_synth_key_extracts_project_and_label_for_resume_shape() {
-        let key = SessionKey::from_session_id("__resume_worker_forge_planner_abc123__");
-        assert_eq!(parse_worker_synth_key(&key), Some(("forge".to_owned(), "planner".to_owned())));
-    }
-
-    /// #695: a label may contain underscores, so the label is everything
-    /// BETWEEN the project and uuid segments rather than the second one.
-    /// Both shapes, because a resume mis-parse costs the kick on every
-    /// restart rather than once at spawn.
-    #[test]
-    fn parse_worker_synth_key_keeps_underscores_in_the_label() {
-        assert_eq!(
-            parse_worker_synth_key(&SessionKey::from_session_id(
-                "__spawn_worker_forge_code_review_abc123__"
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|c| matches!(
+                c, Command::Prompt { text, .. } if text == "go"
             )),
-            Some(("forge".to_owned(), "code_review".to_owned())),
-            "an underscore in the label must not truncate it on spawn",
-        );
-        assert_eq!(
-            parse_worker_synth_key(&SessionKey::from_session_id(
-                "__resume_worker_forge_code_review_abc123__"
-            )),
-            Some(("forge".to_owned(), "code_review".to_owned())),
-            "an underscore in the label must not truncate it on resume",
+            "an underscore in the label must not cost the kick: {dispatched:?}",
         );
     }
 }
