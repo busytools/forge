@@ -8,17 +8,13 @@
 //! `auto_start = true`; all auto-start projects spawn at launch and
 //! the first one (alphabetical) becomes the focused tab.
 //!
-//! **Selection policy.** A deterministic `AssignmentPlan`, computed
-//! once every account reaches a terminal loading state. Its pool comes
-//! from a six-tier walk over the org's `accounts` primaries and
-//! `fallback_accounts` - ready-and-unsaturated first, then
-//! ready-saturated, then degraded; `assignment_plan.rs` documents the
-//! tiers. Each project takes an offset from its position in the
-//! project list and a session lands on
-//! `pool[(offset + session_n) % pool.len()]`. Utilization is never
-//! compared between accounts; it collapses to one boolean per account.
-//! A round-robin cursor over the same pool is the fallback for spawns
-//! that happen before the plan exists.
+//! **Selection policy.** The gateway's declared-model walk: over the
+//! org's `accounts` primaries and `fallback_accounts`, the first
+//! account that declares the project's `model`, preferring ready over
+//! saturated and keeping bailed last (saturated then leads to a
+//! cooling filter). Utilization is never compared between accounts; it
+//! collapses to one boolean per account. Every spawn in an org takes
+//! the same walk, so there is no per-session spread.
 
 use std::collections::HashMap;
 use std::fs;
@@ -362,8 +358,8 @@ pub(crate) struct LoadedProject {
     /// filesystem access; this for human-readable output.
     pub display_path: String,
     /// Name of the org this project belongs to (matches
-    /// `LoadedOrg.name`). Workspace `project_accounts_for` resolves
-    /// the pin via this back-reference.
+    /// `LoadedOrg.name`). The spawn resolves the org's pin and walk
+    /// order through this back-reference.
     pub org: String,
     /// Cached pinned account list from the project's org. Duplicated
     /// here so callers don't need to walk the org list on every
@@ -377,13 +373,13 @@ pub(crate) struct LoadedProject {
     pub auto_start: bool,
     /// The project's model: fills the CLI's model slots at spawn
     /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
-    /// `CLAUDE_CODE_SUBAGENT_MODEL`). Absent means the account's own
-    /// default applies.
+    /// `CLAUDE_CODE_SUBAGENT_MODEL`) and is the model the walk matches
+    /// accounts on. A project that declares none cannot spawn.
     pub model: Option<String>,
     /// Per-project environment from the entry's env table, layered
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
     /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
-    /// usage probe, plan detection and the picker all read the ACCOUNT
+    /// the usage probe and the selection walk both read the ACCOUNT
     /// map, so they measure a different endpoint.
     pub env: HashMap<String, String>,
     /// Cap on this project's live dynamic workers; `None` keeps the

@@ -1,5 +1,4 @@
-//! The account pool: the account state map and the assignment plan
-//! behind one handle.
+//! The account pool: the account state map behind one handle.
 //!
 //! Every operation the caller performs on account state goes through a
 //! named method here. The callers never access the inner maps directly,
@@ -11,31 +10,27 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use forge_primitives::project_key::ProjectKey;
-
 use crate::Provider;
 
 use crate::UsageSnapshot;
 use crate::account::{
     AccountKey, AccountStateMap, LoadingState, Unusable, UsageFetchStatus, account_serves,
 };
-use crate::assignment_plan::AssignmentPlan;
 
-/// The account state map and the assignment plan, behind one handle.
+/// The account state map, behind one handle.
 pub struct AccountPool {
     accounts: Mutex<AccountStateMap>,
-    plan: Mutex<Option<AssignmentPlan>>,
 }
 
 impl AccountPool {
     pub fn new(specs: &[forge_primitives::account::LoadedAccount]) -> Self {
-        Self { accounts: Mutex::new(AccountStateMap::new(specs)), plan: Mutex::new(None) }
+        Self { accounts: Mutex::new(AccountStateMap::new(specs)) }
     }
 
     /// Empty map for the `testing` feature's `Workspace::testing_stub`.
     #[cfg(any(test, feature = "testing"))]
     pub fn empty_for_test() -> Self {
-        Self { accounts: Mutex::new(AccountStateMap::empty_for_test()), plan: Mutex::new(None) }
+        Self { accounts: Mutex::new(AccountStateMap::empty_for_test()) }
     }
 
     pub fn all_loaded(&self) -> bool {
@@ -68,10 +63,6 @@ impl AccountPool {
 
     pub fn is_saturated(&self, key: &AccountKey) -> bool {
         self.accounts.lock().is_saturated(key)
-    }
-
-    pub fn is_account_usable(&self, key: &AccountKey) -> bool {
-        self.accounts.lock().is_account_usable(key)
     }
 
     pub fn unusable_reason(&self, key: &AccountKey) -> Option<Unusable> {
@@ -139,44 +130,6 @@ impl AccountPool {
             .and_then(|t| t.checked_duration_since(std::time::Instant::now()))
     }
 
-    /// The keys the assignment paths may hand out: usable, in
-    /// declaration order.
-    pub fn usable_account_keys(&self) -> std::collections::HashSet<AccountKey> {
-        let state = self.accounts.lock();
-        state.ordered_keys.iter().filter(|k| state.is_account_usable(k)).cloned().collect()
-    }
-
-    /// The ready / degraded / saturated sets the assignment plan
-    /// consumes, in declaration order. `None` while any account is
-    /// still loading.
-    pub fn health_sets(&self) -> Option<(Vec<AccountKey>, Vec<AccountKey>, Vec<AccountKey>)> {
-        use LoadingState;
-
-        let state = self.accounts.lock();
-        if !state.all_loaded() {
-            return None;
-        }
-        let ready: Vec<AccountKey> = state
-            .ordered_keys
-            .iter()
-            .filter(|k| {
-                state.by_key.get(*k).is_some_and(|s| matches!(s.loading, LoadingState::Ready))
-            })
-            .cloned()
-            .collect();
-        let degraded: Vec<AccountKey> = state
-            .ordered_keys
-            .iter()
-            .filter(|k| {
-                state.by_key.get(*k).is_some_and(|s| matches!(s.loading, LoadingState::Bailed))
-            })
-            .cloned()
-            .collect();
-        let saturated: Vec<AccountKey> =
-            ready.iter().filter(|k| state.is_saturated(k)).cloned().collect();
-        Some((ready, degraded, saturated))
-    }
-
     /// The poller's work list: every account due a probe, with its
     /// provider and env.
     pub fn probe_entries(&self) -> Vec<(AccountKey, Provider, HashMap<String, String>)> {
@@ -203,10 +156,6 @@ impl AccountPool {
         }
     }
 
-    pub fn pick_for_project(&self, allowed: &[String], fallbacks: &[String]) -> AccountKey {
-        self.accounts.lock().pick_for_project(allowed, fallbacks)
-    }
-
     /// Run the declared-model selection walk for one org pin.
     pub fn select_account(
         &self,
@@ -216,16 +165,6 @@ impl AccountPool {
     ) -> Result<AccountKey, crate::selection::SelectionError> {
         let state = self.accounts.lock();
         crate::selection::select_account(&state, pin, org, model)
-    }
-
-    /// `selection::org_lists_for_model` against the live account state.
-    pub fn org_lists_for_model(
-        &self,
-        pin: &crate::selection::OrgPin,
-        model: &str,
-    ) -> crate::selection::OrgPin {
-        let state = self.accounts.lock();
-        crate::selection::org_lists_for_model(&state, pin, model)
     }
 
     /// `true` when the account serves `model`. An unknown account
@@ -264,72 +203,9 @@ impl AccountPool {
         Some((account.provider, account.env.clone()))
     }
 
-    /// The plan's assignment for `(project, label)`, cloned. `None`
-    /// when the plan is unpopulated or has no entry.
-    pub fn plan_lookup(&self, project: &ProjectKey, label: &str) -> Option<AccountKey> {
-        let guard = self.plan.lock();
-        guard.as_ref()?.lookup(project, &label.to_owned()).cloned()
-    }
-
-    /// Whether the assignment plan is populated.
-    pub fn plan_is_ready(&self) -> bool {
-        self.plan.lock().is_some()
-    }
-
-    /// `true` when the populated plan has at least one entry for
-    /// `project`. `false` when the plan is absent or the project's
-    /// pool resolved to empty.
-    pub fn project_has_assignments(&self, project: &ProjectKey) -> bool {
-        self.plan.lock().as_ref().is_some_and(|plan| !plan.project_has_no_assignments(project))
-    }
-
-    /// Assign an adhoc worker under the plan's rotation, restricted to
-    /// keys the predicate admits.
-    pub fn assign_adhoc_worker(
-        &self,
-        project: &ProjectKey,
-        label: &str,
-        is_usable: impl Fn(&AccountKey) -> bool,
-    ) -> Option<AccountKey> {
-        let mut guard = self.plan.lock();
-        guard.as_mut()?.assign_adhoc_worker(project, &label.to_owned(), is_usable)
-    }
-
-    /// Re-tier one resumed session onto `pool`'s best available
-    /// account, leaving every other assignment unmoved.
-    pub fn retier_assignment(
-        &self,
-        project: &ProjectKey,
-        label: &str,
-        pool: Vec<AccountKey>,
-        offset: usize,
-        degraded: bool,
-        fallback: bool,
-    ) -> Option<AccountKey> {
-        let mut guard = self.plan.lock();
-        guard.as_mut()?.retier_assignment(project, label, pool, offset, degraded, fallback)
-    }
-
-    /// Merge a fresh compute into the live plan: absent plans are
-    /// populated (boot path), existing assignments are preserved (the
-    /// frozen overlay), pools extend with newly-recovered accounts.
-    pub fn merge_plan(&self, fresh: crate::assignment_plan::AssignmentPlan) {
-        let mut guard = self.plan.lock();
-        match guard.as_mut() {
-            None => *guard = Some(fresh),
-            Some(existing) => existing.merge_frozen(fresh),
-        }
-    }
-
     /// Replace the whole state map. Test fixture setup only.
     #[cfg(any(test, feature = "testing"))]
     pub fn replace_state_for_test(&self, map: AccountStateMap) {
         *self.accounts.lock() = map;
-    }
-
-    /// The populated plan, cloned. Test assertions only.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn plan_for_test(&self) -> Option<crate::assignment_plan::AssignmentPlan> {
-        self.plan.lock().clone()
     }
 }

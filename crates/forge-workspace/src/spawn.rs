@@ -1161,12 +1161,6 @@ pub(crate) fn handle_spawn_worker(
         }
         return;
     }
-    // Extend the assignment plan so this worker's account comes from the
-    // same rotation as the lead's. No-op while the plan is unpopulated
-    // (boot still in flight) - `recompute_plan_if_ready` seeds the live
-    // workers when it lands, which is the only thing that gives this one
-    // an entry.
-    let rate_limited_account = workspace.extend_plan_for_adhoc_worker(&project_key, label);
     try_emit(
         workspace,
         "spawn_worker::WorkerStatusChanged::Added",
@@ -1205,7 +1199,7 @@ pub(crate) fn handle_spawn_worker(
         },
     };
     match workspace.get_agent_handle_with_spawn_key(target, settings, Some(synth_key.clone())) {
-        Ok(_handle) => {
+        Ok(handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
                 project = %project_key.as_str(),
@@ -1213,6 +1207,12 @@ pub(crate) fn handle_spawn_worker(
                 spawn_key = %synth_key.as_str(),
                 "spawn dispatched for worker"
             );
+            // The walk lands on a saturated or bailed account only when
+            // nothing else in the pin declares the project's model, so
+            // the lead hears about it at spawn rather than when the
+            // worker stalls on a 429.
+            let rate_limited_account =
+                handle.display_name().and_then(|name| workspace.degraded_account_name(&name));
             // Reply to the LLM optimistically with the synth key.
             // The LLM addresses subsequent calls by label; the
             // session_id field is informational. Real session UUID
@@ -1220,7 +1220,7 @@ pub(crate) fn handle_spawn_worker(
             let _ = return_to.send(Ok(WorkerSpawnReply {
                 session_id: synth_key.as_str().to_owned(),
                 tag,
-                rate_limited_account: rate_limited_account.map(|k| k.0),
+                rate_limited_account,
                 // The MCP facade fills this after its post-reply persist;
                 // the re-spawn paths never persist, so it stays None.
                 durability_warning: None,
@@ -1783,6 +1783,7 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -2263,10 +2264,11 @@ provider = "anthropic"
     /// exercise the handoff's move branch - it pins the mechanism (arm, hit a
     /// `?`, record on Drop), which is the whole fix.
     #[tokio::test]
-    async fn a_spawn_failing_on_the_project_lookup_records_the_buffered_delivery() {
+    async fn a_refused_spawn_leaves_the_synth_key_buffers_to_the_caller() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
         let synth_key = SessionKey::from_session_id("__spawn_missing__");
         let domain = ws.register_domain_session(synth_key.clone(), None);
         domain.lock().pending_slack_prompts.push(slack_msg("parked while asleep"));
@@ -2280,10 +2282,12 @@ provider = "anthropic"
             Some(synth_key.clone()),
         );
 
-        assert!(result.is_err(), "the project lookup misses, so the spawn fails after the move");
-        assert!(
-            domain.lock().pending_slack_prompts.is_empty(),
-            "the failed spawn records the delivery the handoff had moved",
+        assert!(result.is_err(), "a target mapping to no project is refused");
+        assert_eq!(
+            domain.lock().pending_slack_prompts.len(),
+            1,
+            "the refusal lands before the handoff, so the delivery stays at the key the caller \
+             parked it at and the caller's own expiry still reaches it",
         );
     }
 
@@ -2436,10 +2440,12 @@ accounts = ["Stargate"]
 name = "forge"
 path = "{forge_path}"
 max_workers = {limit}
+model = "claude-sonnet-5"
 
 [[orgs.projects]]
 name = "notes"
 path = "{notes_path}"
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -2452,6 +2458,7 @@ provider = "anthropic"
         .expect("write forge.toml");
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace new"));
+        workspace.seed_test_ready_account("Stargate");
         (workspace, (dir, projects_dir))
     }
 
@@ -2644,6 +2651,43 @@ provider = "anthropic"
         if let Ok(reply) = reply {
             workspace.release_session(&SessionKey::from_session_id(reply.session_id));
         }
+    }
+
+    /// The notice the lead reads: a worker spawned onto an account the
+    /// walk had to take while it was bailed comes back named in the
+    /// reply, so the lead hears it at spawn rather than when the worker
+    /// stalls. The join from the spawned handle's account to the reply
+    /// is the whole mechanism, and a regression there would drop the
+    /// notice silently.
+    #[tokio::test]
+    async fn a_worker_spawned_onto_a_degraded_account_reports_it() {
+        let (workspace, _config_dir) = stub_with_project_cap(2);
+        let project = seeded_project(&workspace);
+        workspace.account_pool().set_loading(
+            &forge_gateway::AccountKey("Stargate".to_owned()),
+            forge_gateway::LoadingState::Bailed,
+        );
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w1",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("reply").expect("the spawn is admitted");
+        assert_eq!(
+            reply.rate_limited_account.as_deref(),
+            Some("Stargate"),
+            "the bailed account is named in the reply, which is what raises the notice",
+        );
+        workspace.release_session(&SessionKey::from_session_id(reply.session_id));
     }
 
     /// The atomicity pin, at the layer it lives: concurrent

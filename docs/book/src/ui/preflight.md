@@ -1,6 +1,6 @@
 # Preflight - the launchpad's first view
 
-The first thing forge renders on every route: it resolves the accounts and, when dictation is on, fetches and loads its models, then hands over - to the projects view for `forge`, straight into chat for `forge <project>`. Shown once per run; later `/launchpad` goes straight to the projects view. Nothing spawns until every account settles - the assignment plan is computed only then, so a session started before that falls back to round-robin and could land on an account the project's org does not allow. Preflight completes when every account settles, not only when all are Ready: a bailed account is degraded rather than holding boot, and its row names the failure. Every failure state names its exits; repairing an account's auth means editing `forge.toml`, which needs a restart - the screen states the restart without a number.
+The first thing forge renders on every route: it resolves the accounts and, when dictation is on, fetches and loads its models, then hands over - to the projects view for `forge`, straight into chat for `forge <project>`. Shown once per run; later `/launchpad` goes straight to the projects view. Nothing spawns until every account settles, because the walk that picks a session's account reads each one's state. Preflight completes when every account settles, not only when all are Ready: a bailed account is degraded rather than holding boot, and its row names the failure. Every failure state names its exits; repairing an account's auth means editing `forge.toml`, which needs a restart - the screen states the restart without a number.
 
 ## Preflight, resolving
 
@@ -9,7 +9,7 @@ Three sibling sections at the same indent, one row shape: two-cell indent, state
 <details>
 <summary>Why accounts gate but dictation does not</summary>
 
-The assignment plan needs settled accounts and does not need the dictation weights, so only the accounts hold the screen - the models keep loading alongside the session rather than delaying it. `queued` is therefore the moment before both models start, not one model waiting on the other.
+The spawn gate needs settled accounts and does not need the dictation weights, so only the accounts hold the screen - the models keep loading alongside the session rather than delaying it. `queued` is therefore the moment before both models start, not one model waiting on the other.
 
 </details>
 

@@ -43,7 +43,8 @@ const ANTHROPIC_UPSTREAM: &str = "https://api.anthropic.com";
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Why a request could not be bound to an account.
-enum SelectFailure {
+#[derive(Debug)]
+pub enum SelectFailure {
     /// The org in the path is not in the config.
     UnknownOrg { org: String },
     /// No account in the walk declares the model.
@@ -102,18 +103,11 @@ impl Gateway {
         rows
     }
 
-    /// Select the account for an unbound session: only accounts that
-    /// declare the model are eligible, the org's walk order decides
-    /// which of those wins, and accounts inside a rotation cooldown
-    /// are skipped.
-    /// Binds the result so the session keeps it.
-    fn select_and_bind(
-        &self,
-        org: &str,
-        project: &str,
-        session: &str,
-        model: &str,
-    ) -> Result<AccountKey, SelectFailure> {
+    /// Which account serves `model` for `org`: the org pin lookup, the
+    /// cooling filter and the declared-model walk, WITHOUT binding.
+    /// This is the one selection decision - the forward binds what it
+    /// returns, and a spawn or the launchpad reads it as the answer.
+    pub fn select_for(&self, org: &str, model: &str) -> Result<AccountKey, SelectFailure> {
         let Some(pin) = self.org_pins.lock().get(org).cloned() else {
             return Err(SelectFailure::UnknownOrg { org: org.to_owned() });
         };
@@ -135,8 +129,8 @@ impl Gateway {
                 .filter(|name| !cooling(name))
                 .collect(),
         };
-        let account = match self.pool.select_account(&pin, org, model) {
-            Ok(account) => account,
+        match self.pool.select_account(&pin, org, model) {
+            Ok(account) => Ok(account),
             // The walk emptied. When cooling accounts were filtered out,
             // the real cause is exhaustion: they DO serve the model,
             // they are cooling until a knowable time, and the budget
@@ -151,9 +145,21 @@ impl Gateway {
                         reset_in: reset.duration_since(now).unwrap_or(Duration::ZERO),
                     });
                 }
-                return Err(SelectFailure::NoEligibleAccount { model, org });
+                Err(SelectFailure::NoEligibleAccount { model, org })
             }
-        };
+        }
+    }
+
+    /// Select the account for an unbound session and bind it, so the
+    /// session keeps it.
+    fn select_and_bind(
+        &self,
+        org: &str,
+        project: &str,
+        session: &str,
+        model: &str,
+    ) -> Result<AccountKey, SelectFailure> {
+        let account = self.select_for(org, model)?;
         self.bindings.bind(org, project, session, account.clone());
         Ok(account)
     }
@@ -1370,6 +1376,49 @@ mod tests {
             harness.gateway.bindings.binding_for("Busytools", "forge", "session-2"),
             Some(AccountKey("OpenRouter".to_owned())),
             "the declared-model gate is symmetric across both directions",
+        );
+    }
+
+    /// `select_for` answers the walk for an org and model WITHOUT
+    /// binding: the spawn calls it and registers its own binding, and
+    /// the launchpad reads it to show what a spawn would do.
+    #[test]
+    fn select_for_walks_without_binding() {
+        let account = |name: &str| forge_primitives::account::LoadedAccount {
+            display_name: name.to_owned(),
+            provider: forge_primitives::account::Provider::Anthropic,
+            base_url: None,
+            models: vec!["claude-sonnet-5".to_owned()],
+            model_aliases: std::collections::HashMap::new(),
+            model_slugs: std::collections::HashMap::new(),
+            env: std::collections::HashMap::new(),
+        };
+        let pool = Arc::new(crate::AccountPool::new(&[account("Cooling"), account("Ready")]));
+        for name in ["Cooling", "Ready"] {
+            pool.set_loading(&AccountKey(name.to_owned()), crate::LoadingState::Ready);
+        }
+        let gateway = Gateway::new(Arc::clone(&pool));
+        gateway.set_org_pins([(
+            "Default".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["Cooling".to_owned(), "Ready".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        // The first account in walk order is inside a rotation cooldown.
+        gateway.rotation.lock().cool_down(
+            &AccountKey("Cooling".to_owned()),
+            SystemTime::now() + Duration::from_secs(60),
+        );
+
+        let selected = gateway
+            .select_for("Default", "claude-sonnet-5")
+            .expect("the ready account serves the model");
+        assert_eq!(selected, AccountKey("Ready".to_owned()), "the walk skips a cooling account");
+        assert_eq!(
+            gateway.bindings.binding_for("Default", "project", "session"),
+            None,
+            "selection writes no binding; the caller owns that",
         );
     }
 

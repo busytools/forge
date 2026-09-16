@@ -43,7 +43,7 @@ An array of tables. At least one is required, or the load fails with
 |---|---|---|---|
 | `name` | string | yes | Must be unique across orgs. |
 | `accounts` | array of strings | yes | Each entry must match an `[[accounts]]` `display_name`. |
-| `fallback_accounts` | array of strings | no | Fallback accounts assignment falls to when the pinned accounts are unavailable. Absent means none. |
+| `fallback_accounts` | array of strings | no | Accounts the walk reaches after the pinned ones. Absent means none. |
 | `projects` | array of tables | yes | Written as `[[orgs.projects]]`. An org with none fails the load. |
 
 `accounts` is the account subset every project in this org may spawn
@@ -54,14 +54,14 @@ under. Rules enforced at load:
 - A name that matches no `[[accounts]]` entry fails, and the error
   lists the valid names.
 
-`fallback_accounts` is the org's second tier: assignment prefers a
-fallback over a saturated or down primary, and returns to the primary
-when it heals. The names also render in the `/gateway` view's fallback
-pin. The list is validated at load
+`fallback_accounts` is walked after the org's `accounts`: a fallback
+declaring the project's model outranks a saturated or bailed primary,
+and the primary is taken again once it heals. The names also render in
+the `/gateway` view's fallback pin. The list is validated at load
 exactly like `accounts`: a name matching no `[[accounts]]` entry fails
 the boot, naming the account and the valid names. An account may appear
-in both lists; it is then primary-tier only. See [the launchpad's pool
-description](./ui/launchpad.md) for the full tier order.
+in both lists; it is then a primary only. See [the launchpad's chip
+description](./ui/launchpad.md) for the walk order.
 
 ## `[[orgs.projects]]`
 
@@ -163,7 +163,7 @@ quietly applying nothing.
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
 | `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
 | `permission_mode` | string | `auto` | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate. |
-| `model` | string | | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Absent means the account's own default applies. |
+| `model` | string | | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Required: the walk that picks a session's account matches on the model an account serves, so a project without one is refused at spawn. |
 
 `permission_mode` stamps a permission mode onto every session the
 project spawns, overriding the launcher's per-session default. A project
@@ -494,8 +494,8 @@ dictation models, then hands over to wherever you were headed: the
 project picker for `forge`, straight into that project's chat for
 `forge <PROJECT>`. It is shown once per run.
 
-Nothing spawns until every account has authenticated, because the
-account-assignment plan is only computed once they have.
+Nothing spawns until every account has settled, because the walk that
+picks a session's account reads each one's state.
 
 Preflight completes only on every account reaching a usable state.
 **forge will not start while an account in `forge.toml` cannot

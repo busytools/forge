@@ -18,7 +18,6 @@ use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use forge_gateway::AccountKey;
-use forge_gateway::selection::OrgPin;
 
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
@@ -132,18 +131,6 @@ pub(crate) struct KickRequest {
     pub prompt_body: String,
 }
 
-/// The best available tier pool for one project against live health:
-/// what a fresh compute would assign from, plus the tier flags the
-/// slot bookkeeping carries. Produced by
-/// [`Workspace::best_tier_pool`] for the resume re-tier.
-#[derive(Debug)]
-struct BestTier {
-    pool: Vec<AccountKey>,
-    offset: usize,
-    degraded: bool,
-    fallback: bool,
-}
-
 /// Per-session chip the Projects pane renders next to each row.
 /// Carries the assigned account display name + the visual-state
 /// category derived by `Workspace::session_chip_for`.
@@ -165,8 +152,8 @@ pub enum SessionChipState {
     /// Account is Ready but at least one usage window (5h or weekly)
     /// is currently at the cap. Yellow foreground signals "still
     /// spawns but expect throttling until the window resets." When
-    /// every account is capped the plan is forced to assign one
-    /// anyway, so every session's chip shows this state.
+    /// every account that declares the model is capped the walk takes
+    /// one anyway, so the chip shows this state.
     AtCap,
     /// Account Bailed on an auth failure (rejected or expired
     /// credentials). Red foreground + `⚠ ` prefix; the repair is an
@@ -215,12 +202,10 @@ pub struct Workspace {
     /// membership for lead-delivery gating without an extra method
     /// wrapper.
     pub(crate) pool: Mutex<HashMap<SessionKey, PooledAgent>>,
-    /// The account state map and the assignment plan, owned by the
-    /// gateway and reached through its pool. The state map carries
-    /// picker/health state updated on every spawn and refreshed by the
-    /// in-memory usage poller; the plan is `None` until the boot-time
-    /// loading tasks reach `all_loaded()`, and spawn paths consult it
-    /// for CLAUDE_CONFIG_DIR selection.
+    /// The account state map, owned by the gateway and reached through
+    /// its pool. It carries picker/health state updated on every spawn
+    /// and refreshed by the in-memory usage poller, and it is what the
+    /// gateway's selection walk reads for CLAUDE_CONFIG_DIR selection.
     accounts: Arc<forge_gateway::AccountPool>,
     /// Dictation preflight: the per-model progress the launchpad
     /// renders, the flag Escape sets, and the loaded engine held for
@@ -739,8 +724,9 @@ fn open_db(app_support: &Path) -> Option<crate::store::Db> {
 ///
 /// Scans the config dirs the caller passes (one shared dir today;
 /// carrying the redb tag cache so already-scanned transcripts are not
-/// re-read): workers pick their account from the assignment-plan
-/// rotation, so a prior worker session can live under any account.
+/// re-read): workers pick their account by the walk over their
+/// project's model, so a prior worker session can live under any
+/// account in its org's pin.
 async fn scan_worker_resume_map(
     config_dirs: &[PathBuf],
     project_dir: &std::path::Path,
@@ -862,9 +848,9 @@ fn build_resume_map_from_sessions(
 /// domain and moved it onto the resolved key - a key nothing else knows yet, so
 /// no caller-side expiry can reach it. What it covers is the session call
 /// failing on a dead bridge dispatcher, which is what a `?` between arming and
-/// disarming can realistically hit;
-/// `a_spawn_failing_on_the_project_lookup_records_the_buffered_delivery` drives
-/// it through the project lookup instead, the one failure reachable from a test.
+/// disarming can realistically hit. No test drives that path: the project
+/// lookups that used to are refusals now, and they land before the handoff,
+/// where the buffers stay at the key their caller parked them at.
 struct SpawnBuffersGuard<'a> {
     workspace: &'a Arc<Workspace>,
     key: &'a SessionKey,
@@ -1116,12 +1102,12 @@ impl Workspace {
         gateway.set_rotation_numbers(config.gateway_rotation);
 
         // Seed account usage from the machine-local store so the
-        // launchpad picker has tier data immediately at cold boot.
+        // launchpad picker has usage data immediately at cold boot.
         // Anthropic's /api/oauth/usage rate-limiter can stall the first
-        // live probe for 30 s+; without seed data every account ties at
-        // tier 0 (unknown-fresh) during that window. The 60 s background
-        // poller refreshes these snapshots - the cache is purely "last
-        // known value" seed.
+        // live probe for 30 s+; without seed data every account reads as
+        // unknown during that window, so nothing is demoted for being at
+        // its cap. The 60 s background poller refreshes these snapshots -
+        // the cache is purely "last known value" seed.
         let state = match &db {
             Some(db) => crate::account_cache::load(db),
             None => crate::account_cache::ForgeState::empty(),
@@ -1395,6 +1381,7 @@ impl Workspace {
                 display_path: project.display_path.clone(),
                 accounts: project.accounts.clone(),
                 fallback_accounts: project.fallback_accounts.clone(),
+                has_model: project.model.is_some(),
                 sessions,
             });
         }
@@ -1511,93 +1498,31 @@ impl Workspace {
             }
         }
 
-        // Resolve which account this spawn lands under. Two paths:
-        //
-        // 1. AssignmentPlan lookup (preferred, deterministic): when
-        //    the boot-time loading tasks have populated the plan
-        //    AND we can derive (project_key, session_label) from
-        //    target + spawn_key, look up the assignment directly.
-        //    Lead sessions use label = "lead"; worker sessions look
-        //    up their WorkerEntry in `live_workers` (which
-        //    `handle_spawn_worker` inserted before reaching here)
-        //    and read its label.
-        //
-        // 2. Round-robin fallback: pick_for_project. Used when the
-        //    plan isn't populated yet (boot-time spawn before
-        //    all_loaded), the label isn't in the plan (an adhoc
-        //    worker spawned before `extend_plan_for_adhoc_worker`
-        //    fires), or the target couldn't be resolved to a known
-        //    project. Preserves the pre-#246 behaviour for cold-
-        //    boot and unforeseen paths.
-        // The spawn's candidates are narrowed to the accounts that can
-        // serve the project's declared model, using the same declared-
-        // model walk the gateway runs on a session's first request. A
-        // project that declares no model keeps the plan's tier walk
-        // exactly as before.
-        let project = self.project_for_target(&target);
-        let pin = OrgPin {
-            accounts: self.project_accounts_for(&target),
-            fallback_accounts: self.project_fallback_accounts_for(&target),
-        };
-        let declared_model = project.as_ref().and_then(|project| project.model.clone());
-        let candidates = match (project.as_ref(), declared_model.as_deref()) {
-            (Some(project), Some(model)) => {
-                // Narrow over the same project's own pin lists:
-                // `project_accounts_for` falls back to the default
-                // project where `project_for_target` resolves the real
-                // one, so resolving them separately pairs a project's
-                // model with another's accounts.
-                let model_pin = OrgPin {
-                    accounts: project.accounts.clone(),
-                    fallback_accounts: project.fallback_accounts.clone(),
-                };
-                match self.candidates_for_model(&model_pin, model) {
-                    Some(candidates) => Some(candidates),
-                    // Defence in depth: the load gate refuses a project
-                    // whose model nothing in its org declares
-                    // (ProjectModelUndeclared), so this fires only if the
-                    // loaded accounts and the pin ever drift apart.
-                    None => {
-                        return Err(WorkspaceError::NoAccountServesProjectModel {
-                            project: project.name.clone(),
-                            org: project.org.clone(),
-                            model: model.to_owned(),
-                            accounts: model_pin
-                                .accounts
-                                .iter()
-                                .chain(model_pin.fallback_accounts.iter())
-                                .cloned()
-                                .collect::<Vec<String>>()
-                                .join(", "),
-                        }
-                        .into());
-                    }
-                }
+        // Resolve which account this spawn lands under: the walk over
+        // the accounts declaring the project's model, which is the same
+        // walk the gateway runs on a session's first request. Both the
+        // project and its model are required - without a project there
+        // is no org, no pin and no model for the walk to run over, and
+        // an unregistered spawn would hand the child the account's real
+        // credential and a direct base URL.
+        let Some(project) = self.project_for_target(&target) else {
+            return Err(WorkspaceError::SpawnResolvesToNoProject {
+                session: session_key.as_str().to_owned(),
             }
-            _ => None,
+            .into());
         };
-        let account_key = {
-            let recorded = self.plan_assignment(&target, spawn_key.as_ref());
-            match &candidates {
-                // A recorded row the narrowed lists do not hold is a
-                // miss: recompute over them and rewrite the row, so a
-                // resume agrees with this spawn.
-                Some((account_pin, fallback_pin)) => {
-                    match recorded.filter(|key| Self::in_candidates(account_pin, fallback_pin, key))
-                    {
-                        Some(recorded) => recorded,
-                        None => self
-                            .reassign_over(&target, spawn_key.as_ref(), account_pin, fallback_pin)
-                            .unwrap_or_else(|| {
-                                self.accounts.pick_for_project(account_pin, fallback_pin)
-                            }),
-                    }
-                }
-                None => recorded.unwrap_or_else(|| {
-                    self.accounts.pick_for_project(&pin.accounts, &pin.fallback_accounts)
-                }),
+        // The gateway's walk is the one place a session's account is
+        // decided: it looks the org's pin up, filters cooling accounts
+        // and walks the accounts declaring the model. The spawn only
+        // registers the answer, and that registration is what binds.
+        let Some(model) = project.model.as_deref() else {
+            return Err(WorkspaceError::ProjectModelMissing {
+                project: project.name.clone(),
+                org: project.org.clone(),
             }
+            .into());
         };
+        let account_key = self.select_account_for_project(&project, model)?;
         tracing::info!(
             target: "forge_workspace::account",
             session = %session_key.as_str(),
@@ -1612,28 +1537,26 @@ impl Workspace {
         // inherits it as `CLAUDE_CONFIG_DIR` so each session reads/
         // writes the right account's user-data tree.
         let account_env = self.accounts.env(&account_key).unwrap_or_default();
-        apply_project_permission_mode(project.as_ref(), &mut settings);
-        let project_permission_mode = project.as_ref().map(|project| project.permission_mode);
+        apply_project_permission_mode(Some(&project), &mut settings);
+        let project_permission_mode = Some(project.permission_mode);
         // The project env merges BEFORE the gateway registers: the
         // stamp must land last, or a project env carrying a
         // base-url key would point the child away from the listener
         // while it still holds the dummy credential - the silent bypass
         // the stamp exists to close, reopened one layer up.
-        let merged_env = self.session_env_for(&target, &account_env);
+        let merged_env = session_env_for(&project, &account_env);
         // Register the session and let the gateway stamp the child's
         // env: the base URL names this listener, the credential the
         // child holds is a dummy, and the real one stays in the
-        // gateway. A spawn that resolves to no project stays on the
-        // direct account env.
-        let registration = project.as_ref().and_then(|project| {
-            let provider = self.accounts.provider(&account_key)?;
-            Some(forge_gateway::binding::Registration {
+        // gateway.
+        let registration = self.accounts.provider(&account_key).map(|provider| {
+            forge_gateway::binding::Registration {
                 org: project.org.clone(),
                 project: project.name.clone(),
                 session: session_key.as_str().to_owned(),
                 account: account_key.clone(),
                 provider,
-            })
+            }
         });
         let mut session_env = match &registration {
             Some(registration) => self
@@ -1647,7 +1570,7 @@ impl Workspace {
         // for everything the CLI does - main, subagents, background
         // slots. A /model change re-seats the primary immediately; the
         // slots follow on the next respawn.
-        if let Some(model) = project.as_ref().and_then(|project| project.model.as_ref()) {
+        if let Some(model) = project.model.as_ref() {
             for var in MODEL_SLOT_VARIABLES {
                 session_env.insert((*var).to_owned(), model.clone());
             }
@@ -1656,7 +1579,7 @@ impl Workspace {
         // caller's pin - forge defaults it to the literal "opus" - from
         // resolving through an account's alias mapping into a model the
         // project never declared.
-        apply_project_model(project.as_ref(), &mut settings);
+        apply_project_model(Some(&project), &mut settings);
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
         // per-session peer-MCP server's CallerKeyResolver can read
@@ -2017,8 +1940,6 @@ impl Workspace {
     /// drive `LoadingState` transitions on the workspace's account
     /// map. Not exposed beyond the crate - the field stays private
     /// so only intentional callers reach in.
-    /// The gateway's account pool: the account state map and the
-    /// assignment plan behind one handle.
     pub(crate) fn account_pool(&self) -> &forge_gateway::AccountPool {
         &self.accounts
     }
@@ -2057,40 +1978,28 @@ impl Workspace {
     /// `true` when every `[[accounts]]` entry has reached a terminal
     /// `LoadingState` AND the gateway's listener is bound. The
     /// launchpad reads this to decide whether project rows are
-    /// clickable - clicking before all accounts resolve means the
-    /// spawn-time picker falls back to round-robin (with
-    /// potentially-undesirable account choice) instead of the
-    /// deterministic plan, and spawning before the listener is bound
-    /// stamps a base URL nothing answers. Public so forge-tui can gate
-    /// keyboard + mouse handlers on it without reaching into the
-    /// crate-private account map.
+    /// clickable - clicking while an account is still resolving means
+    /// the walk runs over a partial map, and spawning before the
+    /// listener is bound stamps a base URL nothing answers. Public so
+    /// forge-tui can gate keyboard + mouse handlers on it without
+    /// reaching into the crate-private account map.
     pub fn all_accounts_loaded(&self) -> bool {
         self.accounts.all_loaded() && self.gateway_ready.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// `true` when the assignment plan is populated AND has at least
-    /// one entry for `project_key`. Projects whose pool resolved to
-    /// empty at compute time (e.g., every allowed account Bailed)
-    /// produce zero entries; the launchpad surfaces a
-    /// `no usable accounts` hint for those rows and keeps them
-    /// unclickable. Returns `false` when the plan isn't populated yet.
-    /// Public for forge-tui to consult during render.
-    pub fn project_has_assigned_account(&self, project_key: &ProjectKey) -> bool {
-        self.accounts.project_has_assignments(project_key)
-    }
-
-    /// `true` once the deterministic per-session account assignment has
-    /// been computed. Monotonic: `recompute_plan_if_ready` stores on the
-    /// first pass and merges a frozen overlay on every later one, so a
-    /// populated plan never goes back to unpopulated.
-    ///
-    /// The boot spawn gates on this rather than on
-    /// [`Self::all_accounts_loaded`]. The map is published on one lock
-    /// acquisition and the plan is written on a second, so an observer
-    /// can see every account settled while the plan is still absent -
-    /// which is the round-robin fallback the gate exists to prevent.
-    pub fn assignment_plan_ready(&self) -> bool {
-        self.accounts.plan_is_ready()
+    /// Whether a spawn in `project_key` would find an account: the
+    /// gateway's walk over the project's declared model, which is what a
+    /// spawn runs and what the launchpad's chips show. `false` for a
+    /// project without a model, or one whose org serves nothing it
+    /// declares, which is the row the launchpad keeps unclickable.
+    pub fn project_would_bind(&self, project_key: &ProjectKey) -> bool {
+        let Some(project) = self.project_for_key(project_key) else {
+            return false;
+        };
+        let Some(model) = project.model.as_deref() else {
+            return false;
+        };
+        self.gateway.select_for(&project.org, model).is_ok()
     }
 
     /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
@@ -2123,6 +2032,17 @@ impl Workspace {
     /// configured account.
     pub fn account_auth_for(&self, display_name: &str) -> Option<crate::views::AccountAuth> {
         self.accounts.auth(display_name)
+    }
+
+    /// The account name back, when that account is saturated or bailed:
+    /// the walk takes one of those only when nothing else in the pin
+    /// declares the project's model, so a spawn landing there is worth
+    /// saying out loud. `None` when it has room, and for an unknown name.
+    pub(crate) fn degraded_account_name(&self, account: &str) -> Option<String> {
+        let key = AccountKey(account.to_owned());
+        let degraded = self.accounts.is_saturated(&key)
+            || self.accounts.loading_state(&key) == forge_gateway::LoadingState::Bailed;
+        degraded.then(|| account.to_owned())
     }
 
     /// The `forge.toml` this workspace loaded. Preflight names it as
@@ -2196,11 +2116,14 @@ impl Workspace {
         );
     }
 
-    /// Resolve `(project, session_label)` to the per-session chip
-    /// the Projects pane renders next to each row: the assigned
-    /// account name + its current visual-state category. Returns
-    /// `None` when the plan isn't populated, the project isn't
-    /// known, or the label has no assignment.
+    /// Resolve `project_key` to the per-session chip the Projects pane
+    /// renders next to each row: the account a spawn in it would land
+    /// on, and that account's current visual-state category. Returns
+    /// `None` when the project is unknown, declares no model, or its
+    /// org serves nothing it declares.
+    ///
+    /// The walk is per org and model, so every row in a project shows
+    /// the same account - which is what a spawn does.
     ///
     /// State derivation:
     /// - `LoadingState::Bailed` splits by the recorded failure class,
@@ -2209,17 +2132,13 @@ impl Workspace {
     ///   (red with a `⚠ ` prefix); transient classes and an unrecorded
     ///   bail -> `Degraded` (warning yellow, the pollers heal it).
     /// - `Ready` + any usage window at the cap (the same
-    ///   `is_saturated` signal the assignment plan uses to avoid an
-    ///   account) -> `AtCap` (yellow; the session still spawns but
-    ///   will throttle - and in the all-accounts-capped case it was
-    ///   assigned only because nothing else was free).
+    ///   `is_saturated` signal the walk demotes an account for) ->
+    ///   `AtCap` (yellow; the session still spawns but will throttle).
     /// - Otherwise -> `Normal` (DIM; default chip).
-    pub fn session_chip_for(
-        &self,
-        project_key: &ProjectKey,
-        label: &str,
-    ) -> Option<SessionChipInfo> {
-        let account_key = self.accounts.plan_lookup(project_key, label)?;
+    pub fn session_chip_for(&self, project_key: &ProjectKey) -> Option<SessionChipInfo> {
+        let project = self.project_for_key(project_key)?;
+        let model = project.model.as_deref()?;
+        let account_key = self.gateway.select_for(&project.org, model).ok()?;
 
         let loading = self.accounts.loading_state(&account_key);
         let saturated = self.accounts.is_saturated(&account_key);
@@ -2240,396 +2159,45 @@ impl Workspace {
         Some(SessionChipInfo { account_name: account_key.0, state })
     }
 
-    /// Look up the deterministic account assignment for a spawn
-    /// target. Returns `(AccountKey, config_dir)` when:
-    /// - the assignment plan is populated (`Some`), AND
-    /// - the spawn resolves to a known (project_key, session_label)
-    ///   pair, AND
-    /// - the plan has an entry for that pair.
-    ///
-    /// Returns `None` for any miss so the caller falls back to the
-    /// pre-#246 round-robin (`pick_for_project`). This keeps boot-
-    /// time spawns (plan not yet populated) working and absorbs
-    /// edge cases like adhoc workers spawned before
-    /// `extend_plan_for_adhoc_worker` runs.
-    pub(crate) fn plan_assignment(
+    /// The account the gateway walks for a project's declared model,
+    /// with the walk's failures turned into the vocabulary a spawn
+    /// reports.
+    fn select_account_for_project(
         &self,
-        target: &SessionTarget,
-        spawn_key: Option<&SessionKey>,
-    ) -> Option<AccountKey> {
-        let (project_key, label) = self.plan_lookup_keys(target, spawn_key)?;
-        // `__resume_` synth keys are exactly the flows that pass
-        // `--resume` (lead drilldown + worker respawn); every other
-        // shape is a fresh spawn whose plan row is the tier walk's own
-        // output.
-        let is_resume = spawn_key.is_some_and(|k| k.as_str().starts_with("__resume_"));
-        // A worker-resume key resolving to the lead label means the
-        // registry lost the worker and the lookup degraded - re-tiering
-        // would rewrite the LEAD's row, so the spawn keeps the recorded
-        // lookup instead.
-        let degraded_worker_resume = is_degraded_worker_resume(spawn_key, &label);
-        let account_key = if is_resume && !degraded_worker_resume {
-            self.retier_on_resume(&project_key, &label)?
-        } else {
-            self.accounts.plan_lookup(&project_key, &label)?
-        };
-        Some(account_key)
-    }
-
-    /// Resume re-tier: a resumed session is not a running one, so the
-    /// frozen overlay does not pin it. A recorded account still inside
-    /// the best available tier keeps its assignment; one outside it
-    /// moves to the account a fresh compute would pick and rewrites the
-    /// plan row, leaving every other session unmoved.
-    fn retier_on_resume(&self, project_key: &ProjectKey, label: &str) -> Option<AccountKey> {
-        let recorded = self.accounts.plan_lookup(project_key, label)?;
-        match self.best_tier_pool(project_key) {
-            Some(best) if !best.pool.contains(&recorded) => {
-                let Some(account) = self.accounts.retier_assignment(
-                    project_key,
-                    label,
-                    best.pool,
-                    best.offset,
-                    best.degraded,
-                    best.fallback,
-                ) else {
-                    return Some(recorded);
-                };
-                tracing::info!(
-                    target: "forge_workspace::assignment_plan",
-                    project = ?project_key,
-                    label = %label,
-                    from = %recorded.0,
-                    to = %account.0,
-                    "resume re-tiered onto the current best account",
-                );
-                Some(account)
-            }
-            _ => Some(recorded),
-        }
-    }
-
-    /// The best available tier pool for `project_key` against live
-    /// account health, with the offset a fresh compute would take
-    /// within it and the tier flags the slot bookkeeping carries.
-    /// `None` while accounts are still loading, for a project absent
-    /// from the config, or when every tier lands dark.
-    fn best_tier_pool(&self, project_key: &ProjectKey) -> Option<BestTier> {
-        let idx = self.project_index(project_key)?;
-        let project = &self.config.projects[idx];
-        let (accounts, fallbacks) = match project.model.as_deref() {
-            Some(model) => {
-                // Same narrowing the spawn pick runs: a resume must not
-                // re-tier onto an account that cannot serve the model.
-                let pin = OrgPin {
-                    accounts: project.accounts.clone(),
-                    fallback_accounts: project.fallback_accounts.clone(),
-                };
-                self.candidates_for_model(&pin, model)?
-            }
-            None => (project.accounts.clone(), project.fallback_accounts.clone()),
-        };
-        self.tier_pool_over(idx, &accounts, &fallbacks)
-    }
-
-    /// `project_key`'s position in the config's project list.
-    fn project_index(&self, project_key: &ProjectKey) -> Option<usize> {
-        self.config.projects.iter().position(|p| {
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                &p.path.to_string_lossy(),
-            ))) == *project_key
-        })
-    }
-
-    /// The tier walk over explicit candidate lists: the offset a fresh
-    /// compute takes within the pool comes from `idx`, the project's
-    /// position in the config.
-    fn tier_pool_over(
-        &self,
-        idx: usize,
-        accounts: &[String],
-        fallbacks: &[String],
-    ) -> Option<BestTier> {
-        let (ready, degraded, saturated) = self.account_health_sets()?;
-        let (pool, degraded, fallback) = forge_gateway::assignment_plan::tier_pool(
-            accounts, fallbacks, &ready, &degraded, &saturated,
-        );
-        if pool.is_empty() {
-            return None;
-        }
-        let offset = idx % pool.len();
-        Some(BestTier { pool, offset, degraded, fallback })
-    }
-
-    /// The candidate account lists for a project that declares `model`:
-    /// the org's pin narrowed to the accounts that declare it, in pin
-    /// order. `None` when nothing in the pin declares the model, which
-    /// the caller must treat as fatal rather than bind a wrong account.
-    ///
-    /// The fallback-only shape resolves to the narrowed fallbacks as
-    /// the candidate list: the tier walk reads an empty primary list as
-    /// "every account", which would put a non-declaring account back in
-    /// the pool. The walk's fallback flag then reads false for that
-    /// pool, a status flag rather than a routing input.
-    fn candidates_for_model(
-        &self,
-        pin: &OrgPin,
+        project: &LoadedProject,
         model: &str,
-    ) -> Option<(Vec<String>, Vec<String>)> {
-        let narrowed = self.accounts.org_lists_for_model(pin, model);
-        if narrowed.accounts.is_empty() {
-            if narrowed.fallback_accounts.is_empty() {
-                return None;
-            }
-            return Some((narrowed.fallback_accounts, Vec::new()));
-        }
-        Some((narrowed.accounts, narrowed.fallback_accounts))
-    }
-
-    /// `true` when `key` is one of the candidate accounts of either
-    /// list.
-    fn in_candidates(accounts: &[String], fallbacks: &[String], key: &AccountKey) -> bool {
-        accounts.iter().chain(fallbacks.iter()).any(|name| name == &key.0)
-    }
-
-    /// Recompute the plan row for `target`'s `(project, label)` over the
-    /// given candidate lists and rewrite it, so a later resume agrees
-    /// with the spawn that used them. `None` while accounts are still
-    /// loading, when no tier lands, or when the lookup degraded to the
-    /// lead's row - leaving the caller its round-robin fallback.
-    fn reassign_over(
-        &self,
-        target: &SessionTarget,
-        spawn_key: Option<&SessionKey>,
-        accounts: &[String],
-        fallbacks: &[String],
-    ) -> Option<AccountKey> {
-        let (project_key, label) = self.plan_lookup_keys(target, spawn_key)?;
-        // The same guard `plan_assignment` applies: a registry-lost
-        // worker resume resolves to the lead's label, so rewriting the
-        // row here would move the lead's assignment.
-        if is_degraded_worker_resume(spawn_key, &label) {
-            return None;
-        }
-        let idx = self.project_index(&project_key)?;
-        let best = self.tier_pool_over(idx, accounts, fallbacks)?;
-        self.accounts.retier_assignment(
-            &project_key,
-            &label,
-            best.pool,
-            best.offset,
-            best.degraded,
-            best.fallback,
-        )
-    }
-
-    /// Derive `(project_key, session_label)` from a spawn target +
-    /// optional synth spawn key.
-    ///
-    /// - Worker spawns (`spawn_key` points at an existing
-    ///   `WorkerEntry` in `live_workers`): the entry's
-    ///   `(project_key, label)` is the answer. This is the path
-    ///   `handle_spawn_worker` -> `get_agent_handle_with_spawn_key`
-    ///   takes after inserting the WorkerEntry as `Spawning`.
-    /// - Resumed workers (`Session(<uuid>)` under a
-    ///   `__resume_<id>__` spawn key the registry doesn't hold): the
-    ///   worker's own key, which `migrate_session_task` stamped onto
-    ///   its `WorkerEntry` at Connected.
-    /// - Lead spawns (no spawn_key or a non-worker synth key):
-    ///   `label = "lead"`; `project_key` derives from the target.
-    /// - Session-id targets where the resumed session has no
-    ///   recoverable project mapping: returns `None` so the caller
-    ///   falls back to round-robin.
-    fn plan_lookup_keys(
-        &self,
-        target: &SessionTarget,
-        spawn_key: Option<&SessionKey>,
-    ) -> Option<(ProjectKey, String)> {
-        let worker_keys = |key: &SessionKey| {
-            self.worker_lookup_for_session(key).map(|(project_key, label, _)| (project_key, label))
-        };
-        if let Some(pair) = spawn_key.and_then(worker_keys) {
-            return Some(pair);
-        }
-        // Resumed workers reach here with a spawn key the registry
-        // never saw. Resolving them by target instead is what keeps
-        // the label right: falling through to "lead" below would look
-        // up the lead's plan row and hand the worker the lead's
-        // account. The catalog cannot answer this either - a worker's
-        // row is absent on a fresh spawn and untagged on a resume, so
-        // it never identifies one.
-        if let SessionTarget::Session(key) = target
-            && let Some(pair) = worker_keys(key)
-        {
-            return Some(pair);
-        }
-        let project_key = self.target_to_project_key(target)?;
-        Some((project_key, "lead".to_owned()))
-    }
-
-    /// Resolve a `SessionTarget` to its on-disk-sanitised project
-    /// key. Returns `None` for `Session(...)` targets when the
-    /// catalog can't map the session's cwd back to a known project
-    /// (e.g., a session whose cwd has since changed).
-    fn target_to_project_key(&self, target: &SessionTarget) -> Option<ProjectKey> {
-        let project_key_for = |path: &std::path::Path| -> ProjectKey {
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                &path.to_string_lossy(),
-            )))
-        };
-        match target {
-            SessionTarget::Default => Some(project_key_for(&self.config.default_project().path)),
-            SessionTarget::Named(name) => {
-                self.find_project_by_name(name).ok().map(|p| project_key_for(&p.path))
-            }
-            SessionTarget::FreshInProject { project_key, .. } => Some(project_key.clone()),
-            SessionTarget::Session(key) => {
-                let cwd = self.session_cwd_for(key)?;
-                let cwd_path = std::path::PathBuf::from(&cwd);
-                // Leads only by the time we get here: `plan_lookup_keys`
-                // answers workers from the registry above, which is the
-                // only source that can - the catalog holds no worker
-                // rows. A lead whose cwd is a subdir of its project
-                // still misses this exact match and degrades to the
-                // prefix-matching `project_accounts_for` fallback.
-                self.config
-                    .projects
-                    .iter()
-                    .find(|p| p.path == cwd_path)
-                    .map(|p| project_key_for(&p.path))
-            }
-        }
-    }
-
-    /// Extend the assignment plan with a newly spawned worker. Called
-    /// from `handle_spawn_worker` (Section 2.5 of #246) so a worker is
-    /// assigned through the same plan-driven rotation the lead is.
-    /// No-op when the plan isn't populated yet (boot still in flight);
-    /// `recompute_plan_if_ready` seeds the live workers when it lands.
-    /// Returns `Some(account)` when the assigned account is itself
-    /// currently unusable (a fresh assignment that fell back onto a
-    /// fully saturated pool, or a re-spawn pinned to a since-unusable
-    /// account), for the caller to surface at spawn; `None` on a usable
-    /// assignment or a no-op.
-    pub(crate) fn extend_plan_for_adhoc_worker(
-        &self,
-        project_key: &ProjectKey,
-        label: &str,
-    ) -> Option<AccountKey> {
-        // Snapshot per-account usability under the accounts lock, then
-        // release it before taking the plan lock: no path holds both
-        // locks at once (each site drops the first guard before taking
-        // the second), so the two orders can't form a cycle. The
-        // snapshot doubles as the rotation predicate and the
-        // warn-surface check below.
-        let usable: std::collections::HashSet<AccountKey> = self.accounts.usable_account_keys();
-
-        let assigned =
-            self.accounts.assign_adhoc_worker(project_key, label, |k| usable.contains(k))?;
-
-        // The assigned account is currently unusable: either the fresh
-        // rotation found the whole pool saturated, or a re-spawn is
-        // pinned to an account that has since gone unusable. Warn and
-        // return it so the caller surfaces the state at spawn.
-        if usable.contains(&assigned) {
-            return None;
-        }
-        tracing::warn!(
-            target: "forge_workspace::account",
-            label,
-            account = %assigned.0,
-            "adhoc worker assigned to a rate-limited or bailed account",
-        );
-        Some(assigned)
-    }
-
-    /// Recompute the `AssignmentPlan` from the current ready-account
-    /// set when every account has reached a terminal `LoadingState`.
-    /// No-op when accounts are still loading - the boot-time
-    /// `account_loader` task calls this as each account settles, so
-    /// the plan ends up populated on the first `all_loaded`-true
-    /// call, and the usage poller's success arm calls it when a
-    /// clean probe heals a Bailed account. The frozen-overlay merge
-    /// preserves existing assignments while extending the pools with
-    /// newly-recovered accounts. The ready / degraded / saturated
-    /// account sets the assignment plan consumes, in forge.toml
-    /// definition order. `None` while any account is still loading.
-    fn account_health_sets(&self) -> Option<(Vec<AccountKey>, Vec<AccountKey>, Vec<AccountKey>)> {
-        self.accounts.health_sets()
-    }
-
-    pub(crate) fn recompute_plan_if_ready(&self) {
-        use forge_gateway::assignment_plan::{ProjectInput, compute_plan};
-
-        let Some((ready_accounts, degraded_accounts, saturated)) = self.account_health_sets()
-        else {
-            return;
-        };
-
-        let projects: Vec<ProjectInput> = self
-            .config
-            .projects
-            .iter()
-            .map(|p| ProjectInput {
-                key: ProjectKey::new(
-                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                        &p.path.to_string_lossy(),
-                    )),
-                ),
-                accounts: p.accounts.clone(),
-                fallback_accounts: p.fallback_accounts.clone(),
-            })
-            .collect();
-
-        let mut fresh = compute_plan(&ready_accounts, &degraded_accounts, &saturated, &projects);
-        for project in &projects {
-            if fresh.slot_degraded(&project.key) {
-                tracing::warn!(
-                    target: "forge_workspace::assignment_plan",
-                    project = ?project.key,
-                    "project assigned from a degraded pool; every allow-listed account is terminal-not-Ready",
-                );
-            }
-            if fresh.slot_fallback(&project.key) {
-                tracing::warn!(
-                    target: "forge_workspace::assignment_plan",
-                    project = ?project.key,
-                    "project assigned from a fallback tier; no primary account is Ready and under its cap",
-                );
-            }
-        }
-
-        // A worker that spawned while the accounts were still loading
-        // found no plan to extend, and nothing downstream would ever give
-        // it an entry: `compute_plan` emits only the lead, and the frozen
-        // overlay adds only what `fresh` already holds. Seed the live
-        // ones here, in label order so the rotation is deterministic.
-        let usable: Vec<AccountKey> =
-            ready_accounts.iter().filter(|k| !saturated.contains(k)).cloned().collect::<Vec<_>>();
-        for input in &projects {
-            let mut labels: Vec<String> =
-                self.list_live_workers(&input.key).into_iter().map(|w| w.label).collect();
-            labels.sort();
-            for label in labels {
-                if let Some(assigned) = fresh.assign_adhoc_worker(&input.key, &label, |k| {
-                    usable.is_empty() || usable.contains(k)
-                }) && !usable.is_empty()
-                    && !usable.contains(&assigned)
-                {
-                    tracing::warn!(
-                        target: "forge_workspace::account",
-                        label = %label,
-                        account = %assigned.0,
-                        "recompute seeded a live worker onto a rate-limited or bailed account",
-                    );
+    ) -> Result<AccountKey, anyhow::Error> {
+        use forge_gateway::SelectFailure;
+        self.gateway.select_for(&project.org, model).map_err(|failure| match failure {
+            SelectFailure::NoEligibleAccount { org, model } => {
+                WorkspaceError::NoAccountServesProjectModel {
+                    project: project.name.clone(),
+                    org,
+                    model,
+                    accounts: project
+                        .accounts
+                        .iter()
+                        .chain(project.fallback_accounts.iter())
+                        .cloned()
+                        .collect::<Vec<String>>()
+                        .join(", "),
                 }
+                .into()
             }
-        }
-
-        // First compute stores; subsequent recomputes merge under the
-        // frozen overlay so mid-run sessions don't shift to a
-        // newly-recovered account.
-        self.accounts.merge_plan(fresh);
+            SelectFailure::BudgetExhausted { org, model, reset_in, .. } => {
+                WorkspaceError::AllAccountsCooling {
+                    project: project.name.clone(),
+                    org,
+                    model,
+                    seconds: reset_in.as_secs(),
+                }
+                .into()
+            }
+            SelectFailure::UnknownOrg { org } => anyhow::anyhow!(
+                "project '{}' names org '{org}', which the gateway holds no pin for",
+                project.name
+            ),
+        })
     }
 
     /// Spawn one boot-time loading task per `[[accounts]]` entry in
@@ -2938,12 +2506,10 @@ impl Workspace {
         }
     }
 
-    /// Write one successful poll result and, when it heals a Bailed
-    /// account, recompute the assignment plan so the recovered account
-    /// rejoins its project pools behind the frozen overlay - existing
-    /// assignments keep their accounts, only new sessions pick it up.
-    /// Without the recompute a healed account stays out of every pool
-    /// until restart.
+    /// Write one successful poll result. A healed account is
+    /// immediately eligible for new spawns: the walk reads the state
+    /// map directly, so there is nothing to recompute. Existing
+    /// sessions keep the account they bound to.
     pub(crate) fn record_usage_success(
         &self,
         key: &AccountKey,
@@ -2969,9 +2535,8 @@ impl Workspace {
                 event_name = "account_healed",
                 account = %key.0,
                 outcome = "ready",
-                "Bailed -> Ready on a clean usage poll; the plan picks the account up for new sessions",
+                "Bailed -> Ready on a clean usage poll; the walk serves it for new sessions",
             );
-            self.recompute_plan_if_ready();
         }
     }
 
@@ -2997,8 +2562,8 @@ impl Workspace {
     /// Snapshot the accounts a project may spawn under, in allow-list
     /// order, each carrying its live rate-limit state for the gateway
     /// view. `allowed_accounts` is the project's
-    /// forge.toml pin; empty falls back to every configured account
-    /// (matching `pick_for_project`'s resolution). `fallback_accounts`
+    /// forge.toml pin; empty falls back to every configured account.
+    /// `fallback_accounts`
     /// is the org's fallback list: unioned in (deduped) even when the
     /// pin does not name them, and flagged so a fallback-only row can
     /// carry its dim `fallback` suffix. `current_account` is the
@@ -3098,79 +2663,9 @@ impl Workspace {
         }
     }
 
-    /// Resolve a target's project-level account pin (the
-    /// `[[orgs]].accounts = [...]` list inherited from the project's
-    /// org in `forge.toml`). Project-rooted targets read directly off
-    /// the matching `LoadedProject`; session-id targets resolve the
-    /// session's cwd through [`Self::cwd_for_session`] and map it to the
-    /// owning project by longest-ancestor-prefix so a resumed session
-    /// (including one in a worktree subdir) inherits the originating
-    /// project's pin.
-    ///
-    /// `cwd_for_session` rather than [`Self::session_cwd_for`]: a
-    /// worker's catalog row is absent on a fresh spawn and untagged on a
-    /// resume, so the bare catalog read cannot identify one and hands it
-    /// the default project's pin - another project's accounts whenever
-    /// the worker isn't in the default one.
-    ///
-    /// Config-load guarantees every `LoadedProject.accounts` is
-    /// non-empty. The session-id branch can still miss (neither source
-    /// knows the session, or its cwd is under no project) - those fall
-    /// back to the default project's pin so the picker always has
-    /// a non-empty list. This mirrors the "use what we know" intent
-    /// rather than a global account fallback.
-    fn project_accounts_for(&self, target: &SessionTarget) -> Vec<String> {
-        self.project_pin_for(target).accounts
-    }
-
-    /// The fallback pin for `target`, resolved the same way
-    /// [`Self::project_accounts_for`] resolves the primary pin.
-    fn project_fallback_accounts_for(&self, target: &SessionTarget) -> Vec<String> {
-        self.project_pin_for(target).fallback_accounts
-    }
-
-    /// The `LoadedProject` whose pins a spawn under `target` inherits,
-    /// falling back to the default project on any miss (so both pins
-    /// stay one resolution).
-    fn project_pin_for(&self, target: &SessionTarget) -> LoadedProject {
-        match target {
-            SessionTarget::Default => self.config.default_project().clone(),
-            SessionTarget::Named(name) => self
-                .find_project_by_name(name)
-                .map_or_else(|_| self.config.default_project().clone(), std::clone::Clone::clone),
-            SessionTarget::Session(key) => {
-                let matched = self.cwd_for_session(key).and_then(|cwd| {
-                    // A worktree cwd is a subdir of its project root, so
-                    // resolve by ancestor-prefix (project_name_for_path)
-                    // instead of exact equality before reading the pin.
-                    self.project_name_for_path(&cwd)
-                        .and_then(|name| self.find_project_by_name(&name).ok())
-                        .cloned()
-                });
-                matched.unwrap_or_else(|| self.config.default_project().clone())
-            }
-            // A fresh worker spawn's project_key is always the parent
-            // project's (the worktree is created post-spawn via
-            // --worktree; resume takes the Session branch), so this exact
-            // key match resolves correctly.
-            SessionTarget::FreshInProject { project_key, .. } => self
-                .config
-                .projects
-                .iter()
-                .find(|p| {
-                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                        &p.path.to_string_lossy(),
-                    )) == project_key.as_str()
-                })
-                .map_or_else(|| self.config.default_project().clone(), |p| (*p).clone()),
-        }
-    }
-
-    /// The project a spawn under `target` belongs to. Not
-    /// [`Self::project_accounts_for`]'s resolution: that falls back to
-    /// the default project, which would hand one project's keys to
-    /// another's session, and it resolves through `session_cwd_for`,
-    /// which misses every worker (the catalog holds no worker rows).
+    /// The project a spawn under `target` belongs to. Resolves through
+    /// `cwd_for_session`, not `session_cwd_for`: the latter misses every
+    /// worker (the catalog holds no worker rows).
     fn project_for_target(&self, target: &SessionTarget) -> Option<LoadedProject> {
         match target {
             SessionTarget::Default => Some(self.config.default_project().clone()),
@@ -3192,31 +2687,6 @@ impl Workspace {
                 }),
             SessionTarget::FreshInProject { project_key, .. } => self.project_for_key(project_key),
         }
-    }
-
-    /// Env for a spawn under `target` on the picked account. An
-    /// unresolved target keeps the account env rather than borrowing
-    /// the default project's, and warns when any project declares env,
-    /// since the symptom is otherwise a silently incomplete session.
-    fn session_env_for(
-        &self,
-        target: &SessionTarget,
-        account_env: &std::collections::HashMap<String, String>,
-    ) -> std::collections::HashMap<String, String> {
-        let Some(project) = self.project_for_target(target) else {
-            return account_env.clone();
-        };
-        // Logged even when the project declares nothing, so a target
-        // resolving to the wrong project is visible.
-        tracing::info!(
-            target: "forge_workspace::workspace",
-            event_name = "session_env_project_applied",
-            project = %project.name,
-            keys = %crate::config::applied_env_keys(&project),
-            "resolved the spawn target to a project; `keys` lists what its \
-             project env contributed, empty when it declares none",
-        );
-        crate::config::session_env(&project, account_env)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
@@ -6408,12 +5878,23 @@ async fn tag_session_with_retry(
     }))
 }
 
-/// `true` when a `__resume_worker_` spawn key resolves to the lead
-/// label: the registry lost the worker and the lookup degraded, so the
-/// row it names is the LEAD's - rewriting it would move the lead's
-/// assignment and reset its rotation.
-fn is_degraded_worker_resume(spawn_key: Option<&SessionKey>, label: &str) -> bool {
-    spawn_key.is_some_and(|key| key.as_str().starts_with("__resume_worker_")) && label == "lead"
+/// Env for a spawn: the account env with `project`'s declared keys
+/// merged over it. The spawn resolves the project first and refuses a
+/// target that maps to none, so there is always one to merge.
+fn session_env_for(
+    project: &LoadedProject,
+    account_env: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    // Logged even when the project declares nothing, so a spawn
+    // carrying the wrong project's env is visible.
+    tracing::info!(
+        target: "forge_workspace::workspace",
+        event_name = "session_env_project_applied",
+        project = %project.name,
+        keys = %crate::config::applied_env_keys(project),
+        "`keys` lists what the project env contributed, empty when it declares none",
+    );
+    crate::config::session_env(project, account_env)
 }
 
 /// Stamp the project's `permission_mode` into the launch settings'
@@ -7280,61 +6761,6 @@ mod tests {
         );
     }
 
-    // forge.toml for the account-pin resolution tests: a `stargate`
-    // project pinned to ["Stargate"] plus an alphabetically-earlier
-    // auto_start default ("airmail") on the Gateway org, so a miss
-    // surfaces as the Gateway pin rather than an empty list / panic.
-    const ACCOUNT_PIN_FIXTURE: &str = r#"
-[[orgs]]
-name = "Gateway"
-accounts = ["Gateway", "Gateway1", "Personal"]
-[[orgs.projects]]
-name = "airmail"
-path = "/tmp/wt-acct-airmail"
-auto_start = true
-
-[[orgs]]
-name = "Stargate"
-accounts = ["Stargate"]
-[[orgs.projects]]
-name = "stargate"
-path = "/tmp/wt-acct-stargate"
-auto_start = true
-
-[[accounts]]
-display_name = "Gateway"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-[[accounts]]
-display_name = "Gateway1"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-[[accounts]]
-display_name = "Personal"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-[[accounts]]
-display_name = "Stargate"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#;
-
-    // Stub whose config is `ACCOUNT_PIN_FIXTURE`. The returned `TempDir`
-    // guards the config dir for the caller's lifetime.
-    fn stub_with_account_pin_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
-        let dir = tempdir().expect("tempdir");
-        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
-        fs::write(forge_dir.join("forge.toml"), ACCOUNT_PIN_FIXTURE).expect("write forge.toml");
-        let config = crate::config::load_from_dir(dir.path()).expect("load config");
-        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config)
-            .expect("the stub config's [[slack]] entries are well-formed");
-        (ws, dir)
-    }
-
     /// `SessionTarget::Default` is the alphabetically-first auto_start
     /// Buffer tracing output so the applied record can be read back.
     #[derive(Clone, Default)]
@@ -7391,16 +6817,12 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
-        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config)
-            .expect("the stub config's [[slack]] entries are well-formed");
+        let project = config.projects[0].clone();
 
         let capture = LogCapture::default();
         let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
         tracing::subscriber::with_default(subscriber, || {
-            ws.session_env_for(
-                &SessionTarget::Named("solo".to_owned()),
-                &std::collections::HashMap::new(),
-            );
+            session_env_for(&project, &std::collections::HashMap::new());
         });
         let log = String::from_utf8_lossy(&capture.0.lock()).into_owned();
 
@@ -7409,12 +6831,13 @@ provider = "anthropic"
     }
 
     /// Two projects at one path collide on the session-storage key, so
-    /// neither can be told apart - the ambiguous case must yield NO
-    /// project env rather than the first match's. Second assertion
-    /// covers the `__fresh__:` key a project-rooted target mints, which
-    /// resolves via the same lookup.
+    /// neither can be told apart: an ambiguous target resolves to NO
+    /// project rather than the first match's, which is what refuses the
+    /// spawn rather than handing it one twin's env and the other's pin.
+    /// Second assertion covers the `__fresh__:` key a project-rooted
+    /// target mints, which resolves via the same lookup.
     #[test]
-    fn an_ambiguous_storage_key_yields_no_project_env() {
+    fn an_ambiguous_storage_key_resolves_to_no_project() {
         let dir = tempdir().expect("tempdir");
         let shared = dir.path().join("shared");
         let solo = dir.path().join("solo");
@@ -7464,116 +6887,19 @@ provider = "anthropic"
             project_key: key(&shared),
             synth_key: SessionKey::from_session_id("__spawn_twin__"),
         };
-        let env = ws.session_env_for(&ambiguous, &std::collections::HashMap::new());
         assert!(
-            !env.contains_key("TWIN_TOKEN"),
-            "an ambiguous key must not deliver either twin's env: {env:?}",
+            ws.project_for_target(&ambiguous).is_none(),
+            "an ambiguous key must resolve to neither twin, which refuses the spawn",
         );
 
         let fresh = SessionTarget::Session(SessionKey::from_session_id(format!(
             "__fresh__:{}",
             key(&solo).as_str()
         )));
-        let env = ws.session_env_for(&fresh, &std::collections::HashMap::new());
         assert_eq!(
-            env.get("SOLO_TOKEN").map(String::as_str),
-            Some("solo-secret"),
+            ws.project_for_target(&fresh).map(|project| project.name),
+            Some("solo".to_owned()),
             "an unambiguous key still resolves, including through a __fresh__: placeholder",
-        );
-    }
-
-    #[test]
-    fn project_accounts_for_resolves_worktree_session_to_parent_project() {
-        // A session whose cwd is a worktree under the stargate root must
-        // inherit ["Stargate"], not the alpha-first Gateway default.
-        let (ws, _dir) = stub_with_account_pin_fixture();
-        ws.record_connected_session(
-            "/tmp/wt-acct-stargate/.claude/worktrees/reviewer",
-            "sess-worktree",
-            None,
-        );
-        let target = SessionTarget::Session(SessionKey::from_session_id("sess-worktree"));
-        assert_eq!(
-            ws.project_accounts_for(&target),
-            vec!["Stargate".to_owned()],
-            "a worktree session inherits its parent project's account pin, not the default's",
-        );
-    }
-
-    #[test]
-    fn project_accounts_for_resolves_project_root_session_to_its_own_pin() {
-        // The common non-worktree path the fix also rewrote: a session
-        // rooted exactly at a project resolves to that project's own pin,
-        // not the default.
-        let (ws, _dir) = stub_with_account_pin_fixture();
-        ws.record_connected_session("/tmp/wt-acct-stargate", "sess-root", None);
-        let target = SessionTarget::Session(SessionKey::from_session_id("sess-root"));
-        assert_eq!(
-            ws.project_accounts_for(&target),
-            vec!["Stargate".to_owned()],
-            "a project-root session resolves to its own pin",
-        );
-    }
-
-    /// A worker's catalog row cannot identify it: the boot scan hides
-    /// worker-tagged sessions, and the Connected mirror either skips the
-    /// insert (fresh spawn) or writes an UNTAGGED row (resume, where the
-    /// guard looks up the synth spawn key while the registry holds the
-    /// real session id). Either way `session_cwd_for` cannot answer, and
-    /// the pin fell through to the DEFAULT project's accounts - another
-    /// project's list whenever the worker isn't in the default project,
-    /// which is the usual case.
-    ///
-    /// The fixture models the no-row case; do not read it as proof that
-    /// a row never exists.
-    #[test]
-    fn project_accounts_for_resolves_a_worker_through_the_registry() {
-        let (ws, _dir) = stub_with_account_pin_fixture();
-        let session_key = SessionKey::from_session_id("worker-uuid-pin");
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                "/tmp/wt-acct-stargate",
-            )));
-        ws.insert_live_worker(
-            &project_key,
-            crate::mcp::workers::types::WorkerEntry {
-                label: "implementer".to_owned(),
-                charter: "test charter".to_owned(),
-                session_key: session_key.clone(),
-                status: forge_primitives::WorkerLiveness::Running,
-                spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead-uuid".to_owned(),
-                needs_tag: false,
-                is_git_repo_at_spawn: true,
-                diagnostic: None,
-                kick: None,
-            },
-        );
-        assert!(
-            ws.session_cwd_for(&session_key).is_none(),
-            "fixture precondition: no catalog row for this worker",
-        );
-
-        let target = SessionTarget::Session(session_key);
-        assert_eq!(
-            ws.project_accounts_for(&target),
-            vec!["Stargate".to_owned()],
-            "a worker inherits its own project's pin, not the default project's",
-        );
-    }
-
-    #[test]
-    fn project_accounts_for_falls_back_to_default_for_unknown_cwd() {
-        // A cwd under no configured project degrades to the default
-        // project's pin (the alpha-first Gateway auto_start default) so
-        // the picker always has a non-empty allow-list.
-        let (ws, _dir) = stub_with_account_pin_fixture();
-        ws.record_connected_session("/tmp/unrelated-elsewhere", "sess-unknown", None);
-        let target = SessionTarget::Session(SessionKey::from_session_id("sess-unknown"));
-        assert_eq!(
-            ws.project_accounts_for(&target),
-            vec!["Gateway".to_owned(), "Gateway1".to_owned(), "Personal".to_owned()],
-            "an unknown cwd falls back to the default project's accounts",
         );
     }
 
@@ -8345,6 +7671,7 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -8420,6 +7747,7 @@ base_url = "https://openrouter.ai/api"
     async fn get_agent_handle_default_is_idempotent() {
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_ready_account("Stargate");
         let settings = SessionLaunchSettings::default();
 
         let handle1 =
@@ -8432,8 +7760,35 @@ base_url = "https://openrouter.ai/api"
 
     #[tokio::test]
     async fn distinct_targets_pool_distinct_entries() {
-        let dir = make_workspace_dir();
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[orgs.projects]]
+name = "dotfiles"
+path = "~/Projects/dotfiles"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_ready_account("Stargate");
         let settings = SessionLaunchSettings::default();
 
         let _ =
@@ -8443,16 +7798,17 @@ base_url = "https://openrouter.ai/api"
             .expect("default again");
         assert_eq!(workspace.pool.lock().len(), 1, "Default is idempotent");
 
-        let other = SessionKey::from_str_for_test("dual-test-other");
-        let _ =
-            workspace.get_agent_handle(SessionTarget::Session(other), settings).expect("session");
-        assert_eq!(workspace.pool.lock().len(), 2, "distinct target adds a pool entry");
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Named("dotfiles".to_owned()), settings)
+            .expect("named");
+        assert_eq!(workspace.pool.lock().len(), 2, "a distinct target adds a pool entry");
     }
 
     #[tokio::test]
     async fn shutdown_drains_pool() {
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_ready_account("Stargate");
         let handle = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default");
@@ -8491,10 +7847,12 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[orgs.projects]]
 name = "dotfiles"
 path = "~/Projects/dotfiles"
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -8506,6 +7864,7 @@ provider = "anthropic"
         .expect("write forge.toml");
 
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_ready_account("Stargate");
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default");
@@ -8568,6 +7927,7 @@ accounts = ["Stargate", "Gateway"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -8593,6 +7953,7 @@ provider = "anthropic"
         // The listener's own tests cover the socket; this one pins what
         // the child is stamped with, so the boot gate is opened by hand.
         workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
+        workspace.seed_test_ready_account("Stargate");
 
         let handle = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
@@ -8640,6 +8001,7 @@ accounts = ["Stargate", "Gateway"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [orgs.projects.env]
 ANTHROPIC_BASE_URL = "http://169.254.10.10:9999"
@@ -8661,6 +8023,7 @@ provider = "anthropic"
         .expect("write forge.toml");
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
+        workspace.seed_test_ready_account("Stargate");
 
         let handle = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
@@ -8708,55 +8071,24 @@ provider = "anthropic"
     async fn pool_records_picked_account() {
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_ready_account("Stargate");
+        workspace.seed_test_ready_account("Gateway");
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default");
         let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 1);
-        // Cold cache → unknown-first tie-break is the project's
-        // `accounts = ["Stargate", "Gateway"]` order. Stargate wins.
+        // Every spawn walks, so the pick is the first ready account in
+        // the org's own order - there is no per-spawn spread.
         assert_eq!(bound[0], "Stargate");
     }
 
     #[tokio::test]
-    async fn cold_cache_spawns_rotate_across_allow_list() {
-        // Two healthy accounts in the allow-list, two spawns. Round-
-        // robin cursor advances per pick, so the first spawn lands
-        // on the first allow-list entry (Stargate) and the second
-        // rotates to Gateway. Cursor is shared across the workspace
-        // so even cold-cache spawns spread load rather than always
-        // hammering the first account.
-        let dir = make_workspace_dir_with_two_accounts();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-
-        let _ = workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .expect("first");
-
-        let other = SessionKey::from_str_for_test("dual-account-test-other");
-        let _ = workspace
-            .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
-            .expect("second");
-
-        let mut bound =
-            workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
-        bound.sort();
-        assert_eq!(
-            bound,
-            vec!["Gateway".to_owned(), "Stargate".to_owned()],
-            "two spawns must split across the two healthy accounts (round-robin)",
-        );
-    }
-
-    #[tokio::test]
     async fn project_account_pin_excludes_unpinned_account() {
-        // Three accounts globally; default org pins only
-        // {Stargate, Gateway}. Spawn under the default project picks
-        // one of the pinned pair (Gateway via alpha tie-break) and
-        // must never touch Personal. Multi-spawn rotation within the
-        // subset is exercised by the unit tests in `account.rs`
-        // (`lru_restricted_pool_lru_within_subset`,
-        // `round_robin_restricted_pool_cycles_within_subset`).
+        // Three accounts globally, all Ready; the default org pins only
+        // {Stargate, Gateway}, so a spawn under the default project
+        // walks the pinned pair in its own order and never reaches
+        // Personal.
         let dir = tempdir().expect("tempdir");
         fs::write(
             forge_toml_path(dir.path()),
@@ -8769,6 +8101,7 @@ accounts = ["Stargate", "Gateway"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -8792,17 +8125,19 @@ provider = "anthropic"
         .expect("write forge.toml");
 
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        for account in ["Stargate", "Gateway", "Personal"] {
+            workspace.seed_test_ready_account(account);
+        }
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default spawn");
 
         let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 1);
-        assert!(
-            bound[0] == "Stargate" || bound[0] == "Gateway",
-            "spawn must land on a pinned account, got {bound:?}",
+        assert_eq!(
+            bound[0], "Stargate",
+            "the walk takes the first pinned account; Personal is never reached",
         );
-        assert_ne!(bound[0], "Personal", "Personal must be excluded by the pin");
     }
 
     // ---- Refresh + facade tests ----
@@ -13538,11 +12873,10 @@ mod git_scan_cwd_tests {
     }
 
     // ---------------------------------------------------------------
-    // #246: recompute_plan_if_ready + extend_plan_for_adhoc_worker +
-    // session_chip_for. Build a real workspace from the local
-    // `make_workspace_dir_246` helper (single account "Stargate",
-    // single project "forge") + manually drive the loading state via
-    // account_pool().set_*().
+    // The selection walk and `session_chip_for`. Build a real
+    // workspace from the local `make_workspace_dir_246` helper (single
+    // account "Stargate", single project "forge") + manually drive the
+    // loading state via account_pool().set_*().
     // ---------------------------------------------------------------
 
     fn make_workspace_dir_246() -> tempfile::TempDir {
@@ -13558,6 +12892,7 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -13599,6 +12934,7 @@ provider = "anthropic"
         let workspace =
             std::sync::Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.seed_test_gateway_ready(true);
+        workspace.seed_test_ready_account("Stargate");
         let handle = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("spawn");
@@ -13612,31 +12948,13 @@ provider = "anthropic"
         }
     }
 
-    /// A spawn resolving to no project keeps the direct account env:
-    /// no registration, no listener base URL, the account's real
-    /// credential intact.
+    /// A spawn whose target resolves to no configured project is
+    /// refused, naming the session and both ways out. It used to spawn
+    /// unregistered, carrying the account's real credential and a
+    /// direct base URL - a session the gateway could not see, rotate or
+    /// cool, and one whose dir forge.toml does not describe.
     #[tokio::test]
-    async fn a_no_project_spawn_keeps_the_direct_account_env() {
-        let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let account_env =
-            HashMap::from([("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "real".to_owned())]);
-        let target = SessionTarget::Session(SessionKey::from_session_id("orphan-uuid"));
-        let env = workspace.session_env_for(&target, &account_env);
-        assert_eq!(
-            env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
-            Some("real"),
-            "a projectless spawn carries the account's real credential",
-        );
-        assert!(
-            !env.contains_key("ANTHROPIC_BASE_URL"),
-            "no listener base URL is stamped for a projectless spawn",
-        );
-    }
-
-    /// Like `make_workspace_dir_246` without `auto_start`, so a test can
-    /// drive the plan itself rather than racing a boot spawn.
-    fn make_workspace_dir_no_auto_start() -> tempfile::TempDir {
+    async fn a_spawn_resolving_to_no_project_is_refused_by_name() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             forge_toml_path(dir.path()),
@@ -13648,6 +12966,8 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
+auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -13657,49 +12977,107 @@ provider = "anthropic"
 "#,
         )
         .expect("write forge.toml");
-        dir
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_gateway_ready(true);
+        workspace.seed_test_ready_account("Stargate");
+        let target = SessionTarget::Session(SessionKey::from_session_id("orphan-uuid"));
+        let error = workspace
+            .get_agent_handle(target, SessionLaunchSettings::default())
+            .err()
+            .expect("a session mapping to no project must not spawn");
+
+        let message = format!("{error}");
+        assert!(
+            message.contains("orphan-uuid"),
+            "the refusal names the session, so the row is identifiable: {message}",
+        );
+        assert!(
+            message.contains("Add that directory as a project"),
+            "and names the way forward: {message}",
+        );
+        assert!(
+            workspace.pool.lock().is_empty(),
+            "nothing is pooled, so no unregistered child is running",
+        );
     }
 
-    /// Two org accounts in definition order (Alpha, Beta) and a
-    /// project with NO `accounts` allow-list, so the project pool IS
-    /// the org-ordered ready slice - the exact shape where HashMap
-    /// iteration order used to make the lead-account pick
-    /// non-deterministic across restarts.
-    fn make_workspace_dir_246_two_accounts() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            forge_toml_path(dir.path()),
-            r#"
-[[orgs]]
-name = "Default"
-accounts = ["Alpha", "Beta"]
+    /// `project_would_bind` is the whole input to the launchpad's click
+    /// gate and to its hint row, so an always-false regression would
+    /// leave every project unclickable and nothing else would fail.
+    #[tokio::test]
+    async fn project_would_bind_tracks_the_walk() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let project = workspace.list_projects().into_iter().next().expect("one project");
 
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-auto_start = true
+        assert!(
+            !workspace.project_would_bind(&project.key),
+            "an account still resolving is nothing the walk can pick",
+        );
 
-[[accounts]]
-display_name = "Alpha"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
+        workspace.seed_test_ready_account("Stargate");
+        assert!(
+            workspace.project_would_bind(&project.key),
+            "a ready account declaring the project's model is what a spawn lands on",
+        );
 
-[[accounts]]
-display_name = "Beta"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#,
-        )
-        .expect("write forge.toml");
-        dir
+        workspace.seed_test_account_state("Stargate", forge_gateway::LoadingState::Bailed);
+        assert!(
+            workspace.project_would_bind(&project.key),
+            "a bailed account is still picked when nothing else declares the model, \
+             so the row stays clickable",
+        );
+
+        // Agent-cooling, which is the one settled state the walk refuses:
+        // it is what renders the launchpad's dim hint on a project that
+        // does declare a model.
+        workspace.seed_test_ready_account("Stargate");
+        let an_hour_out = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_secs()
+            + 3600;
+        workspace.gateway.report_probe_limit(&AccountKey("Stargate".to_owned()), Some(an_hour_out));
+        assert!(
+            !workspace.project_would_bind(&project.key),
+            "every declaring account cooling is nothing to spawn on, so the row blocks",
+        );
     }
 
-    /// Two accounts, so the lead (session_n=0) and the first worker to
-    /// spawn (session_n=1) bind to DIFFERENT accounts. That separation
-    /// is what makes a wrong label observable rather than accidentally
-    /// right.
+    /// The spawn's notice: an account the walk had to take while
+    /// saturated or bailed comes back named, one with room does not, so
+    /// the tool result carries a notice exactly when there is something
+    /// to warn about.
+    #[tokio::test]
+    async fn a_degraded_account_is_named_and_an_account_with_room_is_not() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let key = AccountKey("Stargate".to_owned());
+
+        workspace.account_pool().set_usage(&key, usage_at(100.0));
+        assert_eq!(
+            workspace.degraded_account_name("Stargate").as_deref(),
+            Some("Stargate"),
+            "a saturated account is named, so the spawn warns the worker may throttle",
+        );
+
+        workspace.account_pool().set_usage(&key, usage_at(10.0));
+        assert_eq!(
+            workspace.degraded_account_name("Stargate"),
+            None,
+            "an account with room is not named, so the result carries no notice",
+        );
+
+        workspace.account_pool().set_loading(&key, forge_gateway::LoadingState::Bailed);
+        assert_eq!(
+            workspace.degraded_account_name("Stargate").as_deref(),
+            Some("Stargate"),
+            "a bailed account is named too",
+        );
+    }
+
+    /// Two accounts and a project that declares no model, which is the
+    /// fixture for `apply_project_model`'s absent-model case.
     fn make_workspace_dir_lead_and_worker() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -13731,526 +13109,6 @@ provider = "anthropic"
         dir
     }
 
-    /// One primary (Sub) with one fallback (Api), so a saturation on
-    /// the primary is the exact shape where a resume must re-tier.
-    fn make_workspace_dir_primary_and_fallback() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            forge_toml_path(dir.path()),
-            r#"
-[[orgs]]
-name = "Default"
-accounts = ["Sub"]
-fallback_accounts = ["Api"]
-
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-auto_start = true
-
-[[accounts]]
-display_name = "Sub"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-
-[[accounts]]
-display_name = "Api"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#,
-        )
-        .expect("write forge.toml");
-        dir
-    }
-
-    /// One primary with TWO fallbacks, so a re-tiered pool has more
-    /// than one slot to rotate into.
-    fn make_workspace_dir_multi_fallback() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            forge_toml_path(dir.path()),
-            r#"
-[[orgs]]
-name = "Default"
-accounts = ["Sub"]
-fallback_accounts = ["Api1", "Api2"]
-
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-auto_start = true
-
-[[accounts]]
-display_name = "Sub"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-
-[[accounts]]
-display_name = "Api1"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-
-[[accounts]]
-display_name = "Api2"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#,
-        )
-        .expect("write forge.toml");
-        dir
-    }
-
-    /// Resuming a worker from the Projects-pane drilldown dispatches
-    /// `SessionTarget::Session(<worker uuid>)` under a `__resume_<id>__`
-    /// spawn key the registry has never seen, so the spawn-key lookup
-    /// misses. The worker's own key does resolve - `migrate_session_task`
-    /// stamped it onto the `WorkerEntry` at Connected - and that is the
-    /// only source that can: the sessions catalog holds no worker rows.
-    /// Falling through to the catalog left the label at "lead" and drew
-    /// the LEAD's assigned account.
-    #[tokio::test]
-    async fn plan_assignment_resolves_a_resumed_worker_to_its_own_account() {
-        let dir = make_workspace_dir_lead_and_worker();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        pool.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("Beta".to_owned()), usage_at(10.0));
-        workspace.recompute_plan_if_ready();
-
-        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
-        );
-        let lead_account = workspace
-            .plan_assignment(&SessionTarget::Named("forge".to_owned()), None)
-            .expect("the lead resolves through the plan");
-
-        // A worker earns its plan row by spawning, so give it one the way
-        // a spawn does before resuming it.
-        workspace.extend_plan_for_adhoc_worker(&project_key, "implementer");
-
-        let worker_key = SessionKey::from_session_id("resumed-worker-uuid");
-        workspace.insert_live_worker(
-            &project_key,
-            crate::mcp::workers::types::WorkerEntry {
-                label: "implementer".to_owned(),
-                charter: "test charter".to_owned(),
-                session_key: worker_key.clone(),
-                status: forge_primitives::WorkerLiveness::Running,
-                spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead-uuid".to_owned(),
-                needs_tag: false,
-                is_git_repo_at_spawn: true,
-                diagnostic: None,
-                kick: None,
-            },
-        );
-        let resume_spawn_key =
-            SessionKey::from_session_id("__resume_resumed-worker-uuid__".to_owned());
-
-        let assigned = workspace
-            .plan_assignment(&SessionTarget::Session(worker_key), Some(&resume_spawn_key))
-            .expect("a resumed worker resolves through the registry");
-
-        assert_eq!(
-            assigned,
-            AccountKey("Beta".to_owned()),
-            "the worker draws its own plan row, not the lead's",
-        );
-        assert_ne!(assigned, lead_account, "lead and worker are on different accounts here");
-    }
-
-    /// A resumed session is not a running one, so the frozen overlay
-    /// does not pin it: when the recorded account is no longer in the
-    /// best available tier, the resume re-tiers onto the better
-    /// account and rewrites the plan row. The resumed-worker test
-    /// above pins the companion: a recorded account still inside the
-    /// best tier keeps its assignment.
-    #[tokio::test]
-    async fn resume_retiers_when_the_recorded_account_is_no_longer_best() {
-        let dir = make_workspace_dir_primary_and_fallback();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        pool.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("Api".to_owned()), usage_at(10.0));
-        workspace.recompute_plan_if_ready();
-
-        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
-        );
-        // Seed the catalog so the lead's Session target resolves to its
-        // project the way a drilldown resume needs.
-        workspace.record_connected_session(&project_path, "lead-uuid", None);
-
-        let lead_target = SessionTarget::Session(SessionKey::from_session_id("lead-uuid"));
-        let resume_spawn_key = SessionKey::from_session_id("__resume_lead-uuid__".to_owned());
-        let recorded = workspace
-            .plan_assignment(&lead_target, Some(&resume_spawn_key))
-            .expect("the resume resolves through the plan");
-        assert_eq!(recorded, AccountKey("Sub".to_owned()), "boot recorded the primary");
-
-        // The primary hits its cap while the fallback stays healthy.
-        pool.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
-
-        let re_tiered = workspace
-            .plan_assignment(&lead_target, Some(&resume_spawn_key))
-            .expect("the resume still resolves");
-        assert_eq!(
-            re_tiered,
-            AccountKey("Api".to_owned()),
-            "the resume falls to the healthy fallback",
-        );
-        let plan = workspace.account_pool().plan_for_test();
-        assert_eq!(
-            plan.expect("plan populated").lookup(&project_key, &"lead".to_owned()),
-            Some(&AccountKey("Api".to_owned())),
-            "the plan row records the re-tiered account",
-        );
-
-        // A second resume with the recorded account already best keeps it.
-        let kept = workspace
-            .plan_assignment(&lead_target, Some(&resume_spawn_key))
-            .expect("the resume still resolves");
-        assert_eq!(
-            kept,
-            AccountKey("Api".to_owned()),
-            "no churn once the recorded account is best"
-        );
-    }
-
-    /// The re-tier is a single-row frozen-overlay extend plus a slot
-    /// refresh: the lead moves to the fallback while a worker row that
-    /// sits out of the new pool stays untouched, and a fresh adhoc
-    /// worker rotates into the REFRESHED pool rather than the stale
-    /// boot pool.
-    #[tokio::test]
-    async fn resume_retier_refreshes_the_slot_and_leaves_other_rows_untouched() {
-        let dir = make_workspace_dir_multi_fallback();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        pool.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("Api1".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("Api2".to_owned()), usage_at(10.0));
-        workspace.recompute_plan_if_ready();
-
-        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
-        );
-        workspace.record_connected_session(&project_path, "lead-uuid", None);
-        workspace.extend_plan_for_adhoc_worker(&project_key, "w1");
-
-        // The primary hits its cap; the fallbacks stay healthy. No
-        // recompute runs, so the slot still holds the stale boot pool -
-        // exactly the state a resume can land in.
-        pool.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
-
-        let lead_target = SessionTarget::Session(SessionKey::from_session_id("lead-uuid"));
-        let resume_spawn_key = SessionKey::from_session_id("__resume_lead-uuid__".to_owned());
-        let re_tiered = workspace
-            .plan_assignment(&lead_target, Some(&resume_spawn_key))
-            .expect("the resume resolves");
-        assert_eq!(re_tiered, AccountKey("Api1".to_owned()), "the lead re-tiers to the fallback");
-
-        let row = |label: &str| -> Option<AccountKey> {
-            workspace
-                .account_pool()
-                .plan_for_test()
-                .as_ref()
-                .expect("plan")
-                .lookup(&project_key, &label.to_owned())
-                .cloned()
-        };
-        assert_eq!(
-            row("w1"),
-            Some(AccountKey("Sub".to_owned())),
-            "the worker row sits out of the new pool and is untouched by the lead's re-tier",
-        );
-
-        // The slot carries the refreshed pool AND the lead's re-tier
-        // re-baselined the rotation: the first fresh worker lands on
-        // the free fallback slot instead of colliding with the lead.
-        let _ = workspace.extend_plan_for_adhoc_worker(&project_key, "w2");
-        assert_eq!(
-            row("w2"),
-            Some(AccountKey("Api2".to_owned())),
-            "the first fresh worker lands on the free fallback slot",
-        );
-    }
-
-    /// A resumed worker takes its OWN rotation slot in the refreshed
-    /// pool - the `assign_adhoc_worker` arithmetic - so two workers
-    /// resumed one after the other do not collapse onto the same
-    /// account the way a fixed pool[offset] pick would force.
-    #[tokio::test]
-    async fn resumed_workers_take_their_own_rotation_slot() {
-        let dir = make_workspace_dir_multi_fallback();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        pool.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("Api1".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("Api2".to_owned()), usage_at(10.0));
-        workspace.recompute_plan_if_ready();
-
-        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
-        );
-        for label in ["w1", "w2"] {
-            workspace.extend_plan_for_adhoc_worker(&project_key, label);
-            workspace.insert_live_worker(
-                &project_key,
-                crate::mcp::workers::types::WorkerEntry {
-                    label: label.to_owned(),
-                    charter: "test charter".to_owned(),
-                    session_key: SessionKey::from_session_id(format!("{label}-uuid")),
-                    status: forge_primitives::WorkerLiveness::Running,
-                    spawned_at: SystemTime::UNIX_EPOCH,
-                    spawned_by_session_id: "lead-uuid".to_owned(),
-                    needs_tag: false,
-                    is_git_repo_at_spawn: true,
-                    diagnostic: None,
-                    kick: None,
-                },
-            );
-        }
-
-        // The primary saturates with no recompute; both worker rows sit
-        // out of the fresh fallback pool.
-        pool.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
-
-        let resume = |workspace: &Arc<Workspace>, session_id: &str| {
-            let target = SessionTarget::Session(SessionKey::from_session_id(session_id));
-            let spawn_key =
-                SessionKey::from_session_id(format!("__resume_worker_forge_x_{session_id}__"));
-            workspace
-                .plan_assignment(&target, Some(&spawn_key))
-                .expect("the worker resume resolves")
-        };
-        let w1 = resume(&workspace, "w1-uuid");
-        let w2 = resume(&workspace, "w2-uuid");
-        assert_eq!(w1, AccountKey("Api2".to_owned()), "first resume takes the next counter slot");
-        assert_eq!(w2, AccountKey("Api1".to_owned()), "second resume rotates past it");
-        assert_ne!(w1, w2, "separately-resumed workers never collapse onto one account");
-    }
-
-    /// A worker-resume spawn key whose worker the registry has lost
-    /// (a dead worker resurrecting through a stale catalog row)
-    /// degrades plan_lookup_keys to the "lead" label. The re-tier must
-    /// refuse to write in that shape: the spawn keeps the recorded
-    /// lookup and the LEAD's plan row stays untouched.
-    #[tokio::test]
-    async fn a_worker_resume_resolved_to_lead_never_rewrites_the_lead_row() {
-        let dir = make_workspace_dir_primary_and_fallback();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        pool.set_usage(&AccountKey("Sub".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("Api".to_owned()), usage_at(10.0));
-        workspace.recompute_plan_if_ready();
-
-        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
-        );
-        // A dead worker's catalog row: the session id answers under the
-        // project's cwd, but no live WorkerEntry carries it.
-        workspace.record_connected_session(&project_path, "dead-worker-uuid", None);
-
-        // The primary saturates; a live lead resume WOULD re-tier here.
-        pool.set_usage(&AccountKey("Sub".to_owned()), usage_at(100.0));
-
-        let worker_target = SessionTarget::Session(SessionKey::from_session_id("dead-worker-uuid"));
-        let worker_spawn_key =
-            SessionKey::from_session_id("__resume_worker_forge_x_dead-worker-uuid__".to_owned());
-        let assigned = workspace
-            .plan_assignment(&worker_target, Some(&worker_spawn_key))
-            .expect("the degraded resolution still answers");
-        assert_eq!(
-            assigned,
-            AccountKey("Sub".to_owned()),
-            "the spawn keeps the recorded lead lookup",
-        );
-        let lead_row = workspace
-            .account_pool()
-            .plan_for_test()
-            .as_ref()
-            .expect("plan")
-            .lookup(&project_key, &"lead".to_owned())
-            .cloned();
-        assert_eq!(
-            lead_row,
-            Some(AccountKey("Sub".to_owned())),
-            "the lead's plan row was not rewritten by a worker's resume",
-        );
-    }
-
-    #[tokio::test]
-    async fn recompute_plan_if_ready_binds_lead_in_account_definition_order() {
-        // Two ready accounts + an empty project allow-list: the pool is
-        // the org-ordered ready slice and the lone project's lead lands
-        // at pool[0]. The lead must bind to the first definition-order
-        // account (Alpha), not whatever HashMap iteration would surface
-        // - reverting `ordered_keys` to `by_key` makes this flaky.
-        let dir = make_workspace_dir_246_two_accounts();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        for name in ["Alpha", "Beta"] {
-            let snapshot = forge_primitives::usage::UsageSnapshot {
-                source: forge_primitives::usage::UsageSourceKind::Oauth,
-                fetched_at: std::time::SystemTime::UNIX_EPOCH,
-                five_hour: None,
-                seven_day: None,
-                seven_day_opus: None,
-                seven_day_sonnet: None,
-                extra_usage: None,
-                spend: None,
-                balance: None,
-            };
-            pool.set_usage(&AccountKey(name.to_owned()), snapshot);
-        }
-
-        workspace.recompute_plan_if_ready();
-        let plan = pool.plan_for_test();
-        let plan = plan.as_ref().expect("plan populates once all_loaded fires");
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
-        assert_eq!(
-            plan.lookup(&project_key, &"lead".to_owned()).cloned(),
-            Some(AccountKey("Alpha".to_owned())),
-            "lead must bind to the first definition-order account, not a HashMap-order pick",
-        );
-    }
-
-    /// Round-robin rotation across two cold-cache spawns of two
-    /// same-org projects: the bindings map is the observable. The
-    /// first spawn binds Alpha, the second rotates to Beta - the
-    /// registration is what routes each session to its own account.
-    #[tokio::test]
-    async fn cold_cache_dual_spawns_rotate_across_allow_list() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            forge_toml_path(dir.path()),
-            r#"
-[[orgs]]
-name = "Default"
-accounts = ["Alpha", "Beta"]
-
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-auto_start = true
-
-[[orgs.projects]]
-name = "forge2"
-path = "~/Projects/forge2"
-
-[[accounts]]
-display_name = "Alpha"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-
-[[accounts]]
-display_name = "Beta"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#,
-        )
-        .expect("write forge.toml");
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-
-        let h1 = workspace
-            .get_agent_handle(
-                SessionTarget::Named("forge".to_owned()),
-                SessionLaunchSettings::default(),
-            )
-            .expect("first spawn");
-        let h2 = workspace
-            .get_agent_handle(
-                SessionTarget::Named("forge2".to_owned()),
-                SessionLaunchSettings::default(),
-            )
-            .expect("second spawn");
-        drop(h1);
-        drop(h2);
-
-        let key_a =
-            workspace.resolve_target(&SessionTarget::Named("forge".to_owned())).expect("resolves");
-        let key_b =
-            workspace.resolve_target(&SessionTarget::Named("forge2".to_owned())).expect("resolves");
-        assert_eq!(
-            workspace.gateway.bindings.binding_for("Default", "forge", key_a.as_str()),
-            Some(AccountKey("Alpha".to_owned())),
-            "the first spawn registers Alpha",
-        );
-        assert_eq!(
-            workspace.gateway.bindings.binding_for("Default", "forge2", key_b.as_str()),
-            Some(AccountKey("Beta".to_owned())),
-            "the second spawn rotates to Beta",
-        );
-    }
-
-    #[tokio::test]
-    async fn recompute_plan_if_ready_noop_while_loading() {
-        let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        // Fresh workspace: account starts in `Loading`. all_loaded
-        // returns false; recompute must not populate the plan.
-        workspace.recompute_plan_if_ready();
-        let plan = workspace.account_pool().plan_for_test();
-        assert!(plan.is_none(), "plan stays None while accounts are still Loading");
-    }
-
-    /// A healed account rejoins the assignment plan the moment the
-    /// usage poller writes its clean probe: the frozen overlay keeps
-    /// existing assignments while the recovered account enters the
-    /// pool for new sessions. Removing the recompute call inside
-    /// `record_usage_success` leaves the pool frozen at [Alpha] and
-    /// this test's worker lands on Alpha instead of Beta.
-    #[tokio::test]
-    async fn record_usage_success_heals_a_bailed_account_into_the_plan() {
-        let dir = make_workspace_dir_246_two_accounts();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let snapshot = forge_primitives::usage::UsageSnapshot {
-            source: forge_primitives::usage::UsageSourceKind::Oauth,
-            fetched_at: std::time::SystemTime::UNIX_EPOCH,
-            five_hour: None,
-            seven_day: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            extra_usage: None,
-            spend: None,
-            balance: None,
-        };
-        let pool = workspace.account_pool();
-        pool.set_usage(&AccountKey("Alpha".to_owned()), snapshot.clone());
-        pool.set_loading(&AccountKey("Beta".to_owned()), forge_gateway::LoadingState::Bailed);
-        workspace.recompute_plan_if_ready();
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
-
-        // Heal Beta exactly the way the usage poller's success arm does.
-        workspace.record_usage_success(&AccountKey("Beta".to_owned()), snapshot);
-
-        let worker = pool.assign_adhoc_worker(&project_key, "w1", |_| true);
-        assert_eq!(
-            worker,
-            Some(AccountKey("Beta".to_owned())),
-            "the healed account must have joined the pool for new sessions",
-        );
-    }
-
     /// The probe-glue edge: record_usage_success with any window at
     /// the cap reports the gateway, which rotates every session bound
     /// to that account. A probe under the cap reports nothing.
@@ -14275,137 +13133,9 @@ provider = "anthropic"
         );
     }
 
-    #[tokio::test]
-    async fn recompute_plan_if_ready_populates_plan_when_all_ready() {
-        let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        // Transition the lone account to Ready by injecting a snapshot.
-        let snapshot = forge_primitives::usage::UsageSnapshot {
-            source: forge_primitives::usage::UsageSourceKind::Oauth,
-            fetched_at: std::time::SystemTime::UNIX_EPOCH,
-            five_hour: None,
-            seven_day: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            extra_usage: None,
-            spend: None,
-            balance: None,
-        };
-        workspace.account_pool().set_usage(&AccountKey("Stargate".to_owned()), snapshot);
-
-        workspace.recompute_plan_if_ready();
-        let plan = workspace.account_pool().plan_for_test();
-        let plan = plan.as_ref().expect("plan populates once all_loaded fires");
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
-        assert!(
-            !plan.project_has_no_assignments(&project_key),
-            "plan must have at least one assignment for the lone project",
-        );
-    }
-
-    #[tokio::test]
-    async fn recompute_plan_if_ready_uses_frozen_overlay_on_recompute() {
-        let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let snapshot = forge_primitives::usage::UsageSnapshot {
-            source: forge_primitives::usage::UsageSourceKind::Oauth,
-            fetched_at: std::time::SystemTime::UNIX_EPOCH,
-            five_hour: None,
-            seven_day: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            extra_usage: None,
-            spend: None,
-            balance: None,
-        };
-        workspace.account_pool().set_usage(&AccountKey("Stargate".to_owned()), snapshot);
-
-        workspace.recompute_plan_if_ready();
-        let first_plan = workspace.account_pool().plan_for_test();
-
-        // Recompute should be idempotent on the same ready set
-        // (frozen overlay merges; existing assignments preserved).
-        workspace.recompute_plan_if_ready();
-        let second_plan = workspace.account_pool().plan_for_test();
-        assert!(first_plan.is_some());
-        assert!(second_plan.is_some());
-        // Same plan contents (the frozen overlay preserves entries).
-        let first = first_plan.expect("first");
-        let second = second_plan.expect("second");
-        assert_eq!(
-            first.lookup(
-                &ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
-                    Some(workspace.config.projects[0].path.to_string_lossy().as_ref())
-                ),),
-                &"lead".to_owned(),
-            ),
-            second.lookup(
-                &ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
-                    Some(workspace.config.projects[0].path.to_string_lossy().as_ref())
-                ),),
-                &"lead".to_owned(),
-            ),
-            "frozen overlay preserves the same lead assignment across recomputes",
-        );
-    }
-
-    #[tokio::test]
-    async fn extend_plan_for_adhoc_worker_noop_when_plan_unpopulated() {
-        // Before the plan is populated, the helper must be a no-op
-        // (doesn't panic; doesn't side-effect through to lookups).
-        let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
-        workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        assert!(workspace.account_pool().plan_for_test().is_none(), "plan still unpopulated");
-    }
-
-    #[tokio::test]
-    async fn extend_plan_for_adhoc_worker_extends_when_plan_populated() {
-        let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        workspace.account_pool().set_usage(
-            &AccountKey("Stargate".to_owned()),
-            forge_primitives::usage::UsageSnapshot {
-                source: forge_primitives::usage::UsageSourceKind::Oauth,
-                fetched_at: std::time::SystemTime::UNIX_EPOCH,
-                five_hour: None,
-                seven_day: None,
-                seven_day_opus: None,
-                seven_day_sonnet: None,
-                extra_usage: None,
-                spend: None,
-                balance: None,
-            },
-        );
-        workspace.recompute_plan_if_ready();
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
-        let assigned = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        assert!(
-            assigned.is_none(),
-            "assigning to a usable account returns None (nothing to surface)",
-        );
-        let plan = workspace.account_pool().plan_for_test();
-        let plan = plan.as_ref().expect("populated");
-        assert!(
-            plan.lookup(&project_key, &"reviewer".to_owned()).is_some(),
-            "extend_plan_for_adhoc_worker adds the adhoc label to the plan",
-        );
-    }
-
     /// An org whose primaries cannot serve the project's model and whose
-    /// fallback can: the narrowed-primary-empty shape, where handing the
-    /// empty primary list to the tier walk would widen it back to every
-    /// account.
+    /// fallback can: the walk reaches the fallback because the primaries
+    /// declare nothing it serves.
     fn make_workspace_dir_fallback_only_model() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -14474,107 +13204,16 @@ base_url = "https://openrouter.ai/api"
         dir
     }
 
-    /// Two orgs: the default project's org cannot serve the other
-    /// project's model, so a `__fresh__:<other>` target pins the model
-    /// resolution and the pin resolution apart.
-    fn make_workspace_dir_two_orgs() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            forge_toml_path(dir.path()),
-            r#"
-[[orgs]]
-name = "Default"
-accounts = ["Personal"]
-
-[[orgs.projects]]
-name = "alpha"
-path = "~/Projects/alpha"
-auto_start = true
-
-[[orgs]]
-name = "Other"
-accounts = ["OpenRouter-TM"]
-
-[[orgs.projects]]
-name = "other"
-path = "~/Projects/other"
-model = "deepseek-v4.1-flash"
-
-[[accounts]]
-display_name = "Personal"
-token = "t"
-models = ["claude-opus-5"]
-provider = "anthropic"
-
-[[accounts]]
-display_name = "OpenRouter-TM"
-token = "t"
-models = ["deepseek-v4.1-flash"]
-provider = "openrouter"
-base_url = "https://openrouter.ai/api"
-"#,
-        )
-        .expect("write forge.toml");
-        dir
-    }
-
-    /// The model and the pin must come from the same project. On a
-    /// `__fresh__:<project_key>` target the model resolves to that
-    /// project while the pin resolution falls back to the default
-    /// project's org, so narrowing over the pin's lists would refuse a
-    /// spawn the config accepts, naming the wrong org's accounts.
-    #[tokio::test]
-    async fn a_fresh_key_target_narrows_over_the_model_projects_own_accounts() {
-        let dir = make_workspace_dir_two_orgs();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        pool.set_usage(&AccountKey("Personal".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("OpenRouter-TM".to_owned()), usage_at(10.0));
-        workspace.recompute_plan_if_ready();
-
-        let other_path = workspace
-            .config
-            .projects
-            .iter()
-            .find(|project| project.name == "other")
-            .expect("other project")
-            .path
-            .to_string_lossy()
-            .into_owned();
-        let project_key =
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&other_path));
-        let target = SessionTarget::Session(SessionKey::from_str_for_test(&format!(
-            "__fresh__:{project_key}"
-        )));
-
-        let handle = workspace
-            .get_agent_handle(target, SessionLaunchSettings::default())
-            .expect("the model's own project supplies the accounts, so the spawn resolves");
-        assert_eq!(
-            handle.display_name().as_deref(),
-            Some("OpenRouter-TM"),
-            "the spawn lands on the account that serves the other project's model",
-        );
-    }
-
-    /// Both accounts Ready and the plan computed, for the spawn tests.
-    fn model_aware_workspace(dir: &tempfile::TempDir) -> Arc<Workspace> {
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        pool.set_usage(&AccountKey("Personal".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("OpenRouter-TM".to_owned()), usage_at(10.0));
-        workspace.recompute_plan_if_ready();
-        workspace
-    }
-
-    /// The narrowed primary list is empty but a fallback serves the
-    /// model: the fallbacks become the candidate list, so the session
-    /// lands on the declaring account rather than on a primary the
-    /// widened empty list would have let back in.
+    /// The project's model is served only by a fallback account: the walk
+    /// reaches it, so the session lands on the declaring account rather
+    /// than on a primary that cannot serve it.
     #[tokio::test]
     async fn a_model_declaring_project_spawns_on_the_fallback_that_serves_it() {
         let dir = make_workspace_dir_fallback_only_model();
-        let workspace = model_aware_workspace(&dir);
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let pool = workspace.account_pool();
+        pool.set_usage(&AccountKey("Personal".to_owned()), usage_at(10.0));
+        pool.set_usage(&AccountKey("OpenRouter-TM".to_owned()), usage_at(10.0));
         let handle = workspace
             .get_agent_handle(
                 SessionTarget::Named("forge".to_owned()),
@@ -14585,34 +13224,6 @@ base_url = "https://openrouter.ai/api"
             handle.display_name().as_deref(),
             Some("OpenRouter-TM"),
             "the spawn lands on the account that declares the project's model",
-        );
-    }
-
-    /// A recorded row naming an account that cannot serve the project's
-    /// model is a miss: the spawn lands on a declaring account and the
-    /// row is rewritten so a resume agrees.
-    #[tokio::test]
-    async fn a_recorded_row_that_cannot_serve_the_model_is_rewritten_at_spawn() {
-        let dir = make_workspace_dir_model_split();
-        let workspace = model_aware_workspace(&dir);
-        let target = SessionTarget::Named("forge".to_owned());
-        assert_eq!(
-            workspace.plan_assignment(&target, None).map(|key| key.0),
-            Some("Personal".to_owned()),
-            "precondition: the boot plan records the non-declaring primary",
-        );
-        let handle = workspace
-            .get_agent_handle(target.clone(), SessionLaunchSettings::default())
-            .expect("a declaring account serves the spawn");
-        assert_eq!(
-            handle.display_name().as_deref(),
-            Some("OpenRouter-TM"),
-            "the spawn ignores the recorded row that cannot serve the model",
-        );
-        assert_eq!(
-            workspace.plan_assignment(&target, None).map(|key| key.0),
-            Some("OpenRouter-TM".to_owned()),
-            "the recorded row is rewritten so a resume agrees with the spawn",
         );
     }
 
@@ -14655,113 +13266,6 @@ base_url = "https://openrouter.ai/api"
         );
     }
 
-    /// A worker resume whose registry entry is gone resolves to the
-    /// lead's label. The spawn must apply the same guard
-    /// `plan_assignment` does, or its reassign path rewrites the LEAD's
-    /// row, resets the lead's rotation and binds the worker to the
-    /// account it just gave the lead.
-    #[tokio::test]
-    async fn a_degraded_worker_resume_spawn_never_rewrites_the_lead_row() {
-        let dir = make_workspace_dir_model_split();
-        let workspace = model_aware_workspace(&dir);
-        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
-        );
-        assert_eq!(
-            workspace
-                .account_pool()
-                .plan_for_test()
-                .expect("plan")
-                .lookup(&project_key, &"lead".to_owned())
-                .cloned(),
-            Some(AccountKey("Personal".to_owned())),
-            "precondition: the lead's row records the non-declaring primary",
-        );
-
-        let spawn_key = SessionKey::from_str_for_test("__resume_worker_forge_x_dead-worker-uuid__");
-        let _ = workspace.get_agent_handle_with_spawn_key(
-            SessionTarget::Named("forge".to_owned()),
-            SessionLaunchSettings::default(),
-            Some(spawn_key),
-        );
-
-        assert_eq!(
-            workspace
-                .account_pool()
-                .plan_for_test()
-                .expect("plan")
-                .lookup(&project_key, &"lead".to_owned()),
-            Some(&AccountKey("Personal".to_owned())),
-            "a degraded worker resume must leave the lead's row alone",
-        );
-    }
-
-    /// A resume re-tiers onto an account that can serve the project's
-    /// model: the recorded row names a primary that cannot, and the
-    /// narrowed best pool makes the declaring account the only move.
-    #[tokio::test]
-    async fn resume_retiers_onto_an_account_that_serves_the_project_model() {
-        let dir = make_workspace_dir_model_split();
-        let workspace = model_aware_workspace(&dir);
-
-        let project_path = workspace.config.projects[0].path.to_string_lossy().into_owned();
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
-        );
-        // Seed the catalog so the lead's Session target resolves to its
-        // project the way a drilldown resume needs.
-        workspace.record_connected_session(&project_path, "lead-uuid", None);
-        assert_eq!(
-            workspace
-                .account_pool()
-                .plan_for_test()
-                .expect("plan")
-                .lookup(&project_key, &"lead".to_owned())
-                .cloned(),
-            Some(AccountKey("Personal".to_owned())),
-            "boot recorded the primary that cannot serve the project's model",
-        );
-
-        let lead_target = SessionTarget::Session(SessionKey::from_session_id("lead-uuid"));
-        let resume_spawn_key = SessionKey::from_session_id("__resume_lead-uuid__".to_owned());
-        let re_tiered = workspace
-            .plan_assignment(&lead_target, Some(&resume_spawn_key))
-            .expect("the resume resolves through the plan");
-        assert_eq!(
-            re_tiered,
-            AccountKey("OpenRouter-TM".to_owned()),
-            "the resume re-tiers onto the account that declares the model",
-        );
-        assert_eq!(
-            workspace
-                .account_pool()
-                .plan_for_test()
-                .expect("plan")
-                .lookup(&project_key, &"lead".to_owned()),
-            Some(&AccountKey("OpenRouter-TM".to_owned())),
-            "the plan row records the re-tiered account",
-        );
-    }
-
-    /// The spawn refuses on exactly this: a pin whose accounts and
-    /// fallbacks do not declare the model. The refusal itself is defence
-    /// in depth behind the load gate (ProjectModelUndeclared), so its
-    /// predicate is what is testable.
-    #[tokio::test]
-    async fn candidates_for_model_is_none_when_nothing_in_the_pin_declares_the_model() {
-        let dir = make_workspace_dir_model_split();
-        let workspace = model_aware_workspace(&dir);
-        let pin = OrgPin {
-            accounts: vec!["Personal".to_owned()],
-            fallback_accounts: vec!["OpenRouter-TM".to_owned()],
-        };
-        assert!(
-            workspace.candidates_for_model(&pin, "ghost-model").is_none(),
-            "no account in the pin declares the model, so there is nothing to spawn on",
-        );
-    }
-
     /// The refusal is a stated requirement: it names the project, the
     /// model, the org and the accounts considered.
     #[test]
@@ -14799,151 +13303,16 @@ base_url = "https://openrouter.ai/api"
     }
 
     #[tokio::test]
-    async fn extend_plan_for_adhoc_worker_returns_saturated_account_when_pool_all_saturated() {
-        // The lone allowed account is at 100% utilization, so the plan
-        // pool falls back to it (nothing else exists) and the adhoc
-        // rotation has no usable slot to move to. extend_plan returns
-        // the saturated account it landed on so the spawn path can
-        // surface the rate-limited state.
-        let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        workspace.account_pool().set_usage(&AccountKey("Stargate".to_owned()), usage_at(100.0));
-        workspace.recompute_plan_if_ready();
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
-        let assigned = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        assert_eq!(
-            assigned,
-            Some(AccountKey("Stargate".to_owned())),
-            "all-saturated pool surfaces the assigned rate-limited account",
-        );
-    }
-
-    #[tokio::test]
-    async fn extend_plan_for_adhoc_worker_rotates_onto_usable_account() {
-        // Both accounts are usable at compute time, so the plan freezes
-        // the pool as [Alpha, Beta] and the first adhoc slot resolves to
-        // Beta. Beta then hits its cap AFTER the freeze. The rotation
-        // must walk off the now-saturated slot onto the still-usable
-        // Alpha and return None (a usable assignment, nothing to surface).
-        let dir = make_workspace_dir_246_two_accounts();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        pool.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("Beta".to_owned()), usage_at(10.0));
-        workspace.recompute_plan_if_ready();
-        // Beta saturates after the pool was frozen.
-        pool.set_usage(&AccountKey("Beta".to_owned()), usage_at(100.0));
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
-        let assigned = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        assert!(assigned.is_none(), "rotating onto a usable account returns None");
-        let plan = pool.plan_for_test();
-        let plan = plan.as_ref().expect("populated");
-        assert_eq!(
-            plan.lookup(&project_key, &"reviewer".to_owned()),
-            Some(&AccountKey("Alpha".to_owned())),
-            "adhoc worker rotates off the saturated Beta onto the usable Alpha",
-        );
-    }
-
-    #[tokio::test]
-    async fn extend_plan_for_adhoc_worker_preserves_pinned_account_gone_unusable() {
-        // A re-spawn under an existing label keeps its original account
-        // (wire identity) via the idempotent early-return, even after
-        // that account goes rate-limited while others stay usable. The
-        // re-check must NOT re-home the pin, but extend_plan still
-        // surfaces the now-unusable state by returning the account.
-        let dir = make_workspace_dir_246_two_accounts();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let pool = workspace.account_pool();
-        pool.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
-        pool.set_usage(&AccountKey("Beta".to_owned()), usage_at(10.0));
-        workspace.recompute_plan_if_ready();
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
-        // First spawn pins "reviewer" to the usable Beta (adhoc slot 1).
-        let first = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        assert!(first.is_none(), "initial pin onto a usable account returns None");
-        let plan = pool.plan_for_test();
-        let plan = plan.as_ref().expect("populated");
-        assert_eq!(
-            plan.lookup(&project_key, &"reviewer".to_owned()),
-            Some(&AccountKey("Beta".to_owned())),
-        );
-
-        // Beta goes rate-limited; Alpha is still usable.
-        workspace.account_pool().set_usage(&AccountKey("Beta".to_owned()), usage_at(100.0));
-
-        // Re-spawn the same label: the pin is preserved (not re-homed
-        // onto Alpha) and the now-unusable state is surfaced.
-        let second = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        assert_eq!(
-            second,
-            Some(AccountKey("Beta".to_owned())),
-            "re-spawn keeps the pinned account and surfaces its unusable state",
-        );
-        let plan = workspace.account_pool().plan_for_test();
-        let plan = plan.as_ref().expect("populated");
-        assert_eq!(
-            plan.lookup(&project_key, &"reviewer".to_owned()),
-            Some(&AccountKey("Beta".to_owned())),
-            "pinned account is never re-homed to a usable one",
-        );
-    }
-
-    #[tokio::test]
-    async fn session_chip_for_returns_none_when_plan_unpopulated() {
+    async fn a_chip_needs_an_account_the_walk_can_find() {
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
-        assert!(workspace.session_chip_for(&project_key, "lead").is_none());
-    }
-
-    /// A worker that spawns while the accounts are still loading gets no
-    /// plan entry from `extend_plan_for_adhoc_worker` - the plan is None,
-    /// so it no-ops. Nothing else can create that entry afterwards:
-    /// `compute_plan` emits only the lead, and the frozen overlay adds
-    /// only what `fresh` already holds. So the recompute has to seed the
-    /// workers that are already live.
-    ///
-    /// The lead half is the control. It shares every other precondition,
-    /// so a lead chip proves the fixture and the chip path work and makes
-    /// a missing worker chip attributable to the worker path alone.
-    #[tokio::test]
-    async fn a_worker_spawned_before_the_plan_populates_still_gets_chipped() {
-        let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
-        // Boot window: the plan is not populated, so the spawn's own
-        // attempt to extend it no-ops.
-        assert!(workspace.extend_plan_for_adhoc_worker(&project_key, "early").is_none());
-        workspace.insert_live_worker(
-            &project_key,
-            worker_entry("early", &SessionKey::from_session_id("early-uuid"), false),
-        );
-
-        workspace.seed_test_ready_account("Stargate");
-
         assert!(
-            workspace.session_chip_for(&project_key, "lead").is_some(),
-            "control: the lead is chipped, so the fixture and chip path work",
-        );
-        assert!(
-            workspace.session_chip_for(&project_key, "early").is_some(),
-            "a worker live at recompute gets a plan entry rather than staying bare forever",
+            workspace.session_chip_for(&project_key).is_none(),
+            "nothing is Ready yet, so the walk finds no account to chip with",
         );
     }
 
@@ -14972,55 +13341,13 @@ base_url = "https://openrouter.ai/api"
                 balance: None,
             },
         );
-        workspace.recompute_plan_if_ready();
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
-        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::Normal);
         assert_eq!(chip.account_name, "Stargate");
-    }
-
-    /// The launchpad's worker rows chip from the assignment plan, which
-    /// a worker enters when it spawns. So a worker that came up this boot
-    /// keeps its chip, while one with only a persisted row has no plan
-    /// entry and renders bare - the launchpad must not invent a
-    /// placeholder for the second case.
-    #[tokio::test]
-    async fn plan_chips_a_spawned_worker_but_not_a_never_spawned_one() {
-        let dir = make_workspace_dir_no_auto_start();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        workspace.account_pool().set_usage(
-            &AccountKey("Stargate".to_owned()),
-            forge_primitives::usage::UsageSnapshot {
-                source: forge_primitives::usage::UsageSourceKind::Oauth,
-                fetched_at: std::time::SystemTime::UNIX_EPOCH,
-                five_hour: None,
-                seven_day: None,
-                seven_day_opus: None,
-                seven_day_sonnet: None,
-                extra_usage: None,
-                spend: None,
-                balance: None,
-            },
-        );
-        workspace.recompute_plan_if_ready();
-        let project_key =
-            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
-            )));
-
-        workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-
-        assert!(
-            workspace.session_chip_for(&project_key, "reviewer").is_some(),
-            "a worker that spawned is in the plan, so its row is chipped",
-        );
-        assert!(
-            workspace.session_chip_for(&project_key, "scratch").is_none(),
-            "a label with no plan entry has no chip to render",
-        );
     }
 
     #[tokio::test]
@@ -15048,12 +13375,11 @@ base_url = "https://openrouter.ai/api"
                 balance: None,
             },
         );
-        workspace.recompute_plan_if_ready();
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
-        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::AtCap);
     }
 
@@ -15083,12 +13409,11 @@ base_url = "https://openrouter.ai/api"
                 balance: None,
             },
         );
-        workspace.recompute_plan_if_ready();
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
-        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::AtCap);
     }
 
@@ -15096,9 +13421,8 @@ base_url = "https://openrouter.ai/api"
     async fn session_chip_for_bailed_branch() {
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        // Plan needs SOMETHING in it for session_chip_for to look up.
-        // Snapshot first then transition to Bailed (preserves plan
-        // assignment, just changes loading state).
+        // Snapshot first, then bail: the walk reads the loading state,
+        // so a chip needs the account first made pickable.
         workspace.account_pool().set_usage(
             &AccountKey("Stargate".to_owned()),
             forge_primitives::usage::UsageSnapshot {
@@ -15113,7 +13437,6 @@ base_url = "https://openrouter.ai/api"
                 balance: None,
             },
         );
-        workspace.recompute_plan_if_ready();
         // Now flip to Bailed on an auth failure - the red class.
         workspace
             .account_pool()
@@ -15127,7 +13450,7 @@ base_url = "https://openrouter.ai/api"
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
-        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::Bailed);
     }
 
@@ -15152,7 +13475,6 @@ base_url = "https://openrouter.ai/api"
                 balance: None,
             },
         );
-        workspace.recompute_plan_if_ready();
         workspace
             .account_pool()
             .set_loading(&AccountKey("Stargate".to_owned()), forge_gateway::LoadingState::Bailed);
@@ -15160,7 +13482,7 @@ base_url = "https://openrouter.ai/api"
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
-        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::Degraded);
     }
 }
@@ -15351,6 +13673,7 @@ accounts = ["Stargate"]
 name = "proj"
 path = "{}"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -15545,6 +13868,7 @@ provider = "anthropic"
     async fn force_new_spawn_skips_the_catalog_hold() {
         let dir = scan_fixture_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_ready_account("Stargate");
         assert!(!workspace.catalog_ready());
 
         let launch_settings = SessionLaunchSettings { force_new: true, ..Default::default() };
@@ -15656,6 +13980,7 @@ accounts = ["Stargate"]
 name = "proj"
 path = "{}"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -15727,6 +14052,7 @@ accounts = ["Stargate"]
 name = "proj"
 path = "{}"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"

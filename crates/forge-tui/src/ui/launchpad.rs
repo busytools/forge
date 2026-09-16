@@ -94,10 +94,9 @@ fn click_intent(lifecycle: SessionLifecycleState) -> ClickIntent {
 /// Effective click intent including the boot-time gate. When the
 /// workspace's account-loading tasks haven't all settled, every
 /// project row downgrades to `Block` so the launchpad can't spawn
-/// against a partial assignment plan. Same downgrade when the
-/// project's own pool resolves to empty (every allowed account
-/// Bailed) - the row stays unclickable with a `no usable accounts`
-/// hint.
+/// while the walk still has accounts left to consider. Same downgrade
+/// when the walk resolves to nothing (every allowed account Bailed) -
+/// the row stays unclickable with a `no usable accounts` hint.
 fn effective_click_intent(
     app: &App,
     project_name: &str,
@@ -109,12 +108,12 @@ fn effective_click_intent(
     if !workspace.all_accounts_loaded() {
         return ClickIntent::Block;
     }
-    // Resolve the project's pool through the assignment plan. The
-    // launchpad only shows projects from forge.toml, so the lookup
-    // should always succeed; if it doesn't, conservatively Block.
+    // Resolve the project through the selection walk. The launchpad
+    // only shows projects from forge.toml, so the lookup should always
+    // succeed; if it doesn't, conservatively Block.
     let project_key =
         workspace.list_projects().into_iter().find(|p| p.name == project_name).map(|p| p.key);
-    let pool_ok = project_key.is_some_and(|k| workspace.project_has_assigned_account(&k));
+    let pool_ok = project_key.is_some_and(|k| workspace.project_would_bind(&k));
     if !pool_ok {
         return ClickIntent::Block;
     }
@@ -541,18 +540,20 @@ fn build_picker_content(
             let live = live_workers.get(&project.key).map_or(&[][..], Vec::as_slice);
             push_worker_rows(&mut lines, project, app, labels, live);
         }
-        // Surface a "no usable accounts" hint when the project's
-        // pool resolved to empty (every allowed account Bailed, or
-        // forge.toml allow-list has no known accounts). The row
-        // stays unclickable via `effective_click_intent`'s Block
-        // downgrade; the hint explains why.
+        // Surface why no spawn can run: nothing the walk could reach
+        // declares the project's model, or the project declares no
+        // model for it to match on. The row stays unclickable via
+        // `effective_click_intent`'s Block downgrade; the hint names
+        // the one to fix.
         if let Some(workspace) = app.workspace.as_ref()
             && workspace.all_accounts_loaded()
-            && project_view
-                .as_ref()
-                .is_some_and(|p| !workspace.project_has_assigned_account(&p.key))
+            && project_view.as_ref().is_some_and(|p| !workspace.project_would_bind(&p.key))
         {
-            push_no_usable_accounts_row(&mut lines, width);
+            let reason = match project_view.as_ref() {
+                Some(p) if !p.has_model => NO_MODEL_HINT,
+                _ => NO_USABLE_ACCOUNTS_HINT,
+            };
+            push_unspawnable_hint_row(&mut lines, width, reason);
         }
     }
 
@@ -687,15 +688,14 @@ fn push_project_row(
         ClickIntent::Block => Style::default().fg(theme::DIM),
     };
 
-    // Account chip: the assignment-plan slot for this project's lead
-    // session. Populated once accounts finish loading + the plan
-    // computes. Padded to a fixed column (CHIP_COLUMN_WIDTH) so chips
-    // land at the same x across every project and worker row.
+    // Account chip: the account the walk would pick for this project's
+    // lead session. Padded to a fixed column (CHIP_COLUMN_WIDTH) so
+    // chips land at the same x across every project and worker row.
     let chip_info = app
         .workspace
         .as_ref()
         .and_then(|ws| find_project_key(ws.list_projects().as_slice(), &row.project_name))
-        .and_then(|key| app.workspace.as_ref().and_then(|ws| ws.session_chip_for(&key, "lead")));
+        .and_then(|key| app.workspace.as_ref().and_then(|ws| ws.session_chip_for(&key)));
     let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
 
     // Fixed column widths so rows align across projects + workers:
@@ -761,13 +761,19 @@ const ACTIVITY_COLUMN_WIDTH: usize = 10;
 /// 13 = 1 space + 12 (CHIP_MAX_WIDTH in `account_chip_spans`).
 const CHIP_COLUMN_WIDTH: usize = 13;
 
+/// Hint for a project whose accounts all resolve out of the walk.
+const NO_USABLE_ACCOUNTS_HINT: &str = "no usable accounts";
+/// Hint for a project that declares no model, which is a different fix
+/// from an account problem and reads as one if the row says otherwise.
+const NO_MODEL_HINT: &str = "no model declared - add `model` to this project";
+
 /// Append one row per persisted dynamic worker for this project,
 /// directly below the project's row. Each row carries what the project
-/// row carries - lifecycle glyph, name, assigned-account chip from the
-/// AssignmentPlan, right-aligned activity - so the user can see the
-/// per-session account mapping and each worker's state before clicking
-/// the project. Workers are info-only on the launchpad: clicks land on
-/// the project lead row, and the worker rows are not selectable.
+/// row carries - lifecycle glyph, name, the account the walk picks,
+/// right-aligned activity - so the user can see each worker's state
+/// before clicking the project. Workers are info-only on the launchpad:
+/// clicks land on the project lead row, and the worker rows are not
+/// selectable.
 ///
 /// `labels` are this project's persisted dynamic workers and `live` its
 /// registry entries, both of which the caller reads for the whole picker
@@ -791,7 +797,7 @@ fn push_worker_rows(
         let tree_glyph = if is_last { "└─" } else { "├─" };
         let lifecycle = worker_lifecycle(app, live, label);
         let (glyph, glyph_color) = glyph_for_row(lifecycle, app.active_spinner_glyph());
-        let chip_info = workspace.session_chip_for(&project.key, label);
+        let chip_info = workspace.session_chip_for(&project.key);
         let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
         let name_label = truncate_to(label, WORKER_NAME_WIDTH);
         let name_pad = WORKER_NAME_WIDTH.saturating_sub(name_label.chars().count());
@@ -899,15 +905,13 @@ fn push_error_row(lines: &mut Vec<Line<'static>>, error: &str, area_width: u16) 
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(truncated, style)]));
 }
 
-/// Inline hint for a project whose AssignmentPlan pool is empty
-/// (every allowed account ended in `Bailed`). Same indent + style
-/// shape as `push_error_row`; uses DIM rather than STATUS_ERROR
-/// because the condition is recoverable (repairing one of the
-/// allow-list accounts' credentials) rather than a hard error.
-fn push_no_usable_accounts_row(lines: &mut Vec<Line<'static>>, area_width: u16) {
+/// Inline hint for a project no spawn can run under. Same indent +
+/// style shape as `push_error_row`; uses DIM rather than STATUS_ERROR
+/// because the condition is recoverable by an edit to `forge.toml`
+/// rather than a hard error.
+fn push_unspawnable_hint_row(lines: &mut Vec<Line<'static>>, area_width: u16, message: &str) {
     let style = Style::default().fg(theme::DIM);
     let pad: usize = 8;
-    let message = "no usable accounts";
     let budget = usize::from(area_width).saturating_sub(pad + 2);
     let truncated = truncate_to(message, budget);
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(truncated, style)]));
@@ -1231,7 +1235,7 @@ mod tests {
             forge.join("forge.toml"),
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
-                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
+                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\nmodel = \"claude-sonnet-5\"\n\
                  [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
             ),
         )
@@ -1242,7 +1246,6 @@ mod tests {
         let project = workspace.list_projects().into_iter().next().expect("one project");
         workspace.seed_test_dynamic_worker(&project.key, "reviewer");
         workspace.seed_test_ready_account("Stargate");
-        workspace.seed_test_worker_assignment(&project.key, "reviewer");
         workspace.seed_test_gateway_ready(false);
         workspace.seed_test_gateway_bind_error(Some("Address already in use".to_owned()));
 
@@ -1324,9 +1327,8 @@ mod tests {
     }
 
     /// Render the picker over a one-project `forge.toml` with both
-    /// `reviewer` and `scratch` persisted as workers, and only
-    /// `reviewer` assigned in the plan: a label the plan knows (so it
-    /// chips) alongside one it does not (so it does not).
+    /// `reviewer` and `scratch` persisted as workers, and the account
+    /// Ready, so every chip-bearing row carries one.
     fn render_picker_rows() -> (Vec<String>, tempfile::TempDir, tempfile::TempDir) {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
@@ -1337,7 +1339,7 @@ mod tests {
             forge.join("forge.toml"),
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
-                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
+                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\nmodel = \"claude-sonnet-5\"\n\
                  [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
             ),
         )
@@ -1349,9 +1351,6 @@ mod tests {
         workspace.seed_test_dynamic_worker(&project.key, "reviewer");
         workspace.seed_test_dynamic_worker(&project.key, "scratch");
         workspace.seed_test_ready_account("Stargate");
-        // `reviewer` spawned this boot, so it has a plan entry and a
-        // chip; `scratch` has only a row and renders bare.
-        workspace.seed_test_worker_assignment(&project.key, "reviewer");
 
         let mut app = App::test_default();
         app.workspace = Some(std::sync::Arc::new(workspace));
@@ -1381,7 +1380,7 @@ mod tests {
             forge.join("forge.toml"),
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
-                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\n\
+                 [[orgs.projects]]\nname = \"picker\"\npath = \"{project_path}\"\nmodel = \"claude-sonnet-5\"\n\
                  [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
             ),
         )
@@ -1532,19 +1531,57 @@ mod tests {
         );
     }
 
-    /// Worker rows are sourced from the persisted workers, so a label
-    /// that never spawned still gets a row - and with no
-    /// assignment-plan entry it renders its lifecycle glyph and the
-    /// activity placeholder with no chip at all.
+    /// The hint under an unspawnable row names which fix applies. A
+    /// project with no model reads as a model problem, not as an
+    /// account one: they are different edits and the row is where the
+    /// user acts.
     #[tokio::test]
-    async fn a_never_spawned_dynamic_worker_renders_bare() {
+    async fn a_model_less_project_hints_at_the_model_not_at_the_accounts() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        let forge = config_dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/ dir");
+        let project_path = project_dir.path().to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
+                 [[orgs.projects]]\nname = \"bare\"\npath = \"{project_path}\"\n\
+                 [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+
+        let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+            .expect("workspace");
+        workspace.seed_test_ready_account("Stargate");
+        let mut app = App::test_default();
+        app.workspace = Some(std::sync::Arc::new(workspace));
+        let rows = build_picker_rows(&app);
+        let (lines, _) = build_picker_content(&app, &rows, PICKER_WIDTH);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(
+            rendered.iter().any(|row| row.contains("no model declared")),
+            "a project with no model says so; got {rendered:?}",
+        );
+        assert!(
+            !rendered.iter().any(|row| row.contains("no usable accounts")),
+            "and does not blame the accounts; got {rendered:?}",
+        );
+    }
+
+    /// Worker rows are sourced from the persisted workers, so a label
+    /// that never spawned still gets a row, carrying its lifecycle
+    /// glyph and the activity placeholder.
+    #[tokio::test]
+    async fn a_never_spawned_dynamic_worker_still_gets_a_row() {
         let (rendered, _config_dir, _project_dir) = render_picker_rows();
         let worker_row = row_containing(&rendered, "scratch");
 
-        assert!(
-            !worker_row.contains('('),
-            "a label with no assignment-plan entry renders no chip; got {worker_row:?}",
-        );
         assert!(
             worker_row.contains('\u{25cb}'),
             "a worker that has never spawned carries the Sleeping glyph; got {worker_row:?}",

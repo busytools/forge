@@ -80,12 +80,11 @@ impl std::fmt::Debug for PendingInteractionSlot {
 pub struct WorkerSpawnReply {
     pub session_id: String,
     pub tag: String,
-    /// Set to the assigned account name when that account is itself
-    /// currently rate-limited or bailed (a fresh assignment that fell
-    /// back onto a fully saturated pool, or a re-spawn pinned to a
-    /// since-unusable account). The spawn tool surfaces it as a
-    /// `notice` so the lead sees the situation at spawn instead of only
-    /// discovering it when the worker stalls.
+    /// Set to the account name when the walk had to take an account
+    /// that is saturated or bailed, because no other account in the pin
+    /// declares the project's model. The spawn tool surfaces it as a
+    /// `notice`, so the lead sees at spawn that the worker may hit a
+    /// 429 right away instead of only finding out when it stalls.
     pub rate_limited_account: Option<String>,
     /// Set when persisting the worker's durable row failed (the store
     /// couldn't open, or the write errored). The worker still spawns, but

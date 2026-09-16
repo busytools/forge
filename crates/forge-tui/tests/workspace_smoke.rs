@@ -27,6 +27,7 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -48,6 +49,7 @@ async fn forge_tui_starts_against_fixture_default_project() {
             .expect("workspace constructs against fixture forge.toml"),
     );
 
+    workspace.seed_test_ready_account("Stargate");
     let handle = workspace
         .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
         .expect("default handle resolves");
