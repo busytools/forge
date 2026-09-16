@@ -170,8 +170,8 @@ pub struct AccountState {
 
 /// `true` when an account declaring `models` serves `model`: it
 /// declares the name, or declares it as an alias of a model it does.
-/// The one home for the rule: both the selection walk and the config
-/// load gate match a request's model through here.
+/// The one home for the rule: the selection walk, the route's binding
+/// gate, and the config load gate all match a request's model here.
 pub fn account_serves<S: std::hash::BuildHasher>(
     models: &[String],
     model_aliases: &std::collections::HashMap<String, Vec<String>, S>,

@@ -1302,8 +1302,8 @@ provider = "anthropic"
         let err = load_from_dir(dir.path()).expect_err("an undeclared alias key must not load");
         let message = err.to_string();
         assert!(
-            message.contains("claude-opus-5"),
-            "the error names the undeclared alias key, got: {message}",
+            message.contains("'claude-opus-5'"),
+            "the error quotes the undeclared alias key, not the declared marker, got: {message}",
         );
     }
 

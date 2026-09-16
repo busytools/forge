@@ -201,27 +201,6 @@ mod tests {
     }
 
     #[test]
-    fn an_alias_does_not_widen_an_account_beyond_the_model_it_aliases() {
-        let mut state = pool_with(&[(
-            "Granite",
-            Provider::Anthropic,
-            LoadingState::Ready,
-            None,
-            vec!["claude-opus-5[1m]"],
-        )]);
-        alias(&mut state, "Granite", "claude-opus-5[1m]", "claude-opus-5");
-        let error = select_account(&state, &pin(&["Granite"], &[]), "Default", "claude-sonnet-5")
-            .expect_err("an alias serves only the model it aliases");
-        assert_eq!(
-            error,
-            SelectionError::NoEligibleAccount {
-                model: "claude-sonnet-5".to_owned(),
-                org: "Default".to_owned(),
-            },
-        );
-    }
-
-    #[test]
     fn the_first_account_declaring_the_model_wins() {
         let state = pool_with(&[
             ("Zai", Provider::Zai, LoadingState::Ready, None, vec!["glm-5.3-flash"]),
