@@ -645,6 +645,7 @@ mod tests {
                 provider: forge_primitives::account::Provider::Openrouter,
                 base_url: None,
                 models: vec!["glm-5.3-flash".to_owned()],
+                model_aliases: std::collections::HashMap::new(),
                 model_slugs: std::collections::HashMap::from([(
                     "glm-5.3-flash".to_owned(),
                     "zai-org/glm-5.3-flash".to_owned(),
@@ -656,6 +657,7 @@ mod tests {
                 provider: forge_primitives::account::Provider::Anthropic,
                 base_url: None,
                 models: vec!["claude-sonnet-5".to_owned(), "claude-opus-5".to_owned()],
+                model_aliases: std::collections::HashMap::new(),
                 model_slugs: std::collections::HashMap::new(),
                 env: anthropic_env,
             },
