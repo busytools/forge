@@ -1019,13 +1019,13 @@ enum TakeResolution<T> {
 /// polling it busy-spins a core until the inference runs out on its
 /// own.
 async fn wait_for_take<T>(
-    mut answer: &mut tokio::task::JoinHandle<T>,
+    answer: &mut tokio::task::JoinHandle<T>,
     stop: &mut tokio::sync::mpsc::Receiver<bool>,
     cancel: &forge_dictate::CancelToken,
 ) -> TakeResolution<T> {
     loop {
         tokio::select! {
-            resolved = &mut answer => break TakeResolution::Answered(resolved),
+            resolved = &mut *answer => break TakeResolution::Answered(resolved),
             decide = stop.recv() => {
                 if decide != Some(true) {
                     cancel.cancel();

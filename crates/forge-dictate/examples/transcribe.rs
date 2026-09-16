@@ -16,8 +16,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rate = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
     let channels = u16::from_le_bytes(bytes[22..24].try_into().unwrap());
     let pcm: Vec<f32> = bytes[44..]
-        .chunks_exact(2)
-        .map(|p| f32::from(i16::from_le_bytes([p[0], p[1]])) / 32768.0)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|p| f32::from(i16::from_le_bytes(*p)) / 32768.0)
         .collect();
 
     let engine = Engine::new(ConfigBuilder::new().build())?;

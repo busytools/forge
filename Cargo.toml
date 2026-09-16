@@ -162,6 +162,9 @@ unnecessary_wraps = "allow"         # Symmetry across translate-fn returns.
 struct_field_names = "allow"        # Wire-shape structs share prefixes by API contract.
 struct_excessive_bools = "allow"    # Many UI state structs are flag bags by nature
                                     # (Cli flags, RenderState, SpinnerState, etc.).
+assert_is_empty = "allow"           # Its rewrite, `assert_eq!(v, [] as [T; 0])`, is
+                                    # worse than the form it replaces. Only the failure
+                                    # message is at stake; the assertion still panics.
 # CLI surface (forge-tui binary) legitimately prints to stdout/stderr.
 print_stdout = "allow"
 print_stderr = "allow"

@@ -592,9 +592,7 @@ impl DiffOverlayState {
     /// change the wrapped row count for every file. The span cache is
     /// deliberately left intact (a line's colour is layout-independent).
     pub fn invalidate_measured_heights(&mut self) {
-        for height in &mut self.measured_heights {
-            *height = None;
-        }
+        self.measured_heights.fill(None);
     }
 
     /// Drop the measured heights when the body width changed since the

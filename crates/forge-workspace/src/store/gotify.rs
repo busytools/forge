@@ -142,7 +142,7 @@ mod tests {
         let txn = db.database().begin_write().expect("begin");
         {
             let mut table = txn.open_table(SUBS).expect("open table");
-            table.insert(&[0u8; 16], "not a subscription".as_bytes()).expect("insert corrupt");
+            table.insert([0u8; 16], "not a subscription".as_bytes()).expect("insert corrupt");
         }
         txn.commit().expect("commit");
 
