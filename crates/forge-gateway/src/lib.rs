@@ -11,12 +11,11 @@
 //! offline.
 //!
 //! [`AccountStateMap`] holds each account's health, usage snapshot and
-//! probe schedule, and [`assignment_plan`] picks the account a session
-//! spawns under.
+//! probe schedule; [`Gateway::select_for`] is the one place the account
+//! serving a session's model is decided.
 
 pub mod account;
 mod anthropic;
-pub mod assignment_plan;
 pub mod binding;
 mod codex;
 pub mod forward;
