@@ -44,6 +44,7 @@ pub use crate::account::{
 };
 pub use crate::anthropic::{Anthropic, CLAUDE_CODE_OAUTH_TOKEN_ENV, token_bearer};
 pub use crate::codex::Codex;
+pub use crate::forward::{Gateway, SelectFailure};
 pub use crate::openrouter::Openrouter;
 pub use crate::pool::AccountPool;
 pub use crate::zai::Zai;
