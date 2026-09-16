@@ -234,7 +234,7 @@ fn next_cut(pcm: &[f32], start: usize) -> Option<usize> {
 fn quietest_frame(pcm: &[f32]) -> usize {
     let mut quietest = usize::MAX;
     let mut quietest_energy = f32::INFINITY;
-    for (frame, block) in pcm.chunks_exact(ENERGY_FRAME).enumerate() {
+    for (frame, block) in pcm.as_chunks::<ENERGY_FRAME>().0.iter().enumerate() {
         let energy: f32 = block.iter().map(|s| s * s).sum();
         if energy <= quietest_energy {
             quietest_energy = energy;
@@ -2289,8 +2289,10 @@ mod tests_real_recognition {
         // manifest's integrity gate keeps them that way.
         let rate = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
         let data = bytes[44..]
-            .chunks_exact(2)
-            .map(|p| f32::from(i16::from_le_bytes([p[0], p[1]])) / 32768.0)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| f32::from(i16::from_le_bytes(*p)) / 32768.0)
             .collect();
         (data, rate)
     }
