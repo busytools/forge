@@ -75,7 +75,7 @@ tui-textarea = { package = "tui-textarea-2", version = "0.10" }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 base64 = "0.22"
-sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 futures = "0.3.31"
 arboard = { version = "3.6.1", features = ["image-data"] }
 which = "8.0.2"
