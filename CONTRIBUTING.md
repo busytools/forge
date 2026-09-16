@@ -27,9 +27,11 @@ green before you open a pull request. It is CI's set minus one job:
 CI also runs `cargo check --release`.
 
 The last line it prints is its verdict, `[OK] check: ...` or
-`[ERROR] check: <step> failed`, and the run stops at the first failing
-step. Read that line rather than a pipeline's exit status: piping
-`just check` through `tail` reports tail's status, not the recipe's.
+`[ERROR] check: <step> failed`, the latter with a `; not run: <later
+steps>` clause when the step that failed was not the last one. The run
+stops at the first failing step. Read that line rather than a pipeline's
+exit status: piping `just check` through `tail` reports tail's status,
+not the recipe's.
 
 The toolchain comes from `rust-toolchain.toml`; rustup applies it
 automatically. Tests run through `cargo nextest`, not `cargo test`.

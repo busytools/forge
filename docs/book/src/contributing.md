@@ -17,9 +17,11 @@ denied, `cargo nextest run --workspace --all-features`, and
 before you open a pull request.
 
 The last line it prints is its verdict, `[OK] check: ...` or
-`[ERROR] check: <step> failed`, and the run stops at the first failing
-step. Read that line rather than a pipeline's exit status: piping
-`just check` through `tail` reports tail's status, not the recipe's.
+`[ERROR] check: <step> failed`, the latter with a `; not run: <later
+steps>` clause when the step that failed was not the last one. The run
+stops at the first failing step. Read that line rather than a pipeline's
+exit status: piping `just check` through `tail` reports tail's status,
+not the recipe's.
 
 ## The book's own gate
 

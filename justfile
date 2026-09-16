@@ -142,10 +142,17 @@ check-release:
 # green; leaving the result on the last line means a truncated read still
 # carries it. `[no-exit-message]` keeps just's own error line from
 # landing after the verdict, and the EXIT trap covers an interrupted run,
-# so the last line is a verdict on that path too.
+# so the last line is a verdict on that path too. That line carries no
+# exit status: bash's EXIT trap sees 0 for a signal death, where the
+# process's real status is 128 plus the signal.
 #
 # Fail-fast and exit-code preserving, as the dependency form was: the
-# failing step's own status is what this recipe exits with.
+# failing step's own status is what this recipe exits with. Both verdict
+# lines are built from `steps`, so the list of them has one home.
+#
+# The steps are re-invoked through just's own executable, not a bare
+# `just`, which a caller who invoked it by absolute path does not have on
+# PATH.
 [no-exit-message]
 check:
     #!/usr/bin/env bash
@@ -155,9 +162,8 @@ check:
     verdict=""
 
     on_exit() {
-        status=$?
         if [ -z "$verdict" ]; then
-            echo "[ERROR] check: no verdict, the run ended early (exit $status)"
+            echo "[ERROR] check: no verdict, the run ended early"
         fi
     }
     trap on_exit EXIT
@@ -166,7 +172,7 @@ check:
         step="${steps[$i]}"
         echo "[..] check: $step"
         status=0
-        just --justfile "{{justfile()}}" "$step" || status=$?
+        "{{just_executable()}}" --justfile "{{justfile()}}" "$step" || status=$?
         if [ "$status" -ne 0 ]; then
             later="${steps[*]:i+1}"
             if [ -n "$later" ]; then
@@ -179,7 +185,7 @@ check:
         fi
     done
 
-    verdict="[OK] check: fmt, unicode punctuation, clippy, nextest and docs all green"
+    verdict="[OK] check: all green (${steps[*]})"
     echo "$verdict"
 
 # Deliberately not a bare `gh run watch`. Piping it masks the exit code
