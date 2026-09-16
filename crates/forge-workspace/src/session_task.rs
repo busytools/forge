@@ -309,6 +309,12 @@ impl SessionTask {
                     }
                     let previous_key = self.key.clone();
                     self.rekey_to(&real_key);
+                    // The store is not the first-Connected path's alone:
+                    // every replacement adopts an id forge did not choose,
+                    // and a boot resolves this session from its row.
+                    if let Some(workspace) = self.workspace.upgrade() {
+                        workspace.note_running_session_id(&self.key, &session_id);
+                    }
                     self.emit(SessionUpdate::SessionReplaced {
                         key: real_key.clone(),
                         previous_key,
@@ -358,6 +364,12 @@ impl SessionTask {
                             from: spawn_key,
                             to: real_key.clone(),
                         });
+                    }
+                    // A boot resolves a session from the store, so the id
+                    // the CLI adopted is recorded rather than left to the
+                    // next boot to guess wrong.
+                    if let Some(workspace) = self.workspace.upgrade() {
+                        workspace.note_running_session_id(&self.key, &session_id);
                     }
                     self.emit(SessionUpdate::Connected {
                         key: real_key.clone(),
@@ -754,9 +766,21 @@ impl SessionTask {
             }
             other => {
                 let sid = self.session_id_string();
-                if let Err(err) =
-                    execute_command_via_handle(&self.handle, &self.key, sid.as_deref(), other)
-                {
+                // `/new` starts under an id minted here, so the row this
+                // session belongs to names the new session from the moment
+                // it starts rather than the one it replaces.
+                let fresh = if matches!(other, Command::NewSession { .. }) {
+                    self.fresh_session_id()
+                } else {
+                    None
+                };
+                if let Err(err) = execute_command_via_handle(
+                    &self.handle,
+                    &self.key,
+                    sid.as_deref(),
+                    fresh,
+                    other,
+                ) {
                     tracing::warn!(
                         target: "forge_workspace::session_task",
                         key = %self.key.as_str(),
@@ -849,6 +873,14 @@ impl SessionTask {
             "session task rekeyed onto real session UUID"
         );
         self.key = real_key.clone();
+    }
+
+    /// The id a `/new` starts under: a fresh one, recorded against the row
+    /// this session belongs to, so a restart re-enters the new session
+    /// rather than the one `/new` replaced. `None` when the session has no
+    /// row to record against, which leaves the CLI to pick its own id.
+    fn fresh_session_id(&self) -> Option<String> {
+        self.workspace.upgrade()?.fresh_session_id_for(&self.key)
     }
 
     /// Drain `DomainSession.pending_peer_prompts` after the session's
@@ -1194,6 +1226,7 @@ pub(crate) fn execute_command_via_handle(
     handle: &Arc<AgentHandle>,
     key: &SessionKey,
     session_id: Option<&str>,
+    new_session_id: Option<String>,
     cmd: Command,
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
@@ -1222,7 +1255,7 @@ pub(crate) fn execute_command_via_handle(
             handle.set_model(sid.to_owned(), model)
         }
         Command::NewSession { key: _, cwd, launch_settings } => {
-            handle.new_session(cwd, launch_settings)
+            handle.new_session(new_session_id, cwd, launch_settings)
         }
         Command::ResumeSession { key: _, session_id, cwd, launch_settings } => {
             handle.resume_session(session_id, cwd, launch_settings)
@@ -2258,6 +2291,87 @@ mod tests {
         assert!(drained_notice(&mut update_rx).is_none(), "teardown adds no second notice");
     }
 
+    /// The store follows the id the CLI reports when it connects. A
+    /// `/resume`, a `/clear`, a login or a logout move a session's id
+    /// without forge choosing it, and a boot resolves a session from this
+    /// row - so the row has to move with every Connected, not only the
+    /// first.
+    #[test]
+    fn connected_records_the_id_the_cli_adopted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("solo");
+        std::fs::create_dir_all(&root).expect("root");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "{root}"
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                root = root.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace =
+            Arc::new(crate::Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        let key = SessionKey::from_str_for_test("lead-session");
+        workspace.seed_test_bound_session(&key, "Stargate");
+        {
+            let db = workspace.db.lock();
+            let db = db.as_ref().expect("db");
+            crate::store::sessions::put(
+                db,
+                &crate::store::sessions::SessionRecord {
+                    org: "TestOrg".to_owned(),
+                    project: "forge".to_owned(),
+                    label: "lead".to_owned(),
+                    session_id: None,
+                    charter: None,
+                    kick: None,
+                    resume_kick: None,
+                    interactive: None,
+                },
+            )
+            .expect("seed the row");
+        }
+
+        let stored = || {
+            let db = workspace.db.lock();
+            let db = db.as_ref().expect("db");
+            crate::store::sessions::get(db, "TestOrg", "forge", "lead")
+                .expect("read")
+                .and_then(|row| row.session_id)
+        };
+
+        let (mut task, _updates) = review_task_for(&workspace, &key);
+        task.translate_event(connected_event("first-id", "/proj"));
+        assert_eq!(
+            stored().as_deref(),
+            Some("first-id"),
+            "the first Connected records the id the CLI adopted",
+        );
+
+        // `/resume`, `/clear`, `/login` and `/logout` all arrive as a
+        // second Connected on this same task, which is the arm that used
+        // to leave the row naming the session the user left.
+        task.translate_event(connected_event("second-id", "/proj"));
+        assert_eq!(
+            stored().as_deref(),
+            Some("second-id"),
+            "so does a replacement, which is the id the next boot has to resume",
+        );
+    }
+
     /// `apply_event_to_domain` on `AgentEvent::Connected` stamps (or
     /// overwrites) `session_id` so subsequent `AgentHandle` calls
     /// route to the live identity. See
@@ -2969,6 +3083,7 @@ mod tests {
             &handle,
             &key,
             Some("sess-1"),
+            None,
             Command::Prompt { key: key.clone(), text: "hi".into(), attachments: Vec::new() },
         )
         .expect("dispatch succeeds");
@@ -2989,6 +3104,7 @@ mod tests {
             &handle,
             &key,
             Some("sess-1"),
+            None,
             Command::Cancel { key: key.clone() },
         )
         .expect("dispatch succeeds");
@@ -3010,6 +3126,7 @@ mod tests {
             &handle,
             &key,
             Some("sess-1"),
+            None,
             Command::SetMode { key: key.clone(), mode: PermissionMode::Plan },
         )
         .expect("dispatch succeeds");
@@ -3033,6 +3150,7 @@ mod tests {
             &handle,
             &key,
             Some("sess-1"),
+            None,
             Command::ReconnectMcpServer { key: key.clone(), server_name: "fs".into() },
         )
         .expect("dispatch succeeds");
@@ -3051,9 +3169,14 @@ mod tests {
     fn execute_command_without_session_id_is_dropped() {
         let (handle, mut rx) = stub_handle_with_rx();
         let key = SessionKey::from_str_for_test("sess");
-        let err =
-            execute_command_via_handle(&handle, &key, None, Command::Cancel { key: key.clone() })
-                .expect_err("a no-session dispatch reports the drop, not Ok");
+        let err = execute_command_via_handle(
+            &handle,
+            &key,
+            None,
+            None,
+            Command::Cancel { key: key.clone() },
+        )
+        .expect_err("a no-session dispatch reports the drop, not Ok");
         assert!(err.to_string().contains("no active session"), "the error names the drop: {err}");
         // Nothing should have been queued.
         assert!(rx.try_recv().is_err());

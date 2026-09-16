@@ -19,6 +19,12 @@ use crate::{PermissionMode, PermissionOutcome, QuestionOutcome};
 pub enum AgentCommand {
     // --- Session lifecycle ---
     NewSession {
+        /// The id the child runs under, passed as `--session-id`. `None`
+        /// leaves the choice to the CLI. Never combined with a resume:
+        /// the CLI refuses both flags together, and `--session-id` is
+        /// create-only, so it is refused outright when a transcript of
+        /// that id already exists.
+        session_id: Option<String>,
         cwd: String,
         launch_settings: serde_json::Value,
     },
