@@ -635,6 +635,13 @@ them:
   `cmd_lib` for fire-and-forget shell.
 - **Tracing only.** Never `println!` / `eprintln!` in library code;
   binaries may use `eprintln!` only when tracing itself failed.
+- **`WARN` and `ERROR` mean forge has a problem**, and the line carries
+  enough to act on: the session, the account, the path or the model,
+  whichever apply. A session's own work - its tool call failing, its
+  command exiting non-zero, its history replaying on resume - is
+  `debug`, and a condition no reader can act on is not a warning at
+  all, however real it is. A new warning site names an event
+  (`event_name`) and takes its level from that rule.
 - **Comments earn their place.** What the code does, never. Why, only
   when a reader would otherwise ask and cannot infer it from names or
   surrounding code. Non-obvious gotchas, external constraints and API
