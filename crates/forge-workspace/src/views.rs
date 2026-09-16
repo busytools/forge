@@ -40,6 +40,11 @@ pub struct ProjectView {
     /// Fallback `display_name`s inherited from the project's `[[orgs]]`
     /// entry, alongside `accounts`. Empty when the org names none.
     pub fallback_accounts: Vec<String>,
+    /// `true` when the project declares `model`. A spawn under a
+    /// project without one is refused, so the launchpad's row needs to
+    /// tell the two reasons no spawn can run apart: no model to match
+    /// on, or no account that could serve it.
+    pub has_model: bool,
     pub sessions: Vec<SessionView>,
 }
 
@@ -64,6 +69,7 @@ impl ProjectView {
             display_path,
             accounts: Vec::new(),
             fallback_accounts: Vec::new(),
+            has_model: true,
             sessions,
         }
     }
@@ -90,6 +96,7 @@ impl ProjectView {
             display_path,
             accounts,
             fallback_accounts,
+            has_model: true,
             sessions,
         }
     }
@@ -108,7 +115,7 @@ pub struct AccountRow {
     pub config_dir: PathBuf,
     /// `true` when this is the session's active account.
     pub is_current: bool,
-    /// `None` when the account is pickable now (tier-0, not bailed).
+    /// `None` when the account is pickable now (not saturated, not bailed).
     /// The reason renders as the row's status tag: a capped window
     /// reads `limit hit`, a blocked probe or a bail reads
     /// `auth failed or expired`.

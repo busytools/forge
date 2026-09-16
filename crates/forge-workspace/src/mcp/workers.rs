@@ -211,6 +211,11 @@ impl Tool for Spawn {
                     "session_id": reply.session_id,
                     "tag": reply.tag,
                 });
+                if let Some(account) = &reply.rate_limited_account {
+                    body["notice"] = serde_json::Value::String(format!(
+                        "assigned account '{account}' is currently rate-limited or bailed. The worker spawns anyway but may hit a 429 right away; free up an account or wait for a reset."
+                    ));
+                }
                 if let Some(warning) = &reply.durability_warning {
                     body["durability_warning"] = serde_json::Value::String(warning.clone());
                 }
@@ -1129,6 +1134,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "new-uuid".into(),
             tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
             durability_warning: None,
         }));
         let facade = mock.into_arc();
@@ -1282,6 +1288,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
@@ -1314,6 +1321,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "forge:worker:steward".into(),
+            rate_limited_account: None,
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
@@ -1349,6 +1357,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "t".into(),
+            rate_limited_account: None,
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
@@ -1379,6 +1388,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "t".into(),
+            rate_limited_account: None,
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
@@ -1416,6 +1426,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "forge:worker:pairing".into(),
+            rate_limited_account: None,
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
@@ -1444,6 +1455,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "t".into(),
+            rate_limited_account: None,
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
@@ -1476,6 +1488,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
             durability_warning: Some(
                 "spawned, but persisting this worker for durability failed".into(),
             ),
@@ -1504,6 +1517,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
@@ -1520,6 +1534,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_surfaces_a_degraded_account_as_a_notice() {
+        // The walk takes a saturated or bailed account only when no
+        // other account in the pin declares the model, so the spawn
+        // result names it and the lead knows before the worker stalls.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:reviewer".into(),
+            rate_limited_account: Some("gateway".into()),
+            durability_warning: None,
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
+            })
+            .await;
+        assert!(!output.is_error);
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid json body");
+        let notice = body["notice"].as_str().expect("notice present when the account is degraded");
+        assert!(notice.contains("gateway"), "notice names the account: {notice}");
+    }
+
+    #[tokio::test]
     async fn spawn_omits_notice_when_account_usable() {
         let mock = Arc::new(MockWorkerFacade::new());
         let caller = fake_key("lead-key");
@@ -1527,6 +1569,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
             durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();

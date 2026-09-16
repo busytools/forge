@@ -9,10 +9,11 @@
 //! The usage cache solves the cold-boot problem: Anthropic's
 //! `/api/oauth/usage` endpoint rate-limits aggressively on per-IP burst
 //! probes, so the first launch can wait 30 s+ before the warm probe gets
-//! through - during which the launchpad picker ties at tier 0. The cache
-//! seeds the in-memory `AccountStateMap` with the last known values until
-//! the 60 s poller refreshes them. The spinner override is a user
-//! preference with no such fallback.
+//! through - during which the launchpad picker has no usage to show and
+//! the walk sees every account as unknown. The cache seeds the in-memory
+//! `AccountStateMap` with the last known values until the 60 s poller
+//! refreshes them. The spinner override is a user preference with no such
+//! fallback.
 //!
 //! Failures are non-fatal: a closed store degrades to "no cache; spawn
 //! paths see empty bars until the poller succeeds."

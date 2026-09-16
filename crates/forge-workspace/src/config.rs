@@ -358,8 +358,8 @@ pub(crate) struct LoadedProject {
     /// filesystem access; this for human-readable output.
     pub display_path: String,
     /// Name of the org this project belongs to (matches
-    /// `LoadedOrg.name`). Workspace `project_accounts_for` resolves
-    /// the pin via this back-reference.
+    /// `LoadedOrg.name`). The spawn resolves the org's pin and walk
+    /// order through this back-reference.
     pub org: String,
     /// Cached pinned account list from the project's org. Duplicated
     /// here so callers don't need to walk the org list on every
@@ -379,7 +379,7 @@ pub(crate) struct LoadedProject {
     /// Per-project environment from the entry's env table, layered
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
     /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
-    /// usage probe, plan detection and the picker all read the ACCOUNT
+    /// the usage probe and the selection walk both read the ACCOUNT
     /// map, so they measure a different endpoint.
     pub env: HashMap<String, String>,
     /// Cap on this project's live dynamic workers; `None` keeps the

@@ -1199,7 +1199,7 @@ pub(crate) fn handle_spawn_worker(
         },
     };
     match workspace.get_agent_handle_with_spawn_key(target, settings, Some(synth_key.clone())) {
-        Ok(_handle) => {
+        Ok(handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
                 project = %project_key.as_str(),
@@ -1207,6 +1207,12 @@ pub(crate) fn handle_spawn_worker(
                 spawn_key = %synth_key.as_str(),
                 "spawn dispatched for worker"
             );
+            // The walk lands on a saturated or bailed account only when
+            // nothing else in the pin declares the project's model, so
+            // the lead hears about it at spawn rather than when the
+            // worker stalls on a 429.
+            let rate_limited_account =
+                handle.display_name().and_then(|name| workspace.degraded_account_name(&name));
             // Reply to the LLM optimistically with the synth key.
             // The LLM addresses subsequent calls by label; the
             // session_id field is informational. Real session UUID
@@ -1214,6 +1220,7 @@ pub(crate) fn handle_spawn_worker(
             let _ = return_to.send(Ok(WorkerSpawnReply {
                 session_id: synth_key.as_str().to_owned(),
                 tag,
+                rate_limited_account,
                 // The MCP facade fills this after its post-reply persist;
                 // the re-spawn paths never persist, so it stays None.
                 durability_warning: None,

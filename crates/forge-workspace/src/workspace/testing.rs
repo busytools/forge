@@ -103,7 +103,7 @@ impl Workspace {
 
     /// Like `testing_stub_with_config_dir` but injects a caller-built
     /// `LoadedConfig` so tests can drive the project-resolution paths
-    /// (`project_accounts_for` / `default_project`) that read
+    /// (`project_for_target` / `default_project`) that read
     /// `self.config.projects`, which the `test_extra_projects` overlay
     /// does not populate. Build the config via
     /// `crate::config::load_from_dir` on a tempdir `forge.toml` fixture;

@@ -540,16 +540,20 @@ fn build_picker_content(
             let live = live_workers.get(&project.key).map_or(&[][..], Vec::as_slice);
             push_worker_rows(&mut lines, project, app, labels, live);
         }
-        // Surface a "no usable accounts" hint when the walk resolves
-        // to nothing (every allowed account Bailed, or the forge.toml
-        // allow-list names no known accounts). The row stays
-        // unclickable via `effective_click_intent`'s Block downgrade;
-        // the hint explains why.
+        // Surface why no spawn can run: nothing the walk could reach
+        // declares the project's model, or the project declares no
+        // model for it to match on. The row stays unclickable via
+        // `effective_click_intent`'s Block downgrade; the hint names
+        // the one to fix.
         if let Some(workspace) = app.workspace.as_ref()
             && workspace.all_accounts_loaded()
             && project_view.as_ref().is_some_and(|p| !workspace.project_would_bind(&p.key))
         {
-            push_no_usable_accounts_row(&mut lines, width);
+            let reason = match project_view.as_ref() {
+                Some(p) if !p.has_model => NO_MODEL_HINT,
+                _ => NO_USABLE_ACCOUNTS_HINT,
+            };
+            push_unspawnable_hint_row(&mut lines, width, reason);
         }
     }
 
@@ -757,6 +761,12 @@ const ACTIVITY_COLUMN_WIDTH: usize = 10;
 /// 13 = 1 space + 12 (CHIP_MAX_WIDTH in `account_chip_spans`).
 const CHIP_COLUMN_WIDTH: usize = 13;
 
+/// Hint for a project whose accounts all resolve out of the walk.
+const NO_USABLE_ACCOUNTS_HINT: &str = "no usable accounts";
+/// Hint for a project that declares no model, which is a different fix
+/// from an account problem and reads as one if the row says otherwise.
+const NO_MODEL_HINT: &str = "no model declared - add `model` to this project";
+
 /// Append one row per persisted dynamic worker for this project,
 /// directly below the project's row. Each row carries what the project
 /// row carries - lifecycle glyph, name, the account the walk picks,
@@ -895,15 +905,13 @@ fn push_error_row(lines: &mut Vec<Line<'static>>, error: &str, area_width: u16) 
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(truncated, style)]));
 }
 
-/// Inline hint for a project the walk resolves to nothing for
-/// (every allowed account ended in `Bailed`). Same indent + style
-/// shape as `push_error_row`; uses DIM rather than STATUS_ERROR
-/// because the condition is recoverable (repairing one of the
-/// allow-list accounts' credentials) rather than a hard error.
-fn push_no_usable_accounts_row(lines: &mut Vec<Line<'static>>, area_width: u16) {
+/// Inline hint for a project no spawn can run under. Same indent +
+/// style shape as `push_error_row`; uses DIM rather than STATUS_ERROR
+/// because the condition is recoverable by an edit to `forge.toml`
+/// rather than a hard error.
+fn push_unspawnable_hint_row(lines: &mut Vec<Line<'static>>, area_width: u16, message: &str) {
     let style = Style::default().fg(theme::DIM);
     let pad: usize = 8;
-    let message = "no usable accounts";
     let budget = usize::from(area_width).saturating_sub(pad + 2);
     let truncated = truncate_to(message, budget);
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(truncated, style)]));
@@ -1520,6 +1528,49 @@ mod tests {
             project_row.chars().count(),
             "both rows end at the same column, so the activity field lines up too; \
              worker {worker_row:?} vs project {project_row:?}",
+        );
+    }
+
+    /// The hint under an unspawnable row names which fix applies. A
+    /// project with no model reads as a model problem, not as an
+    /// account one: they are different edits and the row is where the
+    /// user acts.
+    #[tokio::test]
+    async fn a_model_less_project_hints_at_the_model_not_at_the_accounts() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        let forge = config_dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/ dir");
+        let project_path = project_dir.path().to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n\
+                 [[orgs.projects]]\nname = \"bare\"\npath = \"{project_path}\"\n\
+                 [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\nmodels = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+
+        let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
+            .expect("workspace");
+        workspace.seed_test_ready_account("Stargate");
+        let mut app = App::test_default();
+        app.workspace = Some(std::sync::Arc::new(workspace));
+        let rows = build_picker_rows(&app);
+        let (lines, _) = build_picker_content(&app, &rows, PICKER_WIDTH);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(
+            rendered.iter().any(|row| row.contains("no model declared")),
+            "a project with no model says so; got {rendered:?}",
+        );
+        assert!(
+            !rendered.iter().any(|row| row.contains("no usable accounts")),
+            "and does not blame the accounts; got {rendered:?}",
         );
     }
 

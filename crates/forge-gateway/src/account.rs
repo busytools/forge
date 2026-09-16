@@ -76,10 +76,10 @@ pub enum Unusable {
 
 /// Boot-time loading state for an account. The launchpad gates click
 /// and spawn until every account in the map has resolved to `Ready`
-/// or `Bailed`; both terminal states feed into the assignment-plan
-/// computation, while `Loading` keeps the launchpad dim. A bailed
-/// account's `usage` is `None` by construction (the loader clears it
-/// on the transition).
+/// or `Bailed`; the selection walk skips `Loading` and keeps `Bailed`
+/// as its last resort, while `Loading` keeps the launchpad dim. A
+/// bailed account's `usage` is `None` by construction (the loader
+/// clears it on the transition).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadingState {
     /// First-pass probe in progress. The launchpad shows `○` (yellow)
@@ -402,8 +402,7 @@ impl AccountStateMap {
 
     /// `true` when every account in the map has reached a terminal
     /// `LoadingState` (`Ready` or `Bailed`). The launchpad uses this
-    /// as the gate for un-dimming project rows + un-blocking clicks;
-    /// the assignment-plan compute step also fires off this signal.
+    /// as the gate for un-dimming project rows + un-blocking clicks.
     /// Empty maps return `true` (vacuous; no accounts means no work
     /// to wait on - relevant in the testing-stub path).
     pub fn all_loaded(&self) -> bool {
@@ -1236,7 +1235,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // #246: LoadingState gates the launchpad + drives assignment plan.
+    // #246: LoadingState gates the launchpad + feeds the selection walk.
     //
     // Replaces the PR #238 `consecutive_unauthorized` 3-strike counter:
     // a single 401 now transitions to `LoadingState::Bailed` (clearing

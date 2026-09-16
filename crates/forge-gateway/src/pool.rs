@@ -167,16 +167,6 @@ impl AccountPool {
         crate::selection::select_account(&state, pin, org, model)
     }
 
-    /// `selection::org_lists_for_model` against the live account state.
-    pub fn org_lists_for_model(
-        &self,
-        pin: &crate::selection::OrgPin,
-        model: &str,
-    ) -> crate::selection::OrgPin {
-        let state = self.accounts.lock();
-        crate::selection::org_lists_for_model(&state, pin, model)
-    }
-
     /// `true` when the account serves `model`. An unknown account
     /// serves nothing.
     pub fn declares(&self, key: &AccountKey, model: &str) -> bool {

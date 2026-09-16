@@ -114,7 +114,7 @@ The launchpad blocks project-row clicks until every account reaches a terminal s
 | Chip glyph | State |
 |---|---|
 | `○` yellow | Loading - probe in flight |
-| `●` green | Ready - available for assignment |
+| `●` green | Ready - the walk may pick it |
 | `⚠` red | Bailed on an auth failure (rejected or expired credentials; repair is an env edit plus a restart) |
 | `⚠` yellow | Bailed on a transient failure (rate limit, unreachable endpoint, malformed response; the pollers heal it) |
 

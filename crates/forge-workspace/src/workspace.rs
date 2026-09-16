@@ -152,8 +152,8 @@ pub enum SessionChipState {
     /// Account is Ready but at least one usage window (5h or weekly)
     /// is currently at the cap. Yellow foreground signals "still
     /// spawns but expect throttling until the window resets." When
-    /// every account is capped the plan is forced to assign one
-    /// anyway, so every session's chip shows this state.
+    /// every account that declares the model is capped the walk takes
+    /// one anyway, so the chip shows this state.
     AtCap,
     /// Account Bailed on an auth failure (rejected or expired
     /// credentials). Red foreground + `⚠ ` prefix; the repair is an
@@ -724,8 +724,9 @@ fn open_db(app_support: &Path) -> Option<crate::store::Db> {
 ///
 /// Scans the config dirs the caller passes (one shared dir today;
 /// carrying the redb tag cache so already-scanned transcripts are not
-/// re-read): workers pick their account from the assignment-plan
-/// rotation, so a prior worker session can live under any account.
+/// re-read): workers pick their account by the walk over their
+/// project's model, so a prior worker session can live under any
+/// account in its org's pin.
 async fn scan_worker_resume_map(
     config_dirs: &[PathBuf],
     project_dir: &std::path::Path,
@@ -1101,12 +1102,12 @@ impl Workspace {
         gateway.set_rotation_numbers(config.gateway_rotation);
 
         // Seed account usage from the machine-local store so the
-        // launchpad picker has tier data immediately at cold boot.
+        // launchpad picker has usage data immediately at cold boot.
         // Anthropic's /api/oauth/usage rate-limiter can stall the first
-        // live probe for 30 s+; without seed data every account ties at
-        // tier 0 (unknown-fresh) during that window. The 60 s background
-        // poller refreshes these snapshots - the cache is purely "last
-        // known value" seed.
+        // live probe for 30 s+; without seed data every account reads as
+        // unknown during that window, so nothing is demoted for being at
+        // its cap. The 60 s background poller refreshes these snapshots -
+        // the cache is purely "last known value" seed.
         let state = match &db {
             Some(db) => crate::account_cache::load(db),
             None => crate::account_cache::ForgeState::empty(),
@@ -1380,6 +1381,7 @@ impl Workspace {
                 display_path: project.display_path.clone(),
                 accounts: project.accounts.clone(),
                 fallback_accounts: project.fallback_accounts.clone(),
+                has_model: project.model.is_some(),
                 sessions,
             });
         }
@@ -1542,7 +1544,7 @@ impl Workspace {
         // base-url key would point the child away from the listener
         // while it still holds the dummy credential - the silent bypass
         // the stamp exists to close, reopened one layer up.
-        let merged_env = self.session_env_for(&target, &account_env);
+        let merged_env = session_env_for(&project, &account_env);
         // Register the session and let the gateway stamp the child's
         // env: the base URL names this listener, the credential the
         // child holds is a dummy, and the real one stays in the
@@ -2030,6 +2032,17 @@ impl Workspace {
     /// configured account.
     pub fn account_auth_for(&self, display_name: &str) -> Option<crate::views::AccountAuth> {
         self.accounts.auth(display_name)
+    }
+
+    /// The account name back, when that account is saturated or bailed:
+    /// the walk takes one of those only when nothing else in the pin
+    /// declares the project's model, so a spawn landing there is worth
+    /// saying out loud. `None` when it has room, and for an unknown name.
+    pub(crate) fn degraded_account_name(&self, account: &str) -> Option<String> {
+        let key = AccountKey(account.to_owned());
+        let degraded = self.accounts.is_saturated(&key)
+            || self.accounts.loading_state(&key) == forge_gateway::LoadingState::Bailed;
+        degraded.then(|| account.to_owned())
     }
 
     /// The `forge.toml` this workspace loaded. Preflight names it as
@@ -2674,31 +2687,6 @@ impl Workspace {
                 }),
             SessionTarget::FreshInProject { project_key, .. } => self.project_for_key(project_key),
         }
-    }
-
-    /// Env for a spawn under `target` on the picked account. An
-    /// unresolved target keeps the account env rather than borrowing
-    /// the default project's, and warns when any project declares env,
-    /// since the symptom is otherwise a silently incomplete session.
-    fn session_env_for(
-        &self,
-        target: &SessionTarget,
-        account_env: &std::collections::HashMap<String, String>,
-    ) -> std::collections::HashMap<String, String> {
-        let Some(project) = self.project_for_target(target) else {
-            return account_env.clone();
-        };
-        // Logged even when the project declares nothing, so a target
-        // resolving to the wrong project is visible.
-        tracing::info!(
-            target: "forge_workspace::workspace",
-            event_name = "session_env_project_applied",
-            project = %project.name,
-            keys = %crate::config::applied_env_keys(&project),
-            "resolved the spawn target to a project; `keys` lists what its \
-             project env contributed, empty when it declares none",
-        );
-        crate::config::session_env(&project, account_env)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
@@ -5890,6 +5878,25 @@ async fn tag_session_with_retry(
     }))
 }
 
+/// Env for a spawn: the account env with `project`'s declared keys
+/// merged over it. The spawn resolves the project first and refuses a
+/// target that maps to none, so there is always one to merge.
+fn session_env_for(
+    project: &LoadedProject,
+    account_env: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    // Logged even when the project declares nothing, so a spawn
+    // carrying the wrong project's env is visible.
+    tracing::info!(
+        target: "forge_workspace::workspace",
+        event_name = "session_env_project_applied",
+        project = %project.name,
+        keys = %crate::config::applied_env_keys(project),
+        "`keys` lists what the project env contributed, empty when it declares none",
+    );
+    crate::config::session_env(project, account_env)
+}
+
 /// Stamp the project's `permission_mode` into the launch settings'
 /// `permissions.defaultMode`. A spawn that resolved to no project
 /// stamps nothing, so the launcher's session default applies.
@@ -6810,16 +6817,12 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
-        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config)
-            .expect("the stub config's [[slack]] entries are well-formed");
+        let project = config.projects[0].clone();
 
         let capture = LogCapture::default();
         let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
         tracing::subscriber::with_default(subscriber, || {
-            ws.session_env_for(
-                &SessionTarget::Named("solo".to_owned()),
-                &std::collections::HashMap::new(),
-            );
+            session_env_for(&project, &std::collections::HashMap::new());
         });
         let log = String::from_utf8_lossy(&capture.0.lock()).into_owned();
 
@@ -6828,12 +6831,13 @@ provider = "anthropic"
     }
 
     /// Two projects at one path collide on the session-storage key, so
-    /// neither can be told apart - the ambiguous case must yield NO
-    /// project env rather than the first match's. Second assertion
-    /// covers the `__fresh__:` key a project-rooted target mints, which
-    /// resolves via the same lookup.
+    /// neither can be told apart: an ambiguous target resolves to NO
+    /// project rather than the first match's, which is what refuses the
+    /// spawn rather than handing it one twin's env and the other's pin.
+    /// Second assertion covers the `__fresh__:` key a project-rooted
+    /// target mints, which resolves via the same lookup.
     #[test]
-    fn an_ambiguous_storage_key_yields_no_project_env() {
+    fn an_ambiguous_storage_key_resolves_to_no_project() {
         let dir = tempdir().expect("tempdir");
         let shared = dir.path().join("shared");
         let solo = dir.path().join("solo");
@@ -6883,20 +6887,18 @@ provider = "anthropic"
             project_key: key(&shared),
             synth_key: SessionKey::from_session_id("__spawn_twin__"),
         };
-        let env = ws.session_env_for(&ambiguous, &std::collections::HashMap::new());
         assert!(
-            !env.contains_key("TWIN_TOKEN"),
-            "an ambiguous key must not deliver either twin's env: {env:?}",
+            ws.project_for_target(&ambiguous).is_none(),
+            "an ambiguous key must resolve to neither twin, which refuses the spawn",
         );
 
         let fresh = SessionTarget::Session(SessionKey::from_session_id(format!(
             "__fresh__:{}",
             key(&solo).as_str()
         )));
-        let env = ws.session_env_for(&fresh, &std::collections::HashMap::new());
         assert_eq!(
-            env.get("SOLO_TOKEN").map(String::as_str),
-            Some("solo-secret"),
+            ws.project_for_target(&fresh).map(|project| project.name),
+            Some("solo".to_owned()),
             "an unambiguous key still resolves, including through a __fresh__: placeholder",
         );
     }
@@ -12999,10 +13001,68 @@ provider = "anthropic"
         );
     }
 
-    /// Two accounts, so the lead (session_n=0) and the first worker to
-    /// spawn (session_n=1) bind to DIFFERENT accounts. That separation
-    /// is what makes a wrong label observable rather than accidentally
-    /// right.
+    /// `project_would_bind` is the whole input to the launchpad's click
+    /// gate and to its hint row, so an always-false regression would
+    /// leave every project unclickable and nothing else would fail.
+    #[tokio::test]
+    async fn project_would_bind_tracks_the_walk() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let project = workspace.list_projects().into_iter().next().expect("one project");
+
+        assert!(
+            !workspace.project_would_bind(&project.key),
+            "an account still resolving is nothing the walk can pick",
+        );
+
+        workspace.seed_test_ready_account("Stargate");
+        assert!(
+            workspace.project_would_bind(&project.key),
+            "a ready account declaring the project's model is what a spawn lands on",
+        );
+
+        workspace.seed_test_account_state("Stargate", forge_gateway::LoadingState::Bailed);
+        assert!(
+            workspace.project_would_bind(&project.key),
+            "a bailed account is still picked when nothing else declares the model, \
+             so the row stays clickable",
+        );
+    }
+
+    /// The spawn's notice: an account the walk had to take while
+    /// saturated or bailed comes back named, one with room does not, so
+    /// the tool result carries a notice exactly when there is something
+    /// to warn about.
+    #[tokio::test]
+    async fn a_degraded_account_is_named_and_an_account_with_room_is_not() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let key = AccountKey("Stargate".to_owned());
+
+        workspace.account_pool().set_usage(&key, usage_at(100.0));
+        assert_eq!(
+            workspace.degraded_account_name("Stargate").as_deref(),
+            Some("Stargate"),
+            "a saturated account is named, so the spawn warns the worker may throttle",
+        );
+
+        workspace.account_pool().set_usage(&key, usage_at(10.0));
+        assert_eq!(
+            workspace.degraded_account_name("Stargate"),
+            None,
+            "an account with room is not named, so the result carries no notice",
+        );
+
+        workspace.account_pool().set_loading(&key, forge_gateway::LoadingState::Bailed);
+        assert_eq!(
+            workspace.degraded_account_name("Stargate").as_deref(),
+            Some("Stargate"),
+            "a bailed account is named too",
+        );
+    }
+
+    /// Two accounts and a project that declares no model, which is the
+    /// fixture for `apply_project_model`'s absent-model case.
     fn make_workspace_dir_lead_and_worker() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -13346,9 +13406,8 @@ base_url = "https://openrouter.ai/api"
     async fn session_chip_for_bailed_branch() {
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        // Plan needs SOMETHING in it for session_chip_for to look up.
-        // Snapshot first then transition to Bailed (preserves plan
-        // assignment, just changes loading state).
+        // Snapshot first, then bail: the walk reads the loading state,
+        // so a chip needs the account first made pickable.
         workspace.account_pool().set_usage(
             &AccountKey("Stargate".to_owned()),
             forge_primitives::usage::UsageSnapshot {
