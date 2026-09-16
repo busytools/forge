@@ -754,9 +754,21 @@ impl SessionTask {
             }
             other => {
                 let sid = self.session_id_string();
-                if let Err(err) =
-                    execute_command_via_handle(&self.handle, &self.key, sid.as_deref(), other)
-                {
+                // `/new` starts under an id minted here, so the row this
+                // session belongs to names the new session from the moment
+                // it starts rather than the one it replaces.
+                let fresh = if matches!(other, Command::NewSession { .. }) {
+                    self.fresh_session_id()
+                } else {
+                    None
+                };
+                if let Err(err) = execute_command_via_handle(
+                    &self.handle,
+                    &self.key,
+                    sid.as_deref(),
+                    fresh,
+                    other,
+                ) {
                     tracing::warn!(
                         target: "forge_workspace::session_task",
                         key = %self.key.as_str(),
@@ -849,6 +861,14 @@ impl SessionTask {
             "session task rekeyed onto real session UUID"
         );
         self.key = real_key.clone();
+    }
+
+    /// The id a `/new` starts under: a fresh one, recorded against the row
+    /// this session belongs to, so a restart re-enters the new session
+    /// rather than the one `/new` replaced. `None` when the session has no
+    /// row to record against, which leaves the CLI to pick its own id.
+    fn fresh_session_id(&self) -> Option<String> {
+        self.workspace.upgrade()?.fresh_session_id_for(&self.key)
     }
 
     /// Drain `DomainSession.pending_peer_prompts` after the session's
@@ -1194,6 +1214,7 @@ pub(crate) fn execute_command_via_handle(
     handle: &Arc<AgentHandle>,
     key: &SessionKey,
     session_id: Option<&str>,
+    new_session_id: Option<String>,
     cmd: Command,
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
@@ -1222,7 +1243,7 @@ pub(crate) fn execute_command_via_handle(
             handle.set_model(sid.to_owned(), model)
         }
         Command::NewSession { key: _, cwd, launch_settings } => {
-            handle.new_session(cwd, launch_settings)
+            handle.new_session(new_session_id, cwd, launch_settings)
         }
         Command::ResumeSession { key: _, session_id, cwd, launch_settings } => {
             handle.resume_session(session_id, cwd, launch_settings)
@@ -2969,6 +2990,7 @@ mod tests {
             &handle,
             &key,
             Some("sess-1"),
+            None,
             Command::Prompt { key: key.clone(), text: "hi".into(), attachments: Vec::new() },
         )
         .expect("dispatch succeeds");
@@ -2989,6 +3011,7 @@ mod tests {
             &handle,
             &key,
             Some("sess-1"),
+            None,
             Command::Cancel { key: key.clone() },
         )
         .expect("dispatch succeeds");
@@ -3010,6 +3033,7 @@ mod tests {
             &handle,
             &key,
             Some("sess-1"),
+            None,
             Command::SetMode { key: key.clone(), mode: PermissionMode::Plan },
         )
         .expect("dispatch succeeds");
@@ -3033,6 +3057,7 @@ mod tests {
             &handle,
             &key,
             Some("sess-1"),
+            None,
             Command::ReconnectMcpServer { key: key.clone(), server_name: "fs".into() },
         )
         .expect("dispatch succeeds");
@@ -3051,9 +3076,14 @@ mod tests {
     fn execute_command_without_session_id_is_dropped() {
         let (handle, mut rx) = stub_handle_with_rx();
         let key = SessionKey::from_str_for_test("sess");
-        let err =
-            execute_command_via_handle(&handle, &key, None, Command::Cancel { key: key.clone() })
-                .expect_err("a no-session dispatch reports the drop, not Ok");
+        let err = execute_command_via_handle(
+            &handle,
+            &key,
+            None,
+            None,
+            Command::Cancel { key: key.clone() },
+        )
+        .expect_err("a no-session dispatch reports the drop, not Ok");
         assert!(err.to_string().contains("no active session"), "the error names the drop: {err}");
         // Nothing should have been queued.
         assert!(rx.try_recv().is_err());

@@ -31,6 +31,7 @@ use tracing::Instrument;
 
 use crate::client::{AgentEvent, SessionLaunchSettings};
 use crate::forge_sdk_worker;
+use crate::forge_sdk_worker::SessionId;
 use forge_primitives::{PermissionMode, PermissionOutcome, QuestionOutcome};
 
 /// Sentinel `config_dir` for `ForgeSdkBridge` test stubs that never
@@ -908,8 +909,11 @@ impl ForgeSdkBridge {
         )
     }
 
+    /// Start a session under `session_id`, or under an id the CLI picks
+    /// when that is `None`.
     pub(crate) fn new_session(
         &self,
+        session_id: Option<String>,
         cwd: String,
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
@@ -917,8 +921,12 @@ impl ForgeSdkBridge {
         let span = tracing::info_span!("bridge_new_session", cwd = %cwd);
         tokio::spawn(
             async move {
+                let id = match session_id.as_deref() {
+                    Some(id) => SessionId::Create(id),
+                    None => SessionId::Unassigned,
+                };
                 if let Err(err) =
-                    forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
+                    forge_sdk_worker::spawn_session(&bridge, &cwd, id, &launch_settings).await
                 {
                     let msg = format!("forge-sdk session spawn failed: {err}");
                     if bridge
@@ -956,7 +964,7 @@ impl ForgeSdkBridge {
                 if let Err(err) = forge_sdk_worker::spawn_session(
                     &bridge,
                     &cwd,
-                    Some(&session_id),
+                    SessionId::Resume(&session_id),
                     &launch_settings,
                 )
                 .await
@@ -980,16 +988,23 @@ impl ForgeSdkBridge {
         Ok(())
     }
 
-    /// Try resume; on failure transparently retry as new_session(cwd).
-    /// Surfaces `ConnectionFailed` only when both attempts fail. Used
-    /// by project-rooted spawns (Default / Named) where the catalog's
-    /// recorded lead may be stale (e.g. cross-account scan, deleted
-    /// file, schema drift). See
+    /// Re-enter `session_id`, keeping the identity through a refusal.
+    /// Three attempts, in order: resume it; when the CLI refuses - the
+    /// transcript is gone - start a new session under the SAME id, which
+    /// the CLI adopts and which keeps the identity stable; when that is
+    /// refused too, start under a fresh id rather than failing. The
+    /// third attempt exists because the first two can both be refused
+    /// for a reason that is neither of them being absent (an unreadable
+    /// transcript), and that is a state the pre-id fallback handled
+    /// silently by starting a new session. Only all three failing
+    /// surfaces `ConnectionFailed`. Used by project-rooted spawns
+    /// (Default / Named) where the catalog's recorded lead may be stale
+    /// (e.g. cross-account scan, deleted file, schema drift). See
     /// [`forge_primitives::AgentCommand::ResumeOrNewSession`] for the
     /// motivation.
     ///
     /// `cwd` is also passed to the resume attempt, not just the
-    /// fresh-fallback. `claude --resume <id>` indexes sessions by the
+    /// fallback. `claude --resume <id>` indexes sessions by the
     /// project key derived from its own working directory, so
     /// inheriting forge's `$PWD` (the default when cwd is empty) makes
     /// every cross-directory resume fail with "No conversation found
@@ -1007,33 +1022,65 @@ impl ForgeSdkBridge {
             cwd = %cwd,
         );
         tokio::spawn(async move {
-            if let Err(resume_err) =
-                forge_sdk_worker::spawn_session(&bridge, &cwd, Some(&session_id), &launch_settings)
-                    .await
+            let Err(resume_err) = forge_sdk_worker::spawn_session(
+                &bridge,
+                &cwd,
+                SessionId::Resume(&session_id),
+                &launch_settings,
+            )
+            .await
+            else {
+                return;
+            };
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                error = %resume_err,
+                session_id = %session_id,
+                "session resume failed; starting a new session under the same id",
+            );
+            let Err(create_err) = forge_sdk_worker::spawn_session(
+                &bridge,
+                &cwd,
+                SessionId::Create(&session_id),
+                &launch_settings,
+            )
+            .await
+            else {
+                return;
+            };
+            // Both refused: the id is present on disk but not resumable,
+            // so create refuses it as already in use. A fresh id is the
+            // only way the session comes up.
+            let fresh = uuid::Uuid::new_v4().to_string();
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                error = %create_err,
+                session_id = %session_id,
+                fresh_session_id = %fresh,
+                "session could neither be resumed nor created under its id; starting under a \
+                 new one",
+            );
+            if let Err(new_err) = forge_sdk_worker::spawn_session(
+                &bridge,
+                &cwd,
+                SessionId::Create(&fresh),
+                &launch_settings,
+            )
+            .await
             {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    error = %resume_err,
-                    session_id = %session_id,
-                    "session resume failed; falling back to fresh session",
+                let msg = format!(
+                    "forge-sdk session spawn failed after the resume fallbacks (resume err: {resume_err}; same-id err: {create_err}; fresh err: {new_err})",
                 );
-                if let Err(new_err) =
-                    forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
+                if bridge
+                    .event_tx()
+                    .send(AgentEvent::ConnectionFailed { message: msg.clone() })
+                    .is_err()
                 {
-                    let msg = format!(
-                        "forge-sdk session spawn failed after resume fallback (resume err: {resume_err}; new err: {new_err})",
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %msg,
+                        "event channel closed; ConnectionFailed dropped",
                     );
-                    if bridge
-                        .event_tx()
-                        .send(AgentEvent::ConnectionFailed { message: msg.clone() })
-                        .is_err()
-                    {
-                        tracing::warn!(
-                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                            error = %msg,
-                            "event channel closed; ConnectionFailed dropped",
-                        );
-                    }
                 }
             }
         }.instrument(span));

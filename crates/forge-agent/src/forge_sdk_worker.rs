@@ -206,10 +206,45 @@ fn apply_env_overrides(env: &mut HashMap<String, String>, overrides: &HashMap<St
     }
 }
 
+/// How the CLI is told which session to run under. Exactly one of these
+/// is the answer at a time: `--session-id` together with `--resume` is a
+/// hard refusal, so the id is never in two places at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionId<'a> {
+    /// Start a fresh session under this id. `--session-id` is
+    /// create-only: the CLI refuses an id whose transcript already
+    /// exists, even with nothing running.
+    Create(&'a str),
+    /// Re-enter an existing session.
+    Resume(&'a str),
+    /// Nothing to reuse, so the CLI picks its own id.
+    Unassigned,
+}
+
+impl<'a> SessionId<'a> {
+    /// The id the caller supplied, if any. A blank counts as none: the
+    /// bridge's id slot starts empty, so a blank must never be resumed.
+    fn supplied(self) -> Option<&'a str> {
+        match self {
+            Self::Create(id) | Self::Resume(id) if !id.is_empty() => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The id being re-entered, which is what makes a history load
+    /// meaningful - a create has no history to read.
+    fn resumed(self) -> Option<&'a str> {
+        match self {
+            Self::Resume(id) if !id.is_empty() => Some(id),
+            _ => None,
+        }
+    }
+}
+
 /// Spawn a fresh `Client` for `bridge` and start the reader subtask.
 /// Builds `Options` from `launch_settings` (mode, model, effort,
-/// `can_use_tool` callback). When `resume_id` is `Some`, passes the
-/// `--resume` flag and backfills past turns into the `Connected`
+/// `can_use_tool` callback). `id` says which session the child runs
+/// under; a `Resume` also backfills past turns into the `Connected`
 /// event's `history_updates`.
 ///
 /// On success the bridge's client slot is populated and a
@@ -219,7 +254,7 @@ fn apply_env_overrides(env: &mut HashMap<String, String>, overrides: &HashMap<St
 pub(crate) async fn spawn_session(
     bridge: &ForgeSdkBridge,
     cwd: &str,
-    resume_id: Option<&str>,
+    id: SessionId<'_>,
     launch_settings: &crate::client::SessionLaunchSettings,
 ) -> anyhow::Result<()> {
     // If we already have a client, drop it so the existing subprocess
@@ -248,7 +283,7 @@ pub(crate) async fn spawn_session(
     };
     let options = build_options_with_callback(
         cwd,
-        resume_id,
+        id,
         launch_settings,
         bridge.event_tx().clone(),
         Arc::clone(bridge.inner_pending()),
@@ -259,16 +294,16 @@ pub(crate) async fn spawn_session(
     );
     let (client, events) = Client::spawn(options).await?;
     sweep_agent_worktrees(cwd);
-    // For resume sessions the CLI flag carried the real session id -
-    // prefer that over `Client::session_id()`, which is empty until
-    // `system/init` lands on the wire (per `Client::spawn` docs, after
-    // both the initialize control_response AND a user message). For
-    // new sessions we also fall back to whatever Client captured
-    // during its init loop (typically empty), and the App-side handler
-    // adopts the first non-empty session id seen on the wire.
-    let session_id = match resume_id {
-        Some(id) if !id.is_empty() => id.to_owned(),
-        _ => client.session_id(),
+    // A supplied id is the truth: a resume carried it on the CLI flag,
+    // and a create was adopted by the CLI, which is why the transcript
+    // is named after it. Only an unassigned spawn falls back to
+    // `Client::session_id()`, which is empty until `system/init` lands
+    // on the wire (per `Client::spawn` docs, after both the initialize
+    // control_response AND a user message); the App-side handler adopts
+    // the first non-empty session id seen there.
+    let session_id = match id.supplied() {
+        Some(id) => id.to_owned(),
+        None => client.session_id(),
     };
     bridge.session_id_slot_arc().lock().clone_from(&session_id);
 
@@ -304,7 +339,7 @@ pub(crate) async fn spawn_session(
         &session_id,
         &cwd_owned,
         launch_settings,
-        resume_id,
+        id.resumed(),
         &config_dir,
         display_name.as_deref(),
     )
@@ -1044,7 +1079,7 @@ fn sweep_agent_worktrees(cwd: &str) {
 
 fn build_options_with_callback(
     cwd: &str,
-    resume: Option<&str>,
+    id: SessionId<'_>,
     launch_settings: &crate::client::SessionLaunchSettings,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     pending: PendingResponses,
@@ -1215,8 +1250,12 @@ fn build_options_with_callback(
     if !cwd.is_empty() {
         b = b.cwd(PathBuf::from(cwd));
     }
-    if let Some(id) = resume {
-        b = b.resume(id);
+    // One or the other, never both: the CLI refuses `--session-id` with
+    // `--resume`.
+    match id {
+        SessionId::Resume(id) if !id.is_empty() => b = b.resume(id),
+        SessionId::Create(id) if !id.is_empty() => b = b.session_id(id),
+        _ => {}
     }
 
     let mut applied_mode: Option<&'static str> = None;
@@ -1326,7 +1365,8 @@ fn build_options_with_callback(
         applied_effort = applied_effort.as_deref().unwrap_or("(none)"),
         effort_source,
         cwd_present = !cwd.is_empty(),
-        resume_present = resume.is_some(),
+        resume_present = id.resumed().is_some(),
+        create_present = matches!(id, SessionId::Create(_)),
         config_dir = %binding.config_dir.display(),
     );
     b.build()
@@ -1885,9 +1925,10 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        PendingQuestions, PendingResponses, build_forge_system_prompt, deliver_permission_response,
-        deliver_question_response, frame_session_id, initial_mode_state, log_failed_mcp_servers,
-        run_ask_user_question, synth_permission_request,
+        PendingQuestions, PendingResponses, SessionId, build_forge_system_prompt,
+        deliver_permission_response, deliver_question_response, frame_session_id,
+        initial_mode_state, log_failed_mcp_servers, run_ask_user_question,
+        synth_permission_request,
     };
 
     /// Buffer tracing output so an emitted record can be read back.
@@ -2197,6 +2238,49 @@ mod tests {
         assert_eq!(resumed.messages.len(), 3, "and the three turns still replay");
     }
 
+    /// The CLI is told the session's id on exactly one flag. Both
+    /// together is a hard refusal, which is why a create must never
+    /// carry a resume id and the reverse.
+    #[test]
+    fn a_spawn_carries_its_session_id_on_exactly_one_cli_flag() {
+        use crate::client::SessionLaunchSettings;
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        let (event_tx, _rx) = mpsc::unbounded_channel();
+        let launch = SessionLaunchSettings::default();
+        let env = HashMap::new();
+        let build = |id| {
+            super::build_options_with_callback(
+                "",
+                id,
+                &launch,
+                event_tx.clone(),
+                fresh_pending(),
+                fresh_pending_questions(),
+                Arc::new(Mutex::new(String::new())),
+                Vec::new(),
+                &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &env },
+            )
+        };
+
+        let created = build(SessionId::Create("id-1"));
+        assert_eq!(
+            created.session_id.as_deref(),
+            Some("id-1"),
+            "a create hands the CLI the id it must adopt",
+        );
+        assert_eq!(created.resume, None, "and never --resume beside it");
+
+        let resumed = build(SessionId::Resume("id-2"));
+        assert_eq!(resumed.resume.as_deref(), Some("id-2"), "a resume re-enters that id");
+        assert_eq!(resumed.session_id, None, "and never --session-id beside it");
+
+        let unassigned = build(SessionId::Unassigned);
+        assert_eq!(unassigned.session_id, None);
+        assert_eq!(unassigned.resume, None, "an unassigned spawn passes neither flag");
+    }
+
     #[test]
     fn build_options_still_stamps_a_reserved_key_despite_the_warn() {
         // The collision warns but does not suppress the stamp: a
@@ -2214,7 +2298,7 @@ mod tests {
         assert!(super::is_reserved_env_key("CLAUDE_CONFIG_DIR"));
         let options = super::build_options_with_callback(
             "",
-            None,
+            SessionId::Unassigned,
             &launch,
             event_tx,
             fresh_pending(),
@@ -2247,7 +2331,7 @@ mod tests {
         };
         let options = super::build_options_with_callback(
             "",
-            None,
+            SessionId::Unassigned,
             &launch,
             event_tx,
             fresh_pending(),
@@ -2308,7 +2392,7 @@ mod tests {
         let launch = SessionLaunchSettings::default();
         let options = super::build_options_with_callback(
             "",
-            None,
+            SessionId::Unassigned,
             &launch,
             event_tx,
             fresh_pending(),
@@ -2342,7 +2426,7 @@ mod tests {
         let (event_tx, _rx) = mpsc::unbounded_channel();
         let options = super::build_options_with_callback(
             "",
-            None,
+            SessionId::Unassigned,
             &SessionLaunchSettings::default(),
             event_tx,
             fresh_pending(),
@@ -2440,7 +2524,7 @@ mod tests {
         env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "unused".to_owned());
         let options = super::build_options_with_callback(
             "",
-            None,
+            SessionId::Unassigned,
             &launch,
             event_tx,
             fresh_pending(),
@@ -2478,7 +2562,7 @@ mod tests {
         let env = HashMap::new();
         let options = super::build_options_with_callback(
             "",
-            None,
+            SessionId::Unassigned,
             &launch,
             event_tx,
             fresh_pending(),
@@ -2589,7 +2673,7 @@ mod tests {
             let launch = SessionLaunchSettings::default();
             let options = super::build_options_with_callback(
                 "",
-                None,
+                SessionId::Unassigned,
                 &launch,
                 event_tx,
                 fresh_pending(),
@@ -3242,7 +3326,7 @@ mod tests_reader_terminal {
         let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
 
         bridge
-            .new_session("/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
+            .new_session(None, "/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
             .expect("dispatch");
 
         // First spawn: Connected#1. The mock completes its handshake
@@ -3261,7 +3345,7 @@ mod tests_reader_terminal {
         // (status snapshots etc.) are fine; a ConnectionFailed between
         // the two Connecteds is not.
         bridge
-            .new_session("/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
+            .new_session(None, "/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
             .expect("dispatch");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while let Some(event) = events.recv().await {

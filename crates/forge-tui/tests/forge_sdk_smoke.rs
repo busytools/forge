@@ -64,6 +64,7 @@ async fn forge_sdk_e2e_round_trip() {
     // Kick off a session.
     agent
         .new_session(
+            None,
             std::env::current_dir().unwrap().to_string_lossy().into_owned(),
             SessionLaunchSettings::default(),
         )
@@ -96,6 +97,7 @@ async fn forge_sdk_e2e_multi_turn() {
 
     agent
         .new_session(
+            None,
             std::env::current_dir().unwrap().to_string_lossy().into_owned(),
             SessionLaunchSettings::default(),
         )
@@ -139,6 +141,7 @@ async fn forge_sdk_e2e_tool_call_emits_event() {
 
     agent
         .new_session(
+            None,
             std::env::current_dir().unwrap().to_string_lossy().into_owned(),
             SessionLaunchSettings::default(),
         )
@@ -180,6 +183,7 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
 
     agent
         .new_session(
+            None,
             std::env::current_dir().unwrap().to_string_lossy().into_owned(),
             SessionLaunchSettings::default(),
         )
@@ -255,6 +259,7 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
 
     agent
         .new_session(
+            None,
             std::env::current_dir().unwrap().to_string_lossy().into_owned(),
             SessionLaunchSettings::default(),
         )
@@ -307,6 +312,7 @@ async fn forge_sdk_e2e_mcp_snapshot() {
 
     agent
         .new_session(
+            None,
             std::env::current_dir().unwrap().to_string_lossy().into_owned(),
             SessionLaunchSettings::default(),
         )
@@ -353,6 +359,7 @@ async fn forge_sdk_e2e_resume_session() {
 
         agent
             .new_session(
+                None,
                 std::env::current_dir().unwrap().to_string_lossy().into_owned(),
                 SessionLaunchSettings::default(),
             )

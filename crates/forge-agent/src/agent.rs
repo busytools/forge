@@ -120,8 +120,11 @@ impl AgentHandle {
         self.commands.send(cmd).map_err(|_| AgentError::DispatcherShutDown)
     }
 
+    /// Start a session under `session_id`, or under an id the CLI picks
+    /// when that is `None`.
     pub fn new_session(
         &self,
+        session_id: Option<String>,
         cwd: String,
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> Result<(), AgentError> {
@@ -130,7 +133,7 @@ impl AgentHandle {
         // to default settings, losing the user's configured model /
         // permission_mode / effort with no breadcrumb).
         let launch_settings = serde_json::to_value(launch_settings)?;
-        self.send(AgentCommand::NewSession { cwd, launch_settings })
+        self.send(AgentCommand::NewSession { session_id, cwd, launch_settings })
     }
 
     pub fn resume_session(
@@ -379,8 +382,8 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
     use forge_primitives::AgentCommand as C;
 
     match cmd {
-        C::NewSession { cwd, launch_settings } => {
-            bridge.new_session(cwd, decode_launch_settings(launch_settings))
+        C::NewSession { session_id, cwd, launch_settings } => {
+            bridge.new_session(session_id, cwd, decode_launch_settings(launch_settings))
         }
         C::ResumeSession { session_id, cwd, launch_settings } => bridge.resume_session(
             session_id.into_string(),
