@@ -1174,7 +1174,6 @@ mod mock_tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "new-uuid".into(),
             tag: "forge:worker:reviewer".into(),
-            rate_limited_account: None,
             durability_warning: None,
         }));
         let res = mock

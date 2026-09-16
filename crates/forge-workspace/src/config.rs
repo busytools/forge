@@ -8,17 +8,13 @@
 //! `auto_start = true`; all auto-start projects spawn at launch and
 //! the first one (alphabetical) becomes the focused tab.
 //!
-//! **Selection policy.** A deterministic `AssignmentPlan`, computed
-//! once every account reaches a terminal loading state. Its pool comes
-//! from a six-tier walk over the org's `accounts` primaries and
-//! `fallback_accounts` - ready-and-unsaturated first, then
-//! ready-saturated, then degraded; `assignment_plan.rs` documents the
-//! tiers. Each project takes an offset from its position in the
-//! project list and a session lands on
-//! `pool[(offset + session_n) % pool.len()]`. Utilization is never
-//! compared between accounts; it collapses to one boolean per account.
-//! A round-robin cursor over the same pool is the fallback for spawns
-//! that happen before the plan exists.
+//! **Selection policy.** The gateway's declared-model walk: over the
+//! org's `accounts` primaries and `fallback_accounts`, the first
+//! account that declares the project's `model`, preferring ready over
+//! saturated and keeping bailed last (saturated then leads to a
+//! cooling filter). Utilization is never compared between accounts; it
+//! collapses to one boolean per account. Every spawn in an org takes
+//! the same walk, so there is no per-session spread.
 
 use std::collections::HashMap;
 use std::fs;

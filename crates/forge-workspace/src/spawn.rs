@@ -1161,12 +1161,6 @@ pub(crate) fn handle_spawn_worker(
         }
         return;
     }
-    // Extend the assignment plan so this worker's account comes from the
-    // same rotation as the lead's. No-op while the plan is unpopulated
-    // (boot still in flight) - `recompute_plan_if_ready` seeds the live
-    // workers when it lands, which is the only thing that gives this one
-    // an entry.
-    let rate_limited_account = workspace.extend_plan_for_adhoc_worker(&project_key, label);
     try_emit(
         workspace,
         "spawn_worker::WorkerStatusChanged::Added",
@@ -1220,7 +1214,6 @@ pub(crate) fn handle_spawn_worker(
             let _ = return_to.send(Ok(WorkerSpawnReply {
                 session_id: synth_key.as_str().to_owned(),
                 tag,
-                rate_limited_account: rate_limited_account.map(|k| k.0),
                 // The MCP facade fills this after its post-reply persist;
                 // the re-spawn paths never persist, so it stays None.
                 durability_warning: None,
@@ -1783,6 +1776,7 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -2267,6 +2261,7 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
         let synth_key = SessionKey::from_session_id("__spawn_missing__");
         let domain = ws.register_domain_session(synth_key.clone(), None);
         domain.lock().pending_slack_prompts.push(slack_msg("parked while asleep"));
@@ -2436,10 +2431,12 @@ accounts = ["Stargate"]
 name = "forge"
 path = "{forge_path}"
 max_workers = {limit}
+model = "claude-sonnet-5"
 
 [[orgs.projects]]
 name = "notes"
 path = "{notes_path}"
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -2452,6 +2449,7 @@ provider = "anthropic"
         .expect("write forge.toml");
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace new"));
+        workspace.seed_test_ready_account("Stargate");
         (workspace, (dir, projects_dir))
     }
 
