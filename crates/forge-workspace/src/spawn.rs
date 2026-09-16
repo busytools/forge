@@ -183,6 +183,7 @@ pub(crate) fn handle_spawn_project(
         SessionTarget::Named(project_name.to_owned()),
         launch_settings,
         Some(synth_key.clone()),
+        Some(crate::mcp::SessionKind::Lead),
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -848,6 +849,7 @@ pub(crate) fn push_slack_message_into_chat(
 pub(crate) fn handle_spawn_session(
     workspace: &Arc<Workspace>,
     session_id: &str,
+    kind: crate::mcp::SessionKind,
     launch_settings: SessionLaunchSettings,
 ) {
     let synth_key = SessionKey::from_session_id(format!("__resume_{session_id}__"));
@@ -895,6 +897,7 @@ pub(crate) fn handle_spawn_session(
         SessionTarget::Session(session_key),
         launch_settings,
         Some(synth_key.clone()),
+        Some(kind),
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -959,6 +962,7 @@ pub(crate) fn handle_start_default(
         target,
         launch_settings,
         Some(synth_key.clone()),
+        Some(crate::mcp::SessionKind::Lead),
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -1198,7 +1202,12 @@ pub(crate) fn handle_spawn_worker(
             synth_key: synth_key.clone(),
         },
     };
-    match workspace.get_agent_handle_with_spawn_key(target, settings, Some(synth_key.clone())) {
+    match workspace.get_agent_handle_with_spawn_key(
+        target,
+        settings,
+        Some(synth_key.clone()),
+        Some(crate::mcp::SessionKind::Worker),
+    ) {
         Ok(handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
@@ -1999,7 +2008,12 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        handle_spawn_session(&workspace, "no-such-session-id", SessionLaunchSettings::default());
+        handle_spawn_session(
+            &workspace,
+            "no-such-session-id",
+            crate::mcp::SessionKind::Lead,
+            SessionLaunchSettings::default(),
+        );
 
         // The handler should not emit a Fatal envelope. (For the
         // unknown-session path it doesn't emit anything; the
@@ -2333,6 +2347,7 @@ provider = "anthropic"
             },
             forge_agent::client::SessionLaunchSettings::default(),
             Some(synth_key.clone()),
+            Some(crate::mcp::SessionKind::Worker),
         );
 
         assert!(result.is_err(), "a target mapping to no project is refused");

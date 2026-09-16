@@ -253,8 +253,14 @@ pub enum Command {
     /// User clicked a non-lead session row. Workspace spawns an
     /// agent for the specific session_id, synthesizing a key, and
     /// emits `Spawning` then `Connected` with the real key.
+    ///
+    /// `kind` is the role the dispatcher knows the row to be. The row is
+    /// a catalog entry, so the spawn cannot tell a worker's session from
+    /// a lead's by anything it holds, and a worker handed a lead's tool
+    /// surface fails silently - so the caller states it.
     SpawnSession {
         session_id: String,
+        kind: crate::mcp::SessionKind,
         launch_settings: SessionLaunchSettings,
     },
     /// App start. Workspace spawns the default project (or the
