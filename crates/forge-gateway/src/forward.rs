@@ -93,6 +93,15 @@ impl Gateway {
         *self.org_pins.lock() = pins.into_iter().collect();
     }
 
+    /// The published walk order per org, sorted by org name so a view
+    /// renders in a stable order (the store underneath is a HashMap).
+    pub fn org_pins(&self) -> Vec<(String, crate::selection::OrgPin)> {
+        let mut rows: Vec<(String, crate::selection::OrgPin)> =
+            self.org_pins.lock().iter().map(|(org, pin)| (org.clone(), pin.clone())).collect();
+        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        rows
+    }
+
     /// Select the account for an unbound session: only accounts that
     /// declare the model are eligible, the org's walk order decides
     /// which of those wins, and accounts inside a rotation cooldown
@@ -1359,6 +1368,38 @@ mod tests {
             harness.gateway.bindings.binding_for("Busytools", "forge", "session-2"),
             Some(AccountKey("OpenRouter".to_owned())),
             "the declared-model gate is symmetric across both directions",
+        );
+    }
+
+    /// The published walk order is readable, so a view can render the
+    /// orgs the gateway actually holds. Sorted by org name for a stable
+    /// render: the store underneath is a HashMap.
+    #[test]
+    fn published_org_pins_come_back_sorted_with_their_lists_intact() {
+        let gateway = Gateway::new(Arc::new(crate::AccountPool::empty_for_test()));
+        let pin = |accounts: &[&str], fallbacks: &[&str]| crate::selection::OrgPin {
+            accounts: accounts.iter().map(|name| (*name).to_owned()).collect(),
+            fallback_accounts: fallbacks.iter().map(|name| (*name).to_owned()).collect(),
+        };
+        gateway.set_org_pins([
+            ("Zed".to_owned(), pin(&["B"], &["C"])),
+            ("Alpha".to_owned(), pin(&["A"], &[])),
+            ("Mike".to_owned(), pin(&["M"], &[])),
+            ("Bravo".to_owned(), pin(&["N"], &["O", "P"])),
+        ]);
+
+        let pins = gateway.org_pins();
+        let names: Vec<&str> = pins.iter().map(|(org, _)| org.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Alpha", "Bravo", "Mike", "Zed"],
+            "every published org comes back in name order",
+        );
+        assert_eq!(pins[1].1.accounts, vec!["N".to_owned()], "a primary list survives");
+        assert_eq!(
+            pins[1].1.fallback_accounts,
+            vec!["O".to_owned(), "P".to_owned()],
+            "a fallback list survives in order",
         );
     }
 }
