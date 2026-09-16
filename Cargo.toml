@@ -42,7 +42,7 @@ clap_complete = "4"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 toml = "0.8"
-dirs = "6"
+dirs = "7"
 # Pinned exactly, not caret. ratatui-core 0.1.2 moved a blocking cursor
 # read into `Terminal::clear`, which a caret range let an unlocked
 # `cargo install` pick up and ship a crash with. This pin freezes the
