@@ -574,11 +574,15 @@ fn log_tool_call_update_applied(
         return;
     }
     // A failing execute tool is `app.command`'s event, so this arm does
-    // not repeat it; and re-emitting a failure on the replay walk
-    // reports an event that has already been reported once, at the time
+    // not repeat it - but only where `app.command` writes one. A command
+    // the CLI reports failed after it reported completed has no command
+    // record, and this arm keeps it rather than losing it between the
+    // two. Re-emitting a failure on the replay walk is a different
+    // matter: that reports an event already reported once, at the time
     // it happened.
     if matches!(log_spec.event_name, "tool_call_failed" | "tool_call_killed" | "tool_call_timeout")
-        && (tc.is_execute_tool() || super::skip_operational_log_during_replay(app))
+        && ((tc.is_execute_tool() && command_layer_writes(previous_status, tc.status))
+            || super::skip_operational_log_during_replay(app))
     {
         return;
     }
@@ -748,6 +752,27 @@ fn entered_final_status(
     ) && !matches!(previous_status, Some(status) if status == current_status)
 }
 
+/// True when an execute tool's transition is one `app.command` writes:
+/// out of a running status and into a final one. Both emitters key on
+/// this, so neither can drop a failure the other does not report - a
+/// command failing after it reported completed reaches only the tool
+/// layer, and one failing straight out of running reaches only
+/// `app.command`.
+fn command_layer_writes(
+    previous_status: Option<model::ToolCallStatus>,
+    current_status: model::ToolCallStatus,
+) -> bool {
+    matches!(
+        previous_status,
+        Some(model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress)
+    ) && matches!(
+        current_status,
+        model::ToolCallStatus::Completed
+            | model::ToolCallStatus::Failed
+            | model::ToolCallStatus::Killed
+    )
+}
+
 fn log_command_update_applied(
     app: &App,
     id_str: &str,
@@ -772,16 +797,7 @@ fn log_command_update_applied(
         return;
     }
 
-    let transitioned_to_final = matches!(
-        previous_status,
-        Some(model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress)
-    ) && matches!(
-        tc.status,
-        model::ToolCallStatus::Completed
-            | model::ToolCallStatus::Failed
-            | model::ToolCallStatus::Killed
-    );
-    if !transitioned_to_final {
+    if !command_layer_writes(previous_status, tc.status) {
         return;
     }
 
@@ -793,6 +809,17 @@ fn log_command_update_applied(
         return;
     }
     let failure_kind = command_failure_kind(tc);
+    // A refusal is not a failure, and the tool layer already records it
+    // as `tool_call_refused`; a second line here is the double log this
+    // change exists to remove. The tool layer decides the refusal from
+    // the update's raw output and this one from the applied terminal
+    // output, so a disagreement between the two costs a duplicate, never
+    // the only record.
+    if failure_kind == "refused"
+        && matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
+    {
+        return;
+    }
     match tc.status {
         model::ToolCallStatus::Completed => {
             tracing::info!(

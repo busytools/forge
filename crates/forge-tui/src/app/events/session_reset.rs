@@ -831,6 +831,17 @@ mod tests {
             historical_tool_result_text("toolu_slow", true, "the command timed out after 120s"),
             historical_tool_use("toolu_refused"),
             historical_tool_result_text("toolu_refused", true, "permission denied by the user"),
+            // A non-execute failure. `app.command` never sees it, so the
+            // only layer that could report it is the tool layer, and
+            // during a replay the walk must not. This is the shape that
+            // pins that half of the gate: with only Bash failures in the
+            // fixture, the execute-tool half alone silences them.
+            historical_tool_use_named(
+                "toolu_edit_err",
+                "Edit",
+                serde_json::json!({"file_path": "/tmp/notes.md"}),
+            ),
+            historical_tool_result("toolu_edit_err", true),
             historical_tool_use_named(
                 "toolu_task",
                 "TaskCreate",
@@ -1345,6 +1356,51 @@ mod tests {
                 "live path lost `{expected}`, saw {info:?}",
             );
         }
+    }
+
+    /// A command the CLI reports failed *after* it reported completed
+    /// reaches `app.command` nowhere: that layer writes only the
+    /// transition out of a running status, and the completed-to-failed
+    /// move is not one. So the tool layer is the only place this record
+    /// can live, and it must keep it.
+    #[test]
+    fn a_command_failing_after_completion_keeps_its_record() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let capture = EventCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let mut app = App::test_default();
+            for msg in [
+                historical_user_text("run something"),
+                historical_tool_use_named(
+                    "toolu_late",
+                    "Bash",
+                    serde_json::json!({"command": "false"}),
+                ),
+                historical_tool_result("toolu_late", false),
+                historical_tool_result("toolu_late", true),
+            ] {
+                super::super::sdk_message::handle_sdk_message(&mut app, msg);
+            }
+        });
+
+        let ids = |name: &str| -> Vec<String> {
+            capture
+                .records_named(name)
+                .iter()
+                .filter_map(|record| record.field("tool_call_id").map(str::to_owned))
+                .collect()
+        };
+        let tool_failures = ids("tool_call_failed");
+        assert!(
+            tool_failures.iter().any(|id| id == "toolu_late"),
+            "a command that fails after completing lost its only record, saw {tool_failures:?}",
+        );
+        assert!(
+            !ids("command_failed").iter().any(|id| id == "toolu_late"),
+            "the command layer records nothing for this shape; if it did, the tool layer is the duplicate",
+        );
     }
 
     fn synthesized_queued(prompt: &str) -> Message {
