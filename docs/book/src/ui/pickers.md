@@ -81,7 +81,7 @@
 
 ## Gateway view (`/gateway`)
 
-Read-only, open any time including mid-turn. It shows what the gateway holds: every org in name order, each org's primary and fallback pins in walk order, and one line per account naming its provider, what it has left, and whether it is pickable. Nothing here picks, rebinds, respawns or rotates - the spawn pick is the only way a session's account is decided, so there is no account to switch to, only a gateway to inspect.
+Read-only, open any time including mid-turn. It shows what the gateway holds: every org in name order, each org's primary and fallback pins in walk order, and one line per account naming its provider, what it has left, and whether it is pickable. Nothing here picks, rebinds, respawns or rotates - the spawn pick and the gateway's own re-selection are what decide a session's account, so there is no account to switch to, only a gateway to inspect.
 
 <div class="term">
 
