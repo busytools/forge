@@ -28,8 +28,8 @@ pub struct NotifyContext {
     pub worker_label: Option<String>,
 }
 
-/// The strings one notification delivers: a short title (the project)
-/// and the detail line (session kind + event phrase).
+/// The strings one notification delivers: a short title (the session)
+/// and the detail line (the event phrase).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NotificationText {
     pub title: String,
@@ -37,8 +37,7 @@ pub(crate) struct NotificationText {
 }
 
 impl NotificationText {
-    /// The two fields the escape carries: the project, and the session
-    /// kind with the event.
+    /// The two fields the escape carries: the session, and the event.
     fn fields(&self) -> (&str, &str) {
         (&self.title, &self.detail)
     }
@@ -246,31 +245,37 @@ fn send_notification_escape(title: &str, body: &str) -> std::io::Result<()> {
     result
 }
 
+/// What marks a worker's label off from the project in the title: the
+/// delimiter on each side of the label. A lead has no label, so it
+/// carries neither.
+const WORKER_LABEL_DELIMITER: (&str, &str) = (" [", "]");
+
 /// Build the delivered strings for one event from the session's
-/// project + worker label. The title is the project; the detail names
-/// the session's kind and the event. OSC 777 carries them as separate
-/// fields, so the project reaches the banner's bold line instead of
+/// project + worker label. The title is the session - the project
+/// alone for a lead, the project and the worker's label for a worker -
+/// and the detail is the event alone. OSC 777 carries them as separate
+/// fields, so the session reaches the banner's bold line instead of
 /// the app name.
 fn notification_text(
     event: NotifyEvent,
     project: &str,
     worker_label: Option<&str>,
 ) -> NotificationText {
-    let title = project.to_owned();
-    let happened = match event {
+    let (open, close) = WORKER_LABEL_DELIMITER;
+    let title = match worker_label {
+        Some(label) => format!("{project}{open}{label}{close}"),
+        None => project.to_owned(),
+    };
+    let detail = match event {
         NotifyEvent::TurnComplete => "Turn complete",
         NotifyEvent::PermissionRequired => "Needs input",
         NotifyEvent::QuestionRequired => "Needs your answer",
     };
-    let detail = match worker_label {
-        Some(label) => format!("Worker {label} - {happened}"),
-        None => happened.to_owned(),
-    };
-    NotificationText { title, detail }
+    NotificationText { title, detail: detail.to_owned() }
 }
 
 /// The escape one notification delivers. OSC 777 carries the title as
-/// its own field, which is what puts the project on the banner's bold
+/// its own field, which is what puts the session on the banner's bold
 /// line - OSC 9's single field leaves that line to the app name.
 fn notification_escape_sequence<'a>(title: &'a str, body: &'a str) -> Cow<'a, str> {
     let title = sanitize_notification_field(title);
@@ -332,62 +337,64 @@ mod tests {
         assert!(mgr.is_focused());
     }
 
+    /// A worker's bold line carries the whole session: the project,
+    /// then the label marked off from it, then the event underneath.
     #[test]
-    fn turn_complete_text_names_the_project_and_the_session_kind() {
-        let worker = notification_text(NotifyEvent::TurnComplete, "forge", Some("chat-stutter"));
+    fn a_worker_title_marks_the_label_after_the_project() {
+        let worker = notification_text(NotifyEvent::TurnComplete, "hub-modules", Some("steward"));
         assert_eq!(
             worker.fields(),
-            ("forge", "Worker chat-stutter - Turn complete"),
-            "the title carries the project and the detail the kind, label and event",
-        );
-
-        let lead = notification_text(NotifyEvent::TurnComplete, "forge", None);
-        assert_eq!(lead.fields(), ("forge", "Turn complete"));
-
-        assert_ne!(
-            worker.fields(),
-            lead.fields(),
-            "a worker's turn-complete must not read as a lead's",
+            ("hub-modules [steward]", "Turn complete"),
+            "the title is the project and the bracketed label, the body the event alone",
         );
     }
 
-    /// The project is the title now, so the body stops repeating it: a
-    /// lead's body is the event alone, a worker's names the worker.
+    /// A lead has no label, so its bold line is the bare project and
+    /// grows no delimiter.
     #[test]
-    fn the_project_is_the_title_and_the_body_names_the_session() {
-        let lead = notification_text(NotifyEvent::TurnComplete, "companies", None);
+    fn a_lead_title_is_the_project_alone() {
+        let lead = notification_text(NotifyEvent::TurnComplete, "hub-modules", None);
         assert_eq!(
             lead.fields(),
-            ("companies", "Turn complete"),
-            "a lead turn complete is the project and the event, with no lead prefix",
-        );
-
-        let worker = notification_text(NotifyEvent::TurnComplete, "forge", Some("osc777"));
-        assert_eq!(
-            worker.fields(),
-            ("forge", "Worker osc777 - Turn complete"),
-            "a worker names itself, since the project is already the title",
+            ("hub-modules", "Turn complete"),
+            "a lead's title is the project with nothing appended",
         );
     }
 
     #[test]
-    fn permission_text_names_the_project_and_the_session_kind() {
+    fn permission_text_puts_the_label_on_the_title() {
         let worker =
             notification_text(NotifyEvent::PermissionRequired, "busymail", Some("demo-route"));
-        assert_eq!(worker.fields(), ("busymail", "Worker demo-route - Needs input"));
+        assert_eq!(
+            worker.fields(),
+            ("busymail [demo-route]", "Needs input"),
+            "a worker's needs-input title carries the bracketed label and the body the event alone",
+        );
 
         let lead = notification_text(NotifyEvent::PermissionRequired, "busymail", None);
-        assert_eq!(lead.fields(), ("busymail", "Needs input"));
+        assert_eq!(
+            lead.fields(),
+            ("busymail", "Needs input"),
+            "a lead's needs-input title is the project with nothing appended",
+        );
     }
 
     #[test]
-    fn question_text_names_the_project_and_the_session_kind() {
+    fn question_text_puts_the_label_on_the_title() {
         let worker =
             notification_text(NotifyEvent::QuestionRequired, "busymail", Some("demo-route"));
-        assert_eq!(worker.fields(), ("busymail", "Worker demo-route - Needs your answer"));
+        assert_eq!(
+            worker.fields(),
+            ("busymail [demo-route]", "Needs your answer"),
+            "a worker's question title carries the bracketed label and the body the event alone",
+        );
 
         let lead = notification_text(NotifyEvent::QuestionRequired, "busymail", None);
-        assert_eq!(lead.fields(), ("busymail", "Needs your answer"));
+        assert_eq!(
+            lead.fields(),
+            ("busymail", "Needs your answer"),
+            "a lead's question title is the project with nothing appended",
+        );
     }
 
     /// A key with no bucket is where an "unresolved project" now lands:
@@ -489,8 +496,8 @@ mod tests {
     }
 
     /// The fields the escape carries stand alone: the event session's
-    /// project as the title, its kind and the worker's label where
-    /// there is one in the body.
+    /// project as the title, with the worker's label marked after it
+    /// where there is one, and the event alone as the body.
     #[test]
     fn unfocused_worker_turn_complete_names_the_worker() {
         let mut app = App::test_default();
@@ -518,13 +525,13 @@ mod tests {
             fields,
             vec![
                 ("beta".to_owned(), "Turn complete".to_owned()),
-                ("beta".to_owned(), "Worker chat-stutter - Turn complete".to_owned()),
+                ("beta [chat-stutter]".to_owned(), "Turn complete".to_owned()),
             ],
-            "the two turn-completes are told apart on the fields alone",
+            "the two turn-completes are told apart on the title alone",
         );
     }
 
-    /// Permission and question events reach the body through the same
+    /// Permission and question events reach the title through the same
     /// path a turn complete does, worker label included.
     #[test]
     fn unfocused_worker_prompts_name_the_worker() {
@@ -551,8 +558,8 @@ mod tests {
         assert_eq!(
             fields,
             vec![
-                ("busymail".to_owned(), "Worker demo-route - Needs input".to_owned()),
-                ("busymail".to_owned(), "Worker demo-route - Needs your answer".to_owned()),
+                ("busymail [demo-route]".to_owned(), "Needs input".to_owned()),
+                ("busymail [demo-route]".to_owned(), "Needs your answer".to_owned()),
             ],
         );
     }
