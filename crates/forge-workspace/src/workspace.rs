@@ -3174,7 +3174,7 @@ impl Workspace {
         match target {
             SessionTarget::Default => Some(self.config.default_project().clone()),
             SessionTarget::Named(name) => self.find_project_view_by_name(name),
-            // An account switch on a lead with nothing on disk yet routes
+            // A project-rooted target with nothing on disk yet routes
             // through `__fresh__:<project_key>`, which matches no catalog
             // row and no worker, so resolving by cwd alone would drop the
             // project's env on a routine switch.
@@ -7400,8 +7400,8 @@ provider = "anthropic"
     /// Two projects at one path collide on the session-storage key, so
     /// neither can be told apart - the ambiguous case must yield NO
     /// project env rather than the first match's. Second assertion
-    /// covers the `__fresh__:` key an account switch routes through,
-    /// which resolves via the same lookup.
+    /// covers the `__fresh__:` key a project-rooted target mints, which
+    /// resolves via the same lookup.
     #[test]
     fn an_ambiguous_storage_key_yields_no_project_env() {
         let dir = tempdir().expect("tempdir");
@@ -11338,9 +11338,9 @@ mod worker_respawn_tests {
     ///
     /// The lead half is the control: without it, a classifier answering
     /// Worker for every keyless spawn would satisfy the worker half and
-    /// strip peers from every account switch.
+    /// strip peers from every keyless re-spawn.
     #[test]
-    fn an_account_switch_classifies_by_the_worker_registry_not_the_absent_key() {
+    fn a_keyless_respawn_classifies_by_the_worker_registry_not_the_absent_key() {
         let (ws, _rx) = Workspace::testing_stub();
         let worker_key = SessionKey::from_session_id("worker-uuid");
         let lead_key = SessionKey::from_session_id("lead-uuid");
@@ -11353,11 +11353,11 @@ mod worker_respawn_tests {
         assert_eq!(
             worker_kind,
             crate::mcp::SessionKind::Worker,
-            "a focused worker re-spawned by the account switch is a worker",
+            "a focused worker re-spawned without a spawn key is a worker",
         );
         assert!(
             !forge_tool_surface(&ws, worker_kind).contains("peers__"),
-            "the switched worker's forge server carries no peers tools",
+            "the re-spawned worker's forge server carries no peers tools",
         );
 
         let lead_kind = ws.session_kind_for_spawn(None, &lead_key);
@@ -11368,7 +11368,7 @@ mod worker_respawn_tests {
         );
         assert!(
             forge_tool_surface(&ws, lead_kind).contains("peers__ask_agent"),
-            "the switched lead keeps its peers tools",
+            "the re-spawned lead keeps its peers tools",
         );
     }
 

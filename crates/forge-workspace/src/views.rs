@@ -115,8 +115,8 @@ pub struct AccountRow {
     pub unusable: Option<forge_gateway::Unusable>,
     /// What this account has left, in whatever terms its backend bills.
     pub budget: AccountBudget,
-    /// `true` when the account is in the active session's org
-    /// `fallback_accounts`. Renders in the `FALLBACK` group.
+    /// `true` when the account is in the org's `fallback_accounts` only.
+    /// Reads after every primary row, carrying a dim `fallback` suffix.
     pub fallback: bool,
     /// The provider whose backend serves this account.
     pub provider: forge_primitives::account::Provider,

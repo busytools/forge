@@ -1317,9 +1317,9 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.turn_pending = false;
     }
     // Mirror runtime liveness from `session_state_changed` so the
-    // account-switch backstop (`handle_switch_account`) sees an
-    // in-flight turn authoritatively, independent of the TUI gate.
-    // Reuse the canonical decoder parser rather than re-inlining it.
+    // workspace's in-flight guards see a turn authoritatively,
+    // independent of the TUI gate. Reuse the canonical decoder parser
+    // rather than re-inlining it.
     if let AgentEvent::SdkMessage {
         msg: forge_primitives::Message::System { subtype, data, .. },
         ..
@@ -2738,11 +2738,11 @@ mod tests {
         }
     }
 
-    /// The account-switch re-spawn seeds `connected_once = true`, so
-    /// the new task's first Connected emits `SessionReplaced` (not a
-    /// fresh Connected) carrying the resumed history. The TUI reducer
-    /// resets the chat then re-seeds it from that history, so the same
-    /// conversation stays visible across the switch.
+    /// A re-spawn that replaces the session seeds `connected_once =
+    /// true`, so the new task's first Connected emits `SessionReplaced`
+    /// (not a fresh Connected) carrying the resumed history. The TUI
+    /// reducer resets the chat then re-seeds it from that history, so
+    /// the same conversation stays visible across the replacement.
     #[tokio::test]
     async fn connected_once_seed_emits_session_replaced_with_resumed_history() {
         use forge_primitives::Message;
@@ -2813,7 +2813,10 @@ mod tests {
             Some(1),
             "connected_once=true emits SessionReplaced carrying the resumed conversation",
         );
-        assert!(!saw_plain_connected, "an account switch must not emit a fresh Connected");
+        assert!(
+            !saw_plain_connected,
+            "a session-replacing re-spawn must not emit a fresh Connected"
+        );
     }
 
     /// The replaced identity's `/dictate` override axes die with it:
@@ -2886,7 +2889,7 @@ mod tests {
         );
     }
 
-    /// A forced-account switch tears the live session down BEFORE
+    /// A session-replacing re-spawn tears the live session down BEFORE
     /// re-spawning, so if the re-spawned agent fails to connect the
     /// session is momentarily agent-less. That failure must be
     /// recoverable (`ConnectionFailed { fatal: false }`), and the task's
@@ -2923,7 +2926,7 @@ mod tests {
             domain,
             update_tx: workspace.update_sender(),
             spawn_key: None,
-            connected_once: true, // a forced-account switch re-spawn
+            connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
         };
 
