@@ -136,8 +136,8 @@ pub enum TargetStatus {
     /// the workspace command bus and will land in the next turn.
     Delivered,
     /// Target was sleeping; a `Command::SpawnProject` is in flight and
-    /// the wrapped prompt is buffered in target's `pending_peer_prompts`
-    /// for delivery on `AgentEvent::Connected` (drained in C11).
+    /// the wrapped prompt is parked for target's owner for delivery on
+    /// `AgentEvent::Connected` (drained in C11).
     QueuedForSpawn,
 }
 
@@ -211,8 +211,8 @@ pub trait WorkspaceFacade: Send + Sync {
     ///   target's SessionTask in the next dispatch cycle.
     /// - `Ok(QueuedForSpawn)` - target is sleeping; a
     ///   `Command::SpawnProject` is in flight and the wrapped prompt
-    ///   is buffered in target's `pending_peer_prompts` for delivery
-    ///   on `AgentEvent::Connected`.
+    ///   is parked for target's owner for delivery on
+    ///   `AgentEvent::Connected`.
     /// - `Err(UnknownTarget)` - target not in forge.toml.
     ///
     /// The actual buffer + dispatch logic lives in `spawn.rs`'s

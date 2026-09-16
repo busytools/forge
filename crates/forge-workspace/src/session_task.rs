@@ -33,6 +33,10 @@ pub(crate) struct SessionTask {
     /// to: real_key }` ahead of the first `Connected` emit. Cleared
     /// after the first migration.
     pub(crate) spawn_key: Option<SessionKey>,
+    /// Who this session acts for, set at spawn where the role is decided.
+    /// A spawn that never connects expires that owner's parked payloads,
+    /// which nothing can reach from the key once it is gone.
+    pub(crate) owner: crate::parked::Owner,
     /// Tracks whether the first `Connected` has been emitted. The
     /// second-and-beyond Connected on the same task drives
     /// `SessionUpdate::SessionReplaced` instead (covers `/new`,
@@ -381,23 +385,13 @@ impl SessionTask {
                         history,
                         compaction_count,
                     });
-                    // Drain any peer prompts buffered while this
-                    // session was pre-Connected (pushed by
-                    // spawn::handle_deliver_peer_prompt when a peer
-                    // ask hit a sleeping target). Each gets
-                    // re-dispatched as a regular Command::Prompt so
-                    // the existing prompt-delivery path handles it
-                    // uniformly with user-typed prompts.
-                    self.drain_pending_peer_prompts();
-                    // Same for cron prompts buffered for this session's owner
-                    // while it was asleep: each echoes a cron block then
-                    // re-dispatches (missed-marked when overdue).
-                    self.drain_pending_cron_prompts(&cwd_for_tag);
-                    // Same for Gotify notification envelopes buffered while
-                    // the project was asleep.
-                    self.drain_pending_gotify_prompts();
-                    // Same for Slack messages buffered while it was asleep.
-                    self.drain_pending_slack_prompts();
+                    // Everything parked for this session's owner while
+                    // it was asleep, delivered in arrival order: peer
+                    // prompts, then crons, then Gotify, then Slack. Each
+                    // re-dispatches as a regular `Command::Prompt` so the
+                    // prompt-delivery path handles it uniformly with
+                    // user-typed prompts.
+                    self.drain_parked();
                 }
                 // Re-tag must fire on BOTH first-Connected and
                 // post-/new Connected paths: a /new writes a fresh
@@ -429,15 +423,17 @@ impl SessionTask {
                         &key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
-                    // A project-spawn that never connected still holds its
-                    // buffered deliveries - the target_session match above
-                    // can't reach those. Both keys, because the handoff may
-                    // already have moved the domain from the synth key to the
-                    // resolved one, and either way the domain is released below.
-                    workspace.expire_spawn_key_buffers(&key);
-                    if self.key != key {
-                        workspace.expire_spawn_key_buffers(&self.key);
-                    }
+                    // A spawn that never connected still holds everything
+                    // parked for its owner, and the target_session match
+                    // above cannot reach those (they were never stamped).
+                    // Fail the peer asks so their callers get a delivery
+                    // notice rather than waiting out the timeout.
+                    workspace.expire_parked_for_owner(
+                        &self.owner.0,
+                        &self.owner.1,
+                        self.owner.2.as_deref(),
+                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                    );
                     // Worker async spawn failure: classify the
                     // failure, dispatch a typed
                     // WorkerSpawnFailedNotice envelope to the lead's
@@ -883,26 +879,34 @@ impl SessionTask {
         self.workspace.upgrade()?.fresh_session_id_for(&self.key)
     }
 
-    /// Drain `DomainSession.pending_peer_prompts` after the session's
-    /// first `Connected` event. Each buffered peer prompt is
-    /// re-dispatched as a normal `Command::Prompt` against
-    /// `self.key` (now the real claude session UUID after rekey).
+    /// Drain everything parked for this session's owner on its first
+    /// `Connected`, in arrival order. The take is the session's own
+    /// `(org, project, label)` bucket, so a payload parked for a team
+    /// worker never lands on the project's lead.
+    fn drain_parked(&self) {
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        let parked = workspace.take_parked_for_owner(&self.owner);
+        self.deliver_parked_peers(&workspace, parked.peer);
+        self.deliver_parked_crons(&workspace, parked.cron);
+        self.deliver_parked_gotify(&workspace, parked.gotify);
+        self.deliver_parked_slack(&workspace, parked.slack);
+    }
+
+    /// Deliver the peer prompts parked for this session's owner. Each is
+    /// re-dispatched as a normal `Command::Prompt` against `self.key`.
     /// The existing prompt-delivery path handles it identically to a
     /// user-typed prompt - the only difference is the prose body
     /// carries the `[Question id=q-…]` / `[Message id=t-…]` wrapper
     /// that the chat renderer pattern-matches into a styled peer
     /// block (lands in C16).
-    ///
-    /// Called once per session from the first-Connected arm of
-    /// [`Self::translate_event`]. No-op when there are no buffered
-    /// prompts.
-    fn drain_pending_peer_prompts(&self) {
-        let pending: Vec<crate::mcp::peers::types::WrappedPrompt> =
-            std::mem::take(&mut self.domain.lock().pending_peer_prompts);
+    fn deliver_parked_peers(
+        &self,
+        workspace: &Arc<crate::Workspace>,
+        pending: Vec<crate::mcp::peers::types::WrappedPrompt>,
+    ) {
         if pending.is_empty() {
             return;
         }
-        let Some(workspace) = self.workspace.upgrade() else { return };
         // Same sidebar-badge bookkeeping the running-target branch of
         // `spawn::handle_deliver_peer_prompt` does: Question wrappers
         // bump the recipient's incoming counter so the sidebar `·N↓`
@@ -910,7 +914,7 @@ impl SessionTask {
         // were buffered when the target was sleeping, so the bump
         // was deferred until now. Tells / Replies / notices don't
         // bump - same rule as the running-target path.
-        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(&workspace);
+        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
         for wrapped in pending {
             if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
                 facade.bump_inflight_stats(
@@ -922,62 +926,65 @@ impl SessionTask {
             // Same typed peer-envelope echo the running-target
             // dispatch path does. Fire BEFORE the LLM-side dispatch
             // so the user-turn ordering is natural.
-            crate::spawn::push_peer_user_turn_into_chat(&workspace, &self.key, &wrapped);
+            crate::spawn::push_peer_user_turn_into_chat(workspace, &self.key, &wrapped);
             let text = wrapped.to_prose();
             if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, text) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     key = %self.key.as_str(),
                     error = ?err,
-                    "drain_pending_peer_prompts: dispatch failed; prompt dropped"
+                    "deliver_parked_peers: dispatch failed; prompt dropped"
                 );
-                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
+                crate::spawn::send_dispatch_turn_error(workspace, self.key.clone(), &err);
             }
         }
     }
 
-    /// Drain the cron prompts buffered for this session's owner after its
-    /// first `Connected` - the `(project, team_role)` bucket a due cron
-    /// filled while the owner was asleep. Each is echoed as a cron block
-    /// (missed-marked when overdue) and re-dispatched as a plain
-    /// `Command::Prompt`: the lead drains its `None` bucket, a worker its
-    /// own label. No-op when the bucket is empty.
-    fn drain_pending_cron_prompts(&self, cwd: &str) {
-        let Some(workspace) = self.workspace.upgrade() else { return };
-        for cron in workspace.take_pending_crons_for_session(&self.key, cwd) {
+    /// Deliver the cron prompts parked for this session's owner - the
+    /// bucket a due cron filled while the owner was asleep. Each is
+    /// echoed as a cron block (missed-marked when overdue) and
+    /// re-dispatched as a plain `Command::Prompt`.
+    fn deliver_parked_crons(
+        &self,
+        workspace: &Arc<crate::Workspace>,
+        pending: Vec<crate::crons::PendingCron>,
+    ) {
+        if pending.is_empty() {
+            return;
+        }
+        for cron in pending {
             let text = crate::spawn::missed_cron_text(&cron.text, cron.missed);
-            crate::spawn::push_cron_prompt_into_chat(&workspace, &self.key, &text);
+            crate::spawn::push_cron_prompt_into_chat(workspace, &self.key, &text);
             if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, text) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     key = %self.key.as_str(),
                     error = ?err,
-                    "drain_pending_cron_prompts: dispatch failed; prompt dropped",
+                    "deliver_parked_crons: dispatch failed; prompt dropped",
                 );
-                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
+                crate::spawn::send_dispatch_turn_error(workspace, self.key.clone(), &err);
             }
         }
     }
 
-    /// Drain `DomainSession.pending_gotify_prompts` after the session's
-    /// first `Connected` event - Gotify notifications buffered while the
-    /// project was asleep. Each is echoed into chat as a notification
-    /// block and re-dispatched as a plain `Command::Prompt`, landing as an
-    /// ordinary user turn. Mirrors [`Self::drain_pending_cron_prompts`],
-    /// which echoes its own block before dispatching. No-op when the buffer is
-    /// empty.
-    fn drain_pending_gotify_prompts(&self) {
-        let pending: Vec<crate::mcp::gotify::types::GotifyNotification> =
-            std::mem::take(&mut self.domain.lock().pending_gotify_prompts);
+    /// Deliver the Gotify notifications parked for this session's owner.
+    /// Each is echoed into chat as a notification block and re-dispatched
+    /// as a plain `Command::Prompt`, landing as an ordinary user turn.
+    /// Mirrors [`Self::drain_pending_cron_prompts`], which echoes its own
+    /// block before dispatching.
+    fn deliver_parked_gotify(
+        &self,
+        workspace: &Arc<crate::Workspace>,
+        pending: Vec<crate::mcp::gotify::types::GotifyNotification>,
+    ) {
         if pending.is_empty() {
             return;
         }
-        let Some(workspace) = self.workspace.upgrade() else { return };
         for notification in pending {
             // Echo the notification block, then re-dispatch its prose as a
             // plain user turn (mirrors the running-target path in
             // spawn::deliver_gotify_message).
-            crate::spawn::push_gotify_notification_into_chat(&workspace, &self.key, &notification);
+            crate::spawn::push_gotify_notification_into_chat(workspace, &self.key, &notification);
             if let Err(err) =
                 workspace.dispatch_workspace_prompt(&self.key, notification.to_prose())
             {
@@ -985,37 +992,36 @@ impl SessionTask {
                     target: "forge_workspace::session_task",
                     key = %self.key.as_str(),
                     error = ?err,
-                    "drain_pending_gotify_prompts: dispatch failed; prompt dropped"
+                    "deliver_parked_gotify: dispatch failed; prompt dropped"
                 );
-                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
+                crate::spawn::send_dispatch_turn_error(workspace, self.key.clone(), &err);
             }
         }
     }
 
-    /// Drain `DomainSession.pending_slack_prompts` after the session's first
-    /// `Connected` event - Slack messages buffered while the project was
-    /// asleep. Each is echoed into chat as a notification block and
-    /// re-dispatched as a plain `Command::Prompt`, landing as an ordinary user
-    /// turn. Mirrors [`Self::drain_pending_gotify_prompts`]. No-op when the
-    /// buffer is empty.
-    fn drain_pending_slack_prompts(&self) {
-        let pending: Vec<forge_primitives::slack::SlackMessage> =
-            std::mem::take(&mut self.domain.lock().pending_slack_prompts);
+    /// Deliver the Slack messages parked for this session's owner. Each is
+    /// echoed into chat as a notification block and re-dispatched as a
+    /// plain `Command::Prompt`, landing as an ordinary user turn. Mirrors
+    /// [`Self::deliver_parked_gotify`].
+    fn deliver_parked_slack(
+        &self,
+        workspace: &Arc<crate::Workspace>,
+        pending: Vec<forge_primitives::slack::SlackMessage>,
+    ) {
         if pending.is_empty() {
             return;
         }
-        let Some(workspace) = self.workspace.upgrade() else { return };
         for message in pending {
             let prose = crate::spawn::slack_message_to_prose(&message);
-            crate::spawn::push_slack_message_into_chat(&workspace, &self.key, &prose);
+            crate::spawn::push_slack_message_into_chat(workspace, &self.key, &prose);
             if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, prose) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     key = %self.key.as_str(),
                     error = ?err,
-                    "drain_pending_slack_prompts: dispatch failed; prompt dropped"
+                    "deliver_parked_slack: dispatch failed; prompt dropped"
                 );
-                crate::spawn::send_dispatch_turn_error(&workspace, self.key.clone(), &err);
+                crate::spawn::send_dispatch_turn_error(workspace, self.key.clone(), &err);
             }
         }
     }
@@ -1492,6 +1498,12 @@ mod tests {
         DomainSession::new(SessionKey::from_str_for_test("test"), Some(Arc::new(handle)))
     }
 
+    /// The owner a test task carries. Drains resolve the parked bucket
+    /// against it, so a test that parks must park under the same triple.
+    fn test_owner() -> crate::parked::Owner {
+        ("TestOrg".to_owned(), "forge".to_owned(), None)
+    }
+
     fn workspace_with_account_config_dir(
         _config_dir: &str,
     ) -> (tempfile::TempDir, Arc<crate::Workspace>) {
@@ -1576,6 +1588,7 @@ mod tests {
             domain,
             update_tx,
             spawn_key: None,
+            owner: test_owner(),
             connected_once: false,
             workspace: Arc::downgrade(workspace),
         };
@@ -1590,23 +1603,28 @@ mod tests {
     /// `rekey_to` runs first, so the echo has to carry the real key, not the
     /// synthetic one.
     #[test]
-    fn first_connected_drains_pending_slack_prompts_and_echoes_block() {
+    fn first_connected_drains_parked_slack_and_echoes_block() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         workspace.seed_test_project("slack-drain", "/tmp/slack-drain");
 
         let session_key = SessionKey::from_session_id("slack-drain-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
-        domain.lock().pending_slack_prompts.push(forge_primitives::slack::SlackMessage {
-            workspace: "acme".to_owned(),
-            conversation: "D1".to_owned(),
-            conversation_label: "U9".to_owned(),
-            ts: "100.000001".to_owned(),
-            thread_ts: None,
-            user: Some("U9".to_owned()),
-            text: "the buffered text".to_owned(),
-            files: Vec::new(),
-        });
+        workspace.park_slack(
+            "TestOrg",
+            "forge",
+            None,
+            forge_primitives::slack::SlackMessage {
+                workspace: "acme".to_owned(),
+                conversation: "D1".to_owned(),
+                conversation_label: "U9".to_owned(),
+                ts: "100.000001".to_owned(),
+                thread_ts: None,
+                user: Some("U9".to_owned()),
+                text: "the buffered text".to_owned(),
+                files: Vec::new(),
+            },
+        );
 
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
@@ -1619,6 +1637,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            owner: test_owner(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -1647,13 +1666,16 @@ mod tests {
         }
         assert!(echoed, "an asleep-buffered Slack message echoes a SlackMessageAppended on drain");
 
-        assert!(domain.lock().pending_slack_prompts.is_empty(), "the buffer drains once flushed");
+        assert!(
+            workspace.take_parked_for_owner(&test_owner()).slack.is_empty(),
+            "the buffer drains once flushed",
+        );
     }
 
     /// The drain runs after `rekey_to`, so the echo and the dispatch both carry
-    /// the real session key rather than the synthetic one the delivery was
-    /// parked on. Driven through Connected with a distinct synth key, so
-    /// moving the rekey below the drains fails here.
+    /// the real session key rather than the key the task was created with.
+    /// Driven through Connected with a distinct synth key, so moving the rekey
+    /// below the drains fails here.
     #[test]
     fn first_connected_drains_slack_under_the_real_key_after_rekey() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
@@ -1661,7 +1683,7 @@ mod tests {
         let synth_key = SessionKey::from_str_for_test("__spawn_slack-rekey__");
         let real_key = SessionKey::from_session_id("slack-rekey-uuid");
         let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(synth_key.clone(), None)));
-        domain.lock().pending_slack_prompts.push(buffered_slack("buffered while asleep"));
+        workspace.park_slack("TestOrg", "forge", None, buffered_slack("buffered while asleep"));
 
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
@@ -1674,6 +1696,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: Some(synth_key.clone()),
+            owner: test_owner(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -1963,6 +1986,7 @@ mod tests {
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
             spawn_key: None,
+            owner: test_owner(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2015,6 +2039,7 @@ mod tests {
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
             spawn_key: Some(spawn_key.clone()),
+            owner: test_owner(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2033,13 +2058,13 @@ mod tests {
         );
     }
 
-    /// A spawn that never connected strands whatever was buffered for it, and
-    /// the expiry has to reach BOTH keys: the spawn can fail before the handoff
-    /// moved the domain off the synth key, or after. Whichever holds the
-    /// buffers must be drained, because the release below drops the domain - and
-    /// for Slack the delivery was already committed, so nothing re-delivers it.
+    /// A spawn that never connected strands whatever was parked for it, and
+    /// the expiry reaches it by owner rather than by key: one bucket holds
+    /// it, and the release below drops the domain it was once buffered on.
+    /// For Slack the delivery was already committed, so nothing re-delivers
+    /// it.
     #[tokio::test]
-    async fn connection_failed_expires_the_buffers_under_either_key() {
+    async fn connection_failed_expires_the_buffers_parked_for_its_owner() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let key = SessionKey::from_str_for_test("real-key");
         let spawn_key = SessionKey::from_str_for_test("__spawn_proj__");
@@ -2057,12 +2082,9 @@ mod tests {
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
-        let synth_domain =
-            workspace.register_domain_session(spawn_key.clone(), Some(Arc::clone(&handle)));
-        let resolved_domain =
-            workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
-        synth_domain.lock().pending_slack_prompts.push(buffered_slack("before the handoff"));
-        resolved_domain.lock().pending_slack_prompts.push(buffered_slack("after the handoff"));
+        workspace.register_domain_session(spawn_key.clone(), Some(Arc::clone(&handle)));
+        workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
+        workspace.park_slack("TestOrg", "forge", None, buffered_slack("parked while spawning"));
 
         let mut task = SessionTask {
             key: key.clone(),
@@ -2071,6 +2093,7 @@ mod tests {
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
             spawn_key: Some(spawn_key.clone()),
+            owner: test_owner(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2080,12 +2103,8 @@ mod tests {
 
         assert!(!continues);
         assert!(
-            synth_domain.lock().pending_slack_prompts.is_empty(),
-            "a message parked on the synth key is drained",
-        );
-        assert!(
-            resolved_domain.lock().pending_slack_prompts.is_empty(),
-            "and so is one the handoff already moved to the resolved key",
+            workspace.take_parked_for_owner(&test_owner()).slack.is_empty(),
+            "the message parked for this owner is expired, not left for a later session",
         );
     }
 
@@ -2110,6 +2129,7 @@ mod tests {
             ))),
             update_tx,
             spawn_key: None,
+            owner: test_owner(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2169,6 +2189,7 @@ mod tests {
             ))),
             update_tx,
             spawn_key: None,
+            owner: test_owner(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2495,6 +2516,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            owner: test_owner(),
             connected_once: true,
             workspace: std::sync::Weak::new(),
         };
@@ -2533,44 +2555,46 @@ provider = "anthropic"
         );
     }
 
-    /// First-Connected drains `DomainSession.pending_peer_prompts` in
-    /// FIFO order, dispatching one `Command::Prompt` per buffered
-    /// entry, then leaves the buffer empty. Pinned via the workspace's
+    /// First-Connected drains the owner's parked peer prompts in FIFO
+    /// order, dispatching one `Command::Prompt` per parked entry, then
+    /// leaves the bucket empty. Pinned via the workspace's
     /// command-intercept buffer so the full first-Connected branch of
     /// `translate_event` runs end-to-end (no poking the private drain
     /// method directly).
     #[tokio::test]
-    async fn first_connected_drains_pending_peer_prompts_in_fifo_order() {
+    async fn first_connected_drains_parked_peer_prompts_in_fifo_order() {
         use crate::mcp::peers::types::{AskChannel, CorrelationId, WrappedKind, WrappedPrompt};
 
         let (workspace, _update_rx) = crate::Workspace::testing_stub();
 
-        // Build a DomainSession at a fixed session-id key and seed
-        // three Messages in known order. Message kind (not Question)
-        // keeps the assertion focused on FIFO dispatch; the
-        // Question-kind incoming-counter bump is exercised separately.
+        // Park three Messages for the task's owner in known order.
+        // Message kind (not Question) keeps the assertion focused on
+        // FIFO dispatch; the Question-kind incoming-counter bump is
+        // exercised separately.
         let session_key = SessionKey::from_session_id("drain-session-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         let bodies = ["first", "second", "third"];
-        {
-            let mut d = domain.lock();
-            for body in bodies {
-                d.pending_peer_prompts.push(WrappedPrompt {
+        for body in bodies {
+            workspace.park_peer_prompt(
+                "TestOrg",
+                "forge",
+                None,
+                WrappedPrompt {
                     correlation_id: CorrelationId::new_tell(),
                     kind: WrappedKind::Message,
                     channel: AskChannel::Peers,
                     sender_name: "forge".to_owned(),
                     sender_org: "Default".to_owned(),
                     body: body.to_owned(),
-                });
-            }
+                },
+            );
         }
 
         // spawn_key=None + connected_once=false → first-Connected arm
-        // that calls drain_pending_peer_prompts. Matching self.key to
-        // the event's session_id makes rekey_to a no-op so the test
-        // doesn't have to register against the workspace pool.
+        // that drains the parked buckets. Matching self.key to the
+        // event's session_id makes rekey_to a no-op so the test doesn't
+        // have to register against the workspace pool.
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
@@ -2582,6 +2606,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            owner: test_owner(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2632,8 +2657,8 @@ provider = "anthropic"
             );
         }
         assert!(
-            domain.lock().pending_peer_prompts.is_empty(),
-            "pending_peer_prompts is drained after first-Connected"
+            workspace.take_parked_for_owner(&test_owner()).peer.is_empty(),
+            "the parked peer prompts are drained after first-Connected"
         );
     }
 
@@ -2697,10 +2722,9 @@ provider = "anthropic"
     #[tokio::test]
     async fn first_connected_drains_pending_cron_prompts_and_echoes_block() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        // The session's cwd resolves to this project so the owner drain keys
-        // on (project, None) - a lead session with no live-worker label.
         workspace.seed_test_project("cron-drain", "/tmp/cron-drain");
-        workspace.buffer_cron_for_owner("cron-drain", None, "morning reminder".to_owned(), false);
+        // Parked for the task's own owner, which is what the drain reads.
+        workspace.park_cron("TestOrg", "forge", None, "morning reminder".to_owned(), false);
 
         let session_key = SessionKey::from_session_id("cron-drain-uuid");
         let domain =
@@ -2717,6 +2741,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            owner: test_owner(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2747,7 +2772,7 @@ provider = "anthropic"
         assert!(echoed, "an asleep-fired cron echoes a CronPromptAppended on drain");
 
         assert!(
-            workspace.take_pending_crons_for_session(&session_key, "/tmp/cron-drain").is_empty(),
+            workspace.take_parked_for_owner(&test_owner()).cron.is_empty(),
             "the owner's cron bucket is drained after first-Connected",
         );
     }
@@ -2766,8 +2791,10 @@ provider = "anthropic"
         workspace.insert_live_worker(&key, cron_worker_entry("reviewer", "worker-drain-uuid"));
 
         // A missed cron for the worker + an on-time lead cron for the project.
-        workspace.buffer_cron_for_owner("wdp", Some("reviewer"), "worker work".to_owned(), true);
-        workspace.buffer_cron_for_owner("wdp", None, "lead work".to_owned(), false);
+        let worker_owner = ("TestOrg".to_owned(), "wdp".to_owned(), Some("reviewer".to_owned()));
+        let lead_owner = ("TestOrg".to_owned(), "wdp".to_owned(), None);
+        workspace.park_cron("TestOrg", "wdp", Some("reviewer"), "worker work".to_owned(), true);
+        workspace.park_cron("TestOrg", "wdp", None, "lead work".to_owned(), false);
 
         let session_key = SessionKey::from_session_id("worker-drain-uuid");
         let domain =
@@ -2783,6 +2810,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            owner: worker_owner,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2799,8 +2827,7 @@ provider = "anthropic"
             "the worker drains its own missed cron with the marker applied",
         );
         // The lead's bucket is untouched by the worker's drain.
-        let lead_key = SessionKey::from_session_id("lead-uuid");
-        let lead_bucket = workspace.take_pending_crons_for_session(&lead_key, "/tmp/wdp");
+        let lead_bucket = workspace.take_parked_for_owner(&lead_owner).cron;
         assert_eq!(lead_bucket.len(), 1, "the lead's cron stays buffered");
         assert_eq!(lead_bucket[0].text, "lead work");
     }
@@ -2827,6 +2854,7 @@ provider = "anthropic"
                 domain: Arc::clone(&domain),
                 update_tx: workspace.update_sender(),
                 spawn_key: None,
+                owner: test_owner(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
             };
@@ -2876,6 +2904,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
+            owner: test_owner(),
             // The seed a session-replacing re-spawn installs.
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
@@ -2957,6 +2986,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx: workspace.update_sender(),
             spawn_key: None,
+            owner: test_owner(),
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };
@@ -3039,6 +3069,7 @@ provider = "anthropic"
             domain,
             update_tx: workspace.update_sender(),
             spawn_key: None,
+            owner: test_owner(),
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
         };

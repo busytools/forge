@@ -275,8 +275,8 @@ pub enum Command {
     /// `spawn::handle_deliver_peer_prompt` which: (a) resolves
     /// `target_project` to a `SessionKey`; (b) if target is running,
     /// dispatches a plain `Command::Prompt` carrying the wrapper
-    /// prose; (c) if sleeping, buffers `wrapped` in target's
-    /// `pending_peer_prompts` and dispatches `Command::SpawnProject`;
+    /// prose; (c) if sleeping, parks `wrapped` for target's owner and
+    /// dispatches `Command::SpawnProject`;
     /// (d) on `target_project` not in forge.toml, fires the dual-path
     /// `PeerAskFailed` notification back to caller.
     ///

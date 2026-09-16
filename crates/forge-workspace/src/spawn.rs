@@ -14,9 +14,7 @@
 use std::sync::Arc;
 
 use forge_agent::client::SessionLaunchSettings;
-use parking_lot::Mutex;
 
-use crate::domain_session::DomainSession;
 use crate::mcp::gotify::types::GotifyNotification;
 use crate::mcp::peers::facade::PeerStatsDelta;
 use crate::mcp::peers::types::WrappedPrompt;
@@ -205,10 +203,15 @@ pub(crate) fn handle_spawn_project(
                 "spawn_project: get_agent_handle failed"
             );
             // No SessionTask exists to run its ConnectionFailed arm, so
-            // record everything buffered against this synth key here -
+            // record everything parked for this project's lead here -
             // otherwise the caller's LLM waits on a spawn that never
             // happened, and a committed delivery is lost unannounced.
-            workspace.expire_spawn_key_buffers(&synth_key);
+            workspace.expire_parked_for_owner(
+                &project.org,
+                &project.name,
+                None,
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+            );
             try_emit(
                 workspace,
                 "spawn_project::ConnectionFailed",
@@ -288,38 +291,22 @@ pub(crate) fn handle_deliver_peer_prompt(
     }
 
     // Target is sleeping (or unknown - defensive). If the project
-    // exists in forge.toml, ensure a DomainSession exists at the
-    // synthetic spawn key, buffer the wrapped prompt for delivery on
-    // Connected, then dispatch SpawnProject.
-    if workspace.find_project_view_by_name(&target_project).is_none() {
+    // exists in forge.toml, park the envelope for its lead and dispatch
+    // SpawnProject.
+    let Some(target) = workspace.find_project_view_by_name(&target_project) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
             target_project = %target_project,
             "DeliverPeerPrompt target not in forge.toml; dropping"
         );
         return;
-    }
+    };
 
-    let synth_key = SessionKey::from_session_id(format!("__spawn_{target_project}__"));
+    // The lead's own first `Connected` drains the bucket, so the park
+    // must land BEFORE the spawn.
+    workspace.park_peer_prompt(&target.org, &target.name, None, wrapped);
 
-    // Ensure DomainSession at synth_key + buffer wrapped.
-    // get_agent_handle_with_spawn_key (called by handle_spawn_project
-    // below) will re-use this DomainSession if present; otherwise it
-    // creates a new one. We want to buffer BEFORE the spawn so the
-    // session_task's Connected handler can drain on first turn.
-    {
-        let mut handles = workspace.domain_handles.lock();
-        let domain = handles
-            .entry(synth_key.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None))))
-            .clone();
-        drop(handles);
-        let mut d = domain.lock();
-        d.pending_peer_prompts.push(wrapped);
-    }
-
-    // Dispatch SpawnProject. handle_spawn_project reuses the
-    // DomainSession we just placed at synth_key. Move target_project
+    // Dispatch SpawnProject. Move target_project
     // into the command rather than cloning (it's the last use).
     let project_for_log = target_project.clone();
     if let Err(err) = workspace.dispatch(Command::SpawnProject {
@@ -407,7 +394,7 @@ pub(crate) fn deliver_cron_prompt(
     // Buffer by owner, then wake via resume: SpawnProject resumes the lead,
     // whose reconnect re-spawns the persisted workers; each drains its own
     // bucket on connect.
-    workspace.buffer_cron_for_owner(project_name, team_role, prompt, missed);
+    workspace.park_cron(&view.org, &view.name, team_role, prompt, missed);
     match workspace.dispatch(Command::SpawnProject {
         project_name: project_name.to_owned(),
         launch_settings: SessionLaunchSettings::default(),
@@ -489,11 +476,11 @@ fn cron_owner_exists(
 /// `team_role` names a running team worker, deliver straight to it;
 /// otherwise deliver to the project lead - echo + dispatch a
 /// `Command::Prompt` if it's running, else buffer on the synthetic
-/// spawn-key's DomainSession and dispatch `Command::SpawnProject`
+/// its owner's parked bucket and dispatch `Command::SpawnProject`
 /// (`SessionTask` drains + echoes on Connected via
-/// `drain_pending_gotify_prompts`). A team-worker subscription with NO live entry
+/// `deliver_parked_gotify`). A team-worker subscription with NO live entry
 /// falls through to lead delivery (spawning the project brings the team
-/// up); a live-but-not-yet-connected worker buffers on its own domain
+/// up); a live-but-not-yet-connected worker parks for its own label
 /// instead. A project no longer in forge.toml is logged and skipped.
 pub(crate) fn deliver_gotify_message(
     workspace: &Arc<Workspace>,
@@ -529,24 +516,26 @@ pub(crate) fn deliver_gotify_message(
                 );
                 send_dispatch_turn_error(workspace, worker_key, &err);
             }
-        } else if let Some(domain) = workspace.domain_session_for(&worker_key) {
-            domain.lock().pending_gotify_prompts.push(notification);
         } else {
-            // Live entry exists but its DomainSession isn't registered yet
-            // (the sub-second window between insert_live_worker and the
-            // spawn's handle registration). Buffer on the worker's own
-            // key - the spawn registers that exact DomainSession (reuse,
-            // not overwrite), and its Connected drain re-dispatches the
-            // notification.
-            let mut handles = workspace.domain_handles.lock();
-            let domain = handles
-                .entry(worker_key.clone())
-                .or_insert_with(|| {
-                    Arc::new(Mutex::new(DomainSession::new(worker_key.clone(), None)))
-                })
-                .clone();
-            drop(handles);
-            domain.lock().pending_gotify_prompts.push(notification);
+            // Still spawning: park it for the worker's label, drained by
+            // its own first `Connected`. The org comes from the worker's
+            // own registration, so a project dropped from forge.toml
+            // since its spawn still keys correctly.
+            let owner = workspace.owner_for_session_key(&worker_key).or_else(|| {
+                workspace
+                    .find_project_view_by_name(project)
+                    .map(|view| (view.org, view.name, Some(role.to_owned())))
+            });
+            let Some((org, name, label)) = owner else {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    project = %project,
+                    role = %role,
+                    "gotify delivery target resolves to no project; skipping",
+                );
+                return;
+            };
+            workspace.park_gotify(&org, &name, label.as_deref(), notification);
         }
         return;
     }
@@ -576,27 +565,18 @@ pub(crate) fn deliver_gotify_message(
         return;
     }
 
-    // Asleep: buffer on the synthetic spawn key and spawn the project
-    // (only if it's a real forge.toml project).
-    if workspace.find_project_view_by_name(project).is_none() {
+    // Asleep: park it for the project's lead and spawn the project (only
+    // if it's a real forge.toml project).
+    let Some(view) = workspace.find_project_view_by_name(project) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project,
             "gotify delivery target gone from forge.toml; skipping",
         );
         return;
-    }
+    };
 
-    let synth_key = SessionKey::from_session_id(format!("__spawn_{project}__"));
-    {
-        let mut handles = workspace.domain_handles.lock();
-        let domain = handles
-            .entry(synth_key.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None))))
-            .clone();
-        drop(handles);
-        domain.lock().pending_gotify_prompts.push(notification);
-    }
+    workspace.park_gotify(&view.org, &view.name, None, notification);
 
     if let Err(err) = workspace.dispatch(Command::SpawnProject {
         project_name: project.to_owned(),
@@ -696,24 +676,28 @@ pub(crate) fn deliver_slack_message(
             // paint the block twice for a turn the LLM sees once.
             push_slack_message_into_chat(workspace, &worker_key, &prose);
             workspace.slack_delivery_commit(project, team_role, &message);
-        } else if let Some(domain) = workspace.domain_session_for(&worker_key) {
-            workspace.slack_delivery_commit(project, team_role, &message);
-            domain.lock().pending_slack_prompts.push(message);
         } else {
-            // Live entry exists but its DomainSession isn't registered yet
-            // (the sub-second window between insert_live_worker and the
-            // spawn's handle registration). Buffer on the worker's own
-            // key, the exact DomainSession the spawn registers.
-            let mut handles = workspace.domain_handles.lock();
-            let domain = handles
-                .entry(worker_key.clone())
-                .or_insert_with(|| {
-                    Arc::new(Mutex::new(DomainSession::new(worker_key.clone(), None)))
-                })
-                .clone();
-            drop(handles);
+            // Still spawning: commit the dedupe (the sweep must not
+            // re-run it) and park it for the worker's label, drained by
+            // its own first `Connected`. The org comes from the worker's
+            // own registration, so a project dropped from forge.toml
+            // since its spawn still keys correctly.
+            let owner = workspace.owner_for_session_key(&worker_key).or_else(|| {
+                workspace
+                    .find_project_view_by_name(project)
+                    .map(|view| (view.org, view.name, Some(role.to_owned())))
+            });
+            let Some((org, name, label)) = owner else {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    project = %project,
+                    role = %role,
+                    "slack delivery target resolves to no project; leaving it for the next sweep",
+                );
+                return false;
+            };
             workspace.slack_delivery_commit(project, team_role, &message);
-            domain.lock().pending_slack_prompts.push(message);
+            workspace.park_slack(&org, &name, label.as_deref(), message);
         }
         return true;
     }
@@ -746,31 +730,22 @@ pub(crate) fn deliver_slack_message(
         return true;
     }
 
-    // Asleep: buffer on the synthetic spawn key and spawn the project
-    // (only if it's a real forge.toml project). A target missing from
+    // Asleep: park it for the project's lead and spawn the project (only
+    // if it's a real forge.toml project). A target missing from
     // forge.toml returns false uncommitted: the sweep re-runs it, and
     // delivery resumes if the project returns or the subscription is
     // removed - the pump sees a decision, not a silent drop.
-    if workspace.find_project_view_by_name(project).is_none() {
+    let Some(view) = workspace.find_project_view_by_name(project) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project,
             "slack delivery target gone from forge.toml; leaving it for the next sweep",
         );
         return false;
-    }
+    };
 
-    let synth_key = SessionKey::from_session_id(format!("__spawn_{project}__"));
-    {
-        let mut handles = workspace.domain_handles.lock();
-        let domain = handles
-            .entry(synth_key.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None))))
-            .clone();
-        drop(handles);
-        workspace.slack_delivery_commit(project, team_role, &message);
-        domain.lock().pending_slack_prompts.push(message);
-    }
+    workspace.slack_delivery_commit(project, team_role, &message);
+    workspace.park_slack(&view.org, &view.name, None, message);
 
     if let Err(err) = workspace.dispatch(Command::SpawnProject {
         project_name: project.to_owned(),
@@ -915,6 +890,7 @@ pub(crate) fn handle_spawn_session(
         },
     );
 
+    let owner_label = workspace.worker_label_for_session(&session_key);
     match workspace.get_agent_handle_with_spawn_key(
         SessionTarget::Session(session_key),
         launch_settings,
@@ -934,6 +910,14 @@ pub(crate) fn handle_spawn_session(
                 session_id,
                 error = %err,
                 "spawn_session: get_agent_handle failed"
+            );
+            // No SessionTask exists to run its ConnectionFailed arm, so
+            // record everything parked for this session's owner here.
+            workspace.expire_parked_for_owner(
+                &parent.org,
+                &parent.name,
+                owner_label.as_deref(),
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
             try_emit(
                 workspace,
@@ -958,6 +942,12 @@ pub(crate) fn handle_start_default(
     mut launch_settings: SessionLaunchSettings,
 ) {
     let synth_key = SessionKey::from_session_id("__conn_pending__".to_owned());
+    // Resolved before `target` takes `project_name`: a spawn that fails
+    // has to expire what this project's lead has parked.
+    let lead_project = match project_name.as_deref() {
+        Some(name) => workspace.find_project_view_by_name(name),
+        None => Some(workspace.config.default_project().clone()),
+    };
     let target = match project_name {
         Some(name) => SessionTarget::Named(name),
         None => SessionTarget::Default,
@@ -983,6 +973,16 @@ pub(crate) fn handle_start_default(
                 error = %err,
                 "start_default: get_agent_handle failed"
             );
+            // No SessionTask exists to run its ConnectionFailed arm, so
+            // record everything parked for this project's lead here.
+            if let Some(project) = lead_project {
+                workspace.expire_parked_for_owner(
+                    &project.org,
+                    &project.name,
+                    None,
+                    crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                );
+            }
             try_emit(
                 workspace,
                 "start_default::ConnectionFailed",
@@ -1304,6 +1304,14 @@ fn teardown_worker(
     // affect the single worker being closed.
     workspace.release_session(&entry.session_key);
     workspace.expire_inflight_for_closed_worker(project_key, label);
+    // A payload parked for this label while it was still spawning has no
+    // session left to drain it, and the release above cannot resolve an
+    // owner for a worker that never reached the pool.
+    workspace.expire_parked_for_worker_label(
+        project_key,
+        label,
+        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+    );
     Some(entry)
 }
 
@@ -1590,25 +1598,30 @@ fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
 /// Buffer `wrapped` on `target_key`'s `DomainSession` when the target
 /// hasn't finished its Connected handshake (no `session_id` yet). Returns
 /// `Some(wrapped)` when the target IS connected (caller delivers now), or
-/// `None` when it buffered (the target's Connected handler drains
-/// `pending_peer_prompts`, doing the bump + render + dispatch). Mirrors
+/// `None` when it parked (the target's Connected handler drains the
+/// bucket, doing the bump + render + dispatch). Mirrors
 /// the sleeping-peer buffering in `handle_deliver_peer_prompt` so the
 /// bump bookkeeping happens exactly once, at real delivery time.
 fn buffer_prompt_until_connected(
     workspace: &Arc<Workspace>,
+    owner: Option<crate::parked::Owner>,
     target_key: &SessionKey,
     wrapped: WrappedPrompt,
 ) -> Option<WrappedPrompt> {
-    let Some(domain) = workspace.domain_handles.lock().get(target_key).cloned() else {
-        // No DomainSession to buffer on (target vanished); let the caller
-        // proceed - its dispatch warns on the missing target.
+    let Some(domain) = workspace.domain_session_for(target_key) else {
+        // No DomainSession to park against (target vanished); let the
+        // caller proceed - its dispatch warns on the missing target.
         return Some(wrapped);
     };
-    let mut d = domain.lock();
-    if d.session_id.is_some() {
+    if domain.lock().session_id.is_some() {
         return Some(wrapped);
     }
-    d.pending_peer_prompts.push(wrapped);
+    let Some((org, project, label)) = owner else {
+        // No project to address the owner by; let the caller proceed the
+        // same way.
+        return Some(wrapped);
+    };
+    workspace.park_peer_prompt(&org, &project, label.as_deref(), wrapped);
     None
 }
 
@@ -1643,11 +1656,15 @@ pub(crate) fn handle_deliver_worker_prompt(
 
     // A worker addressed before it finishes its Connected handshake has
     // no session_id yet, so a bare Command::Prompt would be dropped by
-    // execute_command_via_handle. Buffer it on the worker's own
-    // DomainSession instead - its Connected handler drains
-    // pending_peer_prompts (bump + render + dispatch) exactly like the
-    // sleeping-peer path. Skips the tag retry / stamp / dispatch below.
-    let Some(wrapped) = buffer_prompt_until_connected(workspace, &target_key, wrapped) else {
+    // execute_command_via_handle. Park it for the worker's label instead -
+    // its Connected handler drains the bucket (bump + render + dispatch)
+    // exactly like the sleeping-peer path. Skips the tag retry / stamp /
+    // dispatch below.
+    let owner = workspace
+        .project_for_key(project_key)
+        .map(|project| (project.org, project.name, Some(target_label.to_owned())));
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, owner, &target_key, wrapped)
+    else {
         return;
     };
 
@@ -1744,7 +1761,9 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     // Same pre-Connect guard as the sibling-worker path: if the lead
     // hasn't stamped its session_id yet, buffer for its Connected drain
     // rather than dispatching a Command::Prompt that would be dropped.
-    let Some(wrapped) = buffer_prompt_until_connected(workspace, target_lead_key, wrapped) else {
+    let owner = workspace.owner_for_session_key(target_lead_key);
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, owner, target_lead_key, wrapped)
+    else {
         return;
     };
 
@@ -2036,10 +2055,13 @@ provider = "anthropic"
     }
 
     /// I3 - `handle_deliver_peer_prompt` against a sleeping known
-    /// project buffers the prompt in the target's pending list and
-    /// triggers a SpawnProject. The pending list grows by one.
+    /// project parks the prompt for that project's lead and triggers a
+    /// SpawnProject. The bucket is addressed by `(org, project, label)`,
+    /// so no synthetic key is anywhere in the path; the drain side is
+    /// pinned in `session_task`, which delivers a parked prompt on the
+    /// owner's first `Connected`.
     #[tokio::test]
-    async fn handle_deliver_peer_prompt_sleeping_target_buffers_prompt() {
+    async fn handle_deliver_peer_prompt_sleeping_target_parks_for_the_projects_lead() {
         let dir = tempdir().expect("tempdir");
         fs::write(
             forge_toml_path(dir.path()),
@@ -2072,25 +2094,21 @@ provider = "anthropic"
 
         handle_deliver_peer_prompt(&workspace, caller, "gateway-backend".to_owned(), w.clone());
 
-        // Sleeping branch parks the wrapped at a synthetic
-        // `__spawn_gateway-backend__` key, then dispatches
-        // SpawnProject which (synchronously inside dispatch)
-        // migrates the buffered state onto the real resolved
-        // session key. Either way, EXACTLY ONE DomainSession in
-        // the workspace must carry our wrapped prompt - assert
-        // on the typed correlation id rather than the key path.
-        let handles = workspace.domain_handles.lock();
-        let total: usize = handles
-            .values()
-            .map(|d| {
-                d.lock()
-                    .pending_peer_prompts
-                    .iter()
-                    .filter(|p| p.correlation_id == w.correlation_id)
-                    .count()
-            })
-            .sum();
-        assert_eq!(total, 1, "wrapped prompt buffered exactly once across handles");
+        // The sleeping branch parks the envelope for the project's lead
+        // under `(org, project, None)`. EXACTLY ONE bucket holds our
+        // wrapped prompt - assert on the typed correlation id as well, so
+        // a mis-keyed parking cannot pass by parking twice.
+        let parked = workspace
+            .parked_by_owner
+            .lock()
+            .get(&("Default".to_owned(), "gateway-backend".to_owned(), None))
+            .map(|parked| parked.peer.clone())
+            .unwrap_or_default();
+        assert_eq!(parked.len(), 1, "the project's lead bucket holds the wrapped prompt");
+        assert_eq!(
+            parked[0].correlation_id, w.correlation_id,
+            "and it is the payload that was handed to the delivery",
+        );
     }
 
     /// Closes #308 Fix B: tells (Message kind) are intentionally NOT
@@ -2196,16 +2214,18 @@ provider = "anthropic"
 
         deliver_slack_message(&ws, "forge", Some("tester"), slack_msg("hello"));
 
-        let worker_key = SessionKey::from_session_id("worker-uuid");
-        let buffered = ws
-            .domain_session_for(&worker_key)
-            .expect("the worker's own domain session")
+        let parked = ws
+            .parked_by_owner
             .lock()
-            .pending_slack_prompts
-            .len();
-        assert_eq!(buffered, 1, "the message lands on the worker that subscribed");
-        assert!(
-            ws.domain_session_for(&SessionKey::from_session_id("__spawn_forge__")).is_none(),
+            .get(&("TestOrg".to_owned(), "forge".to_owned(), Some("tester".to_owned())))
+            .map_or(0, |parked| parked.slack.len());
+        assert_eq!(parked, 1, "the message is parked for the worker that subscribed");
+        assert_eq!(
+            ws.parked_by_owner
+                .lock()
+                .get(&("TestOrg".to_owned(), "forge".to_owned(), None))
+                .map_or(0, |parked| parked.slack.len()),
+            0,
             "a worker-owned subscription never falls through to the lead",
         );
     }
@@ -2294,19 +2314,17 @@ provider = "anthropic"
         );
     }
 
-    /// A spawn failing on the project lookup records what it stranded. The
-    /// domain is already resident at the key the guard holds, so this does not
-    /// exercise the handoff's move branch - it pins the mechanism (arm, hit a
-    /// `?`, record on Drop), which is the whole fix.
+    /// A spawn refused before it reaches the project leaves the caller's
+    /// parked payload where it is, so the caller's own expiry still reaches
+    /// it rather than the workspace having consumed it on the way past.
     #[tokio::test]
-    async fn a_refused_spawn_leaves_the_synth_key_buffers_to_the_caller() {
+    async fn a_refused_spawn_leaves_the_parked_payload_to_the_caller() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         let synth_key = SessionKey::from_session_id("__spawn_missing__");
-        let domain = ws.register_domain_session(synth_key.clone(), None);
-        domain.lock().pending_slack_prompts.push(slack_msg("parked while asleep"));
+        ws.park_slack("Default", "missing", None, slack_msg("parked while asleep"));
 
         let result = ws.get_agent_handle_with_spawn_key(
             crate::target::SessionTarget::FreshInProject {
@@ -2318,26 +2336,36 @@ provider = "anthropic"
         );
 
         assert!(result.is_err(), "a target mapping to no project is refused");
+        let owner = ("Default".to_owned(), "missing".to_owned(), None);
         assert_eq!(
-            domain.lock().pending_slack_prompts.len(),
+            ws.parked_by_owner.lock().get(&owner).map_or(0, |parked| parked.slack.len()),
             1,
-            "the refusal lands before the handoff, so the delivery stays at the key the caller \
-             parked it at and the caller's own expiry still reaches it",
+            "the refusal left the bucket alone, so the caller's expiry can still reach it",
+        );
+
+        ws.expire_parked_for_owner(
+            "Default",
+            "missing",
+            None,
+            crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+        );
+        assert_eq!(
+            ws.parked_by_owner.lock().get(&owner).map_or(0, |parked| parked.slack.len()),
+            0,
+            "and the caller's expiry is what records the loss",
         );
     }
 
     /// The synchronous spawn-failure arm is reachable: a project present only
     /// in the test overlay resolves by name but not by target, so the spawn
-    /// fails before any `SessionTask` exists. Everything a delivery parked on
-    /// the synth key has to be recorded there, because the launchpad's retry
-    /// releases that domain.
+    /// fails before any `SessionTask` exists. Everything a delivery parked for
+    /// that project's lead has to be recorded there, because nothing else will
+    /// drain a bucket the session never reached.
     #[test]
-    fn a_failed_project_spawn_expires_the_synth_key_buffers() {
+    fn a_failed_project_spawn_expires_the_parked_payloads() {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("overlayonly", "/tmp/slack-overlay-only");
-        let synth_key = SessionKey::from_session_id("__spawn_overlayonly__");
-        let domain = ws.register_domain_session(synth_key.clone(), None);
-        domain.lock().pending_slack_prompts.push(slack_msg("parked while asleep"));
+        ws.park_slack("TestOrg", "overlayonly", None, slack_msg("parked while asleep"));
 
         crate::spawn::handle_spawn_project(
             &ws,
@@ -2345,9 +2373,13 @@ provider = "anthropic"
             forge_agent::client::SessionLaunchSettings::default(),
         );
 
-        assert!(
-            domain.lock().pending_slack_prompts.is_empty(),
-            "the failed spawn records the messages parked on the synth key",
+        assert_eq!(
+            ws.parked_by_owner
+                .lock()
+                .get(&("TestOrg".to_owned(), "overlayonly".to_owned(), None))
+                .map_or(0, |parked| parked.slack.len()),
+            0,
+            "the failed spawn records the messages parked for that project's lead",
         );
     }
 
@@ -3620,12 +3652,18 @@ provider = "anthropic"
     }
 
     /// A worker addressed before it Connects (session_id still None)
-    /// must have the prompt buffered onto its DomainSession, not
-    /// dropped - its Connected handler drains pending_peer_prompts.
+    /// must have the prompt parked for its label, not dropped - its
+    /// Connected handler drains the bucket.
     #[tokio::test]
     async fn deliver_to_unconnected_worker_buffers_the_prompt() {
         let (workspace, _rx) = Workspace::testing_stub();
-        let project = ProjectKey::new("forge");
+        workspace.seed_test_project("forge", "/tmp/deliver-unconnected");
+        let project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project")
+            .key;
         let worker_key = SessionKey::from_session_id("__spawn_worker_forge_builder_abc__");
         workspace.insert_live_worker(
             &project,
@@ -3657,9 +3695,13 @@ provider = "anthropic"
         );
 
         assert_eq!(
-            domain.lock().pending_peer_prompts.len(),
+            workspace
+                .parked_by_owner
+                .lock()
+                .get(&("TestOrg".to_owned(), "forge".to_owned(), Some("builder".to_owned())))
+                .map_or(0, |parked| parked.peer.len()),
             1,
-            "prompt buffered for the worker's Connected drain, not dropped"
+            "prompt parked for the worker's Connected drain, not dropped"
         );
     }
 
@@ -3979,19 +4021,35 @@ provider = "anthropic"
     /// for it. The delivery already committed, so nothing re-delivers it, and
     /// the release is the last point that can record the loss.
     #[test]
-    fn close_worker_records_the_delivery_buffered_on_its_key() {
+    fn close_worker_records_the_delivery_parked_for_its_label() {
         let (workspace, _rx) = Workspace::testing_stub();
-        let project = ProjectKey::new("forge");
+        workspace.seed_test_project("forge", "/tmp/close-parked");
+        let project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project")
+            .key;
         workspace.insert_live_worker(&project, fake_worker_entry("reviewer", "worker-1"));
         let worker_key = SessionKey::from_session_id("worker-1");
-        let domain = workspace.register_domain_session(worker_key.clone(), None);
-        domain.lock().pending_slack_prompts.push(slack_msg("buffered while spawning"));
+        workspace.register_domain_session(worker_key, None);
+        workspace.park_slack(
+            "TestOrg",
+            "forge",
+            Some("reviewer"),
+            slack_msg("buffered while spawning"),
+        );
 
         handle_close_worker(&workspace, &project, "reviewer");
 
-        assert!(
-            domain.lock().pending_slack_prompts.is_empty(),
-            "the closed worker's buffered delivery is recorded, not dropped with the domain",
+        assert_eq!(
+            workspace
+                .parked_by_owner
+                .lock()
+                .get(&("TestOrg".to_owned(), "forge".to_owned(), Some("reviewer".to_owned())))
+                .map_or(0, |parked| parked.slack.len()),
+            0,
+            "the closed worker's parked delivery is recorded, not left for a later session",
         );
     }
 }

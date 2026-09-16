@@ -5,21 +5,20 @@
 //! Everything here stays on `Workspace` as a second `impl` block, so
 //! every caller (the boot path in [`crate::workspace`], the
 //! `mcp::cron` facade, `spawn::deliver_cron_prompt`, forge-tui's boot)
-//! keeps its path. The `crons`, `pending_cron_by_owner`,
-//! `cron_scheduler_started` and `update_tx` fields these methods own
-//! are `pub(crate)` for the same reason `db` is: so this sibling
-//! module can reach them without a wrapper. Schedule math lives in
+//! keeps its path. The `crons`, `cron_scheduler_started` and `update_tx`
+//! fields these methods own are `pub(crate)` for the same reason `db` is:
+//! so this sibling module can reach them without a wrapper. A fired cron
+//! with no live owner parks in [`crate::parked`]. Schedule math lives in
 //! [`crate::mcp::cron::schedule`]; the MCP tool surface in
 //! [`crate::mcp::cron`]; delivery in [`crate::spawn`].
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tracing::Instrument;
 
 use crate::protocol::SessionUpdate;
-use crate::target::{ProjectKey, SessionKey};
+use crate::target::ProjectKey;
 use crate::workspace::Workspace;
 
 /// How often the cron scheduler wakes to fire due crons. Minute
@@ -33,9 +32,6 @@ pub(crate) struct PendingCron {
     pub text: String,
     pub missed: bool,
 }
-
-/// Cron prompts buffered for asleep owners, keyed by `(project, team_role)`.
-pub(crate) type PendingCronMap = HashMap<(String, Option<String>), Vec<PendingCron>>;
 
 impl Workspace {
     /// Lock the durable cron list, apply `f`, and persist to the
@@ -131,36 +127,6 @@ impl Workspace {
     /// scheduler's per-tick due-check.
     pub(crate) fn all_crons_snapshot(&self) -> Vec<forge_primitives::CronEntry> {
         self.crons.lock().clone()
-    }
-
-    /// Buffer a cron prompt for an asleep owner, keyed by
-    /// `(project, team_role)`; drained on the owner's first `Connected`.
-    pub(crate) fn buffer_cron_for_owner(
-        &self,
-        project: &str,
-        team_role: Option<&str>,
-        text: String,
-        missed: bool,
-    ) {
-        self.pending_cron_by_owner
-            .lock()
-            .entry((project.to_owned(), team_role.map(str::to_owned)))
-            .or_default()
-            .push(PendingCron { text, missed });
-    }
-
-    /// Take (and clear) the cron prompts buffered for the connecting
-    /// session's owner - `(project of cwd, the session's worker label, or
-    /// None for a lead)`. Empty when nothing was buffered or the cwd is
-    /// under no project.
-    pub(crate) fn take_pending_crons_for_session(
-        &self,
-        session_key: &SessionKey,
-        cwd: &str,
-    ) -> Vec<PendingCron> {
-        let Some(project) = self.project_name_for_path(cwd) else { return Vec::new() };
-        let team_role = self.worker_label_for_session(session_key);
-        self.pending_cron_by_owner.lock().remove(&(project, team_role)).unwrap_or_default()
     }
 
     /// Advance a fired cron and persist: a recurring cron records
@@ -319,9 +285,22 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use crate::SessionKey;
     use crate::protocol::Command;
     use crate::workspace::PooledAgent;
     use forge_gateway::AccountKey;
+
+    /// The cron prompts parked for `(project, label)`, under whichever org
+    /// the seeded project belongs to.
+    fn parked_crons(ws: &crate::Workspace, project: &str, label: Option<&str>) -> Vec<String> {
+        let org =
+            ws.list_projects().into_iter().find(|v| v.name == project).expect("seeded project").org;
+        ws.parked_by_owner
+            .lock()
+            .get(&(org, project.to_owned(), label.map(str::to_owned)))
+            .map(|parked| parked.cron.iter().map(|p| p.text.clone()).collect())
+            .unwrap_or_default()
+    }
 
     fn dynamic_worker_row(
         project: &str,
@@ -505,12 +484,7 @@ mod tests {
 
         // The due cron's prompt is buffered for its owner (the lead) for
         // delivery once the session reaches Connected.
-        let buffered: Vec<String> = ws
-            .pending_cron_by_owner
-            .lock()
-            .get(&("forge".to_owned(), None))
-            .map(|v| v.iter().map(|p| p.text.clone()).collect())
-            .unwrap_or_default();
+        let buffered = parked_crons(&ws, "forge", None);
         assert_eq!(buffered, vec!["morning".to_owned()], "the due cron's prompt was buffered");
 
         // The due cron advanced past now; the future cron is untouched.
@@ -744,12 +718,7 @@ mod tests {
             )),
             "an asleep worker cron wakes the whole project via SpawnProject",
         );
-        let buffered: Vec<String> = ws
-            .pending_cron_by_owner
-            .lock()
-            .get(&("proj".to_owned(), Some("reviewer".to_owned())))
-            .map(|v| v.iter().map(|p| p.text.clone()).collect())
-            .unwrap_or_default();
+        let buffered = parked_crons(&ws, "proj", Some("reviewer"));
         assert_eq!(buffered, vec!["nightly".to_owned()], "buffered for the worker owner");
     }
 
@@ -795,12 +764,7 @@ mod tests {
             )),
             "no bare Prompt to the still-spawning worker (would be dropped)",
         );
-        let buffered: Vec<String> = ws
-            .pending_cron_by_owner
-            .lock()
-            .get(&("proj".to_owned(), Some("reviewer".to_owned())))
-            .map(|v| v.iter().map(|p| p.text.clone()).collect())
-            .unwrap_or_default();
+        let buffered = parked_crons(&ws, "proj", Some("reviewer"));
         assert_eq!(
             buffered,
             vec!["nightly".to_owned()],
@@ -836,12 +800,11 @@ mod tests {
             )),
             "an asleep dynamic worker cron wakes the project too",
         );
-        let count = ws
-            .pending_cron_by_owner
-            .lock()
-            .get(&("proj".to_owned(), Some("scratch".to_owned())))
-            .map_or(0, Vec::len);
-        assert_eq!(count, 1, "buffered for the dynamic worker owner");
+        assert_eq!(
+            parked_crons(&ws, "proj", Some("scratch")).len(),
+            1,
+            "buffered for the dynamic worker owner"
+        );
     }
 
     #[test]

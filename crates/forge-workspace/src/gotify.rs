@@ -298,6 +298,21 @@ mod tests {
 
     use crate::target::SessionKey;
 
+    /// The Gotify notifications parked for `(project, label)`, under the
+    /// org the project is declared in.
+    fn parked_gotify(
+        ws: &crate::Workspace,
+        project: &str,
+        label: Option<&str>,
+    ) -> Vec<crate::mcp::gotify::types::GotifyNotification> {
+        let org = ws.list_projects().into_iter().find(|v| v.name == project).expect("project").org;
+        ws.parked_by_owner
+            .lock()
+            .get(&(org, project.to_owned(), label.map(str::to_owned)))
+            .map(|parked| parked.gotify.clone())
+            .unwrap_or_default()
+    }
+
     fn dynamic_worker_row(
         project: &str,
         label: &str,
@@ -698,16 +713,11 @@ mod tests {
             .count();
         assert_eq!(spawns, 1, "the asleep project got a spawn");
 
-        let synth = SessionKey::from_session_id("__spawn_forge__");
-        let buffered = ws
-            .domain_handles
-            .lock()
-            .get(&synth)
-            .expect("synth domain present")
-            .lock()
-            .pending_gotify_prompts
-            .clone();
-        assert_eq!(buffered, vec![notif], "the notification was buffered");
+        assert_eq!(
+            parked_gotify(&ws, "forge", None),
+            vec![notif],
+            "the notification is parked for the project's lead",
+        );
     }
 
     #[test]
@@ -807,16 +817,11 @@ mod tests {
             .count();
         assert_eq!(spawns, 1, "an asleep team-worker subscription spawns the project lead");
 
-        let synth = SessionKey::from_session_id("__spawn_forge__");
-        let buffered = ws
-            .domain_handles
-            .lock()
-            .get(&synth)
-            .expect("synth domain present")
-            .lock()
-            .pending_gotify_prompts
-            .clone();
-        assert_eq!(buffered, vec![notif], "the notification was buffered");
+        assert_eq!(
+            parked_gotify(&ws, "forge", None),
+            vec![notif],
+            "the notification is parked for the project's lead",
+        );
     }
 
     /// A team-worker subscription whose worker is a live entry but still
@@ -848,12 +853,10 @@ mod tests {
             dispatched.is_empty(),
             "no bare Prompt (dropped) and no lead fallback for a spawning worker",
         );
-        let buffered = ws
-            .domain_session_for(&worker_key)
-            .expect("worker domain")
-            .lock()
-            .pending_gotify_prompts
-            .clone();
-        assert_eq!(buffered, vec![notif], "buffered on the worker's own domain for its drain");
+        assert_eq!(
+            parked_gotify(&ws, "forge", Some("reviewer")),
+            vec![notif],
+            "parked for the worker's own label, for its Connected drain",
+        );
     }
 }
