@@ -541,14 +541,13 @@ mod tests {
         );
     }
 
-    /// A synthetic `__spawn_<name>__` active key resolves its project via
-    /// the same pane/top-bar resolver (by name), so SCHEDULES populates
-    /// even when the bucket's stamp is unresolvable. A bucket whose stamp
-    /// names no project - not in the catalog, not a known name - still
-    /// degrades cleanly to empty rather than surfacing another project's
-    /// crons.
+    /// The bucket's own stamp resolves the project while the catalog does
+    /// not name the session yet - the spawn window, before the scan picks
+    /// the new id up. A bucket whose stamp names no project - not in the
+    /// catalog, not a known name - still degrades cleanly to empty rather
+    /// than surfacing another project's crons.
     #[test]
-    fn refresh_forge_crons_resolves_synthetic_spawn_key_by_name() {
+    fn refresh_forge_crons_resolves_by_the_bucket_stamp_before_the_catalog() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
 
         let mut app = App::test_default();
@@ -568,18 +567,18 @@ mod tests {
         };
         ws.seed_test_cron(cron.clone());
 
-        // Synthetic spawn key with an empty stamp: resolves to cronproj
-        // by name.
-        let synthetic = forge_workspace::SessionKey::from_session_id("__spawn_cronproj__");
-        let bucket = crate::app::session::UiSession::new(synthetic.clone(), "");
-        app.sessions.insert(synthetic.clone(), bucket);
-        app.active_session_key = Some(synthetic);
+        // A session the catalog does not know yet: the bucket's stamp is
+        // what names the project.
+        let fresh = forge_workspace::SessionKey::from_session_id("fresh-uuid");
+        let bucket = crate::app::session::UiSession::new(fresh.clone(), "cronproj");
+        app.sessions.insert(fresh.clone(), bucket);
+        app.active_session_key = Some(fresh);
 
         app.refresh_forge_crons();
         assert_eq!(
             app.forge_crons,
             vec![cron],
-            "synthetic spawn key resolves the project by name, no stamp needed",
+            "the bucket's stamp resolves the project before the catalog does",
         );
 
         // Degrade cleanly: an active bucket that resolves via no link (not

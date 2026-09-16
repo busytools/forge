@@ -858,7 +858,7 @@ fn apply_session_update_spawning(
         // (cron, peer prompt, gotify or slack delivery) hitting a stale
         // synthetic stub left by an earlier failed spawn must not yank
         // the tab away from whatever holds it.
-        let user_asked_for_this = app.pending_spawn_focus.as_ref() == Some(&key);
+        let user_asked_for_this = app.pending_spawn_focus.as_deref() == Some(project_name);
         if user_asked_for_this {
             app.pending_spawn_focus = None;
         }
@@ -923,12 +923,12 @@ fn apply_session_update_spawning(
     // project's Spawning event arrives first steal the screen, so such
     // a wake only registers its bucket and triggers a redraw.
     //
-    // A user-driven wake is the exception: it recorded this exact key
-    // in `pending_spawn_focus` when the click dispatched, so honouring
-    // it moves focus for that one spawn and no other. The project named
-    // on the command line does not reach this reducer at all - its
-    // bucket is minted by the `Connected` that follows.
-    let user_asked_for_this = app.pending_spawn_focus.as_ref() == Some(&key);
+    // A user-driven wake is the exception: the click recorded this
+    // project in `pending_spawn_focus`, so honouring it moves focus for
+    // that one spawn and no other. The project named on the command
+    // line does not reach this reducer at all - its bucket is minted by
+    // the `Connected` that follows.
+    let user_asked_for_this = app.pending_spawn_focus.as_deref() == Some(project_name);
     if user_asked_for_this {
         app.pending_spawn_focus = None;
     }
@@ -3170,8 +3170,8 @@ mod tests {
         assert_eq!(app.active_session_key, active_before, "focus stays put");
     }
 
-    /// Waking a cold project from the Projects pane records the key it
-    /// was headed for, and the reducer honours it when the bucket
+    /// Waking a cold project from the Projects pane records the project
+    /// it was headed for, and the reducer honours it when the bucket
     /// appears. Without the hand-off the click dispatches a spawn and
     /// leaves the user exactly where they were, which is
     /// indistinguishable from a dead row.
@@ -3185,8 +3185,8 @@ mod tests {
         );
         app.active_session_key = Some(elsewhere);
 
-        let key = SessionKey::from_session_id("__spawn_cold__".to_owned());
-        app.pending_spawn_focus = Some(key.clone());
+        let key = SessionKey::from_session_id("cold-uuid".to_owned());
+        app.pending_spawn_focus = Some("cold".to_owned());
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::Spawning {
@@ -3220,8 +3220,8 @@ mod tests {
             crate::app::session::UiSession::new(chosen.clone(), "test-project"),
         );
 
-        let waking = SessionKey::from_session_id("__spawn_cold__".to_owned());
-        app.pending_spawn_focus = Some(waking.clone());
+        let waking = SessionKey::from_session_id("cold-uuid".to_owned());
+        app.pending_spawn_focus = Some("cold".to_owned());
         app.switch_active_session(chosen.clone());
         assert!(
             app.pending_spawn_focus.is_none(),
@@ -3389,8 +3389,8 @@ mod tests {
 
         // The user clicked project A; its Spawning honored the pending
         // focus and sits mid-boot on the waking stub.
-        let clicked = SessionKey::from_session_id("__spawn_a__".to_owned());
-        app.pending_spawn_focus = Some(clicked.clone());
+        let clicked = SessionKey::from_session_id("wake-a-uuid".to_owned());
+        app.pending_spawn_focus = Some("a".to_owned());
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::Spawning {
@@ -3406,10 +3406,10 @@ mod tests {
             "precondition: the click's wake took the tab",
         );
 
-        // Project B failed to spawn earlier; its synthetic stub
-        // survived. A cron, peer prompt, gotify or slack delivery wakes B
-        // in the background during A's boot window.
-        let stale = SessionKey::from_session_id("__spawn_b__".to_owned());
+        // Project B failed to spawn earlier; its stub survived. A cron,
+        // peer prompt, gotify or slack delivery wakes B in the background
+        // during A's boot window.
+        let stale = SessionKey::from_session_id("stale-b-uuid".to_owned());
         app.sessions.insert(stale.clone(), crate::app::session::UiSession::new(stale.clone(), "b"));
         app.needs_redraw = false;
         apply_session_update(
@@ -3441,9 +3441,9 @@ mod tests {
 
         // The user clicked cold project A: its intent is armed but the
         // bucket has not appeared yet. Project B's stub exists.
-        let clicked = SessionKey::from_session_id("__spawn_a__".to_owned());
-        app.pending_spawn_focus = Some(clicked.clone());
-        let stale = SessionKey::from_session_id("__spawn_b__".to_owned());
+        let clicked = SessionKey::from_session_id("wake-a-uuid".to_owned());
+        app.pending_spawn_focus = Some("a".to_owned());
+        let stale = SessionKey::from_session_id("stale-b-uuid".to_owned());
         app.sessions.insert(stale.clone(), crate::app::session::UiSession::new(stale.clone(), "b"));
 
         apply_session_update(
@@ -3456,8 +3456,8 @@ mod tests {
             },
         );
         assert_eq!(
-            app.pending_spawn_focus.as_ref(),
-            Some(&clicked),
+            app.pending_spawn_focus.as_deref(),
+            Some("a"),
             "a declined background wake must not consume the click's intent",
         );
 

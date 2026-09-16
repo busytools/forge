@@ -766,14 +766,14 @@ pub(super) fn apply_session_update_connected(
     compaction_count: u32,
 ) {
     use super::super::connect::type_converters::map_available_models;
-    // Defensive synthetic→real migration: in production, the
-    // `SessionTask` emits `SessionUpdate::KeyRenamed` ahead of
-    // `Connected` so the bucket already lives at `key`. Tests that
-    // fire `Connected` directly (without the prior KeyRenamed) and
-    // legacy single-session bridges still rely on this reducer to
-    // do the migration when the active key is a synthetic
-    // placeholder.
-    let synthetic_to_migrate = if !app.sessions.contains_key(key)
+    // Defensive spawn-key to session-id migration: the workspace emits
+    // `SessionUpdate::KeyRenamed` ahead of `Connected`, so in production
+    // the bucket already lives at `key`. A test that fires `Connected`
+    // directly, and the legacy single-session bridge, rely on this
+    // reducer to move the active bucket when its key is still a spawn
+    // placeholder. `is_synthetic_key` and this block are deleted in the
+    // change that removes `KeyRenamed` - the producer - and not before.
+    let spawn_keyed = if !app.sessions.contains_key(key)
         && let Some(active_key) = app.active_session_key.clone()
         && is_synthetic_key(&active_key)
     {
@@ -781,8 +781,8 @@ pub(super) fn apply_session_update_connected(
     } else {
         None
     };
-    if let Some(synth_key) = synthetic_to_migrate.as_ref() {
-        if let Some(mut existing) = app.sessions.remove(synth_key) {
+    if let Some(spawn_key) = spawn_keyed.as_ref() {
+        if let Some(mut existing) = app.sessions.remove(spawn_key) {
             existing.key = Some(key.clone());
             app.sessions.insert(key.clone(), existing);
             app.active_session_key = Some(key.clone());
@@ -790,7 +790,7 @@ pub(super) fn apply_session_update_connected(
             // `DomainSession` handle map so the migrated bucket's
             // accessors (`cwd_raw`, `session_id`, …) keep resolving.
             if let Some(workspace) = app.workspace.as_ref() {
-                workspace.rekey_domain_session(synth_key, key.clone());
+                workspace.rekey_domain_session(spawn_key, key.clone());
             }
         }
     } else if !app.sessions.contains_key(key) {
@@ -859,9 +859,10 @@ pub(super) fn apply_session_update_connected(
     seed_compaction_count(app, key, compaction_count);
 }
 
-/// Sentinel-pattern check: synthetic keys (`__spawn_<project>__`,
-/// `__resume_<id>__`) all wrap a name in double underscores. Real
-/// claude session UUIDs never look like this.
+/// Spawn-placeholder check: every key the `SessionTask` mints before the
+/// CLI reports an id wraps a name in double underscores. Deleted in the
+/// change that removes `KeyRenamed`, whose emission is the only thing
+/// that produces a bucket for this to migrate.
 fn is_synthetic_key(key: &SessionKey) -> bool {
     let s = key.as_str();
     s.len() >= 4 && s.starts_with("__") && s.ends_with("__")

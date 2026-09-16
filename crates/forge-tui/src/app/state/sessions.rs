@@ -356,12 +356,12 @@ impl super::App {
     /// The active tab's forge.toml project name, backing the Inspector
     /// SCHEDULES + GOTIFY snapshots:
     ///   1. `resolve_active_project_view` on the active KEY - the exact
-    ///      resolver the projects pane + top bar use (catalog for a real
-    ///      UUID, name for a `__spawn_<name>__` sentinel). Independent of
-    ///      the stamp, so it resolves whenever the pane highlights the
-    ///      project.
+    ///      resolver the projects pane + top bar use, reading the catalog.
+    ///      Independent of the stamp, so it resolves whenever the pane
+    ///      highlights the project.
     ///   2. The per-bucket stamp (`UiSession.project`), which every
-    ///      bucket carries from the moment it is minted.
+    ///      bucket carries from the moment it is minted - the only source
+    ///      while a spawn's session is not in the catalog yet.
     pub fn active_project_name(&self) -> Option<String> {
         let active_key = self.active_session_key.as_ref()?;
         if let Some(ws) = self.workspace.as_ref() {

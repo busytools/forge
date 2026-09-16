@@ -977,8 +977,23 @@ mod tests {
 
     // has_in_progress_tool_calls
 
+    /// The app with its seeded bucket moved onto the key these tests fire
+    /// events for. The `Connected` reducer no longer migrates a bucket
+    /// onto the id an event carries - the spawn mints that id, so the
+    /// bucket already lives there - which means a fixture has to seed the
+    /// bucket under the key it will address.
     fn make_test_app() -> App {
-        App::test_default()
+        let mut app = App::test_default();
+        let seeded = forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY);
+        if let Some(mut bucket) = app.sessions.remove(&seeded) {
+            let key = forge_workspace::SessionKey::from_session_id("test-session");
+            bucket.key = Some(key.clone());
+            app.sessions.insert(key.clone(), bucket);
+            if app.active_session_key.as_ref() == Some(&seeded) {
+                app.active_session_key = Some(key);
+            }
+        }
+        app
     }
 
     fn test_current_model(model_name: &str) -> model::CurrentModel {
@@ -1882,10 +1897,9 @@ mod tests {
     #[test]
     fn connected_updates_cwd_and_clears_resuming_marker() {
         let mut app = make_test_app();
-        // This Connected arrives for a key with no bucket, so the
-        // session is filed under the project its cwd names - which is
-        // what a session's cwd is in production.
-        app.workspace.as_ref().expect("workspace").seed_test_project("cwd-proj", "/changed");
+        // The Connected arrives on the bucket's own key: the spawn mints
+        // that id, so the bucket is already filed there by the time the
+        // event lands.
         app.active_messages_mut().expect("active session").push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
@@ -1897,8 +1911,8 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::Connected {
-                key: forge_workspace::SessionKey::from_session_id("session-cwd".to_owned()),
-                session_id: forge_primitives::SessionId::new("session-cwd"),
+                key: forge_workspace::SessionKey::from_session_id("test-session".to_owned()),
+                session_id: forge_primitives::SessionId::new("test-session"),
                 cwd: "/changed".into(),
                 current_model: test_current_model_primitives("claude-updated"),
                 available_models: Vec::new(),

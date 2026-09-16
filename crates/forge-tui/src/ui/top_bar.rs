@@ -95,17 +95,20 @@ fn build_active_context(app: &App, max_chars: usize) -> String {
     projects_pane::truncate_with_ellipsis(&raw, max_chars)
 }
 
-/// Active project's user-facing `name` (from `forge.toml`). Handles
-/// the synthetic-key sentinels (`__spawn_<name>__`, `__resume_<id>__`)
-/// so the top bar reflects the project the user just clicked even
-/// during the Spawning window - before `Connected` arrives and the
-/// bucket migrates to its real session id.
+/// Active project's user-facing `name` (from `forge.toml`), preferring
+/// the catalog's answer and falling back to the bucket's own stamp - the
+/// only source while a spawn's session is not catalogued yet, which is
+/// the whole wake window.
 fn active_project_label(app: &App) -> Option<String> {
-    let workspace = app.workspace.as_ref()?;
     let active_key = app.active_session_key.as_ref()?;
-    let projects = workspace.list_projects();
-    let refs: Vec<&ProjectView> = projects.iter().collect();
-    projects_pane::resolve_active_project_view(active_key, &refs).map(|p| p.name.clone())
+    if let Some(workspace) = app.workspace.as_ref() {
+        let projects = workspace.list_projects();
+        let refs: Vec<&ProjectView> = projects.iter().collect();
+        if let Some(view) = projects_pane::resolve_active_project_view(active_key, &refs) {
+            return Some(view.name.clone());
+        }
+    }
+    app.active_session().map(|s| s.project.clone()).filter(|project| !project.is_empty())
 }
 
 /// Compact representation of the active session for the top-bar
@@ -113,32 +116,14 @@ fn active_project_label(app: &App) -> Option<String> {
 /// falls back to a short-form session UUID; finally `None` when no
 /// session is focused or its bucket has no id yet.
 fn active_session_label(app: &App) -> Option<String> {
-    if let Some(active_key) = app.active_session_key.as_ref() {
-        let s = active_key.as_str();
-        // Synthetic keys: surface a short status word rather than the
-        // raw sentinel string. Lets the user see *what's happening*
-        // (waking / resuming) instead of `__spawn_dotfiles__`.
-        if s.starts_with("__spawn_") && s.ends_with("__") {
-            return Some("waking".to_owned());
-        }
-        if let Some(id) = s.strip_prefix("__resume_").and_then(|r| r.strip_suffix("__"))
-            && let Some(workspace) = app.workspace.as_ref()
-        {
-            for project in workspace.list_projects() {
-                if let Some(view) = project.sessions.iter().find(|sv| sv.session.as_str() == id)
-                    && !view.label.is_empty()
-                {
-                    return Some(view.label.clone());
-                }
-            }
-        }
-        if let Some(workspace) = app.workspace.as_ref() {
-            for project in workspace.list_projects() {
-                if let Some(view) = project.sessions.iter().find(|sv| &sv.session == active_key)
-                    && !view.label.is_empty()
-                {
-                    return Some(view.label.clone());
-                }
+    if let Some(active_key) = app.active_session_key.as_ref()
+        && let Some(workspace) = app.workspace.as_ref()
+    {
+        for project in workspace.list_projects() {
+            if let Some(view) = project.sessions.iter().find(|sv| &sv.session == active_key)
+                && !view.label.is_empty()
+            {
+                return Some(view.label.clone());
             }
         }
     }

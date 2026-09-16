@@ -10,6 +10,7 @@
 use std::fs;
 use std::sync::Arc;
 
+use forge_workspace::protocol::SpawnRole;
 use forge_workspace::{SessionLaunchSettings, SessionTarget, Workspace, WorkspaceError};
 use tempfile::tempdir;
 
@@ -51,7 +52,11 @@ async fn forge_tui_starts_against_fixture_default_project() {
 
     workspace.seed_test_ready_account("Stargate");
     let handle = workspace
-        .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+        .get_agent_handle(
+            SessionTarget::Default,
+            SessionLaunchSettings::default(),
+            &SpawnRole::Lead,
+        )
         .expect("default handle resolves");
 
     assert!(handle.take_events().is_some(), "fresh handle should own its event receiver");

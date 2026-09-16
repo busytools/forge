@@ -316,7 +316,9 @@ fn projects_by_org(
 /// includes worker JSONLs post-Connected, and naive iteration would
 /// surface a worker as the project's live row once the worker's
 /// mtime overtakes the lead's.
-fn live_worker_keys(app: &App) -> std::collections::HashSet<forge_workspace::SessionKey> {
+pub(crate) fn live_worker_keys(
+    app: &App,
+) -> std::collections::HashSet<forge_workspace::SessionKey> {
     app.workspace
         .as_ref()
         .map(|ws| ws.all_live_worker_session_keys().into_iter().collect())
@@ -333,7 +335,7 @@ fn live_worker_keys(app: &App) -> std::collections::HashSet<forge_workspace::Ses
 /// HashMap yields first. Falls back to a catalog walk excluding
 /// workers, for when the lead's bucket isn't yet pooled (cold project
 /// at launchpad time) but its session has a `SessionView` entry.
-fn live_lead_key(
+pub(crate) fn live_lead_key(
     app: &App,
     project: &ProjectView,
     project_path: &str,
@@ -363,10 +365,10 @@ fn live_lead_key(
 /// next to the one that went away rather than on an arbitrary
 /// [`App::sessions`] entry.
 ///
-/// A project waking under a `__spawn_<name>__` synthetic contributes
-/// nothing here. The pane does draw that row, but a click on it is
-/// refused while the bucket is `Spawning`, so it is not a place focus
-/// can be sent.
+/// A project mid-wake contributes its bucket once one exists on its cwd,
+/// `Spawning` included: this is the focus pick's list, not the click
+/// gate. A click is refused while that bucket is `Spawning`, but focus
+/// may still be moved here by a close, so the row is listed.
 pub(crate) fn drawn_session_rows(
     app: &App,
     projects: &[ProjectView],
@@ -412,8 +414,6 @@ fn append_project_rows(
     for (org_name, bucket) in &ordered {
         let mut rows: Vec<RowMeta<'_>> = Vec::with_capacity(bucket.len());
         for project in bucket {
-            let spawn_synthetic =
-                forge_workspace::SessionKey::from_session_id(format!("__spawn_{}__", project.name));
             let project_path_str = project.path.to_string_lossy().into_owned();
             // The project row represents the LEAD.
             let live_session =
@@ -421,14 +421,10 @@ fn append_project_rows(
                     let lifecycle = lifecycle_for(&key);
                     (key, lifecycle)
                 });
-            let synthetic = app
-                .sessions
-                .get(&spawn_synthetic)
-                .map(|_| (spawn_synthetic.clone(), lifecycle_for(&spawn_synthetic)));
             // The row highlights only when the selected session is the
             // session this row represents - a worker selection highlights
             // the worker row and leaves the lead plain.
-            let live = live_session.or(synthetic).map(|(key, lifecycle)| {
+            let live = live_session.map(|(key, lifecycle)| {
                 let badges = badges_for(&key);
                 let is_focused = active_session_key.as_ref() == Some(&key);
                 (key, lifecycle, is_focused, badges)
@@ -941,32 +937,14 @@ fn line_count_as_u16(lines: &[Line<'_>]) -> u16 {
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
 }
 
-/// Find the `ProjectView` that owns `active_key` - handling the two
-/// synthetic-key sentinels (`__spawn_<name>__`, `__resume_<id>__`)
-/// in addition to real claude UUIDs. Without this,
-/// every pane reader that does `sessions.iter().any(|s| &s.session
-/// == key)` returns `None` during the Spawning window - leaving the
-/// pane and top bar with no project highlighted while the user
-/// stares at a "Waking …" placeholder.
-///
-/// Resolution order:
-/// 1. `__spawn_<name>__` → find by `p.name == name`.
-/// 2. `__resume_<session_id>__` → find by any session matching id.
-/// 3. Real UUID → existing catalog scan.
+/// Find the `ProjectView` that owns `active_key` by scanning the
+/// catalog for the session. A bucket whose session the catalog does not
+/// name yet resolves to no project, which is the honest answer: nothing
+/// but the session's own id says which project it belongs to.
 pub(crate) fn resolve_active_project_view<'p>(
     active_key: &forge_workspace::SessionKey,
     projects: &'p [&ProjectView],
 ) -> Option<&'p ProjectView> {
-    let s = active_key.as_str();
-    if let Some(name) = s.strip_prefix("__spawn_").and_then(|r| r.strip_suffix("__")) {
-        return projects.iter().copied().find(|p| p.name == name);
-    }
-    if let Some(id) = s.strip_prefix("__resume_").and_then(|r| r.strip_suffix("__")) {
-        return projects
-            .iter()
-            .copied()
-            .find(|p| p.sessions.iter().any(|sess| sess.session.as_str() == id));
-    }
     projects.iter().copied().find(|p| p.sessions.iter().any(|sess| &sess.session == active_key))
 }
 
