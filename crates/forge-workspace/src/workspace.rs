@@ -8265,6 +8265,36 @@ provider = "anthropic"
         );
     }
 
+    /// `--new` rewrites the lead's row rather than reusing what it holds:
+    /// the flag is what makes the boot wave's leads come up fresh, and a
+    /// `force_new` that fell through to the store would resume the very
+    /// session it was given to replace.
+    #[tokio::test]
+    async fn force_new_rewrites_the_lead_row_rather_than_reusing_it() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
+        workspace.seed_test_ready_account("Stargate");
+        let project = workspace.config.default_project().clone();
+        workspace.record_session_id(&project.org, &project.name, LEAD_LABEL, "stored-lead-id");
+
+        let _handle = workspace
+            .get_agent_handle(
+                SessionTarget::Default,
+                SessionLaunchSettings { force_new: true, ..SessionLaunchSettings::default() },
+            )
+            .expect("spawn");
+
+        let id = workspace
+            .stored_session_id(&project.org, &project.name, LEAD_LABEL)
+            .expect("the row still holds an id");
+        assert_ne!(id, "stored-lead-id", "`--new` must not reuse the id the store held");
+        assert!(
+            uuid::Uuid::parse_str(&id).is_ok(),
+            "the row is rewritten with the id this spawn minted: {id}",
+        );
+    }
+
     /// A row with no id, as the first boot after the store gained ids
     /// leaves it.
     fn seed_session_row(workspace: &Workspace, org: &str, project: &str, label: &str) {
