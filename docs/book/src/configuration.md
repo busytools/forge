@@ -283,10 +283,11 @@ around the answer. Notifications are raised only while forge reads the
 terminal window as unfocused, and that focus signal is relayed and can
 lag the actual frontmost state.
 
-The escape carries the project as its title field and the session kind
-with the event as its body, so the banner's bold line names the project
-instead of the app. The line under it is the terminal's own window
-title, which forge sets separately as the tab title.
+The escape carries the session as its title field and the event as its
+body, so the banner's bold line names the session instead of the app: a
+lead's is the project alone, a worker's is the project with the worker's
+label in brackets after it. The line under it is the terminal's own
+window title, which forge sets separately as the tab title.
 
 What crosses is decided by whatever sits between forge and the
 terminal, and no setting changes it. Ghostty with no multiplexer
