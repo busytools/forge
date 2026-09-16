@@ -92,17 +92,17 @@ Read-only, open any time including mid-turn. It shows what the gateway holds: ev
        <span class="accent">│</span> <span class="bold">  Busytools</span>                                                  <span class="accent">│</span>
        <span class="accent">│</span> <span class="dim">  primary   Zai, Personal</span>                                    <span class="accent">│</span>
        <span class="accent">│</span> <span class="dim">  fallback  OpenRouter</span>                                       <span class="accent">│</span>
-       <span class="accent">│</span>     Zai             zai  5h 100%  7d 63%             <span class="error">limit hit</span><span class="accent">│</span>
-       <span class="accent">│</span>     Personal        anthropic  5h 34%  7d 22%           <span class="success">usable</span><span class="accent">│</span>
-       <span class="accent">│</span>     OpenRouter-TM   openrouter  $20.30 m             <span class="error">limit hit</span><span class="accent">│</span>
-       <span class="accent">│</span>     OpenRouter     <span class="dim">fallback</span>  openrouter <span class="error">auth failed or expired</span><span class="accent">│</span>
+       <span class="accent">│</span>    Zai             zai  5h 100%  7d 63%             <span class="error">limit hit</span><span class="accent">│</span>
+       <span class="accent">│</span>    Personal        anthropic  5h 34%  7d 22%           <span class="success">usable</span><span class="accent">│</span>
+       <span class="accent">│</span>    OpenRouter-TM   openrouter  $20.30 m             <span class="error">limit hit</span><span class="accent">│</span>
+       <span class="accent">│</span>    OpenRouter     <span class="dim">fallback</span>  openrouter <span class="error">auth failed or expired</span><span class="accent">│</span>
        <span class="accent">│</span>                                                              <span class="accent">│</span>
-       <span class="accent">│</span> <span class="bold">  Subspace</span>                                                    <span class="accent">│</span>
-       <span class="accent">│</span> <span class="dim">  primary   Subspace</span>                                          <span class="accent">│</span>
-       <span class="accent">│</span> <span class="dim">  fallback  -</span>                                                 <span class="accent">│</span>
-       <span class="accent">│</span>     Subspace        anthropic  5h 12%  7d 9%            <span class="success">usable</span><span class="accent">│</span>
+       <span class="accent">│</span> <span class="bold">  Subspace</span>                                                   <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">  primary   Subspace</span>                                         <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">  fallback  -</span>                                                <span class="accent">│</span>
+       <span class="accent">│</span>    Subspace        anthropic  5h 12%  7d 9%            <span class="success">usable</span><span class="accent">│</span>
        <span class="accent">│</span>                                                              <span class="accent">│</span>
-       <span class="accent">│</span> <span class="dim">esc close   read-only: the spawn pick decides every account</span>   <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">esc close   read-only: the spawn pick decides every account</span>  <span class="accent">│</span>
        <span class="accent">└──────────────────────────────────────────────────────────────┘</span></pre>
 
 </div>
