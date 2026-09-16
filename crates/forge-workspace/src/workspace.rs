@@ -1722,10 +1722,7 @@ impl Workspace {
                 let project = self.config.default_project();
                 Self::apply_lead_delegation(&mut settings, session_kind);
                 let cwd = project.path.to_string_lossy().to_string();
-                let resume_target = Self::apply_force_new_gate(
-                    self.lead_session_to_resume(project),
-                    settings.force_new,
-                );
+                let resume_target = self.lead_session_to_resume(project, settings.force_new);
                 if let Some(lead) = resume_target {
                     handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
                 } else {
@@ -1737,10 +1734,7 @@ impl Workspace {
                 let project = self.find_project_by_name(&name)?;
                 Self::apply_lead_delegation(&mut settings, session_kind);
                 let cwd = project.path.to_string_lossy().to_string();
-                let resume_target = Self::apply_force_new_gate(
-                    self.lead_session_to_resume(project),
-                    settings.force_new,
-                );
+                let resume_target = self.lead_session_to_resume(project, settings.force_new);
                 if let Some(lead) = resume_target {
                     handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
                 } else {
@@ -2813,10 +2807,6 @@ impl Workspace {
     /// (`new_session`). `force_new` overrides a present lead - that is
     /// what makes the boot wave's leads come up fresh under `--new`,
     /// while every non-boot spawn leaves `force_new` false and resumes.
-    fn apply_force_new_gate(lead: Option<SessionKey>, force_new: bool) -> Option<SessionKey> {
-        if force_new { None } else { lead }
-    }
-
     /// The session a project's lead re-enters: the id the store holds for
     /// it, or - on a boot that finds none - the one the catalog records,
     /// persisted on the way out. The catalog is what every boot read
@@ -2824,7 +2814,17 @@ impl Workspace {
     /// session that exists today coming up unchanged; the second of the
     /// two identity pull requests removes the fallback once the warning
     /// below stops firing.
-    fn lead_session_to_resume(&self, project: &LoadedProject) -> Option<SessionKey> {
+    /// `force_new` (`--new`) starts a fresh session, so neither the store
+    /// nor the catalog is consulted: deriving first would warn and record
+    /// an id the mint is about to replace.
+    fn lead_session_to_resume(
+        &self,
+        project: &LoadedProject,
+        force_new: bool,
+    ) -> Option<SessionKey> {
+        if force_new {
+            return None;
+        }
         if let Some(id) = self.stored_session_id(&project.org, &project.name, LEAD_LABEL) {
             return Some(SessionKey::from_session_id(id));
         }
@@ -2881,6 +2881,25 @@ impl Workspace {
             );
         }
         self.record_session_id(&project.org, &project.name, label, id);
+    }
+
+    /// Record the id the CLI adopted for a live session, so the store
+    /// stops disagreeing with what is running. An in-session `/resume`, a
+    /// `/clear`, a login or a logout can move a session's id without
+    /// forge choosing it, and a boot resolves a session from this row.
+    pub(crate) fn note_running_session_id(&self, key: &SessionKey, session_id: &str) {
+        let Some((org, project, label)) = self.session_row_for_key(key) else {
+            return;
+        };
+        if self.stored_session_id(&org, &project, &label).as_deref() == Some(session_id) {
+            return;
+        }
+        tracing::info!(
+            target: "forge_workspace::sessions",
+            org, project, label, session_id,
+            "recording the id the CLI adopted, which is not the one the store held",
+        );
+        self.record_session_id(&org, &project, &label, session_id);
     }
 
     /// A fresh id for a session starting now, recorded against the row
@@ -6685,22 +6704,6 @@ mod tests {
     }
 
     #[test]
-    fn force_new_gate_overrides_present_lead() {
-        let lead = SessionKey::from_session_id("lead-uuid");
-        // Normal boot (force_new = false): a resumable catalog lead is
-        // resumed.
-        assert_eq!(Workspace::apply_force_new_gate(Some(lead.clone()), false), Some(lead.clone()),);
-        // `--new` (force_new = true): the present lead is skipped, so
-        // the spawn falls to new_session - this is what makes
-        // `forge <project> --new` (which boots the focused lead via
-        // StartDefault -> the same gate) come up fresh.
-        assert_eq!(Workspace::apply_force_new_gate(Some(lead), true), None);
-        // No catalog lead: fresh either way.
-        assert_eq!(Workspace::apply_force_new_gate(None, false), None);
-        assert_eq!(Workspace::apply_force_new_gate(None, true), None);
-    }
-
-    #[test]
     fn persist_spinner_writes_the_redb_override() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
@@ -8196,12 +8199,12 @@ provider = "anthropic"
 
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
         let db = workspace.db.lock();
-        let rows =
-            crate::store::sessions::list_for_project(db.as_ref().expect("db"), "Default", "forge")
-                .expect("list");
-        assert_eq!(rows.len(), 1, "the boot moved the persisted worker over");
-        assert_eq!(rows[0].label, "steward");
-        assert_eq!(rows[0].session_id, None, "its id is derived when the row is read");
+        let row =
+            crate::store::sessions::get(db.as_ref().expect("db"), "Default", "forge", "steward")
+                .expect("read")
+                .expect("the boot moved the persisted worker over");
+        assert_eq!(row.label, "steward");
+        assert_eq!(row.session_id, None, "its id is derived when the row is read");
     }
 
     /// A project with no lead anywhere spawns under an id forge mints,
@@ -8226,7 +8229,7 @@ provider = "anthropic"
             "the id is a uuid, which is what the catalog's validators accept: {id}",
         );
         assert_eq!(
-            workspace.lead_session_to_resume(workspace.config.default_project()),
+            workspace.lead_session_to_resume(workspace.config.default_project(), false),
             Some(SessionKey::from_session_id(id)),
             "a later start re-enters the recorded session",
         );
@@ -8253,7 +8256,7 @@ provider = "anthropic"
         let restarted = Workspace::new_for_test(dir.path().to_owned()).expect("second boot");
         let project = restarted.config.default_project().clone();
         assert_eq!(
-            restarted.lead_session_to_resume(&project),
+            restarted.lead_session_to_resume(&project, false),
             Some(SessionKey::from_session_id(id)),
             "the second boot re-enters the session the first one recorded",
         );
@@ -8313,7 +8316,7 @@ provider = "anthropic"
         seed_session_row(&workspace, &project.org, &project.name, LEAD_LABEL);
 
         assert_eq!(
-            workspace.lead_session_to_resume(&project),
+            workspace.lead_session_to_resume(&project, false),
             Some(SessionKey::from_session_id("catalog-lead-id")),
             "the catalog is what this boot derives from",
         );
@@ -8327,6 +8330,115 @@ provider = "anthropic"
     /// The same first boot for a worker: its row has no id either, so
     /// the catalog scan's answer for its label is what it resumed under,
     /// and that answer goes into the row.
+    /// The derivation's WARN is the evidence the second identity pull
+    /// request is gated on: it fires only while a boot has to derive an
+    /// id, so a tidy-up that drops either site leaves the suite green
+    /// with the signal gone. Both sites are asserted, because they are
+    /// the two ways a row without an id gets filled in.
+    #[tokio::test]
+    async fn both_derivations_warn_while_they_fire() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let project = workspace.config.default_project().clone();
+        let project_key = project_key_for(&project);
+        workspace.catalog.lock().insert(
+            project_key.clone(),
+            vec![forge_primitives::SDKSessionInfo {
+                session_id: "catalog-lead-id".to_owned(),
+                summary: "lead".to_owned(),
+                last_modified: 0,
+                file_size: None,
+                custom_title: None,
+                first_prompt: None,
+                git_branch: None,
+                cwd: None,
+                storage_key: String::new(),
+                tag: None,
+                created_at: None,
+            }],
+        );
+        seed_session_row(&workspace, &project.org, &project.name, LEAD_LABEL);
+        seed_session_row(&workspace, &project.org, &project.name, "steward");
+        let dynamic = vec![crate::store::dynamic_workers::DynamicWorker {
+            project_key: project_key.as_str().to_owned(),
+            label: "steward".to_owned(),
+            charter: "mind the queues".to_owned(),
+            kick: None,
+            resume_kick: None,
+            interactive: false,
+        }];
+
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = workspace.lead_session_to_resume(&project, false);
+            workspace.dispatch_worker_respawns(
+                "lead-session-id",
+                &project_key,
+                &dynamic,
+                &HashMap::from([("steward".to_owned(), "tagged-session-id".to_owned())]),
+            );
+        });
+        let log = String::from_utf8_lossy(&capture.0.lock()).into_owned();
+
+        assert!(
+            log.contains("no stored session id for this lead"),
+            "the lead's derivation is the signal its removal is judged by: {log}",
+        );
+        assert!(
+            log.contains("no stored session id for this worker"),
+            "and so is the worker's: {log}",
+        );
+
+        // The signal reports the derivation, not the write: once the rows
+        // hold ids, the same boot is silent.
+        let quiet = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(quiet.clone()).finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = workspace.lead_session_to_resume(&project, false);
+            workspace.dispatch_worker_respawns(
+                "lead-session-id",
+                &project_key,
+                &dynamic,
+                &HashMap::from([("steward".to_owned(), "tagged-session-id".to_owned())]),
+            );
+        });
+        let quiet_log = String::from_utf8_lossy(&quiet.0.lock()).into_owned();
+        assert!(
+            !quiet_log.contains("no stored session id"),
+            "a row that already holds its id derives nothing: {quiet_log}",
+        );
+    }
+
+    /// The store follows the id the CLI is actually running. An
+    /// in-session `/resume`, a `/clear`, a login or a logout move a
+    /// session's id without forge choosing it, and a boot resolves a
+    /// session from this row: without this the next boot resumes the
+    /// stale id and the registration keeps naming a session that is no
+    /// longer running.
+    #[tokio::test]
+    async fn the_store_follows_the_id_the_cli_adopted() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let key = SessionKey::from_str_for_test("lead-session");
+        workspace.seed_test_bound_session(&key, "Stargate");
+        seed_session_row(&workspace, "TestOrg", "forge", LEAD_LABEL);
+
+        workspace.note_running_session_id(&key, "adopted-id");
+        assert_eq!(
+            workspace.stored_session_id("TestOrg", "forge", LEAD_LABEL).as_deref(),
+            Some("adopted-id"),
+            "the row holds the id the CLI adopted, not a stale one",
+        );
+
+        workspace.note_running_session_id(&key, "adopted-id");
+        assert_eq!(
+            workspace.stored_session_id("TestOrg", "forge", LEAD_LABEL).as_deref(),
+            Some("adopted-id"),
+            "and re-noting the same id leaves it alone",
+        );
+    }
+
     #[tokio::test]
     async fn a_worker_row_with_no_id_takes_the_id_the_tag_scan_resolved() {
         let dir = make_workspace_dir_with_two_accounts();

@@ -90,36 +90,6 @@ pub fn put(db: &Db, record: &SessionRecord) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Every row under `(org, project)`, in label order.
-pub fn list_for_project(db: &Db, org: &str, project: &str) -> anyhow::Result<Vec<SessionRecord>> {
-    let txn = db.database().begin_read()?;
-    let table = match txn.open_table(SESSIONS) {
-        Ok(t) => t,
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-        Err(e) => return Err(e.into()),
-    };
-    let mut out = Vec::new();
-    for entry in table.iter()? {
-        let (key, value) = entry?;
-        let (row_org, row_project, row_label) = key.value();
-        if row_org != org || row_project != project {
-            continue;
-        }
-        match decode(value.value()) {
-            Ok(record) => out.push(record),
-            Err(err) => tracing::warn!(
-                target: "forge_workspace::store::sessions",
-                org = %row_org,
-                project = %row_project,
-                label = %row_label,
-                error = %err,
-                "skipping session record that failed to decode",
-            ),
-        }
-    }
-    Ok(out)
-}
-
 /// Fill `sessions` from `dynamic_workers`, once.
 ///
 /// Runs on the first boot after this table exists: a worker's persisted
@@ -247,12 +217,10 @@ mod tests {
             "both persisted workers cross over",
         );
 
-        let rows = list_for_project(&db, "Personal", "forge").expect("list");
-        assert_eq!(rows.len(), 2);
-        let steward = rows.iter().find(|row| row.label == "steward").expect("steward row");
+        let steward = get(&db, "Personal", "forge", "steward").expect("read").expect("steward row");
         assert_eq!(
             steward,
-            &SessionRecord {
+            SessionRecord {
                 org: "Personal".to_owned(),
                 project: "forge".to_owned(),
                 label: "steward".to_owned(),
@@ -270,10 +238,9 @@ mod tests {
             0,
             "a second boot copies nothing",
         );
-        assert_eq!(
-            list_for_project(&db, "Personal", "forge").expect("list").len(),
-            2,
-            "and adds no duplicate rows",
+        assert!(
+            get(&db, "Personal", "forge", "quartermaster").expect("read").is_some(),
+            "and leaves the rows it copied where they were",
         );
     }
 
@@ -293,7 +260,7 @@ mod tests {
             0,
             "a worker with no configured project is not copied",
         );
-        assert!(list_for_project(&db, "Personal", "forge").expect("list").is_empty());
+        assert!(get(&db, "Personal", "forge", "steward").expect("read").is_none());
         assert_eq!(
             dynamic_workers::list_all(&db).expect("list workers").len(),
             1,

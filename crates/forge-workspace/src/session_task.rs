@@ -359,6 +359,16 @@ impl SessionTask {
                             to: real_key.clone(),
                         });
                     }
+                    // The id the CLI adopted is not always the one forge
+                    // chose: an in-session `/resume`, a `/clear`, a login
+                    // or a logout can move it without forge writing
+                    // anything, and a boot resolves a session from the
+                    // store. Record it, or the next boot resumes the
+                    // stale id and the registration keeps naming a
+                    // session that is no longer running.
+                    if let Some(workspace) = self.workspace.upgrade() {
+                        workspace.note_running_session_id(&real_key, &session_id);
+                    }
                     self.emit(SessionUpdate::Connected {
                         key: real_key.clone(),
                         session_id: SessionId::new(session_id),
@@ -2283,6 +2293,96 @@ mod tests {
     /// overwrites) `session_id` so subsequent `AgentHandle` calls
     /// route to the live identity. See
     /// `translate_second_connected_overwrites_session_id` for the
+    /// The store follows the id the CLI reports when it connects. A
+    /// `/resume`, a `/clear`, a login or a logout move a session's id
+    /// without forge choosing it, and a boot resolves a session from this
+    /// row - so a row left holding the old id resumes a session that is
+    /// no longer running.
+    #[test]
+    fn connected_records_the_id_the_cli_adopted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("solo");
+        std::fs::create_dir_all(&root).expect("root");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "{root}"
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                root = root.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace =
+            Arc::new(crate::Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        let key = SessionKey::from_str_for_test("lead-session");
+        workspace.seed_test_bound_session(&key, "Stargate");
+        {
+            let db = workspace.db.lock();
+            let db = db.as_ref().expect("db");
+            crate::store::sessions::put(
+                db,
+                &crate::store::sessions::SessionRecord {
+                    org: "TestOrg".to_owned(),
+                    project: "forge".to_owned(),
+                    label: "lead".to_owned(),
+                    session_id: None,
+                    charter: None,
+                    kick: None,
+                    resume_kick: None,
+                    interactive: None,
+                },
+            )
+            .expect("seed the row");
+        }
+
+        let (mut task, _updates) = review_task_for(&workspace, &key);
+        task.translate_event(AgentEvent::Connected {
+            session_id: "adopted-id".to_owned(),
+            cwd: "/proj".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+            compaction_count: 0,
+        });
+
+        let stored = {
+            let db = workspace.db.lock();
+            let db = db.as_ref().expect("db");
+            crate::store::sessions::get(db, "TestOrg", "forge", "lead")
+                .expect("read")
+                .and_then(|row| row.session_id)
+        };
+        assert_eq!(
+            stored.as_deref(),
+            Some("adopted-id"),
+            "the row holds the id the CLI reported, not the one forge chose",
+        );
+    }
+
     /// `/new`-flow overwrite case.
     #[test]
     fn translate_connected_stamps_session_id() {
