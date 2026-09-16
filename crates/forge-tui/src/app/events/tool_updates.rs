@@ -13,15 +13,21 @@ use crate::app::todos::{
 pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::RenderToolCallUpdate) {
     let id_str = tcu.tool_call_id.clone();
     let Some((mi, bi)) = app.lookup_tool_call(&id_str) else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_TOOL,
-            event_name = "tool_call_update_missing",
-            message = "tool call update dropped because tool call was not found",
-            outcome = "dropped",
-            session_id = %current_session_id(app),
-            tool_call_id = %id_str,
-            tool_status = ?tcu.fields.status,
-        );
+        // The resume walk re-delivers every update in the transcript
+        // while rebuilding only the user text, so a miss there is a
+        // repaint with no tool call to repaint. Outside the walk it is
+        // a call this view has lost, which is worth a warning.
+        if !super::skip_operational_log_during_replay(app) {
+            tracing::warn!(
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "tool_call_update_missing",
+                message = "tool call update dropped because tool call was not found",
+                outcome = "dropped",
+                session_id = %current_session_id(app),
+                tool_call_id = %id_str,
+                tool_status = ?tcu.fields.status,
+            );
+        }
         return;
     };
     if let Some(parent_tool_use_id) = parent_tool_use_id_from_meta(tcu.meta.as_ref()) {
@@ -567,6 +573,19 @@ fn log_tool_call_update_applied(
     {
         return;
     }
+    // A failing execute tool is `app.command`'s event, so this arm does
+    // not repeat it - but only where `app.command` writes one. A command
+    // the CLI reports failed after it reported completed has no command
+    // record, and this arm keeps it rather than losing it between the
+    // two. Re-emitting a failure on the replay walk is a different
+    // matter: that reports an event already reported once, at the time
+    // it happened.
+    if matches!(log_spec.event_name, "tool_call_failed" | "tool_call_killed" | "tool_call_timeout")
+        && ((tc.is_execute_tool() && command_layer_writes(previous_status, tc.status))
+            || super::skip_operational_log_during_replay(app))
+    {
+        return;
+    }
     let session_id = current_session_id(app);
     let scope_name = tool_scope.map_or("unknown", tool_scope_name);
     let raw_output_chars = tcu.fields.raw_output.as_ref().and_then(|value| match value {
@@ -597,23 +616,6 @@ fn log_tool_call_update_applied(
                 has_task_metadata = tc.task_metadata.is_some(),
             );
         }
-        ToolUpdateLogLevel::Warn => tracing::warn!(
-            target: crate::logging::targets::APP_TOOL,
-            event_name = log_spec.event_name,
-            message = log_spec.message,
-            outcome = log_spec.outcome,
-            session_id = %session_id,
-            tool_call_id = %id_str,
-            tool_name = %tc.sdk_tool_name,
-            tool_title = %tc.title,
-            tool_scope = scope_name,
-            previous_status = ?previous_status,
-            tool_status = ?tc.status,
-            content_block_count,
-            raw_output_chars = raw_output_chars.unwrap_or_default(),
-            has_output_metadata = tc.output_metadata.is_some(),
-            has_task_metadata = tc.task_metadata.is_some(),
-        ),
         ToolUpdateLogLevel::Debug => tracing::debug!(
             target: crate::logging::targets::APP_TOOL,
             event_name = log_spec.event_name,
@@ -641,7 +643,6 @@ fn log_tool_call_update_applied(
 #[derive(Clone)]
 enum ToolUpdateLogLevel {
     Info,
-    Warn,
     Debug,
 }
 
@@ -705,15 +706,18 @@ fn tool_update_log_spec(
                 }
                 if text.contains("timed out") || text.contains("timeout") {
                     return ToolUpdateLogSpec {
-                        level: ToolUpdateLogLevel::Warn,
+                        level: ToolUpdateLogLevel::Debug,
                         event_name: "tool_call_timeout",
                         message: "tool call timed out",
                         outcome: "timeout",
                     };
                 }
             }
+            // A tool call the session made and lost is the session's own
+            // work, visible in its chat row; `WARN` is reserved for
+            // forge's own failures.
             ToolUpdateLogSpec {
-                level: ToolUpdateLogLevel::Warn,
+                level: ToolUpdateLogLevel::Debug,
                 event_name: if matches!(tc.status, model::ToolCallStatus::Killed) {
                     "tool_call_killed"
                 } else {
@@ -748,6 +752,27 @@ fn entered_final_status(
     ) && !matches!(previous_status, Some(status) if status == current_status)
 }
 
+/// True when an execute tool's transition is one `app.command` writes:
+/// out of a running status and into a final one. Both emitters key on
+/// this, so neither can drop a failure the other does not report - a
+/// command failing after it reported completed reaches only the tool
+/// layer, and one failing straight out of running reaches only
+/// `app.command`.
+fn command_layer_writes(
+    previous_status: Option<model::ToolCallStatus>,
+    current_status: model::ToolCallStatus,
+) -> bool {
+    matches!(
+        previous_status,
+        Some(model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress)
+    ) && matches!(
+        current_status,
+        model::ToolCallStatus::Completed
+            | model::ToolCallStatus::Failed
+            | model::ToolCallStatus::Killed
+    )
+}
+
 fn log_command_update_applied(
     app: &App,
     id_str: &str,
@@ -772,28 +797,29 @@ fn log_command_update_applied(
         return;
     }
 
-    let transitioned_to_final = matches!(
-        previous_status,
-        Some(model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress)
-    ) && matches!(
-        tc.status,
-        model::ToolCallStatus::Completed
-            | model::ToolCallStatus::Failed
-            | model::ToolCallStatus::Killed
-    );
-    if !transitioned_to_final {
+    if !command_layer_writes(previous_status, tc.status) {
         return;
     }
 
-    // Status in the condition: the warning arm below must survive a
-    // replay, and `command_failure_kind` lowercases the whole terminal
-    // output, which is wasted for a record that will not be written.
-    if matches!(tc.status, model::ToolCallStatus::Completed)
-        && super::skip_operational_log_during_replay(app)
-    {
+    // The walk replays what already happened, so a command it reports
+    // has already been reported once, when it ran. `command_failure_kind`
+    // lowercases the whole terminal output, which is wasted for a record
+    // that will not be written.
+    if super::skip_operational_log_during_replay(app) {
         return;
     }
     let failure_kind = command_failure_kind(tc);
+    // A refusal is not a failure, and the tool layer already records it
+    // as `tool_call_refused`; a second line here is the double log this
+    // change exists to remove. The tool layer decides the refusal from
+    // the update's raw output and this one from the applied terminal
+    // output, so a disagreement between the two costs a duplicate, never
+    // the only record.
+    if failure_kind == "refused"
+        && matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
+    {
+        return;
+    }
     match tc.status {
         model::ToolCallStatus::Completed => {
             tracing::info!(
@@ -810,7 +836,11 @@ fn log_command_update_applied(
                 assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
             );
         }
-        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => tracing::warn!(
+        // DEBUG, not WARN: the command is the session's own work and its
+        // failure is on screen in the chat row. `app.command` is raised
+        // to `debug` by the default directives, so this record is still
+        // written where a reader wants it.
+        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => tracing::debug!(
             target: crate::logging::targets::APP_COMMAND,
             event_name = if matches!(tc.status, model::ToolCallStatus::Killed) {
                 "command_killed"

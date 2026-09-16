@@ -30,6 +30,11 @@ surface page.
   forbidden workspace-wide. `clippy.toml` relaxes `unwrap`, `expect`
   and `panic` in tests; the other three stay denied everywhere.
 - **No `mod.rs`.** `foo.rs` sits next to `foo/`.
+- **`WARN` and `ERROR` are for forge's own problems.** A session's own
+  work, its tool call failing or its command exiting non-zero, is
+  information about that session and belongs at `debug`. A line that
+  does claim a problem names the session, the org, the model, the
+  account or the path, whichever apply, and carries an `event_name`.
 - **No em-dashes, en-dashes, horizontal bars or curly quotes** across
   the scanned source and docs file types. CI rejects them. Ellipsis is
   allowed. `just unicode-punct-check` shows what would be flagged.

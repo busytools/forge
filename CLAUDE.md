@@ -597,6 +597,24 @@ inspected.
     the user get a degraded experience or an explained one? Silence
     is the failure.
 
+20. **`WARN` and `ERROR` are for forge's own problems.** A session's own
+    work is information about that session, not a warning about forge:
+    its tool call failing, its command exiting non-zero, its history
+    replaying on resume. Those are `debug`, and so is any condition a
+    reader cannot act on, however real it is. A git probe missing
+    `origin/HEAD` on a repo whose remote was added rather than cloned is
+    real, and the level still says it is not forge's health.
+
+    **A line that does claim a problem carries what acting on it
+    needs**: the session, the org, the model, the account, the path,
+    whichever apply. A warning naming none of them costs a reader as
+    much as no warning at all.
+
+    **A new log site names an `event_name` and says which of the two it
+    is.** A demoted level is not a silenced one: the default filter
+    directives in `crates/forge-tui/src/logging.rs` are where a record
+    that no longer claims a problem stays readable.
+
 ## Claude Code worktree interop
 
 Non-guessable external conventions, recorded so forge does not reinvent
@@ -634,7 +652,8 @@ them:
 - **Subprocess:** `tokio::process::Command` for streaming I/O,
   `cmd_lib` for fire-and-forget shell.
 - **Tracing only.** Never `println!` / `eprintln!` in library code;
-  binaries may use `eprintln!` only when tracing itself failed.
+  binaries may use `eprintln!` only when tracing itself failed. Which
+  level a site takes is hard rule 20.
 - **Comments earn their place.** What the code does, never. Why, only
   when a reader would otherwise ask and cannot infer it from names or
   surrounding code. Non-obvious gotchas, external constraints and API

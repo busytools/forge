@@ -375,9 +375,14 @@ impl RouteHandler for Gateway {
         let account = match self.bindings.binding_for(org, project, session) {
             Some(bound) if self.binding_serves(&bound, &model) => bound,
             Some(bound) => {
+                // Names where the rotation happened: several sessions
+                // rotate at once, so account alone cannot be attributed.
                 tracing::info!(
                     target: "forge_gateway::forward",
                     account = %bound.0,
+                    org = %org,
+                    session = %session,
+                    model = %model,
                     "the bound account cannot serve the model in the body; re-selecting"
                 );
                 self.bindings.unbind(org, project, session);

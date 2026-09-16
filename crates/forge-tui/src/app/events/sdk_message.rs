@@ -1339,10 +1339,14 @@ fn handle_task_started(app: &mut App, msg: Message) {
             Some(crate::app::state::types::ToolCallScope::SubagentRoot)
         ) && task_type.as_deref().is_some_and(|kind| !kind.is_empty())
         {
-            tracing::warn!(
+            // DEBUG: every occurrence measured so far is `local_bash`,
+            // which forge handles everywhere else, so this fires on a
+            // known kind rather than on drift. It stays as a guard
+            // against a kind that really is unknown.
+            tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "task_started_unmarked_agent_kind",
-                message = "a subagent dispatch's task_started names no known agent task_type; no sticky liveness mark is set (possible wire drift)",
+                message = "a subagent dispatch's task_started names a non-agent task_type; no sticky liveness mark is set",
                 outcome = "partial",
                 task_type = %task_type.as_deref().unwrap_or_default(),
             );

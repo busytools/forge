@@ -1389,12 +1389,40 @@ pub(crate) fn handle_despawn_worker(
         None
     };
 
+    // A worker's worktree carries its own build tree, so the removal
+    // below deletes hundreds of thousands of files and can run for
+    // minutes. Nothing else on this path is slow, so these phase records
+    // are what tells a long close apart from a hung one (#1113).
+    let worktree_display =
+        worktree_path.as_ref().map_or_else(|| "none".to_owned(), |path| path.display().to_string());
+    tracing::info!(
+        target: "forge_workspace::spawn",
+        project = %project_key.as_str(),
+        label = %label,
+        force,
+        worktree = %worktree_display,
+        "despawn: starting",
+    );
+
     // Dirty-check BEFORE teardown: block (nothing torn down) when the
-    // worktree is dirty and `force` is not set.
-    if !force
-        && let Some(path) = worktree_path.as_ref()
-        && let Some(reason) = forge_agent::env::worktree::worktree_dirty_reason(path)
-    {
+    // worktree is dirty and `force` is not set. `force` skips the probe
+    // rather than ignoring its verdict.
+    let dirty_reason = if force {
+        None
+    } else {
+        worktree_path
+            .as_ref()
+            .and_then(|path| forge_agent::env::worktree::worktree_dirty_reason(path))
+    };
+    tracing::info!(
+        target: "forge_workspace::spawn",
+        project = %project_key.as_str(),
+        label = %label,
+        dirty = dirty_reason.is_some(),
+        reason = dirty_reason.as_deref().unwrap_or("none"),
+        "despawn: dirty verdict",
+    );
+    if let Some(reason) = dirty_reason {
         let _ = respond.send(DespawnResult::Blocked { reason });
         return;
     }
@@ -1441,6 +1469,13 @@ pub(crate) fn handle_despawn_worker(
     let worktree_cleanup_warning = match worktree_path.as_ref() {
         Some(path) => match forge_agent::env::worktree::remove_worktree(path, force) {
             Ok(()) => {
+                tracing::info!(
+                    target: "forge_workspace::spawn",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    worktree = %path.display(),
+                    "despawn: worktree removed",
+                );
                 // Only after a successful removal: while the worktree
                 // stands it holds the branch checked out, and git refuses
                 // to delete a checked-out branch.

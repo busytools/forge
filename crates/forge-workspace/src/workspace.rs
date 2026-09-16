@@ -2472,14 +2472,29 @@ impl Workspace {
                             "usage_poll fetch failed with unhandled error class; see error field for details"
                         }
                     };
-                    tracing::warn!(
-                        target: "forge_workspace::account",
-                        account = %key.0,
-                        error = %err,
-                        retry_after_secs = ?retry_after.map(|d| d.as_secs()),
-                        status = ?status,
-                        "{message}",
-                    );
+                    // A 429 is a healthy poller meeting its rate limit,
+                    // which the backoff above already handles; the other
+                    // classes mean the account's figures are missing for
+                    // a reason someone may need to fix.
+                    if matches!(status, forge_gateway::UsageFetchStatus::RateLimited) {
+                        tracing::debug!(
+                            target: "forge_workspace::account",
+                            account = %key.0,
+                            error = %err,
+                            retry_after_secs = ?retry_after.map(|d| d.as_secs()),
+                            status = ?status,
+                            "{message}",
+                        );
+                    } else {
+                        tracing::warn!(
+                            target: "forge_workspace::account",
+                            account = %key.0,
+                            error = %err,
+                            retry_after_secs = ?retry_after.map(|d| d.as_secs()),
+                            status = ?status,
+                            "{message}",
+                        );
+                    }
                 }
             }
         }

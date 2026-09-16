@@ -88,9 +88,14 @@ impl LoggingRuntime {
 }
 
 /// Default tracing filter. `info` baseline keeps signal-to-noise
-/// sensible; the four targets at `debug` are the ones we actually
-/// stare at when triaging UI/event drops (session lifecycle, command
-/// dispatch, input submission, bridge connect path). `tui_markdown`
+/// sensible; the targets at `debug` are the ones we actually stare at
+/// when triaging UI/event drops (session lifecycle, command dispatch,
+/// input submission, bridge connect path). `app.tool` and
+/// `agent.env_git` are there for a second reason: they carry a
+/// session's own tool failures and a git probe missing
+/// `refs/remotes/origin/HEAD`, which are real and are not forge's
+/// problems. At `debug` they stay readable without raising a warning
+/// that says forge is unwell. `tui_markdown`
 /// is pinned to `error` because it emits per-frame WARN events for
 /// every HTML element and unknown-language code block it encounters
 /// during streaming markdown rendering (peaks at 50K+/sec on chats
@@ -98,12 +103,21 @@ impl LoggingRuntime {
 /// tracing filter before serialisation. The architectural fix
 /// (HTML-strip in `preprocess_prose` at the call site) lands as
 /// a separate PR; this filter bump is defence-in-depth.
+///
+/// The two `llama` targets are the dictation engine's own log bridge,
+/// which reaches tracing through the llama-cpp-2 crate under both its
+/// hyphenated target and its module path. What it reports is the model
+/// loading itself, not forge, so it is not forge's warning to raise.
 const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.session=debug,\
     app.command=debug,\
+    app.tool=debug,\
     app.input=debug,\
     bridge.lifecycle=debug,\
-    tui_markdown=error";
+    agent.env_git=debug,\
+    tui_markdown=error,\
+    llama_cpp_2=error,\
+    llama-cpp-2=error";
 
 fn build_filter_directives(cli: &Cli) -> String {
     let mut directives = cli
@@ -402,11 +416,24 @@ mod tests {
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.command=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.input=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("bridge.lifecycle=debug"));
+        // `app.tool` and `agent.env_git` are the two targets whose
+        // records were demoted out of WARN; dropping them from this set
+        // would silence a session's own tool failure and the git probe
+        // miss entirely, which is the state the levels moved away from.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.tool=debug"));
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
         // tui_markdown emits per-frame WARN events for every HTML
         // tag + unknown code-block language during streaming markdown
         // rendering. Pinning to `error` rejects them at the filter
         // before serialisation - 50K+/sec at peak otherwise.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("tui_markdown=error"));
+        // A directive the parser rejects takes the whole filter with it
+        // and leaves forge logging nothing, so the default set is
+        // checked by parsing it rather than by reading it.
+        assert!(
+            tracing_subscriber::EnvFilter::try_new(DEFAULT_LOG_DIRECTIVES).is_ok(),
+            "the default directives must parse",
+        );
     }
 
     #[test]
