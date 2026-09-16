@@ -660,7 +660,7 @@ fn apply_turn_error_presentation(
         );
         let summary = summarize_internal_error(msg);
         if cancelled_requested {
-            tracing::warn!(
+            tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "turn_error_suppressed_background",
                 message = "background turn error suppressed after cancellation request",
@@ -688,7 +688,7 @@ fn apply_turn_error_presentation(
 
     if exit.cancelled_requested {
         let summary = summarize_internal_error(msg);
-        tracing::warn!(
+        tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "turn_error_suppressed",
             message = "turn error suppressed after cancellation request",

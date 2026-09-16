@@ -75,7 +75,7 @@ fn request_context_usage_refresh_at(app: &mut App, now: Instant) {
             usage.context_usage_refresh_pending = Some(RefreshPending::Auto);
         }
         if let Some(session_id) = app.session_id() {
-            tracing::warn!(
+            tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "context_usage_refresh_coalesced",
                 message = "refresh coalesced; prior probe still in flight",
