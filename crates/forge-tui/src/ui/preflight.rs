@@ -8,9 +8,9 @@
 //!
 //! **Preflight completes when every account settles, not only when
 //! every account is `Ready`.** A bailed account rides along as
-//! degraded: its row names the failure, the assignment plan excludes
-//! it, and the pollers keep re-probing it, so holding the screen waits
-//! on nothing that could change it.
+//! degraded: its row names the failure, the walk skips it, and the
+//! pollers keep re-probing it, so holding the screen waits on nothing
+//! that could change it.
 //!
 //! Repairing an account's auth means editing forge.toml - the env
 //! token or dropping the account - and that needs a restart, because
@@ -81,8 +81,8 @@ pub(super) fn account_glyph(
 
 /// `true` when every account has settled into a terminal state -
 /// `Ready` or `Bailed`. A bailed account no longer holds boot: the
-/// assignment plan already excludes it and the pollers keep re-probing
-/// it, so the screen would be waiting on nothing that could change it.
+/// walk skips it and the pollers keep re-probing it, so the screen
+/// would be waiting on nothing that could change it.
 /// The preflight handover and the boot-spawn release in `app::connect`
 /// share this one condition.
 pub fn accounts_settled(app: &App) -> bool {
