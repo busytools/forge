@@ -18,7 +18,7 @@ jobs:
     name: cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/rust
         with:
           components: rustfmt
@@ -28,14 +28,14 @@ jobs:
     name: unicode punctuation gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: ./scripts/check_no_unicode_punctuation.sh
 
   clippy:
     name: cargo clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # forge-dictate captures audio through cpal, whose Linux backend
       # is ALSA; without the headers `alsa-sys` fails to build and every
       # compiling job dies. Removing this breaks audio, not just CI.
@@ -54,7 +54,7 @@ jobs:
     name: cargo nextest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # forge-dictate captures audio through cpal, whose Linux backend
       # is ALSA; without the headers `alsa-sys` fails to build and every
       # compiling job dies. Removing this breaks audio, not just CI.
@@ -71,7 +71,7 @@ jobs:
     name: cargo check --release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # forge-dictate captures audio through cpal, whose Linux backend
       # is ALSA; without the headers `alsa-sys` fails to build and every
       # compiling job dies. Removing this breaks audio, not just CI.
@@ -89,7 +89,7 @@ jobs:
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # forge-dictate captures audio through cpal, whose Linux backend
       # is ALSA; without the headers `alsa-sys` fails to build and every
       # compiling job dies. Removing this breaks audio, not just CI.

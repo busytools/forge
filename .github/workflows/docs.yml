@@ -37,7 +37,7 @@ jobs:
       contents: read
       pages: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: taiki-e/install-action@v2
         with:
