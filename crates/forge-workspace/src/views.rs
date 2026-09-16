@@ -40,6 +40,11 @@ pub struct ProjectView {
     /// Fallback `display_name`s inherited from the project's `[[orgs]]`
     /// entry, alongside `accounts`. Empty when the org names none.
     pub fallback_accounts: Vec<String>,
+    /// `true` when the project declares `model`. A spawn under a
+    /// project without one is refused, so the launchpad's row needs to
+    /// tell the two reasons no spawn can run apart: no model to match
+    /// on, or no account that could serve it.
+    pub has_model: bool,
     pub sessions: Vec<SessionView>,
 }
 
@@ -64,6 +69,7 @@ impl ProjectView {
             display_path,
             accounts: Vec::new(),
             fallback_accounts: Vec::new(),
+            has_model: true,
             sessions,
         }
     }
@@ -90,12 +96,13 @@ impl ProjectView {
             display_path,
             accounts,
             fallback_accounts,
+            has_model: true,
             sessions,
         }
     }
 }
 
-/// One account row for the `/account` picker: a project-allowed
+/// One account row for the account snapshots: a project-allowed
 /// account plus its live rate-limit state, snapshotted so the TUI
 /// renders without locking `AccountStateMap`. Produced by
 /// [`crate::Workspace::project_accounts_snapshot`] in allow-list order.
@@ -108,16 +115,34 @@ pub struct AccountRow {
     pub config_dir: PathBuf,
     /// `true` when this is the session's active account.
     pub is_current: bool,
-    /// `None` when the account is pickable now (tier-0, not bailed).
+    /// `None` when the account is pickable now (not saturated, not bailed).
     /// The reason renders as the row's status tag: a capped window
     /// reads `limit hit`, a blocked probe or a bail reads
     /// `auth failed or expired`.
     pub unusable: Option<forge_gateway::Unusable>,
     /// What this account has left, in whatever terms its backend bills.
     pub budget: AccountBudget,
-    /// `true` when the account is in the active session's org
-    /// `fallback_accounts`. Renders in the `FALLBACK` group.
+    /// `true` when the account is in the org's `fallback_accounts` only.
+    /// Reads after every primary row, carrying a dim `fallback` suffix.
     pub fallback: bool,
+    /// The provider whose backend serves this account.
+    pub provider: forge_primitives::account::Provider,
+    /// Boot-time loading state, as the launchpad gates on it.
+    pub loading: forge_gateway::LoadingState,
+}
+
+/// One org's block in the read-only gateway view: its walk order and
+/// the live state of every account it names.
+#[derive(Debug, Clone)]
+pub struct GatewayOrgView {
+    /// The `[[orgs]].name` from `forge.toml`.
+    pub org: String,
+    /// The org's primary pin, in walk order.
+    pub accounts: Vec<String>,
+    /// The org's fallback pin, in walk order.
+    pub fallback_accounts: Vec<String>,
+    /// One row per account the org names, primaries first.
+    pub rows: Vec<AccountRow>,
 }
 
 // The account auth classification is returned by the gateway's account

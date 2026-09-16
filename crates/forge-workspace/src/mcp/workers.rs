@@ -1478,34 +1478,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_surfaces_rate_limited_account_as_notice() {
-        // When the adhoc assignment fell back onto a rate-limited
-        // account, the spawn tool result carries a `notice` naming it so
-        // the lead sees the situation at spawn.
-        let mock = Arc::new(MockWorkerFacade::new());
-        let caller = fake_key("lead-key");
-        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
-        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
-            session_id: "u".into(),
-            tag: "forge:worker:reviewer".into(),
-            rate_limited_account: Some("gateway".into()),
-            durability_warning: None,
-        }));
-        let facade: Arc<dyn WorkerFacade> = mock.clone();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
-        let output = tool
-            .call(ToolInput {
-                value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
-            })
-            .await;
-        assert!(!output.is_error);
-        let body: serde_json::Value =
-            serde_json::from_str(&output.blocks[0].text).expect("valid json body");
-        let notice = body["notice"].as_str().expect("notice present when rate-limited");
-        assert!(notice.contains("gateway"), "notice names the rate-limited account: {notice}");
-    }
-
-    #[tokio::test]
     async fn spawn_surfaces_durability_warning_when_persist_failed() {
         // A failed durability persist (store down / write error) still
         // spawns the worker, but the tool result carries a
@@ -1559,6 +1531,34 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_str(&output.blocks[0].text).expect("valid json body");
         assert!(body.get("durability_warning").is_none(), "no warning when persistence succeeds");
+    }
+
+    #[tokio::test]
+    async fn spawn_surfaces_a_degraded_account_as_a_notice() {
+        // The walk takes a saturated or bailed account only when no
+        // other account in the pin declares the model, so the spawn
+        // result names it and the lead knows before the worker stalls.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:reviewer".into(),
+            rate_limited_account: Some("gateway".into()),
+            durability_warning: None,
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
+            })
+            .await;
+        assert!(!output.is_error);
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid json body");
+        let notice = body["notice"].as_str().expect("notice present when the account is degraded");
+        assert!(notice.contains("gateway"), "notice names the account: {notice}");
     }
 
     #[tokio::test]

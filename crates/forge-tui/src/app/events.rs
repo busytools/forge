@@ -385,18 +385,6 @@ pub(super) fn handle_runtime_session_state_update(
     state: model::RuntimeSessionState,
 ) {
     app.set_runtime_session_state(Some(state));
-    // A turn just started under an open `/account` picker: close it -
-    // you can't switch accounts mid-turn (the commit-recheck and the
-    // workspace backstop also guard this; closing proactively is
-    // clearer than letting Enter bounce off the notice).
-    if app.account_picker.is_some()
-        && matches!(
-            state,
-            model::RuntimeSessionState::Running | model::RuntimeSessionState::RequiresAction
-        )
-    {
-        crate::app::account_picker::close(app);
-    }
     match state {
         model::RuntimeSessionState::Running => {
             if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)
@@ -3082,13 +3070,12 @@ mod tests {
         assert_eq!(user_text.text, "first user line");
     }
 
-    /// An `/account` switch re-spawns the session and emits
-    /// `SessionReplaced` carrying the resumed history (the agent is
+    /// A session replacement carries the resumed history (the agent is
     /// replaced, the conversation is not). The reducer must re-seed that
     /// history so the same conversation stays visible, not vanish behind
     /// the reset.
     #[test]
-    fn account_switch_session_replaced_keeps_the_conversation_visible() {
+    fn session_replaced_keeps_the_conversation_visible() {
         let mut app = make_test_app();
         let history = vec![
             user_text_message("what changed in the diff?"),
@@ -3798,8 +3785,8 @@ mod tests {
     }
 
     /// A terminal connection failure ends the session's runtime: the
-    /// stale `Running` mirror must not survive it, or the `/account`
-    /// backstop keeps refusing the switch on a dead session.
+    /// stale `Running` mirror must not survive it, or the in-flight
+    /// guards keep refusing work on a dead session.
     #[test]
     fn connection_failed_clears_runtime_session_state() {
         let mut app = make_test_app();

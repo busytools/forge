@@ -9,7 +9,7 @@
 //! account is the last resort (its 429 hit the usage probe, not
 //! inference).
 
-use crate::account::{AccountKey, AccountStateMap, LoadingState};
+use crate::account::{AccountKey, AccountStateMap, LoadingState, account_serves};
 
 /// An org's walk order: the primary pin, then fallbacks.
 #[derive(Debug, Clone, Default)]
@@ -26,10 +26,12 @@ pub enum SelectionError {
     NoEligibleAccount { model: String, org: String },
 }
 
-/// `true` when the account declares `model` among the models it
-/// serves.
+/// `true` when the account serves `model`, by declaration or alias.
 fn declares(state: &AccountStateMap, key: &AccountKey, model: &str) -> bool {
-    state.by_key.get(key).is_some_and(|account| account.models.iter().any(|m| m == model))
+    state
+        .by_key
+        .get(key)
+        .is_some_and(|account| account_serves(&account.models, &account.model_aliases, model))
 }
 
 /// Pick the account for `model` out of `org`'s walk order: the first
@@ -73,8 +75,7 @@ pub fn select_account(
         }
         if ready.is_some() {
             // Walk order decides: the first ready account in the org's
-            // own order is the assignment, exactly as the plan's tier
-            // walk would produce.
+            // own order is the pick, so no later account is consulted.
             break;
         }
     }
@@ -83,20 +84,6 @@ pub fn select_account(
         model: model.to_owned(),
         org: org.to_owned(),
     })
-}
-
-/// The org's walk order narrowed to the accounts that declare `model`,
-/// preserving pin order. Both lists can come back empty; the caller
-/// decides whether that is fatal.
-pub fn org_lists_for_model(state: &AccountStateMap, pin: &OrgPin, model: &str) -> OrgPin {
-    let keep = |names: &[String]| {
-        names
-            .iter()
-            .filter(|name| declares(state, &AccountKey((*name).clone()), model))
-            .cloned()
-            .collect::<Vec<String>>()
-    };
-    OrgPin { accounts: keep(&pin.accounts), fallback_accounts: keep(&pin.fallback_accounts) }
 }
 
 #[cfg(test)]
@@ -127,6 +114,7 @@ mod tests {
                 provider: *provider,
                 base_url: None,
                 models: models.iter().map(|m| (*m).to_owned()).collect(),
+                model_aliases: std::collections::HashMap::new(),
                 model_slugs: std::collections::HashMap::new(),
                 env: HashMap::new(),
             })
@@ -140,6 +128,17 @@ mod tests {
             }
         }
         state
+    }
+
+    /// Declare `alias` as an alternative name for `model` on one
+    /// fixture account.
+    fn alias(state: &mut AccountStateMap, name: &str, model: &str, alias: &str) {
+        state
+            .by_key
+            .get_mut(&AccountKey(name.to_owned()))
+            .expect("the fixture account is in the state")
+            .model_aliases
+            .insert(model.to_owned(), vec![alias.to_owned()]);
     }
 
     fn pin(accounts: &[&str], fallbacks: &[&str]) -> OrgPin {
@@ -166,6 +165,23 @@ mod tests {
             selected,
             AccountKey("Anthropic".to_owned()),
             "the walk skips accounts that do not declare the model",
+        );
+    }
+
+    #[test]
+    fn an_account_is_selected_for_a_model_it_declares_only_as_an_alias() {
+        let mut state = pool_with(&[
+            ("Granite", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5[1m]"]),
+            ("Other", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5"]),
+        ]);
+        alias(&mut state, "Granite", "claude-opus-5[1m]", "claude-opus-5");
+        let selected =
+            select_account(&state, &pin(&["Granite", "Other"], &[]), "Default", "claude-opus-5")
+                .expect("Granite serves the model through its alias");
+        assert_eq!(
+            selected,
+            AccountKey("Granite".to_owned()),
+            "the walk reaches the aliasing account, not only the one that declares the name",
         );
     }
 
@@ -306,48 +322,5 @@ mod tests {
             select_account(&state, &pin(&["Ghost", "Stargate"], &[]), "Default", "claude-opus-5")
                 .expect("the known account resolves");
         assert_eq!(selected, AccountKey("Stargate".to_owned()));
-    }
-
-    #[test]
-    fn org_lists_for_model_keeps_only_declaring_accounts_in_order() {
-        let state = pool_with(&[
-            ("Personal", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5"]),
-            (
-                "OpenRouter-TM",
-                Provider::Openrouter,
-                LoadingState::Ready,
-                None,
-                vec!["deepseek-v4.1-flash"],
-            ),
-            (
-                "OpenRouter",
-                Provider::Openrouter,
-                LoadingState::Ready,
-                None,
-                vec!["deepseek-v4.1-flash"],
-            ),
-        ]);
-        let pin = OrgPin {
-            accounts: vec!["Personal".into(), "OpenRouter-TM".into()],
-            fallback_accounts: vec!["OpenRouter".into()],
-        };
-        let filtered = org_lists_for_model(&state, &pin, "deepseek-v4.1-flash");
-        assert_eq!(filtered.accounts, vec!["OpenRouter-TM".to_owned()]);
-        assert_eq!(filtered.fallback_accounts, vec!["OpenRouter".to_owned()]);
-    }
-
-    #[test]
-    fn org_lists_for_model_is_empty_when_nothing_declares_the_model() {
-        let state = pool_with(&[(
-            "Personal",
-            Provider::Anthropic,
-            LoadingState::Ready,
-            None,
-            vec!["claude-opus-5"],
-        )]);
-        let pin = OrgPin { accounts: vec!["Personal".into()], fallback_accounts: vec![] };
-        let filtered = org_lists_for_model(&state, &pin, "deepseek-v4.1-flash");
-        assert!(filtered.accounts.is_empty(), "no account declares the model");
-        assert!(filtered.fallback_accounts.is_empty(), "no fallback declares the model");
     }
 }

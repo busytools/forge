@@ -13,7 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use forge_workspace::{SessionKey, SessionLaunchSettings, SessionTarget, Workspace};
+use forge_workspace::{SessionLaunchSettings, SessionTarget, Workspace};
 use tempfile::tempdir;
 
 /// Ensure `forge/` exists and return the production `forge/forge.toml`
@@ -38,6 +38,12 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
+
+[[orgs.projects]]
+name = "dotfiles"
+path = "~/Projects/dotfiles"
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -55,8 +61,9 @@ provider = "anthropic"
     .expect("write forge.toml");
 
     let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+    workspace.seed_test_ready_account("Stargate");
 
-    // Cold cache → both spawns pick Stargate (first in pin). The
+    // Both spawns walk the pin and take the first ready account. The
     // important assertion here is that the bridge actually carries
     // a display_name through to the AgentHandle.
     let h1 = workspace
@@ -65,17 +72,19 @@ provider = "anthropic"
     assert_eq!(
         h1.display_name().as_deref(),
         Some("Stargate"),
-        "first spawn binds to Stargate's display_name (first in pin, cold cache)",
+        "first spawn binds to Stargate's display_name (first in the pin)",
     );
 
-    let other = SessionKey::from_str_for_test("display-name-other");
     let h2 = workspace
-        .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
+        .get_agent_handle(
+            SessionTarget::Named("dotfiles".to_owned()),
+            SessionLaunchSettings::default(),
+        )
         .expect("second spawn");
     assert_eq!(
         h2.display_name().as_deref(),
         Some("Stargate"),
-        "second spawn also binds to Stargate under cold cache",
+        "the walk has no per-spawn spread, so the second spawn takes Stargate too",
     );
 }
 
@@ -104,11 +113,13 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 env = { AIRMAIL_TOKEN = "forge-value" }
 
 [[orgs.projects]]
 name = "airmail"
 path = "~/Projects/airmail"
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -122,6 +133,7 @@ ACCOUNT_KEY = "account-value"
     .expect("write forge.toml");
 
     let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+    workspace.seed_test_ready_account("Stargate");
 
     let handle = workspace
         .get_agent_handle(

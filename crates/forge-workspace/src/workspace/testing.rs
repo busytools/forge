@@ -103,7 +103,7 @@ impl Workspace {
 
     /// Like `testing_stub_with_config_dir` but injects a caller-built
     /// `LoadedConfig` so tests can drive the project-resolution paths
-    /// (`project_accounts_for` / `default_project`) that read
+    /// (`project_for_target` / `default_project`) that read
     /// `self.config.projects`, which the `test_extra_projects` overlay
     /// does not populate. Build the config via
     /// `crate::config::load_from_dir` on a tempdir `forge.toml` fixture;
@@ -288,14 +288,12 @@ impl Workspace {
         self.gateway_ready.store(ready, std::sync::atomic::Ordering::Release);
     }
 
-    /// Mark `account` Ready and recompute the assignment plan, so a
-    /// cross-crate test can render chip-bearing rows without driving the
-    /// real account loader. Test-only.
+    /// Mark `account` Ready, so a cross-crate test can render chip-bearing
+    /// rows without driving the real account loader. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_ready_account(&self, account: &str) {
         self.accounts
             .set_loading(&AccountKey(account.to_owned()), forge_gateway::LoadingState::Ready);
-        self.recompute_plan_if_ready();
     }
 
     /// Drive `account` to `state` directly, so a cross-crate test can
@@ -337,15 +335,6 @@ impl Workspace {
             config,
             Arc::new(crate::slack::SlackWorkspaces::default()),
         )
-    }
-
-    /// Give `label` an assignment-plan entry the way a spawn does, so a
-    /// cross-crate test can produce a chipped worker row. A label without
-    /// one renders bare, which is the contrast worth testing; assignment
-    /// is what puts it in the plan now that nothing pre-seeds from
-    /// forge.toml. Test-only.
-    pub fn seed_test_worker_assignment(&self, project_key: &ProjectKey, label: &str) {
-        let _ = self.extend_plan_for_adhoc_worker(project_key, label);
     }
 
     /// Persist a dynamic-worker row directly, bypassing `workers__spawn`.

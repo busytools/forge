@@ -32,13 +32,13 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         }
     }
     match parsed.name {
-        "/account" => handle_account_submit(app, &parsed.args),
         "/dictate" => handle_dictate_submit(app, &parsed.args),
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/diff" => handle_diff_submit(app, &parsed.args),
         "/effort" => handle_effort_submit(app, &parsed.args),
         "/launchpad" => handle_launchpad_submit(app, &parsed.args),
         "/extensions" => handle_extensions_submit(app, &parsed.args),
+        "/gateway" => handle_gateway_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
         "/model" => handle_model_submit(app, &parsed.args),
         "/new" => handle_new_session_submit(app, &parsed.args),
@@ -49,50 +49,18 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     }
 }
 
-/// `/account` - open the account picker to switch the active session
-/// to a different account for its project. Available only when the
-/// session is idle (no in-flight turn); mid-turn it is a no-op with a
-/// short notice. The picker lists the project's allowed accounts plus
-/// their live rate-limit state; picking one re-spawns the session
-/// under that account and resumes the same conversation.
-fn handle_account_submit(app: &mut App, args: &[&str]) -> bool {
-    use crate::agent::model::RuntimeSessionState;
-
+/// Open the read-only `/gateway` view: every org the gateway holds,
+/// its pins, and each account's live state. No in-flight gate - it
+/// inspects and never acts, so it is safe to open mid-turn.
+fn handle_gateway_submit(app: &mut App, args: &[&str]) -> bool {
     if !args.is_empty() {
-        push_system_message(app, "Usage: /account");
+        push_system_message(app, "Usage: /gateway");
         return true;
     }
-    // Block only a known in-flight turn. `None` (freshly connected, no
-    // state message yet) and `Some(Idle)` both allow - the workspace
-    // backstop is the authoritative guard, so a false-refuse here on a
-    // genuinely-idle session would just be a misleading notice.
-    if matches!(
-        app.runtime_session_state(),
-        Some(RuntimeSessionState::Running | RuntimeSessionState::RequiresAction)
-    ) {
-        push_system_message(app, "Finish or cancel the current turn before switching accounts.");
-        return true;
-    }
-    let Some(project_name) = app.active_project_name() else {
-        push_system_message(app, "No active project to switch accounts for.");
-        return true;
-    };
     let Some(workspace) = app.workspace.clone() else {
         return true;
     };
-    let (allowed, fallbacks) = workspace
-        .list_projects()
-        .into_iter()
-        .find(|view| view.name == project_name)
-        .map(|view| (view.accounts, view.fallback_accounts))
-        .unwrap_or_default();
-    let current = app.active_account_display_name();
-    let rows = workspace.project_accounts_snapshot(&allowed, &fallbacks, current.as_deref());
-    if rows.is_empty() {
-        push_system_message(app, "No accounts configured for this project.");
-        return true;
-    }
-    crate::app::account_picker::open(app, rows);
+    crate::app::gateway_view::open(app, workspace.gateway_view_snapshot());
     true
 }
 
@@ -643,6 +611,13 @@ mod tests {
             SpinnerStyle::Ember,
             "an unknown name must not change the active style",
         );
+    }
+
+    #[test]
+    fn gateway_takes_no_arguments() {
+        let mut app = App::test_default();
+        assert!(handle_gateway_submit(&mut app, &["extra"]));
+        assert!(app.gateway_view.is_none(), "a bad invocation must not open the view");
     }
 
     #[test]

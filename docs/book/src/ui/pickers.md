@@ -79,44 +79,47 @@
 
 </details>
 
-## Account picker (`/account`)
+## Gateway view (`/gateway`)
 
-Idle-only - mid-turn it is a no-op with a red system notice ("Finish or cancel the current turn before switching accounts."). Switch the live session to a different account, keeping the SAME conversation. Rows: the project's allowed accounts, the org's fallbacks (dim `FALLBACK` group). Each row: the current `●` marker, the name, a budget block shaped by the billing kind, and a status tag - `usable` green, or red `limit hit` / `auth failed or expired`.
+Read-only, open any time including mid-turn. It shows what the gateway holds: every org in name order, each org's primary and fallback pins in walk order, and one line per account naming its provider, what it has left, and whether it is pickable. Nothing here picks, rebinds, respawns or rotates - the spawn pick is the only way a session's account is decided, so there is no account to switch to, only a gateway to inspect.
 
 <div class="term">
 
   <pre class="indent">
        <span class="accent">┌──────────────────────────────────────────────────────────────┐</span>
-       <span class="accent">│</span> <span class="accent-bold">Switch account · forge</span>                            <span class="dim">4 accounts</span> <span class="accent">│</span>
+       <span class="accent">│</span> <span class="accent-bold">Gateway · 2 orgs</span>                                             <span class="accent">│</span>
        <span class="accent">│</span>                                                              <span class="accent">│</span>
-       <span class="accent">│</span> <span class="accent">●</span> <span class="accent-bold">Gateway</span>    5h <span class="error">100%</span>  7d <span class="warning">63%</span>  <span class="warning">⟳ resets 1h 42m</span>      <span class="error">limit hit</span> <span class="accent">│</span>
-       <span class="accent">│</span>   Gateway1   5h <span class="success">34%</span>  7d <span class="success">22%</span>                           <span class="success">usable</span> <span class="accent">│</span>
-       <span class="accent">│</span>   Personal   5h <span class="dim">-</span>  7d <span class="dim">-</span>               <span class="error">auth failed or expired</span> <span class="accent">│</span>
+       <span class="accent">│</span> <span class="bold">  Busytools</span>                                                  <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">  primary   Zai, Personal</span>                                    <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">  fallback  OpenRouter</span>                                       <span class="accent">│</span>
+       <span class="accent">│</span>    Zai             zai  5h 100%  7d 63%             <span class="error">limit hit</span><span class="accent">│</span>
+       <span class="accent">│</span>    Personal        anthropic  5h 34%  7d 22%           <span class="success">usable</span><span class="accent">│</span>
+       <span class="accent">│</span>    OpenRouter-TM   openrouter  $20.30 m             <span class="error">limit hit</span><span class="accent">│</span>
+       <span class="accent">│</span>    OpenRouter     <span class="dim">fallback</span>  openrouter <span class="error">auth failed or expired</span><span class="accent">│</span>
        <span class="accent">│</span>                                                              <span class="accent">│</span>
-       <span class="accent">│</span>   <span class="dim bold">FALLBACK</span>                                                   <span class="accent">│</span>
-       <span class="accent">│</span>   Router     <span class="success">$0.56</span> <span class="dim">d</span> <span class="success">$1.25</span> <span class="dim">w</span> <span class="success">$20.30</span> <span class="dim">m</span>      <span class="dim">fallback</span> <span class="dim">·</span> <span class="success">usable</span> <span class="accent">│</span>
+       <span class="accent">│</span> <span class="bold">  Subspace</span>                                                   <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">  primary   Subspace</span>                                         <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">  fallback  -</span>                                                <span class="accent">│</span>
+       <span class="accent">│</span>    Subspace        anthropic  5h 12%  7d 9%            <span class="success">usable</span><span class="accent">│</span>
        <span class="accent">│</span>                                                              <span class="accent">│</span>
-       <span class="accent">│</span> <span class="dim">↑↓ move   enter switch   esc cancel   ● current</span>              <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">esc close   read-only: the spawn pick decides every account</span>  <span class="accent">│</span>
        <span class="accent">└──────────────────────────────────────────────────────────────┘</span></pre>
 
 </div>
 
 | Key | Action |
 |---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> | Move the highlight (clamped, no wrap) |
-| <kbd>Enter</kbd> | Switch to the highlighted account (no-op when already current) |
 | <kbd>Esc</kbd> | Close |
 
 <details>
-<summary>Account picker details</summary>
+<summary>Gateway view details</summary>
 
-- A window-billed account (`anthropic`, `codex`, `zai`) renders `5h` + `7d` utilization coloured by proximity to the cap, plus a reset ETA shown only while at the cap. An API-billed one (`openrouter`) has no window, so it renders per-key spend `d` / `w` / `m`; account-wide balance is deliberately absent. Columns with no reading render `-` rather than a zero, following the billing model - an unprobed API account shows `$- d $- w $- m`.
-- The budget block follows the billing kind: `Unknown` when no snapshot has landed or the cached one was written under a different `provider` (that last case also logs a warning naming the account - a stale row survives a `forge.toml` edit and is re-seeded at every boot); `Subscription` carrying 5h/7d utilization plus the reset ETA; `Api` carrying the three spend figures. The three `-` states are not a measured zero: no snapshot yet, a snapshot carrying no figure for that column (documented on the proxy path; on the Anthropic path a 200 carrying only the session window), and the stale-provider case. The block degrades - dropping the reset ETA, then the repeated `$`, then the spacing, then to the monthly figure alone - rather than overflowing; the paragraph does not wrap and an overrun is cut with no ellipsis, and the grouped-row tag gives way only after the budget block and the name column.
-- Which red reason can apply is keyed on the billing kind: only a window-billed account can saturate (`limit hit`); a probe blocked or bailed account reads `auth failed or expired` either way.
-- Picking a row re-spawns the session under the shared config dir and `claude --resume`s the same session id - nothing is copied; the chat re-seeds and the account label refreshes. Picking the current account is a no-op close; an unusable one is shown red. Live workers and in-flight peer asks are not blocked - workers run their own accounts; peer asks to the switched session expire on reconnect and are re-askable.
-- Like both sibling pickers, the overlay is modal and keyboard-only; mouse-click selection is a possible follow-up.
-- Auto-switch on rate-limit is deferred; no account management or `forge.toml` editing from the picker.
-- Colors: border and title rust orange; account count, period letters, the empty `5h`/`7d` dashes, the `-` on an unprobed row and the hints dim (the `$-` of an empty spend column keeps the spend colour so the three periods stay one row); window percentages green under ~70, yellow under 100, red at the cap; spend amounts green flat - an uncapped key has no cap to be near; reset ETA yellow; `usable` green; both red reasons red; group headers dim bold; `fallback` dim.
+- The snapshot comes from one `Workspace` query, not a `Command`: query refreshes are direct methods under the MVVM contract, and this is a read of state the gateway already holds. Every other key is inert while the overlay is open - it consumes them so the chat beneath never sees them, and it acts on none of them but the close.
+- An org with no fallbacks renders `-` rather than a blank: the empty list is the normal shape, not a missing value. A fallback-only account carries a dim `fallback` suffix on its line, because the pins above it already say which list it came from.
+- The budget follows the billing kind, compactly: a window-billed account (`anthropic`, `codex`, `zai`) renders `5h` + `7d` utilization, with `resets <when>` while it is at its cap; an API-billed one (`openrouter`) renders its per-key `day` / `week` / `month` spend. A column with no reading renders `-` rather than a zero, and an account with no snapshot at all renders a single `-`.
+- The rows are built to the overlay's inner width (62 columns), because the paragraph does not wrap and an overrun is cut with no ellipsis. A row that does not fit degrades in place: the reset ETA goes before the window figures, the period words before the figures, then the figures down to the monthly one, and the provider alone before nothing - so the state tag, the one column the view exists to show, is always the last thing on the row and never the thing that is cut.
+- The state tag is the pool's own verdict: `loading` dim while the boot probe has not settled, `usable` green, `limit hit` red for a capped window, `auth failed or expired` red for a blocked probe or a bail.
+- Colors: border, title and the org count rust orange; org names bold; the pins, the hints and the `fallback` suffix dim; account names bold; the budget figures plain, since the state tag at the end of the line is what carries the verdict; `usable` green; both red reasons red.
 
 </details>
 
@@ -186,7 +189,7 @@ In chat only, no turn gating: session-scoped overrides for the normalizer's thre
 - The device pick is the `/spinner` shape: the `[dictate] device` key is the durable pin and the default shown, a pick overrides it for every session, and a restart reverts to the key. In pick mode `System default` leads as the unpin row, the enumerated inputs follow, and the in-force row carries the `●`; a pin whose device no longer enumerates trails dim, unreachable, with a red `not present · pinned in forge.toml` tag and a two-line red note in place of the standard note, and the footer drops the `● in force` legend since nothing is in force; a machine with no inputs draws `No input devices found.` with an <kbd>Esc</kbd>-only footer.
 - One `Reset all to defaults` row sits below the device block, dim and unreachable when nothing is overridden; it clears the device pick along with the override axes - back to defaults means back to forge.toml. There is no per-axis clear. `k` / `ngram` are deliberately absent - they change wall clock and nothing else.
 - Scopes: the overrides are session-scoped - every session starts from the crate defaults and they die with the session. The device pick is workspace-scoped: it covers every session, survives a session ending or being replaced, and dies with the process. The pin is durable and lives only in `forge.toml`, which the dialog never writes. When a capture starts the workspace resolves the pick over the pin (the pick wins; `System` means the system default even over a pin; no pick falls through to the pin); when it finishes, the session's overrides merge over the crate defaults. The device catalog is enumerated off the render thread, cached, and refreshed when the overlay re-opens. <kbd>Enter</kbd> on a set restarts the highlight at the first row.
-- Colors: border and title rust orange; the right-justified notes, group headers, the `· this session` suffix, the config/default tags, the inert reset row, the stale-pin row's label and the note lines dim; the highlight cursor rust orange with a white bold label; the in-force `●` rust orange (same glyph and purpose as the account picker's); `active until restart` rust orange; `not present` and the stale-pin note in the error colour; hints dim.
+- Colors: border and title rust orange; the right-justified notes, group headers, the `· this session` suffix, the config/default tags, the inert reset row, the stale-pin row's label and the note lines dim; the highlight cursor rust orange with a white bold label; the in-force `●` rust orange; `active until restart` rust orange; `not present` and the stale-pin note in the error colour; hints dim.
 - Push-to-talk itself is the Right Cmd dictate key (below); the recording / transcribing indicator states are the composer surfaces' own.
 
 </details>

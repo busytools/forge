@@ -185,7 +185,6 @@ pub(crate) fn handle_spawn_project(
         SessionTarget::Named(project_name.to_owned()),
         launch_settings,
         Some(synth_key.clone()),
-        None,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -920,7 +919,6 @@ pub(crate) fn handle_spawn_session(
         SessionTarget::Session(session_key),
         launch_settings,
         Some(synth_key.clone()),
-        None,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -950,101 +948,6 @@ pub(crate) fn handle_spawn_session(
     }
 }
 
-/// Switch the live session `key` to `account_display_name`: tear down
-/// its current `claude` subprocess and re-spawn + resume the SAME
-/// `session_id` under the workspace's shared config dir, so
-/// `claude --resume` finds the same conversation - nothing is copied.
-/// The forced-account re-spawn seeds `connected_once = true`, so its
-/// first `Connected` emits `SessionReplaced`: the chat resets, then the
-/// `--resume` backfill re-seeds the same conversation and the new
-/// account's `ForgeAccountIdentity` refreshes the label. Refuses with
-/// a notice (and no teardown) when a turn is in flight - the
-/// authoritative backstop for the TUI idle-gate; a no-op when the
-/// account name is unknown.
-pub(crate) fn handle_switch_account(
-    workspace: &Arc<Workspace>,
-    key: SessionKey,
-    account_display_name: &str,
-    launch_settings: SessionLaunchSettings,
-) {
-    let Some(forced_account) = workspace.resolve_account_for_switch(account_display_name) else {
-        tracing::warn!(
-            target: "forge_workspace::spawn",
-            key = %key.as_str(),
-            account = %account_display_name,
-            "switch_account: unknown account; ignoring",
-        );
-        try_emit(
-            workspace,
-            "switch_account::unknown_account",
-            SessionUpdate::SlashCommandError {
-                key,
-                message: format!("Unknown account: {account_display_name}"),
-            },
-        );
-        return;
-    };
-
-    // Authoritative idle backstop: refuse the switch while a turn is in
-    // flight, independent of the TUI idle-gate. A delivered peer / cron
-    // / gotify / slack prompt can start a turn between picker-open and Enter, and
-    // tearing that turn down would silently drop pending interactions and
-    // strand inflight peer asks. Surface a notice; do NOT tear down.
-    let turn_in_flight =
-        workspace.domain_session_for(&key).is_some_and(|domain| domain.lock().turn_in_flight());
-    if turn_in_flight {
-        try_emit(
-            workspace,
-            "switch_account::busy",
-            SessionUpdate::SlashCommandError {
-                key,
-                message: "Finish or cancel the current turn before switching accounts.".to_owned(),
-            },
-        );
-        return;
-    }
-
-    // Tear down the current account's subprocess so the re-spawn does
-    // not hit the pool fast-path and return the existing handle. The
-    // old SessionTask exits on its now-closed command channel; its
-    // supersession-guarded cleanup no-ops against the new entry.
-    workspace.release_session(&key);
-
-    match workspace.get_agent_handle_with_spawn_key(
-        SessionTarget::Session(key.clone()),
-        launch_settings,
-        None,
-        Some(forced_account),
-    ) {
-        Ok(_handle) => {
-            tracing::info!(
-                target: "forge_workspace::spawn",
-                key = %key.as_str(),
-                account = %account_display_name,
-                "account switch re-spawn started",
-            );
-        }
-        Err(err) => {
-            tracing::error!(
-                target: "forge_workspace::spawn",
-                key = %key.as_str(),
-                account = %account_display_name,
-                error = %err,
-                "switch_account: re-spawn failed",
-            );
-            try_emit(
-                workspace,
-                "switch_account::ConnectionFailed",
-                SessionUpdate::ConnectionFailed {
-                    key,
-                    message: format!("account switch failed: {err}"),
-                    fatal: false,
-                },
-            );
-        }
-    }
-}
-
 /// Startup spawn. Resolves the default project (or the named one
 /// passed on argv) and spawns under the `__conn_pending__` synthetic
 /// key. Failure before the first Connected emits
@@ -1066,7 +969,6 @@ pub(crate) fn handle_start_default(
         target,
         launch_settings,
         Some(synth_key.clone()),
-        None,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -1259,12 +1161,6 @@ pub(crate) fn handle_spawn_worker(
         }
         return;
     }
-    // Extend the assignment plan so this worker's account comes from the
-    // same rotation as the lead's. No-op while the plan is unpopulated
-    // (boot still in flight) - `recompute_plan_if_ready` seeds the live
-    // workers when it lands, which is the only thing that gives this one
-    // an entry.
-    let rate_limited_account = workspace.extend_plan_for_adhoc_worker(&project_key, label);
     try_emit(
         workspace,
         "spawn_worker::WorkerStatusChanged::Added",
@@ -1302,9 +1198,8 @@ pub(crate) fn handle_spawn_worker(
             synth_key: synth_key.clone(),
         },
     };
-    match workspace.get_agent_handle_with_spawn_key(target, settings, Some(synth_key.clone()), None)
-    {
-        Ok(_handle) => {
+    match workspace.get_agent_handle_with_spawn_key(target, settings, Some(synth_key.clone())) {
+        Ok(handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
                 project = %project_key.as_str(),
@@ -1312,6 +1207,12 @@ pub(crate) fn handle_spawn_worker(
                 spawn_key = %synth_key.as_str(),
                 "spawn dispatched for worker"
             );
+            // The walk lands on a saturated or bailed account only when
+            // nothing else in the pin declares the project's model, so
+            // the lead hears about it at spawn rather than when the
+            // worker stalls on a 429.
+            let rate_limited_account =
+                handle.display_name().and_then(|name| workspace.degraded_account_name(&name));
             // Reply to the LLM optimistically with the synth key.
             // The LLM addresses subsequent calls by label; the
             // session_id field is informational. Real session UUID
@@ -1319,7 +1220,7 @@ pub(crate) fn handle_spawn_worker(
             let _ = return_to.send(Ok(WorkerSpawnReply {
                 session_id: synth_key.as_str().to_owned(),
                 tag,
-                rate_limited_account: rate_limited_account.map(|k| k.0),
+                rate_limited_account,
                 // The MCP facade fills this after its post-reply persist;
                 // the re-spawn paths never persist, so it stays None.
                 durability_warning: None,
@@ -1882,6 +1783,7 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -2362,10 +2264,11 @@ provider = "anthropic"
     /// exercise the handoff's move branch - it pins the mechanism (arm, hit a
     /// `?`, record on Drop), which is the whole fix.
     #[tokio::test]
-    async fn a_spawn_failing_on_the_project_lookup_records_the_buffered_delivery() {
+    async fn a_refused_spawn_leaves_the_synth_key_buffers_to_the_caller() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
         let synth_key = SessionKey::from_session_id("__spawn_missing__");
         let domain = ws.register_domain_session(synth_key.clone(), None);
         domain.lock().pending_slack_prompts.push(slack_msg("parked while asleep"));
@@ -2377,13 +2280,14 @@ provider = "anthropic"
             },
             forge_agent::client::SessionLaunchSettings::default(),
             Some(synth_key.clone()),
-            None,
         );
 
-        assert!(result.is_err(), "the project lookup misses, so the spawn fails after the move");
-        assert!(
-            domain.lock().pending_slack_prompts.is_empty(),
-            "the failed spawn records the delivery the handoff had moved",
+        assert!(result.is_err(), "a target mapping to no project is refused");
+        assert_eq!(
+            domain.lock().pending_slack_prompts.len(),
+            1,
+            "the refusal lands before the handoff, so the delivery stays at the key the caller \
+             parked it at and the caller's own expiry still reaches it",
         );
     }
 
@@ -2536,10 +2440,12 @@ accounts = ["Stargate"]
 name = "forge"
 path = "{forge_path}"
 max_workers = {limit}
+model = "claude-sonnet-5"
 
 [[orgs.projects]]
 name = "notes"
 path = "{notes_path}"
+model = "claude-sonnet-5"
 
 [[accounts]]
 display_name = "Stargate"
@@ -2552,6 +2458,7 @@ provider = "anthropic"
         .expect("write forge.toml");
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace new"));
+        workspace.seed_test_ready_account("Stargate");
         (workspace, (dir, projects_dir))
     }
 
@@ -2744,6 +2651,43 @@ provider = "anthropic"
         if let Ok(reply) = reply {
             workspace.release_session(&SessionKey::from_session_id(reply.session_id));
         }
+    }
+
+    /// The notice the lead reads: a worker spawned onto an account the
+    /// walk had to take while it was bailed comes back named in the
+    /// reply, so the lead hears it at spawn rather than when the worker
+    /// stalls. The join from the spawned handle's account to the reply
+    /// is the whole mechanism, and a regression there would drop the
+    /// notice silently.
+    #[tokio::test]
+    async fn a_worker_spawned_onto_a_degraded_account_reports_it() {
+        let (workspace, _config_dir) = stub_with_project_cap(2);
+        let project = seeded_project(&workspace);
+        workspace.account_pool().set_loading(
+            &forge_gateway::AccountKey("Stargate".to_owned()),
+            forge_gateway::LoadingState::Bailed,
+        );
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "w1",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            false,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("reply").expect("the spawn is admitted");
+        assert_eq!(
+            reply.rate_limited_account.as_deref(),
+            Some("Stargate"),
+            "the bailed account is named in the reply, which is what raises the notice",
+        );
+        workspace.release_session(&SessionKey::from_session_id(reply.session_id));
     }
 
     /// The atomicity pin, at the layer it lives: concurrent

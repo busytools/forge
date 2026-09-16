@@ -8,17 +8,13 @@
 //! `auto_start = true`; all auto-start projects spawn at launch and
 //! the first one (alphabetical) becomes the focused tab.
 //!
-//! **Selection policy.** A deterministic `AssignmentPlan`, computed
-//! once every account reaches a terminal loading state. Its pool comes
-//! from a six-tier walk over the org's `accounts` primaries and
-//! `fallback_accounts` - ready-and-unsaturated first, then
-//! ready-saturated, then degraded; `assignment_plan.rs` documents the
-//! tiers. Each project takes an offset from its position in the
-//! project list and a session lands on
-//! `pool[(offset + session_n) % pool.len()]`. Utilization is never
-//! compared between accounts; it collapses to one boolean per account.
-//! A round-robin cursor over the same pool is the fallback for spawns
-//! that happen before the plan exists.
+//! **Selection policy.** The gateway's declared-model walk: over the
+//! org's `accounts` primaries and `fallback_accounts`, the first
+//! account that declares the project's `model`, preferring ready over
+//! saturated and keeping bailed last (saturated then leads to a
+//! cooling filter). Utilization is never compared between accounts; it
+//! collapses to one boolean per account. Every spawn in an org takes
+//! the same walk, so there is no per-session spread.
 
 use std::collections::HashMap;
 use std::fs;
@@ -282,6 +278,10 @@ struct AccountEntry {
     /// differ.
     #[serde(default)]
     model_slugs: HashMap<String, String>,
+    /// Canonical name -> the other names a request may arrive under for
+    /// that model.
+    #[serde(default)]
+    model_aliases: HashMap<String, Vec<String>>,
     /// Provider-behaviour extras only - timeouts, context caps,
     /// fallback switches. Base-url and credential keys are rejected:
     /// they are the flat keys' job.
@@ -358,8 +358,8 @@ pub(crate) struct LoadedProject {
     /// filesystem access; this for human-readable output.
     pub display_path: String,
     /// Name of the org this project belongs to (matches
-    /// `LoadedOrg.name`). Workspace `project_accounts_for` resolves
-    /// the pin via this back-reference.
+    /// `LoadedOrg.name`). The spawn resolves the org's pin and walk
+    /// order through this back-reference.
     pub org: String,
     /// Cached pinned account list from the project's org. Duplicated
     /// here so callers don't need to walk the org list on every
@@ -373,13 +373,13 @@ pub(crate) struct LoadedProject {
     pub auto_start: bool,
     /// The project's model: fills the CLI's model slots at spawn
     /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
-    /// `CLAUDE_CODE_SUBAGENT_MODEL`). Absent means the account's own
-    /// default applies.
+    /// `CLAUDE_CODE_SUBAGENT_MODEL`) and is the model the walk matches
+    /// accounts on. A project that declares none cannot spawn.
     pub model: Option<String>,
     /// Per-project environment from the entry's env table, layered
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
     /// `ANTHROPIC_AUTH_TOKEN` here desyncs forge's own accounting -
-    /// usage probe, plan detection and the picker all read the ACCOUNT
+    /// the usage probe and the selection walk both read the ACCOUNT
     /// map, so they measure a different endpoint.
     pub env: HashMap<String, String>,
     /// Cap on this project's live dynamic workers; `None` keeps the
@@ -604,6 +604,17 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 return Err(WorkspaceError::AccountSlugBlank { path, slug: slug_key.clone() });
             }
         }
+        for (alias_key, alias_values) in &entry.model_aliases {
+            if !entry.models.contains(alias_key) {
+                return Err(WorkspaceError::AccountAliasUndeclared {
+                    path,
+                    alias: alias_key.clone(),
+                });
+            }
+            if alias_values.is_empty() {
+                return Err(WorkspaceError::AccountAliasEmpty { path, alias: alias_key.clone() });
+            }
+        }
         let base_url =
             entry.base_url.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
         // A base-url provider probes `{base_url}/...`, so an absent key
@@ -657,6 +668,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             base_url,
             models: entry.models,
             model_slugs: entry.model_slugs,
+            model_aliases: entry.model_aliases,
             env,
         });
     }
@@ -714,9 +726,14 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if let Some(model) = &project_entry.model {
                 let served =
                     org_entry.accounts.iter().chain(&org_entry.fallback_accounts).any(|name| {
-                        accounts
-                            .iter()
-                            .any(|a| a.display_name == *name && a.models.iter().any(|m| m == model))
+                        accounts.iter().any(|a| {
+                            a.display_name == *name
+                                && forge_gateway::account::account_serves(
+                                    &a.models,
+                                    &a.model_aliases,
+                                    model,
+                                )
+                        })
                     });
                 if !served {
                     return Err(WorkspaceError::ProjectModelUndeclared {
@@ -1198,6 +1215,121 @@ base_url = "http://localhost:18765"
         );
         let config = load_from_dir(dir.path()).expect("a declared model loads");
         assert_eq!(config.projects[0].model.as_deref(), Some("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn a_project_model_that_is_an_alias_loads() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Granite"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-opus-5"
+[[accounts]]
+display_name = "Granite"
+token = "t"
+models = ["claude-opus-5[1m]"]
+provider = "anthropic"
+[accounts.model_aliases]
+"claude-opus-5[1m]" = ["claude-opus-5"]
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("an aliased project model loads");
+        assert_eq!(config.projects[0].model.as_deref(), Some("claude-opus-5"));
+    }
+
+    #[test]
+    fn a_project_model_that_is_neither_declared_nor_an_alias_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Granite"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-sonnet-5"
+[[accounts]]
+display_name = "Granite"
+token = "t"
+models = ["claude-opus-5[1m]"]
+provider = "anthropic"
+[accounts.model_aliases]
+"claude-opus-5[1m]" = ["claude-opus-5"]
+"#,
+        );
+        let err = load_from_dir(dir.path())
+            .expect_err("holding aliases must not make the account serve everything");
+        let message = err.to_string();
+        assert!(
+            message.contains("claude-sonnet-5"),
+            "the error names the undeclared model, got: {message}",
+        );
+    }
+
+    #[test]
+    fn an_alias_for_an_undeclared_model_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Granite"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Granite"
+token = "t"
+models = ["claude-opus-5[1m]"]
+provider = "anthropic"
+[accounts.model_aliases]
+"claude-opus-5" = ["claude-opus-5[1m]"]
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("an undeclared alias key must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("'claude-opus-5'"),
+            "the error quotes the undeclared alias key, not the declared marker, got: {message}",
+        );
+    }
+
+    #[test]
+    fn an_empty_alias_list_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Granite"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Granite"
+token = "t"
+models = ["claude-opus-5[1m]"]
+provider = "anthropic"
+[accounts.model_aliases]
+"claude-opus-5[1m]" = []
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("an empty alias list must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("empty alias list"),
+            "the error says the list is empty, got: {message}",
+        );
     }
 
     #[test]

@@ -105,6 +105,8 @@ The launchpad blocks project-row clicks until every account reaches a terminal s
         <span class="dim">  │   └─ tester    (gateway1)</span>
         <span class="dim">└─ ○  web-api     </span> <span class="dim">(personal)         2d</span>
               <span class="dim">no usable accounts</span>
+        <span class="dim">├─ ○  notes                         5d</span>
+              <span class="dim">no model declared - add `model` to this project</span>
       <span class="dim">────────────────────────────────────────────────────────</span>
 
  <span class="dim">↑↓  navigate     enter  ⛔ gateway failed: gateway port 8787 is taken; forge cannot redirect session traffic without it     ?  help     ctrl+q  quit</span></pre>
@@ -114,7 +116,7 @@ The launchpad blocks project-row clicks until every account reaches a terminal s
 | Chip glyph | State |
 |---|---|
 | `○` yellow | Loading - probe in flight |
-| `●` green | Ready - available for assignment |
+| `●` green | Ready - the walk may pick it |
 | `⚠` red | Bailed on an auth failure (rejected or expired credentials; repair is an env edit plus a restart) |
 | `⚠` yellow | Bailed on a transient failure (rate limit, unreachable endpoint, malformed response; the pollers heal it) |
 
@@ -123,8 +125,8 @@ A bailed chip appends its reason after the name - `- rate limited (retry after 3
 <details>
 <summary>Per-project pool and account chips</summary>
 
-- A project's pool comes from a six-tier walk over its primary and fallback accounts, first non-empty tier winning: primaries Ready and not at the usage cap, then fallbacks Ready and not capped, then primaries at the cap (a session lands on a saturated 100% account only when every earlier tier is empty), then fallbacks at the cap, then the project's Bailed accounts - primaries before fallbacks (a rate-limited probe hits the usage endpoint, not inference, so spawning on one is legitimate) - then dark. Only when every tier is empty does the project render a dim `no usable accounts` sub-row and stay unclickable after the gate lifts.
-- Each project row carries a trailing `(<account>)` chip showing the lead session's assigned account; one worker row nests under the project per persisted dynamic worker, each with the same four elements - lifecycle glyph, name, its own chip, and the right-aligned activity column (<code>&mdash;</code> for a worker that is neither spawning nor failed). A worker's chip and its glyph are independent: a label that has not spawned this boot renders no chip, and a persisted row with no live worker shows `○` regardless. A worker whose session bucket has not landed falls back to its own liveness, the same answer the Projects pane gives for it: `⠋` while it is spawning, `●` once it is running. Chip color tracks the assigned account's runtime state: dim = normal; warning yellow, no glyph = at the usage cap (the session still spawns but will throttle) or bailed on a transient failure; error red + `⚠` = bailed on an auth failure. Worker rows are info-only - selection stays on the project row.
-- Recovery: the 60 s poll re-probes Bailed accounts once their recorded hold-down passes - the server `Retry-After` for a 429, exponential backoff otherwise, both capped at 10 minutes. A healed account flips Bailed → Ready and the assignment plan recomputes with a frozen overlay: existing sessions keep their boot-time account, only new sessions pick up the recovered one.
+- A project's account comes from the declared-model walk over its primary and fallback accounts, in the org's own order: the first account that declares the project's model, preferring a Ready account over a saturated one and keeping Bailed accounts last (a rate-limited probe hits the usage endpoint, not inference, so spawning on one is legitimate). When the walk resolves to nothing the project stays unclickable after the gate lifts and renders a dim sub-row naming the reason: `no usable accounts` when no account in the pin declares the model or every one of them is cooling, and `no model declared - add model to this project` when the project itself declares none. The second points at the project's own missing `model` key, a different edit from an account problem, and it reads as one if the row blames the accounts instead.
+- Each project row carries a trailing `(<account>)` chip showing the account the walk picks for it, which is what a spawn would land on; one worker row nests under the project per persisted dynamic worker, each with the same four elements - lifecycle glyph, name, the same chip, and the right-aligned activity column (<code>&mdash;</code> for a worker that is neither spawning nor failed). The walk answers by org and model rather than by session, so every row of one project carries the same chip. A persisted row with no live worker shows `○`. A worker whose session bucket has not landed falls back to its own liveness, the same answer the Projects pane gives for it: `⠋` while it is spawning, `●` once it is running. Chip color tracks the picked account's runtime state: dim = normal; warning yellow, no glyph = at the usage cap (the session still spawns but will throttle) or bailed on a transient failure; error red + `⚠` = bailed on an auth failure. Worker rows are info-only - selection stays on the project row.
+- Recovery: the 60 s poll re-probes Bailed accounts once their recorded hold-down passes - the server `Retry-After` for a 429, exponential backoff otherwise, both capped at 10 minutes. A healed account flips Bailed → Ready and is immediately eligible for new spawns; sessions already bound keep the account they have.
 
 </details>

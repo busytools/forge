@@ -28,17 +28,6 @@ pub(crate) fn session_launch_settings_for_startup(
     )
 }
 
-/// Build `SessionLaunchSettings` for the resume / sleeping-session
-/// spawn path.
-pub(crate) fn session_launch_settings_for_resume(
-    app: &App,
-) -> forge_workspace::SessionLaunchSettings {
-    session_start::session_launch_settings_for_reason(
-        app,
-        session_start::SessionStartReason::Resume,
-    )
-}
-
 /// Create the `App` struct in `Connecting` state and load shared
 /// settings state. `cwd_raw` is sourced from `forge.toml` (per
 /// Hard Rule #14) - chat-direct mode picks up `project.path`,
@@ -252,7 +241,7 @@ fn create_app_impl(
         repaint_cadence: ui_settings.fps,
         spinner_picker: None,
         model_picker: None,
-        account_picker: None,
+        gateway_view: None,
         dictate_picker: None,
         dictate_key: crate::app::dictate_key::DictateKeyState::default(),
         dictate_take_pending: false,
@@ -346,32 +335,28 @@ pub fn start_connection(app: &mut App) {
         return;
     };
 
-    // Two halves, each doing distinct work.
+    // Two halves. The workspace half is the listener plus a settled
+    // account map: a spawn released before the listener binds has
+    // nowhere to send its turns, and the walk reads the same map, so
+    // one still resolving is one it might route a session onto.
+    // Settling is terminal rather than `Ready` - a bailed account
+    // releases the spawn, because the walk skips it and the pollers
+    // keep re-probing it, so holding boot would wait on nothing.
     //
-    // The plan has to exist, or the spawn falls back to round-robin and
-    // can land a session on an account the project's org does not
-    // allow. Read off the plan rather than the account map: the map is
-    // published on one lock acquisition and the plan written on a
-    // second, so an observer can see every account settled while the
-    // plan is still absent.
-    //
-    // And every account has to have settled, because that is the
-    // condition preflight hands over on. The plan excludes a bailed
-    // account, so a released spawn routes sessions to the accounts
-    // that can take them, when any exist - with every account bailed
-    // the plan is empty and the spawn can fall back on a dead one.
+    // The TUI half reads the same accounts through the snapshot the
+    // preflight screen renders, which is the condition that hands over.
     //
     // Neither half waits on the dictation weights, so the models load
     // alongside the session rather than delaying it.
-    let workspace_ready = workspace.assignment_plan_ready();
+    let workspace_ready = workspace.all_accounts_loaded();
     if !workspace_ready || !crate::ui::preflight::accounts_settled(app) {
         if !app.spawn_deferred_logged {
             app.spawn_deferred_logged = true;
             tracing::info!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
                 event_name = "startup_spawn_deferred",
-                message = "holding the boot spawn until the account plan is ready",
-                plan_ready = workspace_ready,
+                message = "holding the boot spawn until the accounts have settled",
+                accounts_ready = workspace_ready,
             );
         }
         return;
@@ -380,7 +365,7 @@ pub fn start_connection(app: &mut App) {
         tracing::info!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             event_name = "startup_spawn_released",
-            message = "account plan ready; starting the boot spawn",
+            message = "accounts settled; starting the boot spawn",
         );
     }
 
@@ -612,8 +597,8 @@ mod tests {
             .expect("workspace");
         workspace.enable_test_dispatch_intercept();
         if accounts_ready {
-            // Also computes the assignment plan, which is the other half
-            // of what the gate waits on.
+            // The only account settles Ready, which is half of what the
+            // gate waits on.
             workspace.seed_test_ready_account("Stargate");
         }
         let cli = cli_with(project);
@@ -654,40 +639,34 @@ mod tests {
         );
     }
 
-    /// Nothing spawns before the account plan exists. Without it the
-    /// spawn falls back to round-robin and can land a session on an
-    /// account the project's org does not allow.
+    /// Nothing spawns while an account is still resolving: the walk
+    /// skips an account that has not settled, so a released spawn could
+    /// route the session somewhere the account map has not decided yet.
     #[tokio::test(flavor = "current_thread")]
-    async fn nothing_spawns_before_the_account_plan_is_ready() {
+    async fn nothing_spawns_before_the_accounts_settle() {
         let (app, dispatched, _c, _p) = boot_and_dispatch(Some("forge-test"), false).await;
         assert!(
             dispatched.is_empty(),
-            "a fresh account map has no plan yet, so boot must dispatch nothing; got {dispatched:?}",
+            "an unsettled account map must dispatch nothing; got {dispatched:?}",
         );
         assert!(!app.connection_started, "and it must stay armed rather than marking itself done");
         assert!(app.spawn_deferred_logged, "the deferral is recorded once, so it is diagnosable");
     }
 
-    /// The two halves of the gate do distinct work: the plan closes the
-    /// window where the account map reads settled before the plan is
-    /// written, and settled-not-terminal stops a subprocess racing
-    /// accounts that are still resolving.
+    /// One account back mid-flight holds the spawn, and its settling
+    /// releases it.
     ///
     /// **Settled is terminal, not `Ready`: a bailed account releases the
-    /// spawn.** The plan excludes it and the pollers keep re-probing it,
-    /// so holding boot waits on nothing that could change it.
+    /// spawn.** The walk skips it and the pollers keep re-probing it, so
+    /// holding boot would wait on nothing that could change it.
     ///
-    /// **The plan half is UNKILLABLE from a test, and that is a property
-    /// of the code rather than a gap.** Production reaches every
-    /// terminal state through the loader, which recomputes the plan on
-    /// each one, so plan-absent-with-accounts-settled exists only inside
-    /// the real two-lock window between the map being published and the
-    /// plan being written. The test seeding deliberately skips the
-    /// recompute, so a seeded plan-absent state proves nothing about
-    /// production. Dropping `!workspace_ready` therefore passes, and no
-    /// test would change that. Do not add one to chase it.
+    /// **The listener half is UNKILLABLE from a test, and that is a
+    /// property of the code rather than a gap.** `new_for_test` stores
+    /// the ready flag open so spawn paths are exercisable (the refusal
+    /// has its own test that flips it closed), so nothing here can
+    /// observe a closed listener releasing early.
     #[tokio::test(flavor = "current_thread")]
-    async fn the_plan_and_settled_are_both_required() {
+    async fn a_resolving_account_holds_the_spawn_and_settling_releases_it() {
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
@@ -695,12 +674,8 @@ mod tests {
             .expect("workspace");
         workspace.enable_test_dispatch_intercept();
 
-        // Plan present, one account back mid-flight: the second half
-        // holds. Flipping a Ready account to Loading after the seeding
-        // keeps the plan - it is monotonic - so this isolates the
-        // settled half from the plan half.
         workspace.seed_test_ready_account("Stargate");
-        assert!(workspace.assignment_plan_ready(), "seeding Ready computes the plan");
+        assert!(workspace.all_accounts_loaded(), "a settled account opens the workspace half");
         workspace.seed_test_account_state("Stargate", forge_workspace::LoadingState::Loading);
 
         let cli = cli_with(Some("forge-test"));
@@ -714,12 +689,12 @@ mod tests {
         super::start_connection(&mut app);
         assert!(
             workspace.drain_test_dispatch_buffer().is_empty(),
-            "an account still resolving holds the spawn even with a plan in hand",
+            "an account still resolving holds the spawn",
         );
 
         // The same account settling Bailed releases it: degraded rides
-        // along, and the plan routes sessions to the accounts that can
-        // take them.
+        // along, and the walk skips it for the accounts that can serve
+        // the project's model.
         workspace.seed_test_account_state("Stargate", forge_workspace::LoadingState::Bailed);
         super::start_connection(&mut app);
         assert!(

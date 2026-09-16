@@ -61,6 +61,9 @@ pub struct LoadedAccount {
     /// Canonical name -> upstream slug, only where the spellings
     /// differ. Keys are always members of [`Self::models`].
     pub model_slugs: std::collections::HashMap<String, String>,
+    /// Canonical name -> the other names a request may arrive under for
+    /// that model. Keys are always members of [`Self::models`].
+    pub model_aliases: std::collections::HashMap<String, Vec<String>>,
     /// Provider-behaviour extras (timeouts, context caps, fallback
     /// switches) plus the derived credential and base-url variable
     /// stamps the gateway and the child read.

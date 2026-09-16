@@ -103,6 +103,18 @@ pub enum WorkspaceError {
     AccountSlugBlank { path: PathBuf, slug: String },
 
     #[error(
+        "account in forge.toml at {} declares model_aliases for '{alias}', which is not one of its models",
+        path.display()
+    )]
+    AccountAliasUndeclared { path: PathBuf, alias: String },
+
+    #[error(
+        "account in forge.toml at {} declares an empty alias list for '{alias}'",
+        path.display()
+    )]
+    AccountAliasEmpty { path: PathBuf, alias: String },
+
+    #[error(
         "project '{name}' in forge.toml at {} sets model '{model}' that no account in its org declares; every session's first request would fail",
         path.display()
     )]
@@ -140,6 +152,25 @@ pub enum WorkspaceError {
          accounts considered: {accounts}"
     )]
     NoAccountServesProjectModel { project: String, org: String, model: String, accounts: String },
+
+    #[error(
+        "every account in org '{org}' that serves project '{project}' model '{model}' is cooling; \
+         soonest reset in {seconds}s"
+    )]
+    AllAccountsCooling { project: String, org: String, model: String, seconds: u64 },
+
+    #[error(
+        "project '{project}' in org '{org}' declares no model; a session's account is selected by \
+         the model it serves"
+    )]
+    ProjectModelMissing { project: String, org: String },
+
+    #[error(
+        "session '{session}' resolves to no project: its directory matches none of the \
+         [[orgs.projects]] paths in forge.toml. Add that directory as a project, or start the \
+         session from one that is configured"
+    )]
+    SpawnResolvesToNoProject { session: String },
 
     #[error(
         "org '{org}' in forge.toml at {} references unknown account '{account}'; valid accounts: {valid}",

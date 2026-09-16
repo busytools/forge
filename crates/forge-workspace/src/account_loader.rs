@@ -5,8 +5,8 @@
 //! `Workspace::new`, one tokio task per `[[accounts]]` entry in
 //! forge.toml. The launchpad blocks project-row clicks until
 //! `AccountStateMap::all_loaded()` returns true (every account in a
-//! terminal state); the assignment-plan computation (Section 2.4)
-//! only includes accounts whose terminal state is `Ready`.
+//! terminal state); the gateway's walk only considers accounts whose
+//! terminal state is `Ready`.
 //!
 //! One probe per task, every outcome terminal:
 //! - 200 -> snapshot stored via `set_usage`, `Ready`, task exits.
@@ -17,11 +17,11 @@
 //!   which also schedules the poller's re-probe.
 //!
 //! Healing is the pollers' job: the 60 s usage poller re-probes
-//! accounts once their `Retry-After` / backoff window passes, flips
-//! `Bailed` -> `Ready`, and recomputes the assignment plan so the
-//! recovered account rejoins its pools without shifting running
-//! sessions. A rate-limited probe does not mean inference is
-//! limited - the session surfaces its own error if it is.
+//! accounts once their `Retry-After` / backoff window passes and flips
+//! `Bailed` -> `Ready`, which makes the account eligible for new
+//! spawns without shifting running sessions. A rate-limited probe does
+//! not mean inference is limited - the session surfaces its own error
+//! if it is.
 
 use std::sync::Weak;
 
@@ -107,7 +107,6 @@ pub async fn run_account_loading(account_key: AccountKey, workspace_weak: Weak<W
         ),
     }
     settle_probe_result(pool, &account_key, &probe_result);
-    workspace.recompute_plan_if_ready();
 }
 
 #[cfg(test)]
@@ -127,6 +126,7 @@ mod tests {
             provider: forge_primitives::account::Provider::Anthropic,
             base_url: None,
             models: vec!["claude-sonnet-5".to_owned()],
+            model_aliases: std::collections::HashMap::new(),
             model_slugs: std::collections::HashMap::new(),
             env: std::collections::HashMap::new(),
         }])
