@@ -13,15 +13,21 @@ use crate::app::todos::{
 pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::RenderToolCallUpdate) {
     let id_str = tcu.tool_call_id.clone();
     let Some((mi, bi)) = app.lookup_tool_call(&id_str) else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_TOOL,
-            event_name = "tool_call_update_missing",
-            message = "tool call update dropped because tool call was not found",
-            outcome = "dropped",
-            session_id = %current_session_id(app),
-            tool_call_id = %id_str,
-            tool_status = ?tcu.fields.status,
-        );
+        // The resume walk re-delivers every update in the transcript
+        // while rebuilding only the user text, so a miss there is a
+        // repaint with no tool call to repaint. Outside the walk it is
+        // a call this view has lost, which is worth a warning.
+        if !super::skip_operational_log_during_replay(app) {
+            tracing::warn!(
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "tool_call_update_missing",
+                message = "tool call update dropped because tool call was not found",
+                outcome = "dropped",
+                session_id = %current_session_id(app),
+                tool_call_id = %id_str,
+                tool_status = ?tcu.fields.status,
+            );
+        }
         return;
     };
     if let Some(parent_tool_use_id) = parent_tool_use_id_from_meta(tcu.meta.as_ref()) {

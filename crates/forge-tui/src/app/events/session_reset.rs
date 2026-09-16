@@ -902,14 +902,14 @@ mod tests {
     /// different reason than the operational records above: the live
     /// path reports a lost tool call once, when it happens, and a
     /// resume re-delivering the same update would report an event the
-    /// log already carries. Unlike the list above, these emit live at
-    /// DEBUG rather than INFO.
-    const NOT_RE_REPORTED_ON_REPLAY: [&str; 5] = [
+    /// log already carries. None of these emits INFO live.
+    const NOT_RE_REPORTED_ON_REPLAY: [&str; 6] = [
         "tool_call_failed",
         "tool_call_killed",
         "tool_call_timeout",
         "command_failed",
         "command_killed",
+        "tool_call_update_missing",
     ];
 
     /// `Visit::record_str` forwards to `record_debug`, so every way the
