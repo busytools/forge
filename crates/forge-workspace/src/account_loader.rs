@@ -127,6 +127,7 @@ mod tests {
             provider: forge_primitives::account::Provider::Anthropic,
             base_url: None,
             models: vec!["claude-sonnet-5".to_owned()],
+            model_aliases: std::collections::HashMap::new(),
             model_slugs: std::collections::HashMap::new(),
             env: std::collections::HashMap::new(),
         }])

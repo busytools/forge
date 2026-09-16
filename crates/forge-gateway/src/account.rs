@@ -109,8 +109,11 @@ pub struct AccountState {
     /// endpoint the usage probe hits and which credential it carries.
     pub provider: forge_primitives::account::Provider,
     /// The canonical model names the account serves. Selection and
-    /// the route's model gate match against this list.
+    /// the route's model gate match through [`account_serves`].
     pub models: Vec<String>,
+    /// Canonical name -> the other names a request may arrive under for
+    /// that model. Keys are always members of [`Self::models`].
+    pub model_aliases: std::collections::HashMap<String, Vec<String>>,
     /// Canonical name -> upstream slug, only where the spellings
     /// differ. The forward splices the slug into the request body.
     pub model_slugs: std::collections::HashMap<String, String>,
@@ -165,6 +168,19 @@ pub struct AccountState {
     pub loading: LoadingState,
 }
 
+/// `true` when an account declaring `models` serves `model`: it
+/// declares the name, or declares it as an alias of a model it does.
+/// The one home for the rule: the selection walk, the route's binding
+/// gate, and the config load gate all match a request's model here.
+pub fn account_serves<S: std::hash::BuildHasher>(
+    models: &[String],
+    model_aliases: &std::collections::HashMap<String, Vec<String>, S>,
+    model: &str,
+) -> bool {
+    models.iter().any(|m| m == model)
+        || model_aliases.values().flatten().any(|alias| alias == model)
+}
+
 #[derive(Debug)]
 pub struct AccountStateMap {
     pub ordered_keys: Vec<AccountKey>, // forge.toml definition order
@@ -201,6 +217,7 @@ impl AccountStateMap {
                 AccountState {
                     provider: account.provider,
                     models: account.models.clone(),
+                    model_aliases: account.model_aliases.clone(),
                     model_slugs: account.model_slugs.clone(),
                     env: account.env.clone(),
                     usage: None,
@@ -747,6 +764,7 @@ mod tests {
             provider: forge_primitives::account::Provider::Anthropic,
             base_url: None,
             models: vec!["claude-sonnet-5".to_owned()],
+            model_aliases: std::collections::HashMap::new(),
             model_slugs: std::collections::HashMap::new(),
             env: std::collections::HashMap::new(),
         }
@@ -782,6 +800,47 @@ mod tests {
             spend: None,
             balance: None,
         }
+    }
+
+    #[test]
+    fn account_serves_matches_declared_names_and_their_aliases() {
+        let models = vec!["claude-opus-5[1m]".to_owned()];
+        let aliases = std::collections::HashMap::from([(
+            "claude-opus-5[1m]".to_owned(),
+            vec!["claude-opus-5".to_owned()],
+        )]);
+        assert!(
+            account_serves(&models, &aliases, "claude-opus-5[1m]"),
+            "a declared name is served",
+        );
+        assert!(account_serves(&models, &aliases, "claude-opus-5"), "a declared alias is served");
+        assert!(
+            !account_serves(&models, &aliases, "claude-sonnet-5"),
+            "a name that is neither declared nor an alias is not served",
+        );
+        assert!(
+            !account_serves(&models, &std::collections::HashMap::new(), "claude-opus-5"),
+            "with no aliases declared the account serves only its declared names",
+        );
+    }
+
+    #[test]
+    fn an_aliased_name_reaches_the_route_gate_through_the_pool() {
+        let mut granite = make_account("Granite");
+        granite.models = vec!["claude-opus-5[1m]".to_owned()];
+        granite
+            .model_aliases
+            .insert("claude-opus-5[1m]".to_owned(), vec!["claude-opus-5".to_owned()]);
+        let pool = crate::AccountPool::new(&[granite]);
+        let key = AccountKey("Granite".to_owned());
+        assert!(
+            pool.declares(&key, "claude-opus-5"),
+            "the route gate reads the alias the config declared",
+        );
+        assert!(
+            !pool.declares(&key, "claude-sonnet-5"),
+            "the route gate still refuses a model the account does not have",
+        );
     }
 
     #[test]
