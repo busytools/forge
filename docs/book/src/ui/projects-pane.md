@@ -89,7 +89,7 @@ On an **API-billed** account the `5h` / `7d` groups become the spend group, same
 | Org header | Dim bold name and trunk `│` | Nothing |
 | Project row | Lifecycle glyph and name; ` x ` when live, last-activity age when sleeping | Switch to its lead - instantly in-process; a sleeping one spawns and lands in a `Waking...` placeholder until connected. Boot-time `auto_start` spawns never steal the tab. The ` x ` closes instead of switching |
 | Worker row | Subtree beneath its lead, flat siblings | Switch to that worker; its ` x ` closes the worker, JSONL kept |
-| Profile / Org | Account name and organization; dim `-` until the SDK reports one | |
+| Profile / Org | Account name and organization. The name follows the gateway's live binding, so a session re-selected onto another account shows the one serving it and the `5h` / `7d` bars below read that account's windows. The organization is the SDK's own and stays dim `-` until it reports one | |
 | ID | First 8 chars of the session id | `⧉` copies the full id to the OS clipboard |
 | Mode | Permission badge: `auto` / `acceptEdits` yellow, `plan` blue, `bypassPermissions` / `dontAsk` red, `default` dim | |
 | Model | The canonical model the session runs on, exactly as `forge.toml` declares it - the project's `model`, or the name picked at `/model`, rendered verbatim: no humanised label, no `[1m]` marker, no account slug. A project that declares no model pins nothing, so its row falls back to the resolved name, which the catalogue or the humanised id supplies (`Opus 5`) | |

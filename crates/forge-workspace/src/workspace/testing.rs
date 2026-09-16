@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use crate::config::LoadedConfig;
 use crate::protocol::SessionUpdate;
 use crate::target::{ProjectKey, SessionKey};
-use crate::workspace::{KickRequest, Workspace};
+use crate::workspace::{KickRequest, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
 
 #[cfg(any(test, feature = "testing"))]
@@ -335,6 +335,39 @@ impl Workspace {
             config,
             Arc::new(crate::slack::SlackWorkspaces::default()),
         )
+    }
+
+    /// Pool `key` as a live session and bind `account` to it, so a
+    /// cross-crate test can render the account panel against a real
+    /// binding without spawning a CLI. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_bound_session(&self, key: &SessionKey, account: &str) {
+        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        let account = AccountKey(account.to_owned());
+        self.pool.lock().insert(
+            key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: account.clone(),
+                permission_mode: None,
+                registration: Some(forge_gateway::binding::Registration {
+                    org: "TestOrg".to_owned(),
+                    project: "forge".to_owned(),
+                    session: key.as_str().to_owned(),
+                    account: account.clone(),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                }),
+            },
+        );
+        self.gateway.bindings.bind("TestOrg", "forge", key.as_str(), account);
+    }
+
+    /// Store `snapshot` as `account`'s cached usage, so a cross-crate
+    /// test can render the panel's 5h / 7d bars without a probe.
+    /// Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_usage(&self, account: &str, snapshot: forge_primitives::usage::UsageSnapshot) {
+        self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);
     }
 
     /// Persist a dynamic-worker row directly, bypassing `workers__spawn`.
