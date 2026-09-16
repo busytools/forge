@@ -282,6 +282,10 @@ struct AccountEntry {
     /// differ.
     #[serde(default)]
     model_slugs: HashMap<String, String>,
+    /// Canonical name -> the other names a request may arrive under for
+    /// that model.
+    #[serde(default)]
+    model_aliases: HashMap<String, Vec<String>>,
     /// Provider-behaviour extras only - timeouts, context caps,
     /// fallback switches. Base-url and credential keys are rejected:
     /// they are the flat keys' job.
@@ -604,6 +608,17 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 return Err(WorkspaceError::AccountSlugBlank { path, slug: slug_key.clone() });
             }
         }
+        for (alias_key, alias_values) in &entry.model_aliases {
+            if !entry.models.contains(alias_key) {
+                return Err(WorkspaceError::AccountAliasUndeclared {
+                    path,
+                    alias: alias_key.clone(),
+                });
+            }
+            if alias_values.is_empty() {
+                return Err(WorkspaceError::AccountAliasEmpty { path, alias: alias_key.clone() });
+            }
+        }
         let base_url =
             entry.base_url.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
         // A base-url provider probes `{base_url}/...`, so an absent key
@@ -657,6 +672,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             base_url,
             models: entry.models,
             model_slugs: entry.model_slugs,
+            model_aliases: entry.model_aliases,
             env,
         });
     }
@@ -716,7 +732,11 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                     org_entry.accounts.iter().chain(&org_entry.fallback_accounts).any(|name| {
                         accounts.iter().any(|a| {
                             a.display_name == *name
-                                && forge_gateway::account::account_serves(&a.models, model)
+                                && forge_gateway::account::account_serves(
+                                    &a.models,
+                                    &a.model_aliases,
+                                    model,
+                                )
                         })
                     });
                 if !served {
@@ -1199,6 +1219,121 @@ base_url = "http://localhost:18765"
         );
         let config = load_from_dir(dir.path()).expect("a declared model loads");
         assert_eq!(config.projects[0].model.as_deref(), Some("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn a_project_model_that_is_an_alias_loads() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Granite"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-opus-5"
+[[accounts]]
+display_name = "Granite"
+token = "t"
+models = ["claude-opus-5[1m]"]
+provider = "anthropic"
+[accounts.model_aliases]
+"claude-opus-5[1m]" = ["claude-opus-5"]
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("an aliased project model loads");
+        assert_eq!(config.projects[0].model.as_deref(), Some("claude-opus-5"));
+    }
+
+    #[test]
+    fn a_project_model_that_is_neither_declared_nor_an_alias_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Granite"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-sonnet-5"
+[[accounts]]
+display_name = "Granite"
+token = "t"
+models = ["claude-opus-5[1m]"]
+provider = "anthropic"
+[accounts.model_aliases]
+"claude-opus-5[1m]" = ["claude-opus-5"]
+"#,
+        );
+        let err = load_from_dir(dir.path())
+            .expect_err("holding aliases must not make the account serve everything");
+        let message = err.to_string();
+        assert!(
+            message.contains("claude-sonnet-5"),
+            "the error names the undeclared model, got: {message}",
+        );
+    }
+
+    #[test]
+    fn an_alias_for_an_undeclared_model_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Granite"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Granite"
+token = "t"
+models = ["claude-opus-5[1m]"]
+provider = "anthropic"
+[accounts.model_aliases]
+"claude-opus-5" = ["claude-opus-5[1m]"]
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("an undeclared alias key must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("claude-opus-5"),
+            "the error names the undeclared alias key, got: {message}",
+        );
+    }
+
+    #[test]
+    fn an_empty_alias_list_fails_the_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Granite"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+[[accounts]]
+display_name = "Granite"
+token = "t"
+models = ["claude-opus-5[1m]"]
+provider = "anthropic"
+[accounts.model_aliases]
+"claude-opus-5[1m]" = []
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("an empty alias list must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("empty alias list"),
+            "the error says the list is empty, got: {message}",
+        );
     }
 
     #[test]

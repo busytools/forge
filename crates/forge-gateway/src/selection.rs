@@ -26,9 +26,12 @@ pub enum SelectionError {
     NoEligibleAccount { model: String, org: String },
 }
 
-/// `true` when the account serves `model`.
+/// `true` when the account serves `model`, by declaration or alias.
 fn declares(state: &AccountStateMap, key: &AccountKey, model: &str) -> bool {
-    state.by_key.get(key).is_some_and(|account| account_serves(&account.models, model))
+    state
+        .by_key
+        .get(key)
+        .is_some_and(|account| account_serves(&account.models, &account.model_aliases, model))
 }
 
 /// Pick the account for `model` out of `org`'s walk order: the first
@@ -126,6 +129,7 @@ mod tests {
                 provider: *provider,
                 base_url: None,
                 models: models.iter().map(|m| (*m).to_owned()).collect(),
+                model_aliases: std::collections::HashMap::new(),
                 model_slugs: std::collections::HashMap::new(),
                 env: HashMap::new(),
             })
@@ -139,6 +143,17 @@ mod tests {
             }
         }
         state
+    }
+
+    /// Declare `alias` as an alternative name for `model` on one
+    /// fixture account.
+    fn alias(state: &mut AccountStateMap, name: &str, model: &str, alias: &str) {
+        state
+            .by_key
+            .get_mut(&AccountKey(name.to_owned()))
+            .expect("the fixture account is in the state")
+            .model_aliases
+            .insert(model.to_owned(), vec![alias.to_owned()]);
     }
 
     fn pin(accounts: &[&str], fallbacks: &[&str]) -> OrgPin {
@@ -165,6 +180,44 @@ mod tests {
             selected,
             AccountKey("Anthropic".to_owned()),
             "the walk skips accounts that do not declare the model",
+        );
+    }
+
+    #[test]
+    fn an_account_is_selected_for_a_model_it_declares_only_as_an_alias() {
+        let mut state = pool_with(&[
+            ("Granite", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5[1m]"]),
+            ("Other", Provider::Anthropic, LoadingState::Ready, None, vec!["claude-opus-5"]),
+        ]);
+        alias(&mut state, "Granite", "claude-opus-5[1m]", "claude-opus-5");
+        let selected =
+            select_account(&state, &pin(&["Granite", "Other"], &[]), "Default", "claude-opus-5")
+                .expect("Granite serves the model through its alias");
+        assert_eq!(
+            selected,
+            AccountKey("Granite".to_owned()),
+            "the walk reaches the aliasing account, not only the one that declares the name",
+        );
+    }
+
+    #[test]
+    fn an_alias_does_not_widen_an_account_beyond_the_model_it_aliases() {
+        let mut state = pool_with(&[(
+            "Granite",
+            Provider::Anthropic,
+            LoadingState::Ready,
+            None,
+            vec!["claude-opus-5[1m]"],
+        )]);
+        alias(&mut state, "Granite", "claude-opus-5[1m]", "claude-opus-5");
+        let error = select_account(&state, &pin(&["Granite"], &[]), "Default", "claude-sonnet-5")
+            .expect_err("an alias serves only the model it aliases");
+        assert_eq!(
+            error,
+            SelectionError::NoEligibleAccount {
+                model: "claude-sonnet-5".to_owned(),
+                org: "Default".to_owned(),
+            },
         );
     }
 

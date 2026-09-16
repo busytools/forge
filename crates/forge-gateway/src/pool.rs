@@ -235,7 +235,7 @@ impl AccountPool {
             .lock()
             .by_key
             .get(key)
-            .is_some_and(|account| account_serves(&account.models, model))
+            .is_some_and(|account| account_serves(&account.models, &account.model_aliases, model))
     }
 
     /// The upstream slug the account maps `canonical` to, when the

@@ -133,6 +133,7 @@ async fn capture_a_real_messages_request_body() {
         provider: Provider::Anthropic,
         base_url: None,
         models: vec!["claude-sonnet-5".to_owned()],
+        model_aliases: std::collections::HashMap::new(),
         model_slugs: std::collections::HashMap::new(),
         env: account_env.clone(),
     }]));
