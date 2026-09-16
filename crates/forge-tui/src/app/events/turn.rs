@@ -722,6 +722,7 @@ fn apply_turn_error_presentation(
         event_name = "turn_error_received",
         message = "turn error received",
         outcome = "failure",
+        session_key = %session_key.as_str(),
         error_class = ?error_class,
         error_preview = %summary,
         terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
@@ -733,6 +734,7 @@ fn apply_turn_error_presentation(
                 event_name = "turn_error_classified",
                 message = "turn error classified as plan limit",
                 outcome = "degraded",
+                session_key = %session_key.as_str(),
                 error_class = "plan_limit",
                 error_preview = %summary,
             );
@@ -743,6 +745,7 @@ fn apply_turn_error_presentation(
                 event_name = "turn_error_classified",
                 message = "turn error indicates authentication is required",
                 outcome = "degraded",
+                session_key = %session_key.as_str(),
                 error_class = "auth_required",
                 error_preview = %summary,
             );

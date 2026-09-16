@@ -428,6 +428,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         event_name = "session_connection_failed",
         message = "session connection failure applied",
         outcome = "failure",
+        session_key = %session_key.as_str(),
         error_message = %msg,
         is_rate_limited,
     );
