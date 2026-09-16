@@ -8232,6 +8232,33 @@ provider = "anthropic"
         );
     }
 
+    /// The row outlives the process: a second workspace on the same store
+    /// reads the id the first one recorded rather than starting another
+    /// session under a new one.
+    #[tokio::test]
+    async fn a_lead_row_survives_a_restart() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let id = {
+            let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+            workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
+            workspace.seed_test_ready_account("Stargate");
+            let _handle = workspace
+                .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+                .expect("spawn");
+            workspace
+                .stored_session_id("Default", "forge", LEAD_LABEL)
+                .expect("the lead's id reaches the store")
+        };
+
+        let restarted = Workspace::new_for_test(dir.path().to_owned()).expect("second boot");
+        let project = restarted.config.default_project().clone();
+        assert_eq!(
+            restarted.lead_session_to_resume(&project),
+            Some(SessionKey::from_session_id(id)),
+            "the second boot re-enters the session the first one recorded",
+        );
+    }
+
     /// A row with no id, as the first boot after the store gained ids
     /// leaves it.
     fn seed_session_row(workspace: &Workspace, org: &str, project: &str, label: &str) {
