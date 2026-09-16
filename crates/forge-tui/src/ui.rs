@@ -1,4 +1,3 @@
-pub(crate) mod account_picker;
 mod autocomplete;
 pub(crate) mod chat;
 pub(crate) mod chat_tree;
@@ -70,10 +69,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.model_picker.is_some() {
         let area = frame.area();
         model_picker::render(frame, area, app);
-    }
-    if app.account_picker.is_some() {
-        let area = frame.area();
-        account_picker::render(frame, area, app);
     }
     if app.gateway_view.is_some() {
         let area = frame.area();

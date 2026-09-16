@@ -1,4 +1,3 @@
-pub(crate) mod account_picker;
 pub(crate) mod active_bucket_scope;
 mod cache_policy;
 pub(crate) mod cli_version;
@@ -985,8 +984,8 @@ mod tests {
     /// The property: forcing a full redraw must not read the cursor.
     /// `Terminal::clear` does (since ratatui-core 0.1.2), and from
     /// inside the event loop that read blocks until crossterm's 2s
-    /// timeout and then ends the session - which is what `/account`
-    /// hit, because switching account sets `force_redraw`.
+    /// timeout and then ends the session - which is what a session
+    /// switch hit, because it sets `force_redraw`.
     ///
     /// A mutation back to `Terminal::clear` SURVIVES this test on the
     /// locked ratatui-core 0.1.0, whose `clear` does not read the

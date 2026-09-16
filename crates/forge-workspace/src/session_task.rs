@@ -108,8 +108,8 @@ impl SessionTask {
         // `Command::Prompt` to the now-closed channel (which fails with
         // `SessionClosed` and is silently dropped, quietly stopping
         // durable crons for the project). Guarded on handle identity so
-        // a superseded task (its session re-spawned under the same key by
-        // an `/account` switch) doesn't wipe its successor's live entries.
+        // a superseded task (its session re-spawned under the same key)
+        // doesn't wipe its successor's live entries.
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.release_session_if_current(&self.key, &self.handle);
         }
@@ -632,7 +632,7 @@ impl SessionTask {
                     }
                 }
                 // Clear the turn-commit marker on the turn boundary so
-                // the `/account` backstop stops refusing once the turn
+                // the in-flight guards stop refusing once the turn
                 // ends. `Message::Result` is the SDK's signal that the
                 // assistant turn has fully completed - including a
                 // cancelled one, which lands as `error_during_execution`.
@@ -789,7 +789,7 @@ impl SessionTask {
     /// closed-channel regression leaves a trail rather than silently
     /// dropping events.
     // TODO(ved): gate emits on a per-task session epoch so a superseded
-    // task (its session re-spawned under the same key by an `/account`
+    // task (its session re-spawned under the same key by a resume or a
     // switch) can't emit a stale update onto the successor's bucket
     // during its brief post-supersession drain. Low-risk today: the
     // switch is idle-gated and the re-spawn keeps the same session_id.
@@ -1267,7 +1267,6 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverWorkerPromptToLead { .. }
         | Command::DeliverGotifyMessage { .. }
         | Command::RespondSlackPost { .. }
-        | Command::SwitchAccount { .. }
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }
         | Command::RemoveReviewThread { .. }
@@ -1308,7 +1307,7 @@ fn warn_no_session(key: &SessionKey, command: &'static str) -> forge_agent::Agen
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
-        // `/account` backstop doesn't read a stale in-flight turn.
+        // in-flight guards don't read a stale turn.
         domain.runtime_state = None;
         domain.turn_pending = false;
     }
@@ -2301,7 +2300,7 @@ mod tests {
 
     /// `apply_event_to_domain` on `AgentEvent::ConnectionFailed`
     /// clears the runtime/turn mirrors: the subprocess is gone, so the
-    /// `/account` backstop must not read a stale "turn in flight" and
+    /// in-flight guards must not read a stale "turn in flight" and
     /// refuse the switch with "Finish or cancel the current turn".
     #[test]
     fn connection_failed_clears_domain_turn_state() {

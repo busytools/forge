@@ -1427,9 +1427,8 @@ impl Workspace {
     ///    classify as Lead. A fresh worker has no session id yet, so
     ///    this is the only source that can answer for it.
     /// 2. The live-worker registry, keyed by the resolved session key.
-    ///    The `/account` re-spawn passes no spawn key at all, and an
-    ///    absent key is absence of evidence rather than evidence of a
-    ///    lead - it re-spawns whatever session the user has focused,
+    ///    A re-spawn that carries no spawn key at all has no evidence of
+    ///    a lead - it re-spawns whatever session the user has focused,
     ///    which can be a worker row.
     fn session_kind_for_spawn(
         &self,
@@ -1461,7 +1460,7 @@ impl Workspace {
         target: SessionTarget,
         settings: SessionLaunchSettings,
     ) -> Result<Arc<AgentHandle>> {
-        self.get_agent_handle_with_spawn_key(target, settings, None, None)
+        self.get_agent_handle_with_spawn_key(target, settings, None)
     }
 
     /// Like [`Self::get_agent_handle`] but threads a synthetic
@@ -1471,20 +1470,11 @@ impl Workspace {
     /// emit before the matching `Connected` so TUI re-keys its
     /// `UiSession` map atomically. `None` for re-entrant callers (the
     /// pooled handle path) where no key migration is needed.
-    ///
-    /// `forced_account` pins the spawn to a specific `AccountKey`
-    /// instead of running the assignment-plan / round-robin picker.
-    /// Only the `/account` switch supplies it (via
-    /// `handle_switch_account`); a forced account always re-spawns a
-    /// live session, so the new `SessionTask` seeds `connected_once =
-    /// true` and its first `Connected` emits `SessionReplaced` (the
-    /// agent IS being replaced). Every other caller passes `None`.
     pub(crate) fn get_agent_handle_with_spawn_key(
         self: &Arc<Self>,
         target: SessionTarget,
         mut settings: SessionLaunchSettings,
         spawn_key: Option<SessionKey>,
-        forced_account: Option<AccountKey>,
     ) -> Result<Arc<AgentHandle>> {
         // The boot gate is a spawn precondition, not just a launchpad
         // decoration: a child stamped before the listener is bound
@@ -1499,7 +1489,6 @@ impl Workspace {
             }
             .into());
         }
-        let is_account_switch = forced_account.is_some();
         let session_key = self.resolve_target(&target)?;
         // One shared config dir: every account's child reads the same
         // MCP servers, plugins and settings, so the per-account dir is
@@ -1587,11 +1576,9 @@ impl Workspace {
             }
             _ => None,
         };
-        let (account_key, account_dir) = if let Some(key) = forced_account {
-            (key, account_dir)
-        } else {
+        let account_key = {
             let recorded = self.plan_assignment(&target, spawn_key.as_ref());
-            let key = match &candidates {
+            match &candidates {
                 // A recorded row the narrowed lists do not hold is a
                 // miss: recompute over them and rewrite the row, so a
                 // resume agrees with this spawn.
@@ -1609,8 +1596,7 @@ impl Workspace {
                 None => recorded.unwrap_or_else(|| {
                     self.accounts.pick_for_project(&pin.accounts, &pin.fallback_accounts)
                 }),
-            };
-            (key, account_dir)
+            }
         };
         tracing::info!(
             target: "forge_workspace::account",
@@ -1887,10 +1873,10 @@ impl Workspace {
                 domain,
                 update_tx: self.update_tx.clone(),
                 spawn_key,
-                // An account switch replaces a live session's agent, so
-                // the new task's first Connected must emit SessionReplaced
-                // (reset chat, then the --resume backfill re-seeds it).
-                connected_once: is_account_switch,
+                // Every spawn now emits Connected on its first connect:
+                // nothing replaces a live session's agent in-process any
+                // more, so there is no SessionReplaced case to seed.
+                connected_once: false,
                 workspace: Arc::downgrade(self),
             };
             let span = tracing::info_span!(
@@ -3008,21 +2994,9 @@ impl Workspace {
         self.accounts.usage_error(display_name)
     }
 
-    /// Resolve an account `display_name` to its `(AccountKey,
-    /// config_dir)` for the `/account` switch re-spawn. `None` when the
-    /// name isn't a configured account (defensive - the picker only
-    /// offers known accounts).
-    pub(crate) fn resolve_account_for_switch(&self, display_name: &str) -> Option<AccountKey> {
-        // The auth read is the existence check: the switch targets a
-        // configured account, and one shared config dir means there is
-        // no per-account directory left to resolve.
-        self.accounts.auth(display_name)?;
-        Some(AccountKey(display_name.to_owned()))
-    }
-
-    /// Snapshot the accounts a project may switch to, in allow-list
-    /// order, each carrying its live rate-limit state for the
-    /// `/account` picker. `allowed_accounts` is the project's
+    /// Snapshot the accounts a project may spawn under, in allow-list
+    /// order, each carrying its live rate-limit state for the gateway
+    /// view. `allowed_accounts` is the project's
     /// forge.toml pin; empty falls back to every configured account
     /// (matching `pick_for_project`'s resolution). `fallback_accounts`
     /// is the org's fallback list: unioned in (deduped) even when the
@@ -3063,11 +3037,8 @@ impl Workspace {
                 // means every account is primary (the un-pinned shape).
                 let in_pin = allowed_accounts.is_empty() || allowed_accounts.contains(&name);
                 let fallback = fallback_accounts.contains(&name) && !in_pin;
-                let budget = account_budget(
-                    &name,
-                    self.accounts.provider(&key)?,
-                    self.accounts.usage(&name).as_ref(),
-                );
+                let provider = self.accounts.provider(&key)?;
+                let budget = account_budget(&name, provider, self.accounts.usage(&name).as_ref());
                 Some(crate::AccountRow {
                     display_name: name,
                     config_dir,
@@ -3075,6 +3046,8 @@ impl Workspace {
                     unusable,
                     budget,
                     fallback,
+                    provider,
+                    loading: self.accounts.loading_state(&key),
                 })
             })
             .collect();
@@ -3093,7 +3066,8 @@ impl Workspace {
             .org_pins()
             .into_iter()
             .map(|(org, pin)| {
-                let rows = self.gateway_account_rows(&pin);
+                let rows =
+                    self.project_accounts_snapshot(&pin.accounts, &pin.fallback_accounts, None);
                 crate::views::GatewayOrgView {
                     org,
                     accounts: pin.accounts,
@@ -3102,38 +3076,6 @@ impl Workspace {
                 }
             })
             .collect()
-    }
-
-    /// One row per account the pin names, primaries then fallbacks,
-    /// deduped (a dual-listed account stays primary-flagged).
-    fn gateway_account_rows(
-        &self,
-        pin: &forge_gateway::selection::OrgPin,
-    ) -> Vec<crate::views::GatewayAccountRow> {
-        let mut names: Vec<String> = pin.accounts.clone();
-        for name in &pin.fallback_accounts {
-            if !names.contains(name) {
-                names.push(name.clone());
-            }
-        }
-        let mut rows: Vec<crate::views::GatewayAccountRow> = names
-            .into_iter()
-            .filter_map(|name| {
-                let key = AccountKey(name.clone());
-                let provider = self.accounts.provider(&key)?;
-                let in_pin = pin.accounts.contains(&name);
-                Some(crate::views::GatewayAccountRow {
-                    display_name: name.clone(),
-                    provider,
-                    loading: self.accounts.loading_state(&key),
-                    unusable: self.accounts.unusable_reason(&key),
-                    budget: account_budget(&name, provider, self.accounts.usage(&name).as_ref()),
-                    fallback: pin.fallback_accounts.contains(&name) && !in_pin,
-                })
-            })
-            .collect();
-        rows.sort_by_key(|row| row.fallback);
-        rows
     }
 
     /// Resolves a `SessionTarget` to the `SessionKey` used to look up
@@ -3674,7 +3616,7 @@ impl Workspace {
             let senders = self.command_senders.lock();
             if let Some(sender) = senders.get(&key) {
                 // Stamp turn_pending only on the routed path (set + route
-                // together) so the /account backstop can't race a Prompt
+                // together) so the in-flight guards can't race a Prompt
                 // whose wire-lagged `Running` echo hasn't landed yet.
                 if matches!(cmd, Command::Prompt { .. })
                     && let Some(domain) = self.domain_session_for(&key)
@@ -3884,15 +3826,6 @@ impl Workspace {
                 }
                 Command::RespondSlackPost { key, id, approved } => {
                     self.resolve_slack_draft(id, &key, approved);
-                }
-                Command::SwitchAccount { key, account_display_name, launch_settings } => {
-                    let span = tracing::info_span!(
-                        "switch_account",
-                        key = %key.as_str(),
-                        account = %account_display_name,
-                    );
-                    let _enter = span.enter();
-                    spawn::handle_switch_account(self, key, &account_display_name, launch_settings);
                 }
                 Command::OpenUrl { url } => {
                     let span = tracing::info_span!("open_url", url = %url);
@@ -4337,7 +4270,7 @@ impl Workspace {
     /// Supersession-safe release: drop `session_key`'s pool entry,
     /// command sender, and domain handle ONLY when the pooled agent is
     /// still `handle` (by `Arc` identity). A SessionTask whose session
-    /// was re-spawned under the same key (an `/account` switch) is a
+    /// was re-spawned under the same key is a
     /// stale predecessor - when it exits and runs this cleanup, the
     /// pool already holds the successor's handle, so the guard no-ops
     /// and the live re-spawned session is left intact. Gating all three
@@ -6666,7 +6599,7 @@ mod tests {
     use tempfile::tempdir;
 
     /// Build a usage snapshot with 5h + shared-7d windows sharing one
-    /// `resets_at`. Enough for the `/account` picker snapshot tests.
+    /// `resets_at`. Enough for the account snapshot tests.
     #[cfg(test)]
     fn account_usage_snapshot(
         five_hour: f64,
@@ -6997,8 +6930,8 @@ mod tests {
         assert!(view[0].rows[1].fallback, "the fallback list marks its rows");
     }
 
-    /// The supersession guard that keeps an `/account` switch's
-    /// re-spawn intact: a stale predecessor task exiting must NOT wipe
+    /// The supersession guard that keeps a re-spawn intact: a stale
+    /// predecessor task exiting must NOT wipe
     /// the successor's pool entry, command sender, or domain handle -
     /// all three are gated together on `Arc` identity. The current
     /// owner's own exit still releases all three.
@@ -11397,12 +11330,11 @@ mod worker_respawn_tests {
         );
     }
 
-    /// The `/account` re-spawn is the one production spawn carrying no
-    /// spawn key, and it re-spawns whatever session the user has
-    /// focused - a worker row included. An absent key is absence of
-    /// evidence, so the classification reads the live-worker registry,
-    /// which knows; reading leadness out of the absence hands a
-    /// switched worker the cross-project `peers__*` surface.
+    /// A re-spawn that carries no spawn key re-spawns whatever session
+    /// the user has focused - a worker row included. An absent key is
+    /// absence of evidence, so the classification reads the live-worker
+    /// registry, which knows; reading leadness out of the absence hands
+    /// a re-spawned worker the cross-project `peers__*` surface.
     ///
     /// The lead half is the control: without it, a classifier answering
     /// Worker for every keyless spawn would satisfy the worker half and
@@ -14741,7 +14673,6 @@ base_url = "https://openrouter.ai/api"
             SessionTarget::Named("forge".to_owned()),
             SessionLaunchSettings::default(),
             Some(spawn_key),
-            None,
         );
 
         assert_eq!(

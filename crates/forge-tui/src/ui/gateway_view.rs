@@ -9,7 +9,7 @@
 
 use forge_primitives::account::Provider;
 use forge_primitives::usage::AccountBudget;
-use forge_workspace::{GatewayAccountRow, GatewayOrgView, Unusable};
+use forge_workspace::{AccountRow, GatewayOrgView, LoadingState, Unusable};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -79,8 +79,9 @@ fn gateway_lines(orgs: &[GatewayOrgView]) -> Vec<Line<'static>> {
 }
 
 /// One account line: name, provider, what it has left, and its state.
-fn account_line(row: &GatewayAccountRow) -> Line<'static> {
+fn account_line(row: &AccountRow) -> Line<'static> {
     let (tag, tag_color) = match row.unusable {
+        None if row.loading == LoadingState::Loading => ("loading", theme::DIM),
         None => ("usable", Color::Green),
         Some(Unusable::Saturated) => ("limit hit", theme::STATUS_ERROR),
         Some(Unusable::ProbeBlocked | Unusable::Bailed) => {
@@ -171,14 +172,16 @@ mod tests {
         unusable: Option<Unusable>,
         budget: AccountBudget,
         fallback: bool,
-    ) -> GatewayAccountRow {
-        GatewayAccountRow {
+    ) -> AccountRow {
+        AccountRow {
             display_name: name.to_owned(),
-            provider,
-            loading: forge_workspace::LoadingState::Ready,
+            config_dir: std::path::PathBuf::from("/cfg"),
+            is_current: false,
             unusable,
             budget,
             fallback,
+            provider,
+            loading: LoadingState::Ready,
         }
     }
 
@@ -238,6 +241,30 @@ mod tests {
             ],
             "the block reads pins first, then accounts in snapshot order",
         );
+    }
+
+    /// An account whose boot probe has not settled reads `loading`, not
+    /// `usable`: nothing has verified it yet, so the row must not claim
+    /// it is pickable.
+    #[test]
+    fn an_account_still_loading_is_not_tagged_usable() {
+        let orgs = vec![GatewayOrgView {
+            org: "Default".to_owned(),
+            accounts: vec!["Pending".to_owned()],
+            fallback_accounts: Vec::new(),
+            rows: vec![AccountRow {
+                loading: LoadingState::Loading,
+                ..row(
+                    "Pending",
+                    Provider::Anthropic,
+                    None,
+                    AccountBudget::Unknown { spend_billed: false },
+                    false,
+                )
+            }],
+        }];
+        let lines: Vec<String> = gateway_lines(&orgs).iter().map(line_text).collect();
+        assert_eq!(lines[5], "    Pending  anthropic  -  loading");
     }
 
     /// An org with no fallbacks reads `-`, not a blank: the empty list
