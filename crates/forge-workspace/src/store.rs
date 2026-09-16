@@ -9,7 +9,8 @@
 //! Table logic lives per-tenant in the submodules: Gotify subscriptions
 //! ([`gotify`]), Slack subscriptions ([`slack`]), durable crons
 //! ([`cron`]), dynamic workers
-//! ([`dynamic_workers`]), review threads ([`review`]), forge state
+//! ([`dynamic_workers`]), session identities ([`sessions`]), review
+//! threads ([`review`]), forge state
 //! ([`state`], the spinner override + account-usage cache), the
 //! `/usage` view's per-file token summaries ([`token_usage`]), cached
 //! model pricing ([`pricing`]), plugin update history ([`plugins`]),
