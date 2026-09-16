@@ -88,9 +88,14 @@ impl LoggingRuntime {
 }
 
 /// Default tracing filter. `info` baseline keeps signal-to-noise
-/// sensible; the four targets at `debug` are the ones we actually
-/// stare at when triaging UI/event drops (session lifecycle, command
-/// dispatch, input submission, bridge connect path). `tui_markdown`
+/// sensible; the targets at `debug` are the ones we actually stare at
+/// when triaging UI/event drops (session lifecycle, command dispatch,
+/// input submission, bridge connect path). `app.tool` and
+/// `agent.env_git` are there for a second reason: they carry a
+/// session's own tool failures and a git probe missing
+/// `refs/remotes/origin/HEAD`, which are real and are not forge's
+/// problems. At `debug` they stay readable without raising a warning
+/// that says forge is unwell. `tui_markdown`
 /// is pinned to `error` because it emits per-frame WARN events for
 /// every HTML element and unknown-language code block it encounters
 /// during streaming markdown rendering (peaks at 50K+/sec on chats
@@ -106,8 +111,10 @@ impl LoggingRuntime {
 const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.session=debug,\
     app.command=debug,\
+    app.tool=debug,\
     app.input=debug,\
     bridge.lifecycle=debug,\
+    agent.env_git=debug,\
     tui_markdown=error,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
