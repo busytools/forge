@@ -381,13 +381,8 @@ mod tests {
             let lines = render_lines(std::slice::from_ref(&org), inner_w);
             let account = lines.last().expect("the account row");
             assert!(
-                display_len(account) <= inner_w,
-                "a row must fit {inner_w} columns; got {} for {account:?}",
-                display_len(account),
-            );
-            assert!(
-                account.trim_end().ends_with("limit hit"),
-                "the state tag survives at {inner_w} columns; got {account:?}",
+                display_len(account) == inner_w && account.ends_with("limit hit"),
+                "the tag is right-aligned on a row of exactly {inner_w} columns; got {account:?}",
             );
             assert!(
                 account.starts_with("    OpenRouter"),
