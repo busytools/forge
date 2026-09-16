@@ -331,13 +331,13 @@ pub struct Workspace {
     /// file, so this mutex alone serialises writes.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) crons: Mutex<Vec<forge_primitives::CronEntry>>,
-    /// Payloads addressed to an owner that had no live session when they
+    /// Payloads addressed to a slot that had no live session when they
     /// arrived - a peer prompt, a fired cron, a Gotify notification, a
     /// Slack message - keyed by `(org, project, label)` (`None` = lead),
-    /// the triple the `sessions` table uses. The owner's session drains
+    /// the triple the `sessions` table uses. The slot's session drains
     /// its own bucket on first `Connected`. `pub(crate)` so the impl
     /// block in [`crate::parked`] can reach it.
-    pub(crate) parked_by_owner: Mutex<crate::parked::ParkedMap>,
+    pub(crate) parked_by_slot: Mutex<crate::parked::ParkedMap>,
     /// Active Gotify subscriptions (`mcp__forge__gotify`). The set the
     /// stream matches each inbound message against. Durable ones (lead /
     /// team-worker) are also persisted to `db` and reloaded here
@@ -1182,7 +1182,7 @@ impl Workspace {
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
-            parked_by_owner: Mutex::new(HashMap::new()),
+            parked_by_slot: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(gotify_subs),
             db,
             catalog_loaded,
@@ -1782,7 +1782,7 @@ impl Workspace {
             // round-trip after the spawn lands.
             domain_arc.lock().conn = Some(Arc::clone(&arc));
             let domain = Arc::clone(&domain_arc);
-            let owner = (
+            let slot = (
                 project.org.clone(),
                 project.name.clone(),
                 self.worker_label_for_session(&session_key),
@@ -1794,7 +1794,7 @@ impl Workspace {
                 domain,
                 update_tx: self.update_tx.clone(),
                 spawn_key,
-                owner,
+                slot,
                 // Every spawn now emits Connected on its first connect:
                 // nothing replaces a live session's agent in-process any
                 // more, so there is no SessionReplaced case to seed.
@@ -4718,7 +4718,7 @@ impl Workspace {
     /// [`classify_worker_spawn_failure`]: crate::mcp::workers::facade::classify_worker_spawn_failure
     pub(crate) fn handle_async_worker_spawn_failure(
         self: &Arc<Self>,
-        slot: &crate::parked::Owner,
+        slot: &crate::parked::Slot,
         session_key: &SessionKey,
         message: &str,
     ) -> bool {
@@ -7519,7 +7519,7 @@ provider = "anthropic"
     fn parked_slack_count(ws: &Workspace, project: &str, label: Option<&str>) -> usize {
         let org =
             ws.list_projects().into_iter().find(|v| v.name == project).expect("seeded project").org;
-        ws.parked_by_owner
+        ws.parked_by_slot
             .lock()
             .get(&(org, project.to_owned(), label.map(str::to_owned)))
             .map_or(0, |parked| parked.slack.len())
@@ -8789,7 +8789,7 @@ provider = "anthropic"
             domain,
             update_tx,
             spawn_key: None,
-            owner: ("TestOrg".to_owned(), "forge".to_owned(), None),
+            slot: ("TestOrg".to_owned(), "forge".to_owned(), None),
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };
@@ -12263,7 +12263,7 @@ mod async_worker_spawn_failure_tests {
     }
 
     /// The slot a failing worker spawn acts for.
-    fn worker_slot(project: &str, label: &str) -> crate::parked::Owner {
+    fn worker_slot(project: &str, label: &str) -> crate::parked::Slot {
         ("TestOrg".to_owned(), project.to_owned(), Some(label.to_owned()))
     }
 

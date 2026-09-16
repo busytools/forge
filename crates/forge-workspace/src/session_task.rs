@@ -33,10 +33,10 @@ pub(crate) struct SessionTask {
     /// to: real_key }` ahead of the first `Connected` emit. Cleared
     /// after the first migration.
     pub(crate) spawn_key: Option<SessionKey>,
-    /// Who this session acts for, set at spawn where the role is decided.
-    /// A spawn that never connects expires that owner's parked payloads,
-    /// which nothing can reach from the key once it is gone.
-    pub(crate) owner: crate::parked::Owner,
+    /// The slot this session fills, set at spawn where the role is
+    /// decided. A spawn that never connects expires that slot's parked
+    /// payloads, which nothing can reach from the key once it is gone.
+    pub(crate) slot: crate::parked::Slot,
     /// Tracks whether the first `Connected` has been emitted. The
     /// second-and-beyond Connected on the same task drives
     /// `SessionUpdate::SessionReplaced` instead (covers `/new`,
@@ -348,11 +348,11 @@ impl SessionTask {
                         let force_new = self.domain.lock().spawned_force_new;
                         maybe_respawn_workers_on_connected(
                             &workspace,
-                            &self.owner,
+                            &self.slot,
                             real_key.as_str(),
                             force_new,
                         );
-                        maybe_kick_worker_on_connected(&workspace, &self.owner, real_key.as_str());
+                        maybe_kick_worker_on_connected(&workspace, &self.slot, real_key.as_str());
                     }
                     // First Connected: emit KeyRenamed { from:
                     // spawn_key, to: real_key } so the TUI migrates
@@ -382,7 +382,7 @@ impl SessionTask {
                         history,
                         compaction_count,
                     });
-                    // Everything parked for this session's owner while
+                    // Everything parked for this session's slot while
                     // it was asleep, delivered in arrival order: peer
                     // prompts, then crons, then Gotify, then Slack. Each
                     // re-dispatches as a regular `Command::Prompt` so the
@@ -421,14 +421,14 @@ impl SessionTask {
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
                     // A spawn that never connected still holds everything
-                    // parked for its owner, and the target_session match
+                    // parked for its slot, and the target_session match
                     // above cannot reach those (they were never stamped).
                     // Fail the peer asks so their callers get a delivery
                     // notice rather than waiting out the timeout.
-                    workspace.expire_parked_for_owner(
-                        &self.owner.0,
-                        &self.owner.1,
-                        self.owner.2.as_deref(),
+                    workspace.expire_parked_for_slot(
+                        &self.slot.0,
+                        &self.slot.1,
+                        self.slot.2.as_deref(),
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
                     // Worker async spawn failure: classify the
@@ -441,7 +441,7 @@ impl SessionTask {
                     // handle_spawn_worker). Lead-session and
                     // non-worker callers see no behavioural change
                     // - this branch is a no-op for them.
-                    workspace.handle_async_worker_spawn_failure(&self.owner, &key, &message);
+                    workspace.handle_async_worker_spawn_failure(&self.slot, &key, &message);
                 }
                 self.emit(SessionUpdate::ConnectionFailed {
                     key: key.clone(),
@@ -876,20 +876,20 @@ impl SessionTask {
         self.workspace.upgrade()?.fresh_session_id_for(&self.key)
     }
 
-    /// Drain everything parked for this session's owner on its first
+    /// Drain everything parked for this session's slot on its first
     /// `Connected`, in arrival order. The take is the session's own
     /// `(org, project, label)` bucket, so a payload parked for a team
     /// worker never lands on the project's lead.
     fn drain_parked(&self) {
         let Some(workspace) = self.workspace.upgrade() else { return };
-        let parked = workspace.take_parked_for_owner(&self.owner);
+        let parked = workspace.take_parked_for_slot(&self.slot);
         self.deliver_parked_peers(&workspace, parked.peer);
         self.deliver_parked_crons(&workspace, parked.cron);
         self.deliver_parked_gotify(&workspace, parked.gotify);
         self.deliver_parked_slack(&workspace, parked.slack);
     }
 
-    /// Deliver the peer prompts parked for this session's owner. Each is
+    /// Deliver the peer prompts parked for this session's slot. Each is
     /// re-dispatched as a normal `Command::Prompt` against `self.key`.
     /// The existing prompt-delivery path handles it identically to a
     /// user-typed prompt - the only difference is the prose body
@@ -937,8 +937,8 @@ impl SessionTask {
         }
     }
 
-    /// Deliver the cron prompts parked for this session's owner - the
-    /// bucket a due cron filled while the owner was asleep. Each is
+    /// Deliver the cron prompts parked for this session's slot - the
+    /// bucket a due cron filled while the slot was asleep. Each is
     /// echoed as a cron block (missed-marked when overdue) and
     /// re-dispatched as a plain `Command::Prompt`.
     fn deliver_parked_crons(
@@ -964,7 +964,7 @@ impl SessionTask {
         }
     }
 
-    /// Deliver the Gotify notifications parked for this session's owner.
+    /// Deliver the Gotify notifications parked for this session's slot.
     /// Each is echoed into chat as a notification block and re-dispatched
     /// as a plain `Command::Prompt`, landing as an ordinary user turn.
     /// Mirrors [`Self::drain_pending_cron_prompts`], which echoes its own
@@ -996,7 +996,7 @@ impl SessionTask {
         }
     }
 
-    /// Deliver the Slack messages parked for this session's owner. Each is
+    /// Deliver the Slack messages parked for this session's slot. Each is
     /// echoed into chat as a notification block and re-dispatched as a
     /// plain `Command::Prompt`, landing as an ordinary user turn. Mirrors
     /// [`Self::deliver_parked_gotify`].
@@ -1064,7 +1064,7 @@ impl Drop for SessionTask {
 /// The slot's label carries the role: only a lead (`None`) owns a team.
 fn maybe_respawn_workers_on_connected(
     workspace: &Arc<crate::Workspace>,
-    slot: &crate::parked::Owner,
+    slot: &crate::parked::Slot,
     real_session_id: &str,
     force_new: bool,
 ) {
@@ -1113,7 +1113,7 @@ fn maybe_respawn_workers_on_connected(
 /// translate_event returns.
 fn maybe_kick_worker_on_connected(
     workspace: &Arc<crate::Workspace>,
-    slot: &crate::parked::Owner,
+    slot: &crate::parked::Slot,
     real_session_id: &str,
 ) {
     // The label is the worker's; a lead has none and gets no kick.
@@ -1161,7 +1161,7 @@ fn maybe_kick_worker_on_connected(
 #[cfg(test)]
 fn on_connected_for_test(
     workspace: &Arc<crate::Workspace>,
-    slot: &crate::parked::Owner,
+    slot: &crate::parked::Slot,
     real_session_id: &str,
 ) {
     // Normal (non-`--new`) Connected simulation; the force-new cascade
@@ -1452,9 +1452,9 @@ mod tests {
         DomainSession::new(SessionKey::from_str_for_test("test"), Some(Arc::new(handle)))
     }
 
-    /// The owner a test task carries. Drains resolve the parked bucket
+    /// The slot a test task carries. Drains resolve the parked bucket
     /// against it, so a test that parks must park under the same triple.
-    fn test_owner() -> crate::parked::Owner {
+    fn test_slot() -> crate::parked::Slot {
         ("TestOrg".to_owned(), "forge".to_owned(), None)
     }
 
@@ -1542,7 +1542,7 @@ mod tests {
             domain,
             update_tx,
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(workspace),
         };
@@ -1591,7 +1591,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -1621,7 +1621,7 @@ mod tests {
         assert!(echoed, "an asleep-buffered Slack message echoes a SlackMessageAppended on drain");
 
         assert!(
-            workspace.take_parked_for_owner(&test_owner()).slack.is_empty(),
+            workspace.take_parked_for_slot(&test_slot()).slack.is_empty(),
             "the buffer drains once flushed",
         );
     }
@@ -1650,7 +1650,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: Some(synth_key.clone()),
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -1940,7 +1940,7 @@ mod tests {
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -1993,7 +1993,7 @@ mod tests {
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
             spawn_key: Some(spawn_key.clone()),
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2013,12 +2013,12 @@ mod tests {
     }
 
     /// A spawn that never connected strands whatever was parked for it, and
-    /// the expiry reaches it by owner rather than by key: one bucket holds
+    /// the expiry reaches it by slot rather than by key: one bucket holds
     /// it, and the release below drops the domain it was once buffered on.
     /// For Slack the delivery was already committed, so nothing re-delivers
     /// it.
     #[tokio::test]
-    async fn connection_failed_expires_the_buffers_parked_for_its_owner() {
+    async fn connection_failed_expires_the_buffers_parked_for_its_slot() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let key = SessionKey::from_str_for_test("real-key");
         let spawn_key = SessionKey::from_str_for_test("__spawn_proj__");
@@ -2047,7 +2047,7 @@ mod tests {
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
             spawn_key: Some(spawn_key.clone()),
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2057,8 +2057,8 @@ mod tests {
 
         assert!(!continues);
         assert!(
-            workspace.take_parked_for_owner(&test_owner()).slack.is_empty(),
-            "the message parked for this owner is expired, not left for a later session",
+            workspace.take_parked_for_slot(&test_slot()).slack.is_empty(),
+            "the message parked for this slot is expired, not left for a later session",
         );
     }
 
@@ -2083,7 +2083,7 @@ mod tests {
             ))),
             update_tx,
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2143,7 +2143,7 @@ mod tests {
             ))),
             update_tx,
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2470,7 +2470,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: true,
             workspace: std::sync::Weak::new(),
         };
@@ -2509,7 +2509,7 @@ provider = "anthropic"
         );
     }
 
-    /// First-Connected drains the owner's parked peer prompts in FIFO
+    /// First-Connected drains the slot's parked peer prompts in FIFO
     /// order, dispatching one `Command::Prompt` per parked entry, then
     /// leaves the bucket empty. Pinned via the workspace's
     /// command-intercept buffer so the full first-Connected branch of
@@ -2521,7 +2521,7 @@ provider = "anthropic"
 
         let (workspace, _update_rx) = crate::Workspace::testing_stub();
 
-        // Park three Messages for the task's owner in known order.
+        // Park three Messages for the task's slot in known order.
         // Message kind (not Question) keeps the assertion focused on
         // FIFO dispatch; the Question-kind incoming-counter bump is
         // exercised separately.
@@ -2560,7 +2560,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2611,7 +2611,7 @@ provider = "anthropic"
             );
         }
         assert!(
-            workspace.take_parked_for_owner(&test_owner()).peer.is_empty(),
+            workspace.take_parked_for_slot(&test_slot()).peer.is_empty(),
             "the parked peer prompts are drained after first-Connected"
         );
     }
@@ -2668,7 +2668,7 @@ provider = "anthropic"
         }
     }
 
-    /// First-Connected drains the session owner's buffered cron prompts:
+    /// First-Connected drains the session slot's buffered cron prompts:
     /// each dispatches a plain `Command::Prompt` AND echoes a
     /// `CronPromptAppended` so an asleep-fired cron shows its block once the
     /// session connects (mirrors the gotify drain echo). Reproduce-first:
@@ -2677,7 +2677,7 @@ provider = "anthropic"
     async fn first_connected_drains_pending_cron_prompts_and_echoes_block() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         workspace.seed_test_project("cron-drain", "/tmp/cron-drain");
-        // Parked for the task's own owner, which is what the drain reads.
+        // Parked for the task's own slot, which is what the drain reads.
         workspace.park_cron("TestOrg", "forge", None, "morning reminder".to_owned(), false);
 
         let session_key = SessionKey::from_session_id("cron-drain-uuid");
@@ -2695,7 +2695,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2726,8 +2726,8 @@ provider = "anthropic"
         assert!(echoed, "an asleep-fired cron echoes a CronPromptAppended on drain");
 
         assert!(
-            workspace.take_parked_for_owner(&test_owner()).cron.is_empty(),
-            "the owner's cron bucket is drained after first-Connected",
+            workspace.take_parked_for_slot(&test_slot()).cron.is_empty(),
+            "the slot's cron bucket is drained after first-Connected",
         );
     }
 
@@ -2745,8 +2745,8 @@ provider = "anthropic"
         workspace.insert_live_worker(&key, cron_worker_entry("reviewer", "worker-drain-uuid"));
 
         // A missed cron for the worker + an on-time lead cron for the project.
-        let worker_owner = ("TestOrg".to_owned(), "wdp".to_owned(), Some("reviewer".to_owned()));
-        let lead_owner = ("TestOrg".to_owned(), "wdp".to_owned(), None);
+        let worker_slot = ("TestOrg".to_owned(), "wdp".to_owned(), Some("reviewer".to_owned()));
+        let lead_slot = ("TestOrg".to_owned(), "wdp".to_owned(), None);
         workspace.park_cron("TestOrg", "wdp", Some("reviewer"), "worker work".to_owned(), true);
         workspace.park_cron("TestOrg", "wdp", None, "lead work".to_owned(), false);
 
@@ -2764,7 +2764,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
-            owner: worker_owner,
+            slot: worker_slot,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2781,7 +2781,7 @@ provider = "anthropic"
             "the worker drains its own missed cron with the marker applied",
         );
         // The lead's bucket is untouched by the worker's drain.
-        let lead_bucket = workspace.take_parked_for_owner(&lead_owner).cron;
+        let lead_bucket = workspace.take_parked_for_slot(&lead_slot).cron;
         assert_eq!(lead_bucket.len(), 1, "the lead's cron stays buffered");
         assert_eq!(lead_bucket[0].text, "lead work");
     }
@@ -2808,7 +2808,7 @@ provider = "anthropic"
                 domain: Arc::clone(&domain),
                 update_tx: workspace.update_sender(),
                 spawn_key: None,
-                owner: test_owner(),
+                slot: test_slot(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
             };
@@ -2858,7 +2858,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             // The seed a session-replacing re-spawn installs.
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
@@ -2940,7 +2940,7 @@ provider = "anthropic"
             domain: Arc::clone(&domain),
             update_tx: workspace.update_sender(),
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };
@@ -3023,7 +3023,7 @@ provider = "anthropic"
             domain,
             update_tx: workspace.update_sender(),
             spawn_key: None,
-            owner: test_owner(),
+            slot: test_slot(),
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
         };
@@ -3178,7 +3178,7 @@ mod connected_hook_tests {
 
     /// A project's lead slot: the label is what marks the role, so a
     /// project whose name looks worker-shaped is still a lead.
-    fn lead_slot(project_name: &str) -> crate::parked::Owner {
+    fn lead_slot(project_name: &str) -> crate::parked::Slot {
         ("TestOrg".to_owned(), project_name.to_owned(), None)
     }
 
@@ -3345,7 +3345,7 @@ mod connected_hook_tests {
         workspace: &Arc<Workspace>,
         label: &str,
         kick: Option<String>,
-    ) -> crate::parked::Owner {
+    ) -> crate::parked::Slot {
         workspace.seed_test_project("forge", "/tmp/forge");
         let project_key = workspace
             .list_projects()

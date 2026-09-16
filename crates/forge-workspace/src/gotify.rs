@@ -306,7 +306,7 @@ mod tests {
         label: Option<&str>,
     ) -> Vec<crate::mcp::gotify::types::GotifyNotification> {
         let org = ws.list_projects().into_iter().find(|v| v.name == project).expect("project").org;
-        ws.parked_by_owner
+        ws.parked_by_slot
             .lock()
             .get(&(org, project.to_owned(), label.map(str::to_owned)))
             .map(|parked| parked.gotify.clone())

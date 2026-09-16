@@ -207,7 +207,7 @@ pub(crate) fn handle_spawn_project(
             // record everything parked for this project's lead here -
             // otherwise the caller's LLM waits on a spawn that never
             // happened, and a committed delivery is lost unannounced.
-            workspace.expire_parked_for_owner(
+            workspace.expire_parked_for_slot(
                 &project.org,
                 &project.name,
                 None,
@@ -522,12 +522,12 @@ pub(crate) fn deliver_gotify_message(
             // its own first `Connected`. The org comes from the worker's
             // own registration, so a project dropped from forge.toml
             // since its spawn still keys correctly.
-            let owner = workspace.owner_for_session_key(&worker_key).or_else(|| {
+            let slot = workspace.slot_for_session_key(&worker_key).or_else(|| {
                 workspace
                     .find_project_view_by_name(project)
                     .map(|view| (view.org, view.name, Some(role.to_owned())))
             });
-            let Some((org, name, label)) = owner else {
+            let Some((org, name, label)) = slot else {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
                     project = %project,
@@ -683,12 +683,12 @@ pub(crate) fn deliver_slack_message(
             // its own first `Connected`. The org comes from the worker's
             // own registration, so a project dropped from forge.toml
             // since its spawn still keys correctly.
-            let owner = workspace.owner_for_session_key(&worker_key).or_else(|| {
+            let slot = workspace.slot_for_session_key(&worker_key).or_else(|| {
                 workspace
                     .find_project_view_by_name(project)
                     .map(|view| (view.org, view.name, Some(role.to_owned())))
             });
-            let Some((org, name, label)) = owner else {
+            let Some((org, name, label)) = slot else {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
                     project = %project,
@@ -916,7 +916,7 @@ pub(crate) fn handle_spawn_session(
             );
             // No SessionTask exists to run its ConnectionFailed arm, so
             // record everything parked for this session's owner here.
-            workspace.expire_parked_for_owner(
+            workspace.expire_parked_for_slot(
                 &parent.org,
                 &parent.name,
                 owner_label.as_deref(),
@@ -980,7 +980,7 @@ pub(crate) fn handle_start_default(
             // No SessionTask exists to run its ConnectionFailed arm, so
             // record everything parked for this project's lead here.
             if let Some(project) = lead_project {
-                workspace.expire_parked_for_owner(
+                workspace.expire_parked_for_slot(
                     &project.org,
                     &project.name,
                     None,
@@ -1613,7 +1613,7 @@ fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
 /// bump bookkeeping happens exactly once, at real delivery time.
 fn buffer_prompt_until_connected(
     workspace: &Arc<Workspace>,
-    owner: Option<crate::parked::Owner>,
+    slot: Option<crate::parked::Slot>,
     target_key: &SessionKey,
     wrapped: WrappedPrompt,
 ) -> Option<WrappedPrompt> {
@@ -1625,8 +1625,8 @@ fn buffer_prompt_until_connected(
     if domain.lock().session_id.is_some() {
         return Some(wrapped);
     }
-    let Some((org, project, label)) = owner else {
-        // No project to address the owner by; let the caller proceed the
+    let Some((org, project, label)) = slot else {
+        // No project to address the slot by; let the caller proceed the
         // same way.
         return Some(wrapped);
     };
@@ -1770,8 +1770,8 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     // Same pre-Connect guard as the sibling-worker path: if the lead
     // hasn't stamped its session_id yet, buffer for its Connected drain
     // rather than dispatching a Command::Prompt that would be dropped.
-    let owner = workspace.owner_for_session_key(target_lead_key);
-    let Some(wrapped) = buffer_prompt_until_connected(workspace, owner, target_lead_key, wrapped)
+    let slot = workspace.slot_for_session_key(target_lead_key);
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, slot, target_lead_key, wrapped)
     else {
         return;
     };
@@ -2113,7 +2113,7 @@ provider = "anthropic"
         // wrapped prompt - assert on the typed correlation id as well, so
         // a mis-keyed parking cannot pass by parking twice.
         let parked = workspace
-            .parked_by_owner
+            .parked_by_slot
             .lock()
             .get(&("Default".to_owned(), "gateway-backend".to_owned(), None))
             .map(|parked| parked.peer.clone())
@@ -2229,13 +2229,13 @@ provider = "anthropic"
         deliver_slack_message(&ws, "forge", Some("tester"), slack_msg("hello"));
 
         let parked = ws
-            .parked_by_owner
+            .parked_by_slot
             .lock()
             .get(&("TestOrg".to_owned(), "forge".to_owned(), Some("tester".to_owned())))
             .map_or(0, |parked| parked.slack.len());
         assert_eq!(parked, 1, "the message is parked for the worker that subscribed");
         assert_eq!(
-            ws.parked_by_owner
+            ws.parked_by_slot
                 .lock()
                 .get(&("TestOrg".to_owned(), "forge".to_owned(), None))
                 .map_or(0, |parked| parked.slack.len()),
@@ -2353,19 +2353,19 @@ provider = "anthropic"
         assert!(result.is_err(), "a target mapping to no project is refused");
         let owner = ("Default".to_owned(), "missing".to_owned(), None);
         assert_eq!(
-            ws.parked_by_owner.lock().get(&owner).map_or(0, |parked| parked.slack.len()),
+            ws.parked_by_slot.lock().get(&owner).map_or(0, |parked| parked.slack.len()),
             1,
             "the refusal left the bucket alone, so the caller's expiry can still reach it",
         );
 
-        ws.expire_parked_for_owner(
+        ws.expire_parked_for_slot(
             "Default",
             "missing",
             None,
             crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
         );
         assert_eq!(
-            ws.parked_by_owner.lock().get(&owner).map_or(0, |parked| parked.slack.len()),
+            ws.parked_by_slot.lock().get(&owner).map_or(0, |parked| parked.slack.len()),
             0,
             "and the caller's expiry is what records the loss",
         );
@@ -2389,7 +2389,7 @@ provider = "anthropic"
         );
 
         assert_eq!(
-            ws.parked_by_owner
+            ws.parked_by_slot
                 .lock()
                 .get(&("TestOrg".to_owned(), "overlayonly".to_owned(), None))
                 .map_or(0, |parked| parked.slack.len()),
@@ -3711,7 +3711,7 @@ provider = "anthropic"
 
         assert_eq!(
             workspace
-                .parked_by_owner
+                .parked_by_slot
                 .lock()
                 .get(&("TestOrg".to_owned(), "forge".to_owned(), Some("builder".to_owned())))
                 .map_or(0, |parked| parked.peer.len()),
@@ -4059,7 +4059,7 @@ provider = "anthropic"
 
         assert_eq!(
             workspace
-                .parked_by_owner
+                .parked_by_slot
                 .lock()
                 .get(&("TestOrg".to_owned(), "forge".to_owned(), Some("reviewer".to_owned())))
                 .map_or(0, |parked| parked.slack.len()),
