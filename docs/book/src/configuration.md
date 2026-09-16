@@ -483,8 +483,8 @@ dictation models, then hands over to wherever you were headed: the
 project picker for `forge`, straight into that project's chat for
 `forge <PROJECT>`. It is shown once per run.
 
-Nothing spawns until every account has authenticated, because the
-account-assignment plan is only computed once they have.
+Nothing spawns until every account has settled, because the walk that
+picks a session's account reads each one's state.
 
 Preflight completes only on every account reaching a usable state.
 **forge will not start while an account in `forge.toml` cannot

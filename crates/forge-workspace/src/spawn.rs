@@ -2257,7 +2257,7 @@ provider = "anthropic"
     /// exercise the handoff's move branch - it pins the mechanism (arm, hit a
     /// `?`, record on Drop), which is the whole fix.
     #[tokio::test]
-    async fn a_spawn_failing_on_the_project_lookup_records_the_buffered_delivery() {
+    async fn a_refused_spawn_leaves_the_synth_key_buffers_to_the_caller() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
@@ -2275,10 +2275,12 @@ provider = "anthropic"
             Some(synth_key.clone()),
         );
 
-        assert!(result.is_err(), "the project lookup misses, so the spawn fails after the move");
-        assert!(
-            domain.lock().pending_slack_prompts.is_empty(),
-            "the failed spawn records the delivery the handoff had moved",
+        assert!(result.is_err(), "a target mapping to no project is refused");
+        assert_eq!(
+            domain.lock().pending_slack_prompts.len(),
+            1,
+            "the refusal lands before the handoff, so the delivery stays at the key the caller \
+             parked it at and the caller's own expiry still reaches it",
         );
     }
 

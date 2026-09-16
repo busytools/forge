@@ -13,7 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use forge_workspace::{SessionKey, SessionLaunchSettings, SessionTarget, Workspace};
+use forge_workspace::{SessionLaunchSettings, SessionTarget, Workspace};
 use tempfile::tempdir;
 
 /// Ensure `forge/` exists and return the production `forge/forge.toml`
@@ -38,6 +38,11 @@ accounts = ["Stargate"]
 name = "forge"
 path = "~/Projects/forge"
 auto_start = true
+model = "claude-sonnet-5"
+
+[[orgs.projects]]
+name = "dotfiles"
+path = "~/Projects/dotfiles"
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -70,9 +75,11 @@ provider = "anthropic"
         "first spawn binds to Stargate's display_name (first in the pin)",
     );
 
-    let other = SessionKey::from_str_for_test("display-name-other");
     let h2 = workspace
-        .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
+        .get_agent_handle(
+            SessionTarget::Named("dotfiles".to_owned()),
+            SessionLaunchSettings::default(),
+        )
         .expect("second spawn");
     assert_eq!(
         h2.display_name().as_deref(),

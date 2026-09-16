@@ -154,6 +154,13 @@ pub enum WorkspaceError {
     ProjectModelMissing { project: String, org: String },
 
     #[error(
+        "session '{session}' resolves to no project: its directory matches none of the \
+         [[orgs.projects]] paths in forge.toml. Add that directory as a project, or start the \
+         session from one that is configured"
+    )]
+    SpawnResolvesToNoProject { session: String },
+
+    #[error(
         "org '{org}' in forge.toml at {} references unknown account '{account}'; valid accounts: {valid}",
         path.display()
     )]

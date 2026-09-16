@@ -847,9 +847,9 @@ fn build_resume_map_from_sessions(
 /// domain and moved it onto the resolved key - a key nothing else knows yet, so
 /// no caller-side expiry can reach it. What it covers is the session call
 /// failing on a dead bridge dispatcher, which is what a `?` between arming and
-/// disarming can realistically hit;
-/// `a_spawn_failing_on_the_project_lookup_records_the_buffered_delivery` drives
-/// it through the project lookup instead, the one failure reachable from a test.
+/// disarming can realistically hit. No test drives that path: the project
+/// lookups that used to are refusals now, and they land before the handoff,
+/// where the buffers stay at the key their caller parked them at.
 struct SpawnBuffersGuard<'a> {
     workspace: &'a Arc<Workspace>,
     key: &'a SessionKey,
@@ -1498,38 +1498,29 @@ impl Workspace {
 
         // Resolve which account this spawn lands under: the walk over
         // the accounts declaring the project's model, which is the same
-        // walk the gateway runs on a session's first request. A project
-        // that declares no model has no walk to run and is refused.
-        let project = self.project_for_target(&target);
-        // A spawn whose target maps to no project still needs a
-        // gateway-stamped env, so it registers under the default
-        // project's org and name - which is where its pin resolution
-        // falls back to anyway - and the log says so.
-        let gateway_project = if let Some(project) = project.as_ref() {
-            project
-        } else {
-            let default = self.config.default_project();
-            tracing::info!(
-                target: "forge_workspace::account",
-                session = %session_key.as_str(),
-                org = %default.org,
-                project = %default.name,
-                "the spawn resolves to no project; registered under the default project's org",
-            );
-            default
+        // walk the gateway runs on a session's first request. Both the
+        // project and its model are required - without a project there
+        // is no org, no pin and no model for the walk to run over, and
+        // an unregistered spawn would hand the child the account's real
+        // credential and a direct base URL.
+        let Some(project) = self.project_for_target(&target) else {
+            return Err(WorkspaceError::SpawnResolvesToNoProject {
+                session: session_key.as_str().to_owned(),
+            }
+            .into());
         };
         // The gateway's walk is the one place a session's account is
         // decided: it looks the org's pin up, filters cooling accounts
         // and walks the accounts declaring the model. The spawn only
         // registers the answer, and that registration is what binds.
-        let Some(model) = gateway_project.model.as_deref() else {
+        let Some(model) = project.model.as_deref() else {
             return Err(WorkspaceError::ProjectModelMissing {
-                project: gateway_project.name.clone(),
-                org: gateway_project.org.clone(),
+                project: project.name.clone(),
+                org: project.org.clone(),
             }
             .into());
         };
-        let account_key = self.select_account_for_project(gateway_project, model)?;
+        let account_key = self.select_account_for_project(&project, model)?;
         tracing::info!(
             target: "forge_workspace::account",
             session = %session_key.as_str(),
@@ -1544,8 +1535,8 @@ impl Workspace {
         // inherits it as `CLAUDE_CONFIG_DIR` so each session reads/
         // writes the right account's user-data tree.
         let account_env = self.accounts.env(&account_key).unwrap_or_default();
-        apply_project_permission_mode(project.as_ref(), &mut settings);
-        let project_permission_mode = project.as_ref().map(|project| project.permission_mode);
+        apply_project_permission_mode(Some(&project), &mut settings);
+        let project_permission_mode = Some(project.permission_mode);
         // The project env merges BEFORE the gateway registers: the
         // stamp must land last, or a project env carrying a
         // base-url key would point the child away from the listener
@@ -1558,8 +1549,8 @@ impl Workspace {
         // gateway.
         let registration = self.accounts.provider(&account_key).map(|provider| {
             forge_gateway::binding::Registration {
-                org: gateway_project.org.clone(),
-                project: gateway_project.name.clone(),
+                org: project.org.clone(),
+                project: project.name.clone(),
                 session: session_key.as_str().to_owned(),
                 account: account_key.clone(),
                 provider,
@@ -1577,7 +1568,7 @@ impl Workspace {
         // for everything the CLI does - main, subagents, background
         // slots. A /model change re-seats the primary immediately; the
         // slots follow on the next respawn.
-        if let Some(model) = project.as_ref().and_then(|project| project.model.as_ref()) {
+        if let Some(model) = project.model.as_ref() {
             for var in MODEL_SLOT_VARIABLES {
                 session_env.insert((*var).to_owned(), model.clone());
             }
@@ -1586,7 +1577,7 @@ impl Workspace {
         // caller's pin - forge defaults it to the literal "opus" - from
         // resolving through an account's alias mapping into a model the
         // project never declared.
-        apply_project_model(project.as_ref(), &mut settings);
+        apply_project_model(Some(&project), &mut settings);
 
         // Hoist DomainSession creation to BEFORE Agent::spawn so the
         // per-session peer-MCP server's CallerKeyResolver can read
@@ -7757,7 +7748,33 @@ base_url = "https://openrouter.ai/api"
 
     #[tokio::test]
     async fn distinct_targets_pool_distinct_entries() {
-        let dir = make_workspace_dir();
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[orgs.projects]]
+name = "dotfiles"
+path = "~/Projects/dotfiles"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.seed_test_ready_account("Stargate");
         let settings = SessionLaunchSettings::default();
@@ -7769,10 +7786,10 @@ base_url = "https://openrouter.ai/api"
             .expect("default again");
         assert_eq!(workspace.pool.lock().len(), 1, "Default is idempotent");
 
-        let other = SessionKey::from_str_for_test("dual-test-other");
-        let _ =
-            workspace.get_agent_handle(SessionTarget::Session(other), settings).expect("session");
-        assert_eq!(workspace.pool.lock().len(), 2, "distinct target adds a pool entry");
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Named("dotfiles".to_owned()), settings)
+            .expect("named");
+        assert_eq!(workspace.pool.lock().len(), 2, "a distinct target adds a pool entry");
     }
 
     #[tokio::test]
@@ -12919,12 +12936,13 @@ provider = "anthropic"
         }
     }
 
-    /// A spawn resolving to no project is still registered, under the
-    /// default project's org and name: the child holds the gateway's
-    /// dummy rather than the account's real token, and points at the
-    /// listener rather than at the provider.
+    /// A spawn whose target resolves to no configured project is
+    /// refused, naming the session and both ways out. It used to spawn
+    /// unregistered, carrying the account's real credential and a
+    /// direct base URL - a session the gateway could not see, rotate or
+    /// cool, and one whose dir forge.toml does not describe.
     #[tokio::test]
-    async fn a_no_project_spawn_registers_under_the_default_project() {
+    async fn a_spawn_resolving_to_no_project_is_refused_by_name() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             forge_toml_path(dir.path()),
@@ -12951,19 +12969,23 @@ provider = "anthropic"
         workspace.seed_test_gateway_ready(true);
         workspace.seed_test_ready_account("Stargate");
         let target = SessionTarget::Session(SessionKey::from_session_id("orphan-uuid"));
-        let handle =
-            workspace.get_agent_handle(target, SessionLaunchSettings::default()).expect("spawn");
+        let error = workspace
+            .get_agent_handle(target, SessionLaunchSettings::default())
+            .err()
+            .expect("a session mapping to no project must not spawn");
 
-        let env = handle.env();
-        assert_eq!(
-            env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
-            Some(forge_gateway::binding::DUMMY_CREDENTIAL),
-            "the account's real token stays in the gateway; got {env:?}",
-        );
-        let base = env.get("ANTHROPIC_BASE_URL").expect("the listener base URL is stamped");
+        let message = format!("{error}");
         assert!(
-            base.ends_with("/Default/forge/orphan-uuid"),
-            "the URL names the default project's org and name, then the session; got {base}",
+            message.contains("orphan-uuid"),
+            "the refusal names the session, so the row is identifiable: {message}",
+        );
+        assert!(
+            message.contains("Add that directory as a project"),
+            "and names the way forward: {message}",
+        );
+        assert!(
+            workspace.pool.lock().is_empty(),
+            "nothing is pooled, so no unregistered child is running",
         );
     }
 
