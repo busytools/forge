@@ -43,7 +43,7 @@ An array of tables. At least one is required, or the load fails with
 |---|---|---|---|
 | `name` | string | yes | Must be unique across orgs. |
 | `accounts` | array of strings | yes | Each entry must match an `[[accounts]]` `display_name`. |
-| `fallback_accounts` | array of strings | no | Fallback accounts assignment falls to when the pinned accounts are unavailable. Absent means none. |
+| `fallback_accounts` | array of strings | no | Accounts the walk reaches after the pinned ones. Absent means none. |
 | `projects` | array of tables | yes | Written as `[[orgs.projects]]`. An org with none fails the load. |
 
 `accounts` is the account subset every project in this org may spawn
@@ -54,7 +54,7 @@ under. Rules enforced at load:
 - A name that matches no `[[accounts]]` entry fails, and the error
   lists the valid names.
 
-`fallback_accounts` is the org's second tier: assignment prefers a
+`fallback_accounts` is the org's second tier: the walk takes a
 fallback over a saturated or down primary, and returns to the primary
 when it heals. The names also render in the `/gateway` view's fallback
 pin. The list is validated at load
