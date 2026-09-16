@@ -19,82 +19,62 @@ pub(crate) struct ParkedForSlot {
     pub slack: Vec<forge_primitives::slack::SlackMessage>,
 }
 
-/// Parked payloads keyed by `(org, project, label)`; `None` is the lead.
-pub(crate) type ParkedMap = HashMap<(String, String, Option<String>), ParkedForSlot>;
-
-/// `(org, project, label)`; `None` is the lead.
-pub(crate) type Slot = (String, String, Option<String>);
-
-fn slot_key(org: &str, project: &str, label: Option<&str>) -> Slot {
-    (org.to_owned(), project.to_owned(), label.map(str::to_owned))
+/// The slot a payload is addressed to: the `(org, project, label)`
+/// triple the `sessions` table is keyed by, with `label` `None` for the
+/// project's lead. One value rather than three adjacent strings, so a
+/// park and the drain that fills it cannot be transposed.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Slot {
+    pub org: String,
+    pub project: String,
+    pub label: Option<String>,
 }
+
+impl Slot {
+    pub(crate) fn new(org: &str, project: &str, label: Option<String>) -> Self {
+        Self { org: org.to_owned(), project: project.to_owned(), label }
+    }
+
+    /// A worker's slot: its project plus the label that names it.
+    pub(crate) fn worker(org: &str, project: &str, label: &str) -> Self {
+        Self::new(org, project, Some(label.to_owned()))
+    }
+
+    /// A project's lead slot.
+    pub(crate) fn lead(org: &str, project: &str) -> Self {
+        Self::new(org, project, None)
+    }
+}
+
+/// Parked payloads, one bucket per slot.
+pub(crate) type ParkedMap = HashMap<Slot, ParkedForSlot>;
 
 impl crate::Workspace {
     /// Park a peer prompt for `slot`, drained by the session that next
     /// connects as that slot.
-    pub(crate) fn park_peer_prompt(
-        &self,
-        org: &str,
-        project: &str,
-        label: Option<&str>,
-        wrapped: WrappedPrompt,
-    ) {
-        self.parked_by_slot
-            .lock()
-            .entry(slot_key(org, project, label))
-            .or_default()
-            .peer
-            .push(wrapped);
+    pub(crate) fn park_peer_prompt(&self, slot: &Slot, wrapped: WrappedPrompt) {
+        self.parked_by_slot.lock().entry(slot.clone()).or_default().peer.push(wrapped);
     }
 
     /// Park a fired cron prompt for `slot`, missed-marked when it came
     /// due while the owner was asleep.
-    pub(crate) fn park_cron(
-        &self,
-        org: &str,
-        project: &str,
-        label: Option<&str>,
-        text: String,
-        missed: bool,
-    ) {
+    pub(crate) fn park_cron(&self, slot: &Slot, text: String, missed: bool) {
         self.parked_by_slot
             .lock()
-            .entry(slot_key(org, project, label))
+            .entry(slot.clone())
             .or_default()
             .cron
             .push(crate::crons::PendingCron { text, missed });
     }
 
     /// Park a Gotify notification for `slot`.
-    pub(crate) fn park_gotify(
-        &self,
-        org: &str,
-        project: &str,
-        label: Option<&str>,
-        notification: GotifyNotification,
-    ) {
-        self.parked_by_slot
-            .lock()
-            .entry(slot_key(org, project, label))
-            .or_default()
-            .gotify
-            .push(notification);
+    pub(crate) fn park_gotify(&self, slot: &Slot, notification: GotifyNotification) {
+        self.parked_by_slot.lock().entry(slot.clone()).or_default().gotify.push(notification);
     }
 
     /// Park a Slack message for `slot`.
-    pub(crate) fn park_slack(
-        &self,
-        org: &str,
-        project: &str,
-        label: Option<&str>,
-        message: forge_primitives::slack::SlackMessage,
-    ) {
-        self.parked_by_slot
-            .lock()
-            .entry(slot_key(org, project, label))
-            .or_default()
-            .slack
-            .push(message);
+    pub(crate) fn park_slack(&self, slot: &Slot, message: forge_primitives::slack::SlackMessage) {
+        self.parked_by_slot.lock().entry(slot.clone()).or_default().slack.push(message);
     }
 
     /// Take (and clear) everything parked for the connecting session's
@@ -114,37 +94,65 @@ impl crate::Workspace {
         reason: PeerFailureReason,
     ) {
         let Some(slot) = self.slot_for_session_key(session_key) else { return };
-        self.expire_parked_slot(&slot, reason);
+        self.expire_parked_for_slot(&slot, reason);
     }
 
-    /// Drop what is parked for a worker label, resolved from its project
-    /// key. The close paths know the label directly, and they run for a
-    /// worker that may not be pooled yet - the window a delivery parks in.
-    pub(crate) fn expire_parked_for_worker_label(
+    /// Expire what a worker's close left parked, by the rule its
+    /// delivery parked under.
+    ///
+    /// The pool arm is a miss at this call site: the close released the
+    /// session before it got here, which is why the label-based fallback
+    /// is the one that runs. It is kept so the two callers cannot drift -
+    /// the rule is one function, not two implementations of a comment.
+    pub(crate) fn expire_parked_for_worker(
         self: &Arc<Self>,
         project_key: &crate::ProjectKey,
         label: &str,
+        session_key: &SessionKey,
         reason: PeerFailureReason,
     ) {
-        let Some(project) = self.project_for_key(project_key) else { return };
-        self.expire_parked_for_slot(&project.org, &project.name, Some(label), reason);
+        let project = self.project_for_key(project_key);
+        let project = project.as_ref().map(|p| (p.org.clone(), p.name.clone()));
+        let Some(slot) = self.worker_slot_or(session_key, project, label) else { return };
+        self.expire_parked_for_slot(&slot, reason);
+    }
+
+    /// The slot a delivery to a worker addresses: the record its spawn
+    /// wrote while the pool holds it, else its label under `project`.
+    pub(crate) fn delivery_slot_for_worker(
+        &self,
+        session_key: &SessionKey,
+        project: Option<(String, String)>,
+        label: &str,
+    ) -> Option<Slot> {
+        self.worker_slot_or(session_key, project, label)
+    }
+
+    /// The one implementation of the worker address rule: the slot the
+    /// pool holds for this session, else the label under the project the
+    /// caller resolved. Both the park and the expiry call it, so a
+    /// payload cannot be parked under one slot and expired at another.
+    ///
+    /// `None` when neither names the project - a project dropped from
+    /// `forge.toml` since the worker spawned, with no pooled entry left.
+    fn worker_slot_or(
+        &self,
+        session_key: &SessionKey,
+        project: Option<(String, String)>,
+        label: &str,
+    ) -> Option<Slot> {
+        if let Some(slot) = self.slot_for_session_key(session_key) {
+            return Some(slot);
+        }
+        let (org, name) = project?;
+        Some(Slot::worker(&org, &name, label))
     }
 
     /// Drop everything parked for `slot`, failing each peer ask so its
     /// caller gets the delivery-failure notice rather than waiting out the
     /// timeout. A peer ask is the only parked payload with a caller, so the
     /// Gotify and Slack drops have no recipient and are logged.
-    pub(crate) fn expire_parked_for_slot(
-        self: &Arc<Self>,
-        org: &str,
-        project: &str,
-        label: Option<&str>,
-        reason: PeerFailureReason,
-    ) {
-        self.expire_parked_slot(&slot_key(org, project, label), reason);
-    }
-
-    fn expire_parked_slot(self: &Arc<Self>, slot: &Slot, reason: PeerFailureReason) {
+    pub(crate) fn expire_parked_for_slot(self: &Arc<Self>, slot: &Slot, reason: PeerFailureReason) {
         let Some(parked) = self.parked_by_slot.lock().remove(slot) else { return };
         for wrapped in parked.peer {
             self.expire_inflight_ask_failed(&wrapped.correlation_id, reason);
@@ -152,8 +160,9 @@ impl crate::Workspace {
         for notification in parked.gotify {
             tracing::warn!(
                 target: "forge_workspace::spawn",
-                org = %slot.0,
-                project = %slot.1,
+                org = %slot.org,
+                project = %slot.project,
+                label = ?slot.label,
                 app = %notification.app,
                 title = %notification.title,
                 "gotify notification dropped: the spawn it was parked for failed",
@@ -162,8 +171,9 @@ impl crate::Workspace {
         for message in parked.slack {
             tracing::warn!(
                 target: "forge_workspace::spawn",
-                org = %slot.0,
-                project = %slot.1,
+                org = %slot.org,
+                project = %slot.project,
+                label = ?slot.label,
                 conversation = %message.conversation,
                 ts = %message.ts,
                 "slack message dropped: the spawn it was parked for failed",
@@ -171,16 +181,15 @@ impl crate::Workspace {
         }
     }
 
-    /// The `(org, project, label)` a live session acts for, read from the
-    /// registration its spawn stamped. That triple is fixed at spawn, so
-    /// it is the same one the store and the parking paths key on. `None`
-    /// for a key this process holds no registration for.
+    /// The slot a live session fills, read from the record its spawn
+    /// wrote. `None` for a key this process has no pooled entry for.
+    ///
+    /// Read rather than derived: a derivation from the live-worker
+    /// registry answers with the lead's slot for a worker whose entry is
+    /// gone, and this feeds the expiry that has to reach the worker's OWN
+    /// bucket.
     pub(crate) fn slot_for_session_key(&self, session_key: &SessionKey) -> Option<Slot> {
-        let registration = {
-            let pool = self.pool.lock();
-            pool.get(session_key).and_then(|entry| entry.registration.as_ref()).cloned()?
-        };
-        Some((registration.org, registration.project, self.worker_label_for_session(session_key)))
+        Some(self.pool.lock().get(session_key)?.slot.clone())
     }
 }
 
@@ -193,7 +202,7 @@ mod tests {
     };
 
     fn slot(label: Option<&str>) -> Slot {
-        ("TestOrg".to_owned(), "parked-proj".to_owned(), label.map(str::to_owned))
+        Slot::new("TestOrg", "parked-proj", label.map(str::to_owned))
     }
 
     fn wrapped(correlation_id: &CorrelationId, body: &str) -> WrappedPrompt {
@@ -213,7 +222,7 @@ mod tests {
     fn a_parked_payload_lands_on_the_slots_connect() {
         let (ws, _rx) = crate::Workspace::testing_stub();
         let id = CorrelationId::new_ask();
-        ws.park_peer_prompt("TestOrg", "parked-proj", None, wrapped(&id, "are you up?"));
+        ws.park_peer_prompt(&slot(None), wrapped(&id, "are you up?"));
 
         let taken = ws.take_parked_for_slot(&slot(None));
         assert_eq!(taken.peer.len(), 1, "the slot's own connect takes its bucket");
@@ -230,8 +239,8 @@ mod tests {
     fn one_bucket_holds_every_kind() {
         let (ws, _rx) = crate::Workspace::testing_stub();
         let id = CorrelationId::new_ask();
-        ws.park_peer_prompt("TestOrg", "parked-proj", None, wrapped(&id, "are you up?"));
-        ws.park_cron("TestOrg", "parked-proj", None, "morning reminder".to_owned(), true);
+        ws.park_peer_prompt(&slot(None), wrapped(&id, "are you up?"));
+        ws.park_cron(&slot(None), "morning reminder".to_owned(), true);
 
         let taken: ParkedForSlot = ws.take_parked_for_slot(&slot(None));
         assert_eq!(taken.peer.len(), 1, "the peer prompt is here");
@@ -246,7 +255,7 @@ mod tests {
     fn a_workers_parked_payload_is_not_the_leads() {
         let (ws, _rx) = crate::Workspace::testing_stub();
         let id = CorrelationId::new_ask();
-        ws.park_peer_prompt("TestOrg", "parked-proj", Some("planner"), wrapped(&id, "planner"));
+        ws.park_peer_prompt(&slot(Some("planner")), wrapped(&id, "planner"));
 
         assert!(
             ws.take_parked_for_slot(&slot(None)).peer.is_empty(),
@@ -266,7 +275,7 @@ mod tests {
     fn a_parked_payload_is_not_drained_across_orgs() {
         let (ws, _rx) = crate::Workspace::testing_stub();
         let id = CorrelationId::new_ask();
-        ws.park_peer_prompt("OtherOrg", "parked-proj", None, wrapped(&id, "elsewhere"));
+        ws.park_peer_prompt(&Slot::new("OtherOrg", "parked-proj", None), wrapped(&id, "elsewhere"));
 
         assert!(
             ws.take_parked_for_slot(&slot(None)).peer.is_empty(),
@@ -282,7 +291,7 @@ mod tests {
     fn expiring_a_slot_fails_its_parked_asks() {
         let (ws, _rx) = crate::Workspace::testing_stub();
         let id = CorrelationId::new_ask();
-        ws.park_peer_prompt("TestOrg", "parked-proj", None, wrapped(&id, "are you up?"));
+        ws.park_peer_prompt(&slot(None), wrapped(&id, "are you up?"));
         ws.inflight_asks.lock().insert(
             id.clone(),
             InflightAsk {
@@ -294,12 +303,7 @@ mod tests {
             },
         );
 
-        ws.expire_parked_for_slot(
-            "TestOrg",
-            "parked-proj",
-            None,
-            PeerFailureReason::TargetConnectionFailed,
-        );
+        ws.expire_parked_for_slot(&slot(None), PeerFailureReason::TargetConnectionFailed);
 
         assert!(
             !ws.inflight_asks.lock().contains_key(&id),

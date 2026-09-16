@@ -254,13 +254,13 @@ pub enum Command {
     /// agent for the specific session_id, synthesizing a key, and
     /// emits `Spawning` then `Connected` with the real key.
     ///
-    /// `kind` is the role the dispatcher knows the row to be. The row is
-    /// a catalog entry, so the spawn cannot tell a worker's session from
-    /// a lead's by anything it holds, and a worker handed a lead's tool
+    /// `role` is what the dispatcher knows the row to be. The row is a
+    /// catalog entry, so the spawn cannot tell a worker's session from a
+    /// lead's by anything it holds, and a worker handed a lead's tool
     /// surface fails silently - so the caller states it.
     SpawnSession {
         session_id: String,
-        kind: crate::mcp::SessionKind,
+        role: SpawnRole,
         launch_settings: SessionLaunchSettings,
     },
     /// App start. Workspace spawns the default project (or the
@@ -717,6 +717,22 @@ pub enum DictateOutcome {
     Failed,
     /// The user abandoned the take. Resets silently.
     Cancelled,
+}
+
+/// The role a caller states for a spawn: a project's lead, or a worker
+/// named by its label.
+///
+/// Both the session's tool surface and its slot's label come from this
+/// one value, so they cannot disagree - a caller that says `Worker`
+/// gives a worker's tool surface AND a worker's slot.
+///
+/// A spawn whose caller cannot state a role passes `None` instead (a
+/// re-spawn of whatever session the user has focused); the live-worker
+/// registry answers both questions for those.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpawnRole {
+    Lead,
+    Worker(String),
 }
 
 /// Update envelope: forge-workspace -> forge-tui.

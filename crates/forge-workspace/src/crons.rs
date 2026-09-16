@@ -297,7 +297,7 @@ mod tests {
             ws.list_projects().into_iter().find(|v| v.name == project).expect("seeded project").org;
         ws.parked_by_slot
             .lock()
-            .get(&(org, project.to_owned(), label.map(str::to_owned)))
+            .get(&crate::parked::Slot::new(&org, project, label.map(str::to_owned)))
             .map(|parked| parked.cron.iter().map(|p| p.text.clone()).collect())
             .unwrap_or_default()
     }
@@ -620,6 +620,7 @@ mod tests {
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
 
@@ -858,6 +859,7 @@ mod tests {
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
 
@@ -897,6 +899,7 @@ mod tests {
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");

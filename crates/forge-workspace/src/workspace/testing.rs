@@ -357,6 +357,7 @@ impl Workspace {
                     account: account.clone(),
                     provider: forge_primitives::account::Provider::Anthropic,
                 }),
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         self.gateway.bindings.bind("TestOrg", "forge", key.as_str(), account);

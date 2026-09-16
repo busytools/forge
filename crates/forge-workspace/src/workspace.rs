@@ -463,6 +463,11 @@ pub(crate) struct PooledAgent {
     /// `/resume` respawn re-registers it so the fresh child gets a
     /// fresh binding and env set.
     pub registration: Option<forge_gateway::binding::Registration>,
+    /// The slot this session fills, as its spawn stated it. The only
+    /// per-session record of the label, and therefore the only way a
+    /// session's own slot can be recovered after its worker-registry
+    /// entry is gone.
+    pub slot: crate::parked::Slot,
 }
 
 /// Why `insert_live_worker_if_label_absent` refused an insert. Decided
@@ -1418,24 +1423,21 @@ impl Workspace {
         }
     }
 
-    /// Which role a spawn is for. The caller that decided the role passes
-    /// it; a spawn whose caller cannot know - a re-spawn of whatever
-    /// session the user has focused - reads the live-worker registry,
-    /// which does. Nothing recovers it from the key's shape: a key that
-    /// happens to look like a worker is not evidence, and a project named
+    /// The slot a spawn fills, from the role its caller stated. The label
+    /// is used as given: a worker must never be resolved through the
+    /// registry, which answers with the lead's slot once its entry is
+    /// gone, and nothing recovers either answer from the key's shape - a
+    /// key that looks like a worker is not evidence, and a project named
     /// `worker_foo` once classified as a worker for exactly that reason.
-    fn session_kind_for_spawn(
-        &self,
-        spawn_kind: Option<crate::mcp::SessionKind>,
-        session_key: &SessionKey,
-    ) -> crate::mcp::SessionKind {
-        spawn_kind.unwrap_or_else(|| {
-            if self.worker_lookup_for_session(session_key).is_some() {
-                crate::mcp::SessionKind::Worker
-            } else {
-                crate::mcp::SessionKind::Lead
-            }
-        })
+    fn slot_for_spawn(
+        role: &crate::protocol::SpawnRole,
+        project: &LoadedProject,
+    ) -> crate::parked::Slot {
+        let label = match role {
+            crate::protocol::SpawnRole::Lead => None,
+            crate::protocol::SpawnRole::Worker(label) => Some(label.clone()),
+        };
+        crate::parked::Slot::new(&project.org, &project.name, label)
     }
 
     /// Hands out the `Arc<AgentHandle>` for the requested session,
@@ -1453,12 +1455,17 @@ impl Workspace {
     ///
     /// Workspace does not track which handle the caller is "using" -
     /// that's the caller's concern.
+    /// `role` is what the caller states this session to be. There is no
+    /// keyless form: a role forge cannot state is one it would have to
+    /// guess from the live-worker registry, which answers with the lead's
+    /// slot for a worker whose entry is gone.
     pub fn get_agent_handle(
         self: &Arc<Self>,
         target: SessionTarget,
         settings: SessionLaunchSettings,
+        role: &crate::protocol::SpawnRole,
     ) -> Result<Arc<AgentHandle>> {
-        self.get_agent_handle_with_spawn_key(target, settings, None, None)
+        self.get_agent_handle_with_spawn_key(target, settings, None, role)
     }
 
     /// Like [`Self::get_agent_handle`] but threads a synthetic
@@ -1469,17 +1476,15 @@ impl Workspace {
     /// `UiSession` map atomically. `None` for re-entrant callers (the
     /// pooled handle path) where no key migration is needed.
     ///
-    /// `spawn_kind` is the role the caller decided for this spawn, and it
-    /// is what builds the tool surface and the delegation block. `None`
-    /// for a caller that cannot know it - a re-spawn of whatever session
-    /// the user has focused - which falls back to the live-worker
-    /// registry.
+    /// `role` is what the caller states this spawn to be. It is the one
+    /// source for both the tool surface and the slot's label, so a worker
+    /// cannot be handed a lead's tool surface or a lead's address.
     pub(crate) fn get_agent_handle_with_spawn_key(
         self: &Arc<Self>,
         target: SessionTarget,
         mut settings: SessionLaunchSettings,
         spawn_key: Option<SessionKey>,
-        spawn_kind: Option<crate::mcp::SessionKind>,
+        role: &crate::protocol::SpawnRole,
     ) -> Result<Arc<AgentHandle>> {
         // The boot gate is a spawn precondition, not just a launchpad
         // decoration: a child stamped before the listener is bound
@@ -1539,6 +1544,15 @@ impl Workspace {
             .into());
         };
         let account_key = self.select_account_for_project(&project, model)?;
+        // The account and model checks have passed, so this spawn is
+        // committed: record the id its lead will run under, which is what
+        // the store held, what the catalog derived, or the one minted in
+        // `lead_session_key_for`. Nothing is written before this point -
+        // a refusal ahead of it would pin an id no child ever adopts, and
+        // the next boot would prefer that row over the catalog.
+        if matches!(role, crate::protocol::SpawnRole::Lead) {
+            self.record_session_id(&project.org, &project.name, LEAD_LABEL, session_key.as_str());
+        }
         tracing::info!(
             target: "forge_workspace::account",
             session = %session_key.as_str(),
@@ -1632,7 +1646,15 @@ impl Workspace {
         // lead or a worker. Leads see peers + workers (cross-project
         // coordination is a lead-only role); workers see workers
         // only. See `crate::mcp::SessionKind` for the rationale.
-        let session_kind = self.session_kind_for_spawn(spawn_kind, &session_key);
+        // One source for both answers: the slot's label decides the kind,
+        // so a worker's tool surface and a worker's address cannot
+        // disagree.
+        let slot = Self::slot_for_spawn(role, &project);
+        let session_kind = if slot.label.is_some() {
+            crate::mcp::SessionKind::Worker
+        } else {
+            crate::mcp::SessionKind::Lead
+        };
         let forge_server = {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
@@ -1721,13 +1743,26 @@ impl Workspace {
                 let cwd = project.path.to_string_lossy().to_string();
                 // The worker's label is the registry's own field: its
                 // entry lands before the spawn, keyed by this session.
-                // Without a label there is no row to key by, so the CLI
-                // picks the id as it always did.
-                let id = self.worker_label_for_session(&session_key).map(|label| {
+                let id = if let Some(label) = self.worker_label_for_session(&session_key) {
                     let id = uuid::Uuid::new_v4().to_string();
                     self.record_session_id(&project.org, &project.name, &label, &id);
-                    id
-                });
+                    Some(id)
+                } else {
+                    // No label means the row this worker would be keyed by
+                    // has no name: the CLI picks the id as it always did,
+                    // and nothing durable points at the session. A worker
+                    // spawn with no registry entry is an invariant
+                    // violation, not an ordinary state.
+                    tracing::warn!(
+                        target: "forge_workspace::spawn",
+                        org = %project.org,
+                        project = %project.name,
+                        session = %session_key.as_str(),
+                        "fresh worker spawn with no live-worker entry; the CLI picks the id \
+                         and no row records it",
+                    );
+                    None
+                };
                 handle.new_session(id, cwd, settings)?;
             }
         }
@@ -1752,6 +1787,7 @@ impl Workspace {
                     account: account_key.clone(),
                     permission_mode: project_permission_mode,
                     registration: registration.clone(),
+                    slot: slot.clone(),
                 },
             );
         }
@@ -1782,11 +1818,6 @@ impl Workspace {
             // round-trip after the spawn lands.
             domain_arc.lock().conn = Some(Arc::clone(&arc));
             let domain = Arc::clone(&domain_arc);
-            let slot = (
-                project.org.clone(),
-                project.name.clone(),
-                self.worker_label_for_session(&session_key),
-            );
             let task = SessionTask {
                 key: session_key,
                 handle: Arc::clone(&arc),
@@ -2625,12 +2656,18 @@ impl Workspace {
 
     /// Map a project to the `SessionKey` of its lead: the id the store
     /// holds, the catalog's on a boot that finds no row, or a freshly
-    /// minted one when there is nothing to resume - recorded under the
-    /// slot before the spawn, so the key is the id from the first
-    /// instant rather than something to be renamed onto it later.
+    /// minted one when there is nothing to resume, so the pool key IS the
+    /// id from the first instant rather than something renamed onto it
+    /// later.
+    ///
+    /// The mint is not written to the store here: this runs before the
+    /// account and model checks, and a refusal after it would pin an id
+    /// no child ever adopts while `lead_session_to_resume` prefers the
+    /// stored row over the catalog. The record lands once those checks
+    /// pass, in [`Self::get_agent_handle_with_spawn_key`].
     fn lead_session_key_for(&self, project: &LoadedProject, force_new: bool) -> SessionKey {
         self.lead_session_to_resume(project, force_new)
-            .unwrap_or_else(|| SessionKey::from_session_id(self.mint_lead_session_id(project)))
+            .unwrap_or_else(|| SessionKey::from_session_id(uuid::Uuid::new_v4().to_string()))
     }
 
     /// Return the project's lead (most-recent) session id when the
@@ -2688,14 +2725,6 @@ impl Workspace {
         let id = derived.as_str().to_owned();
         self.record_session_id(&project.org, &project.name, LEAD_LABEL, &id);
         Some(SessionKey::from_session_id(id))
-    }
-
-    /// Mint a lead's session id and record it, so the next boot re-enters
-    /// that session rather than starting another one.
-    fn mint_lead_session_id(&self, project: &LoadedProject) -> String {
-        let id = uuid::Uuid::new_v4().to_string();
-        self.record_session_id(&project.org, &project.name, LEAD_LABEL, &id);
-        id
     }
 
     /// The row a live session's id belongs to: its org and project from
@@ -3253,13 +3282,13 @@ impl Workspace {
                     let _enter = span.enter();
                     spawn::handle_spawn_project(self, &project_name, launch_settings);
                 }
-                Command::SpawnSession { session_id, kind, launch_settings } => {
+                Command::SpawnSession { session_id, role, launch_settings } => {
                     let span = tracing::info_span!(
                         "spawn_session",
                         session_id = %session_id,
                     );
                     let _enter = span.enter();
-                    spawn::handle_spawn_session(self, &session_id, kind, launch_settings);
+                    spawn::handle_spawn_session(self, &session_id, &role, launch_settings);
                 }
                 Command::StartDefault { project_name, launch_settings } => {
                     let span = tracing::info_span!(
@@ -4744,8 +4773,8 @@ impl Workspace {
         let (project_key, entry, matched_directly) = if let Some(hit) = direct {
             (hit.0, hit.1, true)
         } else {
-            let Some(label) = slot.2.as_deref() else { return false };
-            let Some(project_key) = self.project_key_for_name(&slot.1) else { return false };
+            let Some(label) = slot.label.as_deref() else { return false };
+            let Some(project_key) = self.project_key_for_name(&slot.project) else { return false };
             let entry = {
                 let workers = self.live_workers.lock();
                 match workers.get(&project_key).and_then(|e| e.iter().find(|w| w.label == label)) {
@@ -6425,6 +6454,7 @@ mod tests {
                 account: AccountKey("B".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         ws.command_senders.lock().insert(key.clone(), tx);
@@ -7214,6 +7244,7 @@ provider = "anthropic"
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         ws.mark_session_connected_for_test(&key, "q-uuid");
@@ -7254,6 +7285,7 @@ provider = "anthropic"
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -7320,6 +7352,7 @@ provider = "anthropic"
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -7373,6 +7406,7 @@ provider = "anthropic"
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -7435,6 +7469,7 @@ provider = "anthropic"
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
@@ -7521,7 +7556,7 @@ provider = "anthropic"
             ws.list_projects().into_iter().find(|v| v.name == project).expect("seeded project").org;
         ws.parked_by_slot
             .lock()
-            .get(&(org, project.to_owned(), label.map(str::to_owned)))
+            .get(&crate::parked::Slot::new(&org, project, label.map(str::to_owned)))
             .map_or(0, |parked| parked.slack.len())
     }
 
@@ -7617,9 +7652,16 @@ base_url = "https://openrouter.ai/api"
         workspace.seed_test_ready_account("Stargate");
         let settings = SessionLaunchSettings::default();
 
-        let handle1 =
-            workspace.get_agent_handle(SessionTarget::Default, settings.clone()).expect("first");
-        let handle2 = workspace.get_agent_handle(SessionTarget::Default, settings).expect("second");
+        let handle1 = workspace
+            .get_agent_handle(
+                SessionTarget::Default,
+                settings.clone(),
+                &crate::protocol::SpawnRole::Lead,
+            )
+            .expect("first");
+        let handle2 = workspace
+            .get_agent_handle(SessionTarget::Default, settings, &crate::protocol::SpawnRole::Lead)
+            .expect("second");
 
         assert!(Arc::ptr_eq(&handle1, &handle2), "expected pool hit for repeated Default target");
         assert_eq!(workspace.pool.lock().len(), 1);
@@ -7658,15 +7700,28 @@ provider = "anthropic"
         workspace.seed_test_ready_account("Stargate");
         let settings = SessionLaunchSettings::default();
 
-        let _ =
-            workspace.get_agent_handle(SessionTarget::Default, settings.clone()).expect("default");
         let _ = workspace
-            .get_agent_handle(SessionTarget::Default, settings.clone())
+            .get_agent_handle(
+                SessionTarget::Default,
+                settings.clone(),
+                &crate::protocol::SpawnRole::Lead,
+            )
+            .expect("default");
+        let _ = workspace
+            .get_agent_handle(
+                SessionTarget::Default,
+                settings.clone(),
+                &crate::protocol::SpawnRole::Lead,
+            )
             .expect("default again");
         assert_eq!(workspace.pool.lock().len(), 1, "Default is idempotent");
 
         let _ = workspace
-            .get_agent_handle(SessionTarget::Named("dotfiles".to_owned()), settings)
+            .get_agent_handle(
+                SessionTarget::Named("dotfiles".to_owned()),
+                settings,
+                &crate::protocol::SpawnRole::Lead,
+            )
             .expect("named");
         assert_eq!(workspace.pool.lock().len(), 2, "a distinct target adds a pool entry");
     }
@@ -7677,7 +7732,11 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.seed_test_ready_account("Stargate");
         let handle = workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .get_agent_handle(
+                SessionTarget::Default,
+                SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
+            )
             .expect("default");
 
         // Pool has one entry going in.
@@ -7733,12 +7792,17 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.seed_test_ready_account("Stargate");
         let _ = workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .get_agent_handle(
+                SessionTarget::Default,
+                SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
+            )
             .expect("default");
         let _ = workspace
             .get_agent_handle(
                 SessionTarget::Named("dotfiles".to_owned()),
                 SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
             )
             .expect("named");
         assert_eq!(workspace.pool.lock().len(), 2);
@@ -7772,6 +7836,7 @@ provider = "anthropic"
         let result = workspace.get_agent_handle(
             SessionTarget::Named("nonexistent".to_owned()),
             SessionLaunchSettings::default(),
+            &crate::protocol::SpawnRole::Lead,
         );
         let Err(err) = result else { panic!("unknown project name should error") };
         let err_string = format!("{err}");
@@ -7864,7 +7929,11 @@ provider = "anthropic"
         workspace.seed_test_ready_account("Stargate");
 
         let _handle = workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .get_agent_handle(
+                SessionTarget::Default,
+                SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
+            )
             .expect("spawn");
 
         let id = workspace
@@ -7892,7 +7961,11 @@ provider = "anthropic"
             workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
             workspace.seed_test_ready_account("Stargate");
             let _handle = workspace
-                .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+                .get_agent_handle(
+                    SessionTarget::Default,
+                    SessionLaunchSettings::default(),
+                    &crate::protocol::SpawnRole::Lead,
+                )
                 .expect("spawn");
             workspace
                 .stored_session_id("Default", "forge", LEAD_LABEL)
@@ -7925,6 +7998,7 @@ provider = "anthropic"
             .get_agent_handle(
                 SessionTarget::Default,
                 SessionLaunchSettings { force_new: true, ..SessionLaunchSettings::default() },
+                &crate::protocol::SpawnRole::Lead,
             )
             .expect("spawn");
 
@@ -8155,7 +8229,11 @@ provider = "anthropic"
         workspace.seed_test_ready_account("Stargate");
 
         let handle = workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .get_agent_handle(
+                SessionTarget::Default,
+                SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
+            )
             .expect("spawn");
         let env = handle.env();
         let base = env
@@ -8226,7 +8304,11 @@ provider = "anthropic"
         workspace.seed_test_ready_account("Stargate");
 
         let handle = workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .get_agent_handle(
+                SessionTarget::Default,
+                SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
+            )
             .expect("spawn");
         let env = handle.env();
         let base = env.get("ANTHROPIC_BASE_URL").expect("base url stamped");
@@ -8251,9 +8333,11 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.gateway_ready.store(false, std::sync::atomic::Ordering::Release);
 
-        let message = match workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-        {
+        let message = match workspace.get_agent_handle(
+            SessionTarget::Default,
+            SessionLaunchSettings::default(),
+            &crate::protocol::SpawnRole::Lead,
+        ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a shut boot gate refuses spawns"),
         };
@@ -8274,7 +8358,11 @@ provider = "anthropic"
         workspace.seed_test_ready_account("Stargate");
         workspace.seed_test_ready_account("Gateway");
         let _ = workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .get_agent_handle(
+                SessionTarget::Default,
+                SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
+            )
             .expect("default");
         let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 1);
@@ -8329,7 +8417,11 @@ provider = "anthropic"
             workspace.seed_test_ready_account(account);
         }
         let _ = workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .get_agent_handle(
+                SessionTarget::Default,
+                SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
+            )
             .expect("default spawn");
 
         let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
@@ -8511,6 +8603,7 @@ provider = "anthropic"
                     account: AccountKey("Openrouter".to_owned()),
                     provider: forge_primitives::account::Provider::Openrouter,
                 }),
+                slot: crate::parked::Slot::lead("Busytools", "forge"),
             },
         );
 
@@ -8606,6 +8699,7 @@ provider = "anthropic"
                     account: AccountKey("OpenRouter-TM".to_owned()),
                     provider: forge_primitives::account::Provider::Openrouter,
                 }),
+                slot: crate::parked::Slot::lead("Default", "forge"),
             },
         );
 
@@ -8674,6 +8768,7 @@ provider = "anthropic"
                 account: AccountKey("Plain".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
 
@@ -8746,6 +8841,7 @@ provider = "anthropic"
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
@@ -8789,7 +8885,7 @@ provider = "anthropic"
             domain,
             update_tx,
             spawn_key: None,
-            slot: ("TestOrg".to_owned(), "forge".to_owned(), None),
+            slot: crate::parked::Slot::lead("TestOrg", "forge"),
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };
@@ -9539,6 +9635,7 @@ provider = "anthropic"
                 account: AccountKey("acct".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
@@ -9590,6 +9687,7 @@ provider = "anthropic"
                 account: AccountKey("acct".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
@@ -10767,6 +10865,13 @@ mod worker_respawn_tests {
         }
     }
 
+    /// Seed a project into the stub workspace and hand back the
+    /// `LoadedProject` a spawn resolves it to.
+    fn seed_project_and_return(ws: &Workspace, name: &str, path: &str) -> LoadedProject {
+        ws.seed_test_project(name, path);
+        ws.find_project_view_by_name(name).expect("seeded project")
+    }
+
     /// The tool names the per-session `forge` MCP server registers for
     /// `kind`, composed exactly as the spawn path composes them.
     fn forge_tool_surface(workspace: &Arc<Workspace>, kind: crate::mcp::SessionKind) -> String {
@@ -10826,90 +10931,56 @@ mod worker_respawn_tests {
         );
     }
 
-    /// The role a spawn carries is the role it gets. A worker re-spawned
-    /// by the boot resume path was classified as Lead while the key's
-    /// shape was the only signal, which hands it the lead-only `peers__*`
-    /// group; the caller that knows the row is a worker now says so.
+    /// The role a spawn carries is the role it gets, and the slot's label
+    /// comes from the same value - so a worker cannot be handed a worker's
+    /// tool surface AND the lead's address. A worker re-spawned by the
+    /// boot resume path was classified as Lead while the key's shape was
+    /// the only signal, which hands it the lead-only `peers__*` group; the
+    /// caller that knows the row is a worker now says so.
     #[test]
-    fn a_worker_spawn_carries_worker_whatever_its_key_looks_like() {
+    fn a_worker_spawn_carries_its_label_and_a_worker_tool_surface() {
         let (ws, _rx) = Workspace::testing_stub();
-        let twin = SessionKey::from_session_id("__spawn_worker_forge_implementer_abc123__");
-        let kind = ws.session_kind_for_spawn(Some(crate::mcp::SessionKind::Worker), &twin);
-        assert_eq!(kind, crate::mcp::SessionKind::Worker, "a worker spawn is a worker");
+        let project = seed_project_and_return(&ws, "forge", "/tmp/role-worker");
+        let role = crate::protocol::SpawnRole::Worker("implementer".to_owned());
+
+        let slot = Workspace::slot_for_spawn(&role, &project);
+        assert_eq!(slot.label.as_deref(), Some("implementer"), "the slot names the worker");
+        let kind = if slot.label.is_some() {
+            crate::mcp::SessionKind::Worker
+        } else {
+            crate::mcp::SessionKind::Lead
+        };
         assert!(
             !forge_tool_surface(&ws, kind).contains("peers__"),
             "and a worker's forge server carries no peers tools",
         );
     }
 
-    /// Controls for [`a_worker_spawn_carries_worker_whatever_its_key_looks_like`]:
-    /// without a case that answers Lead, a classifier answering Worker for
-    /// everything would satisfy it. The key shapes are deliberately the
-    /// ones the old prefix test read, so a reintroduced parse fails here.
+    /// Controls for [`a_worker_spawn_carries_its_label_and_a_worker_tool_surface`]:
+    /// without a case that answers Lead, a derivation answering Worker for
+    /// everything would satisfy it. The shape cases the old prefix test
+    /// read are unreachable here by construction - `slot_for_spawn` takes
+    /// no key, so a parse cannot be reintroduced without a signature
+    /// change - which is the stronger form of that pin.
     #[test]
-    fn a_lead_spawn_carries_lead_whatever_its_key_looks_like() {
+    fn a_lead_spawn_carries_no_label() {
         let (ws, _rx) = Workspace::testing_stub();
-        let unknown = SessionKey::from_session_id("fresh-uuid");
+        let project = seed_project_and_return(&ws, "forge", "/tmp/role-lead");
 
-        for key in [
-            SessionKey::from_session_id("__spawn_forge__"),
-            SessionKey::from_session_id("__spawn_worker_foo__"),
-            SessionKey::from_session_id("__resume_worker_forge_implementer_abc123__"),
-        ] {
-            assert_eq!(
-                ws.session_kind_for_spawn(Some(crate::mcp::SessionKind::Lead), &key),
-                crate::mcp::SessionKind::Lead,
-                "a lead spawn is a lead, whatever its key reads as: {}",
-                key.as_str(),
-            );
-        }
-
-        assert_eq!(
-            ws.session_kind_for_spawn(None, &unknown),
-            crate::mcp::SessionKind::Lead,
-            "no stated kind and no live worker at the session key answers Lead",
-        );
+        let slot = Workspace::slot_for_spawn(&crate::protocol::SpawnRole::Lead, &project);
+        assert_eq!(slot.label, None, "a lead spawn carries no label");
     }
 
-    /// A re-spawn that carries no spawn key re-spawns whatever session
-    /// the user has focused - a worker row included. An absent key is
-    /// absence of evidence, so the classification reads the live-worker
-    /// registry, which knows; reading leadness out of the absence hands
-    /// a re-spawned worker the cross-project `peers__*` surface.
-    ///
-    /// The lead half is the control: without it, a classifier answering
-    /// Worker for every keyless spawn would satisfy the worker half and
-    /// strip peers from every keyless re-spawn.
+    /// A tool surface for each kind, which is what the role gates: this is
+    /// the lead half of the pair above, and it is the control that stops a
+    /// derivation answering Worker for everything from satisfying the
+    /// worker case while stripping peers from every lead.
     #[test]
-    fn a_keyless_respawn_classifies_by_the_worker_registry_not_the_absent_key() {
+    fn a_lead_tool_surface_keeps_its_peers_tools() {
         let (ws, _rx) = Workspace::testing_stub();
-        let worker_key = SessionKey::from_session_id("worker-uuid");
-        let lead_key = SessionKey::from_session_id("lead-uuid");
-        ws.insert_live_worker(
-            &ProjectKey::new("proj-x"),
-            worker_entry("implementer", worker_key.as_str(), lead_key.as_str()),
-        );
-
-        let worker_kind = ws.session_kind_for_spawn(None, &worker_key);
-        assert_eq!(
-            worker_kind,
-            crate::mcp::SessionKind::Worker,
-            "a focused worker re-spawned without a spawn key is a worker",
-        );
         assert!(
-            !forge_tool_surface(&ws, worker_kind).contains("peers__"),
-            "the re-spawned worker's forge server carries no peers tools",
-        );
-
-        let lead_kind = ws.session_kind_for_spawn(None, &lead_key);
-        assert_eq!(
-            lead_kind,
-            crate::mcp::SessionKind::Lead,
-            "a focused lead re-spawned by the same path is still a lead",
-        );
-        assert!(
-            forge_tool_surface(&ws, lead_kind).contains("peers__ask_agent"),
-            "the re-spawned lead keeps its peers tools",
+            forge_tool_surface(&ws, crate::mcp::SessionKind::Lead).contains("peers__ask_agent"),
+            "a lead keeps its peers tools",
         );
     }
 
@@ -12231,6 +12302,7 @@ mod async_worker_spawn_failure_tests {
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         key
@@ -12264,7 +12336,7 @@ mod async_worker_spawn_failure_tests {
 
     /// The slot a failing worker spawn acts for.
     fn worker_slot(project: &str, label: &str) -> crate::parked::Slot {
-        ("TestOrg".to_owned(), project.to_owned(), Some(label.to_owned()))
+        crate::parked::Slot::worker("TestOrg", project, label)
     }
 
     /// #146: async worktree-creation failure → notice envelope
@@ -12476,6 +12548,7 @@ mod async_worker_spawn_failure_tests {
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
@@ -12575,6 +12648,7 @@ mod async_worker_spawn_failure_tests {
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
@@ -13168,7 +13242,11 @@ provider = "anthropic"
         workspace.seed_test_gateway_ready(true);
         workspace.seed_test_ready_account("Stargate");
         let handle = workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .get_agent_handle(
+                SessionTarget::Default,
+                SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
+            )
             .expect("spawn");
         let env = handle.env();
         for var in MODEL_SLOT_VARIABLES {
@@ -13214,7 +13292,11 @@ provider = "anthropic"
         workspace.seed_test_ready_account("Stargate");
         let target = SessionTarget::Session(SessionKey::from_session_id("orphan-uuid"));
         let error = workspace
-            .get_agent_handle(target, SessionLaunchSettings::default())
+            .get_agent_handle(
+                target,
+                SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
+            )
             .err()
             .expect("a session mapping to no project must not spawn");
 
@@ -13450,6 +13532,7 @@ base_url = "https://openrouter.ai/api"
             .get_agent_handle(
                 SessionTarget::Named("forge".to_owned()),
                 SessionLaunchSettings::default(),
+                &crate::protocol::SpawnRole::Lead,
             )
             .expect("the declaring fallback serves the spawn");
         assert_eq!(

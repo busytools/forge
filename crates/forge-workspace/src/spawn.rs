@@ -183,7 +183,7 @@ pub(crate) fn handle_spawn_project(
         SessionTarget::Named(project_name.to_owned()),
         launch_settings,
         Some(synth_key.clone()),
-        Some(crate::mcp::SessionKind::Lead),
+        &crate::protocol::SpawnRole::Lead,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -208,9 +208,7 @@ pub(crate) fn handle_spawn_project(
             // otherwise the caller's LLM waits on a spawn that never
             // happened, and a committed delivery is lost unannounced.
             workspace.expire_parked_for_slot(
-                &project.org,
-                &project.name,
-                None,
+                &crate::parked::Slot::lead(&project.org, &project.name),
                 crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
             try_emit(
@@ -305,7 +303,7 @@ pub(crate) fn handle_deliver_peer_prompt(
 
     // The lead's own first `Connected` drains the bucket, so the park
     // must land BEFORE the spawn.
-    workspace.park_peer_prompt(&target.org, &target.name, None, wrapped);
+    workspace.park_peer_prompt(&crate::parked::Slot::lead(&target.org, &target.name), wrapped);
 
     // Dispatch SpawnProject. Move target_project
     // into the command rather than cloning (it's the last use).
@@ -395,7 +393,8 @@ pub(crate) fn deliver_cron_prompt(
     // Buffer by owner, then wake via resume: SpawnProject resumes the lead,
     // whose reconnect re-spawns the persisted workers; each drains its own
     // bucket on connect.
-    workspace.park_cron(&view.org, &view.name, team_role, prompt, missed);
+    let slot = crate::parked::Slot::new(&view.org, &view.name, team_role.map(str::to_owned));
+    workspace.park_cron(&slot, prompt, missed);
     match workspace.dispatch(Command::SpawnProject {
         project_name: project_name.to_owned(),
         launch_settings: SessionLaunchSettings::default(),
@@ -519,24 +518,21 @@ pub(crate) fn deliver_gotify_message(
             }
         } else {
             // Still spawning: park it for the worker's label, drained by
-            // its own first `Connected`. The org comes from the worker's
-            // own registration, so a project dropped from forge.toml
-            // since its spawn still keys correctly.
-            let slot = workspace.slot_for_session_key(&worker_key).or_else(|| {
-                workspace
-                    .find_project_view_by_name(project)
-                    .map(|view| (view.org, view.name, Some(role.to_owned())))
-            });
-            let Some((org, name, label)) = slot else {
+            // its own first `Connected`.
+            let project_identity =
+                workspace.find_project_view_by_name(project).map(|v| (v.org, v.name));
+            if let Some(slot) =
+                workspace.delivery_slot_for_worker(&worker_key, project_identity, role)
+            {
+                workspace.park_gotify(&slot, notification);
+            } else {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
                     project = %project,
                     role = %role,
                     "gotify delivery target resolves to no project; skipping",
                 );
-                return;
-            };
-            workspace.park_gotify(&org, &name, label.as_deref(), notification);
+            }
         }
         return;
     }
@@ -577,7 +573,7 @@ pub(crate) fn deliver_gotify_message(
         return;
     };
 
-    workspace.park_gotify(&view.org, &view.name, None, notification);
+    workspace.park_gotify(&crate::parked::Slot::lead(&view.org, &view.name), notification);
 
     if let Err(err) = workspace.dispatch(Command::SpawnProject {
         project_name: project.to_owned(),
@@ -683,12 +679,11 @@ pub(crate) fn deliver_slack_message(
             // its own first `Connected`. The org comes from the worker's
             // own registration, so a project dropped from forge.toml
             // since its spawn still keys correctly.
-            let slot = workspace.slot_for_session_key(&worker_key).or_else(|| {
-                workspace
-                    .find_project_view_by_name(project)
-                    .map(|view| (view.org, view.name, Some(role.to_owned())))
-            });
-            let Some((org, name, label)) = slot else {
+            let project_identity =
+                workspace.find_project_view_by_name(project).map(|v| (v.org, v.name));
+            let Some(slot) =
+                workspace.delivery_slot_for_worker(&worker_key, project_identity, role)
+            else {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
                     project = %project,
@@ -698,7 +693,7 @@ pub(crate) fn deliver_slack_message(
                 return false;
             };
             workspace.slack_delivery_commit(project, team_role, &message);
-            workspace.park_slack(&org, &name, label.as_deref(), message);
+            workspace.park_slack(&slot, message);
         }
         return true;
     }
@@ -746,7 +741,7 @@ pub(crate) fn deliver_slack_message(
     };
 
     workspace.slack_delivery_commit(project, team_role, &message);
-    workspace.park_slack(&view.org, &view.name, None, message);
+    workspace.park_slack(&crate::parked::Slot::lead(&view.org, &view.name), message);
 
     if let Err(err) = workspace.dispatch(Command::SpawnProject {
         project_name: project.to_owned(),
@@ -849,7 +844,7 @@ pub(crate) fn push_slack_message_into_chat(
 pub(crate) fn handle_spawn_session(
     workspace: &Arc<Workspace>,
     session_id: &str,
-    kind: crate::mcp::SessionKind,
+    role: &crate::protocol::SpawnRole,
     launch_settings: SessionLaunchSettings,
 ) {
     let synth_key = SessionKey::from_session_id(format!("__resume_{session_id}__"));
@@ -892,12 +887,17 @@ pub(crate) fn handle_spawn_session(
         },
     );
 
-    let owner_label = workspace.worker_label_for_session(&session_key);
+    let spawn_slot = match &role {
+        crate::protocol::SpawnRole::Worker(label) => {
+            crate::parked::Slot::worker(&parent.org, &parent.name, label)
+        }
+        crate::protocol::SpawnRole::Lead => crate::parked::Slot::lead(&parent.org, &parent.name),
+    };
     match workspace.get_agent_handle_with_spawn_key(
         SessionTarget::Session(session_key),
         launch_settings,
         Some(synth_key.clone()),
-        Some(kind),
+        role,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -915,11 +915,11 @@ pub(crate) fn handle_spawn_session(
                 "spawn_session: get_agent_handle failed"
             );
             // No SessionTask exists to run its ConnectionFailed arm, so
-            // record everything parked for this session's owner here.
+            // record everything parked for this session's slot here. The
+            // slot is the one the spawn stated: a worker's own label, so
+            // its bucket is the one expired.
             workspace.expire_parked_for_slot(
-                &parent.org,
-                &parent.name,
-                owner_label.as_deref(),
+                &spawn_slot,
                 crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
             try_emit(
@@ -962,7 +962,7 @@ pub(crate) fn handle_start_default(
         target,
         launch_settings,
         Some(synth_key.clone()),
-        Some(crate::mcp::SessionKind::Lead),
+        &crate::protocol::SpawnRole::Lead,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -981,9 +981,7 @@ pub(crate) fn handle_start_default(
             // record everything parked for this project's lead here.
             if let Some(project) = lead_project {
                 workspace.expire_parked_for_slot(
-                    &project.org,
-                    &project.name,
-                    None,
+                    &crate::parked::Slot::lead(&project.org, &project.name),
                     crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                 );
             }
@@ -1206,7 +1204,7 @@ pub(crate) fn handle_spawn_worker(
         target,
         settings,
         Some(synth_key.clone()),
-        Some(crate::mcp::SessionKind::Worker),
+        &crate::protocol::SpawnRole::Worker(label.to_owned()),
     ) {
         Ok(handle) => {
             tracing::info!(
@@ -1314,11 +1312,11 @@ fn teardown_worker(
     workspace.release_session(&entry.session_key);
     workspace.expire_inflight_for_closed_worker(project_key, label);
     // A payload parked for this label while it was still spawning has no
-    // session left to drain it, and the release above cannot resolve an
-    // owner for a worker that never reached the pool.
-    workspace.expire_parked_for_worker_label(
+    // session left to drain it.
+    workspace.expire_parked_for_worker(
         project_key,
         label,
+        &entry.session_key,
         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
     );
     Some(entry)
@@ -1625,12 +1623,12 @@ fn buffer_prompt_until_connected(
     if domain.lock().session_id.is_some() {
         return Some(wrapped);
     }
-    let Some((org, project, label)) = slot else {
-        // No project to address the slot by; let the caller proceed the
+    let Some(slot) = slot else {
+        // No slot to address the prompt by; let the caller proceed the
         // same way.
         return Some(wrapped);
     };
-    workspace.park_peer_prompt(&org, &project, label.as_deref(), wrapped);
+    workspace.park_peer_prompt(&slot, wrapped);
     None
 }
 
@@ -1669,11 +1667,9 @@ pub(crate) fn handle_deliver_worker_prompt(
     // its Connected handler drains the bucket (bump + render + dispatch)
     // exactly like the sleeping-peer path. Skips the tag retry / stamp /
     // dispatch below.
-    let owner = workspace
-        .project_for_key(project_key)
-        .map(|project| (project.org, project.name, Some(target_label.to_owned())));
-    let Some(wrapped) = buffer_prompt_until_connected(workspace, owner, &target_key, wrapped)
-    else {
+    let project = workspace.project_for_key(project_key).map(|p| (p.org, p.name));
+    let slot = workspace.delivery_slot_for_worker(&target_key, project, target_label);
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, slot, &target_key, wrapped) else {
         return;
     };
 
@@ -2011,7 +2007,7 @@ provider = "anthropic"
         handle_spawn_session(
             &workspace,
             "no-such-session-id",
-            crate::mcp::SessionKind::Lead,
+            &crate::protocol::SpawnRole::Lead,
             SessionLaunchSettings::default(),
         );
 
@@ -2115,7 +2111,7 @@ provider = "anthropic"
         let parked = workspace
             .parked_by_slot
             .lock()
-            .get(&("Default".to_owned(), "gateway-backend".to_owned(), None))
+            .get(&crate::parked::Slot::lead("Default", "gateway-backend"))
             .map(|parked| parked.peer.clone())
             .unwrap_or_default();
         assert_eq!(parked.len(), 1, "the project's lead bucket holds the wrapped prompt");
@@ -2231,13 +2227,13 @@ provider = "anthropic"
         let parked = ws
             .parked_by_slot
             .lock()
-            .get(&("TestOrg".to_owned(), "forge".to_owned(), Some("tester".to_owned())))
+            .get(&crate::parked::Slot::worker("TestOrg", "forge", "tester"))
             .map_or(0, |parked| parked.slack.len());
         assert_eq!(parked, 1, "the message is parked for the worker that subscribed");
         assert_eq!(
             ws.parked_by_slot
                 .lock()
-                .get(&("TestOrg".to_owned(), "forge".to_owned(), None))
+                .get(&crate::parked::Slot::lead("TestOrg", "forge"))
                 .map_or(0, |parked| parked.slack.len()),
             0,
             "a worker-owned subscription never falls through to the lead",
@@ -2338,7 +2334,10 @@ provider = "anthropic"
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         let synth_key = SessionKey::from_session_id("__spawn_missing__");
-        ws.park_slack("Default", "missing", None, slack_msg("parked while asleep"));
+        ws.park_slack(
+            &crate::parked::Slot::lead("Default", "missing"),
+            slack_msg("parked while asleep"),
+        );
 
         let result = ws.get_agent_handle_with_spawn_key(
             crate::target::SessionTarget::FreshInProject {
@@ -2347,11 +2346,11 @@ provider = "anthropic"
             },
             forge_agent::client::SessionLaunchSettings::default(),
             Some(synth_key.clone()),
-            Some(crate::mcp::SessionKind::Worker),
+            &crate::protocol::SpawnRole::Worker("reviewer".to_owned()),
         );
 
         assert!(result.is_err(), "a target mapping to no project is refused");
-        let owner = ("Default".to_owned(), "missing".to_owned(), None);
+        let owner = crate::parked::Slot::lead("Default", "missing");
         assert_eq!(
             ws.parked_by_slot.lock().get(&owner).map_or(0, |parked| parked.slack.len()),
             1,
@@ -2359,9 +2358,7 @@ provider = "anthropic"
         );
 
         ws.expire_parked_for_slot(
-            "Default",
-            "missing",
-            None,
+            &owner,
             crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
         );
         assert_eq!(
@@ -2380,7 +2377,10 @@ provider = "anthropic"
     fn a_failed_project_spawn_expires_the_parked_payloads() {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("overlayonly", "/tmp/slack-overlay-only");
-        ws.park_slack("TestOrg", "overlayonly", None, slack_msg("parked while asleep"));
+        ws.park_slack(
+            &crate::parked::Slot::lead("TestOrg", "overlayonly"),
+            slack_msg("parked while asleep"),
+        );
 
         crate::spawn::handle_spawn_project(
             &ws,
@@ -2391,7 +2391,7 @@ provider = "anthropic"
         assert_eq!(
             ws.parked_by_slot
                 .lock()
-                .get(&("TestOrg".to_owned(), "overlayonly".to_owned(), None))
+                .get(&crate::parked::Slot::lead("TestOrg", "overlayonly"))
                 .map_or(0, |parked| parked.slack.len()),
             0,
             "the failed spawn records the messages parked for that project's lead",
@@ -3713,7 +3713,7 @@ provider = "anthropic"
             workspace
                 .parked_by_slot
                 .lock()
-                .get(&("TestOrg".to_owned(), "forge".to_owned(), Some("builder".to_owned())))
+                .get(&crate::parked::Slot::worker("TestOrg", "forge", "builder"))
                 .map_or(0, |parked| parked.peer.len()),
             1,
             "prompt parked for the worker's Connected drain, not dropped"
@@ -4049,9 +4049,7 @@ provider = "anthropic"
         let worker_key = SessionKey::from_session_id("worker-1");
         workspace.register_domain_session(worker_key, None);
         workspace.park_slack(
-            "TestOrg",
-            "forge",
-            Some("reviewer"),
+            &crate::parked::Slot::worker("TestOrg", "forge", "reviewer"),
             slack_msg("buffered while spawning"),
         );
 
@@ -4061,7 +4059,7 @@ provider = "anthropic"
             workspace
                 .parked_by_slot
                 .lock()
-                .get(&("TestOrg".to_owned(), "forge".to_owned(), Some("reviewer".to_owned())))
+                .get(&crate::parked::Slot::worker("TestOrg", "forge", "reviewer"))
                 .map_or(0, |parked| parked.slack.len()),
             0,
             "the closed worker's parked delivery is recorded, not left for a later session",

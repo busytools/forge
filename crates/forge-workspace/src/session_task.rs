@@ -426,9 +426,7 @@ impl SessionTask {
                     // Fail the peer asks so their callers get a delivery
                     // notice rather than waiting out the timeout.
                     workspace.expire_parked_for_slot(
-                        &self.slot.0,
-                        &self.slot.1,
-                        self.slot.2.as_deref(),
+                        &self.slot,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
                     // Worker async spawn failure: classify the
@@ -501,9 +499,9 @@ impl SessionTask {
                     // send. Resolve the orphaned oneshot with Cancelled
                     // so the SDK callback unblocks rather than hanging
                     // the `claude` subprocess turn forever.
-                    if let Some(slot) =
+                    if let Some(pending) =
                         self.domain.lock().pending_interactions.remove(&tool_call_id)
-                        && let PendingInteractionSlot::Permission(tx) = slot
+                        && let PendingInteractionSlot::Permission(tx) = pending
                     {
                         let _ = tx.send(forge_primitives::PermissionOutcome::Cancelled);
                     }
@@ -547,9 +545,9 @@ impl SessionTask {
                     // TUI channel closed between insert and send -
                     // resolve the orphan with Cancelled so the SDK
                     // callback unblocks.
-                    if let Some(slot) =
+                    if let Some(pending) =
                         self.domain.lock().pending_interactions.remove(&tool_call_id)
-                        && let PendingInteractionSlot::Question(tx) = slot
+                        && let PendingInteractionSlot::Question(tx) = pending
                     {
                         let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
                     }
@@ -1068,13 +1066,13 @@ fn maybe_respawn_workers_on_connected(
     real_session_id: &str,
     force_new: bool,
 ) {
-    if slot.2.is_some() {
+    if slot.label.is_some() {
         return;
     }
-    let Some(project) = workspace.find_project_view_by_name(&slot.1) else {
+    let Some(project) = workspace.find_project_view_by_name(&slot.project) else {
         return;
     };
-    let Some(project_key) = workspace.project_key_for_name(&slot.1) else {
+    let Some(project_key) = workspace.project_key_for_name(&slot.project) else {
         return;
     };
     if !workspace.list_live_workers(&project_key).is_empty() {
@@ -1117,10 +1115,10 @@ fn maybe_kick_worker_on_connected(
     real_session_id: &str,
 ) {
     // The label is the worker's; a lead has none and gets no kick.
-    let Some(label) = slot.2.as_deref() else {
+    let Some(label) = slot.label.as_deref() else {
         return;
     };
-    let Some(project_key) = workspace.project_key_for_name(&slot.1) else {
+    let Some(project_key) = workspace.project_key_for_name(&slot.project) else {
         return;
     };
     // `handle_spawn_worker` inserts the entry as Spawning before the agent
@@ -1455,7 +1453,7 @@ mod tests {
     /// The slot a test task carries. Drains resolve the parked bucket
     /// against it, so a test that parks must park under the same triple.
     fn test_slot() -> crate::parked::Slot {
-        ("TestOrg".to_owned(), "forge".to_owned(), None)
+        crate::parked::Slot::lead("TestOrg", "forge")
     }
 
     fn workspace_with_account_config_dir(
@@ -1565,9 +1563,7 @@ mod tests {
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         workspace.park_slack(
-            "TestOrg",
-            "forge",
-            None,
+            &test_slot(),
             forge_primitives::slack::SlackMessage {
                 workspace: "acme".to_owned(),
                 conversation: "D1".to_owned(),
@@ -1637,7 +1633,7 @@ mod tests {
         let synth_key = SessionKey::from_str_for_test("__spawn_slack-rekey__");
         let real_key = SessionKey::from_session_id("slack-rekey-uuid");
         let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(synth_key.clone(), None)));
-        workspace.park_slack("TestOrg", "forge", None, buffered_slack("buffered while asleep"));
+        workspace.park_slack(&test_slot(), buffered_slack("buffered while asleep"));
 
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
@@ -1929,6 +1925,7 @@ mod tests {
                 account: forge_gateway::AccountKey("Acct".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -1983,6 +1980,7 @@ mod tests {
                 account: forge_gateway::AccountKey("Acct".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -2033,12 +2031,13 @@ mod tests {
                 account: forge_gateway::AccountKey("Acct".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
         workspace.register_domain_session(spawn_key.clone(), Some(Arc::clone(&handle)));
         workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
-        workspace.park_slack("TestOrg", "forge", None, buffered_slack("parked while spawning"));
+        workspace.park_slack(&test_slot(), buffered_slack("parked while spawning"));
 
         let mut task = SessionTask {
             key: key.clone(),
@@ -2531,9 +2530,7 @@ provider = "anthropic"
         let bodies = ["first", "second", "third"];
         for body in bodies {
             workspace.park_peer_prompt(
-                "TestOrg",
-                "forge",
-                None,
+                &test_slot(),
                 WrappedPrompt {
                     correlation_id: CorrelationId::new_tell(),
                     kind: WrappedKind::Message,
@@ -2678,7 +2675,7 @@ provider = "anthropic"
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         workspace.seed_test_project("cron-drain", "/tmp/cron-drain");
         // Parked for the task's own slot, which is what the drain reads.
-        workspace.park_cron("TestOrg", "forge", None, "morning reminder".to_owned(), false);
+        workspace.park_cron(&test_slot(), "morning reminder".to_owned(), false);
 
         let session_key = SessionKey::from_session_id("cron-drain-uuid");
         let domain =
@@ -2745,10 +2742,10 @@ provider = "anthropic"
         workspace.insert_live_worker(&key, cron_worker_entry("reviewer", "worker-drain-uuid"));
 
         // A missed cron for the worker + an on-time lead cron for the project.
-        let worker_slot = ("TestOrg".to_owned(), "wdp".to_owned(), Some("reviewer".to_owned()));
-        let lead_slot = ("TestOrg".to_owned(), "wdp".to_owned(), None);
-        workspace.park_cron("TestOrg", "wdp", Some("reviewer"), "worker work".to_owned(), true);
-        workspace.park_cron("TestOrg", "wdp", None, "lead work".to_owned(), false);
+        let worker_slot = crate::parked::Slot::worker("TestOrg", "wdp", "reviewer");
+        let lead_slot = crate::parked::Slot::lead("TestOrg", "wdp");
+        workspace.park_cron(&worker_slot, "worker work".to_owned(), true);
+        workspace.park_cron(&lead_slot, "lead work".to_owned(), false);
 
         let session_key = SessionKey::from_session_id("worker-drain-uuid");
         let domain =
@@ -3010,6 +3007,7 @@ provider = "anthropic"
                 account: forge_gateway::AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
+                slot: crate::parked::Slot::lead("TestOrg", "forge"),
             },
         );
         let domain = workspace.register_domain_session(key.clone(), Some(Arc::clone(&arc)));
@@ -3179,7 +3177,7 @@ mod connected_hook_tests {
     /// A project's lead slot: the label is what marks the role, so a
     /// project whose name looks worker-shaped is still a lead.
     fn lead_slot(project_name: &str) -> crate::parked::Slot {
-        ("TestOrg".to_owned(), project_name.to_owned(), None)
+        crate::parked::Slot::lead("TestOrg", project_name)
     }
 
     /// Seed `proj-x` with one persisted worker row and return the
@@ -3278,7 +3276,7 @@ mod connected_hook_tests {
         });
         workspace.enable_test_dispatch_intercept();
 
-        let worker = ("TestOrg".to_owned(), lookalike.to_owned(), Some("planner".to_owned()));
+        let worker = crate::parked::Slot::worker("TestOrg", lookalike, "planner");
         on_connected_for_test(&workspace, &worker, "worker-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
@@ -3368,7 +3366,7 @@ mod connected_hook_tests {
                 kick,
             },
         );
-        ("TestOrg".to_owned(), "forge".to_owned(), Some(label.to_owned()))
+        crate::parked::Slot::worker("TestOrg", "forge", label)
     }
 
     /// A worker spawned with `workers__spawn(kick=...)` gets that kick
@@ -3463,7 +3461,7 @@ mod connected_hook_tests {
         // One live worker, carrying a kick, under a DIFFERENT label.
         seed_adhoc_worker_with_kick(&workspace, "other", Some("not yours".into()));
         // A label with no entry of its own, in the same project.
-        let other_label = ("TestOrg".to_owned(), "forge".to_owned(), Some("scratchpad".to_owned()));
+        let other_label = crate::parked::Slot::worker("TestOrg", "forge", "scratchpad");
 
         on_connected_for_test(&workspace, &other_label, "worker-uuid");
         tokio::task::yield_now().await;
