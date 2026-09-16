@@ -309,6 +309,12 @@ impl SessionTask {
                     }
                     let previous_key = self.key.clone();
                     self.rekey_to(&real_key);
+                    // The store is not the first-Connected path's alone:
+                    // every replacement adopts an id forge did not choose,
+                    // and a boot resolves this session from its row.
+                    if let Some(workspace) = self.workspace.upgrade() {
+                        workspace.note_running_session_id(&self.key, &session_id);
+                    }
                     self.emit(SessionUpdate::SessionReplaced {
                         key: real_key.clone(),
                         previous_key,
@@ -359,15 +365,11 @@ impl SessionTask {
                             to: real_key.clone(),
                         });
                     }
-                    // The id the CLI adopted is not always the one forge
-                    // chose: an in-session `/resume`, a `/clear`, a login
-                    // or a logout can move it without forge writing
-                    // anything, and a boot resolves a session from the
-                    // store. Record it, or the next boot resumes the
-                    // stale id and the registration keeps naming a
-                    // session that is no longer running.
+                    // A boot resolves a session from the store, so the id
+                    // the CLI adopted is recorded rather than left to the
+                    // next boot to guess wrong.
                     if let Some(workspace) = self.workspace.upgrade() {
-                        workspace.note_running_session_id(&real_key, &session_id);
+                        workspace.note_running_session_id(&self.key, &session_id);
                     }
                     self.emit(SessionUpdate::Connected {
                         key: real_key.clone(),
@@ -2289,15 +2291,11 @@ mod tests {
         assert!(drained_notice(&mut update_rx).is_none(), "teardown adds no second notice");
     }
 
-    /// `apply_event_to_domain` on `AgentEvent::Connected` stamps (or
-    /// overwrites) `session_id` so subsequent `AgentHandle` calls
-    /// route to the live identity. See
-    /// `translate_second_connected_overwrites_session_id` for the
     /// The store follows the id the CLI reports when it connects. A
     /// `/resume`, a `/clear`, a login or a logout move a session's id
     /// without forge choosing it, and a boot resolves a session from this
-    /// row - so a row left holding the old id resumes a session that is
-    /// no longer running.
+    /// row - so the row has to move with every Connected, not only the
+    /// first.
     #[test]
     fn connected_records_the_id_the_cli_adopted() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2347,42 +2345,37 @@ provider = "anthropic"
             .expect("seed the row");
         }
 
-        let (mut task, _updates) = review_task_for(&workspace, &key);
-        task.translate_event(AgentEvent::Connected {
-            session_id: "adopted-id".to_owned(),
-            cwd: "/proj".to_owned(),
-            current_model: forge_primitives::CurrentModel {
-                resolved_id: "claude".to_owned(),
-                display_name_short: "claude".to_owned(),
-                display_name_long: "claude".to_owned(),
-                requested_id: None,
-                catalog_id: None,
-                supports_effort: false,
-                supported_effort_levels: Vec::new(),
-                supports_auto_mode: None,
-                supports_adaptive_thinking: None,
-                is_authoritative: true,
-            },
-            available_models: Vec::new(),
-            mode: None,
-            history_updates: None,
-            compaction_count: 0,
-        });
-
-        let stored = {
+        let stored = || {
             let db = workspace.db.lock();
             let db = db.as_ref().expect("db");
             crate::store::sessions::get(db, "TestOrg", "forge", "lead")
                 .expect("read")
                 .and_then(|row| row.session_id)
         };
+
+        let (mut task, _updates) = review_task_for(&workspace, &key);
+        task.translate_event(connected_event("first-id", "/proj"));
         assert_eq!(
-            stored.as_deref(),
-            Some("adopted-id"),
-            "the row holds the id the CLI reported, not the one forge chose",
+            stored().as_deref(),
+            Some("first-id"),
+            "the first Connected records the id the CLI adopted",
+        );
+
+        // `/resume`, `/clear`, `/login` and `/logout` all arrive as a
+        // second Connected on this same task, which is the arm that used
+        // to leave the row naming the session the user left.
+        task.translate_event(connected_event("second-id", "/proj"));
+        assert_eq!(
+            stored().as_deref(),
+            Some("second-id"),
+            "so does a replacement, which is the id the next boot has to resume",
         );
     }
 
+    /// `apply_event_to_domain` on `AgentEvent::Connected` stamps (or
+    /// overwrites) `session_id` so subsequent `AgentHandle` calls
+    /// route to the live identity. See
+    /// `translate_second_connected_overwrites_session_id` for the
     /// `/new`-flow overwrite case.
     #[test]
     fn translate_connected_stamps_session_id() {

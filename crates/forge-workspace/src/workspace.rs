@@ -2887,6 +2887,9 @@ impl Workspace {
     /// stops disagreeing with what is running. An in-session `/resume`, a
     /// `/clear`, a login or a logout can move a session's id without
     /// forge choosing it, and a boot resolves a session from this row.
+    /// `key` must be the one the task is registered under: a refused
+    /// rekey leaves it on the old slot, and the row at the key the event
+    /// named belongs to the session already holding it.
     pub(crate) fn note_running_session_id(&self, key: &SessionKey, session_id: &str) {
         let Some((org, project, label)) = self.session_row_for_key(key) else {
             return;
