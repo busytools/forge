@@ -3085,6 +3085,57 @@ impl Workspace {
         rows
     }
 
+    /// The gateway's own view, read-only: every org it holds, that
+    /// org's walk order, and the live state of each account in it. A
+    /// query refresh, not a `Command`.
+    pub fn gateway_view_snapshot(&self) -> Vec<crate::views::GatewayOrgView> {
+        self.gateway
+            .org_pins()
+            .into_iter()
+            .map(|(org, pin)| {
+                let rows = self.gateway_account_rows(&pin);
+                crate::views::GatewayOrgView {
+                    org,
+                    accounts: pin.accounts,
+                    fallback_accounts: pin.fallback_accounts,
+                    rows,
+                }
+            })
+            .collect()
+    }
+
+    /// One row per account the pin names, primaries then fallbacks,
+    /// deduped (a dual-listed account stays primary-flagged).
+    fn gateway_account_rows(
+        &self,
+        pin: &forge_gateway::selection::OrgPin,
+    ) -> Vec<crate::views::GatewayAccountRow> {
+        let mut names: Vec<String> = pin.accounts.clone();
+        for name in &pin.fallback_accounts {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        let mut rows: Vec<crate::views::GatewayAccountRow> = names
+            .into_iter()
+            .filter_map(|name| {
+                let key = AccountKey(name.clone());
+                let provider = self.accounts.provider(&key)?;
+                let in_pin = pin.accounts.contains(&name);
+                Some(crate::views::GatewayAccountRow {
+                    display_name: name.clone(),
+                    provider,
+                    loading: self.accounts.loading_state(&key),
+                    unusable: self.accounts.unusable_reason(&key),
+                    budget: account_budget(&name, provider, self.accounts.usage(&name).as_ref()),
+                    fallback: pin.fallback_accounts.contains(&name) && !in_pin,
+                })
+            })
+            .collect();
+        rows.sort_by_key(|row| row.fallback);
+        rows
+    }
+
     /// Resolves a `SessionTarget` to the `SessionKey` used to look up
     /// the pool. For project-rooted targets (`Default` / `Named`) with
     /// no on-disk session for the project, returns a project-keyed
@@ -6868,6 +6919,82 @@ mod tests {
         assert_eq!(rows.len(), 2, "no duplicate row for the dual-listed account");
         assert_eq!(rows[1].display_name, "B");
         assert!(!rows[1].fallback, "a dual-listed account stays primary-flagged");
+    }
+
+    /// The read-only gateway view: every published org with its walk
+    /// order and the live state of each account it names.
+    #[test]
+    fn gateway_view_reports_each_org_with_its_pins_and_account_state() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "Ready".to_owned(),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    base_url: None,
+                    models: vec!["claude-sonnet-5".to_owned()],
+                    model_slugs: std::collections::HashMap::new(),
+                    env: std::collections::HashMap::new(),
+                },
+                crate::config::LoadedAccount {
+                    display_name: "Capped".to_owned(),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                    base_url: None,
+                    models: vec!["claude-sonnet-5".to_owned()],
+                    model_slugs: std::collections::HashMap::new(),
+                    env: std::collections::HashMap::new(),
+                },
+            ]);
+            map.set_usage(
+                &AccountKey("Ready".to_owned()),
+                account_usage_snapshot(34.0, 22.0, Some(future)),
+            );
+            map.set_usage(
+                &AccountKey("Capped".to_owned()),
+                account_usage_snapshot(100.0, 63.0, Some(future)),
+            );
+            ws.accounts.replace_state_for_test(map);
+        }
+        ws.gateway.set_org_pins([(
+            "Default".to_owned(),
+            forge_gateway::selection::OrgPin {
+                accounts: vec!["Ready".to_owned()],
+                fallback_accounts: vec!["Capped".to_owned()],
+            },
+        )]);
+
+        let view = ws.gateway_view_snapshot();
+        assert_eq!(view.len(), 1, "one block per published org");
+        assert_eq!(view[0].org, "Default");
+        assert_eq!(view[0].accounts, vec!["Ready".to_owned()], "the primary pin, in order");
+        assert_eq!(view[0].fallback_accounts, vec!["Capped".to_owned()], "the fallback pin");
+        assert_eq!(view[0].rows.len(), 2, "one row per account the org names");
+
+        assert_eq!(view[0].rows[0].display_name, "Ready", "primaries read first");
+        assert_eq!(view[0].rows[0].provider, forge_primitives::account::Provider::Anthropic);
+        assert_eq!(view[0].rows[0].loading, forge_gateway::LoadingState::Ready);
+        assert_eq!(view[0].rows[0].unusable, None, "a healthy account carries no reason tag");
+        assert!(!view[0].rows[0].fallback);
+        match view[0].rows[0].budget {
+            crate::views::AccountBudget::Subscription {
+                five_hour_util, seven_day_util, ..
+            } => {
+                assert_eq!(five_hour_util, Some(34.0), "the healthy account's 5h figure");
+                assert_eq!(seven_day_util, Some(22.0), "and its 7d figure");
+            }
+            ref other => {
+                panic!("a subscription account carries a subscription budget; got {other:?}")
+            }
+        }
+
+        assert_eq!(view[0].rows[1].display_name, "Capped", "fallbacks read last");
+        assert_eq!(
+            view[0].rows[1].unusable,
+            Some(forge_gateway::Unusable::Saturated),
+            "a capped window is the why-not, not a probe failure",
+        );
+        assert!(view[0].rows[1].fallback, "the fallback list marks its rows");
     }
 
     /// The supersession guard that keeps an `/account` switch's

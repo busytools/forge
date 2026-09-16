@@ -507,6 +507,8 @@ pub struct App {
     pub model_picker: Option<crate::app::model_picker::ModelPickerState>,
     /// Open `/account` picker overlay state; `None` when closed.
     pub account_picker: Option<crate::app::account_picker::AccountPickerState>,
+    /// Open `/gateway` view overlay state; `None` when closed.
+    pub gateway_view: Option<crate::app::gateway_view::GatewayViewState>,
     /// Open `/dictate` overlay state; `None` when closed.
     pub dictate_picker: Option<crate::app::dictate_picker::DictatePickerState>,
     /// Push-to-talk press tracking for the configured dictate key.
@@ -1023,6 +1025,7 @@ impl App {
             spinner_picker: None,
             model_picker: None,
             account_picker: None,
+            gateway_view: None,
             dictate_picker: None,
             dictate_key: crate::app::dictate_key::DictateKeyState::default(),
             dictate_take_pending: false,

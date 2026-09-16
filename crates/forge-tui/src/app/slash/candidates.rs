@@ -214,6 +214,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     forge.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
     forge.insert("/effort".into(), "Show / set thinking effort".into());
     forge.insert("/extensions".into(), "Open extensions".into());
+    forge.insert("/gateway".into(), "Inspect the gateway's orgs and accounts".into());
     forge.insert("/launchpad".into(), "Return to project picker".into());
     forge.insert("/mode".into(), "Show / set session mode".into());
     forge.insert("/model".into(), "Show / set session model".into());

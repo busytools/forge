@@ -39,6 +39,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/effort" => handle_effort_submit(app, &parsed.args),
         "/launchpad" => handle_launchpad_submit(app, &parsed.args),
         "/extensions" => handle_extensions_submit(app, &parsed.args),
+        "/gateway" => handle_gateway_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
         "/model" => handle_model_submit(app, &parsed.args),
         "/new" => handle_new_session_submit(app, &parsed.args),
@@ -55,6 +56,21 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
 /// short notice. The picker lists the project's allowed accounts plus
 /// their live rate-limit state; picking one re-spawns the session
 /// under that account and resumes the same conversation.
+/// Open the read-only `/gateway` view: every org the gateway holds,
+/// its pins, and each account's live state. No in-flight gate - it
+/// inspects and never acts, so it is safe to open mid-turn.
+fn handle_gateway_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /gateway");
+        return true;
+    }
+    let Some(workspace) = app.workspace.clone() else {
+        return true;
+    };
+    crate::app::gateway_view::open(app, workspace.gateway_view_snapshot());
+    true
+}
+
 fn handle_account_submit(app: &mut App, args: &[&str]) -> bool {
     use crate::agent::model::RuntimeSessionState;
 
@@ -643,6 +659,13 @@ mod tests {
             SpinnerStyle::Ember,
             "an unknown name must not change the active style",
         );
+    }
+
+    #[test]
+    fn gateway_takes_no_arguments() {
+        let mut app = App::test_default();
+        assert!(handle_gateway_submit(&mut app, &["extra"]));
+        assert!(app.gateway_view.is_none(), "a bad invocation must not open the view");
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub(crate) mod events;
 pub(crate) mod extensions;
 pub(crate) mod file_index;
 mod focus;
+pub(crate) mod gateway_view;
 pub(crate) mod git_diff;
 pub(crate) mod input;
 mod input_submit;

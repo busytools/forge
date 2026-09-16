@@ -13,6 +13,7 @@ mod diff_overlay;
 mod document_table;
 pub(crate) mod fence;
 pub(crate) mod format;
+pub(crate) mod gateway_view;
 pub(crate) mod help;
 pub(crate) mod highlight;
 mod input;
@@ -73,6 +74,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.account_picker.is_some() {
         let area = frame.area();
         account_picker::render(frame, area, app);
+    }
+    if app.gateway_view.is_some() {
+        let area = frame.area();
+        gateway_view::render(frame, area, app);
     }
     if app.dictate_picker.is_some() {
         let area = frame.area();
