@@ -275,7 +275,7 @@ fn notification_text(
 }
 
 /// The escape one notification delivers. OSC 777 carries the title as
-/// its own field, which is what puts the project on the banner's bold
+/// its own field, which is what puts the session on the banner's bold
 /// line - OSC 9's single field leaves that line to the app name.
 fn notification_escape_sequence<'a>(title: &'a str, body: &'a str) -> Cow<'a, str> {
     let title = sanitize_notification_field(title);
@@ -365,20 +365,36 @@ mod tests {
     fn permission_text_puts_the_label_on_the_title() {
         let worker =
             notification_text(NotifyEvent::PermissionRequired, "busymail", Some("demo-route"));
-        assert_eq!(worker.fields(), ("busymail [demo-route]", "Needs input"));
+        assert_eq!(
+            worker.fields(),
+            ("busymail [demo-route]", "Needs input"),
+            "a worker's needs-input title carries the bracketed label and the body the event alone",
+        );
 
         let lead = notification_text(NotifyEvent::PermissionRequired, "busymail", None);
-        assert_eq!(lead.fields(), ("busymail", "Needs input"));
+        assert_eq!(
+            lead.fields(),
+            ("busymail", "Needs input"),
+            "a lead's needs-input title is the project with nothing appended",
+        );
     }
 
     #[test]
     fn question_text_puts_the_label_on_the_title() {
         let worker =
             notification_text(NotifyEvent::QuestionRequired, "busymail", Some("demo-route"));
-        assert_eq!(worker.fields(), ("busymail [demo-route]", "Needs your answer"));
+        assert_eq!(
+            worker.fields(),
+            ("busymail [demo-route]", "Needs your answer"),
+            "a worker's question title carries the bracketed label and the body the event alone",
+        );
 
         let lead = notification_text(NotifyEvent::QuestionRequired, "busymail", None);
-        assert_eq!(lead.fields(), ("busymail", "Needs your answer"));
+        assert_eq!(
+            lead.fields(),
+            ("busymail", "Needs your answer"),
+            "a lead's question title is the project with nothing appended",
+        );
     }
 
     /// A key with no bucket is where an "unresolved project" now lands:
