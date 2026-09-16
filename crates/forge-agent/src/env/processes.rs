@@ -96,7 +96,7 @@ pub fn scan(claude_pid: u32, extra_commands: &[String]) -> ProcessSnapshot {
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::new().with_memory().with_cmd(sysinfo::UpdateKind::Always),
+        ProcessRefreshKind::nothing().with_memory().with_cmd(sysinfo::UpdateKind::Always),
     );
 
     let self_pid = sysinfo::get_current_pid().ok();
