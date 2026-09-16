@@ -102,6 +102,39 @@ pub fn list_for_project(db: &Db, project_key: &str) -> anyhow::Result<Vec<Dynami
     Ok(out)
 }
 
+/// Every persisted worker, in key order. The migration into the
+/// `sessions` table reads the whole set, not one project's slice.
+pub fn list_all(db: &Db) -> anyhow::Result<Vec<DynamicWorker>> {
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(DYNAMIC_WORKERS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = Vec::new();
+    for entry in table.iter()? {
+        let (key, value) = entry?;
+        match serde_json::from_slice::<DynamicWorker>(value.value()) {
+            Ok(worker) => out.push(worker),
+            // One undecodable record (schema drift, a corrupt blob) must not
+            // wipe the rest of the durable set - skip it and warn. The key
+            // stays readable even when the value doesn't, so name which
+            // worker lost durability.
+            Err(err) => {
+                let (row_project, row_label) = key.value();
+                tracing::warn!(
+                    target: "forge_workspace::store::dynamic_workers",
+                    project = %row_project,
+                    label = %row_label,
+                    error = %err,
+                    "skipping dynamic worker record that failed to decode",
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Every persisted label, grouped by project key, each group in key
 /// order. Reads the composite key alone and never deserializes the
 /// record, so a caller on a render path pays neither to parse each

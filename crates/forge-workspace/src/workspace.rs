@@ -701,6 +701,23 @@ fn open_db(app_support: &Path) -> Option<crate::store::Db> {
     }
 }
 
+/// The configured projects as the session store keys them: the catalog
+/// key a `dynamic_workers` row carries, plus the org and name a
+/// `sessions` row is keyed by.
+fn project_identities(config: &LoadedConfig) -> Vec<crate::store::sessions::ProjectIdentity> {
+    config
+        .projects
+        .iter()
+        .map(|project| crate::store::sessions::ProjectIdentity {
+            key: forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &project.path.to_string_lossy(),
+            )),
+            org: project.org.clone(),
+            name: project.name.clone(),
+        })
+        .collect()
+}
+
 /// Scan the catalog for `forge:worker:<label>` tagged sessions whose
 /// `cwd` equals the label's run dir under `project_dir` (the project's
 /// filesystem root). Returns one entry per worker label, keyed by label
@@ -1043,6 +1060,25 @@ impl Workspace {
             }),
             None => Vec::new(),
         };
+
+        // The `sessions` table is filled from `dynamic_workers` on the
+        // first boot that finds it empty, so a worker persisted before
+        // this build has a row to derive an id into. Non-fatal, like the
+        // loads above: the rows stay in `dynamic_workers` and the old
+        // read path still reaches them.
+        if let Some(db) = &db
+            && let Err(error) = crate::store::sessions::migrate_from_dynamic_workers(
+                db,
+                &project_identities(&config),
+            )
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "migrating persisted workers into the sessions table failed; their rows stay \
+                 in dynamic_workers",
+            );
+        }
 
         // Resolved here rather than lazily so a malformed `[[slack]]`
         // entry refuses the boot, the way the rest of forge.toml does.
@@ -7973,6 +8009,46 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
         dir
+    }
+
+    /// The migration's other half: a boot has to run the copy, or the
+    /// table stays empty and every worker's id is derived from disk on
+    /// every boot forever.
+    #[tokio::test]
+    async fn booting_copies_the_persisted_workers_into_the_sessions_table() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let app_support = dir.path().join("app-support");
+        fs::create_dir_all(&app_support).expect("app-support dir");
+        let db = crate::store::Db::open(&app_support.join("db.redb")).expect("open db");
+        // The key the boot derives, so the seeded row is one it can match:
+        // the config resolves the project path, so a literal from the
+        // fixture is not the same string.
+        let config = crate::config::load_from_dir(dir.path()).expect("load config");
+        let project_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &config.projects[0].path.to_string_lossy(),
+        ));
+        crate::store::dynamic_workers::insert(
+            &db,
+            &crate::store::dynamic_workers::DynamicWorker {
+                project_key,
+                label: "steward".to_owned(),
+                charter: "mind the queues".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+            },
+        )
+        .expect("seed the worker a previous build persisted");
+        drop(db);
+
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
+        let db = workspace.db.lock();
+        let rows =
+            crate::store::sessions::list_for_project(db.as_ref().expect("db"), "Default", "forge")
+                .expect("list");
+        assert_eq!(rows.len(), 1, "the boot moved the persisted worker over");
+        assert_eq!(rows[0].label, "steward");
+        assert_eq!(rows[0].session_id, None, "its id is derived when the row is read");
     }
 
     #[tokio::test]

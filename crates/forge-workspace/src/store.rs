@@ -26,6 +26,7 @@ pub mod plugins;
 pub mod pricing;
 pub mod review;
 pub mod session_tags;
+pub mod sessions;
 pub mod slack;
 pub mod state;
 pub mod token_usage;
