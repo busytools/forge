@@ -886,7 +886,9 @@ mod tests {
         ]
     }
 
-    /// Every record the gate is meant to silence, one per emitting site.
+    /// Every operational record the gate silences, one per emitting
+    /// site. Each also has a live emission, which is what
+    /// `live_tool_calls_still_emit_their_operational_records` checks.
     const SILENCED_ON_REPLAY: [&str; 6] = [
         "tool_call_received",
         "command_started",
@@ -894,6 +896,20 @@ mod tests {
         "tool_call_completed",
         "task_create_applied",
         "task_update_applied",
+    ];
+
+    /// The failures the walk must not re-report, silenced for a
+    /// different reason than the operational records above: the live
+    /// path reports a lost tool call once, when it happens, and a
+    /// resume re-delivering the same update would report an event the
+    /// log already carries. Unlike the list above, these emit live at
+    /// DEBUG rather than INFO.
+    const NOT_RE_REPORTED_ON_REPLAY: [&str; 5] = [
+        "tool_call_failed",
+        "tool_call_killed",
+        "tool_call_timeout",
+        "command_failed",
+        "command_killed",
     ];
 
     /// `Visit::record_str` forwards to `record_debug`, so every way the
@@ -959,7 +975,7 @@ mod tests {
             tracing::Level::TRACE,
         ] {
             let names = capture.names_at(level);
-            for silenced in SILENCED_ON_REPLAY {
+            for silenced in SILENCED_ON_REPLAY.iter().chain(NOT_RE_REPORTED_ON_REPLAY.iter()) {
                 assert!(
                     !names.iter().any(|name| name == silenced),
                     "replay emitted `{silenced}` at {level}, saw {names:?}",
@@ -969,25 +985,23 @@ mod tests {
     }
 
     /// The other half of the same contract: quieting the replay must
-    /// not quiet what went wrong in it. `tool_call_refused` is INFO
-    /// upstream but is a failure, which is why the gate keys on the
-    /// record's outcome rather than on its level.
+    /// not quiet what the walk *finds*. It must not re-report a failure
+    /// that was already reported when it happened either - a session's
+    /// lost tool call is the session's own work, shown in its chat row,
+    /// and the log's copy belongs to the moment rather than to every
+    /// resume after it. So the tool and command failures are silenced
+    /// here (see NOT_RE_REPORTED_ON_REPLAY), while the two records that
+    /// only the walk can produce - a refusal, and a status this build
+    /// does not recognise - survive, because nothing else reports them.
     #[test]
     fn replay_walk_still_reports_what_went_wrong() {
         let (capture, _app) = capture_replay_of(&replay_fixture());
 
         let warnings = capture.names_at(tracing::Level::WARN);
-        for expected in [
-            "command_failed",
-            "tool_call_failed",
-            "tool_call_timeout",
-            "task_update_unknown_status",
-        ] {
-            assert!(
-                warnings.iter().any(|name| name == expected),
-                "replay lost `{expected}`, saw {warnings:?}",
-            );
-        }
+        assert!(
+            warnings.iter().any(|name| name == "task_update_unknown_status"),
+            "replay lost `task_update_unknown_status`, saw {warnings:?}",
+        );
         let info = capture.names_at(tracing::Level::INFO);
         assert!(
             info.iter().any(|name| name == "tool_call_refused"),

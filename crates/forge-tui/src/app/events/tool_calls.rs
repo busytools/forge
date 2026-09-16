@@ -570,7 +570,8 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
                 .unwrap_or_default(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
         ),
-        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => tracing::warn!(
+        // DEBUG, matching the update path: one event, one level.
+        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => tracing::debug!(
             target: crate::logging::targets::APP_COMMAND,
             event_name = if matches!(tc.status, model::ToolCallStatus::Killed) {
                 "command_killed"
