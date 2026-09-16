@@ -248,9 +248,10 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
         return crate::app::model_picker::handle_key(app, key);
     }
 
-    // The `/account` picker overlay is modal too.
-    if app.account_picker.is_some() {
-        return crate::app::account_picker::handle_key(app, key);
+    // The `/gateway` view is modal, and read-only: it consumes keys
+    // while open and acts on none of them but its close.
+    if app.gateway_view.is_some() {
+        return crate::app::gateway_view::handle_key(app, key);
     }
 
     // The `/dictate` overlay is modal like the other pickers.

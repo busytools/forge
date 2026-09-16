@@ -97,7 +97,8 @@ pub use protocol::{Command, DictateOutcome, DispatchError, SessionUpdate, TurnEr
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use ui::{RepaintCadence, SpinnerStyle};
 pub use views::{
-    AccountAuth, AccountBudget, AccountLoadingRow, AccountRow, ProjectView, SessionView,
+    AccountAuth, AccountBudget, AccountLoadingRow, AccountRow, GatewayOrgView, ProjectView,
+    SessionView,
 };
 pub use workspace::{SessionChipInfo, SessionChipState, Workspace};
 

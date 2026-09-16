@@ -56,8 +56,8 @@ under. Rules enforced at load:
 
 `fallback_accounts` is the org's second tier: assignment prefers a
 fallback over a saturated or down primary, and returns to the primary
-when it heals. The names also render in the `/account` picker's
-FALLBACK group and stay hand-selectable. The list is validated at load
+when it heals. The names also render in the `/gateway` view's fallback
+pin. The list is validated at load
 exactly like `accounts`: a name matching no `[[accounts]]` entry fails
 the boot, naming the account and the valid names. An account may appear
 in both lists; it is then primary-tier only. See [the launchpad's pool
@@ -245,7 +245,7 @@ in any env layer, global or per-account, fails the load, because it
 would sit beside its flat twin and silently lose or win depending on
 layering. Setting `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` at the
 *project* layer instead desynchronises forge's own accounting, because
-the usage probe, plan detection and the account picker all read the
+the usage probe, plan detection and the `/gateway` view all read the
 account map.
 
 An `"anthropic"` account's flat `token` - minted by

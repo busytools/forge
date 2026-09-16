@@ -28,17 +28,6 @@ pub(crate) fn session_launch_settings_for_startup(
     )
 }
 
-/// Build `SessionLaunchSettings` for the resume / sleeping-session
-/// spawn path.
-pub(crate) fn session_launch_settings_for_resume(
-    app: &App,
-) -> forge_workspace::SessionLaunchSettings {
-    session_start::session_launch_settings_for_reason(
-        app,
-        session_start::SessionStartReason::Resume,
-    )
-}
-
 /// Create the `App` struct in `Connecting` state and load shared
 /// settings state. `cwd_raw` is sourced from `forge.toml` (per
 /// Hard Rule #14) - chat-direct mode picks up `project.path`,
@@ -252,7 +241,7 @@ fn create_app_impl(
         repaint_cadence: ui_settings.fps,
         spinner_picker: None,
         model_picker: None,
-        account_picker: None,
+        gateway_view: None,
         dictate_picker: None,
         dictate_key: crate::app::dictate_key::DictateKeyState::default(),
         dictate_take_pending: false,

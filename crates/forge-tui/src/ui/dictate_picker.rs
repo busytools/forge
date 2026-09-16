@@ -1,6 +1,6 @@
 //! `/dictate` overlay render.
 //!
-//! A centered modal in the `/account` picker's chrome: 62 columns,
+//! A centered modal: 62 columns,
 //! `Borders::ALL` in RUST_ORANGE, a header line with a right-justified
 //! note, dim group headers that never take a highlight index, and a
 //! footer of key hints. The `●` marks the value in force - the session

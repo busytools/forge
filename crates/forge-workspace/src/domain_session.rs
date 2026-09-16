@@ -6,8 +6,8 @@
 //! (lifecycle, cwd, account info) lives on
 //! `forge_tui::app::session::UiSession`, not duplicated here - the
 //! lone exception is [`DomainSession::runtime_state`], the one turn
-//! signal the workspace needs authoritatively for the `/account`
-//! switch backstop.
+//! signal the workspace needs authoritatively for its worker-liveness
+//! and prompt-interception guards.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,13 +66,14 @@ pub struct DomainSession {
     /// Latest runtime liveness mirrored from the session's
     /// `session_state_changed` wire messages. Operational turn state
     /// otherwise lives on the TUI's `UiSession`; this one signal is
-    /// duplicated here so `handle_switch_account` can authoritatively
-    /// refuse an `/account` switch while a turn is in flight (the TUI
-    /// idle-gate alone can race a just-delivered peer / cron / gotify / slack
-    /// prompt). `None` until the first state message.
+    /// duplicated here so the workspace's worker-liveness and
+    /// prompt-interception guards can tell an in-flight turn from an
+    /// idle one (the TUI's own gate alone can race a just-delivered
+    /// peer / cron / gotify / slack prompt). `None` until the first
+    /// state message.
     pub runtime_state: Option<RuntimeSessionState>,
     /// Turn committed at `Command::Prompt` routing, ahead of the
-    /// wire-lagged `runtime_state`; the `/account` backstop ORs it in.
+    /// wire-lagged `runtime_state`; the guards OR it in.
     pub turn_pending: bool,
     /// The `/dictate` overlay's per-session normalizer-axis overrides.
     /// Set by `Command::SetDictateOverride` / `::ResetDictateOverrides`
@@ -111,7 +112,7 @@ impl DomainSession {
     /// and in none of the captured session JSONL, so it may never
     /// arrive.
     ///
-    /// Shared by the `/account` switch backstop and the worker
+    /// Shared by the prompt-interception guards and the worker
     /// activity derivation so the two cannot drift apart.
     pub fn turn_in_flight(&self) -> bool {
         self.turn_pending

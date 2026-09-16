@@ -28,7 +28,7 @@ Every surface forge-tui renders, one page each. Scope is current state only: a p
 
 <div class="surface-card"><a href="./diff.md"><span class="name">Diff viewer</span><span class="blurb">Inline diffs on tool calls, and the <code>/diff</code> review overlay with comments, commit mode and the review loop.</span></a></div>
 
-<div class="surface-card"><a href="./pickers.md"><span class="name">Pickers and overlays</span><span class="blurb">The <code>/spinner</code>, <code>/model</code>, <code>/account</code> and <code>/dictate</code> pickers, and the push-to-talk dictate key.</span></a></div>
+<div class="surface-card"><a href="./pickers.md"><span class="name">Pickers and overlays</span><span class="blurb">The <code>/spinner</code> and <code>/model</code> pickers, the read-only <code>/gateway</code> view, the <code>/dictate</code> overlay, and the push-to-talk dictate key.</span></a></div>
 
 <div class="surface-card"><a href="./usage.md"><span class="name">Usage</span><span class="blurb">The <code>/usage</code> overlay: token and notional-cost totals by project or model, per window.</span></a></div>
 

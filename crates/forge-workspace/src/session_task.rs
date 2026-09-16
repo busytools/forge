@@ -108,8 +108,8 @@ impl SessionTask {
         // `Command::Prompt` to the now-closed channel (which fails with
         // `SessionClosed` and is silently dropped, quietly stopping
         // durable crons for the project). Guarded on handle identity so
-        // a superseded task (its session re-spawned under the same key by
-        // an `/account` switch) doesn't wipe its successor's live entries.
+        // a superseded task (its session re-spawned under the same key)
+        // doesn't wipe its successor's live entries.
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.release_session_if_current(&self.key, &self.handle);
         }
@@ -632,7 +632,7 @@ impl SessionTask {
                     }
                 }
                 // Clear the turn-commit marker on the turn boundary so
-                // the `/account` backstop stops refusing once the turn
+                // the in-flight guards stop refusing once the turn
                 // ends. `Message::Result` is the SDK's signal that the
                 // assistant turn has fully completed - including a
                 // cancelled one, which lands as `error_during_execution`.
@@ -789,7 +789,7 @@ impl SessionTask {
     /// closed-channel regression leaves a trail rather than silently
     /// dropping events.
     // TODO(ved): gate emits on a per-task session epoch so a superseded
-    // task (its session re-spawned under the same key by an `/account`
+    // task (its session re-spawned under the same key by a resume or a
     // switch) can't emit a stale update onto the successor's bucket
     // during its brief post-supersession drain. Low-risk today: the
     // switch is idle-gated and the re-spawn keeps the same session_id.
@@ -1267,7 +1267,6 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverWorkerPromptToLead { .. }
         | Command::DeliverGotifyMessage { .. }
         | Command::RespondSlackPost { .. }
-        | Command::SwitchAccount { .. }
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }
         | Command::RemoveReviewThread { .. }
@@ -1308,7 +1307,7 @@ fn warn_no_session(key: &SessionKey, command: &'static str) -> forge_agent::Agen
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
-        // `/account` backstop doesn't read a stale in-flight turn.
+        // in-flight guards don't read a stale turn.
         domain.runtime_state = None;
         domain.turn_pending = false;
     }
@@ -1318,9 +1317,9 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.turn_pending = false;
     }
     // Mirror runtime liveness from `session_state_changed` so the
-    // account-switch backstop (`handle_switch_account`) sees an
-    // in-flight turn authoritatively, independent of the TUI gate.
-    // Reuse the canonical decoder parser rather than re-inlining it.
+    // workspace's in-flight guards see a turn authoritatively,
+    // independent of the TUI gate. Reuse the canonical decoder parser
+    // rather than re-inlining it.
     if let AgentEvent::SdkMessage {
         msg: forge_primitives::Message::System { subtype, data, .. },
         ..
@@ -2301,8 +2300,7 @@ mod tests {
 
     /// `apply_event_to_domain` on `AgentEvent::ConnectionFailed`
     /// clears the runtime/turn mirrors: the subprocess is gone, so the
-    /// `/account` backstop must not read a stale "turn in flight" and
-    /// refuse the switch with "Finish or cancel the current turn".
+    /// in-flight guards must not read a stale "turn in flight".
     #[test]
     fn connection_failed_clears_domain_turn_state() {
         let mut domain = empty_domain();
@@ -2739,17 +2737,17 @@ mod tests {
         }
     }
 
-    /// The account-switch re-spawn seeds `connected_once = true`, so
-    /// the new task's first Connected emits `SessionReplaced` (not a
-    /// fresh Connected) carrying the resumed history. The TUI reducer
-    /// resets the chat then re-seeds it from that history, so the same
-    /// conversation stays visible across the switch.
+    /// A re-spawn that replaces the session seeds `connected_once =
+    /// true`, so the new task's first Connected emits `SessionReplaced`
+    /// (not a fresh Connected) carrying the resumed history. The TUI
+    /// reducer resets the chat then re-seeds it from that history, so
+    /// the same conversation stays visible across the replacement.
     #[tokio::test]
     async fn connected_once_seed_emits_session_replaced_with_resumed_history() {
         use forge_primitives::Message;
 
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let session_key = SessionKey::from_session_id("switch-visible-uuid");
+        let session_key = SessionKey::from_session_id("replacement-visible-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
 
@@ -2764,7 +2762,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
-            // The seed a forced-account re-spawn installs.
+            // The seed a session-replacing re-spawn installs.
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2778,7 +2776,7 @@ mod tests {
 
         task.translate_event(AgentEvent::Connected {
             session_id: session_key.as_str().to_owned(),
-            cwd: "/tmp/switch".to_owned(),
+            cwd: "/tmp/respawn".to_owned(),
             current_model: forge_primitives::CurrentModel {
                 resolved_id: "claude".to_owned(),
                 display_name_short: "claude".to_owned(),
@@ -2802,7 +2800,7 @@ mod tests {
         while let Ok(u) = update_rx.try_recv() {
             match u {
                 SessionUpdate::SessionReplaced { key, history, .. } => {
-                    assert_eq!(key, session_key, "SessionReplaced targets the switched session");
+                    assert_eq!(key, session_key, "SessionReplaced targets the re-spawned session");
                     replaced_history_len = Some(history.len());
                 }
                 SessionUpdate::Connected { .. } => saw_plain_connected = true,
@@ -2814,7 +2812,10 @@ mod tests {
             Some(1),
             "connected_once=true emits SessionReplaced carrying the resumed conversation",
         );
-        assert!(!saw_plain_connected, "an account switch must not emit a fresh Connected");
+        assert!(
+            !saw_plain_connected,
+            "a session-replacing re-spawn must not emit a fresh Connected"
+        );
     }
 
     /// The replaced identity's `/dictate` override axes die with it:
@@ -2848,7 +2849,7 @@ mod tests {
 
         task.translate_event(AgentEvent::Connected {
             session_id: session_key.as_str().to_owned(),
-            cwd: "/tmp/switch".to_owned(),
+            cwd: "/tmp/respawn".to_owned(),
             current_model: forge_primitives::CurrentModel {
                 resolved_id: "claude".to_owned(),
                 display_name_short: "claude".to_owned(),
@@ -2887,7 +2888,7 @@ mod tests {
         );
     }
 
-    /// A forced-account switch tears the live session down BEFORE
+    /// A session-replacing re-spawn tears the live session down BEFORE
     /// re-spawning, so if the re-spawned agent fails to connect the
     /// session is momentarily agent-less. That failure must be
     /// recoverable (`ConnectionFailed { fatal: false }`), and the task's
@@ -2896,9 +2897,9 @@ mod tests {
     /// unreachable - `Agent::spawn` is infallible - so this covers the
     /// realistic async failure path instead.)
     #[tokio::test]
-    async fn switch_respawn_connection_failure_is_nonfatal_and_releases_the_session() {
+    async fn respawn_connection_failure_is_nonfatal_and_releases_the_session() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let key = SessionKey::from_session_id("switch-fail-uuid");
+        let key = SessionKey::from_session_id("respawn-fail-uuid");
 
         let (handle, _agent_cmds) = Agent::testing_stub();
         let arc = Arc::new(handle);
@@ -2924,7 +2925,7 @@ mod tests {
             domain,
             update_tx: workspace.update_sender(),
             spawn_key: None,
-            connected_once: true, // a forced-account switch re-spawn
+            connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
         };
 
@@ -2934,7 +2935,7 @@ mod tests {
         let mut saw_nonfatal = false;
         while let Ok(update) = update_rx.try_recv() {
             if let SessionUpdate::ConnectionFailed { key: failed_key, fatal, .. } = update {
-                assert!(!fatal, "a failed switch re-spawn is recoverable, not fatal");
+                assert!(!fatal, "a failed re-spawn is recoverable, not fatal");
                 assert_eq!(failed_key, key);
                 saw_nonfatal = true;
             }

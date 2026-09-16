@@ -1,4 +1,3 @@
-pub(crate) mod account_picker;
 mod autocomplete;
 pub(crate) mod chat;
 pub(crate) mod chat_tree;
@@ -13,6 +12,7 @@ mod diff_overlay;
 mod document_table;
 pub(crate) mod fence;
 pub(crate) mod format;
+pub(crate) mod gateway_view;
 pub(crate) mod help;
 pub(crate) mod highlight;
 mod input;
@@ -70,9 +70,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let area = frame.area();
         model_picker::render(frame, area, app);
     }
-    if app.account_picker.is_some() {
+    if app.gateway_view.is_some() {
         let area = frame.area();
-        account_picker::render(frame, area, app);
+        gateway_view::render(frame, area, app);
     }
     if app.dictate_picker.is_some() {
         let area = frame.area();
