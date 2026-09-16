@@ -162,13 +162,9 @@ unnecessary_wraps = "allow"         # Symmetry across translate-fn returns.
 struct_field_names = "allow"        # Wire-shape structs share prefixes by API contract.
 struct_excessive_bools = "allow"    # Many UI state structs are flag bags by nature
                                     # (Cli flags, RenderState, SpinnerState, etc.).
-assert_is_empty = "allow"           # Bare `assert!(x.is_empty())` is the house idiom
-                                    # here (81 sites vs 10 messaged). The lint's own
-                                    # rewrite, `assert_eq!(v, [] as [T; 0])`, is worse
-                                    # than the form it replaces, and the panic already
-                                    # prints the expression. Messages stay welcome where
-                                    # they add attribution, never forced. Settled on the
-                                    # nightly-2026-09-16 bump; do not re-litigate.
+assert_is_empty = "allow"           # Its rewrite, `assert_eq!(v, [] as [T; 0])`, is
+                                    # worse than the form it replaces. Only the failure
+                                    # message is at stake; the assertion still panics.
 # CLI surface (forge-tui binary) legitimately prints to stdout/stderr.
 print_stdout = "allow"
 print_stderr = "allow"
