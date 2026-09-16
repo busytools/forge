@@ -165,6 +165,13 @@ pub struct AccountState {
     pub loading: LoadingState,
 }
 
+/// `true` when an account declaring `models` serves `model`. The one
+/// home for the rule: both the selection walk and the config load
+/// gate match a request's model through here.
+pub fn account_serves(models: &[String], model: &str) -> bool {
+    models.iter().any(|m| m == model)
+}
+
 #[derive(Debug)]
 pub struct AccountStateMap {
     pub ordered_keys: Vec<AccountKey>, // forge.toml definition order
@@ -782,6 +789,17 @@ mod tests {
             spend: None,
             balance: None,
         }
+    }
+
+    #[test]
+    fn account_serves_matches_only_the_declared_names() {
+        let models = vec!["claude-sonnet-5".to_owned()];
+        assert!(account_serves(&models, "claude-sonnet-5"), "a declared name is served");
+        assert!(!account_serves(&models, "claude-opus-5"), "an undeclared name is not served");
+        assert!(
+            !account_serves(&[], "claude-sonnet-5"),
+            "an account declaring nothing serves nothing"
+        );
     }
 
     #[test]

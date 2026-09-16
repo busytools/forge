@@ -714,9 +714,10 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if let Some(model) = &project_entry.model {
                 let served =
                     org_entry.accounts.iter().chain(&org_entry.fallback_accounts).any(|name| {
-                        accounts
-                            .iter()
-                            .any(|a| a.display_name == *name && a.models.iter().any(|m| m == model))
+                        accounts.iter().any(|a| {
+                            a.display_name == *name
+                                && forge_gateway::account::account_serves(&a.models, model)
+                        })
                     });
                 if !served {
                     return Err(WorkspaceError::ProjectModelUndeclared {

@@ -9,7 +9,7 @@
 //! account is the last resort (its 429 hit the usage probe, not
 //! inference).
 
-use crate::account::{AccountKey, AccountStateMap, LoadingState};
+use crate::account::{AccountKey, AccountStateMap, LoadingState, account_serves};
 
 /// An org's walk order: the primary pin, then fallbacks.
 #[derive(Debug, Clone, Default)]
@@ -26,10 +26,9 @@ pub enum SelectionError {
     NoEligibleAccount { model: String, org: String },
 }
 
-/// `true` when the account declares `model` among the models it
-/// serves.
+/// `true` when the account serves `model`.
 fn declares(state: &AccountStateMap, key: &AccountKey, model: &str) -> bool {
-    state.by_key.get(key).is_some_and(|account| account.models.iter().any(|m| m == model))
+    state.by_key.get(key).is_some_and(|account| account_serves(&account.models, model))
 }
 
 /// Pick the account for `model` out of `org`'s walk order: the first
