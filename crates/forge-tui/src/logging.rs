@@ -98,12 +98,19 @@ impl LoggingRuntime {
 /// tracing filter before serialisation. The architectural fix
 /// (HTML-strip in `preprocess_prose` at the call site) lands as
 /// a separate PR; this filter bump is defence-in-depth.
+///
+/// The two `llama` targets are the dictation engine's own log bridge,
+/// which reaches tracing through the llama-cpp-2 crate under both its
+/// hyphenated target and its module path. What it reports is the model
+/// loading itself, not forge, so it is not forge's warning to raise.
 const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.session=debug,\
     app.command=debug,\
     app.input=debug,\
     bridge.lifecycle=debug,\
-    tui_markdown=error";
+    tui_markdown=error,\
+    llama_cpp_2=error,\
+    llama-cpp-2=error";
 
 fn build_filter_directives(cli: &Cli) -> String {
     let mut directives = cli
@@ -407,6 +414,13 @@ mod tests {
         // rendering. Pinning to `error` rejects them at the filter
         // before serialisation - 50K+/sec at peak otherwise.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("tui_markdown=error"));
+        // A directive the parser rejects takes the whole filter with it
+        // and leaves forge logging nothing, so the default set is
+        // checked by parsing it rather than by reading it.
+        assert!(
+            tracing_subscriber::EnvFilter::try_new(DEFAULT_LOG_DIRECTIVES).is_ok(),
+            "the default directives must parse",
+        );
     }
 
     #[test]
