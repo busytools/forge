@@ -3000,8 +3000,9 @@ impl Workspace {
     /// forge.toml pin; empty falls back to every configured account
     /// (matching `pick_for_project`'s resolution). `fallback_accounts`
     /// is the org's fallback list: unioned in (deduped) even when the
-    /// pin does not name them, and flagged for the picker's FALLBACK
-    /// group. `current_account` is the session's active account
+    /// pin does not name them, and flagged so a fallback-only row can
+    /// carry its dim `fallback` suffix. `current_account` is the
+    /// session's active account
     /// display name, used to mark the current row. Returns owned
     /// [`crate::AccountRow`]s so the TUI holds a snapshot rather than
     /// the `AccountStateMap` lock.
@@ -3177,7 +3178,7 @@ impl Workspace {
             // A project-rooted target with nothing on disk yet routes
             // through `__fresh__:<project_key>`, which matches no catalog
             // row and no worker, so resolving by cwd alone would drop the
-            // project's env on a routine switch.
+            // project's env.
             SessionTarget::Session(key) => key
                 .as_str()
                 .strip_prefix("__fresh__:")

@@ -2300,8 +2300,7 @@ mod tests {
 
     /// `apply_event_to_domain` on `AgentEvent::ConnectionFailed`
     /// clears the runtime/turn mirrors: the subprocess is gone, so the
-    /// in-flight guards must not read a stale "turn in flight" and
-    /// refuse the switch with "Finish or cancel the current turn".
+    /// in-flight guards must not read a stale "turn in flight".
     #[test]
     fn connection_failed_clears_domain_turn_state() {
         let mut domain = empty_domain();
@@ -2748,7 +2747,7 @@ mod tests {
         use forge_primitives::Message;
 
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let session_key = SessionKey::from_session_id("switch-visible-uuid");
+        let session_key = SessionKey::from_session_id("replacement-visible-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
 
@@ -2763,7 +2762,7 @@ mod tests {
             domain: Arc::clone(&domain),
             update_tx,
             spawn_key: None,
-            // The seed a forced-account re-spawn installs.
+            // The seed a session-replacing re-spawn installs.
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2777,7 +2776,7 @@ mod tests {
 
         task.translate_event(AgentEvent::Connected {
             session_id: session_key.as_str().to_owned(),
-            cwd: "/tmp/switch".to_owned(),
+            cwd: "/tmp/respawn".to_owned(),
             current_model: forge_primitives::CurrentModel {
                 resolved_id: "claude".to_owned(),
                 display_name_short: "claude".to_owned(),
@@ -2801,7 +2800,7 @@ mod tests {
         while let Ok(u) = update_rx.try_recv() {
             match u {
                 SessionUpdate::SessionReplaced { key, history, .. } => {
-                    assert_eq!(key, session_key, "SessionReplaced targets the switched session");
+                    assert_eq!(key, session_key, "SessionReplaced targets the re-spawned session");
                     replaced_history_len = Some(history.len());
                 }
                 SessionUpdate::Connected { .. } => saw_plain_connected = true,
@@ -2850,7 +2849,7 @@ mod tests {
 
         task.translate_event(AgentEvent::Connected {
             session_id: session_key.as_str().to_owned(),
-            cwd: "/tmp/switch".to_owned(),
+            cwd: "/tmp/respawn".to_owned(),
             current_model: forge_primitives::CurrentModel {
                 resolved_id: "claude".to_owned(),
                 display_name_short: "claude".to_owned(),
@@ -2898,9 +2897,9 @@ mod tests {
     /// unreachable - `Agent::spawn` is infallible - so this covers the
     /// realistic async failure path instead.)
     #[tokio::test]
-    async fn switch_respawn_connection_failure_is_nonfatal_and_releases_the_session() {
+    async fn respawn_connection_failure_is_nonfatal_and_releases_the_session() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let key = SessionKey::from_session_id("switch-fail-uuid");
+        let key = SessionKey::from_session_id("respawn-fail-uuid");
 
         let (handle, _agent_cmds) = Agent::testing_stub();
         let arc = Arc::new(handle);
@@ -2936,7 +2935,7 @@ mod tests {
         let mut saw_nonfatal = false;
         while let Ok(update) = update_rx.try_recv() {
             if let SessionUpdate::ConnectionFailed { key: failed_key, fatal, .. } = update {
-                assert!(!fatal, "a failed switch re-spawn is recoverable, not fatal");
+                assert!(!fatal, "a failed re-spawn is recoverable, not fatal");
                 assert_eq!(failed_key, key);
                 saw_nonfatal = true;
             }

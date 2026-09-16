@@ -2012,7 +2012,7 @@ fn build_message_render_signature(
         hook.duration_ms.hash(&mut hasher);
     }
     // Read-kind paths render relative to the project root; fold it so a
-    // cwd change (account switch / worktree) invalidates the cached
+    // cwd change (session re-spawn / worktree) invalidates the cached
     // layout even when the blocks themselves are unchanged.
     render_context.project_root.hash(&mut hasher);
     // Fold each group's level so a `cycle_*_collapse_level` flip
@@ -5879,8 +5879,8 @@ mod tests {
     /// same grouped-read message under a different root rebuilds the
     /// cached layout: the paths relativize against the new root instead
     /// of returning the stale (absolute) first render. Guards the
-    /// signature fold that keeps the read tree honest after an account
-    /// switch / worktree cwd change.
+    /// signature fold that keeps the read tree honest after a session
+    /// re-spawn or a worktree cwd change.
     #[test]
     fn project_root_change_invalidates_render_cache() {
         use crate::agent::model::ToolCallStatus;
