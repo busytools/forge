@@ -48,10 +48,11 @@ rather than a fix.
 `foo.rs` alongside `foo/`.
 
 **Unicode punctuation is gated in CI.** Em-dashes, en-dashes,
-horizontal bars and curly quotes are rejected across the source and
-docs file types; `scripts/check_no_unicode_punctuation.py` carries the
-current list. Use a spaced hyphen, a comma, or two sentences.
-Ellipsis is allowed, because the TUI needs it as a truncation glyph.
+horizontal bars and curly quotes are rejected across the source, docs
+and config file types; `scripts/check_no_unicode_punctuation.py`
+carries the current list. Use a spaced hyphen, a comma, or two
+sentences. Ellipsis is allowed, because the TUI needs it as a
+truncation glyph.
 When a banned codepoint is genuinely required, write the escape form
 (`"\u{2014}"`) rather than the literal character. Run
 `just unicode-punct-check` to see what it would flag.

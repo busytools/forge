@@ -41,8 +41,9 @@ surface page.
   does claim a problem names the session, the org, the model, the
   account or the path, whichever apply, and carries an `event_name`.
 - **No em-dashes, en-dashes, horizontal bars or curly quotes** across
-  the scanned source and docs file types. CI rejects them. Ellipsis is
-  allowed. `just unicode-punct-check` shows what would be flagged.
+  the scanned source, docs and config file types. CI rejects them.
+  Ellipsis is allowed. `just unicode-punct-check` shows what would be
+  flagged.
 - **New wire surface ships with a captured baseline.** See
   [the wire contract](./wire-contract.md).
 - **UI changes update the [UI surface pages](./ui/workspace.md) in the

@@ -46,7 +46,7 @@ from pathlib import Path
 # line, so a banned character added elsewhere in this file is still caught.
 BANNED = re.compile("[\u2013\u2014\u2015\u2018\u2019\u201C\u201D]")
 
-INCLUDE_SUFFIXES = (".rs", ".toml", ".md", ".html", ".sh", ".py")
+INCLUDE_SUFFIXES = (".rs", ".toml", ".md", ".html", ".sh", ".py", ".yml", ".yaml")
 
 # Files with no suffix at all, which a suffix list cannot reach.
 INCLUDE_NAMES = ("justfile", "Justfile")
