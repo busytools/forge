@@ -211,8 +211,9 @@ fn claim_fetch_slot(key: &Path, now: Instant, window: Duration) -> bool {
 /// fresh. Only fires for a remote-tracking default (`origin/...`); a
 /// purely-local default has no remote to fetch. The scan never awaits
 /// it - this scan used the current origin/<default>; the fetch refreshes
-/// it for the NEXT scan. Failures (offline, auth, no remote) warn and
-/// are a no-op.
+/// it for the NEXT scan. Failures (offline, auth, no remote) are
+/// logged at DEBUG and are a no-op: the machine's network is not
+/// forge's condition to report.
 fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
     let Some(remote_branch) = default_branch.and_then(|d| d.strip_prefix("origin/")) else {
         return;
@@ -235,7 +236,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
         match timeout(COMMAND_TIMEOUT, fetch).await {
             Ok(Ok(out)) if out.status.success() => {}
             Ok(Ok(out)) => {
-                tracing::warn!(
+                tracing::debug!(
                     target: crate::logging::targets::ENV_GIT,
                     cwd = %cwd.display(),
                     event_name = "git_background_fetch_nonzero_exit",
@@ -246,7 +247,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
                 );
             }
             Ok(Err(err)) => {
-                tracing::warn!(
+                tracing::debug!(
                     target: crate::logging::targets::ENV_GIT,
                     cwd = %cwd.display(),
                     event_name = "git_background_fetch_failed",
@@ -257,7 +258,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
                 );
             }
             Err(_) => {
-                tracing::warn!(
+                tracing::debug!(
                     target: crate::logging::targets::ENV_GIT,
                     cwd = %cwd.display(),
                     event_name = "git_background_fetch_timeout",
@@ -829,8 +830,8 @@ struct GhIssueEntry {
 
 /// Result of one `git` subprocess invocation. Callers treat all
 /// failure variants the same way (collapse to `NoRepo` / zero
-/// stats), but the variants are split so the WARN log captures the
-/// right context - `Failed` means non-zero exit with stderr that an
+/// stats), but the variants are split so the log captures the right
+/// context - `Failed` means non-zero exit with stderr that an
 /// operator might need; `Empty` is a legitimate "ran fine, no
 /// output" signal (the common case for `status --porcelain` on a
 /// clean tree).
@@ -839,8 +840,10 @@ pub(super) enum GitOutput {
     /// Exit 0, empty stdout (legitimate "no output to report" case).
     Empty,
     /// Timeout, spawn error, interrupted, or non-zero exit. Logged
-    /// at WARN with stderr (truncated) inside `run_git` so an
-    /// operator can diagnose without reproducing.
+    /// at DEBUG with stderr (truncated) inside `run_git`: a repo or a
+    /// network that will not answer is the environment's state, every
+    /// caller degrades to a rendered "(scan failed)", and the GIT
+    /// section is re-probed on the next tick.
     Failed,
     /// Stdout exceeded [`STDOUT_SIZE_CAP`].
     Oversize,
@@ -852,9 +855,11 @@ pub(super) enum GitOutput {
 const STDERR_LOG_CAP: usize = 1024;
 
 /// Spawn `git <args>` against `cwd`, await with a per-command
-/// timeout, return classified output. Non-zero exits log WARN with
-/// the captured stderr so operators can distinguish "clean tree"
-/// from "corrupt index / permissions / fatal: …" without re-running.
+/// timeout, return classified output. Failures log DEBUG with the
+/// captured stderr, so triage of "the GIT section shows nothing"
+/// can still tell "clean tree" from "corrupt index / fatal: …"
+/// without re-running, at a level that does not report a miss the
+/// probe makes on every scan of a perfectly ordinary repo.
 pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
     let mut command = git_command::tokio_command("git");
     command.arg("-C").arg(cwd).args(args).kill_on_drop(true);
@@ -862,7 +867,7 @@ pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
     let output = match timeout(COMMAND_TIMEOUT, fut).await {
         Ok(Ok(out)) => out,
         Ok(Err(err)) => {
-            tracing::warn!(
+            tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
                 event_name = "git_subprocess_failed",
@@ -874,7 +879,7 @@ pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
             return GitOutput::Failed;
         }
         Err(_) => {
-            tracing::warn!(
+            tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
                 event_name = "git_subprocess_timeout",
@@ -887,22 +892,20 @@ pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
     };
     if !output.status.success() {
         // Non-zero exit. The renderer still collapses to NoRepo /
-        // zero stats - keep the surface failure-tolerant - but log
-        // the exit code + truncated stderr so an operator can tell
+        // zero stats - keep the surface failure-tolerant - but record
+        // the exit code + truncated stderr so triage can tell
         // "git: command not found" / "fatal: not a git repository" /
         // "fatal: index file corrupt" apart without reproducing.
-        // Cwd-not-in-a-repo is one of the legitimate hits here; the
-        // log volume stays low because `is_worktree_dirty` is the
-        // only command in the sequence that runs unconditionally
-        // (the rest are gated on `rev-parse --abbrev-ref HEAD`
-        // succeeding).
+        // Cwd-not-in-a-repo is one of the legitimate hits here, and
+        // `origin/HEAD` is absent by design in a repo whose remote was
+        // added rather than cloned, which is why the level is DEBUG.
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr_truncated = if stderr.len() > STDERR_LOG_CAP {
             format!("{}…", &stderr[..STDERR_LOG_CAP])
         } else {
             stderr.into_owned()
         };
-        tracing::warn!(
+        tracing::debug!(
             target: crate::logging::targets::ENV_GIT,
             cwd = %cwd.display(),
             event_name = "git_subprocess_nonzero_exit",
@@ -942,7 +945,7 @@ enum GhNotFound {
 
 /// Spawn `gh <args>` from `cwd` (gh derives the github repo from
 /// the current working directory - there's no `-C` equivalent).
-/// Mirrors [`run_git`]'s timeout / classification / WARN logging so
+/// Mirrors [`run_git`]'s timeout / classification / DEBUG logging so
 /// failures distinguish "gh: command not found" (binary missing)
 /// from "gh: To use GitHub CLI in a Git repository, please run …"
 /// (not a github remote) from "no pull requests found" (legitimate
@@ -954,7 +957,7 @@ async fn run_gh(cwd: &Path, args: &[&str], not_found: GhNotFound) -> GitOutput {
     let output = match timeout(COMMAND_TIMEOUT, fut).await {
         Ok(Ok(out)) => out,
         Ok(Err(err)) => {
-            tracing::warn!(
+            tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
                 event_name = "gh_subprocess_failed",
@@ -966,7 +969,7 @@ async fn run_gh(cwd: &Path, args: &[&str], not_found: GhNotFound) -> GitOutput {
             return GitOutput::Failed;
         }
         Err(_) => {
-            tracing::warn!(
+            tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
                 event_name = "gh_subprocess_timeout",
@@ -998,14 +1001,14 @@ async fn run_gh(cwd: &Path, args: &[&str], not_found: GhNotFound) -> GitOutput {
         }
         // gh exits non-zero on: missing auth (4), not a github
         // remote (1), API error (1). All collapse to "no PR" for
-        // the renderer, but the log captures stderr so an operator
-        // can tell which case fired.
+        // the renderer, and the log records stderr at DEBUG so triage
+        // can still tell which case fired.
         let stderr_truncated = if stderr.len() > STDERR_LOG_CAP {
             format!("{}…", &stderr[..STDERR_LOG_CAP])
         } else {
             stderr.into_owned()
         };
-        tracing::warn!(
+        tracing::debug!(
             target: crate::logging::targets::ENV_GIT,
             cwd = %cwd.display(),
             event_name = "gh_subprocess_nonzero_exit",
