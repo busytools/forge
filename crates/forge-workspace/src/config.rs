@@ -373,8 +373,8 @@ pub(crate) struct LoadedProject {
     pub auto_start: bool,
     /// The project's model: fills the CLI's model slots at spawn
     /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
-    /// `CLAUDE_CODE_SUBAGENT_MODEL`). Absent means the account's own
-    /// default applies.
+    /// `CLAUDE_CODE_SUBAGENT_MODEL`) and is the model the walk matches
+    /// accounts on. A project that declares none cannot spawn.
     pub model: Option<String>,
     /// Per-project environment from the entry's env table, layered
     /// over the account's env at spawn. An `ANTHROPIC_BASE_URL` or
