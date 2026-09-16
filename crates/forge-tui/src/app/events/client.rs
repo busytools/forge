@@ -993,6 +993,9 @@ fn apply_forge_account_identity_presentation(
     if let Some(bucket) = app.sessions.get_mut(session_key) {
         bucket.active_account_display_name = Some(display_name);
     } else {
+        // A known defect, not noise: every occurrence measured is a
+        // worker session key, so the identity is lost for every worker.
+        // Do not demote this line to make the log quiet.
         tracing::warn!(
             target: crate::logging::targets::APP_AUTH,
             event_name = "forge_account_identity_dropped",
