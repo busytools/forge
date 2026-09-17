@@ -71,10 +71,11 @@ No input area, so slash commands are keys: `/help` ≡ <kbd>?</kbd>, `/quit` ≡
 | Failed | `✗` red | bold name + a dim-red error sub-row beneath |
 | Connected (Idle) with live background work | spinner frame, rust orange | as Connected - the row is working, so it spins |
 
-The background-work row is the one place this table and the Projects pane
-agree by construction: both read `session_shows_spinner`, so a session
+The background-work row is the one whose promotion this table and the
+Projects pane share: both read `session_shows_spinner`, so a session
 running a backgrounded task spins on both surfaces rather than reading as
-an idle dot on one of them.
+an idle dot on one of them. Spawning agrees across the two as well, but
+that row is not promoted - it spins on its own lifecycle.
 
 <div class="term">
 
