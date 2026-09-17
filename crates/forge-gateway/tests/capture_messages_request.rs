@@ -116,6 +116,25 @@ fn redact_string_values(value: &mut serde_json::Value, config_dir: &str) {
     }
 }
 
+/// The committed fixture carries nothing about the machine it was
+/// captured on. A re-capture that skips the redactor, or a redaction
+/// rule that loses a form, otherwise lands a real path in the repo with
+/// nothing to catch it - which is how the sanitised home path and the
+/// throwaway config dir got in.
+#[test]
+fn the_committed_capture_carries_no_capture_machine_path() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/messages_request.json");
+    let body = std::fs::read_to_string(&path).expect("the committed capture is readable");
+    for (needle, what) in [
+        ("/Users/", "a literal home path"),
+        ("-Users-", "the dash-sanitised home path the CLI derives project slugs from"),
+        ("/var/folders/", "a macOS temp root"),
+        ("/tmp/.tmp", "a throwaway temp directory"),
+    ] {
+        assert!(!body.contains(needle), "the committed capture carries {what} ({needle})");
+    }
+}
+
 #[tokio::test]
 #[ignore = "live capture: spawns the real claude CLI; run with --ignored after a CLI bump"]
 async fn capture_a_real_messages_request_body() {
