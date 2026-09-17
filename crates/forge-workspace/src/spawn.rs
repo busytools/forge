@@ -1557,11 +1557,20 @@ pub(crate) fn handle_despawn_worker(
             let _ = respond.send(DespawnResult::NotFound);
             return;
         }
+        // A despawn takes the worker's durable records with it, and a
+        // stranded row's label can still own subscriptions and crons from
+        // before it was orphaned. Clearing the row alone would report a
+        // completed despawn while leaving exactly the records the live
+        // path exists to clear.
+        workspace.remove_gotify_subscriptions_for_worker(project_key, label);
+        workspace.remove_slack_subscriptions_for_worker(project_key, label);
+        workspace.stop_slack_subsystem_if_idle();
+        workspace.delete_crons_for_worker(project_key, label);
         tracing::info!(
             target: "forge_workspace::spawn",
             project = %project_key.as_str(),
             label = %label,
-            "despawn: no live worker matched; cleared its stranded durable row",
+            "despawn: no live worker matched; cleared its stranded durable row and records",
         );
         let _ = respond.send(DespawnResult::Despawned {
             worktree_cleanup_warning: None,
@@ -3726,14 +3735,20 @@ provider = "anthropic"
         );
     }
 
-    /// A durable row can outlive its live worker - the tag-write rollback
-    /// removes the entry without the row - and the row is then the only
-    /// handle on a worker the next boot re-spawns. Despawn is the tool a
-    /// lead reaches for to remove a durable worker, so it must clear the
-    /// row rather than report NotFound over it (#1142).
-    #[tokio::test]
-    async fn despawn_clears_a_stranded_row_with_no_live_worker() {
-        let (workspace, mut rx) = Workspace::testing_stub();
+    /// A stub over a configured `proj-x` with a real store, plus the key
+    /// that project resolves under and the update receiver the stub minted.
+    /// The despawn fall-through needs the store: it reads and writes the
+    /// worker's durable row, so a stub with no DB never reaches the arm.
+    struct StoreBackedStub {
+        workspace: Arc<Workspace>,
+        project: ProjectKey,
+        rx: tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+        /// Held so the store outlives the test.
+        _dir: tempfile::TempDir,
+    }
+
+    fn store_backed_stub() -> StoreBackedStub {
+        let (workspace, rx) = Workspace::testing_stub();
         workspace.seed_test_project("proj-x", "/tmp/proj-x");
         let dir = tempdir().expect("tempdir");
         workspace.install_db_for_test(
@@ -3742,6 +3757,17 @@ provider = "anthropic"
         let project = ProjectKey::new(
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
         );
+        StoreBackedStub { workspace, project, rx, _dir: dir }
+    }
+
+    /// A durable row can outlive its live worker - the tag-write rollback
+    /// removes the entry without the row - and the row is then the only
+    /// handle on a worker the next boot re-spawns. Despawn is the tool a
+    /// lead reaches for to remove a durable worker, so it must clear the
+    /// row rather than report NotFound over it (#1142).
+    #[tokio::test]
+    async fn despawn_clears_a_stranded_row_with_no_live_worker() {
+        let StoreBackedStub { workspace, project, mut rx, .. } = store_backed_stub();
         workspace
             .record_worker_row(
                 &project,
@@ -3774,21 +3800,65 @@ provider = "anthropic"
         );
     }
 
+    /// A despawn takes the worker's durable records with it, and a
+    /// stranded row's label can still own subscriptions and crons from
+    /// before it was orphaned. Clearing the row alone would report a
+    /// completed despawn while leaving exactly the records the live path
+    /// exists to clear.
+    #[tokio::test]
+    async fn despawn_clears_a_stranded_workers_subscriptions_and_crons() {
+        let StoreBackedStub { workspace, project, .. } = store_backed_stub();
+        workspace
+            .record_worker_row(&project, "stranded", "stranded-id", "c", None, None, false, false)
+            .expect("seed the stranded row");
+        let sub = forge_primitives::GotifySubscription {
+            id: uuid::Uuid::new_v4(),
+            project: "proj-x".to_owned(),
+            team_role: Some("stranded".to_owned()),
+            applications: Vec::new(),
+            min_priority: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        workspace.add_gotify_subscription(sub.clone(), true);
+        workspace.push_cron(forge_primitives::CronEntry {
+            id: forge_primitives::CronId::from("stranded-cron"),
+            project_name: "proj-x".to_owned(),
+            kind: forge_primitives::CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "stand-up".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: None,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: Some("stranded".to_owned()),
+        });
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "stranded", false, tx);
+        assert!(
+            matches!(
+                resp_rx.await.expect("result"),
+                crate::protocol::DespawnResult::Despawned { .. }
+            ),
+            "the row was cleared, so the despawn reports the worker gone",
+        );
+
+        assert!(
+            workspace.gotify_subscriptions_for_project("proj-x").iter().all(|s| s.id != sub.id),
+            "the label's subscription goes with the worker it was registered for",
+        );
+        assert!(
+            workspace.crons_for_project("proj-x").is_empty(),
+            "and so do its crons, which would otherwise keep firing for a label with no worker",
+        );
+    }
+
     /// `lead` is the project lead's own row, not a worker: it is the
     /// stored id an ordinary boot resumes the lead from. A despawn for it
     /// finds no live worker, and the fall-through must not treat that as a
     /// stranded worker row and clear it.
     #[tokio::test]
     async fn despawn_refuses_to_clear_the_lead_row() {
-        let (workspace, mut rx) = Workspace::testing_stub();
-        workspace.seed_test_project("proj-x", "/tmp/proj-x");
-        let dir = tempdir().expect("tempdir");
-        workspace.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-        let project = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
-        );
+        let StoreBackedStub { workspace, project, mut rx, .. } = store_backed_stub();
         workspace
             .record_worker_row(
                 &project,
@@ -3835,15 +3905,7 @@ provider = "anthropic"
     /// that from a delete that reports success over an absent row.
     #[tokio::test]
     async fn despawn_reports_not_found_when_the_label_holds_no_row() {
-        let (workspace, mut rx) = Workspace::testing_stub();
-        workspace.seed_test_project("proj-x", "/tmp/proj-x");
-        let dir = tempdir().expect("tempdir");
-        workspace.install_db_for_test(
-            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
-        );
-        let project = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
-        );
+        let StoreBackedStub { workspace, project, mut rx, .. } = store_backed_stub();
         // A sibling row, so "nothing was cleared" cannot pass because the
         // store was empty.
         workspace
