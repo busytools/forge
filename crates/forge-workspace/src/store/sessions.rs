@@ -387,6 +387,8 @@ fn decode(org: &str, project: &str, label: &str, value: &[u8]) -> anyhow::Result
     org.clone_into(&mut record.org);
     project.clone_into(&mut record.project);
     label.clone_into(&mut record.label);
+    project.clone_into(&mut record.project);
+    label.clone_into(&mut record.label);
     // An empty string is absence, not an id: the bridge's id slot starts
     // empty, so a blank must never read back as a session to resume.
     if record.session_id.as_deref() == Some("") {
@@ -754,13 +756,14 @@ mod tests {
             "Personal",
             "forge",
             "steward",
-            br#"{"org":"Personal","project":"elsewhere","label":"ghost","session_id":"id-1","charter":"c"}"#,
+            br#"{"org":"Elsewhere","project":"elsewhere","label":"ghost","session_id":"id-1","charter":"c"}"#,
         )
         .expect("plant a row of the shape the previous build wrote");
 
         let row = get(&db, "Personal", "forge", "steward")
             .expect("a legacy body decodes")
             .expect("the row is there");
+        assert_eq!(row.org, "Personal", "the key names the row's org, not its stale body");
         assert_eq!(row.project, "forge", "the key names the row's project, not its stale body");
         assert_eq!(row.label, "steward", "and its label");
         assert_eq!(row.session_id.as_deref(), Some("id-1"), "the body's own fields still decode");
