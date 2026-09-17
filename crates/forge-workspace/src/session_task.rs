@@ -570,14 +570,19 @@ impl SessionTask {
                 // statuses rotate too, because a warning already means
                 // the window is closing. The binding is keyed by the
                 // segment the child's base URL was stamped with, which
-                // is this task's key.
+                // is the id the child runs under.
                 if let forge_primitives::Message::RateLimitEvent { rate_limit_info, .. } = &msg
                     && rate_limit_info.status != forge_primitives::RateLimitStatus::Allowed
                     && let Some(workspace) = self.workspace.upgrade()
                 {
                     let reset_at = rate_limit_info.resets_at.and_then(|t| u64::try_from(t).ok());
                     if let Some(session_id) = self.session_id_string() {
-                        workspace.gateway.report_rate_limit(&session_id, reset_at);
+                        workspace.gateway.report_rate_limit(
+                            self.key.org(),
+                            self.key.project(),
+                            &session_id,
+                            reset_at,
+                        );
                     }
                 }
                 // Clear the turn-commit marker on the turn boundary so
@@ -711,6 +716,15 @@ impl SessionTask {
                 } else {
                     None
                 };
+                // The id the respawned child runs under: the one minted
+                // above for `/new`, the transcript's own for `/resume`.
+                // Its gateway segment is stamped from it below, so the
+                // binding names the occupant the CLI actually runs as.
+                let respawn_id = match &other {
+                    Command::NewSession { .. } => fresh.clone(),
+                    Command::ResumeSession { session_id, .. } => Some(session_id.clone()),
+                    _ => None,
+                };
                 // A worker's mission lives in its conversation, so a
                 // `/new` that emptied it would leave the worker running
                 // with no idea what it is for. The TUI builds the launch
@@ -727,6 +741,13 @@ impl SessionTask {
                         self.workspace.upgrade().and_then(|ws| ws.stored_charter_for(&self.key))
                 {
                     launch_settings.charter = Some(charter);
+                }
+                if let Some(respawn_id) = respawn_id.as_deref()
+                    && let Some(workspace) = self.workspace.upgrade()
+                    && let Command::NewSession { launch_settings, .. }
+                    | Command::ResumeSession { launch_settings, .. } = &mut other
+                {
+                    workspace.stamp_respawn_overrides(&self.key, respawn_id, launch_settings);
                 }
                 if let Err(err) = execute_command_via_handle(
                     &self.handle,
@@ -1524,6 +1545,106 @@ mod tests {
         );
     }
 
+    /// A respawn moves the id the child runs under, so its gateway
+    /// binding moves with it. `/new` stamps the id it mints and
+    /// `/resume` the transcript it re-enters, the segment the session
+    /// left behind keeps no binding, and `bound_account_for` - what the
+    /// projects pane reads - follows the child that is actually running
+    /// rather than the one it replaced.
+    #[test]
+    fn a_respawn_moves_the_gateway_binding_to_the_id_the_child_runs_under() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let slot = SessionSlot::worker("Busytools", "forge", "reviewer");
+        let account = forge_gateway::AccountKey("OpenRouter".to_owned());
+        let (handle, _cmds) = Agent::testing_stub();
+        workspace.pool.lock().insert(
+            slot.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::new(handle),
+                account: account.clone(),
+                permission_mode: None,
+                registration: Some(forge_gateway::binding::Registration {
+                    org: "Busytools".to_owned(),
+                    project: "forge".to_owned(),
+                    session: "spawn-id".to_owned(),
+                    account: account.clone(),
+                    provider: forge_primitives::account::Provider::Anthropic,
+                }),
+                session_id: "spawn-id".to_owned(),
+            },
+        );
+        workspace.gateway.bindings.bind("Busytools", "forge", "spawn-id", account.clone());
+        let (task, mut agent_rx) = command_task_for(&workspace, &slot);
+
+        let stamped_base_url = |launch_settings: &serde_json::Value| -> Option<String> {
+            launch_settings
+                .get("env_overrides")
+                .and_then(|overrides| overrides.get("ANTHROPIC_BASE_URL"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let listener_base = format!("http://127.0.0.1:{}", workspace.gateway_port());
+
+        task.execute_command(Command::NewSession {
+            key: slot.clone(),
+            cwd: "/tmp/forge".to_owned(),
+            launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+        });
+
+        let Some(forge_primitives::AgentCommand::NewSession {
+            session_id, launch_settings, ..
+        }) = agent_rx.try_recv().ok()
+        else {
+            panic!("the task forwards the new-session command to the handle");
+        };
+        let minted = session_id.expect("`/new` starts under a minted id");
+        assert_eq!(
+            stamped_base_url(&launch_settings).as_deref(),
+            Some(format!("{listener_base}/Busytools/forge/{minted}").as_str()),
+            "`/new` stamps the base URL with the id it mints for the child",
+        );
+        assert_eq!(
+            workspace.bound_account_for(&slot),
+            Some(account.clone()),
+            "the account read for the slot follows the child that is running",
+        );
+        assert_eq!(
+            workspace.gateway.bindings.binding_for("Busytools", "forge", "spawn-id"),
+            None,
+            "the id the session left behind keeps no binding",
+        );
+
+        // The same stamp on the routed `/resume`, whose id comes from the
+        // command rather than a mint.
+        task.execute_command(Command::ResumeSession {
+            key: slot.clone(),
+            session_id: "resumed-id".to_owned(),
+            cwd: "/tmp/forge".to_owned(),
+            launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+        });
+
+        let Some(forge_primitives::AgentCommand::ResumeSession { launch_settings, .. }) =
+            agent_rx.try_recv().ok()
+        else {
+            panic!("the task forwards the resume command to the handle");
+        };
+        assert_eq!(
+            stamped_base_url(&launch_settings).as_deref(),
+            Some(format!("{listener_base}/Busytools/forge/resumed-id").as_str()),
+            "`/resume` stamps the base URL with the transcript it re-enters",
+        );
+        assert_eq!(
+            workspace.bound_account_for(&slot),
+            Some(account),
+            "the binding follows the resumed occupant",
+        );
+        assert_eq!(
+            workspace.gateway.bindings.binding_for("Busytools", "forge", &minted),
+            None,
+            "and the segment the new session left behind is dropped",
+        );
+    }
+
     /// First-Connected drains the session's buffered Slack messages: each
     /// dispatches a plain `Command::Prompt` AND echoes a
     /// `SlackMessageAppended` so a message that arrived while the project was
@@ -1736,8 +1857,8 @@ mod tests {
         task.domain.lock().session_id = Some(forge_primitives::SessionId::new(session_id));
 
         workspace.gateway.bindings.bind(
-            "Org",
-            "forge",
+            key.org(),
+            key.project(),
             session_id,
             forge_gateway::AccountKey("A".to_owned()),
         );
@@ -1762,7 +1883,7 @@ mod tests {
         });
 
         assert!(
-            workspace.gateway.bindings.binding_for("Org", "forge", session_id).is_none(),
+            workspace.gateway.bindings.binding_for(key.org(), key.project(), session_id).is_none(),
             "the report drops the session's own binding",
         );
 
@@ -1771,8 +1892,8 @@ mod tests {
         // a live session's binding on each one. Re-binding the task's
         // OWN key is what makes this assert kill the guard regression.
         workspace.gateway.bindings.bind(
-            "Org",
-            "forge",
+            key.org(),
+            key.project(),
             session_id,
             forge_gateway::AccountKey("C".to_owned()),
         );
@@ -1794,7 +1915,7 @@ mod tests {
             },
         });
         assert_eq!(
-            workspace.gateway.bindings.binding_for("Org", "forge", session_id),
+            workspace.gateway.bindings.binding_for(key.org(), key.project(), session_id),
             Some(forge_gateway::AccountKey("C".to_owned())),
             "an allowed frame rotates nothing",
         );
