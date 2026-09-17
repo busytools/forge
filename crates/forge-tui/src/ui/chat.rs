@@ -3797,6 +3797,34 @@ mod tests {
         }
     }
 
+    /// The deadline is the only arm that bounds a measure pass by wall clock,
+    /// and every other test budget leaves it `None`, so nothing else fails if
+    /// it stops firing or starts firing on presence alone.
+    #[test]
+    fn the_deadline_arm_exhausts_on_the_clock_rather_than_on_presence() {
+        let budget = |deadline| super::MeasureBudget {
+            remaining_msgs: usize::MAX,
+            remaining_lines: usize::MAX,
+            remaining_cold_measures: usize::MAX,
+            deadline,
+        };
+
+        let one_ms_ago = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(1))
+            .expect("one millisecond before now is representable");
+        let expired = budget(Some(one_ms_ago));
+        assert!(
+            expired.exhausted(),
+            "a passed deadline must exhaust a budget whose every other lever is still open"
+        );
+
+        let ahead = budget(Some(std::time::Instant::now() + std::time::Duration::from_secs(60)));
+        assert!(
+            !ahead.exhausted(),
+            "a deadline still ahead must not exhaust a budget whose every other lever is open"
+        );
+    }
+
     fn large_session_app(message_count: usize) -> App {
         let body = "line\nline\n";
         let mut app = App::test_default();
