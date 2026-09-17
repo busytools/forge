@@ -350,6 +350,13 @@ pub(crate) enum CronFireOutcome {
     /// The cron's project is no longer in forge.toml. The caller removes
     /// the entry instead of advancing a dead cron forever.
     TargetGone,
+    /// The owner still has a row, but the boot wave would skip it, so
+    /// nothing will ever drain a prompt buffered for it. The caller
+    /// advances the schedule and drops the prompt - buffering it would
+    /// grow the bucket once per fire until process exit, and the prompt
+    /// cannot reach anyone meanwhile. Distinct from [`Self::TargetGone`]
+    /// because the row is kept: a restored worktree brings the owner back.
+    TargetCannotBeWoken,
     /// The Command channel is closed (workspace shutting down). The caller
     /// leaves the cron due so the next boot catch-up re-fires it.
     DispatchFailed,
@@ -407,6 +414,7 @@ pub(crate) fn deliver_cron_prompt(
     // for the next tick rather than deleting a real owner's cron on a hiccup.
     match cron_slot_exists(workspace, &view, team_role) {
         CronOwnerCheck::Exists => {}
+        CronOwnerCheck::CannotBeWoken => return CronFireOutcome::TargetCannotBeWoken,
         CronOwnerCheck::Absent => return CronFireOutcome::TargetGone,
         CronOwnerCheck::Unknown => return CronFireOutcome::DispatchFailed,
     }
@@ -496,6 +504,10 @@ fn live_cron_slot(
 enum CronOwnerCheck {
     /// The owner exists (the lead, or a worker with a persisted row).
     Exists,
+    /// The owner has a row, but the boot wave would skip it - a resume
+    /// would have no directory to start in - so there is nothing to wake
+    /// and nothing that would drain a parked prompt.
+    CannotBeWoken,
     /// Conclusively gone: the read succeeded and the label has no row in
     /// the session store.
     Absent,
@@ -503,11 +515,12 @@ enum CronOwnerCheck {
     Unknown,
 }
 
-/// Whether a cron's slot still has a session to be woken. A lead's does
-/// whenever its project does; a worker's does while its label has a row,
-/// since that row is what re-spawns it. A read failure yields
-/// [`CronOwnerCheck::Unknown`] so the fire router leaves the cron rather
-/// than deleting a live slot's cron on a transient hiccup.
+/// Whether a cron's slot still has a session that can be woken. A lead's
+/// does whenever its project does; a worker's does while its label has a
+/// row AND that row can still start, since the boot wave is what
+/// re-spawns it. A read failure yields [`CronOwnerCheck::Unknown`] so the
+/// fire router leaves the cron rather than deleting a live slot's cron on
+/// a transient hiccup.
 fn cron_slot_exists(
     workspace: &Arc<Workspace>,
     view: &crate::views::ProjectView,
@@ -516,9 +529,17 @@ fn cron_slot_exists(
     let Some(label) = team_role else {
         return CronOwnerCheck::Exists;
     };
-    match workspace.worker_row_exists(&view.key, label) {
-        Ok(true) => CronOwnerCheck::Exists,
-        Ok(false) => CronOwnerCheck::Absent,
+    match workspace.stored_worker_row(&view.key, label) {
+        Ok(None) => CronOwnerCheck::Absent,
+        Ok(Some(row)) => {
+            let can_start = crate::mcp::workers::types::worker_row_can_start(
+                &view.path,
+                &row.label,
+                row.is_git_repo,
+                row.session_id.is_some(),
+            );
+            if can_start { CronOwnerCheck::Exists } else { CronOwnerCheck::CannotBeWoken }
+        }
         Err(_) => CronOwnerCheck::Unknown,
     }
 }

@@ -3997,16 +3997,16 @@ impl Workspace {
         out
     }
 
-    /// Whether `label` has a persisted worker row in `project_key`.
-    /// Distinct from [`Self::worker_rows_for_project`], which swallows a
-    /// read failure as empty: this surfaces the error (and treats a missing
-    /// store as one) so a caller can tell "conclusively absent" from "could
-    /// not read" - the cron fire router must not delete a cron on a hiccup.
-    pub(crate) fn worker_row_exists(
+    /// The row `label` holds in `project_key`. Distinct from
+    /// [`Self::worker_rows_for_project`], which swallows a read failure as
+    /// empty: this surfaces the error (and treats a missing store as one)
+    /// so the cron fire router can tell "conclusively absent" from "could
+    /// not read" and leave the cron on a hiccup.
+    pub(crate) fn stored_worker_row(
         &self,
         project_key: &ProjectKey,
         label: &str,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<crate::store::sessions::SessionRecord>> {
         let Some((org, project)) = self.project_identity_for_key(project_key) else {
             anyhow::bail!("no configured project for {}", project_key.as_str());
         };
@@ -4014,7 +4014,7 @@ impl Workspace {
         let Some(db) = guard.as_ref() else {
             anyhow::bail!("the session store is unavailable this session");
         };
-        Ok(crate::store::sessions::get(db, &org, &project, label)?.is_some())
+        crate::store::sessions::get(db, &org, &project, label)
     }
 
     /// Merge the supplied fields onto the worker row for `(project_key,
@@ -5759,7 +5759,7 @@ fn forge_toml_path(config_dir: &std::path::Path) -> PathBuf {
 fn seed_worker_row(ws: &Workspace, project_key: &ProjectKey, label: &str) {
     ws.seed_test_worker_row(project_key, label);
     assert!(
-        ws.worker_row_exists(project_key, label).expect("read the seeded row"),
+        ws.stored_worker_row(project_key, label).expect("read the seeded row").is_some(),
         "the worker row for {label} did not land; does {project_key:?} resolve to a project?",
     );
 }

@@ -320,7 +320,7 @@ mod tests {
     fn seed_worker_row(ws: &crate::Workspace, project_key: &ProjectKey, label: &str) {
         ws.seed_test_worker_row(project_key, label);
         assert!(
-            ws.worker_row_exists(project_key, label).expect("read the seeded row"),
+            ws.stored_worker_row(project_key, label).expect("read the seeded row").is_some(),
             "the worker row for {label} did not land; does {project_key:?} resolve to a project?",
         );
     }

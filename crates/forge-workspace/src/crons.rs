@@ -217,6 +217,21 @@ impl Workspace {
                     );
                     self.remove_cron(&cron.project_name, id);
                 }
+                // The owner's row is kept but the wave skips it, so the
+                // prompt has nowhere to land. Advance the schedule and
+                // drop this fire: leaving it due would re-fire every tick
+                // and parking it would grow a bucket nothing drains.
+                CronFireOutcome::TargetCannotBeWoken => {
+                    tracing::warn!(
+                        target: "forge_workspace::crons",
+                        project = %cron.project_name,
+                        cron_id = %id,
+                        team_role = cron.team_role.as_deref().unwrap_or("lead"),
+                        "cron owner cannot be woken, so this fire is dropped; its row is \
+                         kept and the schedule advances",
+                    );
+                    self.advance_or_remove_cron(id, now);
+                }
                 // Command channel closed (shutting down): leave the cron
                 // due so the next boot catch-up re-fires it - don't consume
                 // a fire that never handed off.
@@ -311,9 +326,20 @@ mod tests {
     fn seed_worker_row(ws: &crate::Workspace, project_key: &ProjectKey, label: &str) {
         ws.seed_test_worker_row(project_key, label);
         assert!(
-            ws.worker_row_exists(project_key, label).expect("read the seeded row"),
+            ws.stored_worker_row(project_key, label).expect("read the seeded row").is_some(),
             "the worker row for {label} did not land; does {project_key:?} resolve to a project?",
         );
+    }
+
+    /// Seed the `proj` fixture with a project path that exists, and
+    /// return its key. A non-git worker runs in that directory, so the
+    /// wave checks it is still there before re-spawning the worker - a
+    /// fixture path that cannot exist is not a shape production has.
+    fn seed_project_with_a_real_root(ws: &crate::Workspace, dir: &tempfile::TempDir) -> ProjectKey {
+        let root = dir.path().join("proj-root");
+        std::fs::create_dir_all(&root).expect("create the project dir");
+        ws.seed_test_project("proj", &root.to_string_lossy());
+        ws.project_key_for_name("proj").expect("seeded project")
     }
 
     fn live_worker_entry(project: &str, label: &str) -> crate::mcp::workers::types::WorkerEntry {
@@ -686,15 +712,9 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.seed_test_project("proj", "/tmp/wc-static");
         // The row is what gives the slot a session while it is asleep; without it
         // the fire router collects the cron instead.
-        let key = ws
-            .list_projects()
-            .into_iter()
-            .find(|v| v.name == "proj")
-            .map(|v| v.key)
-            .expect("seeded project");
+        let key = seed_project_with_a_real_root(&ws, &dir);
         seed_worker_row(&ws, &key, "reviewer");
 
         ws.enable_test_dispatch_intercept();
@@ -728,8 +748,7 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.seed_test_project("proj", "/tmp/wc-spawning");
-        let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
+        let key = seed_project_with_a_real_root(&ws, &dir);
         seed_worker_row(&ws, &key, "reviewer");
         let worker_key = SessionSlot::worker("TestOrg", "proj", "reviewer");
         ws.insert_live_worker(&key, live_worker_entry("proj", "reviewer"));
@@ -767,8 +786,7 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.seed_test_project("proj", "/tmp/wc-dyn");
-        let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
+        let key = seed_project_with_a_real_root(&ws, &dir);
         // "scratch" exists only via its persisted worker row.
         seed_worker_row(&ws, &key, "scratch");
 
@@ -812,6 +830,59 @@ mod tests {
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::TargetGone),
             "a label with no dynamic_workers row is conclusively gone",
+        );
+    }
+
+    /// A cron's owner can have a row and still be unwakeable: the row
+    /// says it runs in a worktree, and the worktree is gone, so the wave
+    /// skips it and nothing is left to drain a parked prompt. Buffering
+    /// would grow the bucket once per fire until process exit, and
+    /// reporting Delivered would advance the watermark past a prompt that
+    /// never reached anyone.
+    ///
+    /// The control half is the same fire once the worktree stands: it is
+    /// delivered and parked, so the refusal above is the missing
+    /// directory and not the fixture.
+    #[test]
+    fn deliver_worker_cron_with_an_unwakeable_owner_is_neither_parked_nor_delivered() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_dir = tempdir().expect("project dir");
+        ws.seed_test_project("proj", &project_dir.path().to_string_lossy());
+        let key = ws.project_key_for_name("proj").expect("seeded project");
+        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true)
+            .expect("seed the worker's row");
+
+        let outcome =
+            crate::spawn::deliver_cron_prompt(&ws, "proj", Some("steward"), "x".to_owned(), false);
+        assert!(
+            matches!(outcome, crate::spawn::CronFireOutcome::TargetCannotBeWoken),
+            "an owner whose worktree is gone cannot be woken, so its fire is not delivered",
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", Some("steward")).len(),
+            0,
+            "nothing parks for an owner that can never drain the bucket",
+        );
+
+        std::fs::create_dir_all(
+            project_dir.path().join(".claude").join("worktrees").join("steward"),
+        )
+        .expect("restore the worktree");
+        let delivered =
+            crate::spawn::deliver_cron_prompt(&ws, "proj", Some("steward"), "x".to_owned(), false);
+        assert!(
+            matches!(delivered, crate::spawn::CronFireOutcome::Delivered),
+            "the same fire is delivered once the worktree is back, so the refusal above \
+             was the missing directory and not the fixture",
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", Some("steward")).len(),
+            1,
+            "and its prompt is parked for the owner to drain on connect",
         );
     }
 
@@ -957,6 +1028,7 @@ mod tests {
         match outcome {
             crate::spawn::CronFireOutcome::Delivered => "Delivered",
             crate::spawn::CronFireOutcome::TargetGone => "TargetGone",
+            crate::spawn::CronFireOutcome::TargetCannotBeWoken => "TargetCannotBeWoken",
             crate::spawn::CronFireOutcome::DispatchFailed => "DispatchFailed",
         }
     }
