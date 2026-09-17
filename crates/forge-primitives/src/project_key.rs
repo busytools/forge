@@ -1,9 +1,8 @@
 //! `ProjectKey` - the canonical on-disk project identity.
 //!
-//! Lives in forge-primitives so the same key addresses a project
-//! through the account selection in the gateway and through the
-//! workspace that keys its own maps on it, without either crate
-//! growing its own near-identical newtype.
+//! Lives in forge-primitives so one key addresses a project across the
+//! crates that key their own maps on it - the workspace and the TUI -
+//! without either growing its own near-identical newtype.
 
 /// Project root path key - the canonicalised, sanitised string form
 /// produced by `forge_agent::userdata::catalog::scan::project_key_for_directory`.
