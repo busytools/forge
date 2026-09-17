@@ -14,7 +14,7 @@ just check
 `cargo fmt --check`, the Unicode punctuation gate, clippy with warnings
 denied, `cargo nextest run --workspace --all-features`, and
 `cargo doc`. CI's set minus its `cargo check --release` and
-install-config jobs. Green before you open a pull request.
+feature-configs jobs. Green before you open a pull request.
 
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later

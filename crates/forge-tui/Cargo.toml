@@ -71,7 +71,11 @@ perf = []
 # handler fired outcome X for tool_id Y" without spinning up a real
 # workspace. Enabled by this crate's own `[dev-dependencies]` self-ref
 # so unit + integration tests both see the same gated surface.
-testing = ["forge-workspace/testing"]
+#
+# `test-helpers` carries `SessionSlot::from_str_for_test`, which the
+# gated code here builds its fixtures with; the dev-dependency self-ref
+# turns both on, so nothing else builds `testing` without it.
+testing = ["forge-workspace/testing", "forge-workspace/test-helpers"]
 
 [dev-dependencies]
 forge-sdk = { workspace = true }

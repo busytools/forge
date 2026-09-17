@@ -69,7 +69,7 @@ doc steps each set `RUSTFLAGS=-D warnings` so a warning CI would reject
 fails locally too; CI sets it once at workflow level instead.
 
 Run it before opening a pull request. It is CI's set minus two jobs: CI
-also runs `cargo check --release` and `just check-install-config`, both
+also runs `cargo check --release` and `just check-feature-configs`, both
 of which `just check` deliberately leave out.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
@@ -95,9 +95,11 @@ deliberately not part of `just check`, because a second full compile is
 too slow for the inner loop; it catches the errors only a release build
 sees, and `just release` gates on it.
 
-`just check-install-config` compiles the configuration `just install`
-builds - release, `perf` on, the test-only features off. `--all-features`
-cannot stand in for it, because it turns `test-helpers` on.
+`just check-feature-configs` compiles the two forge-tui configurations
+nothing else builds: the one `just install` produces - release, `perf`
+on, the test-only features off - and `testing` on its own.
+`--all-features` cannot stand in for either, because it turns
+`test-helpers` on, which is the feature both leave off.
 
 ## Install the binary
 

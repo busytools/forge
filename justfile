@@ -125,20 +125,29 @@ doc:
 # compile; they are built nowhere else and this check passes on a
 # perf-gated release break without the flag, measured. It does NOT
 # stand in for the shipped configuration - it turns `test-helpers` on,
-# which `scripts/install.sh` leaves off. That is `check-install-config`.
+# which `scripts/install.sh` leaves off. That is `check-feature-configs`.
 #
 # Compile the workspace in release. Mirrors CI's `cargo check --release`.
 check-release:
     RUSTFLAGS="-D warnings" cargo check --release --workspace --all-targets --all-features
 
-# Compiles exactly what `scripts/install.sh` builds - forge-tui's
-# `forge` bin, release, `perf` on and the test-only features off - so
+# Compiles the two forge-tui configurations nothing else builds. The
+# install one compiles what `scripts/install.sh` does - the `forge`
+# bin, release, `perf` on, the test-only features off, `--locked` - so
 # production code reaching a `#[cfg(feature = "test-helpers")]`
-# constructor fails here instead of at the next `just install`.
+# constructor fails here instead of at the next `just install`. The
+# `testing` one is that feature by itself: only the dev-dependency
+# self-ref ever turns it on, and that turns `test-helpers` on
+# alongside, so a `testing` feature that fails to enable what its own
+# gated code needs goes unnoticed.
 #
-# Compile the configuration the shipped binary is built from.
-check-install-config:
-    RUSTFLAGS="-D warnings" cargo check --release -p forge-tui --bin forge --features perf
+# `--all-features` covers neither: it enables whatever a feature-gated
+# symbol sits behind, and leaving that off is the whole point of both.
+#
+# Compile the feature configurations nothing else builds.
+check-feature-configs:
+    RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-tui --bin forge --features perf
+    RUSTFLAGS="-D warnings" cargo check --locked -p forge-tui --features testing
 
 # Full pre-commit / pre-PR verification loop.
 #
@@ -296,13 +305,16 @@ remove-cert:
 
 # Does NOT push - that's gated per CLAUDE.md and stays explicit.
 # Requires cargo-edit (`cargo install cargo-edit`) for `cargo set-version`.
-# Gates on check-release because the ordering is what turns a caught
-# error into a public one: `cargo install` builds release, and it runs
-# after this recipe has already tagged.
+# Gates on check-release and check-feature-configs because the ordering
+# is what turns a caught error into a public one: `cargo install` builds
+# release, and it runs after this recipe has already tagged. The second
+# is the one that predicts the install - `check-release`'s
+# `--all-features` cannot, since it enables the test-only features the
+# install build leaves off.
 # Usage: `just release 0.17.0`
 #
 # Cut a release: bump the workspace version, commit, tag.
-release version: check-release
+release version: check-release check-feature-configs
     @if ! cargo set-version --help >/dev/null 2>&1; then \
         echo "[ERROR] cargo set-version not available - run: cargo install cargo-edit" >&2; \
         exit 1; \

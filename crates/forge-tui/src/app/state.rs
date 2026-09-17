@@ -1167,6 +1167,33 @@ mod tests {
         )
     }
 
+    // --- dispatch_command tests ---
+
+    /// `test_default` seeds both a workspace and an active session, so
+    /// each arm of the refusal is reached by clearing one of them.
+    #[test]
+    fn dispatch_command_refuses_without_a_session_to_stamp() {
+        let mut no_workspace = make_test_app();
+        no_workspace.workspace = None;
+        let err = no_workspace
+            .dispatch_command(|key| forge_workspace::Command::Cancel { key })
+            .expect_err("a dispatch with no workspace must refuse");
+        assert!(
+            matches!(err, forge_workspace::DispatchError::NoActiveSession),
+            "no workspace must refuse with NoActiveSession, got {err:?}"
+        );
+
+        let mut no_active = make_test_app();
+        no_active.active_session_key = None;
+        let err = no_active
+            .dispatch_command(|key| forge_workspace::Command::Cancel { key })
+            .expect_err("a dispatch with no active session must refuse");
+        assert!(
+            matches!(err, forge_workspace::DispatchError::NoActiveSession),
+            "no active session must refuse with NoActiveSession, got {err:?}"
+        );
+    }
+
     // --- InvalidationLevel tests ---
 
     #[test]

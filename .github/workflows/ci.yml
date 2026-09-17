@@ -83,12 +83,13 @@ jobs:
           key: release
       - run: cargo check --release --workspace --all-targets --all-features
 
-  # The configuration `scripts/install.sh` builds: forge-tui's `forge`
-  # bin, release, `perf` on, the test-only features off. The job above
-  # cannot cover it - its `--all-features` turns `test-helpers` ON, so
-  # production code reaching a test-only constructor ships undetected.
-  install-config:
-    name: cargo check --release (install.sh config)
+  # The two forge-tui configurations nothing else builds: the one
+  # `scripts/install.sh` produces (release, `perf` on, the test-only
+  # features off) and `testing` on its own. The job above cannot cover
+  # either - its `--all-features` turns `test-helpers` ON, which is the
+  # feature both configurations leave off.
+  feature-configs:
+    name: cargo check (install.sh + testing configs)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -100,8 +101,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cargo-${{ runner.os }}
-          key: install-config
-      - run: cargo check --release -p forge-tui --bin forge --features perf
+          key: feature-configs
+      - run: cargo check --locked --release -p forge-tui --bin forge --features perf
+      - run: cargo check --locked -p forge-tui --features testing
 
   docs:
     name: cargo doc

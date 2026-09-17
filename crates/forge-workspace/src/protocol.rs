@@ -1394,8 +1394,10 @@ impl std::fmt::Debug for SessionUpdate {
     }
 }
 
-/// Errors from `Workspace::dispatch`: a missing or closed session task,
-/// or a caller with no session selected to dispatch for.
+/// Errors from the dispatch boundary. `UnknownSession` and
+/// `SessionClosed` are returned by `Workspace::dispatch`;
+/// `NoActiveSession` by `App::dispatch_command`, which has no slot to
+/// name.
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchError {
     #[error("no active session")]
