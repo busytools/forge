@@ -12,8 +12,11 @@ use serde::{Deserialize, Serialize};
 
 /// All `[ui]` section knobs. Every field has a default so an
 /// absent `[ui]` section in `forge.toml` is equivalent to all
-/// defaults.
+/// defaults. Unknown keys are rejected; what is lenient here is a
+/// field's value (an unknown spinner name, an out-of-range fps),
+/// never the key.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct UiSettings {
     /// Active spinner style for every animated surface (launchpad,
     /// chat thinking/working, input box, projects pane, inspector).
@@ -28,6 +31,19 @@ pub struct UiSettings {
     /// default rather than failing the load (see `deserialize_fps`).
     #[serde(default, deserialize_with = "deserialize_fps")]
     pub fps: RepaintCadence,
+    /// Ghost of the removed `notifications_osc9` key: any value is
+    /// accepted and dropped, so a synced forge.toml still carrying the
+    /// key loads instead of refusing the boot.
+    #[serde(default, deserialize_with = "ignore_value")]
+    pub notifications_osc9: (),
+}
+
+/// Accept any value for a key forge no longer reads, and drop it.
+fn ignore_value<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| ())
 }
 
 /// Repaint rate when `[ui] fps` is absent.

@@ -30,7 +30,10 @@ use serde::Deserialize;
 use crate::error::WorkspaceError;
 use crate::ui::UiSettings;
 
+/// The whole `forge.toml`. Unknown keys are rejected so a mistyped
+/// section name fails the load instead of being ignored.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ForgeToml {
     #[serde(default)]
     orgs: Vec<OrgEntry>,
@@ -72,6 +75,10 @@ struct ForgeToml {
     /// instead of silently dropping every per-project key.
     #[serde(default)]
     projects: Option<toml::Value>,
+    /// Ghost of the deleted `[selection]` section, read for the same
+    /// reason: a stale synced forge.toml warns instead of failing.
+    #[serde(default)]
+    selection: Option<toml::Value>,
     /// Optional top-level `[env]` table - the BASE every session
     /// starts from, overridden per key by `[accounts.env]` and then by
     /// the project's env. Merged into `LoadedAccount.env` at
@@ -197,7 +204,11 @@ impl ProjectEntry {
     }
 }
 
+/// One `[[orgs]]` entry. Unknown keys are rejected: a misspelled
+/// `fallback_accounts` parses clean as "no fallbacks" otherwise, which
+/// is a silent behaviour change from a typo.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OrgEntry {
     name: String,
     /// Account `display_name`s every project in this org is allowed
@@ -498,6 +509,15 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
              max_workers, env and env_file onto the project's \
              [[orgs.projects]] entry - \
              this config's per-project keys are being silently dropped",
+        );
+    }
+
+    if parsed.selection.is_some() {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "selection_section_ignored",
+            "[selection] is no longer read; the gateway walks an org's accounts \
+             and fallback_accounts in the order they are declared",
         );
     }
 
@@ -1567,7 +1587,7 @@ ANTHROPIC_API_KEY = "   "
         );
         let config = load_from_dir(dir.path()).expect("a blank gateway key is absent");
         assert!(
-            config.accounts[0].env.get("ANTHROPIC_API_KEY").is_none(),
+            !config.accounts[0].env.contains_key("ANTHROPIC_API_KEY"),
             "a blank key is scrubbed, not carried downstream as an empty credential",
         );
     }
@@ -1806,6 +1826,54 @@ provider = "anthropic"
         assert!(
             err.to_string().contains("permissionmode"),
             "deny_unknown_fields has to catch the near-miss, got: {err}",
+        );
+    }
+
+    /// The four sections that used to ignore an unknown key. A
+    /// misspelled `fallback_accounts` parses clean as "no fallbacks",
+    /// which is a silent behaviour change from a typo rather than a
+    /// refused boot.
+    #[test]
+    fn mistyped_keys_are_rejected_in_every_section() {
+        let base = minimal_config();
+        // (label, config text with the near-miss, the key the error must name)
+        let cases = [
+            ("top level", format!("mistyped = 1\n{base}"), "mistyped"),
+            (
+                "an org entry",
+                base.replacen(
+                    "accounts = [\"Stargate\"]",
+                    "accounts = [\"Stargate\"]\nfallback_account = \"Stargate\"",
+                    1,
+                ),
+                "fallback_account",
+            ),
+            (
+                "[gotify]",
+                format!("{base}\n[gotify]\nurl = \"https://notifier\"\nclient_tokens = \"t\"\n"),
+                "client_tokens",
+            ),
+            ("[ui]", format!("{base}\n[ui]\nspiner = \"ember\"\n"), "spiner"),
+        ];
+        // Collected rather than asserted one at a time: a section that
+        // started ignoring keys again should be named alongside the
+        // rest, not hide behind the first.
+        let mut failures: Vec<String> = Vec::new();
+        for (label, text, needle) in cases {
+            let dir = tempdir().expect("tempdir");
+            write_config(dir.path(), &text);
+            match load_from_dir(dir.path()) {
+                Ok(_) => failures.push(format!("{label}: loaded with `{needle}` in it")),
+                Err(err) if !err.to_string().contains(needle) => {
+                    failures.push(format!("{label}: error does not name `{needle}`: {err}"));
+                }
+                Err(_) => {}
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "every near-miss is refused and named:\n{}",
+            failures.join("\n")
         );
     }
 
@@ -2874,13 +2942,17 @@ provider = "anthropic"
         assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Stargate"));
     }
 
+    /// A retired `[selection]` section is a declared ghost, not an
+    /// unknown key: it still loads, so a stale synced forge.toml boots,
+    /// and the load warns about it. Every other unknown top-level table
+    /// fails the load.
     #[test]
-    fn legacy_selection_section_is_silently_ignored() {
+    fn a_legacy_selection_section_still_loads() {
         let dir = tempdir().expect("tempdir");
         let mut config_text = minimal_config().to_owned();
         config_text.push_str("\n[selection]\npolicy = \"round_robin\"\n");
         write_config(dir.path(), &config_text);
-        let config = load_from_dir(dir.path()).expect("legacy [selection] should be ignored");
+        let config = load_from_dir(dir.path()).expect("a retired [selection] still loads");
         assert_eq!(config.default_project().name, "forge");
     }
 }

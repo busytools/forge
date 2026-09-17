@@ -646,13 +646,8 @@ mod tests {
             unreachable!("the forward harness runs no probe")
         }
 
-        fn streaming_http_client(
-            &self,
-            idle_timeout: Duration,
-        ) -> Result<reqwest::Client, String> {
-            reqwest::Client::builder().read_timeout(idle_timeout).build().map_err(|e| {
-                e.to_string()
-            })
+        fn streaming_http_client(&self, idle_timeout: Duration) -> Result<reqwest::Client, String> {
+            reqwest::Client::builder().read_timeout(idle_timeout).build().map_err(|e| e.to_string())
         }
 
         async fn user_agent(&self) -> Result<String, String> {
@@ -1547,10 +1542,8 @@ mod tests {
     /// render: the store underneath is a HashMap.
     #[test]
     fn published_org_pins_come_back_sorted_with_their_lists_intact() {
-        let gateway = Gateway::new(
-            Arc::new(crate::AccountPool::empty_for_test()),
-            reqwest::Client::new(),
-        );
+        let gateway =
+            Gateway::new(Arc::new(crate::AccountPool::empty_for_test()), reqwest::Client::new());
         let pin = |accounts: &[&str], fallbacks: &[&str]| crate::selection::OrgPin {
             accounts: accounts.iter().map(|name| (*name).to_owned()).collect(),
             fallback_accounts: fallbacks.iter().map(|name| (*name).to_owned()).collect(),

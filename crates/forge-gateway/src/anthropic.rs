@@ -522,7 +522,10 @@ mod tests {
             reqwest::Client::builder().build().map_err(|e| e.to_string())
         }
 
-        fn streaming_http_client(&self, _idle_timeout: Duration) -> Result<reqwest::Client, String> {
+        fn streaming_http_client(
+            &self,
+            _idle_timeout: Duration,
+        ) -> Result<reqwest::Client, String> {
             unreachable!("no probe streams a response")
         }
 
@@ -539,7 +542,10 @@ mod tests {
             unreachable!("the probe must not build a client for a missing credential")
         }
 
-        fn streaming_http_client(&self, _idle_timeout: Duration) -> Result<reqwest::Client, String> {
+        fn streaming_http_client(
+            &self,
+            _idle_timeout: Duration,
+        ) -> Result<reqwest::Client, String> {
             unreachable!("the probe must not build a client for a missing credential")
         }
 
