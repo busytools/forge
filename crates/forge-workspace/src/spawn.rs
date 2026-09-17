@@ -1260,8 +1260,8 @@ pub(crate) fn handle_spawn_worker(
     }
     // The row is the whole registry entry a boot re-spawns from, so it
     // carries the spawn args alongside the id rather than leaving them in
-    // memory. A re-spawn dispatched from boot writes the same fields back
-    // over its own row, which is what keeps this one path for both.
+    // memory. One path writes it for both spawns and re-spawns; what a
+    // re-spawn must not restate is the `kick` handled just below.
     //
     // AFTER the guard above, which is the point of the order: both
     // refusals return without spawning, and a row written first would
@@ -1270,12 +1270,17 @@ pub(crate) fn handle_spawn_worker(
     // boot would resume an id no session ever ran under; an at-cap
     // refusal would leave a row the boot re-spawn wave picks up with no
     // cap, bringing back a worker the caller was told does not exist.
+    // The row's `kick` is the worker's first turn, which only a first
+    // spawn states. A resume's live kick is the restart note (or the row's
+    // `resume_kick`), and writing that here would make it the worker's
+    // opening turn on every later `--new` re-spawn.
+    let kick_field = if is_resume { None } else { entry.kick.as_deref() };
     let durability_warning = match workspace.record_worker_row(
         &project_key,
         label,
         session_id.as_str(),
         &charter,
-        entry.kick.as_deref(),
+        kick_field,
         resume_kick,
         interactive,
         is_git,
@@ -2611,6 +2616,77 @@ provider = "anthropic"
     async fn a_failed_boot_respawn_keeps_its_row() {
         let row = failed_spawn_leftover_row(None, true, None).await;
         assert!(row.is_some(), "the boot re-spawn keeps the row a later restart re-spawns from");
+    }
+
+    /// A resume delivers the restart note (or the row's `resume_kick`) as
+    /// this connection's kick, and that text must not land in the row's
+    /// `kick`: that field is the worker's original first turn, and it is
+    /// what a later `--new` re-spawn opens the worker with. Written, the
+    /// resume text becomes the worker's opening turn for the rest of its
+    /// life.
+    #[tokio::test]
+    async fn a_resume_spawn_leaves_the_stored_kick_alone() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+        // The row a real first spawn writes, non-git so the resume runs in
+        // the project root rather than a worktree that is not there.
+        ws.record_worker_row(
+            &key,
+            "tester",
+            "tester-id",
+            "charter",
+            Some("original kick"),
+            None,
+            false,
+            false,
+        )
+        .expect("seed the row the resume re-writes");
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                // What `dispatch_worker_respawns` hands a resuming worker.
+                kick: Some("This session was restarted by forge; continue.".to_owned()),
+                resume_kick: None,
+                interactive: false,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            Some("tester-id"),
+            true,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert!(reply.is_ok(), "the resume spawn succeeds: {reply:?}");
+
+        assert_eq!(
+            ws.list_live_workers(&key).into_iter().next().and_then(|entry| entry.kick).as_deref(),
+            Some("This session was restarted by forge; continue."),
+            "the resuming connection is kicked with the resume text",
+        );
+        let stored = ws
+            .worker_rows_for_project(&key)
+            .into_iter()
+            .find(|row| row.label == "tester")
+            .expect("the row survives the resume");
+        assert_eq!(
+            stored.kick.as_deref(),
+            Some("original kick"),
+            "the row keeps the worker's original first turn; overwriting it makes the restart \
+             note the worker's opening turn on every later --new re-spawn",
+        );
     }
 
     /// The spawn composes the working directory from the gitness the ROW

@@ -3891,7 +3891,9 @@ impl Workspace {
         // A re-spawn passes no re-orient message of its own - it hands
         // the row's `resume_kick` to the child as the kick - so a `None`
         // here carries the stored value forward rather than erasing the
-        // field its caller just read.
+        // field its caller just read. Same for `kick`: only a first spawn
+        // states one, and a resume that wrote its own live kick here would
+        // replace the worker's original first turn with it.
         let existing = crate::store::sessions::get(db, &org, &project, label).ok().flatten();
         crate::store::sessions::put(
             db,
@@ -3901,7 +3903,9 @@ impl Workspace {
                 label: label.to_owned(),
                 session_id: Some(id.to_owned()),
                 charter: Some(charter.to_owned()),
-                kick: kick.map(str::to_owned),
+                kick: kick
+                    .map(str::to_owned)
+                    .or_else(|| existing.as_ref().and_then(|row| row.kick.clone())),
                 resume_kick: resume_kick
                     .map(str::to_owned)
                     .or_else(|| existing.and_then(|row| row.resume_kick)),
