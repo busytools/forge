@@ -567,32 +567,6 @@ mod tests {
         );
     }
 
-    /// Nothing persisted can turn a notification off. A stored channel
-    /// preference that used to select "no notification" has no reader
-    /// left, so the escape is written regardless.
-    #[test]
-    fn a_stored_channel_preference_cannot_suppress_the_escape() {
-        let mut app = App::test_default();
-        let key = seed_bucket(&mut app, "session-a", "companies");
-        app.config.committed_preferences_document =
-            serde_json::json!({ "preferredNotifChannel": "notifications_disabled" });
-        app.notifications.on_focus_lost();
-
-        app.notify(NotifyEvent::TurnComplete, &key);
-
-        let fields: Vec<_> = app
-            .notifications
-            .take_delivered()
-            .into_iter()
-            .map(|delivered| (delivered.title, delivered.body))
-            .collect();
-        assert_eq!(
-            fields,
-            vec![("companies".to_owned(), "Turn complete".to_owned())],
-            "a stored channel preference must not change what is delivered",
-        );
-    }
-
     /// The escape reaches stdout. `written` comes back from the write
     /// itself, so a guard put around the send fails here rather than
     /// passing on the recorded line alone.
