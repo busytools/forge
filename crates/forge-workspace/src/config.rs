@@ -560,26 +560,41 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 names: vec![entry.display_name],
             });
         };
-        let mut env = global_env.clone();
-        // A gateway key declared in an env layer is inert: the stamp
-        // lands last over the merged env and overwrites all four. A
-        // blank one still reads as absent rather than being carried
-        // downstream as an empty credential.
+        // The four gateway keys are the flat keys' and the stamp's
+        // alone. They are dropped from every env layer here, blank or
+        // not, before the layers merge: the stamp covers the child's
+        // env only, while the pool keeps this one, and the forward leg
+        // reads the upstream and the credential out of what the pool
+        // holds. A base URL left in would send real traffic, with the
+        // real credential attached, to an endpoint the config never
+        // named as an account.
         let gateway_keys = [
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_API_KEY",
         ];
+        let mut dropped: Vec<&str> = Vec::new();
         for key in gateway_keys {
             for env in [&mut global_env, &mut entry.env] {
-                if env.get(key).is_some_and(|v| v.trim().is_empty()) {
-                    env.remove(key);
+                if env.remove(key).is_some() {
+                    dropped.push(key);
                 }
             }
         }
+        if !dropped.is_empty() {
+            dropped.dedup();
+            tracing::warn!(
+                target: "forge_workspace::config",
+                event_name = "gateway_keys_dropped_from_env_layer",
+                account = %entry.display_name,
+                keys = %dropped.join(", "),
+                "gateway keys in an env layer are dropped, not refused: the flat \
+                 base_url and token keys own them, and the spawn stamp owns the child",
+            );
+        }
+        let mut env = global_env.clone();
         env.extend(entry.env);
-        trim_setup_token(&mut env);
         // The flat credential: mapped onto the provider's own variable
         // below, which is what the probe, the gateway forward and the
         // child stamp all read.
@@ -783,9 +798,10 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
 /// A project's env: the `env_file` entries with the inline `env` table
 /// layered over them, since the inline form is the more explicit
 /// statement of the two.
-/// Trim the setup token once here: the probe and the spawned child
-/// both read these maps verbatim, so a padded value would authenticate
-/// one and fail the other.
+/// Trim the setup token a project's env declares: the spawned child
+/// reads that map verbatim, so a padded value would fail to
+/// authenticate. The account layers never reach here with one - the
+/// load drops the gateway keys before they merge.
 fn trim_setup_token<S: std::hash::BuildHasher>(env: &mut HashMap<String, String, S>) {
     if let Some(token) = env.get_mut(forge_gateway::CLAUDE_CODE_OAUTH_TOKEN_ENV) {
         *token = token.trim().to_owned();
@@ -1515,22 +1531,25 @@ base_url = "   "
         assert_eq!(account.env.len(), 1, "nothing else is injected");
     }
 
-    /// A gateway key declared in an env layer loads and rides through
-    /// untouched: the stamp is what makes it inert, and it lands after
-    /// the layers merge, so a second load-time gate on the same keys
-    /// would only decide the same question twice.
+    /// A gateway key declared in an env layer is dropped rather than
+    /// refused, and dropped from every layer, so it cannot reach the
+    /// pool. The stamp covers the child's env only, and the pool's env
+    /// is what the forward leg reads the upstream and the credential
+    /// out of: a base URL left there would send real traffic, with the
+    /// real credential attached, somewhere the config never named.
     #[test]
-    fn a_gateway_key_in_an_env_layer_loads_and_rides_through() {
+    fn a_gateway_key_in_an_env_layer_never_reaches_the_account_env() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
             r#"
 [env]
 ANTHROPIC_BASE_URL = "https://proxy.example"
+ANTHROPIC_API_KEY = "sk-global"
 
 [[orgs]]
 name = "Personal"
-accounts = ["Personal"]
+accounts = ["Personal", "Scratch"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
@@ -1540,55 +1559,36 @@ token = "t"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
 [accounts.env]
-ANTHROPIC_API_KEY = "sk-ant-123"
 ANTHROPIC_AUTH_TOKEN = "t2"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("a gateway env key is not refused");
-        let env = &config.accounts[0].env;
-        assert_eq!(
-            env.get("ANTHROPIC_BASE_URL").map(String::as_str),
-            Some("https://proxy.example"),
-            "the global layer's key survives the merge",
-        );
-        assert_eq!(
-            env.get("ANTHROPIC_API_KEY").map(String::as_str),
-            Some("sk-ant-123"),
-            "the account layer's key survives the merge",
-        );
-        assert_eq!(
-            env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
-            Some("t2"),
-            "a key beside the flat token survives the merge",
-        );
-    }
-
-    #[test]
-    fn a_whitespace_gateway_key_reads_as_absent() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
+ANTHROPIC_API_KEY = "   "
 [[accounts]]
-display_name = "Codex"
-token = "t"
+display_name = "Scratch"
+token = "t3"
 models = ["claude-sonnet-5"]
 provider = "codex"
 base_url = "http://localhost:18765"
-[accounts.env]
-ANTHROPIC_API_KEY = "   "
 "#,
         );
-        let config = load_from_dir(dir.path()).expect("a blank gateway key is absent");
-        assert!(
-            !config.accounts[0].env.contains_key("ANTHROPIC_API_KEY"),
-            "a blank key is scrubbed, not carried downstream as an empty credential",
+        let config = load_from_dir(dir.path()).expect("a gateway env key is not refused");
+        let personal = config.accounts.iter().find(|a| a.display_name == "Personal").expect("one");
+        for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] {
+            assert!(
+                !personal.env.contains_key(key),
+                "{key} must not survive into the account env the pool and the forward leg read",
+            );
+        }
+        assert_eq!(
+            personal.env.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str),
+            Some("t"),
+            "the flat token still lands on the account's own variable",
+        );
+        // The scrub runs before the flat keys are mapped, so a base-url
+        // account keeps its own endpoint rather than losing it too.
+        let scratch = config.accounts.iter().find(|a| a.display_name == "Scratch").expect("one");
+        assert_eq!(
+            scratch.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("http://localhost:18765"),
+            "the flat base_url is mapped after the scrub, so it still lands",
         );
     }
 
