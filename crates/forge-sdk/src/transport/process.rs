@@ -36,6 +36,21 @@ use crate::options::{Options, WireTee};
 /// against a process that ignores stdin EOF.
 const CLOSE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Name what actually failed. A spawn that cannot find the program and
+/// one that cannot enter `current_dir` both surface as `ENOENT`, so the
+/// cwd is re-checked here - this is the only point that holds it.
+fn spawn_error(err: std::io::Error, options: &Options) -> Error {
+    if err.kind() != std::io::ErrorKind::NotFound {
+        return Error::Io(err);
+    }
+    match options.cwd.as_deref() {
+        Some(cwd) if !cwd.is_dir() => {
+            Error::CwdNotFound { path: cwd.to_string_lossy().into_owned() }
+        }
+        _ => Error::CliNotFound { binary: options.binary.clone() },
+    }
+}
+
 /// Run `<binary> --version` synchronously and return the stdout.
 ///
 /// # Errors
@@ -217,6 +232,7 @@ impl Subprocess {
     ///
     /// - [`Error::CliNotFound`] when the binary isn't on PATH or the given path
     ///   doesn't exist.
+    /// - [`Error::CwdNotFound`] when `cwd` names a directory that isn't there.
     /// - [`Error::Io`] for other spawn failures.
     pub async fn spawn(options: &Options) -> Result<Self, Error> {
         // Optional CLI-version guard. Runs `<binary> --version` once.
@@ -281,10 +297,7 @@ impl Subprocess {
             extra_args_len = options.extra_args.len(),
             "spawning claude subprocess"
         );
-        let mut child = cmd.spawn().map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => Error::CliNotFound { binary: options.binary.clone() },
-            _ => Error::Io(e),
-        })?;
+        let mut child = cmd.spawn().map_err(|e| spawn_error(e, options))?;
 
         let stdin = child
             .stdin
@@ -866,6 +879,42 @@ mod tests {
             secrets.push(text.clone());
         }
         secrets
+    }
+
+    /// A spawn that cannot enter its `cwd` and one that cannot find the
+    /// binary both surface as `ENOENT`, so the error has to say which.
+    /// The mirror case pins the other half: a genuinely missing binary
+    /// still reports as one, so the cwd arm cannot swallow it.
+    #[tokio::test]
+    async fn spawn_names_a_missing_cwd_apart_from_a_missing_binary() {
+        let missing_cwd = std::env::temp_dir().join("forge-sdk-no-such-working-dir");
+        assert!(!missing_cwd.exists(), "fixture precondition: {missing_cwd:?} must not exist");
+        let missing_cwd = missing_cwd.to_string_lossy().into_owned();
+        let options = Options {
+            binary: "claude".to_owned(),
+            cwd: Some(missing_cwd.clone().into()),
+            minimum_cli_version: None,
+            ..Options::default()
+        };
+        let err = Subprocess::spawn(&options).await.expect_err("a missing cwd must fail the spawn");
+        assert!(
+            matches!(&err, Error::CwdNotFound { path } if *path == missing_cwd),
+            "a spawn that could not enter its working directory reported {err:?} rather than \
+             naming that directory"
+        );
+
+        let options = Options {
+            binary: "forge-no-such-binary-on-path".to_owned(),
+            cwd: Some(std::env::temp_dir()),
+            minimum_cli_version: None,
+            ..Options::default()
+        };
+        let err =
+            Subprocess::spawn(&options).await.expect_err("a missing binary must fail the spawn");
+        assert!(
+            matches!(err, Error::CliNotFound { .. }),
+            "a binary that is not on PATH reported {err:?} rather than CliNotFound"
+        );
     }
 
     /// The spawn record must not render a credential. Two carriers

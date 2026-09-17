@@ -18,6 +18,17 @@ pub enum Error {
         binary: String,
     },
 
+    /// The subprocess's working directory does not exist.
+    ///
+    /// Separate from [`Error::CliNotFound`] because a `spawn` that
+    /// cannot enter its `cwd` fails with the same `ENOENT` as one that
+    /// cannot find the binary, and only the caller knows the cwd.
+    #[error("claude subprocess working directory `{path}` does not exist")]
+    CwdNotFound {
+        /// The working directory that was attempted.
+        path: String,
+    },
+
     /// The subprocess exited with a non-zero status or was terminated by a signal.
     ///
     /// Wraps the CLI's `ProcessError`.
