@@ -7,7 +7,7 @@
 //! [`drop_table`], which then removes the table. Do not add a write path
 //! back.
 
-use redb::{ReadableTable, TableDefinition};
+use redb::{ReadableTable, ReadableTableMetadata, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use super::Db;
@@ -69,6 +69,22 @@ pub fn list_all(db: &Db) -> anyhow::Result<Vec<DynamicWorker>> {
     Ok(out)
 }
 
+/// How many rows the table holds, readable or not.
+///
+/// [`list_all`] skips a value that will not decode, which is right - one
+/// corrupt record must not wipe the rest of the durable set - but it makes
+/// the decoded rows an undercount of what is there. The sweep compares
+/// this with what it moved, so the count has to come from the table.
+pub fn count(db: &Db) -> anyhow::Result<usize> {
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(DYNAMIC_WORKERS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(usize::try_from(table.len()?)?)
+}
+
 /// Remove one row, once the sweep has copied it into `sessions`. This is
 /// what makes the sweep's own progress durable: a row still here is a row
 /// whose arguments exist nowhere else yet, whatever happened to an earlier
@@ -100,11 +116,22 @@ pub fn drop_table(db: &Db) -> anyhow::Result<bool> {
 /// still has the old table. Production has no write path here.
 #[cfg(test)]
 pub(crate) fn insert_for_test(db: &Db, worker: &DynamicWorker) -> anyhow::Result<()> {
-    let value = serde_json::to_vec(worker)?;
+    put_raw_for_test(db, &worker.project_key, &worker.label, &serde_json::to_vec(worker)?)
+}
+
+/// Plant raw bytes at a row, so a test can exercise the sweep against an
+/// entry whose value will not decode.
+#[cfg(test)]
+pub(crate) fn put_raw_for_test(
+    db: &Db,
+    project_key: &str,
+    label: &str,
+    value: &[u8],
+) -> anyhow::Result<()> {
     let txn = db.database().begin_write()?;
     {
         let mut table = txn.open_table(DYNAMIC_WORKERS)?;
-        table.insert((worker.project_key.as_str(), worker.label.as_str()), value.as_slice())?;
+        table.insert((project_key, label), value)?;
     }
     txn.commit()?;
     Ok(())

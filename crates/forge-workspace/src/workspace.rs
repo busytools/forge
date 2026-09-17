@@ -895,10 +895,10 @@ impl Workspace {
             None => Vec::new(),
         };
 
-        // The `sessions` table is filled from `dynamic_workers` on the
-        // first boot that finds it empty, so a worker persisted before
-        // this build has a row the re-spawn wave can read. Non-fatal,
-        // like the loads above.
+        // The boot moves anything still in `dynamic_workers` onto
+        // `sessions`, so a worker persisted before this build has a row
+        // the re-spawn wave can read, and drops the retired table once
+        // nothing is left in it. Non-fatal, like the loads above.
         let mut swept_clean = false;
         if let Some(db) = &db {
             match crate::store::sessions::migrate_from_dynamic_workers(
@@ -7571,6 +7571,13 @@ provider = "anthropic"
     /// skips this store entirely and then drops the only copy of the
     /// args, so the worker comes back on the next boot with an empty
     /// charter.
+    ///
+    /// The steward's own row is there too, because that is what the
+    /// released build leaves: `record_session_id` wrote the worker's
+    /// occupant id to `sessions` under the same `(org, project, label)`
+    /// the retired table keys its args by. Every worker live at the
+    /// moment of upgrade therefore arrives at the merge arm, and the id
+    /// on that row is the thing it must not lose.
     #[tokio::test]
     async fn booting_merges_worker_args_when_the_sessions_table_already_has_rows() {
         let dir = make_workspace_dir_with_two_accounts();
@@ -7595,6 +7602,20 @@ provider = "anthropic"
             },
         )
         .expect("seed the lead row a spawn writes");
+        crate::store::sessions::put(
+            &db,
+            &crate::store::sessions::SessionRecord {
+                org: "Default".to_owned(),
+                project: "forge".to_owned(),
+                label: "steward".to_owned(),
+                session_id: Some("steward-id".to_owned()),
+                charter: None,
+                kick: None,
+                resume_kick: None,
+                interactive: None,
+            },
+        )
+        .expect("seed the steward's own row, as the released build leaves it");
         crate::store::dynamic_workers::insert_for_test(
             &db,
             &crate::store::dynamic_workers::DynamicWorker {
@@ -7623,6 +7644,24 @@ provider = "anthropic"
         );
         assert_eq!(steward.kick.as_deref(), Some("begin"));
         assert_eq!(steward.resume_kick.as_deref(), Some("re-read the notes"));
+        assert_eq!(
+            steward.session_id.as_deref(),
+            Some("steward-id"),
+            "onto the row it already had, keeping the occupant that row names - a plain write \
+             here would blank the id, re-minting one and orphaning the transcript",
+        );
+        assert_eq!(
+            crate::store::dynamic_workers::count(db).expect("count"),
+            0,
+            "the retired table is drained",
+        );
+        // The drop itself, which the count cannot show: an emptied table
+        // and a dropped one both report zero rows, so ask whether there is
+        // still a table to drop.
+        assert!(
+            !crate::store::dynamic_workers::drop_table(db).expect("drop"),
+            "and the boot dropped it, rather than leaving an empty table behind",
+        );
         assert_eq!(steward.interactive, Some(true));
         let lead =
             crate::store::sessions::get(db, "Default", "forge", forge_primitives::LEAD_LABEL)

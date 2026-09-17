@@ -6,9 +6,10 @@
 //! otherwise, so no separate kind column is needed. The value is stored
 //! as serde-json and the worker-only fields are absent on a lead's row.
 //!
-//! A row written by [`migrate_from_dynamic_workers`] carries no id: the
-//! `dynamic_workers` table never stored one, so the session it names
-//! starts fresh under a newly minted id rather than resuming.
+//! A worker row written by [`migrate_from_dynamic_workers`] gets its
+//! spawn args from `dynamic_workers`, which never stored an id. A worker
+//! that has no row yet therefore starts fresh under a newly minted id; one
+//! that already has a row keeps the occupant that row names.
 
 use anyhow::Context;
 use redb::{ReadableTable, TableDefinition};
@@ -24,9 +25,9 @@ const SESSIONS: TableDefinition<(&str, &str, &str), &[u8]> = TableDefinition::ne
 pub const LEAD_LABEL: &str = "lead";
 
 /// One session's identity, plus the worker fields a re-spawn needs.
-/// `session_id` is absent on a row copied from `dynamic_workers`, which
-/// never stored one; every other field is worker-only, so a lead's row
-/// carries none of them.
+/// `session_id` is absent on a worker row the sweep creates, because
+/// `dynamic_workers` never stored one; every other field is worker-only,
+/// so a lead's row carries none of them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub org: String,
@@ -152,10 +153,15 @@ pub fn migrate_from_dynamic_workers(
     db: &Db,
     projects: &[ProjectIdentity],
 ) -> anyhow::Result<SweepOutcome> {
-    let rows = dynamic_workers::list_all(db)?;
+    // What the table HOLDS, not what decoded. An entry whose value will
+    // not decode is skipped by the loop below and can never be moved, so
+    // counting the decoded rows would call a table with an unreadable
+    // entry drained and let the caller drop it.
+    let rows = dynamic_workers::count(db)?;
+    let workers = dynamic_workers::list_all(db)?;
     let mut moved = 0;
     let mut unkeyable = 0;
-    for worker in &rows {
+    for worker in &workers {
         let Some(project) = projects.iter().find(|p| p.key == worker.project_key) else {
             tracing::warn!(
                 target: "forge_workspace::store::sessions",
@@ -194,7 +200,7 @@ pub fn migrate_from_dynamic_workers(
             "moved persisted workers onto the sessions table and out of the retired one",
         );
     }
-    Ok(SweepOutcome { moved, unkeyable, rows: rows.len() })
+    Ok(SweepOutcome { moved, unkeyable, rows })
 }
 
 /// Every row for `(org, project)`, in label order. What a project's lead
@@ -517,6 +523,29 @@ mod tests {
         let rows = list_all(&db).expect("list tolerates the corrupt blob");
         assert_eq!(rows.len(), 1, "the good row survives a corrupt sibling");
         assert_eq!(rows[0].label, "lead");
+    }
+
+    /// An entry whose value will not decode cannot be moved, so the sweep
+    /// must not report a clean drain while one is there - the drop that
+    /// follows would destroy it, and it exists nowhere else. The row count
+    /// therefore comes from the table, not from the rows that decoded.
+    #[test]
+    fn a_table_holding_an_undecodable_entry_is_never_reported_as_drained() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        dynamic_workers::insert_for_test(&db, &worker("proj-a", "steward", false))
+            .expect("seed steward");
+        dynamic_workers::put_raw_for_test(&db, "proj-a", "unreadable", b"not a worker")
+            .expect("plant a retired row that will not decode");
+
+        let projects = [project("proj-a", "Personal", "forge")];
+        let outcome = migrate_from_dynamic_workers(&db, &projects).expect("migrate");
+        assert_eq!(outcome.moved, 1, "the readable row crosses over");
+        assert_eq!(outcome.rows, 2, "and the count is what the table holds, not what decoded");
+        assert!(
+            !outcome.drained(),
+            "so the caller must not drop a table still holding an entry nothing else has",
+        );
     }
 
     /// `keys` reads the composite key alone, so a row whose body will not

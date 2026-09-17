@@ -1296,6 +1296,17 @@ pub(crate) fn handle_spawn_worker(
                 error = %err,
                 "spawn_worker: get_agent_handle failed"
             );
+            // A fresh spawn the caller asked for creates its row above, so
+            // a failure here has to take the row with it: the caller is
+            // told the spawn failed and the live entry is rolled back, and
+            // a row left behind brings the worker back on the next boot.
+            // A resume and a boot re-spawn are not that case - their row
+            // pre-existed and is the only handle on the id being resumed,
+            // so deleting it would lose the worker rather than let it
+            // retry.
+            if !is_resume && !from_boot_respawn {
+                workspace.delete_worker_row(&project_key, label);
+            }
             // Roll back the live_workers entry we just inserted.
             let removed = workspace.remove_latest_worker(&project_key, label);
             if let Some(rolled) = removed {
@@ -2449,6 +2460,16 @@ provider = "anthropic"
             ws.list_live_workers(&key).is_empty(),
             "and the placeholder entry is rolled back, not left live",
         );
+        let row = {
+            let db = ws.db.lock();
+            let db = db.as_ref().expect("db");
+            crate::store::sessions::get(db, "TestOrg", "overlayonly", "tester").expect("read")
+        };
+        assert!(
+            row.is_none(),
+            "and the durable row goes with it: left behind, the next boot re-spawns a worker \
+             the caller was told had failed",
+        );
     }
 
     /// A spawn refused before it reaches the project leaves the caller's
@@ -2672,7 +2693,11 @@ provider = "anthropic"
             .session_id;
 
         let refused = spawn("a second, refused charter").await.expect("reply channel");
-        assert!(refused.is_err(), "the second spawn for a live label is refused");
+        let refusal = refused.expect_err("the second spawn for a live label is refused");
+        assert!(
+            refusal.contains("already live"),
+            "and it is the duplicate arm that refused, not some other failure: {refusal}",
+        );
 
         let rows = ws.worker_rows_for_project(&key);
         let row = rows.iter().find(|r| r.label == "steward").expect("the running worker's row");
