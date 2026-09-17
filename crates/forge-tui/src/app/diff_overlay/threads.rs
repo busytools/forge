@@ -1890,7 +1890,7 @@ mod tests {
         forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat")
             .expect("write corrupt row");
         workspace.install_db_for_test(db);
-        let key = forge_workspace::SessionSlot::from_session_id("review-session");
+        let key = forge_workspace::SessionSlot::from_str_for_test("review-session");
         let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = "/tmp/repo".into();
         app.sessions.insert(key.clone(), session);
@@ -1922,7 +1922,7 @@ mod tests {
         forge_workspace::store::review::write_corrupt_reviews_row_for_test(&db, "forge", "feat")
             .expect("write corrupt reviews row");
         workspace.install_db_for_test(db);
-        let key = forge_workspace::SessionSlot::from_session_id("review-session");
+        let key = forge_workspace::SessionSlot::from_str_for_test("review-session");
         let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = "/tmp/repo".into();
         app.sessions.insert(key.clone(), session);
@@ -1953,7 +1953,7 @@ mod tests {
             "feat",
             Some("first pass".to_owned()),
             &[],
-            forge_workspace::SessionSlot::from_session_id("reviewer"),
+            forge_workspace::SessionSlot::from_str_for_test("reviewer"),
         )
         .expect("seal a review");
 

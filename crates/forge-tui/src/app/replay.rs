@@ -214,7 +214,10 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
                 }
                 apply_session_update(
                     &mut app,
-                    SessionUpdate::ChatAppended { session_id: "replay-session".to_owned(), msg },
+                    SessionUpdate::ChatAppended {
+                key: forge_workspace::SessionSlot::from_str_for_test("replay-session"),
+                msg,
+            },
                 );
             }
             // Control + ControlResponse + ControlCancel are part of the
@@ -427,7 +430,10 @@ mod tests {
             if let DecodedLine::Message(msg) = decoded {
                 apply_session_update(
                     &mut app,
-                    SessionUpdate::ChatAppended { session_id: session_id.to_owned(), msg },
+                    SessionUpdate::ChatAppended {
+                key: forge_workspace::SessionSlot::from_str_for_test(session_id),
+                msg,
+            },
                 );
             }
         }

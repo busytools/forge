@@ -1121,7 +1121,7 @@ mod tests {
     use crate::protocol::WorkerSpawnReply;
 
     fn fake_key(s: &str) -> SessionSlot {
-        SessionSlot::from_session_id(s)
+        SessionSlot::from_str_for_test(s)
     }
 
     fn lead_caller(name: &str) -> CallerProject {
@@ -1751,8 +1751,9 @@ mod tests {
             charter: charter.to_owned(),
             status: forge_primitives::WorkerLiveness::Running,
             session_id: format!("session-{label}"),
+            slot: SessionSlot::from_str_for_test(label),
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".to_owned(),
+            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             diagnostic: None,
             activity: None,
         }
@@ -2164,8 +2165,9 @@ mod tests {
             charter: "test charter".to_owned(),
             status: forge_primitives::WorkerLiveness::Running,
             session_id: session_id.to_owned(),
+            slot: SessionSlot::from_str_for_test(session_id),
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: lead_uuid.to_owned(),
+            spawned_by: SessionSlot::from_str_for_test(lead_uuid),
             diagnostic: None,
             activity: None,
         }

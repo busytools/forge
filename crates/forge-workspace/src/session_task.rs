@@ -28,10 +28,6 @@ pub(crate) struct SessionTask {
     pub(crate) command_rx: mpsc::UnboundedReceiver<Command>,
     pub(crate) domain: Arc<Mutex<DomainSession>>,
     pub(crate) update_tx: mpsc::UnboundedSender<SessionUpdate>,
-    /// The slot this session fills, set at spawn where the role is
-    /// decided. A spawn that never connects expires that slot's parked
-    /// payloads, which nothing can reach from the key once it is gone.
-    pub(crate) slot: crate::parked::Slot,
     /// Tracks whether the first `Connected` has been emitted. The
     /// second-and-beyond Connected on the same task drives
     /// `SessionUpdate::SessionReplaced` instead (covers `/new`,
@@ -51,7 +47,7 @@ impl SessionTask {
     pub(crate) async fn run(mut self) {
         tracing::debug!(
             target: "forge_workspace::session_task",
-            key = %self.key.as_str(),
+            slot = %self.key.display(),
             "session task started"
         );
         // Take the agent's event receiver. The bridge seeds it on
@@ -60,7 +56,7 @@ impl SessionTask {
         let Some(mut event_rx) = self.handle.take_events() else {
             tracing::error!(
                 target: "forge_workspace::session_task",
-                key = %self.key.as_str(),
+                slot = %self.key.display(),
                 "AgentHandle::take_events returned None; session task aborting"
             );
             self.emit(SessionUpdate::ConnectionFailed {
@@ -95,7 +91,7 @@ impl SessionTask {
         }
         tracing::info!(
             target: "forge_workspace::session_task",
-            key = %self.key.as_str(),
+            slot = %self.key.display(),
             "session task exiting (agent event channel closed)"
         );
         // The agent-event / command channel closed - this session's
@@ -210,7 +206,10 @@ impl SessionTask {
                 compaction_count,
             } => {
                 let history = history_updates.unwrap_or_default();
-                let real_key = SessionSlot::from_session_id(session_id.clone());
+                // The slot the task was spawned under, which the CLI's
+                // own id never moves: it names the occupant, this names
+                // the seat.
+                let key = self.key.clone();
                 // Realign the workspace's per-task registrations
                 // (`pool`, `command_senders`, `domain_handles`) onto
                 // the real session UUID. `get_agent_handle` registered
@@ -271,20 +270,16 @@ impl SessionTask {
                     // the drop-hook behavior in `impl Drop for
                     // SessionTask` below - same `TargetConnectionFailed`
                     // reason because semantically the original target
-                    // is unreachable. Fired BEFORE `rekey_to` so the
-                    // project lookup inside `expire_target_inflight`
-                    // still resolves against the about-to-be-replaced
-                    // key.
+                    // is unreachable.
                     if let Some(workspace) = self.workspace.upgrade() {
                         workspace.expire_target_inflight(
                             &self.key,
                             crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                         );
                     }
-                    // Same reason, same ordering: the replaced identity
-                    // never produces a Result, and once `rekey_to` moves
-                    // `DomainSession.key` no later drain can name the
-                    // buffer this turn's review actions sit in.
+                    // Same reason: the replaced identity never produces a
+                    // Result, so the buffer this turn's review actions sit
+                    // in would never be drained.
                     let caller = self.domain.lock().key.clone();
                     self.drain_review_activity_for(&caller);
                     // Session-scoped `/dictate` state dies with the
@@ -299,8 +294,6 @@ impl SessionTask {
                         let mut domain = self.domain.lock();
                         domain.dictate_overrides = crate::dictate::DictateOverrides::default();
                     }
-                    let previous_key = self.key.clone();
-                    self.rekey_to(&real_key);
                     // The store is not the first-Connected path's alone:
                     // every replacement adopts an id forge did not choose,
                     // and a boot resolves this session from its row.
@@ -308,9 +301,8 @@ impl SessionTask {
                         workspace.note_running_session_id(&self.key, &session_id);
                     }
                     self.emit(SessionUpdate::SessionReplaced {
-                        key: real_key.clone(),
-                        previous_key,
-                        session_id: SessionId::new(session_id),
+                        key: key.clone(),
+                        session_id: SessionId::new(session_id.clone()),
                         cwd,
                         current_model,
                         available_models,
@@ -319,14 +311,13 @@ impl SessionTask {
                         compaction_count,
                     });
                     // After SessionReplaced so the echo lands on the
-                    // fresh bucket the TUI minted for it: the cleared
-                    // values re-affirm the blank state.
+                    // bucket it kept: the cleared values re-affirm the
+                    // blank state.
                     self.emit(SessionUpdate::DictateOverrides {
-                        key: real_key.clone(),
+                        key: key.clone(),
                         overrides: crate::dictate::DictateOverrides::default(),
                     });
                 } else {
-                    self.rekey_to(&real_key);
                     self.connected_once = true;
                     // When the connecting session is a project's lead and
                     // persists workers that are not live yet, dispatch
@@ -335,13 +326,8 @@ impl SessionTask {
                     // failure skips re-spawn.
                     if let Some(workspace) = self.workspace.upgrade() {
                         let force_new = self.domain.lock().spawned_force_new;
-                        maybe_respawn_workers_on_connected(
-                            &workspace,
-                            &self.slot,
-                            real_key.as_str(),
-                            force_new,
-                        );
-                        maybe_kick_worker_on_connected(&workspace, &self.slot, real_key.as_str());
+                        maybe_respawn_workers_on_connected(&workspace, &self.key, force_new);
+                        maybe_kick_worker_on_connected(&workspace, &self.key);
                     }
                     // A boot resolves a session from the store, so the id
                     // the CLI adopted is recorded rather than left to the
@@ -350,8 +336,8 @@ impl SessionTask {
                         workspace.note_running_session_id(&self.key, &session_id);
                     }
                     self.emit(SessionUpdate::Connected {
-                        key: real_key.clone(),
-                        session_id: SessionId::new(session_id),
+                        key: key.clone(),
+                        session_id: SessionId::new(session_id.clone()),
                         cwd,
                         current_model,
                         available_models,
@@ -372,7 +358,7 @@ impl SessionTask {
                 // JSONL, and an untagged one is listed by the boot scan
                 // as one of the project's own sessions.
                 if let Some(workspace) = self.workspace.upgrade() {
-                    workspace.apply_worker_tag_or_rollback(&real_key, &cwd_for_tag);
+                    workspace.apply_worker_tag_or_rollback(&key, &session_id, &cwd_for_tag);
                 }
             }
             AgentEvent::AuthRequired { method_name, method_description } => {
@@ -406,7 +392,7 @@ impl SessionTask {
                     // Fail the peer asks so their callers get a delivery
                     // notice rather than waiting out the timeout.
                     workspace.expire_parked_for_slot(
-                        &self.slot,
+                        &self.key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
                     // Worker async spawn failure: classify the
@@ -441,7 +427,6 @@ impl SessionTask {
                 return false;
             }
             AgentEvent::PermissionRequest { session_id, request } => {
-                let session_key = SessionSlot::from_session_id(session_id.clone());
                 let tool_call_id = request.tool_call.tool_call_id.clone();
                 let wire_request = request;
                 let (response_tx, response_rx) =
@@ -456,7 +441,7 @@ impl SessionTask {
                 if self
                     .update_tx
                     .send(SessionUpdate::PermissionRequest {
-                        key: session_key,
+                        key: self.key.clone(),
                         tool_id: tool_call_id.clone(),
                         request: wire_request,
                     })
@@ -481,14 +466,13 @@ impl SessionTask {
                     }
                     tracing::warn!(
                         target: "forge_workspace::session_task",
-                        key = %self.key.as_str(),
+                        slot = %self.key.display(),
                         tool_id = %tool_call_id,
                         "PermissionRequest send failed; orphaned oneshot cancelled"
                     );
                 }
             }
             AgentEvent::QuestionRequest { session_id, request } => {
-                let session_key = SessionSlot::from_session_id(session_id.clone());
                 let tool_call_id = request.tool_call.tool_call_id.clone();
                 let wire_request = request;
                 let (response_tx, response_rx) =
@@ -503,7 +487,7 @@ impl SessionTask {
                 if self
                     .update_tx
                     .send(SessionUpdate::QuestionRequest {
-                        key: session_key,
+                        key: self.key.clone(),
                         tool_id: tool_call_id.clone(),
                         request: wire_request,
                     })
@@ -527,34 +511,30 @@ impl SessionTask {
                     }
                     tracing::warn!(
                         target: "forge_workspace::session_task",
-                        key = %self.key.as_str(),
+                        slot = %self.key.display(),
                         tool_id = %tool_call_id,
                         "QuestionRequest send failed; orphaned oneshot cancelled"
                     );
                 }
             }
-            AgentEvent::McpOperationError { session_id, error } => {
-                let session_key = SessionSlot::from_session_id(session_id);
-                self.emit(SessionUpdate::McpOperationError { key: session_key, error });
+            AgentEvent::McpOperationError { error, .. } => {
+                self.emit(SessionUpdate::McpOperationError { key: self.key.clone(), error });
             }
-            AgentEvent::RuntimeReloadCompleted { session_id } => {
-                self.emit(SessionUpdate::RuntimeReloadCompleted { session_id });
+            AgentEvent::RuntimeReloadCompleted { .. } => {
+                self.emit(SessionUpdate::RuntimeReloadCompleted { key: self.key.clone() });
             }
-            AgentEvent::RuntimeReloadFailed { session_id, message } => {
-                self.emit(SessionUpdate::RuntimeReloadFailed { session_id, message });
+            AgentEvent::RuntimeReloadFailed { message, .. } => {
+                self.emit(SessionUpdate::RuntimeReloadFailed { key: self.key.clone(), message });
             }
-            AgentEvent::SetModeFailed { session_id, mode, message } => {
-                let session_key = SessionSlot::from_session_id(session_id);
-                self.emit(SessionUpdate::SetModeFailed { key: session_key, mode, message });
+            AgentEvent::SetModeFailed { mode, message, .. } => {
+                self.emit(SessionUpdate::SetModeFailed { key: self.key.clone(), mode, message });
             }
-            AgentEvent::SetModelFailed { session_id, model, message } => {
-                let session_key = SessionSlot::from_session_id(session_id);
-                self.emit(SessionUpdate::SetModelFailed { key: session_key, model, message });
+            AgentEvent::SetModelFailed { model, message, .. } => {
+                self.emit(SessionUpdate::SetModelFailed { key: self.key.clone(), model, message });
             }
-            AgentEvent::TurnError { session_id, message } => {
-                let session_key = SessionSlot::from_session_id(session_id);
+            AgentEvent::TurnError { message, .. } => {
                 self.emit(SessionUpdate::TurnError {
-                    key: session_key,
+                    key: self.key.clone(),
                     message,
                     class: None,
                     terminal_reason: None,
@@ -563,23 +543,30 @@ impl SessionTask {
             AgentEvent::SessionsListed { sessions } => {
                 self.emit(SessionUpdate::SessionsListed { key: self.key.clone(), sessions });
             }
-            AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
-                self.emit(SessionUpdate::StatusSnapshot { session_id, account, forge_account });
+            AgentEvent::StatusSnapshot { account, forge_account, .. } => {
+                self.emit(SessionUpdate::StatusSnapshot {
+                    key: self.key.clone(),
+                    account,
+                    forge_account,
+                });
             }
-            AgentEvent::OauthCredentialsSnapshot { session_id, credentials } => {
-                self.emit(SessionUpdate::OauthCredentialsSnapshot { session_id, credentials });
+            AgentEvent::OauthCredentialsSnapshot { credentials, .. } => {
+                self.emit(SessionUpdate::OauthCredentialsSnapshot {
+                    key: self.key.clone(),
+                    credentials,
+                });
             }
-            AgentEvent::ContextUsage { session_id, percentage, max_tokens } => {
+            AgentEvent::ContextUsage { percentage, max_tokens, .. } => {
                 self.emit(SessionUpdate::ContextUsageSnapshot {
-                    session_id,
+                    key: self.key.clone(),
                     percentage,
                     max_tokens,
                 });
             }
-            AgentEvent::McpSnapshot { session_id, servers, error } => {
-                self.emit(SessionUpdate::McpSnapshot { session_id, servers, error });
+            AgentEvent::McpSnapshot { servers, error, .. } => {
+                self.emit(SessionUpdate::McpSnapshot { key: self.key.clone(), servers, error });
             }
-            AgentEvent::SdkMessage { session_id, msg } => {
+            AgentEvent::SdkMessage { msg, .. } => {
                 // A rate-limit window that is not `allowed` proves the
                 // bound account exhausted: report it so the gateway
                 // cools the account down and drops this session's
@@ -594,7 +581,9 @@ impl SessionTask {
                     && let Some(workspace) = self.workspace.upgrade()
                 {
                     let reset_at = rate_limit_info.resets_at.and_then(|t| u64::try_from(t).ok());
-                    workspace.gateway.report_rate_limit(self.key.as_str(), reset_at);
+                    if let Some(session_id) = self.session_id_string() {
+                        workspace.gateway.report_rate_limit(&session_id, reset_at);
+                    }
                 }
                 // Clear the turn-commit marker on the turn boundary so
                 // the in-flight guards stop refusing once the turn
@@ -618,18 +607,18 @@ impl SessionTask {
                     // each review's submit origin.
                     self.drain_review_activity_for(&caller);
                 }
-                self.emit(SessionUpdate::ChatAppended { session_id, msg });
+                self.emit(SessionUpdate::ChatAppended { key: self.key.clone(), msg });
             }
             AgentEvent::HookObservation {
-                session_id,
                 tool_use_id,
                 permission_mode,
                 effort,
                 agent_id,
                 agent_type,
+                ..
             } => {
                 self.emit(SessionUpdate::HookObservation {
-                    session_id,
+                    key: self.key.clone(),
                     tool_use_id,
                     permission_mode,
                     effort,
@@ -659,7 +648,7 @@ impl SessionTask {
                     if tx.send(outcome).is_err() {
                         tracing::warn!(
                             target: "forge_workspace::session_task",
-                            key = %self.key.as_str(),
+                            slot = %self.key.display(),
                             tool_id = %tool_id,
                             "permission oneshot receiver dropped before response could be sent"
                         );
@@ -667,7 +656,7 @@ impl SessionTask {
                 } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
                     tracing::warn!(
                         target: "forge_workspace::session_task",
-                        key = %self.key.as_str(),
+                        slot = %self.key.display(),
                         tool_id = %tool_id,
                         slot = ?other,
                         "RespondPermission expected Permission slot; got different kind. Outcome dropped, slot preserved."
@@ -675,7 +664,7 @@ impl SessionTask {
                 } else {
                     tracing::warn!(
                         target: "forge_workspace::session_task",
-                        key = %self.key.as_str(),
+                        slot = %self.key.display(),
                         tool_id = %tool_id,
                         "RespondPermission found no pending interaction (already responded or expired)"
                     );
@@ -695,7 +684,7 @@ impl SessionTask {
                     if tx.send(outcome).is_err() {
                         tracing::warn!(
                             target: "forge_workspace::session_task",
-                            key = %self.key.as_str(),
+                            slot = %self.key.display(),
                             tool_id = %tool_id,
                             "question oneshot receiver dropped"
                         );
@@ -703,7 +692,7 @@ impl SessionTask {
                 } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
                     tracing::warn!(
                         target: "forge_workspace::session_task",
-                        key = %self.key.as_str(),
+                        slot = %self.key.display(),
                         tool_id = %tool_id,
                         slot = ?other,
                         "RespondQuestion got non-Question slot. Outcome dropped, slot preserved."
@@ -711,7 +700,7 @@ impl SessionTask {
                 } else {
                     tracing::warn!(
                         target: "forge_workspace::session_task",
-                        key = %self.key.as_str(),
+                        slot = %self.key.display(),
                         tool_id = %tool_id,
                         "RespondQuestion found no pending interaction"
                     );
@@ -736,7 +725,7 @@ impl SessionTask {
                 ) {
                     tracing::warn!(
                         target: "forge_workspace::session_task",
-                        key = %self.key.as_str(),
+                        slot = %self.key.display(),
                         error = %err,
                         "agent command dispatch failed; bridge channel closed?"
                     );
@@ -774,7 +763,7 @@ impl SessionTask {
         if self.update_tx.send(update).is_err() {
             tracing::warn!(
                 target: "forge_workspace::session_task",
-                key = %self.key.as_str(),
+                slot = %self.key.display(),
                 "SessionUpdate channel closed; dropping event"
             );
         }
@@ -796,44 +785,12 @@ impl SessionTask {
         }
     }
 
-    /// Migrate this task's workspace-side registrations from the
-    /// current `self.key` to `real_key` (and update `self.key`).
-    /// No-op when `self.key == real_key` or the workspace has been
-    /// dropped. Delegates to
-    /// [`crate::Workspace::migrate_session_task`] for the actual map
-    /// shuffling so the lock-ordering rules live in one place.
-    fn rekey_to(&mut self, real_key: &SessionSlot) {
-        if self.key.as_str() == real_key.as_str() {
-            return;
-        }
-        let migrated = self
-            .workspace
-            .upgrade()
-            .is_some_and(|workspace| workspace.migrate_session_task(&self.key, real_key));
-        if !migrated {
-            // Workspace refused the migration (collision or no workspace
-            // upgrade). Keep `self.key` at the old slot so events
-            // continue flowing through this task's existing channel.
-            // Command dispatch against `real_key` will miss until the
-            // TUI reconnects - single-user scope makes the collision
-            // effectively impossible.
-            return;
-        }
-        tracing::info!(
-            target: "forge_workspace::session_task",
-            from = %self.key.as_str(),
-            to = %real_key.as_str(),
-            "session task rekeyed onto real session UUID"
-        );
-        self.key = real_key.clone();
-    }
-
     /// The id a `/new` starts under: a fresh one, recorded against the row
     /// this session belongs to, so a restart re-enters the new session
     /// rather than the one `/new` replaced. `None` when the session has no
     /// row to record against, which leaves the CLI to pick its own id.
     fn fresh_session_id(&self) -> Option<String> {
-        self.workspace.upgrade()?.fresh_session_id_for(&self.key)
+        Some(self.workspace.upgrade()?.fresh_session_id_for(&self.key))
     }
 
     /// Drain everything parked for this session's slot on its first
@@ -842,7 +799,7 @@ impl SessionTask {
     /// worker never lands on the project's lead.
     fn drain_parked(&self) {
         let Some(workspace) = self.workspace.upgrade() else { return };
-        let parked = workspace.take_parked_for_slot(&self.slot);
+        let parked = workspace.take_parked_for_slot(&self.key);
         self.deliver_parked_peers(&workspace, parked.peer);
         self.deliver_parked_crons(&workspace, parked.cron);
         self.deliver_parked_gotify(&workspace, parked.gotify);
@@ -888,7 +845,7 @@ impl SessionTask {
             if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, text) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
-                    key = %self.key.as_str(),
+                    slot = %self.key.display(),
                     error = ?err,
                     "deliver_parked_peers: dispatch failed; prompt dropped"
                 );
@@ -915,7 +872,7 @@ impl SessionTask {
             if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, text) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
-                    key = %self.key.as_str(),
+                    slot = %self.key.display(),
                     error = ?err,
                     "deliver_parked_crons: dispatch failed; prompt dropped",
                 );
@@ -947,7 +904,7 @@ impl SessionTask {
             {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
-                    key = %self.key.as_str(),
+                    slot = %self.key.display(),
                     error = ?err,
                     "deliver_parked_gotify: dispatch failed; prompt dropped"
                 );
@@ -974,7 +931,7 @@ impl SessionTask {
             if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, prose) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
-                    key = %self.key.as_str(),
+                    slot = %self.key.display(),
                     error = ?err,
                     "deliver_parked_slack: dispatch failed; prompt dropped"
                 );
@@ -1024,17 +981,16 @@ impl Drop for SessionTask {
 /// The slot's label carries the role: only a lead (`None`) owns a team.
 fn maybe_respawn_workers_on_connected(
     workspace: &Arc<crate::Workspace>,
-    slot: &crate::parked::Slot,
-    real_session_id: &str,
+    slot: &crate::SessionSlot,
     force_new: bool,
 ) {
-    if slot.label.is_some() {
+    if !slot.is_lead() {
         return;
     }
-    if workspace.find_project_view_by_name(&slot.project).is_none() {
+    if workspace.find_project_view_by_name(slot.project()).is_none() {
         return;
     }
-    let Some(project_key) = workspace.project_key_for_name(&slot.project) else {
+    let Some(project_key) = workspace.project_key_for_name(slot.project()) else {
         return;
     };
     if !workspace.list_live_workers(&project_key).is_empty() {
@@ -1046,7 +1002,7 @@ fn maybe_respawn_workers_on_connected(
     // synchronously so a fast double-Connected can't slip a second
     // worker-spawn through; the guard is released after the SpawnWorker
     // commands are dispatched.
-    workspace.respawn_workers_for_lead(real_session_id.to_owned(), project_key, force_new);
+    workspace.respawn_workers_for_lead(slot, project_key, force_new);
 }
 
 /// Shared worker-kick hook: when the session that connected is a worker,
@@ -1065,16 +1021,13 @@ fn maybe_respawn_workers_on_connected(
 /// Workspace command bus to the worker's own SessionTask queue,
 /// which processes the prompt on its next loop iteration once
 /// translate_event returns.
-fn maybe_kick_worker_on_connected(
-    workspace: &Arc<crate::Workspace>,
-    slot: &crate::parked::Slot,
-    real_session_id: &str,
-) {
+fn maybe_kick_worker_on_connected(workspace: &Arc<crate::Workspace>, slot: &crate::SessionSlot) {
     // The label is the worker's; a lead has none and gets no kick.
-    let Some(label) = slot.label.as_deref() else {
+    if slot.is_lead() {
         return;
-    };
-    let Some(project_key) = workspace.project_key_for_name(&slot.project) else {
+    }
+    let label = slot.label();
+    let Some(project_key) = workspace.project_key_for_name(slot.project()) else {
         return;
     };
     // `handle_spawn_worker` inserts the entry as Spawning before the agent
@@ -1087,7 +1040,7 @@ fn maybe_kick_worker_on_connected(
         tracing::warn!(
             target: "forge_workspace::workers",
             label = %label,
-            session_id = real_session_id,
+            slot = %slot.display(),
             "no live worker entry for this label; the worker connects unkicked and idles",
         );
         return;
@@ -1101,9 +1054,10 @@ fn maybe_kick_worker_on_connected(
     // `KICK_DISPATCH_INTERVAL`; the first kick of an empty queue
     // has zero added latency.
     workspace.enqueue_kick(crate::workspace::KickRequest {
-        session_key: SessionSlot::from_session_id(real_session_id.to_owned()),
+        slot: slot.clone(),
         prompt_body: kick,
     });
+
 }
 
 /// Test-only entry point for the Connected hooks.
@@ -1115,13 +1069,13 @@ fn maybe_kick_worker_on_connected(
 #[cfg(test)]
 fn on_connected_for_test(
     workspace: &Arc<crate::Workspace>,
-    slot: &crate::parked::Slot,
-    real_session_id: &str,
+    slot: &crate::SessionSlot,
+    _real_session_id: &str,
 ) {
     // Normal (non-`--new`) Connected simulation; the force-new cascade
     // is exercised directly against respawn_workers_for_lead.
-    maybe_respawn_workers_on_connected(workspace, slot, real_session_id, false);
-    maybe_kick_worker_on_connected(workspace, slot, real_session_id);
+    maybe_respawn_workers_on_connected(workspace, slot, false);
+    maybe_kick_worker_on_connected(workspace, slot);
 }
 
 /// Forward a `Command` straight to `handle`. Pure transport - no
@@ -1189,7 +1143,7 @@ pub(crate) fn execute_command_via_handle(
         Command::RespondPermission { .. } | Command::RespondQuestion { .. } => {
             tracing::error!(
                 target: "forge_workspace::session_task",
-                key = %key.as_str(),
+                slot = %key.display(),
                 command = ?cmd,
                 "Respond* commands must be handled by SessionTask::execute_command before delegation"
             );
@@ -1224,7 +1178,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::SubmitReview { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
-                key = %key.as_str(),
+                slot = %key.display(),
                 command = ?misrouted,
                 "App-level command unexpectedly routed via per-session path"
             );
@@ -1236,7 +1190,7 @@ pub(crate) fn execute_command_via_handle(
 fn warn_no_session(key: &SessionSlot, command: &'static str) -> forge_agent::AgentError {
     tracing::warn!(
         target: "forge_workspace::session_task",
-        key = %key.as_str(),
+        slot = %key.display(),
         command,
         "command dropped: no session_id stamped on DomainSession yet",
     );
@@ -1408,8 +1362,8 @@ mod tests {
 
     /// The slot a test task carries. Drains resolve the parked bucket
     /// against it, so a test that parks must park under the same triple.
-    fn test_slot() -> crate::parked::Slot {
-        crate::parked::Slot::lead("TestOrg", "forge")
+    fn test_slot() -> crate::SessionSlot {
+        crate::SessionSlot::lead("TestOrg", "forge")
     }
 
     fn workspace_with_account_config_dir(
@@ -1470,8 +1424,8 @@ mod tests {
                 commit: None,
             }],
         );
-        let reviewer = SessionSlot::from_session_id("reviewer");
-        let worker = SessionSlot::from_session_id("worker");
+        let reviewer = SessionSlot::from_str_for_test("reviewer");
+        let worker = SessionSlot::from_str_for_test("worker");
         workspace.submit_review("forge", "feat", None, &["a".to_owned()], reviewer.clone());
         workspace
             .review_reply(&worker, "forge", "feat", "a", "implementer", "fixed", "t")
@@ -1495,7 +1449,6 @@ mod tests {
             command_rx,
             domain,
             update_tx,
-            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(workspace),
         };
@@ -1514,7 +1467,7 @@ mod tests {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         workspace.seed_test_project("slack-drain", "/tmp/slack-drain");
 
-        let session_key = SessionSlot::from_session_id("slack-drain-uuid");
+        let session_key = SessionSlot::from_str_for_test("slack-drain-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         workspace.park_slack(
@@ -1541,19 +1494,18 @@ mod tests {
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
 
         workspace.enable_test_dispatch_intercept();
-        task.translate_event(connected_event(session_key.as_str(), "/tmp/slack-drain"));
+        task.translate_event(connected_event(&session_key.display(),"/tmp/slack-drain"));
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         assert!(
             dispatched.iter().any(|c| matches!(
                 c, crate::protocol::Command::Prompt { key, text, .. }
-                    if key == &session_key && text.contains("the buffered text")
+                    if *key == session_key && text.contains("the buffered text")
             )),
             "the buffered message arrives as the session's own prompt: {dispatched:?}",
         );
@@ -1562,8 +1514,8 @@ mod tests {
         while let Ok(u) = update_rx.try_recv() {
             if matches!(
                 u,
-                SessionUpdate::SlackMessageAppended { session_id, prose }
-                    if session_id == session_key.as_str() && prose.contains("the buffered text")
+                SessionUpdate::SlackMessageAppended { key, prose }
+                    if key == session_key &&prose.contains("the buffered text")
             ) {
                 echoed = true;
             }
@@ -1585,7 +1537,7 @@ mod tests {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         workspace.seed_test_project("slack-rekey", "/tmp/slack-rekey");
         let first_key = SessionSlot::from_str_for_test("slack-rekey-first");
-        let real_key = SessionSlot::from_session_id("slack-rekey-uuid");
+        let real_key = SessionSlot::from_str_for_test("slack-rekey-uuid");
         let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(first_key.clone(), None)));
         workspace.park_slack(&test_slot(), buffered_slack("buffered while asleep"));
 
@@ -1599,19 +1551,18 @@ mod tests {
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
 
         workspace.enable_test_dispatch_intercept();
-        task.translate_event(connected_event(real_key.as_str(), "/tmp/slack-rekey"));
+        task.translate_event(connected_event(&real_key.display(),"/tmp/slack-rekey"));
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         assert!(
             dispatched.iter().any(|c| matches!(
                 c, crate::protocol::Command::Prompt { key, text, .. }
-                    if key == &real_key && text.contains("buffered while asleep")
+                    if *key == real_key && text.contains("buffered while asleep")
             )),
             "the drained prompt rides the key Connected reported: {dispatched:?}",
         );
@@ -1620,8 +1571,8 @@ mod tests {
         while let Ok(u) = update_rx.try_recv() {
             if matches!(
                 u,
-                SessionUpdate::SlackMessageAppended { session_id, .. }
-                    if session_id == real_key.as_str()
+                SessionUpdate::SlackMessageAppended { key, .. }
+                    if key == real_key
             ) {
                 echoed = true;
             }
@@ -1702,13 +1653,13 @@ mod tests {
     #[test]
     fn a_rate_limit_event_not_allowed_reports_the_gateway_for_the_session_key() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
-        let key = SessionSlot::from_session_id("w-uuid");
+        let key = SessionSlot::from_str_for_test("w-uuid");
         let (mut task, _update_rx) = review_task_for(&workspace, &key);
 
         workspace.gateway.bindings.bind(
             "Org",
             "forge",
-            key.as_str(),
+            &key.display(),
             forge_gateway::AccountKey("A".to_owned()),
         );
 
@@ -1724,15 +1675,15 @@ mod tests {
                 raw: serde_json::Map::new(),
             },
             uuid: "u1".to_owned(),
-            session_id: key.as_str().to_owned(),
+            session_id: key.display(),
         };
         task.translate_event(AgentEvent::SdkMessage {
-            session_id: key.as_str().to_owned(),
+            session_id: key.display(),
             msg: rejected,
         });
 
         assert!(
-            workspace.gateway.bindings.binding_for("Org", "forge", key.as_str()).is_none(),
+            workspace.gateway.bindings.binding_for("Org", "forge", &key.display()).is_none(),
             "the report drops the session's own binding",
         );
 
@@ -1743,11 +1694,11 @@ mod tests {
         workspace.gateway.bindings.bind(
             "Org",
             "forge",
-            key.as_str(),
+            &key.display(),
             forge_gateway::AccountKey("C".to_owned()),
         );
         task.translate_event(AgentEvent::SdkMessage {
-            session_id: key.as_str().to_owned(),
+            session_id: key.display(),
             msg: forge_primitives::Message::RateLimitEvent {
                 rate_limit_info: forge_primitives::RateLimitInfo {
                     status: forge_primitives::RateLimitStatus::Allowed,
@@ -1760,11 +1711,11 @@ mod tests {
                     raw: serde_json::Map::new(),
                 },
                 uuid: "u2".to_owned(),
-                session_id: key.as_str().to_owned(),
+                session_id: key.display(),
             },
         });
         assert_eq!(
-            workspace.gateway.bindings.binding_for("Org", "forge", key.as_str()),
+            workspace.gateway.bindings.binding_for("Org", "forge", &key.display()),
             Some(forge_gateway::AccountKey("C".to_owned())),
             "an allowed frame rotates nothing",
         );
@@ -1866,7 +1817,7 @@ mod tests {
                 account: forge_gateway::AccountKey("Acct".to_owned()),
                 permission_mode: None,
                 registration: None,
-                slot: crate::parked::Slot::lead("TestOrg", "forge"),
+                session_id: "pooled-session".to_owned(),
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -1877,7 +1828,6 @@ mod tests {
             command_rx,
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
-            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -1919,7 +1869,7 @@ mod tests {
                 account: forge_gateway::AccountKey("Acct".to_owned()),
                 permission_mode: None,
                 registration: None,
-                slot: crate::parked::Slot::lead("TestOrg", "forge"),
+                session_id: "pooled-session".to_owned(),
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -1929,7 +1879,6 @@ mod tests {
             command_rx,
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
-            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -1968,7 +1917,7 @@ mod tests {
                 account: forge_gateway::AccountKey("Acct".to_owned()),
                 permission_mode: None,
                 registration: None,
-                slot: crate::parked::Slot::lead("TestOrg", "forge"),
+                session_id: "pooled-session".to_owned(),
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -1981,7 +1930,6 @@ mod tests {
             command_rx,
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
-            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2004,7 +1952,7 @@ mod tests {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let (handle, mut agent_rx) = Agent::testing_stub();
         let handle = Arc::new(handle);
-        let key = SessionSlot::from_session_id("perm");
+        let key = SessionSlot::from_str_for_test("perm");
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let (update_tx, _update_rx) = mpsc::unbounded_channel();
         let mut task = SessionTask {
@@ -2016,13 +1964,12 @@ mod tests {
                 Some(Arc::clone(&handle)),
             ))),
             update_tx,
-            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
 
         task.translate_event(AgentEvent::PermissionRequest {
-            session_id: key.as_str().to_owned(),
+            session_id: key.display(),
             request: permission_request_fixture("tu-1"),
         });
         assert!(
@@ -2063,7 +2010,7 @@ mod tests {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let (handle, mut agent_rx) = Agent::testing_stub();
         let handle = Arc::new(handle);
-        let key = SessionSlot::from_session_id("xkind");
+        let key = SessionSlot::from_str_for_test("xkind");
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let (update_tx, _update_rx) = mpsc::unbounded_channel();
         let mut task = SessionTask {
@@ -2075,13 +2022,12 @@ mod tests {
                 Some(Arc::clone(&handle)),
             ))),
             update_tx,
-            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
 
         task.translate_event(AgentEvent::QuestionRequest {
-            session_id: key.as_str().to_owned(),
+            session_id: key.display(),
             request: question_request_fixture("tu-q1"),
         });
 
@@ -2151,7 +2097,7 @@ mod tests {
     async fn set_model_failed_and_turn_error_map_to_keyed_updates() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let (mut task, mut update_rx) =
-            review_task_for(&workspace, &SessionSlot::from_session_id("m"));
+            review_task_for(&workspace, &SessionSlot::from_str_for_test("m"));
 
         task.translate_event(AgentEvent::SetModelFailed {
             session_id: "m".to_owned(),
@@ -2401,7 +2347,6 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            slot: test_slot(),
             connected_once: true,
             workspace: std::sync::Weak::new(),
         };
@@ -2456,7 +2401,7 @@ provider = "anthropic"
         // Message kind (not Question) keeps the assertion focused on
         // FIFO dispatch; the Question-kind incoming-counter bump is
         // exercised separately.
-        let session_key = SessionSlot::from_session_id("drain-session-uuid");
+        let session_key = SessionSlot::from_str_for_test("drain-session-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         let bodies = ["first", "second", "third"];
@@ -2488,14 +2433,13 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
 
         workspace.enable_test_dispatch_intercept();
         task.translate_event(AgentEvent::Connected {
-            session_id: session_key.as_str().to_owned(),
+            session_id: session_key.display(),
             cwd: "/tmp/drain".to_owned(),
             current_model: forge_primitives::CurrentModel {
                 resolved_id: "claude".to_owned(),
@@ -2585,10 +2529,11 @@ provider = "anthropic"
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "c".to_owned(),
-            session_key: SessionSlot::from_session_id(session_id),
-            status: forge_primitives::WorkerLiveness::Running,
+            slot: SessionSlot::from_str_for_test(session_id),
+            session_id: None,
+            status:forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".to_owned(),
+            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -2608,7 +2553,7 @@ provider = "anthropic"
         // Parked for the task's own slot, which is what the drain reads.
         workspace.park_cron(&test_slot(), "morning reminder".to_owned(), false);
 
-        let session_key = SessionSlot::from_session_id("cron-drain-uuid");
+        let session_key = SessionSlot::from_str_for_test("cron-drain-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
 
@@ -2622,13 +2567,12 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
 
         workspace.enable_test_dispatch_intercept();
-        task.translate_event(connected_event(session_key.as_str(), "/tmp/cron-drain"));
+        task.translate_event(connected_event(&session_key.display(),"/tmp/cron-drain"));
 
         // The buffered cron prompt is dispatched as a plain user turn.
         let buffered = workspace.drain_test_dispatch_buffer();
@@ -2644,8 +2588,8 @@ provider = "anthropic"
         while let Ok(u) = update_rx.try_recv() {
             if matches!(
                 u,
-                SessionUpdate::CronPromptAppended { session_id, text }
-                    if session_id == session_key.as_str() && text == "morning reminder"
+                SessionUpdate::CronPromptAppended { key, text }
+                    if key == session_key && text == "morning reminder"
             ) {
                 echoed = true;
             }
@@ -2672,12 +2616,12 @@ provider = "anthropic"
         workspace.insert_live_worker(&key, cron_worker_entry("reviewer", "worker-drain-uuid"));
 
         // A missed cron for the worker + an on-time lead cron for the project.
-        let worker_slot = crate::parked::Slot::worker("TestOrg", "wdp", "reviewer");
-        let lead_slot = crate::parked::Slot::lead("TestOrg", "wdp");
+        let worker_slot = crate::SessionSlot::worker("TestOrg", "wdp", "reviewer");
+        let lead_slot = crate::SessionSlot::lead("TestOrg", "wdp");
         workspace.park_cron(&worker_slot, "worker work".to_owned(), true);
         workspace.park_cron(&lead_slot, "lead work".to_owned(), false);
 
-        let session_key = SessionSlot::from_session_id("worker-drain-uuid");
+        let session_key = SessionSlot::from_str_for_test("worker-drain-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
@@ -2690,7 +2634,6 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            slot: worker_slot,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
         };
@@ -2702,7 +2645,7 @@ provider = "anthropic"
         assert!(
             dispatched.iter().any(|c| matches!(
                 c, crate::protocol::Command::Prompt { key, text, .. }
-                    if key == &session_key && text == "[missed cron] worker work"
+                    if *key == session_key && text == "[missed cron] worker work"
             )),
             "the worker drains its own missed cron with the marker applied",
         );
@@ -2721,7 +2664,7 @@ provider = "anthropic"
     async fn translate_event_carries_a_non_zero_compaction_count_on_both_arms() {
         for (connected_once, arm) in [(false, "Connected"), (true, "SessionReplaced")] {
             let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-            let session_key = SessionSlot::from_session_id("count-through-uuid");
+            let session_key = SessionSlot::from_str_for_test("count-through-uuid");
             let domain =
                 Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
             let (handle, _agent_cmd_rx) = Agent::testing_stub();
@@ -2733,12 +2676,11 @@ provider = "anthropic"
                 command_rx,
                 domain: Arc::clone(&domain),
                 update_tx: workspace.update_sender(),
-                slot: test_slot(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
             };
 
-            let mut event = connected_event(session_key.as_str(), "/tmp/count");
+            let mut event = connected_event(&session_key.display(),"/tmp/count");
             if let AgentEvent::Connected { compaction_count, .. } = &mut event {
                 *compaction_count = 7;
             }
@@ -2768,7 +2710,7 @@ provider = "anthropic"
         use forge_primitives::Message;
 
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let session_key = SessionSlot::from_session_id("replacement-visible-uuid");
+        let session_key = SessionSlot::from_str_for_test("replacement-visible-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
 
@@ -2782,7 +2724,6 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            slot: test_slot(),
             // The seed a session-replacing re-spawn installs.
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
@@ -2791,12 +2732,12 @@ provider = "anthropic"
         // A one-message resumed history (the --resume backfill).
         let history = vec![Message::System {
             subtype: "info".to_owned(),
-            session_id: Some(session_key.as_str().to_owned()),
+            session_id: Some(session_key.display()),
             data: serde_json::json!({ "body": "earlier turn" }),
         }];
 
         task.translate_event(AgentEvent::Connected {
-            session_id: session_key.as_str().to_owned(),
+            session_id: session_key.display(),
             cwd: "/tmp/respawn".to_owned(),
             current_model: forge_primitives::CurrentModel {
                 resolved_id: "claude".to_owned(),
@@ -2847,7 +2788,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_replaced_identity_drops_its_overrides_but_not_the_device_pick() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let session_key = SessionSlot::from_session_id("dictate-rekey-uuid");
+        let session_key = SessionSlot::from_str_for_test("dictate-rekey-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         domain.lock().dictate_overrides.styling = Some(forge_dictate::normalize::Styling::Formal);
@@ -2863,13 +2804,12 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx: workspace.update_sender(),
-            slot: test_slot(),
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
         };
 
         task.translate_event(AgentEvent::Connected {
-            session_id: session_key.as_str().to_owned(),
+            session_id: session_key.display(),
             cwd: "/tmp/respawn".to_owned(),
             current_model: forge_primitives::CurrentModel {
                 resolved_id: "claude".to_owned(),
@@ -2920,7 +2860,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn respawn_connection_failure_is_nonfatal_and_releases_the_session() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let key = SessionSlot::from_session_id("respawn-fail-uuid");
+        let key = SessionSlot::from_str_for_test("respawn-fail-uuid");
 
         let (handle, _agent_cmds) = Agent::testing_stub();
         let arc = Arc::new(handle);
@@ -2933,7 +2873,7 @@ provider = "anthropic"
                 account: forge_gateway::AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
-                slot: crate::parked::Slot::lead("TestOrg", "forge"),
+                session_id: "pooled-session".to_owned(),
             },
         );
         let domain = workspace.register_domain_session(key.clone(), Some(Arc::clone(&arc)));
@@ -2946,7 +2886,6 @@ provider = "anthropic"
             command_rx,
             domain,
             update_tx: workspace.update_sender(),
-            slot: test_slot(),
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
         };
@@ -3101,8 +3040,8 @@ mod connected_hook_tests {
 
     /// A project's lead slot: the label is what marks the role, so a
     /// project whose name looks worker-shaped is still a lead.
-    fn lead_slot(project_name: &str) -> crate::parked::Slot {
-        crate::parked::Slot::lead("TestOrg", project_name)
+    fn lead_slot(project_name: &str) -> crate::SessionSlot {
+        crate::SessionSlot::lead("TestOrg", project_name)
     }
 
     /// Seed `proj-x` with one persisted worker row and return the
@@ -3201,7 +3140,7 @@ mod connected_hook_tests {
         });
         workspace.enable_test_dispatch_intercept();
 
-        let worker = crate::parked::Slot::worker("TestOrg", lookalike, "planner");
+        let worker = crate::SessionSlot::worker("TestOrg", lookalike, "planner");
         on_connected_for_test(&workspace, &worker, "worker-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
@@ -3242,10 +3181,11 @@ mod connected_hook_tests {
             crate::mcp::workers::types::WorkerEntry {
                 label: "implementer".into(),
                 charter: "test".into(),
-                session_key: SessionSlot::from_session_id("worker-uuid"),
-                status: forge_primitives::WorkerLiveness::Running,
+                slot: SessionSlot::from_str_for_test("worker-uuid"),
+                session_id: None,
+                status:forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead-uuid".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -3268,7 +3208,7 @@ mod connected_hook_tests {
         workspace: &Arc<Workspace>,
         label: &str,
         kick: Option<String>,
-    ) -> crate::parked::Slot {
+    ) -> crate::SessionSlot {
         workspace.seed_test_project("forge", "/tmp/forge");
         let project_key = workspace
             .list_projects()
@@ -3281,17 +3221,18 @@ mod connected_hook_tests {
             crate::mcp::workers::types::WorkerEntry {
                 label: label.to_owned(),
                 charter: "ad-hoc".into(),
-                session_key: SessionSlot::from_session_id("worker-uuid"),
-                status: forge_primitives::WorkerLiveness::Running,
+                slot: SessionSlot::from_str_for_test("worker-uuid"),
+                session_id: None,
+                status:forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
                 kick,
             },
         );
-        crate::parked::Slot::worker("TestOrg", "forge", label)
+        crate::SessionSlot::worker("TestOrg", "forge", label)
     }
 
     /// A worker spawned with `workers__spawn(kick=...)` gets that kick
@@ -3317,7 +3258,7 @@ mod connected_hook_tests {
             dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
         assert_eq!(prompts.len(), 1, "inline-kick worker gets exactly one kick");
         if let Command::Prompt { key, text, .. } = prompts[0] {
-            assert_eq!(key.as_str(), "worker-uuid", "kick targets the worker's real session id");
+            assert_eq!(key.label(), "worker-uuid", "kick targets the worker's own slot");
             assert_eq!(
                 text, "Begin: triage the failing test now.",
                 "inline kick delivered verbatim",
@@ -3386,7 +3327,7 @@ mod connected_hook_tests {
         // One live worker, carrying a kick, under a DIFFERENT label.
         seed_adhoc_worker_with_kick(&workspace, "other", Some("not yours".into()));
         // A label with no entry of its own, in the same project.
-        let other_label = crate::parked::Slot::worker("TestOrg", "forge", "scratchpad");
+        let other_label = crate::SessionSlot::worker("TestOrg", "forge", "scratchpad");
 
         on_connected_for_test(&workspace, &other_label, "worker-uuid");
         tokio::task::yield_now().await;

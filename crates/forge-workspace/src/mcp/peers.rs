@@ -122,7 +122,7 @@ impl Tool for Whoami {
                     text: format!(
                         "no identity resolved for caller {} (this is a forge bug; the \
                          caller key should always resolve to a forge.toml project)",
-                        caller_key.as_str(),
+                        caller_key.display(),
                     ),
                 }],
                 is_error: true,
@@ -309,7 +309,7 @@ impl Tool for TellAgent {
         let Some(identity) = self.facade.whoami(&caller_key) else {
             return tool_error(format!(
                 "no identity resolved for caller {} (forge bug)",
-                caller_key.as_str(),
+                caller_key.display(),
             ));
         };
 
@@ -573,7 +573,7 @@ impl Tool for AskAgent {
         let Some(identity) = self.facade.whoami(&caller_key) else {
             return tool_error(format!(
                 "no identity resolved for caller {} (forge bug)",
-                caller_key.as_str(),
+                caller_key.display(),
             ));
         };
 
@@ -641,7 +641,7 @@ mod tests {
     use crate::mcp::peers::types::{InflightAsk, PeerLiveness, PeerStatus};
 
     fn fake_key(s: &str) -> SessionSlot {
-        SessionSlot::from_session_id(s)
+        SessionSlot::from_str_for_test(s)
     }
 
     fn fake_peer(name: &str) -> PeerStatus {

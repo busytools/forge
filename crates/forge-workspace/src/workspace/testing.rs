@@ -343,6 +343,7 @@ impl Workspace {
     pub fn seed_test_bound_session(&self, key: &SessionSlot, account: &str) {
         let (handle, _rx) = forge_agent::Agent::testing_stub();
         let account = AccountKey(account.to_owned());
+        let session_id = "test-bound-session".to_owned();
         self.pool.lock().insert(
             key.clone(),
             PooledAgent {
@@ -350,16 +351,16 @@ impl Workspace {
                 account: account.clone(),
                 permission_mode: None,
                 registration: Some(forge_gateway::binding::Registration {
-                    org: "TestOrg".to_owned(),
-                    project: "forge".to_owned(),
-                    session: key.as_str().to_owned(),
+                    org: key.org().to_owned(),
+                    project: key.project().to_owned(),
+                    session: session_id.clone(),
                     account: account.clone(),
                     provider: forge_primitives::account::Provider::Anthropic,
                 }),
-                slot: crate::parked::Slot::lead("TestOrg", "forge"),
+                session_id: session_id.clone(),
             },
         );
-        self.gateway.bindings.bind("TestOrg", "forge", key.as_str(), account);
+        self.gateway.bindings.bind(key.org(), key.project(), &session_id, account);
     }
 
     /// Store `snapshot` as `account`'s cached usage, so a cross-crate

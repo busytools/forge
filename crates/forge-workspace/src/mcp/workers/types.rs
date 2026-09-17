@@ -35,7 +35,7 @@ pub fn worker_tag_dir(project_root: &Path, label: &str, is_git_repo_at_spawn: bo
 pub struct LiveWorkerState {
     pub label: String,
     pub status: WorkerLiveness,
-    pub session_key: SessionSlot,
+    pub slot: SessionSlot,
 }
 
 /// In-memory entry stored in `Workspace.live_workers[project_key]`.
@@ -52,10 +52,17 @@ pub struct LiveWorkerState {
 pub struct WorkerEntry {
     pub label: String,
     pub charter: String,
-    pub session_key: SessionSlot,
+    /// The slot this worker fills, which is what addresses it.
+    pub slot: SessionSlot,
+    /// The session id the worker runs under: the one minted and recorded
+    /// at spawn (or the one resumed), refreshed if the CLI ever adopts
+    /// another. `None` before the spawn's id is known.
+    pub session_id: Option<forge_primitives::SessionId>,
     pub status: WorkerLiveness,
     pub spawned_at: SystemTime,
-    pub spawned_by_session_id: String,
+    /// The slot of the session that spawned this worker - its project's
+    /// lead.
+    pub spawned_by: SessionSlot,
     pub needs_tag: bool,
     /// Cached at spawn time: was the project's path a git repo?
     /// Drives the TUI Inspector pane's WORKTREE section render and
@@ -87,8 +94,7 @@ impl WorkerEntry {
     }
 
     /// Project the workspace-internal entry to the wire shape.
-    /// `session_id` is the worker's claude-issued session UUID (=
-    /// `session_key.as_str().to_owned()` once Connected).
+    /// `session_id` is the worker's claude-issued session UUID.
     ///
     /// `activity` is left `None`: deriving it needs the entry's
     /// `DomainSession`, which this method has no handle on. Every
@@ -102,9 +108,13 @@ impl WorkerEntry {
             label: self.label.clone(),
             charter: self.charter.clone(),
             status: self.status,
-            session_id: self.session_key.as_str().to_owned(),
+            session_id: self
+                .session_id
+                .as_ref()
+                .map_or_else(String::new, |id| id.as_str().to_owned()),
+            slot: self.slot.clone(),
             spawned_at: self.spawned_at,
-            spawned_by_session_id: self.spawned_by_session_id.clone(),
+            spawned_by: self.spawned_by.clone(),
             diagnostic: self.diagnostic.clone(),
             activity: None,
         }
@@ -141,10 +151,11 @@ mod is_git_repo_at_spawn_tests {
         WorkerEntry {
             label: "reviewer".into(),
             charter: "review the diff".into(),
-            session_key: SessionSlot::from_session_id("uuid-1"),
-            status: WorkerLiveness::Running,
+            slot: SessionSlot::from_str_for_test("uuid-1"),
+            session_id: None,
+            status:WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".into(),
+            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: is_git,
             diagnostic: None,

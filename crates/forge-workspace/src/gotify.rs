@@ -308,7 +308,7 @@ mod tests {
         let org = ws.list_projects().into_iter().find(|v| v.name == project).expect("project").org;
         ws.parked_by_slot
             .lock()
-            .get(&crate::parked::Slot::new(&org, project, label.map(str::to_owned)))
+            .get(&crate::SessionSlot::for_label(&org, project, label))
             .map(|parked| parked.gotify.clone())
             .unwrap_or_default()
     }
@@ -331,10 +331,11 @@ mod tests {
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "c".to_owned(),
-            session_key: SessionSlot::from_session_id(key),
-            status: forge_primitives::WorkerLiveness::Running,
+            slot: SessionSlot::from_str_for_test(key),
+            session_id: None,
+            status:forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".to_owned(),
+            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -555,7 +556,7 @@ mod tests {
         // "scratch" is not the lead: durability
         // must come solely from its dynamic_workers row.
         let _ = ws.persist_dynamic_worker(&dynamic_worker_row(view_key.as_str(), "scratch"));
-        let caller = SessionSlot::from_session_id("scratch-session");
+        let caller = SessionSlot::from_str_for_test("scratch-session");
         ws.insert_live_worker(&view_key, live_worker_entry("scratch", "scratch-session"));
 
         let (name, team_role, durable) = crate::mcp::gotify::facade::resolve_identity(&ws, &caller)
@@ -750,16 +751,17 @@ mod tests {
             .find(|v| v.name == "forge")
             .map(|v| v.key)
             .expect("seeded project view");
-        let worker_key = SessionSlot::from_session_id("worker-reviewer");
+        let worker_key = SessionSlot::from_str_for_test("worker-reviewer");
         ws.insert_live_worker(
             &view_key,
             crate::mcp::workers::types::WorkerEntry {
                 label: "reviewer".to_owned(),
                 charter: "review".to_owned(),
-                session_key: worker_key.clone(),
-                status: forge_primitives::WorkerLiveness::Running,
+                slot: worker_key.clone(),
+                session_id: None,
+                status:forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".to_owned(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -788,8 +790,8 @@ mod tests {
         // chat so the user sees what arrived (mirrors the peer echo).
         let echoed = drain_updates(&mut rx).into_iter().any(|u| matches!(
             u,
-            crate::protocol::SessionUpdate::GotifyNotificationAppended { session_id, notification }
-                if session_id == worker_key.as_str() && notification == notif
+            crate::protocol::SessionUpdate::GotifyNotificationAppended { key, notification }
+                if key == worker_key && notification == notif
         ));
         assert!(echoed, "a running-target delivery emits a GotifyNotificationAppended echo");
     }
@@ -839,7 +841,7 @@ mod tests {
             .find(|v| v.name == "forge")
             .map(|v| v.key)
             .expect("seeded project view");
-        let worker_key = SessionSlot::from_session_id("worker-spawning");
+        let worker_key = SessionSlot::from_str_for_test("worker-spawning");
         ws.insert_live_worker(&view_key, live_worker_entry("reviewer", "worker-spawning"));
         // Register the domain WITHOUT stamping session_id: still Spawning.
         ws.register_domain_session(worker_key.clone(), None);

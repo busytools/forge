@@ -309,7 +309,7 @@ pub(crate) fn handle_mcp_operation_error(
             event_name = "mcp_operation_error_dropped",
             message = "MCP operation error for an unknown session",
             outcome = "dropped",
-            session_id = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     }

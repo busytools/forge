@@ -1490,7 +1490,7 @@ pub(crate) mod tests {
         let active = app.active_session_key.clone().expect("session");
         app.input_mut().expect("active session").set_text("half-typed message");
 
-        let background = forge_workspace::SessionSlot::from_session_id("bg");
+        let background = forge_workspace::SessionSlot::from_str_for_test("bg");
         app.sessions.insert(
             background.clone(),
             crate::app::session::UiSession::new(background.clone(), "test-project"),
@@ -1516,7 +1516,7 @@ pub(crate) mod tests {
         let a = app.active_session_key.clone().expect("session");
         app.input_mut().expect("active session").set_text("session A draft");
 
-        let b = forge_workspace::SessionSlot::from_session_id("session-b");
+        let b = forge_workspace::SessionSlot::from_str_for_test("session-b");
         app.sessions
             .insert(b.clone(), crate::app::session::UiSession::new(b.clone(), "test-project"));
 

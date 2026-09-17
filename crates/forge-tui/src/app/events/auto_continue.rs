@@ -83,7 +83,7 @@ fn fire(app: &mut App, key: &SessionSlot) {
             event_name = "auto_continue_dispatch_failed",
             message = "continuation prompt could not be dispatched",
             outcome = "failure",
-            session_key = %key.as_str(),
+            slot = %key.display(),
             error = %err,
         );
         if let Some(bucket) = app.sessions.get_mut(key) {
@@ -110,7 +110,7 @@ fn fire(app: &mut App, key: &SessionSlot) {
         event_name = "auto_continued_after_server_error",
         message = "dispatched a continuation turn after a transient server error",
         outcome = "success",
-        session_key = %key.as_str(),
+        slot = %key.display(),
         attempt,
         max_attempts = MAX_ATTEMPTS,
     );

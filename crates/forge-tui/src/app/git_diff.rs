@@ -103,7 +103,7 @@ pub fn request_refresh(
             message = "git diff refresh skipped: empty cwd",
             outcome = "skipped",
             reason = "empty_cwd",
-            key = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     }
@@ -115,7 +115,7 @@ pub fn request_refresh(
             message = "git diff refresh skipped: already in flight",
             outcome = "skipped",
             reason = "in_flight",
-            key = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     }
@@ -181,7 +181,7 @@ fn apply_snapshot_ready(
             message = "git diff snapshot for unknown session",
             outcome = "dropped",
             reason = "unknown_session",
-            key = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     };
@@ -196,7 +196,7 @@ fn apply_snapshot_ready(
             message = "git diff snapshot generation stale",
             outcome = "dropped",
             reason = "stale_generation",
-            key = %key.as_str(),
+            slot = %key.display(),
             event_generation = generation,
             session_generation = session.git_diff_generation,
         );
@@ -280,7 +280,7 @@ fn apply_timer_tick(app: &mut App) {
             event_name = "git_diff_workspace_unset",
             message = "App.workspace is None during apply_timer_tick; scanning cwd_raw without worker-cwd resolution",
             outcome = "fallback",
-            key = %active_key.as_str(),
+            slot = %active_key.display(),
         );
         cwd_raw_path
     };

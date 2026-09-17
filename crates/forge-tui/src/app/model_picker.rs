@@ -348,7 +348,7 @@ mod tests {
         }
         assert!(open(&mut app));
 
-        let other = forge_workspace::SessionSlot::from_session_id("other-session");
+        let other = forge_workspace::SessionSlot::from_str_for_test("other-session");
         let mut bucket = crate::app::session::UiSession::new(other.clone(), "test-project");
         bucket.session_id = Some(forge_primitives::SessionId::new("other-session"));
         app.sessions.insert(other.clone(), bucket);

@@ -993,7 +993,7 @@ mod tests {
     #[test]
     fn set_session_id_preserves_the_real_key_bucket_state() {
         let mut app = App::test_default();
-        let real = forge_workspace::SessionSlot::from_session_id("real-uuid");
+        let real = forge_workspace::SessionSlot::from_str_for_test("real-uuid");
         app.sessions
             .insert(real.clone(), super::UiSession::new(real.clone(), App::TEST_SESSION_PROJECT));
         app.active_session_key = Some(real.clone());
@@ -1033,7 +1033,7 @@ mod tests {
             command: command.map(str::to_owned),
         };
         let mut session = super::UiSession::new(
-            forge_workspace::SessionSlot::from_session_id("bg"),
+            forge_workspace::SessionSlot::from_str_for_test("bg"),
             "test-project",
         );
         assert!(!session.has_live_background_work(), "empty registry is not live work");
@@ -1096,7 +1096,7 @@ mod tests {
         use crate::app::state::types::BackgroundTask;
 
         let mut session = super::UiSession::new(
-            forge_workspace::SessionSlot::from_session_id("bg"),
+            forge_workspace::SessionSlot::from_str_for_test("bg"),
             "test-project",
         );
         for (task_id, task_type) in

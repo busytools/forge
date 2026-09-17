@@ -298,7 +298,7 @@ mod tests {
             ws.list_projects().into_iter().find(|v| v.name == project).expect("seeded project").org;
         ws.parked_by_slot
             .lock()
-            .get(&crate::parked::Slot::new(&org, project, label.map(str::to_owned)))
+            .get(&crate::SessionSlot::for_label(&org, project, label))
             .map(|parked| parked.cron.iter().map(|p| p.text.clone()).collect())
             .unwrap_or_default()
     }
@@ -321,10 +321,11 @@ mod tests {
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "c".to_owned(),
-            session_key: SessionSlot::from_session_id(key),
-            status: forge_primitives::WorkerLiveness::Running,
+            slot: SessionSlot::from_str_for_test(key),
+            session_id: None,
+            status:forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".to_owned(),
+            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -612,7 +613,7 @@ mod tests {
         // list_projects derives `is_open` from pool membership.
         let cwd = project_expanded_path(&ws, "cronlead");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionSlot::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_str_for_test("lead-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -621,7 +622,7 @@ mod tests {
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
-                slot: crate::parked::Slot::lead("TestOrg", "forge"),
+                session_id: "pooled-session".to_owned(),
             },
         );
 
@@ -644,8 +645,8 @@ mod tests {
         let echoed = drain_updates(&mut rx).into_iter().any(|u| {
             matches!(
                 u,
-                SessionUpdate::CronPromptAppended { session_id, text }
-                    if session_id == lead_key.as_str() && text == "morning"
+                SessionUpdate::CronPromptAppended { key, text }
+                    if key == lead_key && text == "morning"
             )
         });
         assert!(echoed, "a running-lead cron fire emits a CronPromptAppended echo");
@@ -657,7 +658,7 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/wc-live");
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
         ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-uuid"));
-        let worker_key = SessionSlot::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
         ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
 
         ws.enable_test_dispatch_intercept();
@@ -745,7 +746,7 @@ mod tests {
             resume_kick: None,
             interactive: false,
         });
-        let worker_key = SessionSlot::from_session_id("worker-spawning-cron");
+        let worker_key = SessionSlot::from_str_for_test("worker-spawning-cron");
         ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-spawning-cron"));
         // Registered but not connected: session_id stays None.
         ws.register_domain_session(worker_key.clone(), None);
@@ -1022,7 +1023,7 @@ provider = "anthropic"
         ws.seed_test_project("proj", "/tmp/wc-missed");
         let cwd = project_expanded_path(&ws, "proj");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionSlot::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_str_for_test("lead-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -1031,7 +1032,7 @@ provider = "anthropic"
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
-                slot: crate::parked::Slot::lead("TestOrg", "forge"),
+                session_id: "pooled-session".to_owned(),
             },
         );
 
@@ -1062,7 +1063,7 @@ provider = "anthropic"
         ws.seed_test_project("proj", "/tmp/wc-thresh");
         let cwd = project_expanded_path(&ws, "proj");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionSlot::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_str_for_test("lead-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -1071,7 +1072,7 @@ provider = "anthropic"
                 account: AccountKey("test".to_owned()),
                 permission_mode: None,
                 registration: None,
-                slot: crate::parked::Slot::lead("TestOrg", "forge"),
+                session_id: "pooled-session".to_owned(),
             },
         );
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");

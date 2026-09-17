@@ -122,7 +122,7 @@ impl NotificationManager {
             event_name = "notification_fired",
             message = "unfocused notification dispatched",
             outcome = "success",
-            session_key = %session_key.as_str(),
+            slot = %session_key.display(),
             resolved_project = ?context.project,
             resolved_worker_label = ?context.worker_label,
             event = ?event,
@@ -164,7 +164,7 @@ impl crate::app::App {
                 event_name = "notification_session_missing",
                 message = "no session bucket for the event's key; nothing to notify about",
                 outcome = "skipped",
-                session_key = %session_key.as_str(),
+                slot = %session_key.display(),
                 event = ?event,
             );
             return;
@@ -179,7 +179,7 @@ impl crate::app::App {
                 event_name = "notification_suppressed_focused",
                 message = "notification suppressed because terminal is focused",
                 outcome = "skipped",
-                session_key = %session_key.as_str(),
+                slot = %session_key.display(),
                 event = ?event,
             );
             return;
@@ -405,7 +405,7 @@ mod tests {
         let mut app = App::test_default();
         app.notifications = NotificationManager::new();
         app.notifications.on_focus_lost();
-        let unknown = forge_workspace::SessionSlot::from_session_id("no-such-session");
+        let unknown = forge_workspace::SessionSlot::from_str_for_test("no-such-session");
 
         app.notify(NotifyEvent::TurnComplete, &unknown);
 
@@ -434,10 +434,11 @@ mod tests {
             forge_workspace::WorkerEntry {
                 label: label.to_owned(),
                 charter: String::new(),
-                session_key: key.clone(),
+                slot: key.clone(),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: String::new(),
+                spawned_by: SessionSlot::from_str_for_test(""),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -477,7 +478,7 @@ mod tests {
     #[test]
     fn notification_context_is_none_for_an_unknown_session() {
         let app = App::test_default();
-        let unknown = forge_workspace::SessionSlot::from_session_id("no-such-session");
+        let unknown = forge_workspace::SessionSlot::from_str_for_test("no-such-session");
         assert_eq!(app.notification_context(&unknown), None);
     }
 

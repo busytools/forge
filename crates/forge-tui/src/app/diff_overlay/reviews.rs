@@ -327,10 +327,9 @@ fn finalize_review_close(app: &mut App, overview: Option<&str>, seal_ids: &[Stri
 
     // The reviewer's session is the notice target when a worker later
     // addresses this review; record it as the submit origin.
-    let origin = app
-        .active_session_key
-        .clone()
-        .unwrap_or_else(|| forge_workspace::SessionSlot::from_session_id(String::new()));
+    let Some(origin) = app.active_session_key.clone() else {
+        return;
+    };
     let project = app.active_session().map(|s| s.project.clone()).filter(|name| !name.is_empty());
     let branch = app.diff_overlay.as_ref().and_then(|o| o.branch.clone());
     let workspace = app.workspace.clone();
@@ -520,7 +519,7 @@ mod tests {
     fn a_reply_on_a_filed_thread_seals_into_a_second_review() {
         let (mut app, mut rx, _dir) = review_app_with_agent();
         let ws = app.workspace.clone().expect("ws");
-        let origin = forge_workspace::SessionSlot::from_session_id("review-session");
+        let origin = forge_workspace::SessionSlot::from_str_for_test("review-session");
 
         let mut thread = user_thread("does this handle the empty case?");
         thread.id = "t1".to_owned();
@@ -1135,7 +1134,7 @@ mod tests {
         forge_workspace::store::review::write_corrupt_row_for_test(&db, "forge", "feat")
             .expect("corrupt row");
         workspace.install_db_for_test(db);
-        let key = forge_workspace::SessionSlot::from_session_id("review-session");
+        let key = forge_workspace::SessionSlot::from_str_for_test("review-session");
         let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = "/tmp/repo".into();
         app.sessions.insert(key.clone(), session);

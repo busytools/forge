@@ -836,7 +836,7 @@ fn begin_capture(
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
     let mut runtime = ws.dictate_runtime.lock();
     if let Some(live) = runtime.recording.as_ref() {
-        return Err(format!("the microphone is in use by session {}", live.key.as_str()));
+        return Err(format!("the microphone is in use by session {}", live.key.display()));
     }
     let engine = ws
         .dictate
@@ -851,7 +851,7 @@ fn begin_capture(
     let pick = ws.dictate_device_pick.lock().clone();
     let wanted = crate::dictate::resolve_capture_device(pick.as_ref(), engine.device());
     let capture = engine
-        .try_capture_with(key.as_str(), wanted.as_deref())
+        .try_capture_with(key.display(), wanted.as_deref())
         .map_err(|busy| format!("the microphone is in use by session {}", busy.holder))?;
     // The session can close while the device open waits above. A
     // capture handed to a session that no longer exists holds the
@@ -1311,8 +1311,8 @@ mod tests {
     #[test]
     fn a_set_override_lands_on_its_own_session_and_echoes_back() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let a = crate::SessionSlot::from_session_id("dictate-a");
-        let b = crate::SessionSlot::from_session_id("dictate-b");
+        let a = crate::SessionSlot::from_str_for_test("dictate-a");
+        let b = crate::SessionSlot::from_str_for_test("dictate-b");
         workspace.register_domain_session(a.clone(), None);
         workspace.register_domain_session(b.clone(), None);
 
@@ -1344,7 +1344,7 @@ mod tests {
     #[test]
     fn reset_clears_every_axis_at_once() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionSlot::from_session_id("dictate-reset");
+        let key = crate::SessionSlot::from_str_for_test("dictate-reset");
         workspace.register_domain_session(key.clone(), None);
 
         for update in [
@@ -1372,7 +1372,7 @@ mod tests {
     #[test]
     fn an_override_for_an_unknown_session_is_refused() {
         let (workspace, _updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionSlot::from_session_id("never-registered");
+        let key = crate::SessionSlot::from_str_for_test("never-registered");
         let err = workspace
             .dispatch(Command::ResetDictateOverrides { key })
             .expect_err("an unknown session must be refused");
@@ -1382,7 +1382,7 @@ mod tests {
     #[test]
     fn a_device_pick_lands_on_the_workspace_and_echoes() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionSlot::from_session_id("dictate-device");
+        let key = crate::SessionSlot::from_str_for_test("dictate-device");
         workspace.register_domain_session(key.clone(), None);
 
         workspace
@@ -1412,8 +1412,8 @@ mod tests {
     #[test]
     fn a_device_pick_is_shared_by_every_session() {
         let (workspace, _updates) = crate::Workspace::testing_stub();
-        let first = crate::SessionSlot::from_session_id("dictate-first");
-        let second = crate::SessionSlot::from_session_id("dictate-second");
+        let first = crate::SessionSlot::from_str_for_test("dictate-first");
+        let second = crate::SessionSlot::from_str_for_test("dictate-second");
         workspace.register_domain_session(first.clone(), None);
         workspace.register_domain_session(second.clone(), None);
 
@@ -1434,7 +1434,7 @@ mod tests {
     #[test]
     fn reset_clears_the_device_pick_with_the_axes() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionSlot::from_session_id("dictate-device-reset");
+        let key = crate::SessionSlot::from_str_for_test("dictate-device-reset");
         workspace.register_domain_session(key.clone(), None);
 
         workspace
@@ -1618,7 +1618,7 @@ mod dictate_lifecycle_tests {
     use super::*;
 
     fn key(name: &str) -> SessionSlot {
-        SessionSlot::from_session_id(name.to_owned())
+        SessionSlot::from_str_for_test(name.to_owned())
     }
 
     /// The meter cadence is a decided constant - a deliberate fourth

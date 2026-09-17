@@ -215,7 +215,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    let Some(sid) = require_active_session(
+    let Some(_sid) = require_active_session(
         app,
         "Cannot switch mode: not connected yet.",
         "Cannot switch mode: no active session.",
@@ -241,7 +241,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     // state is needed - the UI never sees a stale pending phase.
     apply_optimistic_mode_change(app, requested_mode);
 
-    let session_key = forge_workspace::SessionSlot::from_session_id(sid.to_string());
+    let session_key = app.active_session_key.clone();
     if let Err(e) =
         app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
     {
@@ -250,10 +250,12 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         if app.rollback_pending_mode() {
             app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
         }
-        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
-            key: session_key,
-            message: format!("Failed to run /mode: {e}"),
-        });
+        if let Some(session_key) = session_key {
+            let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+                key: session_key,
+                message: format!("Failed to run /mode: {e}"),
+            });
+        }
     }
     true
 }
@@ -332,7 +334,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    let Some(sid) = require_active_session(
+    let Some(_sid) = require_active_session(
         app,
         "Cannot switch model: not connected yet.",
         "Cannot switch model: no active session.",
@@ -340,7 +342,10 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    switch_model(app, forge_workspace::SessionSlot::from_session_id(sid.to_string()), model_name);
+    let Some(session_key) = app.active_session_key.clone() else {
+        return true;
+    };
+    switch_model(app, session_key, model_name);
     true
 }
 

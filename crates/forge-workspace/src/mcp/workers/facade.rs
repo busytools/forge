@@ -434,7 +434,7 @@ fn classify_worker_identity(
             WorkerIdentity { name: label, org: format!("worker in {}", project_key.as_str()) }
         }
         None => WorkerIdentity {
-            name: caller.as_str().to_owned(),
+            name: caller.label().to_owned(),
             org: format!("worker in {} (detached)", project_key.as_str()),
         },
     }
@@ -487,17 +487,17 @@ impl WorkerFacade for ProdWorkerFacade {
 
     fn caller_identity(&self, caller: &SessionSlot) -> WorkerIdentity {
         let Some(ws) = self.workspace.upgrade() else {
-            return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
+            return WorkerIdentity { name: caller.label().to_owned(), org: String::new() };
         };
         let Some(cp) = self.caller_project(caller) else {
-            return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
+            return WorkerIdentity { name: caller.label().to_owned(), org: String::new() };
         };
         let label = if cp.is_lead {
             None
         } else {
             ws.list_live_workers(&cp.project_key)
                 .into_iter()
-                .find(|w| w.session_key == *caller)
+                .find(|w| w.slot == *caller)
                 .map(|w| w.label)
         };
         classify_worker_identity(cp.is_lead, &cp.project_key, label, caller)
@@ -592,7 +592,7 @@ impl WorkerFacade for ProdWorkerFacade {
             project_key: cp.project_key,
             label,
             charter,
-            spawned_by_session_id: caller.as_str().to_owned(),
+            spawned_by: caller.clone(),
             // Fresh unless the caller asked to resume; the resume
             // resolution above fills in the real session id.
             resume_existing,
@@ -796,14 +796,11 @@ impl WorkerFacade for ProdWorkerFacade {
         if cx.is_lead {
             return Err(WorkerLeadDeliverError::LeadCallerHasNoLead);
         }
-        let Some(lead) = cx.lead_session_view else {
-            return Err(WorkerLeadDeliverError::UnknownCaller);
-        };
-        let target_lead_key = lead.session.clone();
+        let target_lead_key = cx.lead.clone();
         // Defensive: confirm the lead's session is still in the pool
         // before dispatching. If it closed since the worker was
         // spawned, surface a clear error so the worker LLM can adapt.
-        if !ws.pool.lock().contains_key(&target_lead_key) {
+        if !cx.lead_running {
             return Err(WorkerLeadDeliverError::LeadGone);
         }
         if let Err(err) = ws.dispatch(Command::DeliverWorkerPromptToLead {
@@ -945,13 +942,13 @@ impl WorkerFacade for MockWorkerFacade {
 
     fn caller_identity(&self, caller: &SessionSlot) -> WorkerIdentity {
         let Some(cp) = self.caller_project(caller) else {
-            return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
+            return WorkerIdentity { name: caller.label().to_owned(), org: String::new() };
         };
         let label = if cp.is_lead {
             None
         } else {
             self.workers.lock().get(cp.project_key.as_str()).and_then(|ws| {
-                ws.iter().find(|w| w.session_id == caller.as_str()).map(|w| w.label.clone())
+                ws.iter().find(|w| w.slot == *caller).map(|w| w.label.clone())
             })
         };
         classify_worker_identity(cp.is_lead, &cp.project_key, label, caller)
@@ -1089,18 +1086,18 @@ impl WorkerFacade for MockWorkerFacade {
         // WorkerStatus). The Tool tests preload that field; the
         // failure modes (LeadGone, UnknownCaller) are still
         // reachable when the test omits the entry.
-        let lead_session_id = self
+        let lead_slot = self
             .workers
             .lock()
             .get(cp.project_key.as_str())
-            .and_then(|ws| ws.iter().find(|w| w.session_id == caller.as_str()))
-            .map(|w| w.spawned_by_session_id.clone());
-        let Some(lead_session_id) = lead_session_id else {
+            .and_then(|ws| ws.iter().find(|w| w.slot == *caller))
+            .map(|w| w.spawned_by.clone());
+        let Some(lead_slot) = lead_slot else {
             return Err(WorkerLeadDeliverError::UnknownCaller);
         };
-        // Mock has no pool to consult; treat empty `spawned_by` as
+        // Mock has no pool to consult; treat an unset `spawned_by` as
         // "lead gone" so tests can exercise that path explicitly.
-        if lead_session_id.is_empty() {
+        if lead_slot.label().is_empty() {
             return Err(WorkerLeadDeliverError::LeadGone);
         }
         // Record under the synthetic label `<lead>` so tests can
@@ -1148,10 +1145,10 @@ mod mock_tests {
     fn mock_caller_project_returns_preloaded() {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(
-            SessionSlot::from_session_id("k1"),
+            SessionSlot::from_str_for_test("k1"),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
-        let cp = mock.caller_project(&SessionSlot::from_session_id("k1")).unwrap();
+        let cp = mock.caller_project(&SessionSlot::from_str_for_test("k1")).unwrap();
         assert!(cp.is_lead);
         assert_eq!(cp.project_key.as_str(), "forge");
     }
@@ -1160,12 +1157,12 @@ mod mock_tests {
     async fn mock_spawn_rejects_non_lead() {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(
-            SessionSlot::from_session_id("k1"),
+            SessionSlot::from_str_for_test("k1"),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: false },
         );
         let res = mock
             .spawn_worker(
-                &SessionSlot::from_session_id("k1"),
+                &SessionSlot::from_str_for_test("k1"),
                 "reviewer".into(),
                 "charter".into(),
                 None,
@@ -1181,7 +1178,7 @@ mod mock_tests {
     async fn mock_spawn_records_call_and_returns_preloaded_reply() {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(
-            SessionSlot::from_session_id("lead-key"),
+            SessionSlot::from_str_for_test("lead-key"),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
@@ -1192,7 +1189,7 @@ mod mock_tests {
         }));
         let res = mock
             .spawn_worker(
-                &SessionSlot::from_session_id("lead-key"),
+                &SessionSlot::from_str_for_test("lead-key"),
                 "reviewer".into(),
                 "charter".into(),
                 None,
@@ -1232,7 +1229,7 @@ mod mock_tests {
     #[tokio::test]
     async fn mock_spawn_empty_inline_charter_errors_empty_charter() {
         let mock = MockWorkerFacade::new();
-        let lead = SessionSlot::from_session_id("lead-key");
+        let lead = SessionSlot::from_str_for_test("lead-key");
         mock.callers.lock().insert(
             lead.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
@@ -1256,10 +1253,11 @@ mod mock_tests {
         let entry = |label: &str, status: WorkerLiveness| WorkerEntry {
             label: label.to_owned(),
             charter: "c".into(),
-            session_key: SessionSlot::from_session_id("w-uuid"),
+            slot: SessionSlot::from_str_for_test("w-uuid"),
+            session_id: None,
             status,
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead".into(),
+            spawned_by: SessionSlot::from_str_for_test("lead"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -1292,7 +1290,7 @@ mod mock_tests {
         // surfaces to render `▶ Message lead` instead of the
         // hyphenated env-key path.
         let mock = MockWorkerFacade::new();
-        let lead = SessionSlot::from_session_id("lead-uuid");
+        let lead = SessionSlot::from_str_for_test("lead-uuid");
         mock.callers.lock().insert(
             lead.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
@@ -1305,7 +1303,7 @@ mod mock_tests {
     #[test]
     fn caller_identity_worker_with_live_entry_returns_label_and_worker_in_project() {
         let mock = MockWorkerFacade::new();
-        let worker_key = SessionSlot::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
         mock.callers.lock().insert(
             worker_key.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: false },
@@ -1317,8 +1315,9 @@ mod mock_tests {
                 charter: "review the diff".into(),
                 status: forge_primitives::WorkerLiveness::Running,
                 session_id: "worker-uuid".into(),
+                slot: SessionSlot::from_str_for_test("worker-uuid"),
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead-uuid".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
                 diagnostic: None,
                 activity: None,
             }],
@@ -1331,7 +1330,7 @@ mod mock_tests {
     #[test]
     fn caller_identity_detached_worker_falls_back_to_session_id() {
         let mock = MockWorkerFacade::new();
-        let worker_key = SessionSlot::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
         mock.callers.lock().insert(
             worker_key.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: false },
@@ -1346,7 +1345,7 @@ mod mock_tests {
     #[test]
     fn caller_identity_unknown_caller_returns_session_id_with_empty_org() {
         let mock = MockWorkerFacade::new();
-        let unknown = SessionSlot::from_session_id("ghost-uuid");
+        let unknown = SessionSlot::from_str_for_test("ghost-uuid");
         // No entry in mock.callers - mirrors the genuinely-unresolved case.
         let id = mock.caller_identity(&unknown);
         assert_eq!(id.name, "ghost-uuid");
@@ -1356,7 +1355,7 @@ mod mock_tests {
     #[test]
     fn mock_deliver_unknown_label_errors() {
         let mock = MockWorkerFacade::new();
-        let caller = SessionSlot::from_session_id("k1");
+        let caller = SessionSlot::from_str_for_test("k1");
         mock.callers.lock().insert(
             caller.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
@@ -1377,7 +1376,7 @@ mod mock_tests {
     fn mock_capacity_fallback_derives_live_from_workers_map() {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(
-            SessionSlot::from_session_id("k1"),
+            SessionSlot::from_str_for_test("k1"),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
         mock.workers.lock().insert(
@@ -1388,8 +1387,9 @@ mod mock_tests {
                     charter: "c".into(),
                     status: forge_primitives::WorkerLiveness::Running,
                     session_id: "a-uuid".into(),
+                    slot: SessionSlot::from_str_for_test("a-uuid"),
                     spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                    spawned_by_session_id: "lead".into(),
+                    spawned_by: SessionSlot::from_str_for_test("lead"),
                     diagnostic: None,
                     activity: None,
                 },
@@ -1398,14 +1398,15 @@ mod mock_tests {
                     charter: "c".into(),
                     status: forge_primitives::WorkerLiveness::Running,
                     session_id: "b-uuid".into(),
+                    slot: SessionSlot::from_str_for_test("b-uuid"),
                     spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                    spawned_by_session_id: "lead".into(),
+                    spawned_by: SessionSlot::from_str_for_test("lead"),
                     diagnostic: None,
                     activity: None,
                 },
             ],
         );
-        let capacity = mock.capacity(&SessionSlot::from_session_id("k1")).expect("caller resolves");
+        let capacity = mock.capacity(&SessionSlot::from_str_for_test("k1")).expect("caller resolves");
         assert_eq!(capacity.project, "forge");
         assert_eq!(capacity.cap, crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT);
         assert_eq!(capacity.cap_source, WorkerCapSource::Default);
@@ -1435,16 +1436,17 @@ mod prod_list_workers_tests {
 
         // The caller IS the worker, which is enough for
         // `caller_context` to resolve it into the project.
-        let caller = SessionSlot::from_session_id("worker-uuid");
+        let caller = SessionSlot::from_str_for_test("worker-uuid");
         ws.insert_live_worker(
             &project,
             crate::mcp::workers::types::WorkerEntry {
                 label: "implementer".into(),
                 charter: "test charter".into(),
-                session_key: caller.clone(),
-                status: WorkerLiveness::Running,
+                slot: caller.clone(),
+                session_id: None,
+                status:WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead-uuid".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -1480,10 +1482,11 @@ mod capacity_tests {
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "test charter".into(),
-            session_key: SessionSlot::from_session_id(session_id),
-            status: WorkerLiveness::Running,
+            slot: SessionSlot::from_str_for_test(session_id),
+            session_id: None,
+            status:WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".into(),
+            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -1500,7 +1503,7 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project_with_max_workers("forge", "/tmp/forge", 1);
         let project = project_key_of(&ws, "forge");
-        let caller = SessionSlot::from_session_id("worker-uuid");
+        let caller = SessionSlot::from_str_for_test("worker-uuid");
         ws.insert_live_worker(&project, entry("implementer", "worker-uuid"));
 
         let facade = ProdWorkerFacade::from_arc(&ws);
@@ -1516,7 +1519,7 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/forge");
         let project = project_key_of(&ws, "forge");
-        let caller = SessionSlot::from_session_id("worker-uuid");
+        let caller = SessionSlot::from_str_for_test("worker-uuid");
         ws.insert_live_worker(&project, entry("implementer", "worker-uuid"));
 
         let facade = ProdWorkerFacade::from_arc(&ws);
@@ -1531,7 +1534,7 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/forge");
         let project = project_key_of(&ws, "forge");
-        let caller = SessionSlot::from_session_id("worker-a");
+        let caller = SessionSlot::from_str_for_test("worker-a");
         ws.insert_live_worker(&project, entry("a", "worker-a"));
         ws.insert_live_worker(&project, entry("b", "worker-b"));
 
@@ -1544,7 +1547,7 @@ mod capacity_tests {
     fn capacity_none_for_unknown_caller() {
         let (ws, _rx) = Workspace::testing_stub();
         let facade = ProdWorkerFacade::from_arc(&ws);
-        assert!(facade.capacity(&SessionSlot::from_session_id("ghost")).is_none());
+        assert!(facade.capacity(&SessionSlot::from_str_for_test("ghost")).is_none());
     }
 
     #[test]
@@ -1552,7 +1555,7 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project_with_max_workers("forge", "/tmp/forge", 2);
         let project = project_key_of(&ws, "forge");
-        let caller = SessionSlot::from_session_id("worker-running");
+        let caller = SessionSlot::from_str_for_test("worker-running");
         ws.insert_live_worker(&project, entry("running", "worker-running"));
         let mut failed = entry("failed", "worker-failed");
         failed.status = WorkerLiveness::Failed;
@@ -1571,7 +1574,7 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/forge");
         let project = project_key_of(&ws, "forge");
-        let caller = SessionSlot::from_session_id("worker-only");
+        let caller = SessionSlot::from_str_for_test("worker-only");
         let mut failed = entry("only", "worker-only");
         failed.status = WorkerLiveness::Failed;
         ws.insert_live_worker(&project, failed);

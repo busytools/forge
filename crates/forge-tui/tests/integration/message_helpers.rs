@@ -111,7 +111,10 @@ pub fn send_msg(app: &mut forge_tui::app::App, msg: forge_primitives::Message) {
     }
     send_client_event(
         app,
-        SessionUpdate::ChatAppended { session_id: "test-session".to_owned(), msg },
+        SessionUpdate::ChatAppended {
+            key: forge_workspace::SessionSlot::from_str_for_test("test-session"),
+            msg,
+        },
     );
 }
 

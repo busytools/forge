@@ -187,7 +187,7 @@ fn warn_unresolved(
         target: "forge_workspace::review",
         event_name = "review_scope_unresolved",
         step = error.step(),
-        caller = %caller.as_str(),
+        caller = %caller.display(),
         project = cx.map_or("-", |c| c.project_name.as_str()),
         worker_label = cx.and_then(|c| c.worker_label.as_deref()).unwrap_or("-"),
         cwd_raw = cwd_raw.unwrap_or("-"),
@@ -310,7 +310,7 @@ impl MockReviewFacade {
                 project: "forge".to_owned(),
                 branch: "feat".to_owned(),
                 author_label: "implementer".to_owned(),
-                caller: SessionSlot::from_session_id("caller"),
+                caller: SessionSlot::from_str_for_test("caller"),
             })),
             summaries: parking_lot::Mutex::new(Vec::new()),
             review_branches: parking_lot::Mutex::new(Vec::new()),
@@ -387,7 +387,7 @@ mod resolve_scope_tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        let reviewer = SessionSlot::from_session_id("lead-uuid");
+        let reviewer = SessionSlot::from_str_for_test("lead-uuid");
         ws.submit_review("myproj", "feat/theirs", None, &[], reviewer.clone())
             .expect("submit theirs");
         ws.submit_review("other", "feat/elsewhere", None, &[], reviewer).expect("submit elsewhere");
@@ -395,7 +395,7 @@ mod resolve_scope_tests {
             project: "myproj".to_owned(),
             branch: "feat/mine".to_owned(),
             author_label: "implementer".to_owned(),
-            caller: SessionSlot::from_session_id("caller-uuid"),
+            caller: SessionSlot::from_str_for_test("caller-uuid"),
         };
         assert_eq!(
             ProdReviewFacade(Arc::downgrade(&ws)).branches_with_reviews(&scope),
@@ -448,8 +448,8 @@ mod resolve_scope_tests {
     fn ws_with_session_cwd(cwd: &str) -> (Arc<Workspace>, SessionSlot) {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("myproj", cwd);
-        let caller = SessionSlot::from_session_id("caller-uuid");
-        ws.record_connected_session(cwd, caller.as_str(), None);
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+        ws.record_connected_session(cwd, &caller.display(), None);
         (ws, caller)
     }
 
@@ -471,16 +471,17 @@ mod resolve_scope_tests {
             .find(|v| v.name == "myproj")
             .map(|v| v.key)
             .expect("seeded project");
-        let caller = SessionSlot::from_session_id("worker-uuid");
+        let caller = SessionSlot::from_str_for_test("worker-uuid");
         ws.insert_live_worker(
             &key,
             crate::WorkerEntry {
                 label: label.to_owned(),
                 charter: "build".to_owned(),
-                session_key: caller.clone(),
-                status: forge_primitives::WorkerLiveness::Running,
+                slot: caller.clone(),
+                session_id: None,
+                status:forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".to_owned(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn,
                 diagnostic: None,
@@ -500,7 +501,7 @@ mod resolve_scope_tests {
     #[tokio::test]
     async fn workspace_gone_is_its_own_reason() {
         let err = ProdReviewFacade(Weak::new())
-            .resolve_scope(&SessionSlot::from_session_id("caller-uuid"))
+            .resolve_scope(&SessionSlot::from_str_for_test("caller-uuid"))
             .await
             .expect_err("a dropped workspace fails");
         assert_eq!(err, ScopeError::WorkspaceGone);
@@ -510,7 +511,7 @@ mod resolve_scope_tests {
     #[tokio::test]
     async fn caller_outside_every_project_is_its_own_reason() {
         let (ws, _rx) = Workspace::testing_stub();
-        let err = scope_err(&ws, &SessionSlot::from_session_id("ghost-uuid")).await;
+        let err = scope_err(&ws, &SessionSlot::from_str_for_test("ghost-uuid")).await;
         assert_eq!(err, ScopeError::UnknownCaller);
         assert!(!err.message().contains("detached"), "{}", err.message());
     }
@@ -537,7 +538,7 @@ mod resolve_scope_tests {
             "worktree-pyth-review-fixes",
             Some("round 1".to_owned()),
             &[],
-            SessionSlot::from_session_id("lead-uuid"),
+            SessionSlot::from_str_for_test("lead-uuid"),
         )
         .expect("submit review on the worker's branch");
 

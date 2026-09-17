@@ -350,12 +350,10 @@ pub(crate) fn live_lead_key(
         .or_else(|| app.sessions.iter().find(|(k, s)| is_lead_bucket(k, s)))
         .map(|(k, _)| k.clone())
         .or_else(|| {
-            project.sessions.iter().find_map(|s| {
-                if worker_keys.contains(&s.session) {
-                    return None;
-                }
-                app.sessions.get(&s.session).map(|_| s.session.clone())
-            })
+            // Cold project: no bucket on its cwd yet, so the row is
+            // the lead's slot itself when one is pooled.
+            let lead = forge_workspace::SessionSlot::lead(&project.org, &project.name);
+            app.sessions.contains_key(&lead).then_some(lead)
         })
 }
 
@@ -380,7 +378,7 @@ pub(crate) fn drawn_session_rows(
             let project_path = project.path.to_string_lossy();
             rows.extend(live_lead_key(app, project, &project_path, &worker_keys));
             if let Some(ws) = app.workspace.as_ref() {
-                rows.extend(ws.list_live_workers(&project.key).into_iter().map(|w| w.session_key));
+                rows.extend(ws.list_live_workers(&project.key).into_iter().map(|w| w.slot));
             }
         }
     }
@@ -713,7 +711,7 @@ fn append_worker_tree_children(
         // cleanly.
         let (badge_stats, badge_last_failure_at) = app
             .sessions
-            .get(&worker.session_key)
+            .get(&worker.slot)
             .map(|s| (s.peer_badges.clone(), s.peer_badges_last_failure_at))
             .unwrap_or_default();
         let (badge_spans, badge_width) =
@@ -724,7 +722,7 @@ fn append_worker_tree_children(
             .saturating_sub(badge_width);
         let label = truncate_with_ellipsis(worker.label.as_str(), label_budget);
         let label_pad = label_budget.saturating_sub(label.chars().count());
-        let is_focused = active_session_key.as_ref() == Some(&worker.session_key);
+        let is_focused = active_session_key.as_ref() == Some(&worker.slot);
         let label_style = if is_focused {
             // Active worker - mirror the lead row's focused style
             // (RUST_ORANGE + bold) so the highlight semantics are
@@ -754,22 +752,22 @@ fn append_worker_tree_children(
         // regardless of selection - the prompt is the worker's own
         // state (#153 parity with the project-lead row). Selection
         // recolours the glyph below, never swaps it.
-        let lifecycle = app.sessions.get(&worker.session_key).map_or_else(
+        let lifecycle = app.sessions.get(&worker.slot).map_or_else(
             || crate::ui::worker_lifecycle_without_bucket(worker.status),
             |s| s.lifecycle_state,
         );
         let needs_attention =
-            app.sessions.get(&worker.session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+            app.sessions.get(&worker.slot).is_some_and(|b| !b.prompt_queue.is_empty());
         // Same red `✕` the lead row uses for a dead turn - distinct from
         // the yellow `△`, and ahead of it because a prompt whose turn
         // died can no longer be answered.
         let failed_turn =
-            app.sessions.get(&worker.session_key).is_some_and(|b| b.failed_turn.is_some());
+            app.sessions.get(&worker.slot).is_some_and(|b| b.failed_turn.is_some());
         // A worker running its own backgrounded task (e.g. a `gh run watch`)
         // spins its row like a lead does - same Idle-only promotion.
         let (has_background_work, has_unseen_completion) = app
             .sessions
-            .get(&worker.session_key)
+            .get(&worker.slot)
             .map_or((false, false), |b| (b.has_live_background_work(), b.unseen_turn_completion));
         let (glyph, mut glyph_color) = if failed_turn {
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
@@ -850,7 +848,7 @@ fn append_worker_tree_children(
         app.pane_hit_targets.push(PaneHitTarget::WorkerRow {
             project_key: project.key.clone(),
             label: worker.label.clone(),
-            session_key: worker.session_key.clone(),
+            session_key: worker.slot.clone(),
             y: row_y,
             height: 1,
             x_start: area.x,
@@ -937,15 +935,17 @@ fn line_count_as_u16(lines: &[Line<'_>]) -> u16 {
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
 }
 
-/// Find the `ProjectView` that owns `active_key` by scanning the
-/// catalog for the session. A bucket whose session the catalog does not
-/// name yet resolves to no project, which is the honest answer: nothing
-/// but the session's own id says which project it belongs to.
+/// Find the `ProjectView` the active key names. The slot carries its
+/// own org and project, so the answer does not depend on the catalog
+/// holding a row for the session.
 pub(crate) fn resolve_active_project_view<'p>(
     active_key: &forge_workspace::SessionSlot,
     projects: &'p [&ProjectView],
 ) -> Option<&'p ProjectView> {
-    projects.iter().copied().find(|p| p.sessions.iter().any(|sess| &sess.session == active_key))
+    projects
+        .iter()
+        .copied()
+        .find(|p| p.org == active_key.org() && p.name == active_key.project())
 }
 
 /// Glyph + state colour for a session row - both read the session's
@@ -2150,14 +2150,15 @@ mod tests {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
         let project_key = ProjectKey::new_for_test("alice-project");
-        let worker_session_key = SessionSlot::from_session_id("worker-probe-a");
+        let worker_session_key = SessionSlot::from_str_for_test("worker-probe-a");
         let entry = WorkerEntry {
             label: "probe-a".into(),
             charter: "render-badge-test".into(),
-            session_key: worker_session_key.clone(),
+            slot: worker_session_key.clone(),
+            session_id: None,
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead".into(),
+            spawned_by: SessionSlot::from_str_for_test("lead"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -2671,10 +2672,11 @@ mod tests {
         let entry = WorkerEntry {
             label: "reviewer".into(),
             charter: "be sharp".into(),
-            session_key: SessionSlot::from_session_id("worker-1"),
+            slot: SessionSlot::from_str_for_test("worker-1"),
+            session_id: None,
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead".into(),
+            spawned_by: SessionSlot::from_str_for_test("lead"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -2740,10 +2742,11 @@ mod tests {
             WorkerEntry {
                 label: "reviewer".into(),
                 charter: "be sharp".into(),
-                session_key: SessionSlot::from_session_id("worker-1"),
+                slot: SessionSlot::from_str_for_test("worker-1"),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -2755,10 +2758,11 @@ mod tests {
             WorkerEntry {
                 label: "doc-writer".into(),
                 charter: "tone".into(),
-                session_key: SessionSlot::from_session_id("worker-2"),
+                slot: SessionSlot::from_str_for_test("worker-2"),
+            session_id: None,
                 status: forge_primitives::WorkerLiveness::Spawning,
                 spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -2876,16 +2880,17 @@ mod tests {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
         let project_key = ProjectKey::new_for_test("forge");
-        let worker_key = SessionSlot::from_session_id("worker-1");
+        let worker_key = SessionSlot::from_str_for_test("worker-1");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
                 label: "reviewer".into(),
                 charter: "be sharp".into(),
-                session_key: worker_key.clone(),
+                slot: worker_key.clone(),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -2895,7 +2900,7 @@ mod tests {
         // Active session is something else - the worker is
         // background. Seed its prompt_queue so the override gate
         // fires.
-        app.active_session_key = Some(SessionSlot::from_session_id("some-other-lead-session"));
+        app.active_session_key = Some(SessionSlot::from_str_for_test("some-other-lead-session"));
         seed_worker_prompt_queue(&mut app, &worker_key);
 
         let project =
@@ -2930,23 +2935,24 @@ mod tests {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
         let project_key = ProjectKey::new_for_test("forge");
-        let worker_key = SessionSlot::from_session_id("worker-1");
+        let worker_key = SessionSlot::from_str_for_test("worker-1");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
                 label: "reviewer".into(),
                 charter: "be sharp".into(),
-                session_key: worker_key.clone(),
+                slot: worker_key.clone(),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
                 kick: None,
             },
         );
-        app.active_session_key = Some(SessionSlot::from_session_id("some-other-lead-session"));
+        app.active_session_key = Some(SessionSlot::from_str_for_test("some-other-lead-session"));
         // Both signals present: the failure must win.
         seed_worker_prompt_queue(&mut app, &worker_key);
         app.sessions.get_mut(&worker_key).expect("seeded bucket").failed_turn =
@@ -2989,16 +2995,17 @@ mod tests {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
         let project_key = ProjectKey::new_for_test("forge");
-        let worker_key = SessionSlot::from_session_id("worker-1");
+        let worker_key = SessionSlot::from_str_for_test("worker-1");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
                 label: "reviewer".into(),
                 charter: "be sharp".into(),
-                session_key: worker_key.clone(),
+                slot: worker_key.clone(),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -3038,8 +3045,8 @@ mod tests {
         use forge_workspace::{ProjectKey, SessionSlot};
 
         let project_path = "/tmp/resume-tie-project";
-        let first_key = SessionSlot::from_session_id("lead-first");
-        let second_key = SessionSlot::from_session_id("lead-resumed");
+        let first_key = SessionSlot::from_str_for_test("lead-first");
+        let second_key = SessionSlot::from_str_for_test("lead-resumed");
         let project = ProjectView::new_for_test(
             ProjectKey::new_for_test("resume-tie-project"),
             "resume-tie-project",
@@ -3103,8 +3110,8 @@ mod tests {
         use forge_workspace::{ProjectKey, SessionSlot, WorkerEntry};
 
         let project_path = "/tmp/shared-cwd-project";
-        let lead_key = SessionSlot::from_session_id("lead-uuid");
-        let worker_key = SessionSlot::from_session_id("worker-uuid");
+        let lead_key = SessionSlot::from_str_for_test("lead-uuid");
+        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
 
         let mut app = App::test_default();
         app.sessions.clear();
@@ -3119,10 +3126,11 @@ mod tests {
             WorkerEntry {
                 label: "reviewer".to_owned(),
                 charter: "noop".to_owned(),
-                session_key: worker_key.clone(),
+                slot: worker_key.clone(),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: lead_key.as_str().to_owned(),
+                spawned_by: lead_key.clone(),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -3164,18 +3172,19 @@ mod tests {
         let workspace = app.workspace.clone().expect("workspace stub");
 
         let project_key = ProjectKey::new_for_test("forge");
-        let lead_session_key = SessionSlot::from_session_id("lead-session-1");
-        let worker_session_key = SessionSlot::from_session_id("worker-resume-session-1");
+        let lead_session_key = SessionSlot::from_str_for_test("lead-session-1");
+        let worker_session_key = SessionSlot::from_str_for_test("worker-resume-session-1");
 
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
                 label: "reviewer".into(),
                 charter: "be sharp".into(),
-                session_key: worker_session_key.clone(),
+                slot: worker_session_key.clone(),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -3254,10 +3263,11 @@ mod tests {
             WorkerEntry {
                 label: "reviewer".into(),
                 charter: "be sharp".into(),
-                session_key: SessionSlot::from_session_id("worker-1"),
+                slot: SessionSlot::from_str_for_test("worker-1"),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Failed,
                 spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: Some("No conversation found".into()),
@@ -3303,10 +3313,11 @@ mod tests {
             WorkerEntry {
                 label: "reviewer".into(),
                 charter: "be sharp".into(),
-                session_key: SessionSlot::from_session_id("worker-1"),
+                slot: SessionSlot::from_str_for_test("worker-1"),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Failed,
                 spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -3431,7 +3442,7 @@ mod tests {
         use forge_workspace::{ProjectKey, SessionSlot};
 
         let mut app = App::test_default();
-        let lead_key = SessionSlot::from_session_id("lead-bg");
+        let lead_key = SessionSlot::from_str_for_test("lead-bg");
         let mut lead = UiSession::new(lead_key.clone(), "bg-activity-project");
         lead.cwd_raw = project_path.to_owned();
         lead.lifecycle_state = lifecycle;
@@ -3714,14 +3725,15 @@ mod tests {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("workspace stub");
         let project_key = ProjectKey::new_for_test("bg-worker-project");
-        let worker_session_key = SessionSlot::from_session_id("worker-bg");
+        let worker_session_key = SessionSlot::from_str_for_test("worker-bg");
         let entry = WorkerEntry {
             label: "runner".into(),
             charter: "bg-work-test".into(),
-            session_key: worker_session_key.clone(),
+            slot: worker_session_key.clone(),
+            session_id: None,
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead".into(),
+            spawned_by: SessionSlot::from_str_for_test("lead"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -3790,10 +3802,11 @@ mod tests {
             WorkerEntry {
                 label: "runner".into(),
                 charter: "bucketless".into(),
-                session_key: SessionSlot::from_session_id("worker-nobucket"),
+                slot: SessionSlot::from_str_for_test("worker-nobucket"),
+            session_id: None,
                 status,
                 spawned_at: SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -3863,10 +3876,11 @@ mod tests {
                             WorkerEntry {
                                 label: label.into(),
                                 charter: "org-trunk-test".into(),
-                                session_key: SessionSlot::from_session_id(format!("worker-{idx}")),
+                                slot: SessionSlot::from_str_for_test(format!("worker-{idx}")),
+            session_id: None,
                                 status: forge_primitives::WorkerLiveness::Running,
                                 spawned_at: SystemTime::UNIX_EPOCH,
-                                spawned_by_session_id: "lead".into(),
+                                spawned_by: SessionSlot::from_str_for_test("lead"),
                                 needs_tag: false,
                                 is_git_repo_at_spawn: false,
                                 diagnostic: None,

@@ -726,12 +726,12 @@ impl App {
     ) -> Result<(), forge_workspace::DispatchError> {
         let workspace = self.workspace.as_ref().ok_or_else(|| {
             forge_workspace::DispatchError::UnknownSession(
-                forge_workspace::SessionSlot::from_session_id("__no_workspace__"),
+                forge_workspace::SessionSlot::from_str_for_test("__no_workspace__"),
             )
         })?;
         let key = self.active_session_key.clone().ok_or_else(|| {
             forge_workspace::DispatchError::UnknownSession(
-                forge_workspace::SessionSlot::from_session_id("__no_active__"),
+                forge_workspace::SessionSlot::from_str_for_test("__no_active__"),
             )
         })?;
         workspace.dispatch(builder(key))
@@ -751,7 +751,7 @@ impl App {
         &mut self,
     ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         if self.active_session_key.is_none() {
-            let key = forge_workspace::SessionSlot::from_session_id(Self::TEST_SESSION_KEY);
+            let key = forge_workspace::SessionSlot::from_str_for_test(Self::TEST_SESSION_KEY);
             self.sessions.entry(key.clone()).or_insert_with(|| {
                 super::session::UiSession::new(key.clone(), Self::TEST_SESSION_PROJECT)
             });
@@ -934,7 +934,7 @@ impl App {
         let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
         let (diff_overlay_tx, diff_overlay_rx) = std_mpsc::channel();
         let (usage_overlay_tx, usage_overlay_rx) = std_mpsc::channel();
-        let pending_key = forge_workspace::SessionSlot::from_session_id(Self::TEST_SESSION_KEY);
+        let pending_key = forge_workspace::SessionSlot::from_str_for_test(Self::TEST_SESSION_KEY);
         let mut pending_session =
             super::session::UiSession::new(pending_key.clone(), Self::TEST_SESSION_PROJECT);
         // Seed a synthetic `current_model` so tests that depend on

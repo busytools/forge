@@ -3721,7 +3721,7 @@ mod inbound_message_surfacing_tests {
 
     fn seed_background_bucket(app: &mut App, session_id: &str) -> forge_workspace::SessionSlot {
         use crate::app::session::UiSession;
-        let key = forge_workspace::SessionSlot::from_session_id(session_id.to_owned());
+        let key = forge_workspace::SessionSlot::from_str_for_test(session_id.to_owned());
         let mut bucket = UiSession::new(key.clone(), "test-project");
         bucket.session_id = Some(crate::agent::model::SessionId::new(session_id.to_owned()));
         app.sessions.insert(key.clone(), bucket);
@@ -3762,7 +3762,7 @@ mod inbound_message_surfacing_tests {
         crate::app::events::client::apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::CronPromptAppended {
-                session_id: "session-b".to_owned(),
+                key: forge_workspace::SessionSlot::from_str_for_test("session-b"),
                 text: "check the queue".to_owned(),
             },
         );
@@ -3809,7 +3809,7 @@ mod inbound_message_surfacing_tests {
         crate::app::events::client::apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::CronPromptAppended {
-                session_id: "session-b".to_owned(),
+                key: forge_workspace::SessionSlot::from_str_for_test("session-b"),
                 text: "check the queue".to_owned(),
             },
         );
@@ -3844,7 +3844,7 @@ mod inbound_message_surfacing_tests {
         crate::app::events::client::apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::CronPromptAppended {
-                session_id: "session-b".to_owned(),
+                key: forge_workspace::SessionSlot::from_str_for_test("session-b"),
                 text: "check the queue".to_owned(),
             },
         );

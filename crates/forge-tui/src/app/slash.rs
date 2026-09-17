@@ -801,11 +801,11 @@ mod tests {
                 seed_ask_session(&mut app);
                 assert!(try_handle_submit(&mut app, "/mode plan"));
 
-                let session_id = app.session_id().unwrap_or_default().to_string();
+                let key = app.active_session_key.clone().expect("active key");
                 crate::app::events::apply_session_update(
                     &mut app,
                     forge_workspace::SessionUpdate::ChatAppended {
-                        session_id,
+                        key,
                         msg: forge_primitives::Message::System {
                             subtype: "status".into(),
                             data: serde_json::json!({"permissionMode": "plan"}),

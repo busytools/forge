@@ -963,7 +963,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn caller() -> SessionSlot {
-        SessionSlot::from_session_id("caller-uuid")
+        SessionSlot::from_str_for_test("caller-uuid")
     }
 
     /// Records every outbound call, so a test can assert what did and did
@@ -1955,7 +1955,7 @@ mod tests {
             )
             .expect("the lead subscribes to C1");
 
-        let worker_key = SessionSlot::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
         let project_key = ws
             .list_projects()
             .into_iter()
@@ -1967,10 +1967,11 @@ mod tests {
             crate::mcp::workers::types::WorkerEntry {
                 label: "tester".into(),
                 charter: "c".into(),
-                session_key: worker_key.clone(),
-                status: forge_primitives::WorkerLiveness::Running,
+                slot: worker_key.clone(),
+                session_id: None,
+                status:forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "caller-uuid".into(),
+                spawned_by: SessionSlot::from_str_for_test("caller-uuid"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,

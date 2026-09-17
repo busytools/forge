@@ -207,7 +207,7 @@ pub fn drain_events(app: &mut App) {
                         event_name = "review_waiting_gave_up",
                         message = "git could not be read for this checkout; giving up on restoring its review-replies count",
                         outcome = "skipped",
-                        key = %event.key.as_str(),
+                        slot = %event.key.display(),
                         attempts = session.review_waiting_failed_reads,
                     );
                 }
@@ -297,7 +297,7 @@ mod tests {
         workspace.install_db_for_test(
             forge_workspace::store::Db::open(&db_dir.join("db.redb")).expect("open db"),
         );
-        let key = SessionSlot::from_session_id("restored-session");
+        let key = SessionSlot::from_str_for_test("restored-session");
         let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = repo.to_string_lossy().into_owned();
         session.session_id = Some(crate::agent::model::SessionId::new("restored-session"));
@@ -411,7 +411,7 @@ mod tests {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("test workspace");
         workspace.install_db_for_test(db);
-        let key = SessionSlot::from_session_id("restored-session");
+        let key = SessionSlot::from_str_for_test("restored-session");
         let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = repo.path().to_string_lossy().into_owned();
         session.session_id = Some(crate::agent::model::SessionId::new("restored-session"));

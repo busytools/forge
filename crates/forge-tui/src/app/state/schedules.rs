@@ -401,7 +401,7 @@ mod tests {
 
         // Active tab is the real web-api session, but the stamp is empty
         // AND cwd_raw is blank - only the catalog resolver can succeed.
-        let key = forge_workspace::SessionSlot::from_session_id(uuid);
+        let key = forge_workspace::SessionSlot::from_str_for_test(uuid);
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "");
         bucket.cwd_raw = String::new();
         app.sessions.insert(key.clone(), bucket);
@@ -437,7 +437,7 @@ mod tests {
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: None,
         });
-        let key = forge_workspace::SessionSlot::from_session_id(uuid);
+        let key = forge_workspace::SessionSlot::from_str_for_test(uuid);
         let bucket = crate::app::session::UiSession::new(key.clone(), "web-api");
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key);
@@ -485,7 +485,7 @@ mod tests {
         ws.seed_test_cron(cron.clone());
 
         // Real UUID NOT in the catalog: only the bucket's stamp resolves.
-        let key = forge_workspace::SessionSlot::from_session_id("uncatalogued-uuid");
+        let key = forge_workspace::SessionSlot::from_str_for_test("uncatalogued-uuid");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "web-api");
         bucket.cwd_raw = path.to_owned();
         app.sessions.insert(key.clone(), bucket);
@@ -527,7 +527,7 @@ mod tests {
         };
         ws.seed_test_cron(cron.clone());
 
-        let key = forge_workspace::SessionSlot::from_session_id("web-api-uuid");
+        let key = forge_workspace::SessionSlot::from_str_for_test("web-api-uuid");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "web-api");
         bucket.cwd_raw = "~/Projects/web-api".to_owned();
         app.sessions.insert(key.clone(), bucket);
@@ -569,7 +569,7 @@ mod tests {
 
         // A session the catalog does not know yet: the bucket's stamp is
         // what names the project.
-        let fresh = forge_workspace::SessionSlot::from_session_id("fresh-uuid");
+        let fresh = forge_workspace::SessionSlot::from_str_for_test("fresh-uuid");
         let bucket = crate::app::session::UiSession::new(fresh.clone(), "cronproj");
         app.sessions.insert(fresh.clone(), bucket);
         app.active_session_key = Some(fresh);
@@ -585,7 +585,7 @@ mod tests {
         // a known project name, not catalogued, a stamp naming no project,
         // cwd under no project) yields empty rather than another
         // project's crons.
-        let orphan = forge_workspace::SessionSlot::from_session_id("orphan-uuid");
+        let orphan = forge_workspace::SessionSlot::from_str_for_test("orphan-uuid");
         let mut orphan_bucket =
             crate::app::session::UiSession::new(orphan.clone(), "orphan-project");
         orphan_bucket.cwd_raw = "/tmp/unmapped-dir".to_owned();
@@ -622,7 +622,7 @@ mod tests {
             ws.seed_test_project("cronproj", "/tmp/cronproj-shapes");
             ws.seed_test_cron(cron.clone());
 
-            let key = forge_workspace::SessionSlot::from_session_id(key_str);
+            let key = forge_workspace::SessionSlot::from_str_for_test(key_str);
             let bucket = crate::app::session::UiSession::new(key.clone(), "cronproj");
             app.sessions.insert(key.clone(), bucket);
             app.active_session_key = Some(key);
@@ -661,7 +661,7 @@ mod tests {
         };
         ws.seed_test_cron(cron.clone());
 
-        let key = forge_workspace::SessionSlot::from_session_id("worktree-worker-uuid");
+        let key = forge_workspace::SessionSlot::from_str_for_test("worktree-worker-uuid");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "cronproj");
         bucket.cwd_raw = format!("{path}/.claude/worktrees/reviewer");
         app.sessions.insert(key.clone(), bucket);
@@ -694,7 +694,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
         });
 
-        let key = forge_workspace::SessionSlot::from_session_id("gproj-uuid");
+        let key = forge_workspace::SessionSlot::from_str_for_test("gproj-uuid");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "gproj");
         bucket.cwd_raw = format!("{path}/.claude/worktrees/reviewer");
         app.sessions.insert(key.clone(), bucket);
@@ -720,7 +720,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         ws.seed_test_project(project, &format!("/tmp/{project}"));
-        let key = forge_workspace::SessionSlot::from_session_id(session_id);
+        let key = forge_workspace::SessionSlot::from_str_for_test(session_id);
         let bucket = crate::app::session::UiSession::new(key.clone(), project);
         app.sessions.insert(key.clone(), bucket);
         app.active_session_key = Some(key.clone());
@@ -744,10 +744,11 @@ mod tests {
             forge_workspace::WorkerEntry {
                 label: label.to_owned(),
                 charter: "charter".to_owned(),
-                session_key: session.clone(),
+                slot: session.clone(),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".to_owned(),
+                spawned_by: forge_workspace::SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,

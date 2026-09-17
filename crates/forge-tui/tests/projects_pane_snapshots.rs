@@ -68,7 +68,12 @@ fn project_view(name: &str, sessions: Vec<SessionView>) -> ProjectView {
 }
 
 fn session_view(id: &str, label: &str) -> SessionView {
-    SessionView::new_for_test(SessionSlot::from_str_for_test(id), label, false, None)
+    SessionView::new_for_test(
+        forge_primitives::SessionId::new(id),
+        label,
+        false,
+        None,
+    )
 }
 
 #[test]
@@ -711,10 +716,11 @@ fn worker_selection_highlights_only_the_worker_row() {
         forge_workspace::WorkerEntry {
             label: "reviewer".into(),
             charter: "be sharp".into(),
-            session_key: worker_key.clone(),
+            slot: worker_key.clone(),
+            session_id: None,
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-a".into(),
+            spawned_by: SessionSlot::from_str_for_test("lead-a"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,

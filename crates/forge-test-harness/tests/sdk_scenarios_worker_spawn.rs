@@ -40,7 +40,7 @@ use forge_workspace::{
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn worker_spawn_scenario() {
-    let caller_key = SessionSlot::from_session_id("lead-test-session");
+    let caller_key = SessionSlot::from_str_for_test("lead-test-session");
     let project_key = forge_workspace::ProjectKey::new_for_test("forge");
 
     let mock = MockWorkerFacade::new();
@@ -64,8 +64,9 @@ async fn worker_spawn_scenario() {
             charter: "You are a terse reviewer. Reply with one word answers.".into(),
             status: forge_primitives::WorkerLiveness::Running,
             session_id: "worker-session-uuid-stub".into(),
+            slot: SessionSlot::worker("TestOrg", "forge", "reviewer"),
             spawned_at: SystemTime::now(),
-            spawned_by_session_id: "lead-test-session".into(),
+            spawned_by: SessionSlot::from_str_for_test("lead-test-session"),
             diagnostic: None,
             activity: Some(forge_primitives::SessionLifecycleState::Idle),
         }],

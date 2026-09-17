@@ -48,12 +48,15 @@ pub struct WorkerStatus {
     pub label: String,
     pub charter: String,
     pub status: WorkerLiveness,
+    /// The session id the worker currently runs under.
     pub session_id: String,
+    /// The slot the worker fills, which is what addresses it.
+    pub slot: crate::SessionSlot,
     pub spawned_at: SystemTime,
-    /// session_id of the caller that issued the `workers__spawn`
-    /// call. In v1 this is always the project's lead; field exists
+    /// The slot of the caller that issued the `workers__spawn` call.
+    /// In v1 this is always the project's lead; field exists
     /// pre-baked for v2 worker-spawn-from-worker (currently gated).
-    pub spawned_by_session_id: String,
+    pub spawned_by: crate::SessionSlot,
     /// Human-readable failure reason when `status == Failed` (the
     /// first line of claude's stderr, or the error variant name when
     /// stderr was empty). `None` when the worker isn't in `Failed`
@@ -137,8 +140,9 @@ mod tests {
             charter: "be sharp".into(),
             status: WorkerLiveness::Failed,
             session_id: "uuid-1".into(),
+            slot: crate::SessionSlot::new("me", "forge", "reviewer"),
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".into(),
+            spawned_by: crate::SessionSlot::lead("me", "forge"),
             diagnostic: Some("No conversation found".into()),
             activity: Some(SessionLifecycleState::Attention),
         };

@@ -114,7 +114,7 @@ pub fn request_refresh(
             message = "process scan refresh skipped: no claude pid",
             outcome = "skipped",
             reason = "no_pid",
-            key = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     };
@@ -125,7 +125,7 @@ pub fn request_refresh(
             message = "process scan refresh skipped: already in flight",
             outcome = "skipped",
             reason = "in_flight",
-            key = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     }
@@ -149,7 +149,7 @@ pub fn request_refresh(
                     message = "process scan blocking task panicked or was cancelled",
                     outcome = "failure",
                     error = %err,
-                    key = %key.as_str(),
+                    slot = %key.display(),
                 );
                 return;
             }
@@ -196,7 +196,7 @@ fn apply_snapshot_ready(
             message = "process snapshot for unknown session",
             outcome = "dropped",
             reason = "unknown_session",
-            key = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     };
@@ -207,7 +207,7 @@ fn apply_snapshot_ready(
             message = "process snapshot generation stale",
             outcome = "dropped",
             reason = "stale_generation",
-            key = %key.as_str(),
+            slot = %key.display(),
             event_generation = generation,
             session_generation = session.process_scan_generation,
         );
@@ -241,7 +241,7 @@ fn apply_timer_tick(app: &mut App) {
             event_name = "process_scan_workspace_unset",
             message = "App.workspace is None during process apply_timer_tick; skipping scan",
             outcome = "skipped",
-            key = %active_key.as_str(),
+            slot = %active_key.display(),
         );
         return;
     };

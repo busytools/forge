@@ -22,14 +22,14 @@ pub enum SessionTarget {
     /// string in `forge.toml`. Errors with `ProjectNotFound` if no
     /// such name exists.
     Named(String),
-    /// A specific session by id. Used by the click-to-resume flow
-    /// in the Projects pane and by `Workspace::spawn_session`.
+    /// A specific session slot, resumed under the id the store holds
+    /// for it. Used by the click-to-resume flow in the Projects pane
+    /// and by `Workspace::spawn_session`.
     Session(SessionSlot),
-    /// Spawn a FRESH session in the project identified by `project_key`,
-    /// bypassing the lead-resume path. Used by the workers MCP so a
-    /// worker is always a brand-new session, not a resume of the
-    /// project's existing lead. `session_id` is the id the caller minted
-    /// and recorded for it, so the pool key is the id the child will run
-    /// under and nothing has to move on `Connected`.
-    FreshInProject { project_key: ProjectKey, session_id: String },
+    /// Spawn a FRESH session in `slot`'s project, bypassing the
+    /// lead-resume path. Used by the workers MCP so a worker is always
+    /// a brand-new session, not a resume of the project's existing
+    /// lead. The caller has already recorded the id it minted for the
+    /// slot, so the child adopts exactly that one.
+    FreshInProject { slot: SessionSlot },
 }

@@ -917,7 +917,7 @@ mod tests {
     #[test]
     fn a_slack_draft_shows_the_exact_text_that_would_go_out() {
         let prompt = crate::app::prompt::PromptState::from_slack_draft(
-            forge_primitives::SessionSlot::from_session_id("caller"),
+            forge_primitives::SessionSlot::from_str_for_test("caller"),
             forge_primitives::slack::SlackDraft {
                 id: uuid::Uuid::new_v4(),
                 workspace: "acme".to_owned(),

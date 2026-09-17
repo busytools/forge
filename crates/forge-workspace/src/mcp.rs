@@ -122,7 +122,7 @@ mod tests {
     use crate::mcp::workers::facade::MockWorkerFacade;
 
     fn fake_key(s: &str) -> SessionSlot {
-        SessionSlot::from_session_id(s)
+        SessionSlot::from_str_for_test(s)
     }
 
     #[test]

@@ -204,10 +204,11 @@ mod prod_facade_tests {
         WorkerEntry {
             label: label.to_owned(),
             charter: "review".to_owned(),
-            session_key: SessionSlot::from_session_id(session_id),
-            status: WorkerLiveness::Running,
+            slot: SessionSlot::from_str_for_test(session_id),
+            session_id: None,
+            status:WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".to_owned(),
+            spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -226,8 +227,8 @@ mod prod_facade_tests {
         (
             ws,
             facade,
-            SessionSlot::from_session_id("lead-uuid"),
-            SessionSlot::from_session_id("worker-uuid"),
+            SessionSlot::from_str_for_test("lead-uuid"),
+            SessionSlot::from_str_for_test("worker-uuid"),
         )
     }
 

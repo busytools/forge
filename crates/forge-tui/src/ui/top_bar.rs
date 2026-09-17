@@ -124,11 +124,13 @@ fn active_session_label(app: &App) -> Option<String> {
     {
         return Some("waking".to_owned());
     }
-    if let Some(active_key) = app.active_session_key.as_ref()
+    if let Some(active_id) = app.session_id()
         && let Some(workspace) = app.workspace.as_ref()
     {
+        // A catalog row is named by the id the CLI wrote it under, so
+        // the lookup follows the active bucket's occupant.
         for project in workspace.list_projects() {
-            if let Some(view) = project.sessions.iter().find(|sv| &sv.session == active_key)
+            if let Some(view) = project.sessions.iter().find(|sv| sv.session == active_id)
                 && !view.label.is_empty()
             {
                 return Some(view.label.clone());
@@ -160,7 +162,7 @@ mod tests {
     #[test]
     fn the_strip_says_waking_while_the_focused_bucket_has_not_connected() {
         let mut app = App::test_default();
-        let key = SessionSlot::from_session_id("9f1c2b3a-4d5e-4f60-8a7b-0c1d2e3f4a5b");
+        let key = SessionSlot::from_str_for_test("9f1c2b3a-4d5e-4f60-8a7b-0c1d2e3f4a5b");
         let mut bucket = UiSession::new(key.clone(), "forge");
         bucket.lifecycle_state = SessionLifecycleState::Spawning;
         app.sessions.insert(key.clone(), bucket);

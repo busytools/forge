@@ -660,7 +660,7 @@ impl Workspace {
                         target: "forge_workspace::review",
                         project = %scope.0,
                         branch = %scope.1,
-                        caller = %caller.as_str(),
+                        caller = %caller.display(),
                         "review-activity notice dropped: no submit origin recorded",
                     );
                     None
@@ -911,7 +911,7 @@ mod tests {
         sweep_git(&root, &["update-ref", "refs/remotes/origin/feat/pushed", "HEAD"]);
 
         let (ws, _rx) = sweep_ws(dir.path(), "myproj", &root);
-        let reviewer = SessionSlot::from_session_id("lead-uuid");
+        let reviewer = SessionSlot::from_str_for_test("lead-uuid");
         // Four live to three dead, so the pass stays under the refusal
         // bound - a sweep is meant to be a trickle, and the ratio that
         // trips the bound is asserted separately.
@@ -1105,10 +1105,11 @@ mod tests {
             crate::WorkerEntry {
                 label: "reviewer".to_owned(),
                 charter: "review".to_owned(),
-                session_key: SessionSlot::from_session_id("worker-uuid"),
-                status: forge_primitives::WorkerLiveness::Spawning,
+                slot: SessionSlot::from_str_for_test("worker-uuid"),
+                session_id: None,
+                status:forge_primitives::WorkerLiveness::Spawning,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".to_owned(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: true,
                 diagnostic: None,
@@ -1167,7 +1168,7 @@ mod tests {
                 .map(str::to_owned)
         };
 
-        let origin = SessionSlot::from_session_id("reviewer");
+        let origin = SessionSlot::from_str_for_test("reviewer");
         let r1 = ws
             .submit_review(
                 "forge",
@@ -1223,14 +1224,14 @@ mod tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         ws.save_review_threads("forge", "feat", &[make("a"), make("b")]);
-        let caller = SessionSlot::from_session_id("worker");
+        let caller = SessionSlot::from_str_for_test("worker");
         let r1 = ws
             .submit_review(
                 "forge",
                 "feat",
                 Some("overview".to_owned()),
                 &["a".to_owned(), "b".to_owned()],
-                SessionSlot::from_session_id("reviewer"),
+                SessionSlot::from_str_for_test("reviewer"),
             )
             .expect("submit");
 
@@ -1310,8 +1311,8 @@ mod tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
-        let reviewer = SessionSlot::from_session_id("reviewer");
-        let worker = SessionSlot::from_session_id("worker");
+        let reviewer = SessionSlot::from_str_for_test("reviewer");
+        let worker = SessionSlot::from_str_for_test("worker");
         ws.submit_review(
             "forge",
             "feat",
@@ -1400,7 +1401,7 @@ mod tests {
 
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.install_db_for_test(db);
-        let worker = SessionSlot::from_session_id("worker");
+        let worker = SessionSlot::from_str_for_test("worker");
         ws.review_reply(&worker, "forge", "feat", "a", "impl", "fixed", "t").expect("reply");
 
         assert!(
@@ -1441,8 +1442,8 @@ mod tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
-        let reviewer = SessionSlot::from_session_id("reviewer");
-        let worker = SessionSlot::from_session_id("worker");
+        let reviewer = SessionSlot::from_str_for_test("reviewer");
+        let worker = SessionSlot::from_str_for_test("worker");
         ws.submit_review(
             "forge",
             "feat",

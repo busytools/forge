@@ -166,11 +166,18 @@ pub enum WorkspaceError {
     ProjectModelMissing { project: String, org: String },
 
     #[error(
-        "session '{session}' resolves to no project: its directory matches none of the \
-         [[orgs.projects]] paths in forge.toml. Add that directory as a project, or start the \
-         session from one that is configured"
+        "session '{slot}' resolves to no project: it names no project in forge.toml. Add that \
+         project, or start the session from one that is configured"
     )]
-    SpawnResolvesToNoProject { session: String },
+    SpawnResolvesToNoProject { slot: String },
+    /// The stated spawn role and the target slot name different
+    /// sessions. Both are caller statements, so a disagreement is a
+    /// caller bug rather than something to resolve.
+    #[error("spawn role {role:?} and target slot '{slot}' name different sessions")]
+    SpawnRoleSlotDisagree {
+        role: crate::protocol::SpawnRole,
+        slot: String,
+    },
 
     #[error(
         "org '{org}' in forge.toml at {} references unknown account '{account}'; valid accounts: {valid}",

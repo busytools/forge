@@ -251,15 +251,15 @@ pub enum Command {
         launch_settings: SessionLaunchSettings,
     },
     /// User clicked a non-lead session row. Workspace spawns an
-    /// agent for the specific session_id and emits `Spawning` then
-    /// `Connected` on it.
+    /// agent for the slot the row names, under the id its row holds,
+    /// and emits `Spawning` then `Connected` on it.
     ///
     /// `role` is what the dispatcher knows the row to be. The row is a
     /// catalog entry, so the spawn cannot tell a worker's session from a
     /// lead's by anything it holds, and a worker handed a lead's tool
     /// surface fails silently - so the caller states it.
     SpawnSession {
-        session_id: String,
+        key: SessionSlot,
         role: SpawnRole,
         launch_settings: SessionLaunchSettings,
     },
@@ -318,7 +318,9 @@ pub enum Command {
         project_key: crate::ProjectKey,
         label: String,
         charter: String,
-        spawned_by_session_id: String,
+        /// The slot of the session issuing the spawn - normally the
+        /// project's lead.
+        spawned_by: SessionSlot,
         resume_existing: Option<String>,
         /// First message delivered as the worker's user turn on Connected,
         /// via the rate-limited kick dispatcher. Either `workers__spawn`'s
@@ -602,9 +604,9 @@ impl std::fmt::Debug for Command {
                 .debug_struct("SpawnProject")
                 .field("project_name", project_name)
                 .finish_non_exhaustive(),
-            Self::SpawnSession { session_id, .. } => f
+            Self::SpawnSession { key, .. } => f
                 .debug_struct("SpawnSession")
-                .field("session_id", session_id)
+                .field("key", key)
                 .finish_non_exhaustive(),
             Self::StartDefault { project_name, .. } => f
                 .debug_struct("StartDefault")
@@ -615,11 +617,11 @@ impl std::fmt::Debug for Command {
                 .field("caller", caller)
                 .field("target_project", target_project)
                 .finish_non_exhaustive(),
-            Self::SpawnWorker { project_key, label, spawned_by_session_id, .. } => f
+            Self::SpawnWorker { project_key, label, spawned_by, .. } => f
                 .debug_struct("SpawnWorker")
                 .field("project_key", project_key)
                 .field("label", label)
-                .field("spawned_by_session_id", spawned_by_session_id)
+                .field("spawned_by", spawned_by)
                 .field("return_to", &"<oneshot::Sender>")
                 .finish_non_exhaustive(),
             Self::CloseWorker { project_key, label } => f
@@ -763,14 +765,14 @@ pub enum SessionUpdate {
         /// per-session count, which has no other durable source.
         compaction_count: u32,
     },
-    /// `key` is the replacement session; `previous_key` is the bucket
-    /// it supersedes (the task's key before `rekey_to`). The two differ
-    /// whenever the CLI issues a fresh session UUID, and the reducer
-    /// needs `previous_key` to find the outgoing bucket - it is not
-    /// derivable from anything else on the envelope.
+    /// The slot's occupant changed under it - a `/new`, a `/resume`, a
+    /// login or a logout. The slot keeps its bucket, in its place on
+    /// screen; its contents reset, meaning the rendered conversation,
+    /// the history, the per-session overrides and any waiter holding a
+    /// tool call that is never coming back. `session_id` is the new
+    /// occupant.
     SessionReplaced {
         key: SessionSlot,
-        previous_key: SessionSlot,
         session_id: SessionId,
         cwd: String,
         current_model: CurrentModel,
@@ -796,10 +798,10 @@ pub enum SessionUpdate {
         message: String,
     },
     RuntimeReloadCompleted {
-        session_id: String,
+        key: SessionSlot,
     },
     RuntimeReloadFailed {
-        session_id: String,
+        key: SessionSlot,
         message: String,
     },
     /// The CLI refused (or failed) a `set_permission_mode` control
@@ -850,11 +852,11 @@ pub enum SessionUpdate {
         terminal_reason: Option<TerminalReason>,
     },
     ChatAppended {
-        session_id: String,
+        key: SessionSlot,
         msg: Message,
     },
     HookObservation {
-        session_id: String,
+        key: SessionSlot,
         tool_use_id: Option<String>,
         permission_mode: Option<String>,
         effort: Option<String>,
@@ -862,7 +864,7 @@ pub enum SessionUpdate {
         agent_type: Option<String>,
     },
     StatusSnapshot {
-        session_id: String,
+        key: SessionSlot,
         account: AccountInfo,
         forge_account: Option<ForgeAccountIdentity>,
     },
@@ -887,18 +889,18 @@ pub enum SessionUpdate {
         pick: Option<crate::dictate::DictateDeviceChoice>,
     },
     OauthCredentialsSnapshot {
-        session_id: String,
+        key: SessionSlot,
         credentials: Option<OauthCredentials>,
     },
     ContextUsageSnapshot {
-        session_id: String,
+        key: SessionSlot,
         percentage: Option<u8>,
         /// Raw model context-window size in tokens (e.g. `1_000_000`
         /// for Opus 1M). `None` until the upstream probe reports it.
         max_tokens: Option<u64>,
     },
     McpSnapshot {
-        session_id: String,
+        key: SessionSlot,
         servers: Vec<McpServerStatus>,
         error: Option<String>,
     },
@@ -995,7 +997,7 @@ pub enum SessionUpdate {
         status: forge_primitives::WorkerStatus,
         worktree: WorktreeDisposition,
     },
-    /// A peer-coordination envelope arrived at session `session_id`.
+    /// A peer-coordination envelope arrived at `key`.
     /// Carries the typed `WrappedPrompt` so the TUI reducer can build
     /// the chat-side echo from real fields instead of having the
     /// workspace forge a `Message::User` carrying prose for the TUI to
@@ -1003,35 +1005,35 @@ pub enum SessionUpdate {
     /// prose via a separate `Command::Prompt` dispatch - that's the
     /// CLI's input channel and stays text-shaped.
     PeerEnvelopeAppended {
-        session_id: String,
+        key: SessionSlot,
         wrapped: crate::mcp::peers::types::WrappedPrompt,
     },
-    /// A matched Gotify notification arrived at session `session_id`.
+    /// A matched Gotify notification arrived at `key`.
     /// Carries the typed `GotifyNotification` so the TUI reducer builds
     /// the chat-side echo from real fields (mirrors PeerEnvelopeAppended).
     /// The session's LLM receives the same prose via a separate
     /// `Command::Prompt` - this update only drives the visible echo.
     GotifyNotificationAppended {
-        session_id: String,
+        key: SessionSlot,
         notification: crate::mcp::gotify::types::GotifyNotification,
     },
-    /// A due cron fired into session `session_id`. Carries the fired
+    /// A due cron fired into `key`. Carries the fired
     /// prompt text so the TUI reducer builds the chat-side echo (mirrors
     /// GotifyNotificationAppended). The session's LLM receives the same
     /// text via a separate `Command::Prompt` - this update only drives
     /// the visible echo.
     CronPromptAppended {
-        session_id: String,
+        key: SessionSlot,
         text: String,
     },
-    /// A matched Slack message arrived at session `session_id`. Carries the
+    /// A matched Slack message arrived at `key`. Carries the
     /// prose rather than the typed message: the prose builder is `pub(crate)`
     /// to forge-workspace, so a typed message would force the TUI to rebuild
     /// the very format it parses. The session's LLM receives the same prose
     /// via a separate `Command::Prompt` - this update only drives the visible
     /// echo (mirrors GotifyNotificationAppended).
     SlackMessageAppended {
-        session_id: String,
+        key: SessionSlot,
         prose: String,
     },
     /// A composed Slack message is waiting for the user's decision in the
@@ -1122,10 +1124,10 @@ pub enum SessionUpdate {
 
 impl SessionUpdate {
     /// The [`SessionSlot`] this update routes to, or `None` for
-    /// updates that target App-level state (`SessionsListed`,
-    /// `ServiceStatus`, usage, plugin, fatal-error).
-    /// Variants carrying a raw `session_id` synthesize a key from it.
-    pub fn session_key(&self) -> Option<SessionSlot> {
+    /// updates that target App-level state (`ServiceStatus`, catalog,
+    /// plugin, fatal-error). Every identity-carrying variant names a
+    /// slot, so nothing is synthesized here.
+    pub fn slot(&self) -> Option<&SessionSlot> {
         match self {
             Self::Spawning { key, .. }
             | Self::Connected { key, .. }
@@ -1154,21 +1156,19 @@ impl SessionUpdate {
             | Self::PromptQueuedWhileBusy { key }
             | Self::DictateEnded { key, .. }
             | Self::SlackPostPending { key, .. }
-            | Self::SlackDraftExpired { key, .. } => Some(key.clone()),
-            Self::RuntimeReloadCompleted { session_id }
-            | Self::RuntimeReloadFailed { session_id, .. }
-            | Self::ChatAppended { session_id, .. }
-            | Self::HookObservation { session_id, .. }
-            | Self::StatusSnapshot { session_id, .. }
-            | Self::OauthCredentialsSnapshot { session_id, .. }
-            | Self::ContextUsageSnapshot { session_id, .. }
-            | Self::McpSnapshot { session_id, .. }
-            | Self::PeerEnvelopeAppended { session_id, .. }
-            | Self::GotifyNotificationAppended { session_id, .. }
-            | Self::CronPromptAppended { session_id, .. }
-            | Self::SlackMessageAppended { session_id, .. } => {
-                Some(SessionSlot::from_session_id(session_id.clone()))
-            }
+            | Self::SlackDraftExpired { key, .. }
+            | Self::RuntimeReloadCompleted { key }
+            | Self::RuntimeReloadFailed { key, .. }
+            | Self::ChatAppended { key, .. }
+            | Self::HookObservation { key, .. }
+            | Self::StatusSnapshot { key, .. }
+            | Self::OauthCredentialsSnapshot { key, .. }
+            | Self::ContextUsageSnapshot { key, .. }
+            | Self::McpSnapshot { key, .. }
+            | Self::PeerEnvelopeAppended { key, .. }
+            | Self::GotifyNotificationAppended { key, .. }
+            | Self::CronPromptAppended { key, .. }
+            | Self::SlackMessageAppended { key, .. } => Some(key),
             Self::ServiceStatus { .. }
             | Self::CatalogLoaded
             | Self::PluginsInventoryUpdated { .. }
@@ -1200,10 +1200,9 @@ impl std::fmt::Debug for SessionUpdate {
             Self::Connected { key, .. } => {
                 f.debug_struct("Connected").field("key", key).finish_non_exhaustive()
             }
-            Self::SessionReplaced { key, previous_key, .. } => f
+            Self::SessionReplaced { key, .. } => f
                 .debug_struct("SessionReplaced")
                 .field("key", key)
-                .field("previous_key", previous_key)
                 .finish_non_exhaustive(),
             Self::ConnectionFailed { key, .. } => {
                 f.debug_struct("ConnectionFailed").field("key", key).finish_non_exhaustive()
@@ -1214,12 +1213,12 @@ impl std::fmt::Debug for SessionUpdate {
             Self::SlashCommandError { key, .. } => {
                 f.debug_struct("SlashCommandError").field("key", key).finish_non_exhaustive()
             }
-            Self::RuntimeReloadCompleted { session_id } => {
-                f.debug_struct("RuntimeReloadCompleted").field("session_id", session_id).finish()
+            Self::RuntimeReloadCompleted { key } => {
+                f.debug_struct("RuntimeReloadCompleted").field("key", key).finish()
             }
-            Self::RuntimeReloadFailed { session_id, .. } => f
+            Self::RuntimeReloadFailed { key, .. } => f
                 .debug_struct("RuntimeReloadFailed")
-                .field("session_id", session_id)
+                .field("key", key)
                 .finish_non_exhaustive(),
             Self::SetModeFailed { key, .. } => {
                 f.debug_struct("SetModeFailed").field("key", key).finish_non_exhaustive()
@@ -1249,17 +1248,17 @@ impl std::fmt::Debug for SessionUpdate {
             Self::TurnError { key, .. } => {
                 f.debug_struct("TurnError").field("key", key).finish_non_exhaustive()
             }
-            Self::ChatAppended { session_id, .. } => f
+            Self::ChatAppended { key, .. } => f
                 .debug_struct("ChatAppended")
-                .field("session_id", session_id)
+                .field("key", key)
                 .finish_non_exhaustive(),
-            Self::HookObservation { session_id, .. } => f
+            Self::HookObservation { key, .. } => f
                 .debug_struct("HookObservation")
-                .field("session_id", session_id)
+                .field("key", key)
                 .finish_non_exhaustive(),
-            Self::StatusSnapshot { session_id, .. } => f
+            Self::StatusSnapshot { key, .. } => f
                 .debug_struct("StatusSnapshot")
-                .field("session_id", session_id)
+                .field("key", key)
                 .finish_non_exhaustive(),
             Self::ForgeAccountIdentity { key, .. } => {
                 f.debug_struct("ForgeAccountIdentity").field("key", key).finish_non_exhaustive()
@@ -1270,17 +1269,17 @@ impl std::fmt::Debug for SessionUpdate {
             Self::DictateDevicePin { key, .. } => {
                 f.debug_struct("DictateDevicePin").field("key", key).finish_non_exhaustive()
             }
-            Self::OauthCredentialsSnapshot { session_id, .. } => f
+            Self::OauthCredentialsSnapshot { key, .. } => f
                 .debug_struct("OauthCredentialsSnapshot")
-                .field("session_id", session_id)
+                .field("key", key)
                 .finish_non_exhaustive(),
-            Self::ContextUsageSnapshot { session_id, .. } => f
+            Self::ContextUsageSnapshot { key, .. } => f
                 .debug_struct("ContextUsageSnapshot")
-                .field("session_id", session_id)
+                .field("key", key)
                 .finish_non_exhaustive(),
-            Self::McpSnapshot { session_id, .. } => f
+            Self::McpSnapshot { key, .. } => f
                 .debug_struct("McpSnapshot")
-                .field("session_id", session_id)
+                .field("key", key)
                 .finish_non_exhaustive(),
             Self::SessionsListed { key, sessions } => f
                 .debug_struct("SessionsListed")
@@ -1336,25 +1335,25 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("label", &status.label)
                 .field("worktree", worktree)
                 .finish_non_exhaustive(),
-            Self::PeerEnvelopeAppended { session_id, wrapped } => f
+            Self::PeerEnvelopeAppended { key, wrapped } => f
                 .debug_struct("PeerEnvelopeAppended")
-                .field("session_id", session_id)
+                .field("key", key)
                 .field("correlation_id", &wrapped.correlation_id)
                 .field("kind", &wrapped.kind)
                 .finish_non_exhaustive(),
-            Self::GotifyNotificationAppended { session_id, notification } => f
+            Self::GotifyNotificationAppended { key, notification } => f
                 .debug_struct("GotifyNotificationAppended")
-                .field("session_id", session_id)
+                .field("key", key)
                 .field("app", &notification.app)
                 .field("priority", &notification.priority)
                 .finish_non_exhaustive(),
-            Self::CronPromptAppended { session_id, .. } => f
+            Self::CronPromptAppended { key, .. } => f
                 .debug_struct("CronPromptAppended")
-                .field("session_id", session_id)
+                .field("key", key)
                 .finish_non_exhaustive(),
-            Self::SlackMessageAppended { session_id, .. } => f
+            Self::SlackMessageAppended { key, .. } => f
                 .debug_struct("SlackMessageAppended")
-                .field("session_id", session_id)
+                .field("key", key)
                 .finish_non_exhaustive(),
             Self::SlackPostPending { key, draft } => f
                 .debug_struct("SlackPostPending")

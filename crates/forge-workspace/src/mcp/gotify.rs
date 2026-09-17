@@ -383,7 +383,7 @@ mod tests {
     use std::time::SystemTime;
 
     fn resolver() -> CallerKeyResolver {
-        CallerKeyResolver::from_fixed(SessionSlot::from_session_id("caller"))
+        CallerKeyResolver::from_fixed(SessionSlot::from_str_for_test("caller"))
     }
 
     fn sample_sub(id: Uuid, project: &str) -> GotifySubscription {

@@ -670,7 +670,7 @@ mod tests {
     use crate::mcp::review::facade::{MockReviewFacade, ScopeError};
 
     fn resolver() -> CallerKeyResolver {
-        CallerKeyResolver::from_fixed(SessionSlot::from_session_id("caller"))
+        CallerKeyResolver::from_fixed(SessionSlot::from_str_for_test("caller"))
     }
 
     fn summary(review_id: &str, number: u32) -> ReviewSummary {

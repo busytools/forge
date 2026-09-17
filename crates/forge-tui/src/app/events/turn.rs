@@ -58,7 +58,7 @@ pub(crate) fn dispatch_permission_outcome(
         tracing::error!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "permission_dispatch_no_workspace",
-            session_key = %session_key.as_str(),
+            slot = %session_key.display(),
             tool_id = %tool_id,
             "permission outcome dropped: app.workspace is None - this should never happen in production",
         );
@@ -79,7 +79,7 @@ pub(crate) fn dispatch_permission_outcome(
             tracing::debug!(
                 target: crate::logging::targets::APP_PERMISSION,
                 event_name = "permission_dispatch_skipped_in_test",
-                session_key = %session_key.as_str(),
+                slot = %session_key.display(),
                 tool_id = %tool_id,
                 "permission dispatch skipped: no session task in test stub",
             );
@@ -88,7 +88,7 @@ pub(crate) fn dispatch_permission_outcome(
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "permission_dispatch_failed",
-            session_key = %session_key.as_str(),
+            slot = %session_key.display(),
             tool_id = %tool_id,
             error = %err,
             "failed to dispatch permission response",
@@ -158,7 +158,7 @@ pub(crate) fn dispatch_slack_post_outcome(
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "slack_post_dispatch_no_workspace",
-            session_key = %session_key.as_str(),
+            slot = %session_key.display(),
             draft_id = %id,
             "slack post answer dropped: app.workspace is None - this should never happen in production",
         );
@@ -169,7 +169,7 @@ pub(crate) fn dispatch_slack_post_outcome(
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "slack_post_dispatch_failed",
-            session_key = %session_key.as_str(),
+            slot = %session_key.display(),
             draft_id = %id,
             error = %err,
             "failed to dispatch the slack post answer",
@@ -194,7 +194,7 @@ pub(crate) fn dispatch_question_outcome(
         tracing::error!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "question_dispatch_no_workspace",
-            session_key = %session_key.as_str(),
+            slot = %session_key.display(),
             tool_id = %tool_id,
             "question outcome dropped: app.workspace is None - this should never happen in production",
         );
@@ -211,7 +211,7 @@ pub(crate) fn dispatch_question_outcome(
             tracing::debug!(
                 target: crate::logging::targets::APP_PERMISSION,
                 event_name = "question_dispatch_skipped_in_test",
-                session_key = %session_key.as_str(),
+                slot = %session_key.display(),
                 tool_id = %tool_id,
                 "question dispatch skipped: no session task in test stub",
             );
@@ -220,7 +220,7 @@ pub(crate) fn dispatch_question_outcome(
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "question_dispatch_failed",
-            session_key = %session_key.as_str(),
+            slot = %session_key.display(),
             tool_id = %tool_id,
             error = %err,
             "failed to dispatch question response",
@@ -260,7 +260,7 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionSlot) {
             event_name = "turn_cancelled_dropped",
             message = "turn cancelled dropped for an unknown session",
             outcome = "dropped",
-            session_key = %session_key.as_str(),
+            slot = %session_key.display(),
             reason = "unknown_session",
         );
         return;
@@ -416,14 +416,14 @@ fn apply_turn_complete_presentation(
             // dropped) the turn info row keeps spinning and counting up
             // until forge restarts.
             let bucket_keys: Vec<String> =
-                app.sessions.keys().map(|k| k.as_str().to_owned()).collect();
+                app.sessions.keys().map(forge_workspace::SessionSlot::display).collect();
             tracing::error!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "turn_complete_dropped",
                 message = "turn complete dropped for an unknown session",
                 outcome = "dropped",
-                session_key = %session_key.as_str(),
-                active_session_key = ?app.active_session_key.as_ref().map(|k| k.as_str().to_owned()),
+                slot = %session_key.display(),
+                active_session_key = ?app.active_session_key.as_ref().map(forge_workspace::SessionSlot::display),
                 bucket_keys = ?bucket_keys,
                 reason = "unknown_session",
             );
@@ -465,7 +465,7 @@ fn apply_turn_complete_presentation(
                 event_name = "turn_complete_terminal_reason_background",
                 message = "background turn completed with SDK terminal reason",
                 outcome = "success",
-                session_key = %session_key.as_str(),
+                slot = %session_key.display(),
                 terminal_reason = reason.as_stored(),
             );
         }
@@ -627,7 +627,7 @@ fn apply_turn_error_presentation(
                 event_name = "turn_error_dropped",
                 message = "turn error dropped for an unknown session",
                 outcome = "dropped",
-                session_key = %session_key.as_str(),
+                slot = %session_key.display(),
                 reason = "unknown_session",
             );
             return;
@@ -665,7 +665,7 @@ fn apply_turn_error_presentation(
                 event_name = "turn_error_suppressed_background",
                 message = "background turn error suppressed after cancellation request",
                 outcome = "cancelled",
-                session_key = %session_key.as_str(),
+                slot = %session_key.display(),
                 error_preview = %summary,
                 terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
             );
@@ -676,7 +676,7 @@ fn apply_turn_error_presentation(
                 event_name = "turn_error_received_background",
                 message = "background turn error received",
                 outcome = "failure",
-                session_key = %session_key.as_str(),
+                slot = %session_key.display(),
                 error_class = ?error_class,
                 error_preview = %summary,
                 terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
@@ -722,7 +722,7 @@ fn apply_turn_error_presentation(
         event_name = "turn_error_received",
         message = "turn error received",
         outcome = "failure",
-        session_key = %session_key.as_str(),
+        slot = %session_key.display(),
         error_class = ?error_class,
         error_preview = %summary,
         terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
@@ -734,7 +734,7 @@ fn apply_turn_error_presentation(
                 event_name = "turn_error_classified",
                 message = "turn error classified as plan limit",
                 outcome = "degraded",
-                session_key = %session_key.as_str(),
+                slot = %session_key.display(),
                 error_class = "plan_limit",
                 error_preview = %summary,
             );
@@ -745,7 +745,7 @@ fn apply_turn_error_presentation(
                 event_name = "turn_error_classified",
                 message = "turn error indicates authentication is required",
                 outcome = "degraded",
-                session_key = %session_key.as_str(),
+                slot = %session_key.display(),
                 error_class = "auth_required",
                 error_preview = %summary,
             );
@@ -988,10 +988,11 @@ mod tests {
                 forge_workspace::WorkerEntry {
                     label: "egen-lead".to_owned(),
                     charter: String::new(),
-                    session_key: worker_key.clone(),
+                    slot: worker_key.clone(),
+                    session_id: None,
                     status: forge_primitives::WorkerLiveness::Running,
                     spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                    spawned_by_session_id: String::new(),
+                    spawned_by: SessionSlot::from_str_for_test(""),
                     needs_tag: false,
                     is_git_repo_at_spawn: false,
                     diagnostic: None,
