@@ -93,13 +93,17 @@ just doc              # rustdoc with warnings denied
 `just check-release` compiles the workspace in release mode. It is
 deliberately not part of `just check`, because a second full compile is
 too slow for the inner loop; it catches the errors only a release build
-sees, and `just release` gates on it.
+sees.
 
 `just check-feature-configs` compiles the two forge-tui configurations
 nothing else builds: the one `just install` produces - release, `perf`
 on, the test-only features off - and `testing` on its own.
-`--all-features` cannot stand in for either, because it turns
-`test-helpers` on, which is the feature both leave off.
+`--all-features` cannot stand in for either, because it turns every
+feature on regardless and so never exercises which configuration
+enables what: the install build leaving `test-helpers` off, or
+`testing` having to forward it.
+
+`just release` gates on both.
 
 ## Install the binary
 

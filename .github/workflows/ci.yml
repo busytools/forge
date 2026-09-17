@@ -85,9 +85,10 @@ jobs:
 
   # The two forge-tui configurations nothing else builds: the one
   # `scripts/install.sh` produces (release, `perf` on, the test-only
-  # features off) and `testing` on its own. The job above cannot cover
-  # either - its `--all-features` turns `test-helpers` ON, which is the
-  # feature both configurations leave off.
+  # features off) and `testing` on its own. The job above covers
+  # neither - with every feature on, it never exercises which
+  # configuration enables what: the install build leaving
+  # `test-helpers` off, or `testing` having to forward it.
   feature-configs:
     name: cargo check (install.sh + testing configs)
     runs-on: ubuntu-latest

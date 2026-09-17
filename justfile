@@ -141,8 +141,9 @@ check-release:
 # alongside, so a `testing` feature that fails to enable what its own
 # gated code needs goes unnoticed.
 #
-# `--all-features` covers neither: it enables whatever a feature-gated
-# symbol sits behind, and leaving that off is the whole point of both.
+# `--all-features` covers neither: it turns every feature on regardless,
+# so it never exercises which configuration enables what - the install
+# build leaving `test-helpers` off, or `testing` having to forward it.
 #
 # Compile the feature configurations nothing else builds.
 check-feature-configs:
