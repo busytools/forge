@@ -3954,16 +3954,18 @@ impl Workspace {
             .collect()
     }
 
-    /// Every persisted worker label, keyed by the project key the
-    /// launchpad holds.
+    /// Every persisted worker label the launchpad still offers, keyed by
+    /// the project key it holds. A row the boot wave would not start is
+    /// not among them.
     ///
     /// The launchpad's worker rows read this once per frame, which is
     /// what the shape is for: one read transaction answers every project
-    /// row. Unlike [`Self::list_live_workers`] it answers before the
-    /// project has launched, which is when the launchpad renders.
+    /// row, over a projection that skips each row's charter. Unlike
+    /// [`Self::list_live_workers`] it answers before the project has
+    /// launched, which is when the launchpad renders.
     ///
     /// Empty on a read failure rather than surfacing it, deliberately
-    /// unlike the sibling `worker_row_exists`: the caller is a render
+    /// unlike the sibling `stored_worker_row`: the caller is a render
     /// path, where a warn plus a bare row beats failing the frame.
     pub fn worker_labels_by_project(&self) -> HashMap<ProjectKey, Vec<String>> {
         let rows = {
@@ -3971,7 +3973,7 @@ impl Workspace {
             let Some(db) = guard.as_ref() else {
                 return HashMap::new();
             };
-            crate::store::sessions::list_all(db).unwrap_or_else(|error| {
+            crate::store::sessions::worker_row_index(db).unwrap_or_else(|error| {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
                     %error,
@@ -11723,6 +11725,51 @@ provider = "anthropic"
 
         assert!(worktree.exists(), "the facade recreated the worktree the despawn removed");
         assert_eq!(resume_existing.as_deref(), Some(session_id.as_str()));
+    }
+
+    /// The mirror of the recreation case: the row says the worker runs in
+    /// the project root, and the project is a repo. The ensure has to read
+    /// the ROW, as the spawn does, or it mints a worktree the resumed
+    /// session will not run in and nothing will clean up.
+    #[tokio::test]
+    async fn mcp_resume_does_not_ensure_a_worktree_the_row_does_not_use() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, key, worktree) = git_worker_fixture(&project, &cfg, "steward");
+        let session_id = "550e8400-e29b-41d4-a716-446655440099";
+        let dir = tempfile::tempdir().expect("tempdir");
+        ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("db"));
+        ws.record_worker_row(&key, "steward", session_id, "charter", None, None, false, false)
+            .expect("seed the row that disagrees with the disk");
+        ws.enable_test_dispatch_intercept();
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
+
+        let spawner = tokio::spawn(async move {
+            facade
+                .spawn_worker(
+                    &lead_slot(),
+                    "steward".to_owned(),
+                    "charter".to_owned(),
+                    None,
+                    None,
+                    false,
+                    true,
+                )
+                .await
+        });
+        poll_spawn_worker_field(&ws, |cmd| match cmd {
+            Command::SpawnWorker { label, .. } if label == "steward" => Some(()),
+            _ => None,
+        })
+        .await
+        .expect("the resume spawn dispatched");
+        let _ = spawner.await.expect("facade task joins");
+
+        assert!(
+            !worktree.exists(),
+            "the ensure must follow the row's recorded gitness, not probe the project: \
+             this row runs in the project root, so no worktree belongs here",
+        );
     }
 
     fn run_git_in(dir: &std::path::Path, args: &[&str]) {

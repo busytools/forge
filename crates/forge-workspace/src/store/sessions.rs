@@ -218,11 +218,36 @@ pub fn list_for_project(db: &Db, org: &str, project: &str) -> anyhow::Result<Vec
     Ok(list_all(db)?.into_iter().filter(|row| row.org == org && row.project == project).collect())
 }
 
-/// Every row's `(org, project, label)`, in key order, without decoding
-/// its body. For callers that want the labels alone: a value blob carries
-/// a charter, and the render path that lists labels would otherwise
-/// decode one per frame.
-pub fn keys(db: &Db) -> anyhow::Result<Vec<(String, String, String)>> {
+/// One persisted row, without its body: what a caller needs to decide
+/// whether that row's worker can still start.
+pub struct WorkerRowIndex {
+    pub org: String,
+    pub project: String,
+    pub label: String,
+    pub session_id: Option<String>,
+    pub is_git_repo: Option<bool>,
+}
+
+/// The two body fields [`WorkerRowIndex`] reads. Deserialising into this
+/// rather than [`SessionRecord`] is the point: serde skips what it is not
+/// asked for, so the charter - kilobytes on a project's lead row - is
+/// never allocated.
+#[derive(Deserialize)]
+struct RowStart {
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    is_git_repo: Option<bool>,
+}
+
+/// Every row's identity plus the fields that say whether its worker can
+/// still start, in key order.
+///
+/// A caller needs this rather than `(org, project, label)` alone because
+/// the launchpad decides a row is still real from its recorded gitness
+/// and its stored id, and it needs [`list_all`] rather than this only if
+/// it also wants the charter.
+pub fn worker_row_index(db: &Db) -> anyhow::Result<Vec<WorkerRowIndex>> {
     let txn = db.database().begin_read()?;
     let table = match txn.open_table(SESSIONS) {
         Ok(t) => t,
@@ -231,9 +256,21 @@ pub fn keys(db: &Db) -> anyhow::Result<Vec<(String, String, String)>> {
     };
     let mut out = Vec::new();
     for entry in table.iter()? {
-        let (key, _) = entry?;
+        let (key, value) = entry?;
         let (org, project, label) = key.value();
-        out.push((org.to_owned(), project.to_owned(), label.to_owned()));
+        // A value that will not decode leaves both fields absent, which
+        // reads exactly like a row written before the gitness field
+        // existed: offerable, and the spawn repairs it.
+        let start = serde_json::from_slice::<RowStart>(value.value())
+            .unwrap_or(RowStart { session_id: None, is_git_repo: None });
+        out.push(WorkerRowIndex {
+            org: org.to_owned(),
+            project: project.to_owned(),
+            label: label.to_owned(),
+            // An empty string is absence, not an id - see `decode`.
+            session_id: start.session_id.filter(|id| !id.is_empty()),
+            is_git_repo: start.is_git_repo,
+        });
     }
     Ok(out)
 }
@@ -296,6 +333,9 @@ pub fn update(db: &Db, fields: &SessionRecord) -> anyhow::Result<bool> {
     }
     if fields.interactive.is_some() {
         row.interactive = fields.interactive;
+    }
+    if fields.is_git_repo.is_some() {
+        row.is_git_repo = fields.is_git_repo;
     }
     put(db, &row)?;
     Ok(true)
@@ -561,27 +601,42 @@ mod tests {
         );
     }
 
-    /// `keys` reads the composite key alone, so a row whose body will not
-    /// decode still reports its label. That is what the launchpad's
-    /// worker rows are built from, once per frame: read through
-    /// `list_all` instead and an undecodable body takes its label off the
-    /// screen and pays a full deserialize per row per frame.
+    /// `worker_row_index` takes the identity off the composite key, so a
+    /// row whose body will not decode still reports its label and stays
+    /// offerable. That is what the launchpad's worker rows are built from,
+    /// once per frame: read through `list_all` instead and an undecodable
+    /// body takes its label off the screen, and every row's charter is
+    /// materialised on the render path.
     #[test]
-    fn keys_reports_labels_without_decoding_the_row_body() {
+    fn worker_row_index_reports_labels_without_the_row_body() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
         put(&db, &record("Personal", "forge", "lead", Some("id-1"))).expect("put");
+        let mut listed = record("Personal", "forge", "worker", Some("id-2"));
+        listed.is_git_repo = Some(true);
+        put(&db, &listed).expect("put");
         put_raw_for_test(&db, "Personal", "forge", "corrupt", b"not a record")
             .expect("plant the undecodable row");
 
-        let keys = keys(&db).expect("keys reads the key, not the value");
+        let rows = worker_row_index(&db).expect("the index reads the key and two fields");
+        let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
         assert_eq!(
-            keys,
-            vec![
-                ("Personal".to_owned(), "forge".to_owned(), "corrupt".to_owned()),
-                ("Personal".to_owned(), "forge".to_owned(), "lead".to_owned()),
-            ],
-            "both labels survive, including the one whose body does not decode",
+            labels,
+            vec!["corrupt", "lead", "worker"],
+            "every label survives, including the one whose body does not decode",
+        );
+        let worker = rows.iter().find(|row| row.label == "worker").expect("the worker row");
+        assert_eq!(worker.session_id.as_deref(), Some("id-2"), "the stored id is projected");
+        assert_eq!(
+            worker.is_git_repo,
+            Some(true),
+            "and so is the gitness the launchpad decides off",
+        );
+        let corrupt = rows.iter().find(|row| row.label == "corrupt").expect("the corrupt row");
+        assert_eq!(
+            (corrupt.session_id.as_deref(), corrupt.is_git_repo),
+            (None, None),
+            "an unreadable body reads as unknown, which the launchpad offers",
         );
     }
 

@@ -533,7 +533,15 @@ impl WorkerFacade for ProdWorkerFacade {
         let Some(view) = ws.list_projects().into_iter().find(|v| v.key == cp.project_key) else {
             return Err(WorkerSpawnError::UnknownCallerProject);
         };
-        let is_git_repo_at_spawn = forge_agent::env::worktree::is_git_repo(&view.path);
+        // A row that already exists answers for gitness, exactly as it
+        // does in `handle_spawn_worker`, so the worktree ensured below is
+        // the one the spawn will actually run in. Probing here instead
+        // would diverge on a project whose repo-ness changed since the
+        // worker was spawned: the ensure would create a worktree nothing
+        // uses and nothing cleans up, or skip one the resume needs.
+        let is_git_repo_at_spawn = ws
+            .recorded_worker_is_git_repo(&cp.project_key, &label)
+            .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path));
         // The one-live-worker-per-label guard lives in the shared
         // `handle_spawn_worker` core, so a boot re-spawn is deduped
         // against this one; a duplicate MCP spawn surfaces from there as
