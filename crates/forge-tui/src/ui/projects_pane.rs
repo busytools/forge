@@ -1454,7 +1454,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // floor + tiny inflight overage. Gating on resets_at > now keeps
     // a stale 100% reading from rendering "7d cap" forever after
     // the window has actually reset - matching the resets_at-driven
-    // classification used by the account picker.
+    // classification the account selection walk uses.
     let usage = app.usage();
     let seven_day_at_cap = usage
         .and_then(|u| u.snapshot.as_ref())
@@ -1652,7 +1652,7 @@ fn push_usage_window_lines(
 ///
 /// `spend` is `None` when no probe has landed. Every figure then reads
 /// `$-` rather than `$0.00`, because a zero is a reading and forge has
-/// none - the same distinction the account picker draws.
+/// none - the same distinction the account rows draw.
 ///
 /// `cap` keeps a three-character label while the periods get whole
 /// words, so its bar is the same 19 cells as the `Ctx` bar above rather
@@ -2531,7 +2531,7 @@ mod tests {
 
     /// Every period reads `$-` before a probe lands. `$0.00` is a
     /// reading, and forge has none - the same distinction the account
-    /// picker draws, and the whole point of the sibling work.
+    /// rows draw, and the whole point of the sibling work.
     #[test]
     fn an_unprobed_spend_account_shows_dashes_not_zeroes() {
         let mut app = App::test_default();

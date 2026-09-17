@@ -117,8 +117,8 @@ pub struct AccountState {
     pub env: std::collections::HashMap<String, String>,
     /// Latest usage snapshot fetched by the workspace's background
     /// poller. `None` until the first successful fetch. Drives the
-    /// picker's order; also surfaced to the TUI's bottom panel via
-    /// `Workspace::usage_for`.
+    /// selection walk's order; also surfaced to the TUI's bottom panel
+    /// via `Workspace::usage_for`.
     pub usage: Option<UsageSnapshot>,
     /// Latest poll-attempt outcome when the fetch failed. Cleared
     /// (set to `None`) on the next successful fetch. The TUI reads
@@ -220,7 +220,7 @@ impl AccountStateMap {
     /// forge.toml) are ignored. Does NOT clear `last_error` or
     /// `next_probe_at` - the cache is purely seed data; the live
     /// poller still drives backoff. Used by `Workspace::new` to make
-    /// the launchpad picker non-empty on cold boot.
+    /// the launchpad non-empty on cold boot.
     pub fn seed_from_cache(&mut self, cached: &std::collections::BTreeMap<String, UsageSnapshot>) {
         for (name, snapshot) in cached {
             let key = AccountKey(name.clone());
@@ -625,7 +625,7 @@ mod tests {
         }
     }
 
-    /// Default snapshot fixture used by every account-picker test. The
+    /// Default snapshot fixture used by the account-selection tests. The
     /// `resets_at` value matters: under the resets_at-driven predicate,
     /// a window at 100% utilization with `resets_at = None` is NOT
     /// classified as rate-limited (None means "no future reset to clear
@@ -1019,8 +1019,8 @@ mod tests {
     #[test]
     fn is_rate_limited_fires_on_opus_only_capped_window() {
         // Max-plan reality: shared 5h + 7d windows healthy, opus-7d
-        // at cap. The picker must classify as rate-limited or the
-        // account keeps getting picked and trips API 429s.
+        // at cap. The selection walk must classify as rate-limited or
+        // the account keeps getting selected and trips API 429s.
         let future = SystemTime::now() + std::time::Duration::from_secs(60);
         let snap = opus_only_capped_snapshot(100.0, Some(future));
         assert!(is_rate_limited(&snap), "opus 7d cap (alone) must be detected");
@@ -1037,8 +1037,9 @@ mod tests {
     #[test]
     fn is_rate_limited_false_when_opus_capped_but_reset_passed() {
         // Stale opus-window snapshot - resets_at has come and gone.
-        // Must classify as NOT rate-limited so the picker reconsiders
-        // the account; the same self-clearing applies per-window.
+        // Must classify as NOT rate-limited so the selection walk
+        // reconsiders the account; the same self-clearing applies
+        // per-window.
         let past = SystemTime::now() - std::time::Duration::from_secs(60);
         let snap = opus_only_capped_snapshot(100.0, Some(past));
         assert!(!is_rate_limited(&snap), "stale opus window must self-clear like any other");

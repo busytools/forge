@@ -32,7 +32,7 @@ use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 mod testing;
 
 /// How often the background poller refreshes account usage. The
-/// TUI's bottom panel + the spawn-path account picker both read
+/// TUI's bottom panel and the gateway's account selection both read
 /// from the cache this poll populates. 60 s upper-bounds how stale
 /// the "which account has more headroom" decision can be while
 /// staying clear of the OAuth usage endpoint's 429 throttle under
@@ -202,9 +202,9 @@ pub struct Workspace {
     /// wrapper.
     pub(crate) pool: Mutex<HashMap<SessionSlot, PooledAgent>>,
     /// The account state map, owned by the gateway and reached through
-    /// its pool. It carries picker/health state updated on every spawn
+    /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
-    /// gateway's selection walk reads for CLAUDE_CONFIG_DIR selection.
+    /// gateway's selection walk reads to choose an account.
     accounts: Arc<forge_gateway::AccountPool>,
     /// Dictation preflight: the per-model progress the launchpad
     /// renders, the flag Escape sets, and the loaded engine held for
@@ -1372,11 +1372,12 @@ impl Workspace {
     /// spawn; subsequent calls reuse the existing Agent and ignore the
     /// parameter.
     ///
-    /// Each fresh spawn consults the account picker and exports
-    /// `CLAUDE_CONFIG_DIR` to the spawned `claude` subprocess so it
-    /// reads/writes the picked account's config dir. Picker state
-    /// lives in the in-memory usage cache; nothing about account
-    /// choice is persisted across forge launches.
+    /// Each fresh spawn runs the gateway's account selection and
+    /// stamps the chosen account's env onto the spawned `claude`
+    /// subprocess, so it talks to the gateway listener rather than
+    /// upstream. Selection state lives in the in-memory usage cache;
+    /// nothing about account choice is persisted across forge
+    /// launches.
     ///
     /// Workspace does not track which handle the caller is "using" -
     /// that's the caller's concern.
@@ -2040,8 +2041,8 @@ impl Workspace {
     /// OAuth usage for every `[[accounts]]` entry via the per-
     /// account config-dir's credentials file (no Agent spawn
     /// required), writes each result into `AccountStateMap.by_key`.
-    /// The TUI's bottom panel + the spawn-path picker both read
-    /// from that cache.
+    /// The TUI's bottom panel and the gateway's account selection both
+    /// read from that cache.
     ///
     /// Call once at construction, AFTER `start_account_loading_tasks`
     /// (which subsumed the old `spawn_initial_account_probe` in #246).
