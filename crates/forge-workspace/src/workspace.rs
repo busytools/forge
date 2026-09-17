@@ -743,7 +743,7 @@ impl Workspace {
     /// `app_support_dir`, so tests never touch the user's durable store
     /// or contend for their live lock. The catalog scan does NOT
     /// auto-start; tests opt in via [`Workspace::start_catalog_scan`]
-    /// so a fixture can dispatch spawns against an unloaded catalog.
+    /// so the catalog stays empty until a fixture asks for it.
     #[cfg(any(test, feature = "testing"))]
     pub fn new_for_test(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let app_support = config_dir.join("app-support");
@@ -757,9 +757,9 @@ impl Workspace {
 
     /// Run the catalog scan in the background and signal readiness
     /// when it lands. `[`Workspace::new`] calls this during
-    /// construction; tests built on `new_for_test` opt in explicitly
-    /// so a fixture can dispatch spawns against an unloaded catalog.
-    /// Idempotent - a second call is a no-op.
+    /// construction; tests built on `new_for_test` opt in explicitly so
+    /// the catalog stays empty until a fixture asks for it. Idempotent -
+    /// a second call is a no-op.
     pub fn start_catalog_scan(&self) {
         spawn_background_catalog_scan(
             &self.catalog,
@@ -935,8 +935,7 @@ impl Workspace {
         // The scan itself runs in the background (#794): reading every
         // transcript end to end for its worker tag was the bulk of the
         // pre-paint pause. The catalog starts empty and fills when the
-        // scan lands; spawn paths that read it for a resume decision
-        // gate on `catalog_loaded` via `wait_catalog_ready`.
+        // scan lands; nothing on a spawn path waits for it.
         let catalog = Arc::new(Mutex::new(HashMap::new()));
 
         let accounts = Arc::new(forge_gateway::AccountPool::new(&config.accounts));
