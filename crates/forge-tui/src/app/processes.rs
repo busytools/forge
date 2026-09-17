@@ -38,12 +38,9 @@ use crate::app::MessageRole;
 use crate::app::state::tool_call_info::{ToolCallInfo, is_execute_tool_name, is_monitor_tool_name};
 use crate::app::state::types::{BackgroundTask, SessionTaskCard, WorkflowEntry, WorkflowStatus};
 
-/// Soft cap on the rendered PROCESSES section. Sanity bound so a
-/// runaway process tree doesn't blow up the body line count; users
-/// scroll within the section to see everything below the cap. The
-/// `overflow` count on [`ProcessCollection`] is no longer rendered
-/// as a footer row (the scrollbar IS the overflow indicator) but
-/// is kept so future surfaces can show "n hidden" if needed.
+/// Soft cap on the rendered PROCESSES section: a sanity bound so a
+/// runaway process tree doesn't blow up the body line count. Rows past
+/// it are dropped, and the pane's scrollbar covers what is left.
 const PROCESSES_MAX: usize = 50;
 
 /// One row in the PROCESSES section.
@@ -57,15 +54,9 @@ pub struct ProcessRow {
     /// wire tool call; OS process name (`"cargo"`) otherwise. Cron
     /// rows carry the cron expression (`*/5 * * * *`).
     pub headline: String,
-    /// Secondary line carrying the cmdline (OS) or cron prompt.
-    /// `None` when nothing meaningful applies. Renderer drops this
-    /// at depth >= 1 to keep the tree compact (only the supervisor
-    /// row shows full context).
-    pub detail: Option<String>,
     /// Trailing metadata line: kind label · status · flags.
     /// Pre-rendered as a single string; the renderer suffixes a
     /// `· 12 MB` segment at Wide tier when `memory_bytes` is set.
-    /// Same depth-collapse as `detail`.
     pub metadata: String,
     /// Tool-call status driving the row's status glyph. OS-walked
     /// entries always read as `InProgress` (alive-set membership is
@@ -352,7 +343,6 @@ fn synthetic_background_bash_row(description: &str, task_type: &str) -> ProcessR
     ProcessRow {
         kind: ProcessKind::BashBackgrounded,
         headline: description.to_owned(),
-        detail: None,
         metadata: task_type.to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: None,
@@ -560,7 +550,6 @@ fn overflow_row(hidden: usize, depth: u8, ancestor_has_more: Vec<bool>) -> Proce
     ProcessRow {
         kind: ProcessKind::Overflow,
         headline: format!("+{hidden} more"),
-        detail: None,
         metadata: String::new(),
         status: ToolCallStatus::InProgress,
         memory_bytes: None,
@@ -675,8 +664,7 @@ fn sort_siblings_inplace(
 }
 
 /// OS process matched to a wire-tracked backgrounded `Bash`. Headline
-/// from the wire description; detail from the OS cmdline; metadata
-/// suffixed with memory.
+/// from the wire description; metadata suffixed with memory.
 fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
     let description = read_str_field(tc.raw_input.as_ref(), "description");
     // Headline precedence: wire description, else the unwrapped inner
@@ -694,7 +682,6 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
         // No cmdline continuation - the wire description already
         // conveys intent ("Run unit tests"); the literal shell
         // wrapper `/bin/zsh -c -l 'cargo ...'` is noise.
-        detail: None,
         metadata: "Bash · running".to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
@@ -705,8 +692,8 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
 }
 
 /// OS process with no matching wire tool call (foreground Bash,
-/// grandchildren, etc.). Headline is the OS process name; detail is
-/// the cmdline.
+/// grandchildren, etc.). Headline is the cmdline's executable, or the
+/// process name when the cmdline is empty or a shell wrapper.
 fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
     // A shell-wrapper cmdline shows its inner command (the raw
     // `/bin/zsh -c ... eval '...'` chrome is never a headline). Otherwise
@@ -726,12 +713,6 @@ fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
     ProcessRow {
         kind: ProcessKind::Process,
         headline,
-        // `detail` retained for future surfaces (Narrow overlay,
-        // tooltips) but no longer rendered in the supervisor
-        // 2-line block. Storing it here is cheap and lets a
-        // future "expand row" affordance show the cmdline without
-        // a fresh sysinfo scan.
-        detail: None,
         metadata: "Process · running".to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
@@ -1004,9 +985,6 @@ mod tests {
         // user sees what's actually running (process name alone like
         // "rustc" or "node" is too vague when there are many).
         assert_eq!(rows[0].headline, "rustc --crate-name forge_tui ...");
-        // `detail` is no longer set on supervisor rows - the cmdline
-        // IS the headline now.
-        assert!(rows[0].detail.is_none());
     }
 
     #[test]

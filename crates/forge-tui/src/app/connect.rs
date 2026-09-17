@@ -384,10 +384,10 @@ pub fn start_connection(app: &mut App) {
 
     // Launchpad branch: the user invoked `forge` without an argv, so
     // no project is focused. Every `auto_start = true` project spawns
-    // immediately. The account picker consults whatever usage data
-    // is currently in memory (loaded from the on-disk cache at boot,
-    // refreshed by the 60s background poller). No warm-gate - when
-    // the cache is empty (cold install) the picker falls through to
+    // immediately. The gateway's account selection consults whatever
+    // usage data is currently in memory (loaded from the on-disk cache
+    // at boot, refreshed by the 60s background poller). No warm-gate -
+    // when the cache is empty (cold install) the walk falls through to
     // forge.toml definition order; once data lands, subsequent spawns
     // see the right tier.
     if app.startup_project.is_none() {

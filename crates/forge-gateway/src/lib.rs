@@ -164,7 +164,7 @@ pub trait ProviderBackend: Send + Sync {
     /// kind.
     fn source(&self) -> UsageSourceKind;
 
-    /// The account picker's budget shape for one account's cached
+    /// The budget shape this backend renders for one account's cached
     /// usage snapshot.
     ///
     /// A snapshot whose source is not this backend's is treated as

@@ -271,7 +271,7 @@ pub(crate) fn transport_label(config: Option<&Value>) -> &'static str {
 }
 
 /// The row's summary: the error when present, else server info, tool
-/// count and the command or URL; shared with the details overlay.
+/// count and the command or URL.
 pub(crate) fn server_summary_line(server: &McpServerStatus) -> String {
     if let Some(error) = server.error.as_deref()
         && !error.trim().is_empty()

@@ -110,11 +110,6 @@ impl ProjectView {
 pub struct AccountRow {
     /// forge.toml `[[accounts]]` display name.
     pub display_name: String,
-    /// The workspace's shared config dir, seeding the child's
-    /// `CLAUDE_CONFIG_DIR` (one shared dir for every account).
-    pub config_dir: PathBuf,
-    /// `true` when this is the session's active account.
-    pub is_current: bool,
     /// `None` when the account is pickable now (not saturated, not bailed).
     /// The reason renders as the row's status tag: a capped window
     /// reads `limit hit`, a blocked probe or a bail reads

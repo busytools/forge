@@ -3596,7 +3596,7 @@ mod tests {
         app.active_session_key = Some(key_a.clone());
         if let Some(ws) = app.workspace.as_ref() {
             ws.insert_live_worker(
-                &forge_workspace::ProjectKey::new_for_test("p-beta"),
+                &forge_workspace::ProjectKey::new("p-beta"),
                 forge_workspace::WorkerEntry {
                     label: "egen-lead".to_owned(),
                     charter: String::new(),
@@ -3699,7 +3699,7 @@ mod tests {
         worktree: forge_workspace::protocol::WorktreeDisposition,
     ) -> SessionUpdate {
         SessionUpdate::WorkerStatusChanged {
-            project_key: forge_workspace::ProjectKey::new_for_test("forge"),
+            project_key: forge_workspace::ProjectKey::new("forge"),
             action: forge_workspace::protocol::WorkerStatusAction::Removed,
             status: forge_primitives::WorkerStatus {
                 label: label.to_owned(),

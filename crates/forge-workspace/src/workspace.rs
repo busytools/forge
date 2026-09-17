@@ -33,7 +33,7 @@ use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 mod testing;
 
 /// How often the background poller refreshes account usage. The
-/// TUI's bottom panel + the spawn-path account picker both read
+/// TUI's bottom panel and the gateway's account selection both read
 /// from the cache this poll populates. 60 s upper-bounds how stale
 /// the "which account has more headroom" decision can be while
 /// staying clear of the OAuth usage endpoint's 429 throttle under
@@ -203,9 +203,9 @@ pub struct Workspace {
     /// wrapper.
     pub(crate) pool: Mutex<HashMap<SessionSlot, PooledAgent>>,
     /// The account state map, owned by the gateway and reached through
-    /// its pool. It carries picker/health state updated on every spawn
+    /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
-    /// gateway's selection walk reads for CLAUDE_CONFIG_DIR selection.
+    /// gateway's selection walk reads to choose an account.
     accounts: Arc<forge_gateway::AccountPool>,
     /// Dictation preflight: the per-model progress the launchpad
     /// renders, the flag Escape sets, and the loaded engine held for
@@ -962,6 +962,29 @@ impl Workspace {
                 ),
             }
         }
+        // The catalog table outlived its module: deleting the machinery
+        // left the rows behind, and nothing reads or writes them now, so
+        // there is nothing to drain first. A store that never cached a
+        // catalog drops nothing.
+        if let Some(db) = db.as_mut() {
+            match crate::store::model_catalog::drop_table(db) {
+                Ok(true) => {
+                    if let Err(error) = db.compact() {
+                        tracing::warn!(
+                            target: "forge_workspace::workspace",
+                            %error,
+                            "compacting the store after dropping the retired model catalog table failed",
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "dropping the retired model_catalog table failed; it stays for the next boot",
+                ),
+            }
+        }
 
         // Resolved here rather than lazily so a malformed `[[slack]]`
         // entry refuses the boot, the way the rest of forge.toml does.
@@ -1363,11 +1386,12 @@ impl Workspace {
     /// spawn; subsequent calls reuse the existing Agent and ignore the
     /// parameter.
     ///
-    /// Each fresh spawn consults the account picker and exports
-    /// `CLAUDE_CONFIG_DIR` to the spawned `claude` subprocess so it
-    /// reads/writes the picked account's config dir. Picker state
-    /// lives in the in-memory usage cache; nothing about account
-    /// choice is persisted across forge launches.
+    /// Each fresh spawn runs the gateway's account selection and
+    /// stamps the chosen account's env onto the spawned `claude`
+    /// subprocess, so it talks to the gateway listener rather than
+    /// upstream. Selection state lives in the in-memory usage cache;
+    /// nothing about account choice is persisted across forge
+    /// launches.
     ///
     /// Workspace does not track which handle the caller is "using" -
     /// that's the caller's concern.
@@ -2031,8 +2055,8 @@ impl Workspace {
     /// OAuth usage for every `[[accounts]]` entry via the per-
     /// account config-dir's credentials file (no Agent spawn
     /// required), writes each result into `AccountStateMap.by_key`.
-    /// The TUI's bottom panel + the spawn-path picker both read
-    /// from that cache.
+    /// The TUI's bottom panel and the gateway's account selection both
+    /// read from that cache.
     ///
     /// Call once at construction, AFTER `start_account_loading_tasks`
     /// (which subsumed the old `spawn_initial_account_probe` in #246).
@@ -2431,16 +2455,13 @@ impl Workspace {
     /// `fallback_accounts`
     /// is the org's fallback list: unioned in (deduped) even when the
     /// pin does not name them, and flagged so a fallback-only row can
-    /// carry its dim `fallback` suffix. `current_account` is the
-    /// session's active account
-    /// display name, used to mark the current row. Returns owned
+    /// carry its dim `fallback` suffix. Returns owned
     /// [`crate::AccountRow`]s so the TUI holds a snapshot rather than
     /// the `AccountStateMap` lock.
     pub fn project_accounts_snapshot(
         &self,
         allowed_accounts: &[String],
         fallback_accounts: &[String],
-        current_account: Option<&str>,
     ) -> Vec<crate::AccountRow> {
         // Resolve the allow-list to concrete account names, falling
         // back to every configured account when the project pins none.
@@ -2460,9 +2481,7 @@ impl Workspace {
             .into_iter()
             .filter_map(|name| {
                 let key = AccountKey(name.clone());
-                let config_dir = self.config_dir.clone();
                 let unusable = self.accounts.unusable_reason(&key);
-                let is_current = current_account == Some(name.as_str());
                 // A dual-listed account is primary-tier: the pin's
                 // membership wins over the fallback list. An empty pin
                 // means every account is primary (the un-pinned shape).
@@ -2472,8 +2491,6 @@ impl Workspace {
                 let budget = account_budget(&name, provider, self.accounts.usage(&name).as_ref());
                 Some(crate::AccountRow {
                     display_name: name,
-                    config_dir,
-                    is_current,
                     unusable,
                     budget,
                     fallback,
@@ -2482,8 +2499,8 @@ impl Workspace {
                 })
             })
             .collect();
-        // Stable-sort the fallback group last, matching the picker's
-        // group order. `false` sorts before `true`, and the sort
+        // Stable-sort the fallback group last, matching the gateway
+        // view's group order. `false` sorts before `true`, and the sort
         // preserves within-group order.
         rows.sort_by_key(|row| row.fallback);
         rows
@@ -2497,8 +2514,7 @@ impl Workspace {
             .org_pins()
             .into_iter()
             .map(|(org, pin)| {
-                let rows =
-                    self.project_accounts_snapshot(&pin.accounts, &pin.fallback_accounts, None);
+                let rows = self.project_accounts_snapshot(&pin.accounts, &pin.fallback_accounts);
                 crate::views::GatewayOrgView {
                     org,
                     accounts: pin.accounts,
@@ -5946,9 +5962,8 @@ mod tests {
     }
 
     /// `project_accounts_snapshot` returns one row per allow-list entry
-    /// in order, each carrying the shared config_dir, is_current
-    /// marker, unusable reason, 5h/7d utilization, and a reset ETA only
-    /// while the account is at its cap.
+    /// in order, each carrying its unusable reason, budget, fallback
+    /// flag and boot loading state.
     #[test]
     fn project_accounts_snapshot_reports_allowlist_order_and_state() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -5987,19 +6002,13 @@ mod tests {
             ws.accounts.replace_state_for_test(map);
         }
 
-        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &[], Some("A"));
+        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &[]);
 
         assert_eq!(rows.len(), 2, "one row per allow-list entry");
         assert_eq!(rows[0].display_name, "A", "allow-list order preserved");
         assert_eq!(rows[1].display_name, "B");
 
-        // A: current + saturated -> unusable as Saturated, carries a
-        // reset ETA.
-        assert!(rows[0].is_current, "A is the session's active account");
-        assert_eq!(
-            rows[0].config_dir, ws.config_dir,
-            "one shared config dir: every row names the workspace's own",
-        );
+        // A: saturated -> unusable as Saturated, carries a reset ETA.
         assert_eq!(
             rows[0].unusable,
             Some(forge_gateway::Unusable::Saturated),
@@ -6017,10 +6026,7 @@ mod tests {
             }
             ref other => panic!("a window-billed account renders as a subscription, got {other:?}"),
         }
-        assert_eq!(rows[0].config_dir, ws.config_dir);
-
-        // B: not current + under cap -> usable, no reset ETA.
-        assert!(!rows[1].is_current);
+        // B: under cap -> usable, no reset ETA.
         assert_eq!(rows[1].unusable, None, "B under cap on both windows");
         match rows[1].budget {
             crate::views::AccountBudget::Subscription { five_hour_util, resets_at, .. } => {
@@ -6063,11 +6069,10 @@ mod tests {
             ws.accounts.replace_state_for_test(map);
         }
 
-        let rows = ws.project_accounts_snapshot(&[], &[], None);
+        let rows = ws.project_accounts_snapshot(&[], &[]);
         let names: Vec<&str> = rows.iter().map(|r| r.display_name.as_str()).collect();
         assert_eq!(names, vec!["One", "Two"], "empty pin lists all accounts in order");
         assert!(rows.iter().all(|r| r.unusable.is_none()), "both under cap -> usable");
-        assert!(rows.iter().all(|r| !r.is_current), "no current account when None passed");
     }
 
     /// Fallback rows are flagged against the org `fallback_accounts`
@@ -6101,7 +6106,7 @@ mod tests {
             ws.accounts.replace_state_for_test(map);
         }
 
-        let rows = ws.project_accounts_snapshot(&["A".to_owned()], &["B".to_owned()], Some("A"));
+        let rows = ws.project_accounts_snapshot(&["A".to_owned()], &["B".to_owned()]);
 
         assert_eq!(rows[0].display_name, "A", "regular rows lead");
         assert!(!rows[0].fallback, "a primary row is not flagged fallback");
@@ -6142,11 +6147,8 @@ mod tests {
             ws.accounts.replace_state_for_test(map);
         }
 
-        let rows = ws.project_accounts_snapshot(
-            &["A".to_owned(), "B".to_owned()],
-            &["B".to_owned()],
-            Some("A"),
-        );
+        let rows =
+            ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &["B".to_owned()]);
 
         assert_eq!(rows.len(), 2, "no duplicate row for the dual-listed account");
         assert_eq!(rows[1].display_name, "B");

@@ -91,9 +91,3 @@ impl SessionSlot {
         Self::worker("TestOrg", "test-project", s)
     }
 }
-
-impl std::fmt::Display for SessionSlot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.display())
-    }
-}

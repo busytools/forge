@@ -87,8 +87,9 @@ impl ExtensionsTab {
         }
     }
 
-    /// Every tab except MCPs and Marketplaces filters over the
-    /// flattened extension rows.
+    /// Whether this tab draws from the flattened extension rows. MCPs
+    /// and Marketplaces render their own shapes instead, so they take
+    /// neither the filter bar nor the Available toggle.
     pub const fn filters_rows(self) -> bool {
         !matches!(self, Self::Mcps | Self::Marketplaces)
     }
@@ -118,13 +119,6 @@ pub fn rows_for_tab(rows: &[ExtensionRow], tab: ExtensionsTab) -> Vec<&Extension
         ExtensionsTab::Lsp => rows.iter().filter(|row| row.kind == ExtensionKind::Lsp).collect(),
         ExtensionsTab::Mcps | ExtensionsTab::Marketplaces => Vec::new(),
     }
-}
-
-/// Whether the Available toggle can change what this tab renders:
-/// every row-backed tab except MCPs and Marketplaces, which carry no
-/// available stream at all.
-pub const fn tab_takes_available(tab: ExtensionsTab) -> bool {
-    !matches!(tab, ExtensionsTab::Mcps | ExtensionsTab::Marketplaces)
 }
 
 /// A row matches the filter when its name or source carries the query
