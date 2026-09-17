@@ -496,16 +496,32 @@ async fn sdk_message_for_unknown_slot_is_dropped_even_with_empty_app_session_id(
 /// producer named even when the wire `session_id` inside it belongs to
 /// another session.
 ///
-/// Before this change the reducer synthesized the routing key from that
-/// wire id, so the frame was filed under a key no bucket held and was
-/// dropped silently - the conversation it belonged to never saw it, and
-/// against an id-less focused bucket it could adopt the foreign id onto
-/// the wrong session.
+/// The wire id must name a session that HOLDS a bucket, or the two
+/// routings agree by accident: an id no bucket carries falls back to the
+/// addressed slot either way, and the test passes without testing
+/// anything. A second live session is what makes the answers differ, so
+/// the addressed slot receives the frame and the id's owner does not.
 #[tokio::test]
 async fn a_frame_lands_on_its_slot_even_when_the_wire_id_names_another_session() {
     let mut app = test_app();
     app.set_session_id(Some(model::SessionId::new("mine")));
     let key = active_session_key(&app);
+
+    let other = forge_workspace::SessionSlot::worker("TestOrg", "test-project", "other");
+    send_client_event(
+        &mut app,
+        SessionUpdate::Spawning {
+            key: other.clone(),
+            project_name: "forge".to_owned(),
+            cwd: "/tmp/forge".to_owned(),
+            display_name: "forge".to_owned(),
+        },
+    );
+    app.switch_active_session(other.clone());
+    assert_eq!(active_session_key(&app), other, "precondition: the second slot is the active one");
+    app.set_session_id(Some(model::SessionId::new("someone-elses-session")));
+    app.switch_active_session(key.clone());
+
     let before = app.messages().expect("active session").len();
 
     let wire_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
@@ -528,11 +544,19 @@ async fn a_frame_lands_on_its_slot_even_when_the_wire_id_names_another_session()
     assert_eq!(
         app.session_id().map(|s| s.to_string()).as_deref(),
         Some("mine"),
-        "and it does not adopt the wire id",
+        "and the addressed slot keeps its own occupant",
     );
     assert!(
         app.messages().expect("active session").len() > before,
-        "the frame rendered into its own bucket",
+        "the frame rendered into the slot that addressed it, not the one its wire id names",
+    );
+    assert_eq!(
+        app.sessions
+            .get(&other)
+            .and_then(|bucket| bucket.session_id.as_ref())
+            .map(ToString::to_string),
+        Some("someone-elses-session".to_owned()),
+        "the session the wire id names is untouched",
     );
 }
 
