@@ -136,7 +136,8 @@ pub enum DespawnOutcome {
 
 /// Synchronous error from `despawn_worker`. Gating (lead-only,
 /// non-empty label) happens before dispatch; `UnknownLabel` is
-/// surfaced from the handler's `NotFound`.
+/// surfaced from the handler's `NotFound`, and `DispatchFailed` from
+/// its `Failed`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerDespawnError {
     /// Caller is a worker, not a project lead. Despawn is lead-only.
@@ -147,8 +148,10 @@ pub enum WorkerDespawnError {
     UnknownCallerProject,
     /// No live worker matched `label` in the caller's project.
     UnknownLabel { label: String, project_key: String },
-    /// Despawn was dispatched but the workspace channel failed or the
-    /// handler dropped the reply.
+    /// The despawn did not happen: the workspace channel failed, the
+    /// handler dropped the reply, or the store could not be read or
+    /// written, so whether a worker's row exists is unknown. Distinct
+    /// from [`Self::UnknownLabel`], which claims there is none.
     DispatchFailed { message: String },
 }
 

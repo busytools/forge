@@ -256,6 +256,12 @@ pub struct WorkerRowIndex {
 /// not asked for, so the charter - kilobytes on a project's lead row - is
 /// never allocated. The identity is not here because it is not in the
 /// body: the key carries it, and this reader takes it from there.
+///
+/// A body that is not a record at all fails here exactly as it fails
+/// [`SessionRecord`], so the two readers agree on every row a running
+/// forge writes. They part company only for a body whose identity fields
+/// are the wrong type, which this reader no longer parses: a corrupted
+/// store rather than a shape forge produces.
 #[derive(Deserialize)]
 struct RowStart {
     session_id: Option<String>,
@@ -281,9 +287,8 @@ pub fn worker_row_index(db: &Db) -> anyhow::Result<Vec<WorkerRowIndex>> {
         let (key, value) = entry?;
         // A body that will not decode is not a row to offer. `list_all`
         // skips the same rows, and the boot wave reads through it, so
-        // reporting one here would draw a worker the wave never starts -
-        // the two sites have to agree on which rows exist. The loss is
-        // reported by `list_all`'s warn, on the wave's read.
+        // reporting one here would draw a worker the wave never starts.
+        // The loss is reported by `list_all`'s warn, on the wave's read.
         let Ok(start) = serde_json::from_slice::<RowStart>(value.value()) else {
             continue;
         };
