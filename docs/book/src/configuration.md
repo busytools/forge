@@ -499,11 +499,12 @@ Nothing spawns until every account has settled, because the walk that
 picks a session's account reads each one's state.
 
 **A bailed account does not stop forge from starting.** `Ready` and
-`Bailed` both count as settled, so preflight completes: the walk keeps
-a bailed account as a last resort, its row names the failure, and the
-pollers keep re-probing it. It will not start a session until its auth
-works. Fix that account's auth, or remove its `[[accounts]]` block -
-the screen names both.
+`Bailed` both count as settled, so preflight completes: the row names
+the failure and the pollers keep re-probing it. The walk still keeps a
+bailed account as a last resort, and picks one when nothing else in the
+pin declares the project's model - which is why the project row stays
+clickable. Fix that account's auth, or remove its `[[accounts]]` block,
+then restart forge to pick the edit up. The screen names both.
 
 Every project carrying `auto_start = true` still spawns its lead session
 in the background, but none of them is focused: you pick one from the
