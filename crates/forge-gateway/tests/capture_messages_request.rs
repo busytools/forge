@@ -49,19 +49,25 @@ fn error_body() -> StreamBody {
     )
 }
 
-/// Capture-machine identifiers - the real name, home path, email,
-/// city, and long hex-shaped runs (UUIDs, the CLI's 64-hex device id,
+/// Capture-machine identifiers - the real name, home path in both the
+/// plain and the dash-sanitised form the CLI derives its project slugs
+/// from, email, city, the throwaway config dir the capture spawns
+/// under, and long hex-shaped runs (UUIDs, the CLI's 64-hex device id,
 /// hashes) - are capture-local. The bare GitHub username, org, account
 /// and project names are public and stay.
-fn redact(text: &str) -> String {
+fn redact(text: &str, config_dir: &str) -> String {
     let mut out = text.to_owned();
     for secret in [
         "/Users/vedhavyas",
+        "-Users-vedhavyas",
         "7549475+vedhavyas@users.noreply.github.com",
         "Vedhavyas Singareddi",
         "Hyderabad",
     ] {
         out = out.replace(secret, "<REDACTED>");
+    }
+    if !config_dir.is_empty() {
+        out = out.replace(config_dir, "<REDACTED>");
     }
     while let Some((start, len)) = find_hex_run(&out) {
         out.replace_range(start..start + len, "<UUID>");
@@ -93,17 +99,17 @@ fn find_hex_run(text: &str) -> Option<(usize, usize)> {
 
 /// Walk the parsed capture and redact string values only, so numeric
 /// literals and JSON structure survive the pass untouched.
-fn redact_string_values(value: &mut serde_json::Value) {
+fn redact_string_values(value: &mut serde_json::Value, config_dir: &str) {
     match value {
-        serde_json::Value::String(text) => *text = redact(text),
+        serde_json::Value::String(text) => *text = redact(text, config_dir),
         serde_json::Value::Array(items) => {
             for item in items {
-                redact_string_values(item);
+                redact_string_values(item, config_dir);
             }
         }
         serde_json::Value::Object(map) => {
             for item in map.values_mut() {
-                redact_string_values(item);
+                redact_string_values(item, config_dir);
             }
         }
         _ => {}
@@ -190,7 +196,7 @@ async fn capture_a_real_messages_request_body() {
     // hex digits) and corrupted the fixture outside every string.
     let mut value: serde_json::Value =
         serde_json::from_str(&captured).expect("the captured body parses as JSON");
-    redact_string_values(&mut value);
+    redact_string_values(&mut value, &config_dir.path().to_string_lossy());
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/messages_request.json");
     std::fs::write(&fixture, serde_json::to_string_pretty(&value).expect("serializes"))
         .expect("write fixture");
