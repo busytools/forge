@@ -2563,9 +2563,9 @@ mod tests {
     use crate::agent::model;
     use crate::app::events::apply_session_update;
     use forge_primitives::plugins::{ExtensionKind, PluginCapability, RowState};
-    use forge_workspace::{DictateOutcome, SessionKey};
+    use forge_workspace::{DictateOutcome, SessionSlot};
 
-    fn plugins_view_with_live_take() -> (crate::app::App, SessionKey) {
+    fn plugins_view_with_live_take() -> (crate::app::App, SessionSlot) {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         app.active_view = crate::app::ActiveView::Extensions;

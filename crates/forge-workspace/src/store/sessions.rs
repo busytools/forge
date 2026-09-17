@@ -6,9 +6,10 @@
 //! otherwise, so no separate kind column is needed. The value is stored
 //! as serde-json and the worker-only fields are absent on a lead's row.
 //!
-//! A row written by [`migrate_from_dynamic_workers`] carries no id: the
-//! `dynamic_workers` table never stored one, so the session it names
-//! starts fresh under a newly minted id rather than resuming.
+//! A worker row written by [`migrate_from_dynamic_workers`] gets its
+//! spawn args from `dynamic_workers`, which never stored an id. A worker
+//! that has no row yet therefore starts fresh under a newly minted id; one
+//! that already has a row keeps the occupant that row names.
 
 use anyhow::Context;
 use redb::{ReadableTable, TableDefinition};
@@ -24,9 +25,9 @@ const SESSIONS: TableDefinition<(&str, &str, &str), &[u8]> = TableDefinition::ne
 pub const LEAD_LABEL: &str = "lead";
 
 /// One session's identity, plus the worker fields a re-spawn needs.
-/// `session_id` is absent on a row copied from `dynamic_workers`, which
-/// never stored one; every other field is worker-only, so a lead's row
-/// carries none of them.
+/// `session_id` is absent on a worker row the sweep creates, because
+/// `dynamic_workers` never stored one; every other field is worker-only,
+/// so a lead's row carries none of them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub org: String,
@@ -109,25 +110,58 @@ pub(crate) fn put_raw_for_test(
     Ok(())
 }
 
-/// Fill `sessions` from `dynamic_workers`, once.
+/// What a sweep of `dynamic_workers` accounted for. The retired table is
+/// only safe to drop when [`Self::drained`], and everything else holds it
+/// for a later boot.
+pub struct SweepOutcome {
+    /// Rows copied into `sessions` and removed from the retired table.
+    pub moved: usize,
+    /// Rows left where they are: no configured project carries their
+    /// key, so they cannot be keyed by `(org, project, label)`.
+    pub unkeyable: usize,
+    /// Rows the retired table held when the sweep looked.
+    pub rows: usize,
+}
+
+impl SweepOutcome {
+    /// Nothing is left in the retired table: every row it held was
+    /// copied, so dropping it loses nothing. An unkeyable row counts as
+    /// not drained by construction - it is in `rows` and not in `moved` -
+    /// and a later boot retries it, which is what the hold is for.
+    pub fn drained(&self) -> bool {
+        self.moved == self.rows
+    }
+}
+
+/// Move any `dynamic_workers` rows onto `sessions`, and take each one out
+/// of the retired table as it lands.
 ///
-/// Runs on the first boot after this table exists. A worker's persisted
-/// row carries no id, so the session it names starts fresh under a newly
-/// minted id rather than resuming. Does nothing once `sessions` holds any
-/// row, which is what makes the second boot a no-op. A worker whose
-/// project the config no longer names cannot be keyed by
-/// `(org, project, label)` and is left where it is, warned rather than
-/// dropped silently. Returns how many rows it
-/// moved.
+/// A worker's persisted row carries no id, so the session it names starts
+/// fresh under a newly minted one rather than resuming. An existing
+/// `sessions` row for the same `(org, project, label)` keeps its id: this
+/// merges the spawn args onto it, which is the only place they exist for a
+/// worker spawned by the release that wrote `sessions` ids and
+/// `dynamic_workers` args.
+///
+/// A worker whose project the config no longer names cannot be keyed by
+/// `(org, project, label)`: it is left where it is, warned rather than
+/// dropped silently, and it holds the table for a later boot.
+///
+/// Both halves are idempotent, so a boot interrupted between the copy and
+/// the removal simply repeats the copy.
 pub fn migrate_from_dynamic_workers(
     db: &Db,
     projects: &[ProjectIdentity],
-) -> anyhow::Result<usize> {
-    if !is_empty(db)? {
-        return Ok(0);
-    }
+) -> anyhow::Result<SweepOutcome> {
+    // What the table HOLDS, not what decoded. An entry whose value will
+    // not decode is skipped by the loop below and can never be moved, so
+    // counting the decoded rows would call a table with an unreadable
+    // entry drained and let the caller drop it.
+    let rows = dynamic_workers::count(db)?;
+    let workers = dynamic_workers::list_all(db)?;
     let mut moved = 0;
-    for worker in dynamic_workers::list_all(db)? {
+    let mut unkeyable = 0;
+    for worker in &workers {
         let Some(project) = projects.iter().find(|p| p.key == worker.project_key) else {
             tracing::warn!(
                 target: "forge_workspace::store::sessions",
@@ -136,43 +170,139 @@ pub fn migrate_from_dynamic_workers(
                 "no configured project for this worker's key; leaving its row in \
                  dynamic_workers",
             );
+            unkeyable += 1;
             continue;
         };
-        put(
-            db,
-            &SessionRecord {
-                org: project.org.clone(),
-                project: project.name.clone(),
-                label: worker.label,
-                session_id: None,
-                charter: Some(worker.charter),
-                kick: worker.kick,
-                resume_kick: worker.resume_kick,
-                interactive: Some(worker.interactive),
-            },
-        )?;
+        let fields = SessionRecord {
+            org: project.org.clone(),
+            project: project.name.clone(),
+            label: worker.label.clone(),
+            session_id: None,
+            charter: Some(worker.charter.clone()),
+            kick: worker.kick.clone(),
+            resume_kick: worker.resume_kick.clone(),
+            interactive: Some(worker.interactive),
+        };
+        // An existing row is the id-bearing one: merge onto it so the
+        // occupant it names survives. `update` leaves an absent field at
+        // its stored value, and it reports whether there was a row to
+        // merge onto.
+        if !update(db, &fields)? {
+            put(db, &fields)?;
+        }
+        dynamic_workers::delete(db, &worker.project_key, &worker.label)?;
         moved += 1;
     }
     if moved > 0 {
         tracing::info!(
             target: "forge_workspace::store::sessions",
             rows = moved,
-            "migrated persisted workers into the sessions table; each carries no id, so the \
-             session it names starts fresh under a newly minted one",
+            "moved persisted workers onto the sessions table and out of the retired one",
         );
     }
-    Ok(moved)
+    Ok(SweepOutcome { moved, unkeyable, rows })
 }
 
-/// Whether the store holds no session row at all.
-fn is_empty(db: &Db) -> anyhow::Result<bool> {
+/// Every row for `(org, project)`, in label order. What a project's lead
+/// reads to re-spawn its persisted workers.
+pub fn list_for_project(db: &Db, org: &str, project: &str) -> anyhow::Result<Vec<SessionRecord>> {
+    Ok(list_all(db)?.into_iter().filter(|row| row.org == org && row.project == project).collect())
+}
+
+/// Every row's `(org, project, label)`, in key order, without decoding
+/// its body. For callers that want the labels alone: a value blob carries
+/// a charter, and the render path that lists labels would otherwise
+/// decode one per frame.
+pub fn keys(db: &Db) -> anyhow::Result<Vec<(String, String, String)>> {
     let txn = db.database().begin_read()?;
     let table = match txn.open_table(SESSIONS) {
         Ok(t) => t,
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(true),
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
     };
-    Ok(table.iter()?.next().is_none())
+    let mut out = Vec::new();
+    for entry in table.iter()? {
+        let (key, _) = entry?;
+        let (org, project, label) = key.value();
+        out.push((org.to_owned(), project.to_owned(), label.to_owned()));
+    }
+    Ok(out)
+}
+
+/// Every session row, in key order.
+pub fn list_all(db: &Db) -> anyhow::Result<Vec<SessionRecord>> {
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(SESSIONS) {
+        Ok(t) => t,
+        // A fresh database has no table until the first write; an absent
+        // table is an empty store, not an error.
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = Vec::new();
+    for entry in table.iter()? {
+        let (key, value) = entry?;
+        match decode(value.value()) {
+            Ok(row) => out.push(row),
+            // One undecodable row (schema drift, a corrupt blob) must not
+            // hide the rest. The key stays readable when the value does
+            // not, so name which session lost its row.
+            Err(error) => {
+                let (row_org, row_project, row_label) = key.value();
+                tracing::warn!(
+                    target: "forge_workspace::store::sessions",
+                    org = %row_org,
+                    project = %row_project,
+                    label = %row_label,
+                    %error,
+                    "skipping session row that failed to decode",
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Merge `fields` onto the row at `(org, project, label)`, leaving an
+/// absent field at its stored value. Returns whether a row existed; this
+/// never creates one, because the row is what makes a worker re-spawn on
+/// the next lead connect.
+pub fn update(db: &Db, fields: &SessionRecord) -> anyhow::Result<bool> {
+    let Some(mut row) = get(db, &fields.org, &fields.project, &fields.label)? else {
+        return Ok(false);
+    };
+    // `Option::clone_from` overwrites, so each guard is what keeps an
+    // absent field at its stored value.
+    if fields.session_id.is_some() {
+        row.session_id.clone_from(&fields.session_id);
+    }
+    if fields.charter.is_some() {
+        row.charter.clone_from(&fields.charter);
+    }
+    if fields.kick.is_some() {
+        row.kick.clone_from(&fields.kick);
+    }
+    if fields.resume_kick.is_some() {
+        row.resume_kick.clone_from(&fields.resume_kick);
+    }
+    if fields.interactive.is_some() {
+        row.interactive = fields.interactive;
+    }
+    put(db, &row)?;
+    Ok(true)
+}
+
+/// Delete the row at `(org, project, label)`. Returns whether one
+/// existed. This is what stops a despawned worker coming back: the row is
+/// the only thing a boot re-spawns from.
+pub fn delete(db: &Db, org: &str, project: &str, label: &str) -> anyhow::Result<bool> {
+    let txn = db.database().begin_write()?;
+    let existed = {
+        let mut table = txn.open_table(SESSIONS)?;
+        table.remove((org, project, label))?.is_some()
+    };
+    txn.commit()?;
+    Ok(existed)
 }
 
 fn decode(value: &[u8]) -> anyhow::Result<SessionRecord> {
@@ -219,6 +349,18 @@ mod tests {
         }
     }
 
+    /// A record carrying only the fields an `update` supplies; the rest
+    /// stay absent, which is what makes them keep their stored value.
+    fn record_fields(
+        org: &str,
+        project: &str,
+        label: &str,
+        session_id: Option<&str>,
+        kick: Option<&str>,
+    ) -> SessionRecord {
+        SessionRecord { kick: kick.map(str::to_owned), ..record(org, project, label, session_id) }
+    }
+
     /// The first boot after this table exists is the migration: every
     /// persisted worker crosses over with its fields, and its id is left
     /// empty because `dynamic_workers` never stored one - so the session
@@ -227,16 +369,15 @@ mod tests {
     fn the_first_open_copies_the_persisted_workers_over_once() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
-        dynamic_workers::insert(&db, &worker("proj-a", "steward", true)).expect("seed steward");
-        dynamic_workers::insert(&db, &worker("proj-a", "quartermaster", false))
+        dynamic_workers::insert_for_test(&db, &worker("proj-a", "steward", true))
+            .expect("seed steward");
+        dynamic_workers::insert_for_test(&db, &worker("proj-a", "quartermaster", false))
             .expect("seed quartermaster");
 
         let projects = [project("proj-a", "Personal", "forge")];
-        assert_eq!(
-            migrate_from_dynamic_workers(&db, &projects).expect("migrate"),
-            2,
-            "both persisted workers cross over",
-        );
+        let outcome = migrate_from_dynamic_workers(&db, &projects).expect("migrate");
+        assert_eq!(outcome.moved, 2, "both persisted workers cross over");
+        assert!(outcome.drained(), "and nothing is left in the retired table");
 
         let steward = get(&db, "Personal", "forge", "steward").expect("read").expect("steward row");
         assert_eq!(
@@ -254,10 +395,12 @@ mod tests {
             "the row carries the worker's fields and no id",
         );
 
-        assert_eq!(
-            migrate_from_dynamic_workers(&db, &projects).expect("second boot"),
-            0,
-            "a second boot copies nothing",
+        let second = migrate_from_dynamic_workers(&db, &projects).expect("second boot");
+        assert_eq!(second.moved, 0, "a second boot copies nothing");
+        assert!(
+            second.drained(),
+            "and it is a clean drain: the first sweep took every row with it, so the table is \
+             empty and the caller may drop it",
         );
         assert!(
             get(&db, "Personal", "forge", "quartermaster").expect("read").is_some(),
@@ -273,13 +416,16 @@ mod tests {
     fn a_worker_whose_project_is_no_longer_configured_is_left_behind() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
-        dynamic_workers::insert(&db, &worker("proj-gone", "steward", false)).expect("seed");
+        dynamic_workers::insert_for_test(&db, &worker("proj-gone", "steward", false))
+            .expect("seed");
 
-        assert_eq!(
-            migrate_from_dynamic_workers(&db, &[project("proj-a", "Personal", "forge")])
-                .expect("migrate"),
-            0,
-            "a worker with no configured project is not copied",
+        let outcome = migrate_from_dynamic_workers(&db, &[project("proj-a", "Personal", "forge")])
+            .expect("migrate");
+        assert_eq!(outcome.moved, 0, "a worker with no configured project is not copied");
+        assert_eq!(outcome.unkeyable, 1, "and it is counted as left behind rather than dropped");
+        assert!(
+            !outcome.drained(),
+            "so the retired table is not safe to drop: its row exists nowhere else",
         );
         assert!(get(&db, "Personal", "forge", "steward").expect("read").is_none());
         assert_eq!(
@@ -309,6 +455,121 @@ mod tests {
             Some(None)
         );
         assert_eq!(get(&db, "Personal", "forge", "ghost").expect("get"), None);
+    }
+
+    /// The three additions the worker registry needs: a project's rows
+    /// list, a field merge that leaves an absent field alone, and a
+    /// delete that reports whether it removed anything.
+    #[test]
+    fn list_update_and_delete_are_scoped_to_the_row() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let mut steward = record("Personal", "forge", "steward", Some("id-1"));
+        steward.charter = Some("charter".to_owned());
+        put(&db, &steward).expect("put steward");
+        put(&db, &record("Personal", "forge", "lead", Some("id-2"))).expect("put lead");
+        put(&db, &record("Personal", "other", "steward", None)).expect("put elsewhere");
+
+        assert_eq!(
+            list_for_project(&db, "Personal", "forge").expect("list").len(),
+            2,
+            "a project's rows are scoped by org and project",
+        );
+        assert_eq!(list_all(&db).expect("list all").len(), 3, "and the whole table lists");
+
+        assert!(
+            update(&db, &record_fields("Personal", "forge", "steward", None, Some("new kick")))
+                .expect("update"),
+            "an existing row updates",
+        );
+        let updated = get(&db, "Personal", "forge", "steward").expect("get").expect("row");
+        assert_eq!(updated.kick.as_deref(), Some("new kick"), "the supplied field lands");
+        assert_eq!(
+            updated.session_id.as_deref(),
+            Some("id-1"),
+            "and an absent field keeps its stored value",
+        );
+        assert_eq!(updated.charter.as_deref(), Some("charter"), "including the charter");
+
+        assert!(
+            !update(&db, &record_fields("Personal", "forge", "ghost", None, Some("k")))
+                .expect("update ghost"),
+            "an absent row is not created",
+        );
+        assert!(get(&db, "Personal", "forge", "ghost").expect("get").is_none());
+
+        assert!(delete(&db, "Personal", "forge", "steward").expect("delete"));
+        assert!(get(&db, "Personal", "forge", "steward").expect("get").is_none());
+        assert!(
+            !delete(&db, "Personal", "forge", "steward").expect("delete again"),
+            "a second delete reports nothing removed",
+        );
+        assert!(
+            get(&db, "Personal", "other", "steward").expect("get").is_some(),
+            "deleting one project's row leaves another's alone",
+        );
+    }
+
+    /// A row whose value will not decode is skipped, not fatal: the key
+    /// alone stays readable, so `list_all` reports the rest.
+    #[test]
+    fn list_all_skips_an_undecodable_row() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        put(&db, &record("Personal", "forge", "lead", Some("id-1"))).expect("put");
+        put_raw_for_test(&db, "Personal", "forge", "corrupt", b"not a record")
+            .expect("plant the undecodable row");
+
+        let rows = list_all(&db).expect("list tolerates the corrupt blob");
+        assert_eq!(rows.len(), 1, "the good row survives a corrupt sibling");
+        assert_eq!(rows[0].label, "lead");
+    }
+
+    /// An entry whose value will not decode cannot be moved, so the sweep
+    /// must not report a clean drain while one is there - the drop that
+    /// follows would destroy it, and it exists nowhere else. The row count
+    /// therefore comes from the table, not from the rows that decoded.
+    #[test]
+    fn a_table_holding_an_undecodable_entry_is_never_reported_as_drained() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        dynamic_workers::insert_for_test(&db, &worker("proj-a", "steward", false))
+            .expect("seed steward");
+        dynamic_workers::put_raw_for_test(&db, "proj-a", "unreadable", b"not a worker")
+            .expect("plant a retired row that will not decode");
+
+        let projects = [project("proj-a", "Personal", "forge")];
+        let outcome = migrate_from_dynamic_workers(&db, &projects).expect("migrate");
+        assert_eq!(outcome.moved, 1, "the readable row crosses over");
+        assert_eq!(outcome.rows, 2, "and the count is what the table holds, not what decoded");
+        assert!(
+            !outcome.drained(),
+            "so the caller must not drop a table still holding an entry nothing else has",
+        );
+    }
+
+    /// `keys` reads the composite key alone, so a row whose body will not
+    /// decode still reports its label. That is what the launchpad's
+    /// worker rows are built from, once per frame: read through
+    /// `list_all` instead and an undecodable body takes its label off the
+    /// screen and pays a full deserialize per row per frame.
+    #[test]
+    fn keys_reports_labels_without_decoding_the_row_body() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        put(&db, &record("Personal", "forge", "lead", Some("id-1"))).expect("put");
+        put_raw_for_test(&db, "Personal", "forge", "corrupt", b"not a record")
+            .expect("plant the undecodable row");
+
+        let keys = keys(&db).expect("keys reads the key, not the value");
+        assert_eq!(
+            keys,
+            vec![
+                ("Personal".to_owned(), "forge".to_owned(), "corrupt".to_owned()),
+                ("Personal".to_owned(), "forge".to_owned(), "lead".to_owned()),
+            ],
+            "both labels survive, including the one whose body does not decode",
+        );
     }
 
     /// An empty id is absence, not an id: a blank is not an answer a

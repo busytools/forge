@@ -159,7 +159,7 @@ mod tests {
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
             .expect("workspace");
 
-        let key = forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY);
+        let key = forge_workspace::SessionSlot::from_str_for_test(App::TEST_SESSION_KEY);
         workspace.seed_test_bound_session(&key, "OpenRouter-TM");
         workspace.seed_test_usage("OpenRouter-TM", usage_snapshot(11.0, 22.0));
 

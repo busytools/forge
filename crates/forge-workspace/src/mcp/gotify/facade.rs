@@ -11,7 +11,7 @@ use forge_connectors::gotify::GotifyRecent;
 use forge_primitives::GotifySubscription;
 use uuid::Uuid;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::gotify::SubsystemHost;
 use crate::mcp::caller_context::caller_context;
 use crate::workspace::Workspace;
@@ -47,19 +47,19 @@ pub(crate) trait GotifyFacade: Send + Sync {
     /// is durable. Returns the new id.
     fn subscribe(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         applications: Vec<String>,
         min_priority: Option<u8>,
     ) -> Result<Uuid, GotifySubscribeError>;
 
     /// The caller's own subscriptions in its project - a lead's, or one
     /// worker's, never another owner's.
-    fn list(&self, caller: &SessionKey) -> Vec<GotifySubscription>;
+    fn list(&self, caller: &SessionSlot) -> Vec<GotifySubscription>;
 
     /// Remove one of the caller's OWN subscriptions by id within its
     /// project. `true` when an entry was removed; `false` both when no
     /// such id exists and when it belongs to another owner.
-    fn unsubscribe(&self, caller: &SessionKey, id: Uuid) -> bool;
+    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> bool;
 
     /// The application NAMEs on the configured server (`GET /application`)
     /// so a session can self-discover what it may subscribe to.
@@ -92,7 +92,7 @@ impl ProdGotifyFacade {
 impl GotifyFacade for ProdGotifyFacade {
     fn subscribe(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         applications: Vec<String>,
         min_priority: Option<u8>,
     ) -> Result<Uuid, GotifySubscribeError> {
@@ -116,7 +116,7 @@ impl GotifyFacade for ProdGotifyFacade {
         Ok(id)
     }
 
-    fn list(&self, caller: &SessionKey) -> Vec<GotifySubscription> {
+    fn list(&self, caller: &SessionSlot) -> Vec<GotifySubscription> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
         // Symmetric with `cron__list`: every caller sees only its own
@@ -128,7 +128,7 @@ impl GotifyFacade for ProdGotifyFacade {
             .collect()
     }
 
-    fn unsubscribe(&self, caller: &SessionKey, id: Uuid) -> bool {
+    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> bool {
         let Some(ws) = self.workspace.upgrade() else { return false };
         let Some(cx) = caller_context(&ws, caller) else { return false };
         let removed = ws.remove_gotify_subscription_owned_by(
@@ -174,7 +174,7 @@ impl GotifyFacade for ProdGotifyFacade {
 /// table, false for a worker without one.
 pub(crate) fn resolve_identity(
     ws: &Workspace,
-    caller: &SessionKey,
+    caller: &SessionSlot,
 ) -> Option<(String, Option<String>, bool)> {
     let cx = caller_context(ws, caller)?;
     let worker_label = if cx.is_lead {
@@ -182,11 +182,11 @@ pub(crate) fn resolve_identity(
     } else {
         ws.list_live_workers(&cx.project_key)
             .into_iter()
-            .find(|w| w.session_key == *caller)
+            .find(|w| w.slot == *caller)
             .map(|w| w.label)
     };
     let dynamic_labels: Vec<String> =
-        ws.dynamic_workers_for_project(&cx.project_key).into_iter().map(|w| w.label).collect();
+        ws.worker_rows_for_project(&cx.project_key).into_iter().map(|w| w.label).collect();
     let (team_role, durable) = durable_identity(worker_label.as_deref(), &dynamic_labels);
     Some((cx.project_name, team_role, durable))
 }
@@ -213,7 +213,7 @@ fn durable_identity(
 /// facade results/errors - without a real workspace.
 /// One recorded `subscribe` call: `(caller, applications, min_priority)`.
 #[cfg(test)]
-type SubscribeCall = (SessionKey, Vec<String>, Option<u8>);
+type SubscribeCall = (SessionSlot, Vec<String>, Option<u8>);
 
 /// One recorded `recent` call: `(applications, min_priority, limit)`.
 #[cfg(test)]
@@ -225,7 +225,7 @@ pub(crate) struct MockGotifyFacade {
     pub subs: parking_lot::Mutex<Vec<GotifySubscription>>,
     pub subscribe_calls: parking_lot::Mutex<Vec<SubscribeCall>>,
     pub subscribe_result: parking_lot::Mutex<Option<Result<Uuid, GotifySubscribeError>>>,
-    pub unsubscribe_calls: parking_lot::Mutex<Vec<(SessionKey, Uuid)>>,
+    pub unsubscribe_calls: parking_lot::Mutex<Vec<(SessionSlot, Uuid)>>,
     pub unsubscribe_result: parking_lot::Mutex<Option<bool>>,
     pub apps_result: parking_lot::Mutex<Option<Result<Vec<String>, GotifyReadError>>>,
     pub recent_calls: parking_lot::Mutex<Vec<RecentCall>>,
@@ -247,7 +247,7 @@ impl MockGotifyFacade {
 impl GotifyFacade for MockGotifyFacade {
     fn subscribe(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         applications: Vec<String>,
         min_priority: Option<u8>,
     ) -> Result<Uuid, GotifySubscribeError> {
@@ -255,11 +255,11 @@ impl GotifyFacade for MockGotifyFacade {
         self.subscribe_result.lock().clone().unwrap_or_else(|| Ok(Uuid::nil()))
     }
 
-    fn list(&self, _caller: &SessionKey) -> Vec<GotifySubscription> {
+    fn list(&self, _caller: &SessionSlot) -> Vec<GotifySubscription> {
         self.subs.lock().clone()
     }
 
-    fn unsubscribe(&self, caller: &SessionKey, id: Uuid) -> bool {
+    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> bool {
         self.unsubscribe_calls.lock().push((caller.clone(), id));
         self.unsubscribe_result.lock().unwrap_or(false)
     }
@@ -286,14 +286,15 @@ mod tests {
     use crate::target::ProjectKey;
     use forge_primitives::WorkerLiveness;
 
-    fn worker_entry(label: &str, session_id: &str) -> WorkerEntry {
+    fn worker_entry(project: &str, label: &str) -> WorkerEntry {
         WorkerEntry {
             label: label.to_owned(),
             charter: "watch".to_owned(),
-            session_key: SessionKey::from_session_id(session_id),
+            slot: SessionSlot::worker("TestOrg", project, label),
+            session_id: None,
             status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".to_owned(),
+            spawned_by: SessionSlot::lead("TestOrg", project),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -303,21 +304,21 @@ mod tests {
 
     /// A project with a live lead plus two live workers, mirroring the
     /// cron facade's fixture so the two families are tested the same way.
-    fn fixture() -> (Arc<Workspace>, Arc<dyn GotifyFacade>, ProjectKey, SessionKey, SessionKey) {
+    fn fixture() -> (Arc<Workspace>, Arc<dyn GotifyFacade>, ProjectKey, SessionSlot, SessionSlot) {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("myproj", "/tmp/gotify-scope");
         let key =
             ws.list_projects().into_iter().find(|v| v.name == "myproj").expect("seeded view").key;
         ws.record_connected_session("/tmp/gotify-scope", "lead-uuid", None);
-        ws.insert_live_worker(&key, worker_entry("reviewer", "worker-uuid"));
-        ws.insert_live_worker(&key, worker_entry("analyst", "sibling-uuid"));
+        ws.insert_live_worker(&key, worker_entry("myproj", "reviewer"));
+        ws.insert_live_worker(&key, worker_entry("myproj", "analyst"));
         let facade = ProdGotifyFacade::from_arc(&ws);
         (
             ws,
             facade,
             key,
-            SessionKey::from_session_id("lead-uuid"),
-            SessionKey::from_session_id("worker-uuid"),
+            SessionSlot::lead("TestOrg", "myproj"),
+            SessionSlot::worker("TestOrg", "myproj", "reviewer"),
         )
     }
 

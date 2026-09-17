@@ -11,9 +11,9 @@
 
 use std::path::PathBuf;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::target::ProjectKey;
-use crate::views::{ProjectView, SessionView};
+use crate::views::ProjectView;
 use crate::workspace::Workspace;
 
 /// Resolved context for an incoming MCP caller.
@@ -25,11 +25,12 @@ pub(crate) struct CallerContext {
     pub project_name: String,
     pub project_org: String,
     pub project_path: PathBuf,
-    /// The catalog row for the project's lead session, if one is
-    /// currently registered. `None` when the project has no lead row
-    /// yet (rare; right after spawn before the lead's `Connected`
-    /// resolves, or after the lead session ended).
-    pub lead_session_view: Option<SessionView>,
+    /// The project's lead slot. Always known: a project's lead is named
+    /// by the triple its spawn stated, not by whichever catalog row
+    /// currently happens to look like one.
+    pub lead: SessionSlot,
+    /// Whether an agent is pooled for that lead slot right now.
+    pub lead_running: bool,
     /// True when `caller` itself IS the project's lead session.
     pub is_lead: bool,
     /// The caller's worker label when it is a live worker, else `None`
@@ -37,52 +38,37 @@ pub(crate) struct CallerContext {
     pub worker_label: Option<String>,
 }
 
-/// Resolve a caller's project context. Walks [`Workspace::list_projects`]
-/// looking for the caller as either:
-///   1. A live worker (registered in `live_workers` for the project).
-///   2. The project's lead session (first session in the catalog that
-///      is NOT a live worker - same rule peers facade uses).
-///   3. Any other session row in the project's catalog (a session
-///      that isn't a live worker AND isn't the lead).
-///
-/// Returns the project the caller belongs to plus the lead's session
-/// view + an `is_lead` flag. `None` when the caller doesn't appear in
-/// any project (caller hasn't connected yet, or transient race).
-pub(crate) fn caller_context(ws: &Workspace, caller: &SessionKey) -> Option<CallerContext> {
+/// Resolve a caller's project context: the project the caller's slot
+/// names, when `list_projects` still declares it. A caller whose slot
+/// names no declared project resolves to nothing (a project dropped
+/// from `forge.toml` since the session spawned).
+pub(crate) fn caller_context(ws: &Workspace, caller: &SessionSlot) -> Option<CallerContext> {
     ws.list_projects().into_iter().find_map(|view| caller_context_in_view(ws, &view, caller))
 }
 
 /// Per-view resolution. File-private so the test mod can exercise it
 /// against hand-constructed [`ProjectView`]s without going through
-/// the catalog-driven [`Workspace::list_projects`] path (same pattern
-/// peers/facade.rs uses for [`crate::mcp::peers::facade`]'s
-/// `lead_session_view` tests).
+/// the catalog-driven [`Workspace::list_projects`] path.
 fn caller_context_in_view(
     ws: &Workspace,
     view: &ProjectView,
-    caller: &SessionKey,
+    caller: &SessionSlot,
 ) -> Option<CallerContext> {
-    let live = ws.list_live_workers(&view.key);
-    let worker_label = live.iter().find(|w| w.session_key == *caller).map(|w| w.label.clone());
-    let is_live_worker = worker_label.is_some();
-    // Lead = first catalog session that isn't a live worker. Mirrors
-    // peers/facade.rs::lead_session_view and workers/facade.rs::caller_project.
-    let lead_session_view =
-        view.sessions.iter().find(|s| !live.iter().any(|w| w.session_key == s.session)).cloned();
-    let is_lead = lead_session_view.as_ref().is_some_and(|lead| lead.session == *caller);
-    // Accept the caller as a member of this project when they appear
-    // as a live worker, the lead, or any other catalog session row
-    // (workers/facade.rs::caller_project's broader catalog-match
-    // semantics).
-    if !is_live_worker && !is_lead && !view.sessions.iter().any(|s| s.session == *caller) {
+    if caller.org() != view.org || caller.project() != view.name {
         return None;
     }
+    let live = ws.list_live_workers(&view.key);
+    let worker_label = live.iter().find(|w| w.slot == *caller).map(|w| w.label.clone());
+    let is_lead = worker_label.is_none() && caller.is_lead();
+    let lead = SessionSlot::lead(&view.org, &view.name);
+    let lead_running = ws.session_is_pooled(&lead);
     Some(CallerContext {
         project_key: view.key.clone(),
         project_name: view.name.clone(),
         project_org: view.org.clone(),
         project_path: view.path.clone(),
-        lead_session_view,
+        lead,
+        lead_running,
         is_lead,
         worker_label,
     })
@@ -95,18 +81,15 @@ mod tests {
     use forge_primitives::WorkerLiveness;
     use std::time::SystemTime;
 
-    fn session(id: &str) -> SessionView {
-        SessionView::new_for_test(SessionKey::from_session_id(id), id, true, None)
-    }
-
-    fn worker_entry(session_key: SessionKey) -> WorkerEntry {
+    fn worker_entry(slot: SessionSlot) -> WorkerEntry {
         WorkerEntry {
             label: "reviewer".into(),
             charter: "review the diff".into(),
-            session_key,
+            slot,
+            session_id: None,
             status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".into(),
+            spawned_by: SessionSlot::lead("me", "myproj"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -114,11 +97,11 @@ mod tests {
         }
     }
 
-    fn fixture() -> (std::sync::Arc<Workspace>, ProjectView, SessionView, SessionView) {
+    fn fixture() -> (std::sync::Arc<Workspace>, ProjectView, SessionSlot, SessionSlot) {
         let (ws, _rx) = Workspace::testing_stub();
         let key = ProjectKey::new("myproj".to_owned());
-        let lead = session("lead-uuid");
-        let worker = session("worker-uuid");
+        let lead = SessionSlot::lead("me", "myproj");
+        let worker = SessionSlot::worker("me", "myproj", "reviewer");
         let view = ProjectView::new_for_test_with_org(
             key.clone(),
             "myproj",
@@ -126,86 +109,68 @@ mod tests {
             "me",
             Vec::new(),
             Vec::new(),
-            vec![lead.clone(), worker.clone()],
+            vec![],
         );
-        ws.insert_live_worker(&key, worker_entry(worker.session.clone()));
+        ws.insert_live_worker(&key, worker_entry(worker.clone()));
         (ws, view, lead, worker)
     }
 
     #[test]
     fn caller_context_resolves_worker_as_non_lead() {
         let (ws, view, lead, worker) = fixture();
-        let cx = caller_context_in_view(&ws, &view, &worker.session)
+        let cx = caller_context_in_view(&ws, &view, &worker)
             .expect("worker caller resolves to its project");
         assert_eq!(cx.project_name, "myproj");
         assert_eq!(cx.project_org, "me");
         assert_eq!(cx.project_key.as_str(), "myproj");
         assert!(!cx.is_lead, "worker is not the lead");
         assert_eq!(cx.worker_label.as_deref(), Some("reviewer"), "a live worker carries its label");
-        assert_eq!(
-            cx.lead_session_view.as_ref().map(|v| v.session.clone()),
-            Some(lead.session),
-            "lead_session_view points at the project's lead row",
-        );
+        assert_eq!(cx.lead, lead, "the project's lead slot is named by the triple");
+        assert!(!cx.lead_running, "no lead is pooled in this fixture");
     }
 
     #[test]
     fn caller_context_resolves_lead_as_lead() {
         let (ws, view, lead, _) = fixture();
-        let cx = caller_context_in_view(&ws, &view, &lead.session)
-            .expect("lead caller resolves to its project");
+        let cx =
+            caller_context_in_view(&ws, &view, &lead).expect("lead caller resolves to its project");
         assert!(cx.is_lead, "lead caller flagged as lead");
         assert_eq!(cx.worker_label, None, "a lead has no worker label");
-        assert_eq!(cx.lead_session_view.as_ref().map(|v| v.session.clone()), Some(lead.session),);
+        assert_eq!(cx.lead, lead);
     }
 
+    /// A caller whose slot names another project (or none) is not a
+    /// member of this one, so it resolves to nothing.
     #[test]
-    fn caller_context_returns_none_for_unknown_caller() {
+    fn caller_context_returns_none_for_an_unrelated_caller() {
         let (ws, view, _, _) = fixture();
-        let cx = caller_context_in_view(&ws, &view, &SessionKey::from_session_id("ghost-uuid"));
-        assert!(cx.is_none(), "caller not in the project must return None");
+        let elsewhere = SessionSlot::worker("someone-else", "otherproj", "reviewer");
+        assert!(
+            caller_context_in_view(&ws, &view, &elsewhere).is_none(),
+            "a caller under another project must return None",
+        );
     }
 
-    /// The lead is re-resolved from live catalog state on every call,
-    /// so a lead-resume rekey (L1 -> L2) is followed rather than pinned
-    /// to a stale snapshot.
+    /// The lead is named by the project's own triple, so the answer does
+    /// not depend on which catalog rows happen to be on disk: a project
+    /// with no lead transcript still has a lead slot.
     #[test]
-    fn caller_context_follows_lead_across_resume_rekey() {
+    fn caller_context_names_the_lead_slot_with_no_catalog_rows() {
         let (ws, _rx) = Workspace::testing_stub();
         let key = ProjectKey::new("myproj".to_owned());
-        let worker = session("worker-uuid");
-        ws.insert_live_worker(&key, worker_entry(worker.session.clone()));
-
-        let view_with_lead = |lead_id: &str| {
-            ProjectView::new_for_test_with_org(
-                key.clone(),
-                "myproj",
-                "/tmp/myproj",
-                "me",
-                Vec::new(),
-                Vec::new(),
-                vec![session(lead_id), worker.clone()],
-            )
-        };
-
-        let pre = view_with_lead("L1");
-        let cx_pre =
-            caller_context_in_view(&ws, &pre, &worker.session).expect("worker resolves pre-resume");
-        assert_eq!(
-            cx_pre.lead_session_view.as_ref().map(|v| v.session.as_str().to_owned()),
-            Some("L1".to_owned()),
-            "pre-resume lead is L1",
+        let worker = SessionSlot::worker("me", "myproj", "reviewer");
+        ws.insert_live_worker(&key, worker_entry(worker.clone()));
+        let view = ProjectView::new_for_test_with_org(
+            key,
+            "myproj",
+            "/tmp/myproj",
+            "me",
+            Vec::new(),
+            Vec::new(),
+            vec![],
         );
 
-        // The lead session rekeyed to L2; the same worker caller must
-        // now resolve to L2, not the stale L1.
-        let post = view_with_lead("L2");
-        let cx_post = caller_context_in_view(&ws, &post, &worker.session)
-            .expect("worker resolves post-resume");
-        assert_eq!(
-            cx_post.lead_session_view.as_ref().map(|v| v.session.as_str().to_owned()),
-            Some("L2".to_owned()),
-            "post-resume lead follows to L2",
-        );
+        let cx = caller_context_in_view(&ws, &view, &worker).expect("worker resolves");
+        assert_eq!(cx.lead, SessionSlot::lead("me", "myproj"));
     }
 }

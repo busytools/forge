@@ -4,7 +4,7 @@
 //! batches without knowing anything about session routing.
 //!
 //! TUI consumers wrap these progress streams with their per-session
-//! `SessionKey` + generation routing; the env layer is route-blind.
+//! `SessionSlot` + generation routing; the env layer is route-blind.
 //!
 //! Pattern mirrors `env::git_diff` (env owns subprocess + parsing,
 //! workspace mediates, TUI consumes via channel).

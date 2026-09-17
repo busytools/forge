@@ -145,7 +145,7 @@ pub enum PaneHitTarget {
     /// bucket + tell the workspace to release its pool entry so the
     /// underlying `claude` subprocess can exit).
     CloseSession {
-        session_key: forge_workspace::SessionKey,
+        session_key: forge_workspace::SessionSlot,
         y: u16,
         height: u16,
         x_start: u16,
@@ -175,7 +175,7 @@ pub enum PaneHitTarget {
     /// prompt lands in the chat. Stamped per row during render; the
     /// band is pinned so no scroll-offset gate is needed.
     InspectorAttentionRow {
-        session_key: forge_workspace::SessionKey,
+        session_key: forge_workspace::SessionSlot,
         y: u16,
         height: u16,
         x_start: u16,
@@ -199,11 +199,11 @@ pub enum PaneHitTarget {
     },
     /// Label area of a worker tree-child row. Click switches focus to
     /// the worker's chat (same gesture as a project-row click, but the
-    /// destination is the worker's `SessionKey` not the lead's).
+    /// destination is the worker's `SessionSlot` not the lead's).
     WorkerRow {
         project_key: forge_workspace::ProjectKey,
         label: String,
-        session_key: forge_workspace::SessionKey,
+        session_key: forge_workspace::SessionSlot,
         y: u16,
         height: u16,
         x_start: u16,
@@ -353,13 +353,15 @@ pub struct App {
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_slack_posts: std::cell::RefCell<Vec<(uuid::Uuid, bool)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_question_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::QuestionOutcome)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_notifications: std::cell::RefCell<Vec<(super::notify::NotifyEvent, super::notify::NotifyContext)>>,
-    /// Per-session state buckets, keyed by claude session UUID.
-    /// [`super::session::UiSession`] value type one bucket at a time.
-    pub sessions: std::collections::HashMap<forge_workspace::SessionKey, super::session::UiSession>,
+    /// Per-session state buckets, keyed by the session's slot - the
+    /// `(org, project, label)` triple - with [`super::session::UiSession`]
+    /// the value type, one bucket per slot.
+    pub sessions:
+        std::collections::HashMap<forge_workspace::SessionSlot, super::session::UiSession>,
     /// Which entry of [`Self::sessions`] the renderer reads from.
     /// `None` while no session is focused - production boots that way
     /// until the first spawn lands.
-    pub active_session_key: Option<forge_workspace::SessionKey>,
+    pub active_session_key: Option<forge_workspace::SessionSlot>,
     /// True while `active_session_key` is a pivot alias: a background
     /// frame is being routed through the active accessors and the
     /// user's real tab is not the one addressed. Set and restored by
@@ -371,8 +373,8 @@ pub struct App {
     /// reducer once that project's bucket exists. The reducer focuses a
     /// wake by itself only when nothing is focused, so a click that
     /// arrives while another session holds the tab records its intent
-    /// here instead. A project name rather than a key because the click
-    /// happens before the session id exists.
+    /// here instead. A project name rather than a slot because the click
+    /// happens before the spawn states the label the slot will carry.
     pub pending_spawn_focus: Option<String>,
     /// Snapshot of the durable forge crons (`mcp__forge__cron`) the
     /// active session itself created, refreshed on the ~1s ticker
@@ -712,7 +714,7 @@ impl App {
     }
 
     /// Dispatch a workspace [`forge_workspace::Command`] for the
-    /// active session. Stamps the active `SessionKey` onto
+    /// active session. Stamps the active `SessionSlot` onto
     /// `builder`'s output before dispatching. No-op (returns
     /// `Err(UnknownSession)`) when there is no active session.
     ///
@@ -722,16 +724,16 @@ impl App {
     /// underlying `Workspace::dispatch`.
     pub fn dispatch_command(
         &self,
-        builder: impl FnOnce(forge_workspace::SessionKey) -> forge_workspace::Command,
+        builder: impl FnOnce(forge_workspace::SessionSlot) -> forge_workspace::Command,
     ) -> Result<(), forge_workspace::DispatchError> {
         let workspace = self.workspace.as_ref().ok_or_else(|| {
             forge_workspace::DispatchError::UnknownSession(
-                forge_workspace::SessionKey::from_session_id("__no_workspace__"),
+                forge_workspace::SessionSlot::from_str_for_test("__no_workspace__"),
             )
         })?;
         let key = self.active_session_key.clone().ok_or_else(|| {
             forge_workspace::DispatchError::UnknownSession(
-                forge_workspace::SessionKey::from_session_id("__no_active__"),
+                forge_workspace::SessionSlot::from_str_for_test("__no_active__"),
             )
         })?;
         workspace.dispatch(builder(key))
@@ -751,7 +753,7 @@ impl App {
         &mut self,
     ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         if self.active_session_key.is_none() {
-            let key = forge_workspace::SessionKey::from_session_id(Self::TEST_SESSION_KEY);
+            let key = forge_workspace::SessionSlot::from_str_for_test(Self::TEST_SESSION_KEY);
             self.sessions.entry(key.clone()).or_insert_with(|| {
                 super::session::UiSession::new(key.clone(), Self::TEST_SESSION_PROJECT)
             });
@@ -934,7 +936,7 @@ impl App {
         let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
         let (diff_overlay_tx, diff_overlay_rx) = std_mpsc::channel();
         let (usage_overlay_tx, usage_overlay_rx) = std_mpsc::channel();
-        let pending_key = forge_workspace::SessionKey::from_session_id(Self::TEST_SESSION_KEY);
+        let pending_key = forge_workspace::SessionSlot::from_str_for_test(Self::TEST_SESSION_KEY);
         let mut pending_session =
             super::session::UiSession::new(pending_key.clone(), Self::TEST_SESSION_PROJECT);
         // Seed a synthetic `current_model` so tests that depend on

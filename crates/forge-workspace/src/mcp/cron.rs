@@ -25,8 +25,8 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 use forge_primitives::cron::{CronEntry, CronId, CronKind};
 
+use crate::SessionSlot;
 use crate::mcp::cron::facade::{CronCreateError, CronDeleteError, CronFacade};
-use crate::mcp::peers::facade::CallerKeyResolver;
 
 pub(crate) mod facade;
 pub(crate) mod schedule;
@@ -37,11 +37,11 @@ pub(crate) mod schedule;
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn CronFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 ) -> McpServerBuilder {
-    let create = Create { facade: facade.clone(), caller_key: caller_key.clone() };
-    let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
-    let delete = Delete { facade, caller_key };
+    let create = Create { facade: facade.clone(), slot: slot.clone() };
+    let list = List { facade: facade.clone(), slot: slot.clone() };
+    let delete = Delete { facade, slot };
     builder.tool(create).tool(list).tool(delete)
 }
 
@@ -100,7 +100,7 @@ fn format_create_error(err: &CronCreateError) -> String {
 
 struct Create {
     facade: Arc<dyn CronFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -193,15 +193,11 @@ impl Tool for Create {
                 );
             }
         };
-        let caller = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
         let description = args.description.and_then(|d| {
             let trimmed = d.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_owned())
         });
-        match self.facade.create_cron(&caller, kind, args.prompt, description) {
+        match self.facade.create_cron(&self.slot, kind, args.prompt, description) {
             Ok(entry) => match serde_json::to_string_pretty(&cron_to_json(&entry)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -213,7 +209,7 @@ impl Tool for Create {
 
 struct List {
     facade: Arc<dyn CronFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[async_trait::async_trait]
@@ -237,11 +233,7 @@ impl Tool for List {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let caller = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-        let crons = self.facade.list_crons(&caller);
+        let crons = self.facade.list_crons(&self.slot);
         let arr: Vec<serde_json::Value> = crons.iter().map(cron_to_json).collect();
         match serde_json::to_string_pretty(&serde_json::Value::Array(arr)) {
             Ok(json) => ToolOutput::text(json),
@@ -252,7 +244,7 @@ impl Tool for List {
 
 struct Delete {
     facade: Arc<dyn CronFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -287,11 +279,7 @@ impl Tool for Delete {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let caller = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-        match self.facade.delete_cron(&caller, &CronId::from(args.id.as_str())) {
+        match self.facade.delete_cron(&self.slot, &CronId::from(args.id.as_str())) {
             Ok(true) => ToolOutput::text(format!("deleted cron {}", args.id)),
             Ok(false) => tool_error(format!("no cron with id {} in your project", args.id)),
             Err(CronDeleteError::UnknownCallerProject) => {
@@ -304,11 +292,10 @@ impl Tool for Delete {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionKey;
     use crate::mcp::cron::facade::MockCronFacade;
 
-    fn resolver() -> CallerKeyResolver {
-        CallerKeyResolver::from_fixed(SessionKey::from_session_id("caller"))
+    fn caller_slot() -> SessionSlot {
+        SessionSlot::from_str_for_test("caller")
     }
 
     fn sample_entry(id: &str) -> CronEntry {
@@ -333,7 +320,7 @@ mod tests {
     async fn create_with_cron_expr_calls_facade_and_returns_entry() {
         let mock = Arc::new(MockCronFacade::new());
         *mock.create_result.lock() = Some(Ok(sample_entry("c1")));
-        let tool = Create { facade: mock.clone(), caller_key: resolver() };
+        let tool = Create { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({ "schedule": "0 9 * * *", "prompt": "stand-up" })))
@@ -351,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn create_threads_and_trims_description() {
         let mock = Arc::new(MockCronFacade::new());
-        let tool = Create { facade: mock.clone(), caller_key: resolver() };
+        let tool = Create { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({
@@ -385,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn create_with_run_once_at_parses_rfc3339() {
         let mock = Arc::new(MockCronFacade::new());
-        let tool = Create { facade: mock.clone(), caller_key: resolver() };
+        let tool = Create { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(
@@ -399,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn create_rejects_bad_rfc3339_without_touching_facade() {
         let mock = Arc::new(MockCronFacade::new());
-        let tool = Create { facade: mock.clone(), caller_key: resolver() };
+        let tool = Create { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({ "run_once_at": "not a date", "prompt": "x" })))
@@ -411,7 +398,7 @@ mod tests {
     #[tokio::test]
     async fn create_rejects_both_and_neither_schedule() {
         let mock = Arc::new(MockCronFacade::new());
-        let tool = Create { facade: mock.clone(), caller_key: resolver() };
+        let tool = Create { facade: mock.clone(), slot: caller_slot() };
 
         let both = tool
             .call(input(serde_json::json!({
@@ -431,7 +418,7 @@ mod tests {
         let mock = Arc::new(MockCronFacade::new());
         *mock.create_result.lock() =
             Some(Err(CronCreateError::InvalidExpression("bad pattern".to_owned())));
-        let tool = Create { facade: mock.clone(), caller_key: resolver() };
+        let tool = Create { facade: mock.clone(), slot: caller_slot() };
 
         let out =
             tool.call(input(serde_json::json!({ "schedule": "nonsense", "prompt": "x" }))).await;
@@ -443,7 +430,7 @@ mod tests {
     async fn list_returns_project_crons() {
         let mock = Arc::new(MockCronFacade::new());
         *mock.crons.lock() = vec![sample_entry("a"), sample_entry("b")];
-        let tool = List { facade: mock.clone(), caller_key: resolver() };
+        let tool = List { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error);
@@ -454,7 +441,7 @@ mod tests {
     async fn delete_removes_by_id() {
         let mock = Arc::new(MockCronFacade::new());
         *mock.delete_result.lock() = Some(Ok(true));
-        let tool = Delete { facade: mock.clone(), caller_key: resolver() };
+        let tool = Delete { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "id": "c1" }))).await;
         assert!(!out.is_error);
@@ -465,7 +452,7 @@ mod tests {
     async fn delete_missing_id_is_error() {
         let mock = Arc::new(MockCronFacade::new());
         *mock.delete_result.lock() = Some(Ok(false));
-        let tool = Delete { facade: mock.clone(), caller_key: resolver() };
+        let tool = Delete { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "id": "ghost" }))).await;
         assert!(out.is_error, "deleting an unknown id signals an error to the LLM");
@@ -479,10 +466,10 @@ mod tests {
         // auto-approve fast-path covers via the `mcp__forge__` prefix
         // (asserted in forge-sdk options.rs).
         let mock = MockCronFacade::new().into_arc();
-        let resolver = resolver();
-        let create = Create { facade: mock.clone(), caller_key: resolver.clone() };
-        let list = List { facade: mock.clone(), caller_key: resolver.clone() };
-        let delete = Delete { facade: mock, caller_key: resolver };
+        let slot = caller_slot();
+        let create = Create { facade: mock.clone(), slot: slot.clone() };
+        let list = List { facade: mock.clone(), slot: slot.clone() };
+        let delete = Delete { facade: mock, slot };
         assert_eq!(create.name(), "cron__create");
         assert_eq!(list.name(), "cron__list");
         assert_eq!(delete.name(), "cron__delete");

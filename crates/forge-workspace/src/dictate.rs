@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use tokio::time::MissedTickBehavior;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::protocol::{DictateOutcome, SessionUpdate};
 
 /// Cap on one recording when `[dictate] max_capture_minutes` is absent.
@@ -666,14 +666,14 @@ const PROGRESS_POLL: Duration = Duration::from_millis(150);
 /// and the channel its recording task polls for the stop decision.
 /// `true` on the channel means submit, `false` means abandon.
 pub(crate) struct LiveRecording {
-    pub(crate) key: SessionKey,
+    pub(crate) key: SessionSlot,
     pub(crate) stop: tokio::sync::mpsc::Sender<bool>,
 }
 
 /// A submitted take still awaiting its transcript. The microphone is
 /// already released; the entry stays only so Esc can still abandon it.
 pub(crate) struct FinishingTake {
-    pub(crate) key: SessionKey,
+    pub(crate) key: SessionSlot,
     pub(crate) stop: tokio::sync::mpsc::Sender<bool>,
 }
 
@@ -694,7 +694,7 @@ pub(crate) struct DictateRuntime {
     /// older than the window is a stop whose take already resolved
     /// (a refusal, a cap self-submit) and must not poison the next
     /// attempt.
-    pub(crate) stop_pending: Option<(SessionKey, Instant)>,
+    pub(crate) stop_pending: Option<(SessionSlot, Instant)>,
 }
 
 /// How long after parking a stop is still treated as racing its
@@ -712,7 +712,7 @@ impl Default for DictateRuntime {
 impl DictateRuntime {
     /// The stop channel to route a `DictateStop` for `key` to, if a
     /// recording or a submitted take belongs to it.
-    fn stop_channel_for(&self, key: &SessionKey) -> Option<tokio::sync::mpsc::Sender<bool>> {
+    fn stop_channel_for(&self, key: &SessionSlot) -> Option<tokio::sync::mpsc::Sender<bool>> {
         if let Some(recording) = self.recording.as_ref().filter(|r| &r.key == key) {
             return Some(recording.stop.clone());
         }
@@ -723,7 +723,7 @@ impl DictateRuntime {
     /// its start's registration and should pre-load an abandon. A
     /// stale park for the key is consumed without honour; another
     /// key's park is left alone.
-    fn take_parked_stop(&mut self, key: &SessionKey, now: Instant) -> bool {
+    fn take_parked_stop(&mut self, key: &SessionSlot, now: Instant) -> bool {
         let ours = self.stop_pending.as_ref().is_some_and(|(parked, _)| parked == key);
         if !ours {
             return false;
@@ -739,7 +739,7 @@ impl DictateRuntime {
     /// Drop `key`'s parked stop, if any: the take it answered has
     /// resolved some other way, and a left-behind park would poison
     /// the session's next attempt.
-    fn clear_stop_pending(&mut self, key: &SessionKey) {
+    fn clear_stop_pending(&mut self, key: &SessionSlot) {
         if self.stop_pending.as_ref().is_some_and(|(parked, _)| parked == key) {
             self.stop_pending = None;
         }
@@ -748,7 +748,7 @@ impl DictateRuntime {
 
 /// `Command::DictateStart`: take the microphone for the composer at
 /// `key` and start streaming level events.
-pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: SessionKey) {
+pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: SessionSlot) {
     let updates = ws.update_sender();
     let ws_for_capture = Arc::clone(ws);
     let key_for_capture = key.clone();
@@ -791,7 +791,7 @@ pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: Sessio
 /// it, so it never poisons the session's next attempt.
 pub(crate) async fn handle_dictate_stop(
     ws: &Arc<crate::Workspace>,
-    key: &SessionKey,
+    key: &SessionSlot,
     submit: bool,
 ) {
     let stop = {
@@ -831,12 +831,12 @@ fn refused_message(error: &forge_dictate::Error) -> String {
 #[allow(clippy::type_complexity)]
 fn begin_capture(
     ws: &Arc<crate::Workspace>,
-    key: &SessionKey,
+    key: &SessionSlot,
 ) -> Result<(forge_dictate::Capture, f32, u64, tokio::sync::mpsc::Receiver<bool>), String> {
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
     let mut runtime = ws.dictate_runtime.lock();
     if let Some(live) = runtime.recording.as_ref() {
-        return Err(format!("the microphone is in use by session {}", live.key.as_str()));
+        return Err(format!("the microphone is in use by session {}", live.key.display()));
     }
     let engine = ws
         .dictate
@@ -851,7 +851,7 @@ fn begin_capture(
     let pick = ws.dictate_device_pick.lock().clone();
     let wanted = crate::dictate::resolve_capture_device(pick.as_ref(), engine.device());
     let capture = engine
-        .try_capture_with(key.as_str(), wanted.as_deref())
+        .try_capture_with(key.display(), wanted.as_deref())
         .map_err(|busy| format!("the microphone is in use by session {}", busy.holder))?;
     // The session can close while the device open waits above. A
     // capture handed to a session that no longer exists holds the
@@ -887,7 +887,7 @@ fn begin_capture(
 /// take's join has been normalized.
 async fn run_recording(
     ws: Arc<crate::Workspace>,
-    key: SessionKey,
+    key: SessionSlot,
     mut capture: forge_dictate::Capture,
     generation: u64,
     mut stop: tokio::sync::mpsc::Receiver<bool>,
@@ -969,7 +969,7 @@ async fn run_recording(
 /// the take's segmenter closes the stream.
 async fn forward_take_progress(
     updates: tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
-    key: SessionKey,
+    key: SessionSlot,
     generation: u64,
     mut progress: Option<std::sync::mpsc::Receiver<forge_dictate::WindowProgress>>,
 ) {
@@ -1039,7 +1039,7 @@ async fn wait_for_take<T>(
 /// Stream level events until a stop decision or the capture cap stops
 /// itself. Returns whether the take should be submitted.
 async fn record_until_stopped(
-    key: &SessionKey,
+    key: &SessionSlot,
     capture: &forge_dictate::CaptureMeter,
     stop: &mut tokio::sync::mpsc::Receiver<bool>,
     updates: &tokio::sync::mpsc::UnboundedSender<SessionUpdate>,
@@ -1067,7 +1067,7 @@ async fn record_until_stopped(
 /// Clear the recording slot only when it still belongs to `key` - a
 /// teardown may already have removed it and a newer take from another
 /// session may have installed its own, which is not ours to clear.
-fn clear_recording_if_ours(ws: &crate::Workspace, key: &SessionKey) {
+fn clear_recording_if_ours(ws: &crate::Workspace, key: &SessionSlot) {
     let mut runtime = ws.dictate_runtime.lock();
     if runtime.recording.as_ref().is_some_and(|live| &live.key == key) {
         runtime.recording = None;
@@ -1077,7 +1077,7 @@ fn clear_recording_if_ours(ws: &crate::Workspace, key: &SessionKey) {
 
 /// Move this take's stop channel from the recording slot to the
 /// finishing list, so a stop during transcription still routes to it.
-fn move_to_finishing(ws: &crate::Workspace, key: &SessionKey) {
+fn move_to_finishing(ws: &crate::Workspace, key: &SessionSlot) {
     let mut runtime = ws.dictate_runtime.lock();
     if runtime.recording.as_ref().is_some_and(|live| &live.key == key)
         && let Some(live) = runtime.recording.take()
@@ -1087,7 +1087,7 @@ fn move_to_finishing(ws: &crate::Workspace, key: &SessionKey) {
 }
 
 /// Drop this take's finishing entry, whatever took it out of routing.
-fn remove_finishing(ws: &crate::Workspace, key: &SessionKey) {
+fn remove_finishing(ws: &crate::Workspace, key: &SessionSlot) {
     let mut runtime = ws.dictate_runtime.lock();
     runtime.finishing.retain(|take| &take.key != key);
     runtime.clear_stop_pending(key);
@@ -1097,7 +1097,7 @@ fn remove_finishing(ws: &crate::Workspace, key: &SessionKey) {
 /// (dropping the entry closes the stop channel, which is what makes the
 /// recording task release the device) and a submitted take loses its
 /// cancel route. Called when the session closes.
-pub(crate) fn teardown_for_closed_session(ws: &crate::Workspace, key: &SessionKey) {
+pub(crate) fn teardown_for_closed_session(ws: &crate::Workspace, key: &SessionSlot) {
     let mut runtime = ws.dictate_runtime.lock();
     if runtime.recording.as_ref().is_some_and(|live| &live.key == key) {
         runtime.recording = None;
@@ -1311,8 +1311,8 @@ mod tests {
     #[test]
     fn a_set_override_lands_on_its_own_session_and_echoes_back() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let a = crate::SessionKey::from_session_id("dictate-a");
-        let b = crate::SessionKey::from_session_id("dictate-b");
+        let a = crate::SessionSlot::from_str_for_test("dictate-a");
+        let b = crate::SessionSlot::from_str_for_test("dictate-b");
         workspace.register_domain_session(a.clone(), None);
         workspace.register_domain_session(b.clone(), None);
 
@@ -1344,7 +1344,7 @@ mod tests {
     #[test]
     fn reset_clears_every_axis_at_once() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionKey::from_session_id("dictate-reset");
+        let key = crate::SessionSlot::from_str_for_test("dictate-reset");
         workspace.register_domain_session(key.clone(), None);
 
         for update in [
@@ -1372,7 +1372,7 @@ mod tests {
     #[test]
     fn an_override_for_an_unknown_session_is_refused() {
         let (workspace, _updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionKey::from_session_id("never-registered");
+        let key = crate::SessionSlot::from_str_for_test("never-registered");
         let err = workspace
             .dispatch(Command::ResetDictateOverrides { key })
             .expect_err("an unknown session must be refused");
@@ -1382,7 +1382,7 @@ mod tests {
     #[test]
     fn a_device_pick_lands_on_the_workspace_and_echoes() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionKey::from_session_id("dictate-device");
+        let key = crate::SessionSlot::from_str_for_test("dictate-device");
         workspace.register_domain_session(key.clone(), None);
 
         workspace
@@ -1412,8 +1412,8 @@ mod tests {
     #[test]
     fn a_device_pick_is_shared_by_every_session() {
         let (workspace, _updates) = crate::Workspace::testing_stub();
-        let first = crate::SessionKey::from_session_id("dictate-first");
-        let second = crate::SessionKey::from_session_id("dictate-second");
+        let first = crate::SessionSlot::from_str_for_test("dictate-first");
+        let second = crate::SessionSlot::from_str_for_test("dictate-second");
         workspace.register_domain_session(first.clone(), None);
         workspace.register_domain_session(second.clone(), None);
 
@@ -1434,7 +1434,7 @@ mod tests {
     #[test]
     fn reset_clears_the_device_pick_with_the_axes() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionKey::from_session_id("dictate-device-reset");
+        let key = crate::SessionSlot::from_str_for_test("dictate-device-reset");
         workspace.register_domain_session(key.clone(), None);
 
         workspace
@@ -1617,8 +1617,8 @@ mod tests {
 mod dictate_lifecycle_tests {
     use super::*;
 
-    fn key(name: &str) -> SessionKey {
-        SessionKey::from_session_id(name.to_owned())
+    fn key(name: &str) -> SessionSlot {
+        SessionSlot::from_str_for_test(name.to_owned())
     }
 
     /// The meter cadence is a decided constant - a deliberate fourth

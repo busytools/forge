@@ -7,7 +7,7 @@
 //!   plus scan/watch handles).
 //! - Spawns forwarding threads that consume the agent's progress
 //!   channels and re-emit as `FileIndexEvent`s tagged with
-//!   `SessionKey` + generation so the workspace-wide event pump
+//!   `SessionSlot` + generation so the workspace-wide event pump
 //!   routes them to the right bucket.
 //! - Owns the reducer ([`apply_event`]) and the autocomplete
 //!   ranking ([`visible_candidates`], [`rank_and_truncate_candidates`]).
@@ -43,21 +43,21 @@ pub enum FileIndexEvent {
     /// `FileIndexState`. Without it, A's scanner output would land
     /// in B's index whenever B is active during A's scan.
     ScanBatch {
-        key: forge_workspace::SessionKey,
+        key: forge_workspace::SessionSlot,
         generation: u64,
         entries: Vec<FileCandidate>,
     },
     ScanFinished {
-        key: forge_workspace::SessionKey,
+        key: forge_workspace::SessionSlot,
         generation: u64,
     },
     FsBatch {
-        key: forge_workspace::SessionKey,
+        key: forge_workspace::SessionSlot,
         generation: u64,
         changes: Vec<FileIndexChange>,
     },
     RebuildRequested {
-        key: forge_workspace::SessionKey,
+        key: forge_workspace::SessionSlot,
         generation: u64,
     },
 }
@@ -247,7 +247,7 @@ fn apply_event(app: &mut App, event: FileIndexEvent) {
 /// Run `refresh_after_mutation` only when the just-mutated bucket
 /// is the active one. Background-bucket mutations don't drive any
 /// visible UI, so the @-mention refresh is a wasted hop.
-fn refresh_after_mutation_if_active(app: &mut App, key: &forge_workspace::SessionKey) {
+fn refresh_after_mutation_if_active(app: &mut App, key: &forge_workspace::SessionSlot) {
     if app.active_session_key.as_ref() == Some(key) {
         refresh_after_mutation(app);
     }
@@ -285,7 +285,7 @@ fn apply_change(entries: &mut BTreeMap<String, FileCandidate>, change: FileIndex
 /// pushes it onto `event_tx`. Returns a handle whose Drop aborts
 /// the agent walker.
 fn spawn_scan(
-    key: forge_workspace::SessionKey,
+    key: forge_workspace::SessionSlot,
     root: PathBuf,
     generation: u64,
     respect_gitignore: bool,
@@ -314,7 +314,7 @@ fn spawn_scan(
 /// each [`env::WatchProgress`] with `key` + `generation`. Returns
 /// a handle whose Drop stops the agent watcher.
 fn spawn_watch(
-    key: forge_workspace::SessionKey,
+    key: forge_workspace::SessionSlot,
     root: PathBuf,
     generation: u64,
     respect_gitignore: bool,
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn a_stale_scan_batch_cannot_undo_a_watcher_removal() {
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_str_for_test("a");
+        let key = forge_workspace::SessionSlot::from_str_for_test("a");
         app.sessions
             .entry(key.clone())
             .or_insert_with(|| crate::app::session::UiSession::new(key.clone(), "test-project"));
@@ -533,8 +533,8 @@ mod tests {
     #[test]
     fn scan_event_routes_to_targeted_bucket_not_active_bucket() {
         let mut app = App::test_default();
-        let key_a = forge_workspace::SessionKey::from_str_for_test("a");
-        let key_b = forge_workspace::SessionKey::from_str_for_test("b");
+        let key_a = forge_workspace::SessionSlot::from_str_for_test("a");
+        let key_b = forge_workspace::SessionSlot::from_str_for_test("b");
         app.sessions
             .entry(key_a.clone())
             .or_insert_with(|| crate::app::session::UiSession::new(key_a.clone(), "test-project"));

@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use forge_primitives::git_diff::RepoGate;
 use forge_primitives::review::ReviewStatus;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::mcp::caller_context::CallerContext;
 use crate::mcp::review::{ReviewDetail, ReviewSummary};
 use crate::workspace::Workspace;
@@ -32,7 +32,7 @@ pub struct ReviewScope {
     pub project: String,
     pub branch: String,
     pub author_label: String,
-    pub caller: SessionKey,
+    pub caller: SessionSlot,
 }
 
 /// Which step of [`ReviewFacade::resolve_scope`]'s chain failed. One
@@ -135,7 +135,7 @@ impl ScopeError {
 #[async_trait]
 pub trait ReviewFacade: Send + Sync {
     /// Resolve the caller to its review scope, or the step that failed.
-    async fn resolve_scope(&self, caller: &SessionKey) -> Result<ReviewScope, ScopeError>;
+    async fn resolve_scope(&self, caller: &SessionSlot) -> Result<ReviewScope, ScopeError>;
 
     /// `review__list` rows for the scope's branch, newest review first.
     fn list(&self, scope: &ReviewScope) -> Result<Vec<ReviewSummary>, String>;
@@ -178,7 +178,7 @@ impl ProdReviewFacade {
 /// that discriminates the failing step. This is the line to reach for
 /// when a caller reports it cannot read its reviews.
 fn warn_unresolved(
-    caller: &SessionKey,
+    caller: &SessionSlot,
     cx: Option<&CallerContext>,
     cwd_raw: Option<&str>,
     error: ScopeError,
@@ -187,7 +187,7 @@ fn warn_unresolved(
         target: "forge_workspace::review",
         event_name = "review_scope_unresolved",
         step = error.step(),
-        caller = %caller.as_str(),
+        caller = %caller.display(),
         project = cx.map_or("-", |c| c.project_name.as_str()),
         worker_label = cx.and_then(|c| c.worker_label.as_deref()).unwrap_or("-"),
         cwd_raw = cwd_raw.unwrap_or("-"),
@@ -200,7 +200,7 @@ fn warn_unresolved(
 
 #[async_trait]
 impl ReviewFacade for ProdReviewFacade {
-    async fn resolve_scope(&self, caller: &SessionKey) -> Result<ReviewScope, ScopeError> {
+    async fn resolve_scope(&self, caller: &SessionSlot) -> Result<ReviewScope, ScopeError> {
         let Some(ws) = self.0.upgrade() else {
             return Err(warn_unresolved(caller, None, None, ScopeError::WorkspaceGone));
         };
@@ -310,7 +310,7 @@ impl MockReviewFacade {
                 project: "forge".to_owned(),
                 branch: "feat".to_owned(),
                 author_label: "implementer".to_owned(),
-                caller: SessionKey::from_session_id("caller"),
+                caller: SessionSlot::from_str_for_test("caller"),
             })),
             summaries: parking_lot::Mutex::new(Vec::new()),
             review_branches: parking_lot::Mutex::new(Vec::new()),
@@ -330,7 +330,7 @@ impl MockReviewFacade {
 #[cfg(test)]
 #[async_trait]
 impl ReviewFacade for MockReviewFacade {
-    async fn resolve_scope(&self, _caller: &SessionKey) -> Result<ReviewScope, ScopeError> {
+    async fn resolve_scope(&self, _caller: &SessionSlot) -> Result<ReviewScope, ScopeError> {
         self.scope.lock().clone()
     }
 
@@ -375,7 +375,7 @@ impl ReviewFacade for MockReviewFacade {
 #[cfg(test)]
 mod resolve_scope_tests {
     use super::{ProdReviewFacade, ReviewFacade, ReviewScope, ScopeError};
-    use crate::SessionKey;
+    use crate::SessionSlot;
     use crate::workspace::Workspace;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Weak};
@@ -387,7 +387,7 @@ mod resolve_scope_tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        let reviewer = SessionKey::from_session_id("lead-uuid");
+        let reviewer = SessionSlot::from_str_for_test("lead-uuid");
         ws.submit_review("myproj", "feat/theirs", None, &[], reviewer.clone())
             .expect("submit theirs");
         ws.submit_review("other", "feat/elsewhere", None, &[], reviewer).expect("submit elsewhere");
@@ -395,7 +395,7 @@ mod resolve_scope_tests {
             project: "myproj".to_owned(),
             branch: "feat/mine".to_owned(),
             author_label: "implementer".to_owned(),
-            caller: SessionKey::from_session_id("caller-uuid"),
+            caller: SessionSlot::from_str_for_test("caller-uuid"),
         };
         assert_eq!(
             ProdReviewFacade(Arc::downgrade(&ws)).branches_with_reviews(&scope),
@@ -443,14 +443,31 @@ mod resolve_scope_tests {
         path
     }
 
-    /// A workspace holding one project rooted at `cwd`, with the returned
-    /// caller registered as a catalog session whose cwd is that root.
-    fn ws_with_session_cwd(cwd: &str) -> (Arc<Workspace>, SessionKey) {
-        let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project("myproj", cwd);
-        let caller = SessionKey::from_session_id("caller-uuid");
-        ws.record_connected_session(cwd, caller.as_str(), None);
-        (ws, caller)
+    /// A workspace holding one project rooted at `cwd`, which the
+    /// returned lead caller resolves through. The project is declared in
+    /// the config rather than seeded into the test overlay: a lead's cwd
+    /// comes from `project_for_slot`, which reads `config.projects`.
+    fn ws_with_session_cwd(cwd: &str) -> (Arc<Workspace>, SessionSlot) {
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.projects.push(crate::config::LoadedProject {
+            name: "myproj".to_owned(),
+            path: PathBuf::from(cwd),
+            display_path: cwd.to_owned(),
+            org: "TestOrg".to_owned(),
+            accounts: Vec::new(),
+            fallback_accounts: Vec::new(),
+            auto_start: false,
+            model: None,
+            env: std::collections::HashMap::new(),
+            max_workers: None,
+            permission_mode: forge_primitives::permission::PermissionMode::Auto,
+        });
+        let (ws, _rx) = Workspace::testing_stub_with_config(
+            PathBuf::from("/tmp/forge-review-testing-stub"),
+            config,
+        )
+        .expect("the stub config's [[slack]] entries are well-formed");
+        (ws, SessionSlot::lead("TestOrg", "myproj"))
     }
 
     /// Register `label` as a live worker of the project rooted at
@@ -463,7 +480,7 @@ mod resolve_scope_tests {
         project_root: &str,
         label: &str,
         is_git_repo_at_spawn: bool,
-    ) -> SessionKey {
+    ) -> SessionSlot {
         ws.seed_test_project("myproj", project_root);
         let key = ws
             .list_projects()
@@ -471,16 +488,17 @@ mod resolve_scope_tests {
             .find(|v| v.name == "myproj")
             .map(|v| v.key)
             .expect("seeded project");
-        let caller = SessionKey::from_session_id("worker-uuid");
+        let caller = SessionSlot::worker("TestOrg", "myproj", label);
         ws.insert_live_worker(
             &key,
             crate::WorkerEntry {
                 label: label.to_owned(),
                 charter: "build".to_owned(),
-                session_key: caller.clone(),
+                slot: caller.clone(),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".to_owned(),
+                spawned_by: SessionSlot::lead("TestOrg", "myproj"),
                 needs_tag: false,
                 is_git_repo_at_spawn,
                 diagnostic: None,
@@ -490,7 +508,7 @@ mod resolve_scope_tests {
         caller
     }
 
-    async fn scope_err(ws: &Arc<Workspace>, caller: &SessionKey) -> ScopeError {
+    async fn scope_err(ws: &Arc<Workspace>, caller: &SessionSlot) -> ScopeError {
         ProdReviewFacade(Arc::downgrade(ws))
             .resolve_scope(caller)
             .await
@@ -500,7 +518,7 @@ mod resolve_scope_tests {
     #[tokio::test]
     async fn workspace_gone_is_its_own_reason() {
         let err = ProdReviewFacade(Weak::new())
-            .resolve_scope(&SessionKey::from_session_id("caller-uuid"))
+            .resolve_scope(&SessionSlot::from_str_for_test("caller-uuid"))
             .await
             .expect_err("a dropped workspace fails");
         assert_eq!(err, ScopeError::WorkspaceGone);
@@ -510,7 +528,7 @@ mod resolve_scope_tests {
     #[tokio::test]
     async fn caller_outside_every_project_is_its_own_reason() {
         let (ws, _rx) = Workspace::testing_stub();
-        let err = scope_err(&ws, &SessionKey::from_session_id("ghost-uuid")).await;
+        let err = scope_err(&ws, &SessionSlot::from_str_for_test("ghost-uuid")).await;
         assert_eq!(err, ScopeError::UnknownCaller);
         assert!(!err.message().contains("detached"), "{}", err.message());
     }
@@ -537,7 +555,7 @@ mod resolve_scope_tests {
             "worktree-pyth-review-fixes",
             Some("round 1".to_owned()),
             &[],
-            SessionKey::from_session_id("lead-uuid"),
+            SessionSlot::from_str_for_test("lead-uuid"),
         )
         .expect("submit review on the worker's branch");
 

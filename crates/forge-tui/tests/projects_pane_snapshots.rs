@@ -18,7 +18,7 @@ use forge_tui::app::PaneHitTarget;
 use forge_tui::app::apply_session_update;
 use forge_tui::app::session::{SessionLifecycleState, UiSession};
 use forge_tui::ui::{projects_pane, top_bar};
-use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionUpdate, SessionView};
+use forge_workspace::{ProjectKey, ProjectView, SessionSlot, SessionUpdate, SessionView};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -26,7 +26,7 @@ use ratatui::layout::Rect;
 /// Insert (or update) a `UiSession` bucket for `key` carrying
 /// `lifecycle_state`. The Projects pane reads lifecycle directly off
 /// the bucket; no workspace lookup needed.
-fn register_lifecycle_for_test(app: &mut App, key: &SessionKey, state: SessionLifecycleState) {
+fn register_lifecycle_for_test(app: &mut App, key: &SessionSlot, state: SessionLifecycleState) {
     let bucket = app
         .sessions
         .entry(key.clone())
@@ -68,7 +68,7 @@ fn project_view(name: &str, sessions: Vec<SessionView>) -> ProjectView {
 }
 
 fn session_view(id: &str, label: &str) -> SessionView {
-    SessionView::new_for_test(SessionKey::from_str_for_test(id), label, false, None)
+    SessionView::new_for_test(forge_primitives::SessionId::new(id), label, false, None)
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn renders_banner_and_project_row_under_org_header() {
 
     // Insert a Session bucket for the lead so the pane treats `forge`
     // as a live project (gets the close-affordance + active glyph).
-    let lead_key = SessionKey::from_str_for_test("session-a");
+    let lead_key = SessionSlot::lead("Test", "forge");
     let lead_session = UiSession::new(lead_key.clone(), "forge");
     app.sessions.insert(lead_key.clone(), lead_session);
     app.active_session_key = Some(lead_key.clone());
@@ -127,7 +127,7 @@ fn live_and_idle_projects_render_under_same_org_with_distinct_glyphs() {
         project_view("bravo", vec![bravo_session.clone()]),
     ];
 
-    let alpha_key = SessionKey::from_str_for_test("alpha-1");
+    let alpha_key = SessionSlot::lead("Test", "alpha");
     app.sessions.insert(alpha_key.clone(), UiSession::new(alpha_key.clone(), "alpha"));
     app.active_session_key = Some(alpha_key.clone());
 
@@ -162,7 +162,7 @@ fn medium_tier_truncates_long_project_labels() {
     // 18-char Medium project budget (20 - 2 indent = 18).
     let projects = vec![project_view("stargate-chain-pulse", vec![long_session.clone()])];
 
-    let lead_key = SessionKey::from_str_for_test("really-long-session-id");
+    let lead_key = SessionSlot::from_str_for_test("really-long-session-id");
     app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone(), "stargate-chain-pulse"));
     app.active_session_key = Some(lead_key);
 
@@ -242,7 +242,7 @@ fn render_top_bar_to_lines(app: &mut App, width: u16) -> Vec<String> {
 #[test]
 fn narrow_top_bar_renders_icon_and_stamps_target() {
     let mut app = App::test_default();
-    let key_a = SessionKey::from_str_for_test("session-a");
+    let key_a = SessionSlot::lead("Test", "forge");
     app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone(), "test-project"));
     app.active_session_key = Some(key_a);
 
@@ -267,7 +267,7 @@ fn narrow_top_bar_renders_icon_and_stamps_target() {
 fn narrow_overlay_banner_includes_close_glyph_and_target() {
     let mut app = App::test_default();
     let projects = vec![project_view("forge", vec![session_view("session-a", "main")])];
-    let lead_key = SessionKey::from_str_for_test("session-a");
+    let lead_key = SessionSlot::lead("Test", "forge");
     app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone(), "forge"));
     app.active_session_key = Some(lead_key);
 
@@ -309,7 +309,7 @@ fn narrow_overlay_keeps_full_unmodified_project_key_in_targets() {
         "really-long-project-name",
         vec![session_view("really-long-session-id", "lead")],
     )];
-    let lead_key = SessionKey::from_str_for_test("really-long-session-id");
+    let lead_key = SessionSlot::from_str_for_test("really-long-session-id");
     app.sessions
         .insert(lead_key.clone(), UiSession::new(lead_key.clone(), "really-long-project-name"));
     app.active_session_key = Some(lead_key);
@@ -368,8 +368,8 @@ fn spinner_shape_identical_accent_on_selected_row() {
         project_view("stargate", vec![session_view("session-s", "lead-b")]),
     ];
 
-    let key_a = SessionKey::from_str_for_test("session-r");
-    let key_b = SessionKey::from_str_for_test("session-s");
+    let key_a = SessionSlot::lead("Test", "forge");
+    let key_b = SessionSlot::lead("Test", "stargate");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Running);
     register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Running);
@@ -412,8 +412,8 @@ fn idle_shape_identical_accent_on_selected_row() {
         project_view("stargate", vec![session_view("session-j", "lead-b")]),
     ];
 
-    let key_a = SessionKey::from_str_for_test("session-i");
-    let key_b = SessionKey::from_str_for_test("session-j");
+    let key_a = SessionSlot::lead("Test", "forge");
+    let key_b = SessionSlot::lead("Test", "stargate");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
     register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Idle);
@@ -457,8 +457,8 @@ fn attention_glyph_shape_stable_accent_on_selected_row() {
         project_view("stargate", vec![session_view("session-b", "lead-b")]),
     ];
 
-    let key_a = SessionKey::from_str_for_test("session-a");
-    let key_b = SessionKey::from_str_for_test("session-b");
+    let key_a = SessionSlot::lead("Test", "forge");
+    let key_b = SessionSlot::lead("Test", "stargate");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Attention);
     register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Attention);
@@ -528,8 +528,8 @@ fn wide_tier_background_session_with_pending_prompt_renders_yellow_glyph() {
         project_view("stargate", vec![session_view("session-b", "lead-b")]),
     ];
 
-    let key_a = SessionKey::from_str_for_test("session-a");
-    let key_b = SessionKey::from_str_for_test("session-b");
+    let key_a = SessionSlot::lead("Test", "forge");
+    let key_b = SessionSlot::lead("Test", "stargate");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
     register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Idle);
@@ -570,8 +570,8 @@ fn wide_tier_background_session_with_failed_turn_renders_red_cross() {
         project_view("stargate", vec![session_view("session-b", "lead-b")]),
     ];
 
-    let key_a = SessionKey::from_str_for_test("session-a");
-    let key_b = SessionKey::from_str_for_test("session-b");
+    let key_a = SessionSlot::lead("Test", "forge");
+    let key_b = SessionSlot::lead("Test", "stargate");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
     register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Idle);
@@ -638,7 +638,7 @@ fn focused_session_pending_prompt_keeps_triangle_takes_accent() {
     // △; selection recolours the glyph to the accent, never swaps it.
     let projects = vec![project_view("forge", vec![session_view("session-a", "lead-a")])];
 
-    let key_a = SessionKey::from_str_for_test("session-a");
+    let key_a = SessionSlot::lead("Test", "forge");
     app.active_session_key = Some(key_a.clone());
     register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Running);
 
@@ -683,8 +683,8 @@ fn worker_selection_highlights_only_the_worker_row() {
         vec![session_view("lead-a", "lead-a"), session_view("worker-1", "reviewer")],
     )];
 
-    let lead_key = SessionKey::from_str_for_test("lead-a");
-    let worker_key = SessionKey::from_str_for_test("worker-1");
+    let lead_key = SessionSlot::from_str_for_test("lead-a");
+    let worker_key = SessionSlot::from_str_for_test("worker-1");
 
     // Lead mid-AskUserQuestion: turn in flight, question pending.
     register_lifecycle_for_test(&mut app, &lead_key, SessionLifecycleState::Running);
@@ -711,10 +711,11 @@ fn worker_selection_highlights_only_the_worker_row() {
         forge_workspace::WorkerEntry {
             label: "reviewer".into(),
             charter: "be sharp".into(),
-            session_key: worker_key.clone(),
+            slot: worker_key.clone(),
+            session_id: None,
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-a".into(),
+            spawned_by: SessionSlot::from_str_for_test("lead-a"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,

@@ -196,10 +196,9 @@ fn find_live_bucket<'app>(
     app: &'app App,
     project: &ProjectView,
 ) -> Option<&'app crate::app::session::UiSession> {
-    for sess in &project.sessions {
-        if let Some(bucket) = app.sessions.get(&sess.session) {
-            return Some(bucket);
-        }
+    let lead = forge_workspace::SessionSlot::lead(&project.org, &project.name);
+    if let Some(bucket) = app.sessions.get(&lead) {
+        return Some(bucket);
     }
     let path_str = project.path.to_string_lossy();
     app.sessions.values().find(|s| s.cwd_raw.as_str() == path_str.as_ref())
@@ -495,7 +494,7 @@ fn build_picker_content(
     // One store scan and one registry snapshot for the whole picker;
     // the per-project lookups below are map indexes.
     let worker_labels =
-        app.workspace.as_ref().map(|ws| ws.dynamic_worker_labels_by_project()).unwrap_or_default();
+        app.workspace.as_ref().map(|ws| ws.worker_labels_by_project()).unwrap_or_default();
     let live_workers =
         app.workspace.as_ref().map(|ws| ws.live_worker_states_by_project()).unwrap_or_default();
 
@@ -528,7 +527,7 @@ fn build_picker_content(
             .map(|ws| ws.list_projects())
             .and_then(|list| list.into_iter().find(|p| p.name == row.project_name));
         if let Some(project) = project_view.as_ref()
-            && let Some(labels) = worker_labels.get(project.key.as_str())
+            && let Some(labels) = worker_labels.get(&project.key)
         {
             let live = live_workers.get(&project.key).map_or(&[][..], Vec::as_slice);
             push_worker_rows(&mut lines, project, app, labels, live);
@@ -846,7 +845,7 @@ fn worker_lifecycle(
     match entry.status {
         WorkerLiveness::Spawning => SessionLifecycleState::Spawning,
         WorkerLiveness::Failed => SessionLifecycleState::Failed,
-        WorkerLiveness::Running => app.sessions.get(&entry.session_key).map_or_else(
+        WorkerLiveness::Running => app.sessions.get(&entry.slot).map_or_else(
             || crate::ui::worker_lifecycle_without_bucket(entry.status),
             |s| s.lifecycle_state,
         ),
@@ -1136,7 +1135,7 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
 /// clear. Resolving through the catalog would leave the stub in place
 /// and the row reading failed.
 fn retry_project(app: &mut App, project_name: &str) {
-    let failed: Vec<forge_workspace::SessionKey> = app
+    let failed: Vec<forge_workspace::SessionSlot> = app
         .sessions
         .iter()
         .filter(|(_, bucket)| {
@@ -1177,7 +1176,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::app::session::UiSession;
-    use forge_workspace::SessionKey;
+    use forge_workspace::SessionSlot;
     use std::time::Duration;
 
     /// Retrying a failed project clears its bucket. Found by the bucket's
@@ -1188,7 +1187,7 @@ mod tests {
     #[test]
     fn retry_clears_a_failed_bucket_the_catalog_never_saw() {
         let mut app = App::test_default();
-        let stub = SessionKey::from_session_id("failed-stub");
+        let stub = SessionSlot::from_str_for_test("failed-stub");
         let mut bucket = UiSession::new(stub.clone(), "forge");
         bucket.lifecycle_state = SessionLifecycleState::Failed;
         app.sessions.insert(stub.clone(), bucket);
@@ -1207,7 +1206,7 @@ mod tests {
     #[test]
     fn retry_leaves_a_settled_bucket_alone() {
         let mut app = App::test_default();
-        let settled = SessionKey::from_session_id("settled-uuid");
+        let settled = SessionSlot::from_str_for_test("settled-uuid");
         let mut bucket = UiSession::new(settled.clone(), "forge");
         bucket.lifecycle_state = SessionLifecycleState::Idle;
         app.sessions.insert(settled.clone(), bucket);
@@ -1252,7 +1251,7 @@ mod tests {
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
             .expect("workspace");
         let project = workspace.list_projects().into_iter().next().expect("one project");
-        workspace.seed_test_dynamic_worker(&project.key, "reviewer");
+        workspace.seed_test_worker_row(&project.key, "reviewer");
         workspace.seed_test_ready_account("Stargate");
         workspace.seed_test_gateway_ready(false);
         workspace.seed_test_gateway_bind_error(Some("Address already in use".to_owned()));
@@ -1356,8 +1355,8 @@ mod tests {
         let workspace = forge_workspace::Workspace::new_for_test(config_dir.path().to_owned())
             .expect("workspace");
         let project = workspace.list_projects().into_iter().next().expect("one project");
-        workspace.seed_test_dynamic_worker(&project.key, "reviewer");
-        workspace.seed_test_dynamic_worker(&project.key, "scratch");
+        workspace.seed_test_worker_row(&project.key, "reviewer");
+        workspace.seed_test_worker_row(&project.key, "scratch");
         workspace.seed_test_ready_account("Stargate");
 
         let mut app = App::test_default();
@@ -1609,7 +1608,7 @@ mod tests {
         forge_workspace::LiveWorkerState {
             label: label.to_owned(),
             status,
-            session_key: SessionKey::from_session_id(session.to_owned()),
+            slot: SessionSlot::from_str_for_test(session.to_owned()),
         }
     }
 
@@ -1627,7 +1626,7 @@ mod tests {
             worker_entry("settled", "worker-settled", WorkerLiveness::Running),
             worker_entry("unbucketed", "worker-unbucketed", WorkerLiveness::Running),
         ];
-        let settled_key = SessionKey::from_session_id("worker-settled".to_owned());
+        let settled_key = SessionSlot::from_str_for_test("worker-settled".to_owned());
         let mut bucket = UiSession::new(settled_key.clone(), "test-project");
         bucket.lifecycle_state = SessionLifecycleState::Running;
         app.sessions.insert(settled_key, bucket);

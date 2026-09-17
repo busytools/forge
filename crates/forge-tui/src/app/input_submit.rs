@@ -100,11 +100,13 @@ pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
     };
 
     let session_id = sid.to_string();
+    let Some(session_key) = app.active_session_key.clone() else {
+        return Err("no active session".to_owned());
+    };
     app.dispatch_command(|key| forge_workspace::Command::Cancel { key })
         .map_err(|e| e.to_string())?;
     app.set_pending_cancel(true);
     app.set_cancelled_turn_pending_hint(true);
-    let session_key = forge_workspace::SessionKey::from_session_id(session_id.clone());
     let _ = app.update_tx.send(forge_workspace::SessionUpdate::TurnCancelled { key: session_key });
     tracing::info!(
         target: crate::logging::targets::APP_INPUT,
@@ -220,6 +222,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
     let session_id = sid.to_string();
     let input_chars = text.chars().count();
     let tx = app.update_tx.clone();
+    let fallback_key = app.active_session_key.clone();
     match app.dispatch_command(|key| forge_workspace::Command::Prompt {
         key,
         text,
@@ -237,13 +240,14 @@ fn dispatch_prompt(app: &mut App, text: String) {
             );
         }
         Err(e) => {
-            let session_key = forge_workspace::SessionKey::from_session_id(session_id);
-            let _ = tx.send(forge_workspace::SessionUpdate::TurnError {
-                key: session_key,
-                message: e.to_string(),
-                class: None,
-                terminal_reason: None,
-            });
+            if let Some(session_key) = fallback_key {
+                let _ = tx.send(forge_workspace::SessionUpdate::TurnError {
+                    key: session_key,
+                    message: e.to_string(),
+                    class: None,
+                    terminal_reason: None,
+                });
+            }
         }
     }
 }

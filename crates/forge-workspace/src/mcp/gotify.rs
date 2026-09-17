@@ -22,8 +22,8 @@ use forge_connectors::gotify::GotifyRecent;
 use forge_primitives::GotifySubscription;
 use uuid::Uuid;
 
+use crate::SessionSlot;
 use crate::mcp::gotify::facade::{GotifyFacade, GotifyReadError, GotifySubscribeError};
-use crate::mcp::peers::facade::CallerKeyResolver;
 
 pub(crate) mod facade;
 pub mod types;
@@ -31,17 +31,17 @@ pub mod types;
 /// Attach the five Gotify tools to an existing [`McpServerBuilder`].
 /// Called for BOTH lead and worker sessions (any-caller), so
 /// `build_forge_server` invokes this unconditionally. `apps` / `recent`
-/// are server-global reads and don't take the caller key.
+/// are server-global reads and don't take the caller slot.
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn GotifyFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 ) -> McpServerBuilder {
-    let subscribe = Subscribe { facade: facade.clone(), caller_key: caller_key.clone() };
-    let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
+    let subscribe = Subscribe { facade: facade.clone(), slot: slot.clone() };
+    let list = List { facade: facade.clone(), slot: slot.clone() };
     let apps = Apps { facade: facade.clone() };
     let recent = Recent { facade: facade.clone() };
-    let unsubscribe = Unsubscribe { facade, caller_key };
+    let unsubscribe = Unsubscribe { facade, slot };
     builder.tool(subscribe).tool(list).tool(unsubscribe).tool(apps).tool(recent)
 }
 
@@ -98,7 +98,7 @@ fn recent_to_json(n: &GotifyRecent) -> serde_json::Value {
 
 struct Subscribe {
     facade: Arc<dyn GotifyFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -152,12 +152,8 @@ impl Tool for Subscribe {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let caller = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
         match self.facade.subscribe(
-            &caller,
+            &self.slot,
             args.applications.unwrap_or_default(),
             args.min_priority,
         ) {
@@ -169,7 +165,7 @@ impl Tool for Subscribe {
 
 struct List {
     facade: Arc<dyn GotifyFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[async_trait::async_trait]
@@ -194,11 +190,7 @@ impl Tool for List {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let caller = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-        let subs = self.facade.list(&caller);
+        let subs = self.facade.list(&self.slot);
         let arr: Vec<serde_json::Value> = subs.iter().map(sub_to_json).collect();
         match serde_json::to_string_pretty(&serde_json::Value::Array(arr)) {
             Ok(json) => ToolOutput::text(json),
@@ -209,7 +201,7 @@ impl Tool for List {
 
 struct Unsubscribe {
     facade: Arc<dyn GotifyFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
@@ -248,11 +240,7 @@ impl Tool for Unsubscribe {
         let Ok(id) = Uuid::parse_str(&args.id) else {
             return tool_error(format!("not a valid subscription id: {}", args.id));
         };
-        let caller = match self.caller_key.current() {
-            Ok(k) => k,
-            Err(err) => return tool_error(err.to_string()),
-        };
-        if self.facade.unsubscribe(&caller, id) {
+        if self.facade.unsubscribe(&self.slot, id) {
             ToolOutput::text(format!("unsubscribed {id}"))
         } else {
             tool_error(format!("no subscription with id {id} in your project"))
@@ -378,12 +366,11 @@ impl Tool for Recent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionKey;
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use std::time::SystemTime;
 
-    fn resolver() -> CallerKeyResolver {
-        CallerKeyResolver::from_fixed(SessionKey::from_session_id("caller"))
+    fn caller_slot() -> SessionSlot {
+        SessionSlot::from_str_for_test("caller")
     }
 
     fn sample_sub(id: Uuid, project: &str) -> GotifySubscription {
@@ -406,7 +393,7 @@ mod tests {
         let id = Uuid::from_u128(0x42);
         let mock = Arc::new(MockGotifyFacade::new());
         *mock.subscribe_result.lock() = Some(Ok(id));
-        let tool = Subscribe { facade: mock.clone(), caller_key: resolver() };
+        let tool = Subscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({ "applications": ["alerts"], "min_priority": 5 })))
@@ -424,7 +411,7 @@ mod tests {
     async fn subscribe_surfaces_not_configured_error() {
         let mock = Arc::new(MockGotifyFacade::new());
         *mock.subscribe_result.lock() = Some(Err(GotifySubscribeError::NotConfigured));
-        let tool = Subscribe { facade: mock.clone(), caller_key: resolver() };
+        let tool = Subscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error);
@@ -441,7 +428,7 @@ mod tests {
         let b = Uuid::from_u128(0xb);
         let mock = Arc::new(MockGotifyFacade::new());
         *mock.subs.lock() = vec![sample_sub(a, "p"), sample_sub(b, "p")];
-        let tool = List { facade: mock.clone(), caller_key: resolver() };
+        let tool = List { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error);
@@ -457,7 +444,7 @@ mod tests {
         let id = Uuid::from_u128(0xc1);
         let mock = Arc::new(MockGotifyFacade::new());
         *mock.unsubscribe_result.lock() = Some(true);
-        let tool = Unsubscribe { facade: mock.clone(), caller_key: resolver() };
+        let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "id": id.to_string() }))).await;
         assert!(!out.is_error);
@@ -472,7 +459,7 @@ mod tests {
     async fn unsubscribe_unowned_or_missing_id_is_error() {
         let mock = Arc::new(MockGotifyFacade::new());
         *mock.unsubscribe_result.lock() = Some(false);
-        let tool = Unsubscribe { facade: mock.clone(), caller_key: resolver() };
+        let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out =
             tool.call(input(serde_json::json!({ "id": Uuid::from_u128(0x9).to_string() }))).await;
@@ -482,7 +469,7 @@ mod tests {
     #[tokio::test]
     async fn unsubscribe_rejects_bad_uuid_without_touching_facade() {
         let mock = Arc::new(MockGotifyFacade::new());
-        let tool = Unsubscribe { facade: mock.clone(), caller_key: resolver() };
+        let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "id": "not-a-uuid" }))).await;
         assert!(out.is_error);
@@ -583,10 +570,10 @@ mod tests {
     #[test]
     fn tool_names_are_the_gotify_family() {
         let mock = MockGotifyFacade::new().into_arc();
-        let resolver = resolver();
-        let subscribe = Subscribe { facade: mock.clone(), caller_key: resolver.clone() };
-        let list = List { facade: mock.clone(), caller_key: resolver.clone() };
-        let unsubscribe = Unsubscribe { facade: mock.clone(), caller_key: resolver };
+        let slot = caller_slot();
+        let subscribe = Subscribe { facade: mock.clone(), slot: slot.clone() };
+        let list = List { facade: mock.clone(), slot: slot.clone() };
+        let unsubscribe = Unsubscribe { facade: mock.clone(), slot };
         let apps = Apps { facade: mock.clone() };
         let recent = Recent { facade: mock };
         assert_eq!(subscribe.name(), "gotify__subscribe");

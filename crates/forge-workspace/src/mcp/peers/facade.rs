@@ -31,99 +31,9 @@ use crate::mcp::peers::types::{
 };
 use tracing::warn;
 
-use crate::SessionKey;
-use crate::domain_session::DomainSession;
+use crate::SessionSlot;
 use crate::protocol::{Command, SessionUpdate};
 use crate::workspace::Workspace;
-
-/// Snapshot the caller's current [`SessionKey`] on demand.
-///
-/// Each session's peer-MCP tools hold a `CallerKeyResolver` instead of
-/// a bare `SessionKey` because the session's key isn't stable - `/new`
-/// and `/clear` move the pooled key when the CLI adopts a different id,
-/// through [`Workspace::migrate_session_task`]. Tools that baked the
-/// key in at server-build time would see stale lookups after the
-/// rekey.
-///
-/// Production resolver reads from `DomainSession.key` via the
-/// session's shared `Arc<Mutex<DomainSession>>`. The migrate path
-/// updates `DomainSession.key` in place, so the resolver always
-/// returns the current key.
-///
-/// Test resolvers can be any closure (typically returning a fixed
-/// fake key).
-#[derive(Clone)]
-pub struct CallerKeyResolver(Arc<dyn Fn() -> Result<SessionKey, ResolverDetached> + Send + Sync>);
-
-/// Returned by [`CallerKeyResolver::current`] when the underlying
-/// `DomainSession` has been dropped (typically: workspace shutdown
-/// happening concurrently with a peer/worker tool invocation). The
-/// Tool impl should surface this as an `is_error` tool response -
-/// the recipient session is dying, the LLM call won't have anywhere
-/// to land anyway. Replaces the prior `__detached__` SessionKey
-/// sentinel which forced every consumer to compare against a magic
-/// string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResolverDetached;
-
-impl std::fmt::Display for ResolverDetached {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("caller session is detached (DomainSession dropped)")
-    }
-}
-
-impl std::error::Error for ResolverDetached {}
-
-impl std::fmt::Debug for CallerKeyResolver {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CallerKeyResolver").finish_non_exhaustive()
-    }
-}
-
-impl CallerKeyResolver {
-    /// Build a resolver that reads `DomainSession.key` through a
-    /// `Weak<Mutex<DomainSession>>`. Use this in production (the
-    /// spawn path).
-    ///
-    /// **Weak intentionally**: the DomainSession's `conn` field
-    /// holds an `Arc<AgentHandle>`, and the AgentHandle owns the
-    /// `ForgeSdkBridge` which owns the McpServer (extra_mcp_servers)
-    /// whose Tool impls hold *this* resolver. Holding the
-    /// DomainSession strongly here would close a cycle:
-    /// AgentHandle → bridge → tools → resolver → DomainSession.conn
-    /// → AgentHandle. Drop never fires. With Weak, the cycle is
-    /// broken at the resolver edge: when the workspace drops its
-    /// strong reference (via `domain_handles.drain()` in
-    /// `Workspace::shutdown` and per-session in `release_session`),
-    /// the inner Arc count hits 1 (the cloned strong handle held by
-    /// the bridge's domain reference is the only remaining one) and
-    /// then 0 when the bridge drops, breaking the cycle cleanly.
-    ///
-    /// If the DomainSession gets dropped before a tool fires (e.g.
-    /// the workspace is shutting down concurrently with a peer tool
-    /// invocation), `current()` returns `Err(ResolverDetached)`.
-    /// Tools handle this by returning a tool-level error so the LLM
-    /// sees the failure cleanly rather than silently routing against
-    /// a synthetic sentinel SessionKey.
-    pub fn from_domain(domain: &Arc<parking_lot::Mutex<DomainSession>>) -> Self {
-        let weak = Arc::downgrade(domain);
-        Self(Arc::new(move || weak.upgrade().map(|d| d.lock().key.clone()).ok_or(ResolverDetached)))
-    }
-
-    /// Build a resolver that returns a fixed `SessionKey`. Use this
-    /// in tests where the session never rekeys.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn from_fixed(key: SessionKey) -> Self {
-        Self(Arc::new(move || Ok(key.clone())))
-    }
-
-    /// Resolve the caller's current `SessionKey`. Returns
-    /// `Err(ResolverDetached)` when the underlying `DomainSession`
-    /// has been dropped (workspace shutdown race).
-    pub fn current(&self) -> Result<SessionKey, ResolverDetached> {
-        (self.0)()
-    }
-}
 
 /// What `deliver_peer_prompt` returns on success - whether the target
 /// session was already running (prompt sent immediately) or asleep
@@ -154,7 +64,7 @@ pub enum DeliverError {
 
 /// Why delivering a Reply straight to the asker's session failed.
 /// Reply delivery bypasses name/label resolution (the asker is
-/// addressed by `SessionKey`), so the only failure mode is a caller
+/// addressed by `SessionSlot`), so the only failure mode is a caller
 /// session that closed before the reply could land.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplyDeliverError {
@@ -200,7 +110,7 @@ pub trait WorkspaceFacade: Send + Sync {
     /// doesn't resolve to any known project (defensive - the tools
     /// closure-bind a real key at spawn time, so this should be
     /// `Some` in practice).
-    fn whoami(&self, caller: &SessionKey) -> Option<PeerStatus>;
+    fn whoami(&self, caller: &SessionSlot) -> Option<PeerStatus>;
 
     /// Deliver a wrapped peer prompt to `target_project`.
     ///
@@ -218,7 +128,7 @@ pub trait WorkspaceFacade: Send + Sync {
     /// `Command::DeliverPeerPrompt` handler (lands in C11).
     fn deliver_peer_prompt(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError>;
@@ -230,7 +140,7 @@ pub trait WorkspaceFacade: Send + Sync {
     /// `Err` only when the caller session closed.
     fn deliver_reply_to_caller(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError>;
 
@@ -253,7 +163,7 @@ pub trait WorkspaceFacade: Send + Sync {
     /// Apply a delta to `peer_stats[key]` and emit
     /// `SessionUpdate::PeerInflightStatsChanged` so the TUI reducer
     /// can update the sidebar peer-activity badge.
-    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta);
+    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta);
 }
 
 /// Production impl. Holds a `Weak<Workspace>` rather than
@@ -280,19 +190,16 @@ impl ProdWorkspaceFacade {
 
 /// Return the first non-worker session in `view.sessions`, i.e. the
 /// project's lead. Worker sessions land in `view.sessions` once their
-/// `Connected` lands and the catalog indexes them; without filtering,
-/// a spawned worker can shadow the lead at position 0 and break peer
-/// caller resolution (whoami / list_peers) plus peer delivery target
-/// resolution. The workers MCP's own `caller_project` uses the same
-/// "skip live_workers" gate; pulling it inline here keeps the two
-/// paths consistent.
-fn lead_session_view<'a>(
+/// `Connected` lands and the catalog indexes them; keying on the slot a
+/// spawn stated is what keeps a worker from shadowing its lead, so no
+/// filter over the catalog is needed.
+fn lead_for(
     ws: &crate::workspace::Workspace,
-    view: &'a crate::views::ProjectView,
-) -> Option<&'a crate::views::SessionView> {
-    let live_keys: std::collections::HashSet<_> =
-        ws.list_live_workers(&view.key).into_iter().map(|w| w.session_key).collect();
-    view.sessions.iter().find(|s| !live_keys.contains(&s.session))
+    view: &crate::views::ProjectView,
+) -> (SessionSlot, bool) {
+    let slot = SessionSlot::lead(&view.org, &view.name);
+    let running = ws.session_is_pooled(&slot);
+    (slot, running)
 }
 
 impl WorkspaceFacade for ProdWorkspaceFacade {
@@ -303,13 +210,10 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         projects
             .into_iter()
             .map(|view| {
-                let lead = lead_session_view(&ws, &view);
-                let liveness = lead.map_or(PeerLiveness::Sleeping, |s| {
-                    if s.is_open { PeerLiveness::Running } else { PeerLiveness::Sleeping }
-                });
-                let counts =
-                    lead.and_then(|s| stat_counters.get(&s.session)).cloned().unwrap_or_default();
-                let spawned_at = lead.filter(|s| s.is_open).and_then(|s| s.last_activity);
+                let (lead, running) = lead_for(&ws, &view);
+                let liveness = if running { PeerLiveness::Running } else { PeerLiveness::Sleeping };
+                let counts = stat_counters.get(&lead).cloned().unwrap_or_default();
+                let spawned_at = ws.session_last_activity(&lead);
                 PeerStatus {
                     name: view.name,
                     org: view.org,
@@ -323,7 +227,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
             .collect()
     }
 
-    fn whoami(&self, caller: &SessionKey) -> Option<PeerStatus> {
+    fn whoami(&self, caller: &SessionSlot) -> Option<PeerStatus> {
         let ws = self.0.upgrade()?;
         let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
         // Liveness + stats key off the LEAD's session, not the
@@ -335,16 +239,10 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         // because workers also legitimately ask "who am I as a
         // peer?".
         let stat_counters = ws.peer_stats.lock();
-        let (status, spawned_at, counts) = match cx.lead_session_view.as_ref() {
-            Some(lead) => {
-                let counts = stat_counters.get(&lead.session).cloned().unwrap_or_default();
-                let status =
-                    if lead.is_open { PeerLiveness::Running } else { PeerLiveness::Sleeping };
-                let spawned_at = if lead.is_open { lead.last_activity } else { None };
-                (status, spawned_at, counts)
-            }
-            None => (PeerLiveness::Sleeping, None, PeerInflightStats::default()),
-        };
+        let counts = stat_counters.get(&cx.lead).cloned().unwrap_or_default();
+        let status = if cx.lead_running { PeerLiveness::Running } else { PeerLiveness::Sleeping };
+        let spawned_at = ws.session_last_activity(&cx.lead);
+        drop(stat_counters);
         Some(PeerStatus {
             name: cx.project_name,
             org: cx.project_org,
@@ -358,7 +256,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
 
     fn deliver_peer_prompt(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError> {
@@ -370,12 +268,13 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
             .into_iter()
             .find(|v| v.name == target_project)
             .ok_or_else(|| DeliverError::UnknownTarget { name: target_project.to_owned() })?;
-        // Skip worker sessions when probing the target project's
-        // lead - workers can shadow `sessions[0]` once they connect.
-        // `lead_session_view` mirrors the workers MCP gate.
-        let target_status = lead_session_view(&ws, &project)
-            .filter(|s| s.is_open)
-            .map_or(TargetStatus::QueuedForSpawn, |_| TargetStatus::Delivered);
+        // Probing the target project's lead by its slot, so a live
+        // worker cannot shadow it.
+        let target_status = if lead_for(&ws, &project).1 {
+            TargetStatus::Delivered
+        } else {
+            TargetStatus::QueuedForSpawn
+        };
         if let Err(err) = ws.dispatch(Command::DeliverPeerPrompt {
             caller: caller.clone(),
             target_project: target_project.to_owned(),
@@ -392,7 +291,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
 
     fn deliver_reply_to_caller(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError> {
         let Some(ws) = self.0.upgrade() else {
@@ -424,7 +323,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         ws.inflight_asks.lock().remove(id)
     }
 
-    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
+    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
         let Some(ws) = self.0.upgrade() else { return };
         let stats_snapshot = {
             let mut stats = ws.peer_stats.lock();
@@ -475,16 +374,16 @@ pub struct MockWorkspaceFacade {
     /// Pre-loaded peer status snapshot returned by `list_peers`.
     pub peers: parking_lot::Mutex<Vec<PeerStatus>>,
     /// Captured calls to `deliver_peer_prompt`.
-    pub deliver_calls: parking_lot::Mutex<Vec<(SessionKey, String, WrappedPrompt)>>,
+    pub deliver_calls: parking_lot::Mutex<Vec<(SessionSlot, String, WrappedPrompt)>>,
     /// Captured calls to `deliver_reply_to_caller` (by-session reply
     /// delivery) so tests can assert the reply's target + kind.
-    pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionKey, WrappedPrompt)>>,
+    pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionSlot, WrappedPrompt)>>,
     /// Captured calls to `register_inflight_ask`.
     pub register_calls: parking_lot::Mutex<Vec<InflightAsk>>,
     /// Captured calls to `complete_inflight_ask`.
     pub complete_calls: parking_lot::Mutex<Vec<CorrelationId>>,
     /// Captured calls to `bump_inflight_stats`.
-    pub bump_calls: parking_lot::Mutex<Vec<(SessionKey, PeerStatsDelta)>>,
+    pub bump_calls: parking_lot::Mutex<Vec<(SessionSlot, PeerStatsDelta)>>,
     /// Pre-loaded `InflightAsk`s that `resolve_correlation` may return.
     pub inflight: parking_lot::Mutex<std::collections::HashMap<CorrelationId, InflightAsk>>,
     /// If set, `deliver_peer_prompt` returns this error instead of
@@ -516,18 +415,18 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         self.peers.lock().clone()
     }
 
-    fn whoami(&self, caller: &SessionKey) -> Option<PeerStatus> {
+    fn whoami(&self, caller: &SessionSlot) -> Option<PeerStatus> {
         // Mock's `whoami` does the same "find by caller's lead session"
         // shape as the prod impl, but works against the mock's
         // pre-loaded peers list. Tests that want a specific identity
         // pre-load the peers with an entry whose name matches their
         // caller key convention.
-        self.peers.lock().iter().find(|p| p.name == caller.as_str()).cloned()
+        self.peers.lock().iter().find(|p| p.name == caller.label()).cloned()
     }
 
     fn deliver_peer_prompt(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError> {
@@ -551,7 +450,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
 
     fn deliver_reply_to_caller(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError> {
         if let Some(err) = self.force_reply_error.lock().clone() {
@@ -575,7 +474,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         self.inflight.lock().remove(id)
     }
 
-    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
+    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
         self.bump_calls.lock().push((key.clone(), delta));
     }
 }
@@ -586,11 +485,11 @@ mod tests {
     use crate::mcp::peers::types::{AskChannel, WrappedKind};
     use std::path::PathBuf;
 
-    fn fake_key(s: &str) -> SessionKey {
+    fn fake_key(s: &str) -> SessionSlot {
         // Tests use the production constructor (no test-helpers feature
-        // here) - SessionKey is just a String newtype, so this aligns
+        // here) - SessionSlot is just a String newtype, so this aligns
         // with how the workspace itself constructs keys at runtime.
-        SessionKey::from_session_id(s)
+        SessionSlot::from_str_for_test(s)
     }
 
     fn fake_peer(name: &str, liveness: PeerLiveness) -> PeerStatus {
@@ -614,26 +513,6 @@ mod tests {
             sender_org: "Personal".to_owned(),
             body: "hi".to_owned(),
         }
-    }
-
-    #[test]
-    fn caller_key_from_fixed_returns_ok() {
-        let resolver = CallerKeyResolver::from_fixed(fake_key("alpha"));
-        let key = resolver.current().expect("from_fixed always resolves");
-        assert_eq!(key.as_str(), "alpha");
-    }
-
-    #[test]
-    fn caller_key_from_domain_returns_err_after_drop() {
-        // Build a DomainSession-shaped Mutex, downgrade to Weak via
-        // from_domain, drop the Arc, then probe current(). The
-        // upgrade must fail and we must see ResolverDetached.
-        let domain =
-            Arc::new(parking_lot::Mutex::new(crate::DomainSession::new(fake_key("alpha"), None)));
-        let resolver = CallerKeyResolver::from_domain(&domain);
-        assert_eq!(resolver.current().map(|k| k.as_str().to_owned()), Ok("alpha".to_owned()));
-        drop(domain);
-        assert_eq!(resolver.current(), Err(ResolverDetached));
     }
 
     #[test]
@@ -716,7 +595,7 @@ mod tests {
         mock.peers.lock().push(fake_peer("alpha", PeerLiveness::Running));
         mock.peers.lock().push(fake_peer("beta", PeerLiveness::Sleeping));
         // Convention in the mock: caller key string == project name.
-        // The prod impl matches by SessionKey ↔ lead-session lookup.
+        // The prod impl matches by SessionSlot ↔ lead-session lookup.
         let identity = mock.whoami(&fake_key("alpha"));
         assert!(identity.is_some());
         assert_eq!(identity.unwrap().name, "alpha");
@@ -755,27 +634,28 @@ mod tests {
 /// `ProjectView` / `SessionView` constructors.
 #[cfg(all(test, feature = "test-helpers"))]
 mod lead_resolution_tests {
-    use super::{DeliverError, ProdWorkspaceFacade, lead_session_view};
+    use super::{DeliverError, ProdWorkspaceFacade, lead_for};
     use crate::mcp::peers::types::{AskChannel, WrappedKind};
     use crate::target::ProjectKey;
     use crate::views::{ProjectView, SessionView};
     use crate::workspace::Workspace;
-    use crate::{CorrelationId, SessionKey, WorkerEntry, WrappedPrompt};
+    use crate::{CorrelationId, SessionSlot, WorkerEntry, WrappedPrompt};
     use forge_primitives::WorkerLiveness;
     use std::time::SystemTime;
 
     fn session(id: &str) -> SessionView {
-        SessionView::new_for_test(SessionKey::from_session_id(id), id, true, None)
+        SessionView::new_for_test(forge_primitives::SessionId::new(id), id, true, None)
     }
 
-    fn worker_entry(session_key: SessionKey) -> WorkerEntry {
+    fn worker_entry(slot: SessionSlot) -> WorkerEntry {
         WorkerEntry {
             label: "reviewer".into(),
             charter: "review the diff".into(),
-            session_key,
+            slot,
+            session_id: None,
             status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".into(),
+            spawned_by: SessionSlot::lead("Test", "forge"),
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
@@ -784,48 +664,39 @@ mod lead_resolution_tests {
     }
 
     #[test]
-    fn live_worker_at_index_zero_does_not_shadow_lead() {
-        // A just-connected worker can land at sessions[0]; the lead
-        // must still resolve to the non-worker session.
-        let (ws, _rx) = Workspace::testing_stub();
-        let key = ProjectKey::new("p".to_owned());
-        let worker = session("worker-uuid");
-        let lead = session("lead-uuid");
-        let view = ProjectView::new_for_test(
-            key.clone(),
-            "forge",
-            "/tmp/forge",
-            vec![worker.clone(), lead.clone()],
-        );
-        ws.insert_live_worker(&key, worker_entry(worker.session.clone()));
-        let resolved = lead_session_view(&ws, &view).expect("a lead resolves");
-        assert_eq!(
-            resolved.session, lead.session,
-            "the live worker at index 0 must not shadow the lead",
-        );
-    }
-
-    #[test]
-    fn returns_first_session_when_no_live_workers() {
+    fn names_the_lead_slot_when_no_lead_row_is_catalogued() {
+        // A project with no lead transcript still has a lead slot: the
+        // triple names it, so the catalog cannot take it away.
         let (ws, _rx) = Workspace::testing_stub();
         let key = ProjectKey::new("p".to_owned());
         let lead = session("lead-uuid");
         let view = ProjectView::new_for_test(key, "forge", "/tmp/forge", vec![lead.clone()]);
-        let resolved = lead_session_view(&ws, &view).expect("a lead resolves");
-        assert_eq!(resolved.session, lead.session);
+        let (resolved, running) = lead_for(&ws, &view);
+        assert_eq!(resolved, SessionSlot::lead("Test", "forge"));
+        assert!(!running, "nothing is pooled for it here");
     }
 
     #[test]
-    fn returns_none_when_every_session_is_a_live_worker() {
+    fn names_the_lead_slot_even_when_every_session_is_a_live_worker() {
         // LeadGone: the lead disconnected and only workers remain in
-        // the catalog. No non-worker session means no lead.
+        // the catalog. The slot still names the lead; only its
+        // liveness is gone, which is what the caller reads.
         let (ws, _rx) = Workspace::testing_stub();
         let key = ProjectKey::new("p".to_owned());
         let worker = session("worker-uuid");
         let view =
             ProjectView::new_for_test(key.clone(), "forge", "/tmp/forge", vec![worker.clone()]);
-        ws.insert_live_worker(&key, worker_entry(worker.session.clone()));
-        assert!(lead_session_view(&ws, &view).is_none(), "an all-worker project has no lead");
+        ws.insert_live_worker(
+            &key,
+            worker_entry(SessionSlot::from_str_for_test(worker.session.as_str())),
+        );
+        let (resolved, running) = lead_for(&ws, &view);
+        assert_eq!(
+            resolved,
+            SessionSlot::lead("Test", "forge"),
+            "an all-worker project still names its lead"
+        );
+        assert!(!running, "and the lead is not running");
     }
 
     fn wrapped() -> WrappedPrompt {
@@ -844,7 +715,7 @@ mod lead_resolution_tests {
         let (ws, _rx) = Workspace::testing_stub();
         let facade = ProdWorkspaceFacade::from_arc(&ws);
         let result = facade.deliver_peer_prompt(
-            &SessionKey::from_session_id("caller"),
+            &SessionSlot::from_str_for_test("caller"),
             "no-such-project",
             wrapped(),
         );
@@ -857,7 +728,7 @@ mod lead_resolution_tests {
     fn whoami_none_when_caller_leads_no_project() {
         let (ws, _rx) = Workspace::testing_stub();
         let facade = ProdWorkspaceFacade::from_arc(&ws);
-        assert!(facade.whoami(&SessionKey::from_session_id("nobody")).is_none());
+        assert!(facade.whoami(&SessionSlot::from_str_for_test("nobody")).is_none());
     }
 
     /// #298 Cause 1: workers can call `peers__whoami` and see their
@@ -871,19 +742,19 @@ mod lead_resolution_tests {
         let pk = crate::ProjectKey::new(
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/myproj")),
         );
-        ws.insert_live_worker(&pk, worker_entry(SessionKey::from_session_id("worker-uuid")));
+        let worker = SessionSlot::worker("TestOrg", "myproj", "worker-uuid");
+        ws.insert_live_worker(&pk, worker_entry(worker.clone()));
 
         let facade = ProdWorkspaceFacade::from_arc(&ws);
-        let status = facade
-            .whoami(&SessionKey::from_session_id("worker-uuid"))
-            .expect("worker caller resolves to its project's peer identity");
+        let status =
+            facade.whoami(&worker).expect("worker caller resolves to its project's peer identity");
         assert_eq!(status.name, "myproj");
         assert_eq!(status.org, "TestOrg");
 
         // Regression lock: the pre-existing lead-only path still
         // resolves to the same project identity.
         let lead_status = facade
-            .whoami(&SessionKey::from_session_id("lead-uuid"))
+            .whoami(&SessionSlot::lead("TestOrg", "myproj"))
             .expect("lead caller still resolves");
         assert_eq!(lead_status.name, "myproj");
     }

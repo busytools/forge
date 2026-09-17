@@ -1238,7 +1238,7 @@ fn copy_session_id_to_clipboard(session_id: &str) {
     }
 }
 
-fn close_session(app: &mut App, session_key: &forge_workspace::SessionKey) {
+fn close_session(app: &mut App, session_key: &forge_workspace::SessionSlot) {
     let was_active = app.active_session_key.as_ref() == Some(session_key);
     // Captured ahead of the teardown: this row is about to leave the
     // pane, and its position is what "the adjacent row" is measured
@@ -1286,10 +1286,10 @@ fn close_worker(app: &mut App, project_key: &forge_workspace::ProjectKey, label:
 }
 
 /// Switch the active session to a worker's chat. The worker's
-/// `SessionKey` lives in `app.sessions` once Connected has landed
+/// `SessionSlot` lives in `app.sessions` once Connected has landed
 /// for the worker session (workers spawn through the standard
 /// session lifecycle, same as project leads).
-fn switch_to_worker(app: &mut App, session_key: forge_workspace::SessionKey) {
+fn switch_to_worker(app: &mut App, session_key: forge_workspace::SessionSlot) {
     if app.sessions.contains_key(&session_key) {
         app.switch_active_session(session_key);
     } else {
@@ -1299,7 +1299,7 @@ fn switch_to_worker(app: &mut App, session_key: forge_workspace::SessionKey) {
         // after the worker lands its bucket will succeed.
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
-            session_id = %session_key.as_str(),
+            slot = %session_key.display(),
             "switch_to_worker: bucket not yet present, click ignored",
         );
     }
@@ -1325,15 +1325,15 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 /// failed can produce, and the reason the pane's rule carries that
 /// tie-break.
 fn switch_to_project_lead(app: &mut App, project_key: &str) {
-    // Resolve the project view up-front; it carries the name, the path
-    // and the catalog rows every branch below reads.
+    // Resolve the project view up-front; it carries the name and the path
+    // every branch below reads.
     let view = app
         .workspace
         .as_ref()
         .and_then(|w| w.list_projects().into_iter().find(|p| p.key.as_str() == project_key));
-    let (resolved_name, catalog_sessions) = match view.as_ref() {
-        Some(view) => (view.name.clone(), view.sessions.clone()),
-        None => (project_key.to_owned(), Vec::new()),
+    let resolved_name = match view.as_ref() {
+        Some(view) => view.name.clone(),
+        None => project_key.to_owned(),
     };
     let running_key = view.as_ref().and_then(|view| {
         let path = view.path.to_string_lossy();
@@ -1381,10 +1381,12 @@ fn switch_to_project_lead(app: &mut App, project_key: &str) {
         return;
     }
 
-    // Fallback to the disk catalog's most recent session for this
-    // project. If it's pooled, switch; otherwise dispatch a fresh
-    // SpawnProject (covers cold projects with no live bucket).
-    let lead_session_key = catalog_sessions.into_iter().next().map(|s| s.session);
+    // Fallback for a project with no live bucket: its lead slot, named by
+    // the triple rather than by whichever catalog row happens to be most
+    // recent. If it is pooled, switch; otherwise dispatch a fresh
+    // SpawnProject.
+    let lead_session_key =
+        view.as_ref().map(|v| forge_workspace::SessionSlot::lead(&v.org, &v.name));
     match lead_session_key {
         Some(key) if app.sessions.contains_key(&key) => {
             app.switch_active_session(key);
@@ -1722,7 +1724,7 @@ mod tests {
     fn switch_to_project_lead_blocks_on_spawning_bucket() {
         let mut app = App::test_default();
         let (project_key, path) = seed_forge_project(&mut app);
-        let key = forge_workspace::SessionKey::from_session_id("waking-uuid");
+        let key = forge_workspace::SessionSlot::from_str_for_test("waking-uuid");
         let mut bucket = UiSession::new(key.clone(), "forge");
         bucket.cwd_raw = path;
         bucket.lifecycle_state = SessionLifecycleState::Spawning;
@@ -1760,7 +1762,7 @@ mod tests {
     fn switch_to_project_lead_switches_a_settled_bucket() {
         let mut app = App::test_default();
         let (project_key, path) = seed_forge_project(&mut app);
-        let key = forge_workspace::SessionKey::from_session_id("settled-uuid");
+        let key = forge_workspace::SessionSlot::from_str_for_test("settled-uuid");
         let mut bucket = UiSession::new(key.clone(), "forge");
         bucket.cwd_raw = path;
         bucket.lifecycle_state = SessionLifecycleState::Idle;
@@ -1841,13 +1843,13 @@ mod tests {
     /// y-only lookup reintroduces it with the geometry left correct.
     #[test]
     fn waking_a_project_does_not_turn_row_body_columns_into_a_close_button() {
-        use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView};
+        use forge_workspace::{ProjectKey, ProjectView, SessionSlot, SessionView};
 
         const PROJECT_PATH: &str = "/Users/v/Projects/hub-modules";
         let width = crate::ui::layout::PANE_WIDTH_WIDE;
 
         let mut app = App::test_default();
-        let lead = SessionKey::from_session_id("hub-modules-lead");
+        let lead = SessionSlot::from_str_for_test("hub-modules-lead");
         let projects = vec![ProjectView::new_for_test(
             ProjectKey::new_for_test("hub-modules"),
             "hub-modules",
@@ -1855,7 +1857,7 @@ mod tests {
             // A real sleeping row paints a relative-time label in the
             // gutter, which is the thing a user aims at.
             vec![SessionView::new_for_test(
-                lead.clone(),
+                forge_primitives::SessionId::new(lead.display()),
                 "lead",
                 true,
                 Some(std::time::SystemTime::now() - std::time::Duration::from_secs(7200)),
@@ -1999,7 +2001,7 @@ mod tests {
     /// One live project with one live worker, so both close-carrying
     /// row kinds paint in the same frame.
     fn pane_with_project_and_worker() -> (App, Vec<forge_workspace::ProjectView>) {
-        use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView, WorkerEntry};
+        use forge_workspace::{ProjectKey, ProjectView, SessionSlot, SessionView, WorkerEntry};
 
         const PROJECT_PATH: &str = "/Users/v/Projects/hub-modules";
 
@@ -2007,23 +2009,24 @@ mod tests {
         let workspace = app.workspace.clone().expect("test_default seeds a workspace stub");
         let project_key = ProjectKey::new_for_test(CLOSE_ROW_PROJECT);
 
-        let lead = SessionKey::from_session_id("hub-modules-lead");
+        let lead = SessionSlot::from_str_for_test("hub-modules-lead");
         let mut bucket = UiSession::new(lead.clone(), CLOSE_ROW_PROJECT);
         bucket.lifecycle_state = SessionLifecycleState::Idle;
         bucket.cwd_raw = PROJECT_PATH.to_owned();
         app.sessions.insert(lead.clone(), bucket);
 
-        let worker = SessionKey::from_session_id("hub-modules-steward");
+        let worker = SessionSlot::from_str_for_test("hub-modules-steward");
         app.sessions.insert(worker.clone(), UiSession::new(worker.clone(), CLOSE_ROW_PROJECT));
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
                 label: CLOSE_ROW_WORKER.into(),
                 charter: "band-test".into(),
-                session_key: worker,
+                slot: worker,
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
@@ -2035,7 +2038,12 @@ mod tests {
             project_key,
             CLOSE_ROW_PROJECT,
             PROJECT_PATH,
-            vec![SessionView::new_for_test(lead, "lead", true, None)],
+            vec![SessionView::new_for_test(
+                forge_primitives::SessionId::new(lead.display()),
+                "lead",
+                true,
+                None,
+            )],
         )];
         (app, projects)
     }
@@ -2112,7 +2120,7 @@ mod tests {
     #[test]
     fn switch_to_worker_swaps_active_session_when_bucket_exists() {
         let mut app = App::test_default();
-        let worker_key = forge_workspace::SessionKey::from_session_id("worker-uuid");
+        let worker_key = forge_workspace::SessionSlot::from_str_for_test("worker-uuid");
         let bucket = UiSession::new(worker_key.clone(), "test-project");
         app.sessions.insert(worker_key.clone(), bucket);
 
@@ -2131,7 +2139,7 @@ mod tests {
     fn switch_to_worker_silent_when_no_bucket() {
         let mut app = App::test_default();
         let initial_active = app.active_session_key.clone();
-        let unknown = forge_workspace::SessionKey::from_session_id("not-in-sessions");
+        let unknown = forge_workspace::SessionSlot::from_str_for_test("not-in-sessions");
         switch_to_worker(&mut app, unknown);
         assert_eq!(
             app.active_session_key, initial_active,
@@ -2814,20 +2822,20 @@ mod tests {
             let ws = app.workspace.clone().expect("test workspace");
             for (name, session_id) in seeded {
                 ws.seed_test_project(name, &format!("/tmp/{name}"));
-                let key = forge_workspace::SessionKey::from_session_id(session_id);
+                let key = forge_workspace::SessionSlot::from_str_for_test(session_id);
                 let mut bucket = UiSession::new(key.clone(), name);
                 // The anchor the pane resolves a project row's lead by.
                 bucket.cwd_raw = format!("/tmp/{name}");
                 app.sessions.insert(key, bucket);
             }
-            let closing_key = forge_workspace::SessionKey::from_session_id(*closing);
+            let closing_key = forge_workspace::SessionSlot::from_str_for_test(*closing);
             app.active_session_key = Some(closing_key.clone());
 
             close_session(&mut app, &closing_key);
 
             assert_eq!(
-                app.active_session_key.as_ref().map(forge_workspace::SessionKey::as_str),
-                Some(expected),
+                app.active_session_key.as_ref().map(|k| k.label().to_owned()),
+                Some(expected.to_owned()),
                 "closing {closing} must land on the row drawn next to it",
             );
         }
@@ -2841,7 +2849,7 @@ mod tests {
     fn a_picker_modal_swallows_the_session_switching_click() {
         let mut app = App::test_default();
         let prior = app.active_session_key.clone().expect("test_default has an active session");
-        let worker_key = forge_workspace::SessionKey::from_session_id("worker-uuid");
+        let worker_key = forge_workspace::SessionSlot::from_str_for_test("worker-uuid");
         app.sessions.insert(worker_key.clone(), UiSession::new(worker_key.clone(), "test-project"));
         app.pane_hit_targets.push(PaneHitTarget::WorkerRow {
             project_key: forge_workspace::ProjectKey::new_for_test("p"),

@@ -23,7 +23,7 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 use forge_primitives::review::{ReviewAuthor, ReviewSet, ReviewSide, ReviewStatus, ReviewThread};
 
-use crate::mcp::peers::facade::CallerKeyResolver;
+use crate::SessionSlot;
 use crate::mcp::review::facade::{ReviewFacade, ReviewScope};
 
 pub mod facade;
@@ -214,8 +214,8 @@ fn comment_view(thread: &ReviewThread, reviews: &[ReviewSet]) -> ReviewCommentVi
 /// review-conversation tools. Test-only; production shares one `forge`
 /// server via [`crate::mcp::build_forge_server`].
 #[cfg(test)]
-pub fn build_server(facade: Arc<dyn ReviewFacade>, caller_key: CallerKeyResolver) -> McpServer {
-    add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, caller_key).build()
+pub fn build_server(facade: Arc<dyn ReviewFacade>, slot: SessionSlot) -> McpServer {
+    add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, slot).build()
 }
 
 /// Attach the four review-conversation tools to an existing builder. The
@@ -224,13 +224,13 @@ pub fn build_server(facade: Arc<dyn ReviewFacade>, caller_key: CallerKeyResolver
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn ReviewFacade>,
-    caller_key: CallerKeyResolver,
+    slot: SessionSlot,
 ) -> McpServerBuilder {
     builder
-        .tool(ReviewList { facade: facade.clone(), caller_key: caller_key.clone() })
-        .tool(ReviewGet { facade: facade.clone(), caller_key: caller_key.clone() })
-        .tool(ReviewReply { facade: facade.clone(), caller_key: caller_key.clone() })
-        .tool(ReviewResolve { facade, caller_key })
+        .tool(ReviewList { facade: facade.clone(), slot: slot.clone() })
+        .tool(ReviewGet { facade: facade.clone(), slot: slot.clone() })
+        .tool(ReviewReply { facade: facade.clone(), slot: slot.clone() })
+        .tool(ReviewResolve { facade, slot })
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -258,17 +258,16 @@ fn rfc3339_now() -> String {
 /// naming the step that failed (see [`ScopeError`]).
 async fn scope_or_error(
     facade: &Arc<dyn ReviewFacade>,
-    caller_key: &CallerKeyResolver,
+    slot: &SessionSlot,
 ) -> Result<ReviewScope, ToolOutput> {
-    let caller = caller_key.current().map_err(|err| tool_error(err.to_string()))?;
-    facade.resolve_scope(&caller).await.map_err(|err| tool_error(err.message()))
+    facade.resolve_scope(slot).await.map_err(|err| tool_error(err.message()))
 }
 
 /// `review__list` - the submitted reviews on the caller's (project,
 /// branch). No args.
 pub(crate) struct ReviewList {
     pub(crate) facade: Arc<dyn ReviewFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[async_trait::async_trait]
@@ -296,7 +295,7 @@ impl Tool for ReviewList {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let scope = match scope_or_error(&self.facade, &self.caller_key).await {
+        let scope = match scope_or_error(&self.facade, &self.slot).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -344,7 +343,7 @@ fn list_output(
 /// `review__get` - the comments of one review, with anchored code.
 pub(crate) struct ReviewGet {
     pub(crate) facade: Arc<dyn ReviewFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(Deserialize)]
@@ -389,7 +388,7 @@ impl Tool for ReviewGet {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let scope = match scope_or_error(&self.facade, &self.caller_key).await {
+        let scope = match scope_or_error(&self.facade, &self.slot).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -408,7 +407,7 @@ impl Tool for ReviewGet {
 /// Open -> Addressed.
 pub(crate) struct ReviewReply {
     pub(crate) facade: Arc<dyn ReviewFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(Deserialize)]
@@ -456,7 +455,7 @@ impl Tool for ReviewReply {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let scope = match scope_or_error(&self.facade, &self.caller_key).await {
+        let scope = match scope_or_error(&self.facade, &self.slot).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -473,7 +472,7 @@ impl Tool for ReviewReply {
 /// `review__resolve` - mark a comment resolved.
 pub(crate) struct ReviewResolve {
     pub(crate) facade: Arc<dyn ReviewFacade>,
-    pub(crate) caller_key: CallerKeyResolver,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(Deserialize)]
@@ -513,7 +512,7 @@ impl Tool for ReviewResolve {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let scope = match scope_or_error(&self.facade, &self.caller_key).await {
+        let scope = match scope_or_error(&self.facade, &self.slot).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -666,11 +665,10 @@ mod tests {
         );
     }
 
-    use crate::SessionKey;
     use crate::mcp::review::facade::{MockReviewFacade, ScopeError};
 
-    fn resolver() -> CallerKeyResolver {
-        CallerKeyResolver::from_fixed(SessionKey::from_session_id("caller"))
+    fn caller_slot() -> SessionSlot {
+        SessionSlot::from_str_for_test("caller")
     }
 
     fn summary(review_id: &str, number: u32) -> ReviewSummary {
@@ -692,7 +690,7 @@ mod tests {
         let mock = Arc::new(MockReviewFacade::new());
         mock.summaries.lock().push(summary("r1", 1));
         let facade: Arc<dyn ReviewFacade> = mock;
-        let tool = ReviewList { facade, caller_key: resolver() };
+        let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!out.is_error, "list happy path: {:?}", out.blocks);
         let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
@@ -705,7 +703,7 @@ mod tests {
         let mock = Arc::new(MockReviewFacade::new());
         *mock.scope.lock() = Err(ScopeError::SessionCwdUnknown);
         let facade: Arc<dyn ReviewFacade> = mock;
-        let tool = ReviewList { facade, caller_key: resolver() };
+        let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(out.is_error, "an unresolved scope must surface as an error");
         assert_eq!(out.blocks[0].text, ScopeError::SessionCwdUnknown.message());
@@ -722,7 +720,7 @@ mod tests {
         *mock.review_branches.lock() =
             vec!["feat".to_owned(), "main".to_owned(), "worktree-impl".to_owned()];
         let facade: Arc<dyn ReviewFacade> = mock;
-        let tool = ReviewList { facade, caller_key: resolver() };
+        let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(out.is_error, "a review filed against another branch must not read as 'none'");
         let text = &out.blocks[0].text;
@@ -740,7 +738,7 @@ mod tests {
         mock.summaries.lock().push(summary("r1", 1));
         *mock.review_branches.lock() = vec!["feat".to_owned(), "worktree-impl".to_owned()];
         let facade: Arc<dyn ReviewFacade> = mock;
-        let tool = ReviewList { facade, caller_key: resolver() };
+        let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!out.is_error, "a populated list is not an error: {:?}", out.blocks);
         let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
@@ -756,7 +754,7 @@ mod tests {
         mock.summaries.lock().push(summary("r1", 1));
         *mock.review_branches.lock() = vec!["feat".to_owned()];
         let facade: Arc<dyn ReviewFacade> = mock;
-        let tool = ReviewList { facade, caller_key: resolver() };
+        let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert_eq!(out.blocks.len(), 1, "a normal list stays one json block: {:?}", out.blocks);
     }
@@ -765,7 +763,7 @@ mod tests {
     async fn review_list_empty_stays_an_empty_list_with_nothing_elsewhere() {
         let mock = Arc::new(MockReviewFacade::new());
         let facade: Arc<dyn ReviewFacade> = mock;
-        let tool = ReviewList { facade, caller_key: resolver() };
+        let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!out.is_error, "a project with no reviews anywhere is not an error");
         let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
@@ -782,7 +780,7 @@ mod tests {
             comments: Vec::new(),
         });
         let facade: Arc<dyn ReviewFacade> = mock;
-        let tool = ReviewGet { facade, caller_key: resolver() };
+        let tool = ReviewGet { facade, slot: caller_slot() };
         let hit = tool.call(ToolInput { value: serde_json::json!({ "review_id": "r1" }) }).await;
         assert!(!hit.is_error);
         let parsed: serde_json::Value = serde_json::from_str(&hit.blocks[0].text).expect("json");
@@ -795,7 +793,7 @@ mod tests {
     async fn review_reply_captures_and_returns_status() {
         let mock = Arc::new(MockReviewFacade::new());
         let facade: Arc<dyn ReviewFacade> = mock.clone();
-        let tool = ReviewReply { facade, caller_key: resolver() };
+        let tool = ReviewReply { facade, slot: caller_slot() };
         let out = tool
             .call(ToolInput {
                 value: serde_json::json!({ "comment_id": "c1", "text": "fixed it" }),
@@ -815,7 +813,7 @@ mod tests {
         let mock = Arc::new(MockReviewFacade::new());
         *mock.force_error.lock() = Some("no review comment c1 on (forge, feat)".to_owned());
         let facade: Arc<dyn ReviewFacade> = mock.clone();
-        let tool = ReviewReply { facade, caller_key: resolver() };
+        let tool = ReviewReply { facade, slot: caller_slot() };
         let out = tool
             .call(ToolInput { value: serde_json::json!({ "comment_id": "c1", "text": "x" }) })
             .await;
@@ -828,7 +826,7 @@ mod tests {
     async fn review_resolve_captures_comment_id() {
         let mock = Arc::new(MockReviewFacade::new());
         let facade: Arc<dyn ReviewFacade> = mock.clone();
-        let tool = ReviewResolve { facade, caller_key: resolver() };
+        let tool = ReviewResolve { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({ "comment_id": "c2" }) }).await;
         assert!(!out.is_error, "resolve happy path: {:?}", out.blocks);
         let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
@@ -840,7 +838,7 @@ mod tests {
     async fn review_reply_invalid_args_is_error() {
         let mock = Arc::new(MockReviewFacade::new());
         let facade: Arc<dyn ReviewFacade> = mock;
-        let tool = ReviewReply { facade, caller_key: resolver() };
+        let tool = ReviewReply { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({ "comment_id": "c1" }) }).await;
         assert!(out.is_error, "missing 'text' is an error");
         assert!(out.blocks[0].text.to_lowercase().contains("invalid"));
@@ -849,7 +847,7 @@ mod tests {
     #[test]
     fn build_server_registers_all_four_tools() {
         let facade = MockReviewFacade::new().into_arc();
-        let server = build_server(facade, resolver());
+        let server = build_server(facade, caller_slot());
         let debug = format!("{server:?}");
         for expected in ["review__list", "review__get", "review__reply", "review__resolve"] {
             assert!(debug.contains(expected), "build_server must include {expected}; {debug}");

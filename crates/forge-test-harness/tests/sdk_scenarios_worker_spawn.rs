@@ -31,20 +31,18 @@ use std::time::SystemTime;
 
 use forge_sdk::{OptionsBuilder, PermissionMode};
 use forge_test_harness::sdk_wire::run_live_scenario;
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 use forge_workspace::protocol::WorkerSpawnReply;
-use forge_workspace::{
-    CallerKeyResolver, CallerProject, MockWorkerFacade, WorkerFacade, build_workers_server,
-};
+use forge_workspace::{CallerProject, MockWorkerFacade, WorkerFacade, build_workers_server};
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn worker_spawn_scenario() {
-    let caller_key = SessionKey::from_session_id("lead-test-session");
+    let caller = SessionSlot::from_str_for_test("lead-test-session");
     let project_key = forge_workspace::ProjectKey::new_for_test("forge");
 
     let mock = MockWorkerFacade::new();
-    mock.callers.lock().insert(caller_key.clone(), CallerProject { project_key, is_lead: true });
+    mock.callers.lock().insert(caller.clone(), CallerProject { project_key, is_lead: true });
     // Preloaded spawn reply: the mock returns this synthetic
     // {session_id, tag} as if a real worker had been spawned.
     *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
@@ -64,15 +62,16 @@ async fn worker_spawn_scenario() {
             charter: "You are a terse reviewer. Reply with one word answers.".into(),
             status: forge_primitives::WorkerLiveness::Running,
             session_id: "worker-session-uuid-stub".into(),
+            slot: SessionSlot::worker("TestOrg", "forge", "reviewer"),
             spawned_at: SystemTime::now(),
-            spawned_by_session_id: "lead-test-session".into(),
+            spawned_by: SessionSlot::from_str_for_test("lead-test-session"),
             diagnostic: None,
             activity: Some(forge_primitives::SessionLifecycleState::Idle),
         }],
     );
     let facade: Arc<dyn WorkerFacade> = Arc::new(mock);
 
-    let server = build_workers_server(facade, CallerKeyResolver::from_fixed(caller_key));
+    let server = build_workers_server(facade, caller);
 
     let opts = OptionsBuilder::new()
         .max_turns(4)

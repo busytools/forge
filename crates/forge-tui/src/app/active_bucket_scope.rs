@@ -10,7 +10,7 @@
 //! `active_viewport_mut`, …), and both must leave the user's
 //! visible UI state untouched.
 
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 
 use crate::app::App;
 
@@ -20,7 +20,7 @@ use crate::app::App;
 /// on each `UiSession`, so the pivot naturally swaps which bucket's
 /// input editor is active for the duration of `body` - no manual
 /// snapshot/restore needed.
-pub(crate) fn with_pivoted<F, R>(app: &mut App, target_key: SessionKey, body: F) -> R
+pub(crate) fn with_pivoted<F, R>(app: &mut App, target_key: SessionSlot, body: F) -> R
 where
     F: FnOnce(&mut App) -> R,
 {

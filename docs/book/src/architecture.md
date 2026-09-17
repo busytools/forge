@@ -107,6 +107,19 @@ as the status snapshot, context usage and the MCP snapshot are plain
 `Workspace` methods rather than command variants, because they are
 reads rather than user actions.
 
+**Both enums address a session by its slot.** A slot is the
+`(org, project, label)` triple `forge-primitives`' `SessionSlot`
+carries: it names the seat, and the claude session id names the
+occupant. `/new` and `/resume` swap the occupant and leave the slot
+alone, so a `Command` carries a slot and a `SessionUpdate` routes on
+one; nothing infers a bucket from a wire session id. A session id
+survives only where the `claude` CLI or the child's own address needs
+it: the `--session-id` / `--resume` arguments, the gateway binding's
+URL segment, the stream-json `session_id` field, and the transcript
+filenames with the caches that mirror them. `SessionUpdate::Connected`
+and `SessionReplaced` also carry one, since they announce a new
+occupant: the id is their payload, the slot is still their address.
+
 `DomainSession`, on the workspace side, keeps only workspace-internal
 routing metadata, plus the pending-interaction and turn-state
 bookkeeping the session actors need. The operational state the TUI

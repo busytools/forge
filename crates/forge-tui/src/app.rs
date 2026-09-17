@@ -1032,9 +1032,9 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
-        // Re-key first: `set_session_id` moves the seeded fixture
-        // bucket onto the new id, so the stub has to be installed after
-        // it or the conn lands on the bucket the re-key abandoned.
+        // Stamp the id the frames carry onto the seeded fixture bucket.
+        // Adoption writes an id field and moves nothing, so the stub
+        // lands on the same bucket either way.
         app.set_session_id(Some(model::SessionId::new("session-1")));
         let rx = app.install_testing_stub();
         (app, rx)
@@ -1634,7 +1634,7 @@ mod tests {
         let mut app = App::test_default();
         app.sessions.clear();
 
-        let key = forge_workspace::SessionKey::from_session_id("bg-gate");
+        let key = forge_workspace::SessionSlot::from_str_for_test("bg-gate");
         let mut session = UiSession::new(key.clone(), "test-project");
         session.lifecycle_state = SessionLifecycleState::Idle;
         app.sessions.insert(key.clone(), session);
@@ -1676,7 +1676,7 @@ mod tests {
         let mut app = App::test_default();
         app.sessions.clear();
 
-        let key = forge_workspace::SessionKey::from_session_id("gate-match");
+        let key = forge_workspace::SessionSlot::from_str_for_test("gate-match");
         let mut session = UiSession::new(key.clone(), "test-project");
         session.lifecycle_state = SessionLifecycleState::Attention;
         session.background_tasks.push(crate::app::BackgroundTask {
@@ -1729,7 +1729,7 @@ mod tests {
         let mut app = App::test_default();
         assert!(!app.shows_activity(), "focused session idle, nothing else running");
 
-        let other = forge_workspace::SessionKey::from_session_id("other-project");
+        let other = forge_workspace::SessionSlot::from_str_for_test("other-project");
         let mut session = UiSession::new(other.clone(), "other-project");
         session.lifecycle_state = SessionLifecycleState::Running;
         app.sessions.insert(other.clone(), session);

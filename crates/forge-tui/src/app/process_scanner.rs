@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 use forge_workspace::env::processes::ProcessSnapshot;
 
 use crate::app::App;
@@ -49,7 +49,7 @@ pub enum ProcessScanEvent {
     /// A scanner task finished. `generation` lets `drain_events`
     /// drop stale results when the session's claude PID has changed
     /// (e.g. spawn-time → new session swap) since the scan started.
-    SnapshotReady { key: SessionKey, generation: u64, snapshot: ProcessSnapshot },
+    SnapshotReady { key: SessionSlot, generation: u64, snapshot: ProcessSnapshot },
     /// The 1 s ticker fired. `drain_events` resolves the current
     /// active session at consume time and issues a fresh refresh.
     TimerTick,
@@ -101,7 +101,7 @@ impl Drop for ScanInFlightGuard {
 /// - The session's `scan_in_flight` guard is already set.
 pub fn request_refresh(
     tx: std_mpsc::Sender<ProcessScanEvent>,
-    key: SessionKey,
+    key: SessionSlot,
     claude_pid: Option<u32>,
     generation: u64,
     scan_in_flight: Arc<AtomicBool>,
@@ -114,7 +114,7 @@ pub fn request_refresh(
             message = "process scan refresh skipped: no claude pid",
             outcome = "skipped",
             reason = "no_pid",
-            key = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     };
@@ -125,7 +125,7 @@ pub fn request_refresh(
             message = "process scan refresh skipped: already in flight",
             outcome = "skipped",
             reason = "in_flight",
-            key = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     }
@@ -149,7 +149,7 @@ pub fn request_refresh(
                     message = "process scan blocking task panicked or was cancelled",
                     outcome = "failure",
                     error = %err,
-                    key = %key.as_str(),
+                    slot = %key.display(),
                 );
                 return;
             }
@@ -185,7 +185,7 @@ fn apply_event(app: &mut App, event: ProcessScanEvent) {
 
 fn apply_snapshot_ready(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     generation: u64,
     snapshot: ProcessSnapshot,
 ) {
@@ -196,7 +196,7 @@ fn apply_snapshot_ready(
             message = "process snapshot for unknown session",
             outcome = "dropped",
             reason = "unknown_session",
-            key = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     };
@@ -207,7 +207,7 @@ fn apply_snapshot_ready(
             message = "process snapshot generation stale",
             outcome = "dropped",
             reason = "stale_generation",
-            key = %key.as_str(),
+            slot = %key.display(),
             event_generation = generation,
             session_generation = session.process_scan_generation,
         );
@@ -241,7 +241,7 @@ fn apply_timer_tick(app: &mut App) {
             event_name = "process_scan_workspace_unset",
             message = "App.workspace is None during process apply_timer_tick; skipping scan",
             outcome = "skipped",
-            key = %active_key.as_str(),
+            slot = %active_key.display(),
         );
         return;
     };

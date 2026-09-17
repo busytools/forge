@@ -14,7 +14,7 @@ workspace = true
 
 [features]
 # Cross-crate test helpers. Currently exposes
-# `SessionKey::from_str_for_test`. Production builds don't see it.
+# `SessionSlot::from_str_for_test`. Production builds don't see it.
 test-helpers = []
 
 [dependencies]

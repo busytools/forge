@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 
 use forge_primitives::review::ReviewThread;
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 
 use crate::app::App;
 
@@ -57,7 +57,7 @@ const MAX_FAILED_READS: u8 = 3;
 /// A finished recompute.
 #[derive(Debug)]
 pub struct ReviewWaitingEvent {
-    pub key: SessionKey,
+    pub key: SessionSlot,
     pub outcome: ReviewWaitingOutcome,
 }
 
@@ -92,7 +92,7 @@ pub fn hydrate_pending(app: &mut App) {
     let Some(workspace) = app.workspace.clone() else {
         return;
     };
-    let pending: Vec<(SessionKey, String, PathBuf, Arc<AtomicBool>)> = app
+    let pending: Vec<(SessionSlot, String, PathBuf, Arc<AtomicBool>)> = app
         .sessions
         .iter()
         .filter(|(_, session)| {
@@ -134,7 +134,7 @@ pub fn hydrate_pending(app: &mut App) {
 /// decision to the drain, which counts them.
 fn request_refresh(
     tx: std_mpsc::Sender<ReviewWaitingEvent>,
-    key: SessionKey,
+    key: SessionSlot,
     project: String,
     cwd: PathBuf,
     workspace: Arc<forge_workspace::Workspace>,
@@ -207,7 +207,7 @@ pub fn drain_events(app: &mut App) {
                         event_name = "review_waiting_gave_up",
                         message = "git could not be read for this checkout; giving up on restoring its review-replies count",
                         outcome = "skipped",
-                        key = %event.key.as_str(),
+                        slot = %event.key.display(),
                         attempts = session.review_waiting_failed_reads,
                     );
                 }
@@ -291,13 +291,13 @@ mod tests {
     /// A booted App holding one connected session rooted at `repo`, with
     /// the review store open. Mirrors the state a restart leaves: the
     /// bucket is there, nothing has opened `/diff` on it.
-    fn booted_app(repo: &Path, db_dir: &Path) -> (App, SessionKey) {
+    fn booted_app(repo: &Path, db_dir: &Path) -> (App, SessionSlot) {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("test workspace");
         workspace.install_db_for_test(
             forge_workspace::store::Db::open(&db_dir.join("db.redb")).expect("open db"),
         );
-        let key = SessionKey::from_session_id("restored-session");
+        let key = SessionSlot::from_str_for_test("restored-session");
         let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = repo.to_string_lossy().into_owned();
         session.session_id = Some(crate::agent::model::SessionId::new("restored-session"));
@@ -310,7 +310,7 @@ mod tests {
     /// the state it is waiting for, with the count only as a cap - the
     /// spawned `git` runs against a 10s timeout, so any fixed budget
     /// would be asserting on how loaded the runner is.
-    async fn settle(app: &mut App, key: &SessionKey) {
+    async fn settle(app: &mut App, key: &SessionSlot) {
         for _ in 0..1500 {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             drain_events(app);
@@ -323,7 +323,7 @@ mod tests {
 
     /// Same, for a pass that ends without settling: wait until the slot
     /// is released and the event is drained.
-    async fn drain_until_idle(app: &mut App, key: &SessionKey) {
+    async fn drain_until_idle(app: &mut App, key: &SessionSlot) {
         for _ in 0..1500 {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             drain_events(app);
@@ -338,7 +338,7 @@ mod tests {
         panic!("recompute never released its slot");
     }
 
-    fn waiting(app: &App, key: &SessionKey) -> Option<crate::app::ReviewRepliesWaiting> {
+    fn waiting(app: &App, key: &SessionSlot) -> Option<crate::app::ReviewRepliesWaiting> {
         app.sessions.get(key).and_then(|s| s.review_replies_waiting.clone())
     }
 
@@ -411,7 +411,7 @@ mod tests {
         let mut app = App::test_default();
         let workspace = app.workspace.clone().expect("test workspace");
         workspace.install_db_for_test(db);
-        let key = SessionKey::from_session_id("restored-session");
+        let key = SessionSlot::from_str_for_test("restored-session");
         let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = repo.path().to_string_lossy().into_owned();
         session.session_id = Some(crate::agent::model::SessionId::new("restored-session"));

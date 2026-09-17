@@ -95,7 +95,7 @@ pub use error::WorkspaceError;
 pub use forge_dictate::Device;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
 pub use protocol::{Command, DictateOutcome, DispatchError, SessionUpdate, TurnErrorClass};
-pub use target::{ProjectKey, SessionKey, SessionTarget};
+pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use ui::{RepaintCadence, SpinnerStyle};
 pub use views::{
     AccountAuth, AccountBudget, AccountLoadingRow, AccountRow, GatewayOrgView, ProjectView,
@@ -193,11 +193,9 @@ pub use forge_agent::AgentEvent;
 
 // MCP test-harness re-exports. `forge-test-harness` integration tests
 // drive the workers MCP server directly against a mock facade; that
-// requires the server-builder, the resolver, and the facade trait /
-// mock to be visible cross-crate. Gating on `testing` keeps them out
-// of production builds.
-#[cfg(feature = "testing")]
-pub use mcp::peers::facade::CallerKeyResolver;
+// requires the server-builder and the facade trait / mock to be
+// visible cross-crate. Gating on `testing` keeps them out of
+// production builds.
 #[cfg(feature = "testing")]
 pub use mcp::workers::build_server as build_workers_server;
 #[cfg(feature = "testing")]

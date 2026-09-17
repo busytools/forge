@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::config::LoadedConfig;
 use crate::protocol::SessionUpdate;
-use crate::target::{ProjectKey, SessionKey};
+use crate::target::{ProjectKey, SessionSlot};
 use crate::workspace::{KickRequest, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
 
@@ -23,7 +23,7 @@ impl Workspace {
     /// that assert a live worker/lead receives a prompt need it set -
     /// in production every Running session has it stamped by `Connected`.
     #[cfg(test)]
-    pub(crate) fn mark_session_connected_for_test(&self, key: &SessionKey, session_id: &str) {
+    pub(crate) fn mark_session_connected_for_test(&self, key: &SessionSlot, session_id: &str) {
         let domain = self
             .domain_session_for(key)
             .unwrap_or_else(|| self.register_domain_session(key.clone(), None));
@@ -42,7 +42,7 @@ impl Workspace {
     /// because that's what the bridge's dispatcher accepts; this is
     /// distinct from [`crate::protocol::Command`] (the workspace's
     /// outer envelope) that wraps these primitives under a
-    /// `SessionKey`.
+    /// `SessionSlot`.
     pub fn testing_stub_handle()
     -> (forge_agent::AgentHandle, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         forge_agent::Agent::testing_stub()
@@ -61,7 +61,7 @@ impl Workspace {
     /// `DomainSession.conn` slot.
     pub fn install_testing_stub(
         &self,
-        key: &SessionKey,
+        key: &SessionSlot,
     ) -> mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         let (handle, rx) = forge_agent::Agent::testing_stub();
         let arc = Arc::new(handle);
@@ -340,9 +340,10 @@ impl Workspace {
     /// cross-crate test can render the account panel against a real
     /// binding without spawning a CLI. Test-only.
     #[cfg(any(test, feature = "testing"))]
-    pub fn seed_test_bound_session(&self, key: &SessionKey, account: &str) {
+    pub fn seed_test_bound_session(&self, key: &SessionSlot, account: &str) {
         let (handle, _rx) = forge_agent::Agent::testing_stub();
         let account = AccountKey(account.to_owned());
+        let session_id = "test-bound-session".to_owned();
         self.pool.lock().insert(
             key.clone(),
             PooledAgent {
@@ -350,16 +351,16 @@ impl Workspace {
                 account: account.clone(),
                 permission_mode: None,
                 registration: Some(forge_gateway::binding::Registration {
-                    org: "TestOrg".to_owned(),
-                    project: "forge".to_owned(),
-                    session: key.as_str().to_owned(),
+                    org: key.org().to_owned(),
+                    project: key.project().to_owned(),
+                    session: session_id.clone(),
                     account: account.clone(),
                     provider: forge_primitives::account::Provider::Anthropic,
                 }),
-                slot: crate::parked::Slot::lead("TestOrg", "forge"),
+                session_id: session_id.clone(),
             },
         );
-        self.gateway.bindings.bind("TestOrg", "forge", key.as_str(), account);
+        self.gateway.bindings.bind(key.org(), key.project(), &session_id, account);
     }
 
     /// Store `snapshot` as `account`'s cached usage, so a cross-crate
@@ -374,15 +375,38 @@ impl Workspace {
     /// Cross-crate test access to the otherwise `pub(crate)` store write
     /// so forge-tui can render launchpad worker rows against a seeded row.
     #[cfg(any(test, feature = "testing"))]
-    pub fn seed_test_dynamic_worker(&self, project_key: &ProjectKey, label: &str) {
-        let _ = self.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
-            project_key: project_key.as_str().to_owned(),
-            label: label.to_owned(),
-            charter: format!("charter for {label}"),
-            kick: None,
-            resume_kick: None,
-            interactive: false,
-        });
+    pub fn seed_test_worker_row(&self, project_key: &ProjectKey, label: &str) {
+        let _ = self.record_worker_row(
+            project_key,
+            label,
+            &format!("{label}-test-id"),
+            &format!("charter for {label}"),
+            None,
+            None,
+            false,
+        );
+    }
+
+    /// Write a session row for `slot` carrying `charter`, bypassing a
+    /// spawn. A test that drives `/new` needs the store to already hold
+    /// the worker's mission, which is what the re-delivery reads.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_session_charter(&self, slot: &SessionSlot, charter: &str) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        let _ = crate::store::sessions::put(
+            db,
+            &crate::store::sessions::SessionRecord {
+                org: slot.org().to_owned(),
+                project: slot.project().to_owned(),
+                label: slot.label().to_owned(),
+                session_id: None,
+                charter: Some(charter.to_owned()),
+                kick: None,
+                resume_kick: None,
+                interactive: None,
+            },
+        );
     }
 }
 

@@ -87,9 +87,13 @@ pub struct CronEntry {
     /// Absolute instant of the next scheduled fire. For `Once` this
     /// equals the kind's instant.
     pub next_fire: SystemTime,
-    /// Owner: `None` for a lead cron (also every seeded / legacy entry),
-    /// `Some(label)` for a worker's. Routes the fire to its owner and
-    /// scopes `cron__list` / `cron__delete` to that owner.
+    /// The label half of the slot that owns this cron: `None` for a
+    /// lead's (also every seeded / legacy entry), `Some(label)` for a
+    /// worker's. The project name carries the other half, so this routes
+    /// the fire to its slot and scopes `cron__list` / `cron__delete` to
+    /// it. The name is the store's, kept because the field is serialized
+    /// and a rename would silently re-key every persisted worker cron to
+    /// its lead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_role: Option<String>,
 }

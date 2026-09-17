@@ -15,7 +15,7 @@ use std::sync::Arc;
 use forge_agent::AgentHandle;
 use forge_primitives::{RuntimeSessionState, SessionId};
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::protocol::PendingInteractionSlot;
 
 /// Workspace's owned per-session state. One `DomainSession` per
@@ -23,7 +23,7 @@ use crate::protocol::PendingInteractionSlot;
 /// via `Arc<parking_lot::Mutex<DomainSession>>` so the `Workspace`
 /// can route commands without locking the whole pool.
 pub struct DomainSession {
-    pub key: SessionKey,
+    pub key: SessionSlot,
     /// Claude-issued session UUID. `None` until the first `Connected`
     /// event from this session's bridge. Workspace consults this when
     /// dispatching `AgentHandle` calls that route by session id.
@@ -69,7 +69,7 @@ impl DomainSession {
     /// given `conn`. Pre-spawn / pre-Connect callers pass `None` to
     /// register a placeholder domain whose handle slot fills in once
     /// the spawn handler runs.
-    pub fn new(key: SessionKey, conn: Option<Arc<AgentHandle>>) -> Self {
+    pub fn new(key: SessionSlot, conn: Option<Arc<AgentHandle>>) -> Self {
         Self {
             key,
             session_id: None,

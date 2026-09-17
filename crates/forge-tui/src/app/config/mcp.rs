@@ -284,7 +284,7 @@ pub(crate) fn is_mcp_action_available(
 
 pub(crate) fn handle_mcp_operation_error(
     app: &mut App,
-    key: &forge_workspace::SessionKey,
+    key: &forge_workspace::SessionSlot,
     error: &forge_primitives::McpOperationError,
 ) {
     let formatted = format_mcp_operation_error(error);
@@ -309,7 +309,7 @@ pub(crate) fn handle_mcp_operation_error(
             event_name = "mcp_operation_error_dropped",
             message = "MCP operation error for an unknown session",
             outcome = "dropped",
-            session_id = %key.as_str(),
+            slot = %key.display(),
         );
         return;
     }

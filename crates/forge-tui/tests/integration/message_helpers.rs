@@ -4,7 +4,7 @@
 use forge_tui::agent::model;
 use forge_workspace::SessionUpdate;
 
-use crate::helpers::send_client_event;
+use crate::helpers::{active_session_key, send_client_event};
 
 /// Build a wire `Message::Assistant` envelope carrying the supplied
 /// content blocks.
@@ -101,18 +101,16 @@ pub fn system_message(subtype: &str, data: serde_json::Value) -> forge_primitive
     }
 }
 
-/// Dispatch a wire `Message` envelope. Adopts `"test-session"` as
-/// the app's session id on first use so the `ChatAppended`
-/// session-id guard accepts the envelope (`test_app()` defaults
-/// `session_id` to `None`).
+/// Dispatch a wire `Message` envelope onto the app's ACTIVE slot.
+/// Adopts `"test-session"` as the app's session id on first use so
+/// the `ChatAppended` session-id guard accepts the envelope
+/// (`test_app()` defaults `session_id` to `None`).
 pub fn send_msg(app: &mut forge_tui::app::App, msg: forge_primitives::Message) {
     if app.session_id().is_none() {
         app.set_session_id(Some(model::SessionId::new("test-session")));
     }
-    send_client_event(
-        app,
-        SessionUpdate::ChatAppended { session_id: "test-session".to_owned(), msg },
-    );
+    let key = active_session_key(app);
+    send_client_event(app, SessionUpdate::ChatAppended { key, msg });
 }
 
 /// Convenience: build a wire `tool_use` content block.

@@ -42,7 +42,7 @@ fn skip_operational_log_during_replay(app: &App) -> bool {
 /// Snapshot this BEFORE tearing a session down: once the bucket is
 /// gone its row is no longer in the list, and there is nothing left
 /// for the replacement focus to be adjacent to.
-pub(crate) fn drawn_session_order(app: &App) -> Vec<forge_workspace::SessionKey> {
+pub(crate) fn drawn_session_order(app: &App) -> Vec<forge_workspace::SessionSlot> {
     let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
     crate::ui::projects_pane::drawn_session_rows(app, &projects)
 }
@@ -58,10 +58,10 @@ pub(crate) fn drawn_session_order(app: &App) -> Vec<forge_workspace::SessionKey>
 /// is predictable when the row itself was not.
 pub(crate) fn adjacent_drawn_session(
     app: &App,
-    order: &[forge_workspace::SessionKey],
-    closed: &forge_workspace::SessionKey,
-) -> Option<forge_workspace::SessionKey> {
-    let live = |key: &&forge_workspace::SessionKey| app.sessions.contains_key(*key);
+    order: &[forge_workspace::SessionSlot],
+    closed: &forge_workspace::SessionSlot,
+) -> Option<forge_workspace::SessionSlot> {
+    let live = |key: &&forge_workspace::SessionSlot| app.sessions.contains_key(*key);
     let Some(idx) = order.iter().position(|key| key == closed) else {
         return order.iter().find(live).cloned();
     };
@@ -78,7 +78,7 @@ pub(crate) fn adjacent_drawn_session(
 /// flake has a trail when it next reproduces.
 pub(crate) fn set_bucket_lifecycle_state(
     app: &mut App,
-    key: &forge_workspace::SessionKey,
+    key: &forge_workspace::SessionSlot,
     state: crate::app::session::SessionLifecycleState,
 ) {
     if let Some(bucket) = app.sessions.get_mut(key) {
@@ -97,7 +97,7 @@ pub(crate) fn set_bucket_lifecycle_state(
             event_name = "session_lifecycle_transition",
             message = "session lifecycle state changed",
             outcome = "success",
-            key = %key.as_str(),
+            slot = %key.display(),
             from = ?from,
             to = ?state,
         );
@@ -460,7 +460,7 @@ pub(crate) fn push_system_message_with_severity(
 /// leaking it into whatever session happens to be focused.
 pub(crate) fn push_system_message_to_session(
     app: &mut App,
-    key: &forge_workspace::SessionKey,
+    key: &forge_workspace::SessionSlot,
     severity: Option<SystemSeverity>,
     message: &str,
 ) {
@@ -486,7 +486,7 @@ pub(crate) fn push_system_message_to_session(
         // trace it so a "why did I get no ping" report is diagnosable.
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
-            key = %key.as_str(),
+            slot = %key.display(),
             "system message dropped: no live session bucket for key",
         );
     }
@@ -543,7 +543,7 @@ mod tests {
 
     use std::time::{Duration, Instant};
 
-    /// Helper: the [`forge_workspace::SessionKey`] used to tag
+    /// Helper: the [`forge_workspace::SessionSlot`] used to tag
     /// `ClientEvent`s emitted by tests. Tests built around
     /// `App::test_default` always have one bucket keyed by
     /// [`App::TEST_SESSION_KEY`], and tests that swap session ids in
@@ -552,10 +552,10 @@ mod tests {
     /// active-session matcher in [`super::handle_client_event`], so the
     /// seeded key is what the multiplexer expects when no real
     /// Connect/SessionReplaced has flowed through yet.
-    fn active_session_key(app: &App) -> forge_workspace::SessionKey {
-        app.active_session_key
-            .clone()
-            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY))
+    fn active_session_key(app: &App) -> forge_workspace::SessionSlot {
+        app.active_session_key.clone().unwrap_or_else(|| {
+            forge_workspace::SessionSlot::from_str_for_test(App::TEST_SESSION_KEY)
+        })
     }
 
     // Helper: build a minimal ToolCallInfo with given id + status
@@ -984,9 +984,9 @@ mod tests {
     /// bucket under the key it will address.
     fn make_test_app() -> App {
         let mut app = App::test_default();
-        let seeded = forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY);
+        let seeded = forge_workspace::SessionSlot::from_str_for_test(App::TEST_SESSION_KEY);
         if let Some(mut bucket) = app.sessions.remove(&seeded) {
-            let key = forge_workspace::SessionKey::from_session_id("test-session");
+            let key = forge_workspace::SessionSlot::from_str_for_test("test-session");
             bucket.key = Some(key.clone());
             app.sessions.insert(key.clone(), bucket);
             if app.active_session_key.as_ref() == Some(&seeded) {
@@ -1002,7 +1002,7 @@ mod tests {
 
     fn connected_event(model_name: &str) -> SessionUpdate {
         SessionUpdate::Connected {
-            key: forge_workspace::SessionKey::from_session_id("test-session".to_owned()),
+            key: forge_workspace::SessionSlot::from_str_for_test("test-session".to_owned()),
             session_id: forge_primitives::SessionId::new("test-session"),
             cwd: "/test".into(),
             current_model: test_current_model_primitives(model_name),
@@ -1241,9 +1241,8 @@ mod tests {
         if app.session_id().is_none() {
             app.set_session_id(Some(model::SessionId::new("test-session")));
         }
-        let session_id =
-            app.session_id().map_or_else(|| "test-session".to_owned(), |s| s.to_string());
-        apply_session_update(app, forge_workspace::SessionUpdate::ChatAppended { session_id, msg });
+        let key = app.active_session_key.clone().expect("active key");
+        apply_session_update(app, forge_workspace::SessionUpdate::ChatAppended { key, msg });
     }
 
     #[test]
@@ -1845,7 +1844,7 @@ mod tests {
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::McpSnapshot {
-                session_id: "test-session".into(),
+                key: forge_workspace::SessionSlot::from_str_for_test("test-session"),
                 servers: vec![mcp_server_with_status(
                     "playwright",
                     forge_primitives::McpServerConnectionStatus::Connected,
@@ -1873,7 +1872,7 @@ mod tests {
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::McpSnapshot {
-                session_id: "test-session".into(),
+                key: forge_workspace::SessionSlot::from_str_for_test("test-session"),
                 servers,
                 error: None,
             },
@@ -1883,7 +1882,7 @@ mod tests {
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::McpSnapshot {
-                session_id: "test-session".into(),
+                key: forge_workspace::SessionSlot::from_str_for_test("test-session"),
                 servers: vec![mcp_server_with_status(
                     "playwright",
                     forge_primitives::McpServerConnectionStatus::Failed,
@@ -1911,7 +1910,7 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::Connected {
-                key: forge_workspace::SessionKey::from_session_id("test-session".to_owned()),
+                key: forge_workspace::SessionSlot::from_str_for_test("test-session".to_owned()),
                 session_id: forge_primitives::SessionId::new("test-session"),
                 cwd: "/changed".into(),
                 current_model: test_current_model_primitives("claude-updated"),
@@ -1944,7 +1943,7 @@ mod tests {
         let mut app = App::test_default();
         app.sessions.clear();
         app.active_session_key = None;
-        let key = forge_workspace::SessionKey::from_session_id("orphan-uuid");
+        let key = forge_workspace::SessionSlot::from_str_for_test("orphan-uuid");
 
         apply_session_update(
             &mut app,
@@ -1972,14 +1971,13 @@ mod tests {
         let mut app = App::test_default();
         app.sessions.clear();
         app.active_session_key = None;
-        let from = forge_workspace::SessionKey::from_session_id("beta-uuid");
-        let to = forge_workspace::SessionKey::from_session_id("replacement-uuid");
+        let _from = forge_workspace::SessionSlot::from_str_for_test("beta-uuid");
+        let to = forge_workspace::SessionSlot::from_str_for_test("replacement-uuid");
 
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: to.clone(),
-                previous_key: from,
                 session_id: forge_primitives::SessionId::new("replacement-uuid"),
                 cwd: "/nowhere/orphan".into(),
                 current_model: test_current_model_primitives("claude"),
@@ -2245,12 +2243,11 @@ mod tests {
             sampling_required: None,
         });
 
-        let previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionKey::from_session_id("replacement".to_owned()),
-                previous_key,
+                key,
                 session_id: forge_primitives::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -2297,12 +2294,11 @@ mod tests {
             sampling_required: None,
         });
 
-        let previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionKey::from_session_id("replacement".to_owned()),
-                previous_key,
+                key,
                 session_id: forge_primitives::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -2354,7 +2350,7 @@ mod tests {
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::StatusSnapshot {
-                session_id: "old-session".into(),
+                key: forge_workspace::SessionSlot::from_str_for_test("old-session"),
                 account: forge_primitives::AccountInfo {
                     email: Some("old@example.com".into()),
                     organization: None,
@@ -2417,11 +2413,12 @@ mod tests {
             "session-1",
         ));
         app.set_session_id(Some(model::SessionId::new("session-1")));
+        let key = active_session_key(&app);
 
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::StatusSnapshot {
-                session_id: "session-1".into(),
+                key,
                 account: forge_primitives::AccountInfo {
                     email: None,
                     organization: None,
@@ -2453,11 +2450,12 @@ mod tests {
             "session-1",
         ));
         app.set_session_id(Some(model::SessionId::new("session-1")));
+        let key = active_session_key(&app);
 
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::StatusSnapshot {
-                session_id: "session-1".into(),
+                key,
                 account: forge_primitives::AccountInfo {
                     email: None,
                     organization: None,
@@ -2502,7 +2500,7 @@ mod tests {
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::McpSnapshot {
-                session_id: "old-session".into(),
+                key: forge_workspace::SessionSlot::from_str_for_test("old-session"),
                 servers: vec![forge_primitives::McpServerStatus {
                     name: "stale".into(),
                     status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -2529,8 +2527,8 @@ mod tests {
         // `recent_sessions`. A listing delivered for bucket B must
         // NOT overwrite bucket A's list, even if A is currently active.
         let mut app = make_test_app();
-        let key_a = forge_workspace::SessionKey::from_str_for_test("project-a");
-        let key_b = forge_workspace::SessionKey::from_str_for_test("project-b");
+        let key_a = forge_workspace::SessionSlot::from_str_for_test("project-a");
+        let key_b = forge_workspace::SessionSlot::from_str_for_test("project-b");
         app.sessions
             .insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone(), "project-a"));
         app.sessions
@@ -3027,12 +3025,11 @@ mod tests {
         let mut app = make_test_app();
         *app.resuming_session_id_mut().expect("active session") = Some("requested-123".into());
 
-        let previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionKey::from_session_id("active-456".to_owned()),
-                previous_key,
+                key,
                 session_id: forge_primitives::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -3055,12 +3052,11 @@ mod tests {
         let history_updates =
             vec![user_text_message("first user line"), assistant_text_message("assistant reply")];
 
-        let previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionKey::from_session_id("active-456".to_owned()),
-                previous_key,
+                key,
                 session_id: forge_primitives::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -3096,12 +3092,11 @@ mod tests {
             assistant_text_message("the switch re-spawns under the new account"),
         ];
 
-        let previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionKey::from_session_id("switch-visible".to_owned()),
-                previous_key,
+                key,
                 session_id: forge_primitives::SessionId::new("switch-visible"),
                 cwd: "/proj".into(),
                 current_model: test_current_model_primitives("model"),
@@ -3138,12 +3133,11 @@ mod tests {
             assistant_text_message("second assistant"),
         ];
 
-        let previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionKey::from_session_id("active-457".to_owned()),
-                previous_key,
+                key,
                 session_id: forge_primitives::SessionId::new("active-457"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -3189,12 +3183,11 @@ mod tests {
             serde_json::json!({"command": "Execute command"}),
         );
 
-        let previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionKey::from_session_id("active-789".to_owned()),
-                previous_key,
+                key,
                 session_id: forge_primitives::SessionId::new("active-789"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -3220,12 +3213,11 @@ mod tests {
     fn resume_history_clears_active_turn_owner_after_replay() {
         let mut app = make_test_app();
 
-        let previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionKey::from_session_id("active-790".to_owned()),
-                previous_key,
+                key,
                 session_id: forge_primitives::SessionId::new("active-790"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -3236,6 +3228,9 @@ mod tests {
             },
         );
 
+        // Non-vacuity: the replay landed, so a `None` pointer is the
+        // replay's own verdict rather than a dropped frame.
+        assert_eq!(app.messages().expect("active session").len(), 2);
         assert_eq!(app.active_turn_assistant_idx(), None);
     }
 
@@ -3250,12 +3245,11 @@ mod tests {
             serde_json::json!({"description": "Run subagent"}),
         );
 
-        let previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionKey::from_session_id("active-791".to_owned()),
-                previous_key,
+                key,
                 session_id: forge_primitives::SessionId::new("active-791"),
                 cwd: "/replacement".into(),
                 current_model: test_current_model_primitives("new-model"),
@@ -3266,6 +3260,10 @@ mod tests {
             },
         );
 
+        // Non-vacuity: the replayed tool call is in the chat, so an
+        // empty scope is the replay's own verdict rather than a dropped
+        // frame.
+        assert!(app.lookup_tool_call("resume-task").is_some(), "the replayed call rendered");
         assert!(app.active_task_ids().expect("active session").is_empty());
         assert_eq!(app.tool_call_scope("resume-task"), None);
     }
@@ -3966,7 +3964,7 @@ mod tests {
     /// and the transcript is the only durable record.
     fn connected_with_compactions(compaction_count: u32) -> SessionUpdate {
         SessionUpdate::Connected {
-            key: forge_workspace::SessionKey::from_session_id("test-session".to_owned()),
+            key: forge_workspace::SessionSlot::from_str_for_test("test-session".to_owned()),
             session_id: forge_primitives::SessionId::new("test-session"),
             cwd: "/test".into(),
             current_model: test_current_model_primitives("model"),
@@ -3995,12 +3993,11 @@ mod tests {
     #[test]
     fn session_replaced_seeds_the_count_on_the_foreground_arm() {
         let mut app = make_test_app();
-        let previous_key = active_session_key(&app);
+        let key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: forge_workspace::SessionKey::from_session_id("replaced-fg".to_owned()),
-                previous_key,
+                key,
                 session_id: forge_primitives::SessionId::new("replaced-fg"),
                 cwd: "/test".into(),
                 current_model: test_current_model_primitives("model"),
@@ -4016,22 +4013,21 @@ mod tests {
     /// The background arm reaches the bucket through the `SessionReplaced`
     /// carry rather than `reset_for_new_session`, so it seeds by a
     /// different route and a `session_mut` miss here would no-op in
-    /// silence.
+    /// silence. The replaced slot keeps its bucket, so the arm is the
+    /// off-screen slot's own.
     #[test]
     fn session_replaced_seeds_the_count_on_the_background_arm() {
         let mut app = make_test_app();
         let background_key =
-            forge_workspace::SessionKey::from_session_id("background-old".to_owned());
+            forge_workspace::SessionSlot::from_str_for_test("background-old".to_owned());
         app.sessions.insert(
             background_key.clone(),
             crate::app::session::UiSession::new(background_key.clone(), "test-project"),
         );
-        let replacement = forge_workspace::SessionKey::from_session_id("background-new".to_owned());
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
-                key: replacement.clone(),
-                previous_key: background_key,
+                key: background_key.clone(),
                 session_id: forge_primitives::SessionId::new("background-new"),
                 cwd: "/test".into(),
                 current_model: test_current_model_primitives("model"),
@@ -4043,8 +4039,8 @@ mod tests {
         );
         assert_eq!(
             app.sessions
-                .get(&replacement)
-                .expect("replacement bucket")
+                .get(&background_key)
+                .expect("the replaced slot keeps its bucket")
                 .session_usage
                 .compaction_count,
             9,
@@ -4352,12 +4348,10 @@ mod tests {
         // notice-clearing assertion targets SessionReplaced on the
         // active key.
         let active_key = active_session_key(&app);
-        let previous_key = active_session_key(&app);
         apply_session_update(
             &mut app,
             SessionUpdate::SessionReplaced {
                 key: active_key,
-                previous_key,
                 session_id: forge_primitives::SessionId::new("new-session"),
                 cwd: "/test".into(),
                 current_model: test_current_model_primitives("claude"),
@@ -5440,7 +5434,7 @@ mod tests {
     #[test]
     fn background_turn_error_records_failed_turn_from_last_retry() {
         let mut app = make_test_app();
-        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        let bg = forge_workspace::SessionSlot::from_str_for_test("bg-session");
         app.sessions
             .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
@@ -5468,7 +5462,7 @@ mod tests {
     #[test]
     fn background_turn_error_without_retries_records_unknown_failure() {
         let mut app = make_test_app();
-        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        let bg = forge_workspace::SessionSlot::from_str_for_test("bg-session");
         app.sessions
             .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
 
@@ -5494,7 +5488,7 @@ mod tests {
     #[test]
     fn server_error_turn_error_arms_a_continuation_instead_of_an_attention_row() {
         let mut app = make_test_app();
-        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        let bg = forge_workspace::SessionSlot::from_str_for_test("bg-session");
         app.sessions
             .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
@@ -5523,7 +5517,7 @@ mod tests {
     #[test]
     fn server_error_turn_error_falls_through_to_attention_once_the_cap_is_spent() {
         let mut app = make_test_app();
-        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        let bg = forge_workspace::SessionSlot::from_str_for_test("bg-session");
         app.sessions
             .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         let bucket = app.sessions.get_mut(&bg).expect("bucket");
@@ -5552,7 +5546,7 @@ mod tests {
     #[test]
     fn rate_limit_turn_error_goes_straight_to_the_attention_row() {
         let mut app = make_test_app();
-        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        let bg = forge_workspace::SessionSlot::from_str_for_test("bg-session");
         app.sessions
             .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         app.sessions.get_mut(&bg).expect("bucket").last_api_retry =
@@ -5578,7 +5572,7 @@ mod tests {
     #[test]
     fn cancelled_background_turn_records_no_failure() {
         let mut app = make_test_app();
-        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        let bg = forge_workspace::SessionSlot::from_str_for_test("bg-session");
         let mut bucket = crate::app::session::UiSession::new(bg.clone(), "test-project");
         bucket.pending_cancel = true;
         app.sessions.insert(bg.clone(), bucket);
@@ -5606,7 +5600,7 @@ mod tests {
     fn turn_complete_on_background_session_marks_unseen_completion() {
         let mut app = make_test_app();
         // A second bucket, never selected: a background session.
-        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        let bg = forge_workspace::SessionSlot::from_str_for_test("bg-session");
         app.sessions
             .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
 
@@ -5624,11 +5618,11 @@ mod tests {
     #[test]
     fn switch_active_session_clears_unseen_completion() {
         let mut app = make_test_app();
-        let bg = forge_workspace::SessionKey::from_session_id("bg-session");
+        let bg = forge_workspace::SessionSlot::from_str_for_test("bg-session");
         app.sessions
             .insert(bg.clone(), crate::app::session::UiSession::new(bg.clone(), "test-project"));
         // A second background session whose turn also wrapped unseen.
-        let other = forge_workspace::SessionKey::from_session_id("bg-session-2");
+        let other = forge_workspace::SessionSlot::from_str_for_test("bg-session-2");
         app.sessions.insert(
             other.clone(),
             crate::app::session::UiSession::new(other.clone(), "test-project"),

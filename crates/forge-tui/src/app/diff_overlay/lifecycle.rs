@@ -320,7 +320,7 @@ fn resolve_active_diff_cwd(app: &App, cwd_raw: &str) -> PathBuf {
             event_name = "diff_overlay_workspace_unset",
             message = "App.workspace is None during diff overlay cwd resolution; using cwd_raw without worker-cwd resolution",
             outcome = "fallback",
-            key = %active_key.as_str(),
+            slot = %active_key.display(),
         );
         cwd_raw_path
     }
@@ -553,7 +553,7 @@ mod tests {
         // to the worker's worktree so the diff opens against the
         // worker's branch, not an empty lead diff.
         use forge_primitives::WorkerLiveness;
-        use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
+        use forge_workspace::{ProjectKey, SessionSlot, WorkerEntry};
 
         let mut app = App::test_default();
         let workspace =
@@ -569,16 +569,17 @@ mod tests {
         let project_key = ProjectKey::new_for_test(
             forge_workspace::userdata::catalog::scan::project_key_for_directory(Some(project_root)),
         );
-        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
                 label: "implementer".into(),
                 charter: "test charter".into(),
-                session_key: worker_key.clone(),
+                slot: worker_key.clone(),
+                session_id: None,
                 status: WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "lead-uuid".into(),
+                spawned_by: SessionSlot::from_str_for_test("lead-uuid"),
                 needs_tag: false,
                 is_git_repo_at_spawn: true,
                 diagnostic: None,
@@ -601,7 +602,7 @@ mod tests {
         // `cwd_raw` back unchanged - the worker resolution short-
         // circuits via `worker_lookup_for_session` returning None.
         let mut app = App::test_default();
-        let lead_key = forge_workspace::SessionKey::from_session_id("lead-uuid");
+        let lead_key = forge_workspace::SessionSlot::from_str_for_test("lead-uuid");
         let mut session = crate::app::session::UiSession::new(lead_key.clone(), "forge");
         session.cwd_raw = "/tmp/project".into();
         app.sessions.insert(lead_key.clone(), session);

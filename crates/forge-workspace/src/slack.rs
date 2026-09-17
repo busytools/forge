@@ -18,7 +18,7 @@ use forge_primitives::slack::{
 };
 use uuid::Uuid;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::workspace::Workspace;
 
 /// How long a delivered message stays remembered. Long enough to cover a
@@ -186,7 +186,7 @@ impl Workspace {
     /// whichever session happens to be focused.
     pub(crate) fn register_slack_draft(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         draft: SlackDraft,
     ) -> (Uuid, tokio::sync::oneshot::Receiver<bool>) {
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -277,7 +277,7 @@ impl Workspace {
     pub(crate) fn resolve_slack_draft(
         &self,
         id: Uuid,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         approved: bool,
     ) -> bool {
         let mut drafts = self.slack_drafts.lock();
@@ -1100,7 +1100,7 @@ mod tests {
     #[test]
     fn a_draft_is_addressed_to_the_session_that_asked() {
         let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
-        let caller = SessionKey::from_session_id("worker-uuid");
+        let caller = SessionSlot::from_str_for_test("worker-uuid");
         let (_id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
 
         let mut addressed = Vec::new();
@@ -1119,7 +1119,7 @@ mod tests {
     #[test]
     fn answering_a_draft_that_is_not_pending_is_refused() {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
-        let caller = SessionKey::from_session_id("caller-uuid");
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
         assert!(!ws.resolve_slack_draft(Uuid::new_v4(), &caller, true));
     }
 
@@ -1129,7 +1129,7 @@ mod tests {
     async fn a_draft_with_no_ui_to_answer_it_fails_closed() {
         let (ws, _dir, rx) = workspace_with_one_slack_workspace("acme");
         drop(rx);
-        let caller = SessionKey::from_session_id("caller-uuid");
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
         let (_id, decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
         assert!(
             ws.slack_drafts.lock().is_empty(),
@@ -1141,7 +1141,7 @@ mod tests {
     #[test]
     fn answering_a_draft_removes_it() {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
-        let caller = SessionKey::from_session_id("caller-uuid");
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
         let (id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
 
         assert!(ws.resolve_slack_draft(id, &caller, true), "the draft was waiting");
@@ -1154,8 +1154,8 @@ mod tests {
     #[test]
     fn another_session_cannot_answer_a_draft_it_was_not_addressed() {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
-        let asker = SessionKey::from_session_id("worker-uuid");
-        let other = SessionKey::from_session_id("lead-uuid");
+        let asker = SessionSlot::from_str_for_test("worker-uuid");
+        let other = SessionSlot::from_str_for_test("lead-uuid");
         let (id, _decision) = ws.register_slack_draft(&asker, draft("acme", "C1"));
 
         assert!(
@@ -1174,7 +1174,7 @@ mod tests {
     #[tokio::test]
     async fn the_dock_answer_reaches_the_registry_through_dispatch() {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
-        let caller = SessionKey::from_session_id("caller-uuid");
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
         let (id, decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
 
         ws.dispatch(crate::protocol::Command::RespondSlackPost {

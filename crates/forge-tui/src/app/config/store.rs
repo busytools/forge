@@ -36,13 +36,13 @@ pub struct LoadedSettingsDocuments {
 
 /// Workspace-backed entry point into the bridge's settings reader.
 /// Holds a borrowed `&Workspace` plus the active session's
-/// `&SessionKey` so `load` / `resolve_paths` can ask the workspace
+/// `&SessionSlot` so `load` / `resolve_paths` can ask the workspace
 /// for the bridge's documents + config_dir without TUI ever holding
 /// an `AgentHandle` directly.
 #[derive(Clone, Copy)]
 pub struct WorkspaceBridge<'a> {
     pub workspace: &'a forge_workspace::Workspace,
-    pub key: &'a forge_workspace::SessionKey,
+    pub key: &'a forge_workspace::SessionSlot,
 }
 
 pub fn load(
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn the_bridge_arm_reads_the_root_it_is_given() {
         let (workspace, _updates) = forge_workspace::Workspace::testing_stub();
-        let key = forge_workspace::SessionKey::from_str_for_test("bridge-arm-key");
+        let key = forge_workspace::SessionSlot::from_str_for_test("bridge-arm-key");
         let _rx = workspace.install_testing_stub(&key);
         let dir = tempfile::tempdir().expect("tempdir");
         let local = dir.path().join(".claude");

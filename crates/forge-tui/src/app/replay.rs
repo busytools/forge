@@ -185,9 +185,11 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
     let mut result_duration_ms = None;
     // Adopt a stable session id BEFORE the reducer runs so the
     // session-id guard inside `apply_session_update` accepts each
-    // ChatAppended envelope. The seeded bucket is re-keyed onto this
-    // id by `set_session_id`.
+    // ChatAppended envelope. `set_session_id` records the id on the
+    // seeded bucket without moving it, so the key captured here is the
+    // slot every replayed frame is addressed to.
     app.set_session_id(Some(model::SessionId::new("replay-session")));
+    let replay_key = app.active_session_key.clone().expect("test_default seeds a session bucket");
 
     for (raw_line_no, raw_line) in content.lines().enumerate() {
         if raw_line.trim().is_empty() || raw_line.starts_with('#') {
@@ -214,7 +216,7 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
                 }
                 apply_session_update(
                     &mut app,
-                    SessionUpdate::ChatAppended { session_id: "replay-session".to_owned(), msg },
+                    SessionUpdate::ChatAppended { key: replay_key.clone(), msg },
                 );
             }
             // Control + ControlResponse + ControlCancel are part of the
@@ -419,18 +421,31 @@ mod tests {
 
         let mut app = App::test_default();
         app.set_session_id(Some(model::SessionId::new(session_id)));
-        for (i, line) in [create_tool_use, create_result, delete_tool_use].iter().enumerate() {
-            let decoded = decode_dispatch(line, (i + 1) as u64);
+        // Address every frame to the slot the app actually holds: a
+        // frame for an unknown slot is dropped, which would leave
+        // SCHEDULES empty and the drain assertion below passing because
+        // nothing ever landed.
+        let key = app.active_session_key.clone().expect("test_default seeds a session bucket");
+        let drive = |app: &mut App, line: &str, line_no: u64| {
+            let decoded = decode_dispatch(line, line_no);
             if let DecodedLine::Malformed { line, reason } = decoded {
                 panic!("decode_dispatch line {line}: {reason}");
             }
             if let DecodedLine::Message(msg) = decoded {
-                apply_session_update(
-                    &mut app,
-                    SessionUpdate::ChatAppended { session_id: session_id.to_owned(), msg },
-                );
+                apply_session_update(app, SessionUpdate::ChatAppended { key: key.clone(), msg });
             }
-        }
+        };
+        drive(&mut app, &create_tool_use, 1);
+        drive(&mut app, &create_result, 2);
+        // Non-vacuity: the create landed in SCHEDULES, so the drain below
+        // is the delete's own verdict rather than a frame that never
+        // reached a bucket.
+        assert_eq!(
+            app.active_session().expect("active bucket").schedules.len(),
+            1,
+            "CronCreate must populate SCHEDULES before the delete is replayed",
+        );
+        drive(&mut app, &delete_tool_use, 3);
 
         let harness = ReplayHarness::from_app(app);
         let schedules = &harness.default_session().schedules;

@@ -14,7 +14,7 @@ use forge_primitives::slack::{
 };
 use uuid::Uuid;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::mcp::caller_context::caller_context;
 use crate::mcp::gotify::facade::resolve_identity;
 use crate::slack::SlackWorkspaces;
@@ -249,7 +249,7 @@ pub(crate) trait SlackFacade: Send + Sync {
     /// are the only handle a session has to unsubscribe with.
     fn subscribed_targets(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         workspace: Option<&str>,
     ) -> Vec<SlackSubscription>;
 
@@ -258,7 +258,7 @@ pub(crate) trait SlackFacade: Send + Sync {
     /// approval - a rejected or unanswered draft is `Rejected`.
     async fn post(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         request: SlackPostRequest,
     ) -> Result<SlackPostOutcome, SlackPostError>;
 
@@ -273,7 +273,7 @@ pub(crate) trait SlackFacade: Send + Sync {
     /// rejected or unanswered draft.
     async fn edit(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         request: SlackEditRequest,
     ) -> Result<(), SlackEditError>;
 
@@ -281,7 +281,7 @@ pub(crate) trait SlackFacade: Send + Sync {
     /// a reaction is authored content in the user's name.
     async fn react(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         request: SlackReactRequest,
     ) -> Result<(), SlackReactError>;
 
@@ -298,7 +298,7 @@ pub(crate) trait SlackFacade: Send + Sync {
     /// send and belongs behind the same gate as `slack__post`.
     async fn post_attachment(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         request: SlackUploadRequest,
     ) -> Result<(), SlackAttachmentError>;
 
@@ -332,14 +332,14 @@ pub(crate) trait SlackFacade: Send + Sync {
     /// per target. Returns the new record ids.
     fn subscribe(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         workspace: Option<&str>,
         request: SlackSubscribeRequest,
     ) -> Result<Vec<Uuid>, SlackSubscribeError>;
 
     /// Remove one of the caller's OWN subscriptions by id. `false` both
     /// when no such id exists and when it belongs to another owner.
-    fn unsubscribe(&self, caller: &SessionKey, id: Uuid) -> bool;
+    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> bool;
 }
 
 /// Production facade over `Weak<Workspace>` (weak to avoid a cycle with
@@ -365,7 +365,7 @@ pub(crate) enum GateDecision {
 struct ResolveOnDrop {
     workspace: Arc<Workspace>,
     id: Uuid,
-    caller: SessionKey,
+    caller: SessionSlot,
 }
 
 impl Drop for ResolveOnDrop {
@@ -389,7 +389,7 @@ impl ProdSlackFacade {
     /// expiry are distinct outcomes the callers surface differently.
     async fn await_approval(
         workspace: &Arc<Workspace>,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         draft: SlackDraft,
     ) -> GateDecision {
         let (id, decision) = workspace.register_slack_draft(caller, draft);
@@ -443,7 +443,7 @@ impl SlackFacade for ProdSlackFacade {
 
     async fn post(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         request: SlackPostRequest,
     ) -> Result<SlackPostOutcome, SlackPostError> {
         let ws = self.workspace.upgrade().ok_or(SlackPostError::UnknownWorkspace)?;
@@ -489,7 +489,7 @@ impl SlackFacade for ProdSlackFacade {
 
     async fn edit(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         request: SlackEditRequest,
     ) -> Result<(), SlackEditError> {
         let ws = self.workspace.upgrade().ok_or(SlackEditError::UnknownWorkspace)?;
@@ -538,7 +538,7 @@ impl SlackFacade for ProdSlackFacade {
 
     async fn react(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         request: SlackReactRequest,
     ) -> Result<(), SlackReactError> {
         let ws = self.workspace.upgrade().ok_or(SlackReactError::UnknownWorkspace)?;
@@ -656,7 +656,7 @@ impl SlackFacade for ProdSlackFacade {
 
     async fn post_attachment(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         request: SlackUploadRequest,
     ) -> Result<(), SlackAttachmentError> {
         let ws = self.workspace.upgrade().ok_or(SlackAttachmentError::UnknownWorkspace)?;
@@ -703,7 +703,7 @@ impl SlackFacade for ProdSlackFacade {
 
     fn subscribed_targets(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         workspace: Option<&str>,
     ) -> Vec<SlackSubscription> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
@@ -717,7 +717,7 @@ impl SlackFacade for ProdSlackFacade {
 
     fn subscribe(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         workspace: Option<&str>,
         request: SlackSubscribeRequest,
     ) -> Result<Vec<Uuid>, SlackSubscribeError> {
@@ -777,7 +777,7 @@ impl SlackFacade for ProdSlackFacade {
         Ok(ids)
     }
 
-    fn unsubscribe(&self, caller: &SessionKey, id: Uuid) -> bool {
+    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> bool {
         let Some(ws) = self.workspace.upgrade() else { return false };
         let Some(cx) = caller_context(&ws, caller) else { return false };
         let removed =
@@ -892,7 +892,7 @@ impl SlackFacade for MockSlackFacade {
 
     async fn post_attachment(
         &self,
-        _caller: &SessionKey,
+        _caller: &SessionSlot,
         request: SlackUploadRequest,
     ) -> Result<(), SlackAttachmentError> {
         self.upload_calls.lock().push(request);
@@ -901,7 +901,7 @@ impl SlackFacade for MockSlackFacade {
 
     async fn post(
         &self,
-        _caller: &SessionKey,
+        _caller: &SessionSlot,
         request: SlackPostRequest,
     ) -> Result<SlackPostOutcome, SlackPostError> {
         self.post_calls.lock().push(request);
@@ -910,7 +910,7 @@ impl SlackFacade for MockSlackFacade {
 
     async fn edit(
         &self,
-        _caller: &SessionKey,
+        _caller: &SessionSlot,
         request: SlackEditRequest,
     ) -> Result<(), SlackEditError> {
         self.edit_calls.lock().push(request);
@@ -919,7 +919,7 @@ impl SlackFacade for MockSlackFacade {
 
     async fn react(
         &self,
-        _caller: &SessionKey,
+        _caller: &SessionSlot,
         request: SlackReactRequest,
     ) -> Result<(), SlackReactError> {
         self.react_calls.lock().push(request);
@@ -928,7 +928,7 @@ impl SlackFacade for MockSlackFacade {
 
     fn subscribed_targets(
         &self,
-        _caller: &SessionKey,
+        _caller: &SessionSlot,
         workspace: Option<&str>,
     ) -> Vec<SlackSubscription> {
         self.subscribed_targets_calls.lock().push(workspace.map(str::to_owned));
@@ -937,7 +937,7 @@ impl SlackFacade for MockSlackFacade {
 
     fn subscribe(
         &self,
-        _caller: &SessionKey,
+        _caller: &SessionSlot,
         workspace: Option<&str>,
         request: SlackSubscribeRequest,
     ) -> Result<Vec<Uuid>, SlackSubscribeError> {
@@ -945,7 +945,7 @@ impl SlackFacade for MockSlackFacade {
         self.subscribe_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
     }
 
-    fn unsubscribe(&self, _caller: &SessionKey, id: Uuid) -> bool {
+    fn unsubscribe(&self, _caller: &SessionSlot, id: Uuid) -> bool {
         self.unsubscribe_calls.lock().push(id);
         self.unsubscribe_result.lock().unwrap_or(false)
     }
@@ -962,8 +962,8 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use tempfile::tempdir;
 
-    fn caller() -> SessionKey {
-        SessionKey::from_session_id("caller-uuid")
+    fn caller() -> SessionSlot {
+        SessionSlot::lead("TestOrg", "forge")
     }
 
     /// Records every outbound call, so a test can assert what did and did
@@ -1955,7 +1955,7 @@ mod tests {
             )
             .expect("the lead subscribes to C1");
 
-        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::worker("TestOrg", "forge", "tester");
         let project_key = ws
             .list_projects()
             .into_iter()
@@ -1967,10 +1967,11 @@ mod tests {
             crate::mcp::workers::types::WorkerEntry {
                 label: "tester".into(),
                 charter: "c".into(),
-                session_key: worker_key.clone(),
+                slot: worker_key.clone(),
+                session_id: None,
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
-                spawned_by_session_id: "caller-uuid".into(),
+                spawned_by: SessionSlot::lead("TestOrg", "forge"),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
