@@ -203,6 +203,7 @@ impl Workspace {
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
+            unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
         };

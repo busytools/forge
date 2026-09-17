@@ -187,6 +187,9 @@ impl Workspace {
         use crate::spawn::CronFireOutcome;
         let snapshot = self.all_crons_snapshot();
         let due = crate::mcp::cron::schedule::due_crons(&snapshot, now);
+        // What THIS pass finds unwakeable, committed at the end so the set
+        // holds only the latest pass's answer.
+        let mut still_unwakeable = std::collections::HashSet::new();
         for id in &due {
             let Some(cron) = snapshot.iter().find(|c| &c.id == id) else { continue };
             // Overdue by more than two ticks: forge or the session was down
@@ -226,17 +229,33 @@ impl Workspace {
                 // the owner can be woken.
                 CronFireOutcome::TargetCannotBeWoken { directory } => {
                     let recurring = matches!(cron.kind, forge_primitives::CronKind::Recurring(_));
-                    tracing::warn!(
-                        target: "forge_workspace::crons",
-                        event_name = "cron_owner_cannot_be_woken",
-                        project = %cron.project_name,
-                        cron_id = %id,
-                        label = cron.team_role.as_deref().unwrap_or("lead"),
-                        directory = %directory.display(),
-                        recurring,
-                        "cron owner cannot be woken, so this fire did not land; the owner's \
-                         row is kept",
-                    );
+                    // A stuck one-shot is re-evaluated every tick, so the
+                    // repeats carry the same event_name at debug rather
+                    // than writing the same warning once a minute for as
+                    // long as the directory is missing.
+                    if self.cron_unwakeable_is_new(id) {
+                        tracing::warn!(
+                            target: "forge_workspace::crons",
+                            event_name = "cron_owner_cannot_be_woken",
+                            project = %cron.project_name,
+                            cron_id = %id,
+                            label = cron.team_role.as_deref().unwrap_or("lead"),
+                            directory = %directory.display(),
+                            recurring,
+                            "cron owner cannot be woken, so this fire did not land; the owner's \
+                             row is kept",
+                        );
+                    } else {
+                        tracing::debug!(
+                            target: "forge_workspace::crons",
+                            event_name = "cron_owner_cannot_be_woken",
+                            project = %cron.project_name,
+                            cron_id = %id,
+                            "cron owner still cannot be woken; the first warning for this \
+                             cron already names it",
+                        );
+                    }
+                    still_unwakeable.insert(id.clone());
                     if recurring {
                         self.advance_or_remove_cron(id, now);
                     }
@@ -262,6 +281,10 @@ impl Workspace {
                 }
             }
         }
+        // Commit this pass. Anything not in it - fired, advanced, deleted
+        // or simply not due - keeps no marker, so the next time it is
+        // unwakeable the warning is a WARN again.
+        self.cron_unwakeable_commit(still_unwakeable);
     }
 
     /// Spawn the cron scheduler: a background task that wakes every

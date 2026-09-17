@@ -427,6 +427,17 @@ pub struct Workspace {
     /// is in flight. The existing `live_workers.is_empty()` gate
     /// covers the post-dispatch case.
     respawn_in_flight: Mutex<std::collections::HashSet<ProjectKey>>,
+    /// The cron ids the LAST `fire_due_crons` pass found unwakeable, so
+    /// the first warning about one is a `WARN` and the repeats are not.
+    ///
+    /// Not a cache: nothing but that warning's level reads it, and it
+    /// holds only what the most recent pass saw, replaced wholesale at the
+    /// end of each pass. That is what stops an entry outliving its
+    /// condition - a cron that fires, advances or is deleted is simply
+    /// absent from the next pass's set, so one that goes unwakeable again
+    /// is new again and warns at `WARN` again. A set that never cleared
+    /// would silence a cron that is firing.
+    unwakeable_crons: Mutex<std::collections::HashSet<forge_primitives::CronId>>,
     /// Test-only intercept buffer for app-level Commands. When
     /// `Some`, `dispatch` captures the command into the buffer
     /// instead of routing it to the spawn::* handler - used by
@@ -1091,6 +1102,7 @@ impl Workspace {
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
+            unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -3522,6 +3534,25 @@ impl Workspace {
     /// wave was already in flight.
     fn try_claim_respawn(&self, project_key: &crate::target::ProjectKey) -> bool {
         self.respawn_in_flight.lock().insert(project_key.clone())
+    }
+
+    /// Whether this fire pass is the FIRST to find `id` unwakeable,
+    /// recording it as seen if so. True is the pass that warns; false is
+    /// every later pass while the condition holds.
+    pub(crate) fn cron_unwakeable_is_new(&self, id: &forge_primitives::CronId) -> bool {
+        self.unwakeable_crons.lock().insert(id.clone())
+    }
+
+    /// Close a fire pass: `ids` is what it found unwakeable, and it
+    /// replaces the previous pass's set wholesale. That replacement is
+    /// the only clearing this state needs - an entry cannot survive a
+    /// pass that did not find its cron unwakeable, whether the cron fired,
+    /// advanced, was deleted, or simply was not due.
+    pub(crate) fn cron_unwakeable_commit(
+        &self,
+        ids: std::collections::HashSet<forge_primitives::CronId>,
+    ) {
+        *self.unwakeable_crons.lock() = ids;
     }
 
     /// The session id the store holds for the label, if any. `None` when
@@ -6522,6 +6553,107 @@ mod tests {
         fn make_writer(&'a self) -> Self::Writer {
             self.clone()
         }
+    }
+
+    /// A stuck one-shot is re-evaluated on every 60s tick, so its warning
+    /// has to be given once rather than once a minute for as long as the
+    /// directory is missing. The repeat is still recorded, at debug, under
+    /// the same `event_name`, so one filter still finds the whole story.
+    ///
+    /// The clearing is the half that matters. The state holds only the
+    /// last pass's answer, so a cron that goes unwakeable AGAIN warns
+    /// again; a set that never cleared would leave a durable cron that IS
+    /// firing silent, which is the failure this family of changes exists
+    /// to remove.
+    ///
+    /// Runs real fire passes under a log capture, which is why it sits
+    /// beside `LogCapture` rather than with the other cron tests.
+    #[test]
+    fn a_stuck_cron_warns_once_then_warns_again_after_it_clears() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let (ws, _rx) = Workspace::testing_stub();
+        let db_dir = tempdir().expect("db dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_dir = tempdir().expect("project dir");
+        ws.seed_test_project("proj", &project_dir.path().to_string_lossy());
+        let key = ws.project_key_for_name("proj").expect("seeded project");
+        // A git worker whose worktree is not there, so the wave would skip
+        // it and no fire can land.
+        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true)
+            .expect("seed the stranded row");
+
+        // A whole minute, so the recurring's next `*/5` slot is at least a
+        // minute later and the middle pass below cannot catch it.
+        let t0 = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(600_000_000);
+        for (id, kind) in
+            [("once", CronKind::Once(t0)), ("again", CronKind::Recurring("*/5 * * * *".to_owned()))]
+        {
+            ws.push_cron(CronEntry {
+                id: CronId::from(id),
+                project_name: "proj".to_owned(),
+                kind,
+                prompt: "p".to_owned(),
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+                description: None,
+                last_fire: None,
+                next_fire: t0,
+                team_role: Some("steward".to_owned()),
+            });
+        }
+
+        let log_of = |capture: &LogCapture| String::from_utf8_lossy(&capture.0.lock()).into_owned();
+        let warns = |capture: &LogCapture| -> usize {
+            log_of(capture)
+                .lines()
+                .filter(|line| line.contains("cron_owner_cannot_be_woken") && line.contains("WARN"))
+                .count()
+        };
+        let pass = |capture: &LogCapture, now: std::time::SystemTime| {
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
+                .with_writer(capture.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || ws.fire_due_crons(now));
+        };
+
+        let first = LogCapture::default();
+        pass(&first, t0);
+        assert_eq!(
+            warns(&first),
+            2,
+            "both crons are newly unwakeable, so both warn: {}",
+            log_of(&first)
+        );
+
+        // Half a minute on: the one-shot is still stuck and still due, and
+        // the recurring has advanced past this pass entirely.
+        let second = LogCapture::default();
+        pass(&second, t0 + std::time::Duration::from_secs(30));
+        assert_eq!(
+            warns(&second),
+            0,
+            "a cron that was already unwakeable last pass does not warn again: {}",
+            log_of(&second),
+        );
+        assert!(
+            log_of(&second).contains("cron_owner_cannot_be_woken"),
+            "and it is still recorded, at debug, under the same event_name: {}",
+            log_of(&second),
+        );
+
+        // A day on, the recurring is due again with its owner still
+        // stranded: this time that is new again.
+        let third = LogCapture::default();
+        pass(&third, t0 + std::time::Duration::from_secs(86_400));
+        assert_eq!(
+            warns(&third),
+            1,
+            "a cron unwakeable again after a pass that did not see it must warn again - a \
+             set that never cleared would leave a firing cron silent: {}",
+            log_of(&third),
+        );
     }
 
     /// The applied record names the keys a project contributed and must
