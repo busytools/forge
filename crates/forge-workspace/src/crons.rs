@@ -937,7 +937,7 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        // Db open, empty dynamic_workers: the row is the only thing that
+        // Db open, empty session store: the row is the only thing that
         // could bring this owner back, so "ghost" is conclusively absent
         // and its cron must be collected rather than buffered into a
         // bucket nothing will ever drain.
@@ -946,7 +946,7 @@ mod tests {
             crate::spawn::deliver_cron_prompt(&ws, "proj", Some("ghost"), "x".to_owned(), false);
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::TargetGone),
-            "a label with no dynamic_workers row is conclusively gone",
+            "a label with no row in the session store is conclusively gone",
         );
     }
 
