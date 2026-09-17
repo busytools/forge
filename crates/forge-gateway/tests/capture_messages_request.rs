@@ -137,7 +137,7 @@ async fn capture_a_real_messages_request_body() {
         model_slugs: std::collections::HashMap::new(),
         env: account_env.clone(),
     }]));
-    let gateway = Arc::new(Gateway::new(Arc::clone(&pool)));
+    let gateway = Arc::new(Gateway::new(Arc::clone(&pool), reqwest::Client::new()));
 
     let listener_port = free_port().await;
     let listener = GatewayListener::bind(listener_port).await.expect("gateway bind");

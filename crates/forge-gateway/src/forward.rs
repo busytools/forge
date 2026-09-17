@@ -39,6 +39,12 @@ use crate::splice::splice_model;
 /// host is what they have always used.
 const ANTHROPIC_UPSTREAM: &str = "https://api.anthropic.com";
 
+/// How long the upstream may produce nothing at all before the
+/// forwarded turn is abandoned. An idle bound, not a deadline for the
+/// whole response: a turn streams for as long as the model takes, and
+/// only silence means the leg is wedged.
+pub const FORWARD_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// The error type a streamed body yields.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -70,11 +76,14 @@ pub struct Gateway {
 }
 
 impl Gateway {
-    pub fn new(pool: Arc<crate::AccountPool>) -> Self {
+    /// The caller builds `client` through `ProviderHost`, so the
+    /// forward leg carries the TLS trust and the idle bound every other
+    /// outbound path does: `host.streaming_http_client(FORWARD_IDLE_TIMEOUT)`.
+    pub fn new(pool: Arc<crate::AccountPool>, client: reqwest::Client) -> Self {
         Self {
             bindings: Bindings::default(),
             pool,
-            client: reqwest::Client::new(),
+            client,
             org_pins: parking_lot::Mutex::new(HashMap::new()),
             rotation: parking_lot::Mutex::new(RotationState::new()),
         }
@@ -626,12 +635,43 @@ mod tests {
         script: ScriptHandle,
     }
 
+    /// The host the harness builds its forward client through, so the
+    /// leg runs against the port's own construction rather than a
+    /// hand-built client.
+    struct TestHost;
+
+    #[async_trait::async_trait]
+    impl crate::ProviderHost for TestHost {
+        fn http_client(&self, _timeout: Duration) -> Result<reqwest::Client, String> {
+            unreachable!("the forward harness runs no probe")
+        }
+
+        fn streaming_http_client(
+            &self,
+            idle_timeout: Duration,
+        ) -> Result<reqwest::Client, String> {
+            reqwest::Client::builder().read_timeout(idle_timeout).build().map_err(|e| {
+                e.to_string()
+            })
+        }
+
+        async fn user_agent(&self) -> Result<String, String> {
+            unreachable!("the forward harness runs no probe")
+        }
+    }
+
     /// Stub upstream + gateway listener + one registered session whose
     /// account's upstream is the stub. The pool holds one account per
     /// provider, both with the stub as their upstream, so a test that
     /// asserts "no upstream request" is airtight whichever account a
     /// broken selection could have picked.
     async fn harness(chunk_delay: Duration) -> Harness {
+        harness_with_idle_timeout(chunk_delay, FORWARD_IDLE_TIMEOUT).await
+    }
+
+    /// [`harness`] with the forward leg's idle bound under the test's
+    /// control, so a stalled upstream is reachable inside a test.
+    async fn harness_with_idle_timeout(chunk_delay: Duration, idle_timeout: Duration) -> Harness {
         let script: ScriptHandle =
             Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
         let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
@@ -679,7 +719,9 @@ mod tests {
                 env: anthropic_env,
             },
         ]));
-        let gateway = Arc::new(Gateway::new(Arc::clone(&pool)));
+        let client = crate::ProviderHost::streaming_http_client(&TestHost, idle_timeout)
+            .expect("the test host builds a client");
+        let gateway = Arc::new(Gateway::new(Arc::clone(&pool), client));
 
         let listener_port = free_port().await;
         let listener = GatewayListener::bind(listener_port).await.expect("gateway bind");
@@ -963,6 +1005,34 @@ mod tests {
         let second = response.chunk().await.expect("a second chunk").expect("chunk bytes");
         assert!(!second.is_empty());
         assert!(started.elapsed() >= Duration::from_millis(1000), "the tail respects the gap");
+    }
+
+    /// The forward leg's client is the host's, and a host that bounds
+    /// idle reads ends a wedged upstream: the CLI's turn is abandoned
+    /// instead of held open until the upstream produces anything.
+    #[tokio::test]
+    async fn a_stalled_upstream_ends_the_forwarded_stream_at_the_hosts_idle_bound() {
+        let harness =
+            harness_with_idle_timeout(Duration::from_secs(5), Duration::from_millis(200)).await;
+        let started = Instant::now();
+        let mut response =
+            post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+
+        let first = response.chunk().await.expect("a body chunk").expect("chunk bytes");
+        assert!(!first.is_empty(), "the first chunk arrives while the upstream is healthy");
+
+        let stalled = tokio::time::timeout(Duration::from_secs(8), response.chunk())
+            .await
+            .expect("the idle bound ends the stream; an unbounded client never returns here");
+        assert!(
+            stalled.is_err(),
+            "the stream is cut mid-body when the upstream goes quiet; got {stalled:?}",
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the host's bound ended the stream, not the upstream's next chunk; took {:?}",
+            started.elapsed(),
+        );
     }
 
     #[tokio::test]
@@ -1408,7 +1478,7 @@ mod tests {
         for name in ["Cooling", "Ready"] {
             pool.set_loading(&AccountKey(name.to_owned()), crate::LoadingState::Ready);
         }
-        let gateway = Gateway::new(Arc::clone(&pool));
+        let gateway = Gateway::new(Arc::clone(&pool), reqwest::Client::new());
         gateway.set_org_pins([(
             "Default".to_owned(),
             crate::selection::OrgPin {
@@ -1444,7 +1514,10 @@ mod tests {
     /// render: the store underneath is a HashMap.
     #[test]
     fn published_org_pins_come_back_sorted_with_their_lists_intact() {
-        let gateway = Gateway::new(Arc::new(crate::AccountPool::empty_for_test()));
+        let gateway = Gateway::new(
+            Arc::new(crate::AccountPool::empty_for_test()),
+            reqwest::Client::new(),
+        );
         let pin = |accounts: &[&str], fallbacks: &[&str]| crate::selection::OrgPin {
             accounts: accounts.iter().map(|name| (*name).to_owned()).collect(),
             fallback_accounts: fallbacks.iter().map(|name| (*name).to_owned()).collect(),

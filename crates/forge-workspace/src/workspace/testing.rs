@@ -146,8 +146,12 @@ impl Workspace {
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
         let accounts = std::sync::Arc::new(forge_gateway::AccountPool::empty_for_test());
+        // A stub workspace never binds the listener, so nothing forwards
+// through this client; the leg's own construction is covered by the
+// gateway's tests.
         let gateway = std::sync::Arc::new(forge_gateway::forward::Gateway::new(
             std::sync::Arc::clone(&accounts),
+            reqwest::Client::new(),
         ));
         let workspace = Self {
             config_dir,
