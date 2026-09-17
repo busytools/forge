@@ -2392,6 +2392,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: None,
+                    is_git_repo: None,
                 },
             )
             .expect("seed the row");
@@ -3248,6 +3249,10 @@ mod connected_hook_tests {
 
     /// Seed `proj-x` with one persisted worker row and return the
     /// tempdir backing the store, whose lifetime must outlive the test.
+    ///
+    /// The project path is a real directory: a non-git worker runs in the
+    /// project root, so the wave checks that root is there before
+    /// re-spawning it.
     fn seed_project_with_one_worker_row(
         workspace: &Arc<Workspace>,
         label: &str,
@@ -3256,9 +3261,12 @@ mod connected_hook_tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        workspace.seed_test_project("proj-x", "/tmp/proj-x");
+        let project_path = dir.path().join("proj-x");
+        std::fs::create_dir_all(&project_path).expect("create the project dir");
+        let project_path = project_path.to_string_lossy().into_owned();
+        workspace.seed_test_project("proj-x", &project_path);
         let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path)),
         );
         workspace
             .record_worker_row(
@@ -3268,6 +3276,7 @@ mod connected_hook_tests {
                 &format!("charter for {label}"),
                 None,
                 None,
+                false,
                 false,
             )
             .expect("seed the worker row");
@@ -3344,6 +3353,7 @@ mod connected_hook_tests {
                 None,
                 None,
                 false,
+                false,
             )
             .expect("seed the worker row");
         workspace.enable_test_dispatch_intercept();
@@ -3381,9 +3391,7 @@ mod connected_hook_tests {
         // flow does this via `handle_spawn_worker`'s
         // `insert_live_worker`; the test intercept skipped that
         // path so we seed it manually for the idempotency gate).
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
-        );
+        let project_key = workspace.project_key_for_name("proj-x").expect("seeded project");
         workspace.insert_live_worker(
             &project_key,
             crate::mcp::workers::types::WorkerEntry {

@@ -43,6 +43,14 @@ pub struct SessionRecord {
     pub resume_kick: Option<String>,
     #[serde(default)]
     pub interactive: Option<bool>,
+    /// Whether the worker runs in a worktree, which fixes the directory
+    /// its session starts in: `worker_tag_dir` reads it to compose the
+    /// path. Absent on a row written before the field existed, and the
+    /// spawn probes for it then - the row is what lets the launchpad and
+    /// the boot wave ask the same question without a git probe of their
+    /// own.
+    #[serde(default)]
+    pub is_git_repo: Option<bool>,
 }
 
 /// A configured project as the migration needs it: its catalog key, and
@@ -182,6 +190,7 @@ pub fn migrate_from_dynamic_workers(
             kick: worker.kick.clone(),
             resume_kick: worker.resume_kick.clone(),
             interactive: Some(worker.interactive),
+            is_git_repo: None,
         };
         // An existing row is the id-bearing one: merge onto it so the
         // occupant it names survives. `update` leaves an absent field at
@@ -346,6 +355,7 @@ mod tests {
             kick: None,
             resume_kick: None,
             interactive: None,
+            is_git_repo: None,
         }
     }
 
@@ -391,6 +401,9 @@ mod tests {
                 kick: Some("kick for steward".to_owned()),
                 resume_kick: Some("resume kick for steward".to_owned()),
                 interactive: Some(true),
+                // The retired table never held it; the spawn probes and
+                // records it on the worker's next spawn.
+                is_git_repo: None,
             },
             "the row carries the worker's fields and no id",
         );

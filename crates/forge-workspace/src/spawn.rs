@@ -1079,17 +1079,23 @@ pub(crate) fn handle_spawn_worker(
     let WorkerSpawnArgs { label, charter, kick, resume_kick, interactive } = args;
     let label = label.as_str();
     let resume_kick = resume_kick.as_deref();
-    // Verify the project exists before minting the worker's id. Probe its
-    // filesystem path for git-repo-ness exactly once here - a blocking FS
-    // call, deliberately BEFORE the live_workers critical section below so
-    // it never widens the dedup window - and feed the result into both the
+    // Verify the project exists before minting the worker's id. A worker
+    // that already has a row takes its git-repo-ness from that row: it is
+    // the flag the launchpad and the boot wave read to decide whether the
+    // directory this spawn would enter is there, so probing again here
+    // could compose a different cwd than the one they cleared. Only a
+    // first spawn probes the project path - a blocking FS call,
+    // deliberately BEFORE the live_workers critical section below so it
+    // never widens the dedup window. Either way the result feeds both the
     // WorkerEntry flag and the `--worktree` extra-arg threading below.
     let projects = workspace.list_projects();
     let Some(view) = projects.iter().find(|v| v.key == project_key) else {
         let _ = return_to.send(Err(format!("project not found: {}", project_key.as_str())));
         return;
     };
-    let is_git = forge_agent::env::worktree::is_git_repo(&view.path);
+    let is_git = workspace
+        .recorded_worker_is_git_repo(&project_key, label)
+        .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path));
 
     // The pool key a fresh worker spawns under: an id minted here and
     // recorded under the worker's slot before the child starts, so the
@@ -1204,6 +1210,7 @@ pub(crate) fn handle_spawn_worker(
         entry.kick.as_deref(),
         resume_kick,
         interactive,
+        is_git,
     ) {
         Ok(()) => None,
         Err(error) => {
@@ -2458,6 +2465,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: None,
+                    is_git_repo: None,
                 },
             )
             .expect("seed the row the spawn will write");

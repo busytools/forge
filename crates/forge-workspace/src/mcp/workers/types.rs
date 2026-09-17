@@ -28,14 +28,37 @@ pub fn worker_tag_dir(project_root: &Path, label: &str, is_git_repo_at_spawn: bo
     }
 }
 
-/// Whether a persisted worker row still has a directory to run in: a
-/// git worker's cwd is its worktree, a non-git worker's is the project
-/// root. A `.git` marker on the root or any ancestor stands in for the
-/// `git rev-parse` probe `worker_tag_dir`'s callers use, because the
-/// launchpad calls this per row per frame.
-pub fn worker_working_dir_exists(project_root: &Path, label: &str) -> bool {
-    project_root.join(".claude/worktrees").join(label).exists()
-        || !project_root.ancestors().any(|dir| dir.join(".git").exists())
+/// Whether a persisted worker row can still start a session. The boot
+/// wave asks this before re-spawning the row and the launchpad asks it
+/// before offering one, so the two cannot disagree about which workers
+/// are still real.
+///
+/// A resume starts in [`worker_tag_dir`] on the row's own git flag, so a
+/// worktree that is gone leaves it nowhere to start. Inferring that flag
+/// from the project's filesystem instead would put the two on different
+/// directories: a `.git` entry git itself refuses, or a repo initialised
+/// after the worker was spawned, is enough to separate them. A fresh
+/// spawn (`resuming` false) starts in the project root and passes
+/// `--worktree`, so claude creates the worktree itself and nothing is
+/// missing yet.
+///
+/// `is_git_repo` is `None` on a row written before the field existed. That
+/// answers "yes, it can start": the spawn probes and records the flag, and
+/// a row whose directory forge cannot compose is never hidden on a guess.
+/// The launchpad calls this per row per frame, so it must not probe.
+pub fn worker_row_can_start(
+    project_root: &Path,
+    label: &str,
+    is_git_repo: Option<bool>,
+    resuming: bool,
+) -> bool {
+    if !resuming {
+        return true;
+    }
+    match is_git_repo {
+        None => true,
+        Some(flag) => worker_tag_dir(project_root, label, flag).is_dir(),
+    }
 }
 
 /// One live worker's liveness, without the spawn args. A render path
