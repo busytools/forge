@@ -39,7 +39,7 @@ pub struct DomainSession {
     pub pending_interactions: HashMap<String, PendingInteractionSlot>,
     /// `--new` boot-wave flag, stamped at spawn time from
     /// `SessionLaunchSettings.force_new`. For a project lead it makes
-    /// the Connected-time respawn skip the worker resume scan
+    /// the Connected-time respawn skip the store lookup
     /// (`resume_existing = None` for every worker), so they come
     /// up fresh alongside their fresh lead. `false` for every non-boot
     /// spawn.

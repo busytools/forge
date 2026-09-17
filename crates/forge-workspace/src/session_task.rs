@@ -188,11 +188,12 @@ impl SessionTask {
             && !cwd.is_empty()
             && let Some(workspace) = self.workspace.upgrade()
         {
-            // Skip the catalog mirror for workers: they're tracked via
-            // live_workers and their JSONL carries the forge:worker tag,
-            // but a tag-less mirror here lets a just-connected worker win
-            // resolve_lead_session's untagged-latest fallback during the
-            // boot window before that tag lands.
+            // Skip the catalog mirror for workers. The projects pane
+            // draws a project's own sessions from this catalog and its
+            // workers from `live_workers`, so a mirrored worker would be
+            // listed as one of the project's sessions - and it arrives
+            // here before its JSONL carries the forge:worker tag that
+            // keeps the boot scan from listing it.
             if workspace.worker_lookup_for_session(&self.key).is_none() {
                 workspace.record_connected_session(cwd, session_id, None);
             }
@@ -231,12 +232,11 @@ impl SessionTask {
                 // and subsequent Connecteds (the /new / login /
                 // logout flow that enters via `connected_once`).
                 // Each Connected carries a fresh session_id and the
-                // worker's tag must travel to the new JSONL -
-                // without re-tagging on /new, the resume scan
-                // (#157/#164) finds the orphaned pre-/new JSONL and
-                // resumes that instead of the active post-/new
-                // session. Captured before the if/else because both
-                // branches consume the `cwd` field.
+                // worker's tag must travel to the new JSONL - a
+                // post-/new JSONL left untagged is listed by the boot
+                // scan as one of the project's own sessions instead of
+                // being hidden as a worker's. Captured before the
+                // if/else because both branches consume the `cwd` field.
                 //
                 // The detached task does an initial retry loop on
                 // `Io(NotFound)` (claude writes the JSONL lazily on
@@ -369,8 +369,8 @@ impl SessionTask {
                 }
                 // Re-tag must fire on BOTH first-Connected and
                 // post-/new Connected paths: a /new writes a fresh
-                // JSONL, and if it isn't re-tagged the resume scan
-                // picks the stale pre-/new orphan instead.
+                // JSONL, and an untagged one is listed by the boot scan
+                // as one of the project's own sessions.
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.apply_worker_tag_or_rollback(&real_key, &cwd_for_tag);
                 }

@@ -89,10 +89,15 @@ pub enum WorkerSpawnError {
     /// pick a different label, or `git commit --allow-empty` first
     /// in the empty-repo case).
     WorktreeCreationFailed { reason: String },
-    /// `resume_session` was set but no prior session tagged
-    /// `forge:worker:<label>` exists in the caller's project, so there
-    /// is nothing to resume. Refused before any dispatch.
+    /// `resume_session` was set but the store holds no id for the
+    /// label, so there is nothing to resume. Refused before any
+    /// dispatch.
     NoPriorSession { label: String },
+    /// The store could not be read, so whether the label has a prior
+    /// session is unknown. Distinct from [`Self::NoPriorSession`]: the
+    /// session may well exist, and starting a fresh one would mint over
+    /// the row that could not be read.
+    SessionStoreUnreadable { label: String, message: String },
 }
 
 /// Synchronous error from `update_worker`. Gating (lead-only, non-empty
@@ -549,10 +554,19 @@ impl WorkerFacade for ProdWorkerFacade {
                     }
                 }
             }
-            let Some(session_id) = ws.resolve_worker_resume_session(&view.org, &view.name, &label)
-            else {
-                discard_refused_worktree(&view.path, &label, ensured.take());
-                return Err(WorkerSpawnError::NoPriorSession { label });
+            let session_id = match ws.resolve_worker_resume_session(&view.org, &view.name, &label) {
+                Ok(Some(session_id)) => session_id,
+                Ok(None) => {
+                    discard_refused_worktree(&view.path, &label, ensured.take());
+                    return Err(WorkerSpawnError::NoPriorSession { label });
+                }
+                Err(error) => {
+                    discard_refused_worktree(&view.path, &label, ensured.take());
+                    return Err(WorkerSpawnError::SessionStoreUnreadable {
+                        label,
+                        message: error.to_string(),
+                    });
+                }
             };
             Some(session_id)
         } else {
@@ -561,10 +575,10 @@ impl WorkerFacade for ProdWorkerFacade {
 
         // Row to persist on success. Captured before the values move
         // into the Command so a forge restart can re-spawn this dynamic
-        // worker (resolved charter/kick, no session_id - resume is
-        // recovered from the catalog tag). This is the ONLY MCP-spawn
-        // site; boot/reconnect re-spawns dispatch SpawnWorker directly
-        // and must not persist.
+        // worker (resolved charter/kick, no session_id - the sessions
+        // table holds that). This is the ONLY MCP-spawn site;
+        // boot/reconnect re-spawns dispatch SpawnWorker directly and
+        // must not persist.
         let persisted = crate::store::dynamic_workers::DynamicWorker {
             project_key: cp.project_key.as_str().to_owned(),
             label: label.clone(),

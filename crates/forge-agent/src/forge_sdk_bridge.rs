@@ -580,14 +580,19 @@ impl ForgeSdkBridge {
     /// Other user-action methods (`prompt_with_images`) intentionally
     /// opt out - see the inline rationale at each call site.
     fn check_session_id(&self, session_id: &str, label: &'static str) -> bool {
-        let current = self.inner.session_id_slot.lock().clone();
-        if current == session_id {
-            return true;
-        }
+        // The slot is written once, where a spawn supplies the id the
+        // child will run under, and every production spawn supplies one:
+        // `new_session(None)` needs `fresh_session_id_for` to miss, which
+        // needs a pooled entry with no `registration`, and the account
+        // walk only returns keys from the org pin the pool holds. So a
+        // live bridge's slot is never empty here, and a request that does
+        // not match is stale rather than unaddressable.
         // An id-less request names no session at all, so there is nothing
-        // to match it against: accepting it would run the dispatch on
-        // whichever session the bridge happens to hold.
+        // to match it against, and accepting it would run the dispatch on
+        // whichever session the bridge happens to hold. Checked before
+        // the equality, since two empty ids would otherwise match.
         if session_id.is_empty() {
+            let current = self.inner.session_id_slot.lock().clone();
             tracing::error!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
                 event_name = "dispatch_without_session_id",
@@ -596,6 +601,10 @@ impl ForgeSdkBridge {
                 "dropping a dispatch that carries no session id"
             );
             return false;
+        }
+        let current = self.inner.session_id_slot.lock().clone();
+        if current == session_id {
+            return true;
         }
         tracing::warn!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -1186,12 +1195,48 @@ mod tests {
     use super::*;
 
     /// Bind the bridge's id slot. Every production bridge has one from
-    /// the start: the slot is set from the spawn's supplied id, or from
-    /// the first inbound frame that carries one. An unbound slot is a
-    /// fixture state only, and `check_session_id` refuses a dispatch it
-    /// cannot match rather than accepting any id.
+    /// the start: the slot is written once, where the spawn supplies the
+    /// id the child will run under, and nothing writes it per frame. An
+    /// unbound slot is therefore a fixture state, and `check_session_id`
+    /// refuses a dispatch it cannot match rather than accepting any id.
     fn bind_session_slot(bridge: &ForgeSdkBridge, session_id: &str) {
         bridge.session_id_slot_arc().lock().clone_from(&session_id.to_owned());
+    }
+
+    /// The match is by id and only by id: a stale id is refused so a
+    /// `cancel`/`set_mode`/`set_model` meant for one session cannot land
+    /// on another, and an id-less request is refused rather than being
+    /// run against whichever session the bridge happens to hold.
+    #[test]
+    fn check_session_id_matches_by_id_only() {
+        let bridge = test_bridge();
+        bind_session_slot(&bridge, "session-1");
+
+        assert!(bridge.check_session_id("session-1", "cancel"), "the session's own id passes");
+        assert!(!bridge.check_session_id("session-2", "cancel"), "another session's id is refused");
+        assert!(
+            !bridge.check_session_id("", "cancel"),
+            "a request carrying no id is refused, not matched to anything",
+        );
+    }
+
+    /// An unbound slot refuses rather than matching everything, which is
+    /// what the old `current.is_empty()` wildcard did. That arm is safe
+    /// to refuse because nothing writes the slot per frame and every
+    /// production spawn supplies an id, so a live bridge is never
+    /// unbound; see the invariant on `check_session_id`.
+    #[test]
+    fn an_unbound_slot_refuses_rather_than_matching_anything() {
+        let bridge = test_bridge();
+
+        assert!(
+            !bridge.check_session_id("session-1", "cancel"),
+            "an unbound slot does not accept a request it cannot check",
+        );
+        assert!(
+            !bridge.check_session_id("", "cancel"),
+            "nor an id-less request, which two empty ids would otherwise match",
+        );
     }
 
     fn test_bridge() -> ForgeSdkBridge {

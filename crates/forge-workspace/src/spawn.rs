@@ -2984,7 +2984,7 @@ provider = "anthropic"
         }
     }
 
-    /// #976's open question, decided: the boot-time respawn scan is
+    /// #976's open question, decided: the boot-time respawn wave is
     /// EXEMPT from the cap. Persisted workers are state the user
     /// already had, and the boot path drops the spawn reply, so an
     /// over-limit refusal there would strand rows silently with no

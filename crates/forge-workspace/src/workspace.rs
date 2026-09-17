@@ -540,9 +540,9 @@ async fn run_background_catalog_scan(
     update_tx: mpsc::UnboundedSender<SessionUpdate>,
     loaded: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    // One root derivation with the resume scan, so the tag cache is
-    // one key space. Without a projects tree the scan still runs and
-    // finds an empty catalog.
+    // The tag cache is one key space with any other scan of this config
+    // dir. Without a projects tree the scan still runs and finds an
+    // empty catalog.
     let scan_root = catalog_scan_root(&config_dir)
         .unwrap_or_else(|| std::fs::canonicalize(&config_dir).unwrap_or(config_dir.clone()));
     let tag_cache = std::sync::Arc::new(load_session_tag_cache(db.lock().as_ref()));
@@ -774,6 +774,11 @@ impl Workspace {
     /// Whether the background catalog scan has populated the catalog.
     /// False from construction until the scan lands; always true when
     /// constructed without a tokio runtime (nothing would run it).
+    ///
+    /// Test-only: the boot spawn hold that read this is gone, and a
+    /// frontend learns the same fact from `SessionUpdate::CatalogLoaded`.
+    /// Tests await it to sequence a fixture against the scan.
+    #[cfg(any(test, feature = "testing"))]
     pub fn catalog_ready(&self) -> bool {
         self.catalog_loaded.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -892,9 +897,9 @@ impl Workspace {
 
         // The `sessions` table is filled from `dynamic_workers` on the
         // first boot that finds it empty, so a worker persisted before
-        // this build has a row to derive an id into. Non-fatal, like the
-        // loads above: the rows stay in `dynamic_workers` and the old
-        // read path still reaches them.
+        // this build has a row the re-spawn wave can read. Non-fatal,
+        // like the loads above: the rows stay in `dynamic_workers` and
+        // the old read path still reaches them.
         if let Some(db) = &db
             && let Err(error) = crate::store::sessions::migrate_from_dynamic_workers(
                 db,
@@ -1388,11 +1393,11 @@ impl Workspace {
         };
         let account_key = self.select_account_for_project(&project, model)?;
         // The account and model checks have passed, so this spawn is
-        // committed: record the id its lead will run under, which is what
-        // the store held, what the catalog derived, or the one minted in
+        // committed: record the id its lead will run under, either the
+        // one the store held or the one minted in
         // `lead_session_key_for`. Nothing is written before this point -
-        // a refusal ahead of it would pin an id no child ever adopts, and
-        // the next boot would prefer that row over the catalog.
+        // a refusal ahead of it would pin an id no child ever adopts,
+        // and the next boot would resume onto it.
         if matches!(role, crate::protocol::SpawnRole::Lead) {
             self.record_session_id(&project.org, &project.name, LEAD_LABEL, session_key.as_str());
         }
@@ -1480,8 +1485,8 @@ impl Workspace {
             }
         };
         // Carry `--new` onto the domain so a project lead's
-        // Connected-time respawn skips the worker resume scan and
-        // brings its workers up fresh alongside the fresh lead.
+        // Connected-time respawn skips the store lookup and brings its
+        // workers up fresh alongside the fresh lead.
         domain_arc.lock().spawned_force_new = settings.force_new;
 
         // Build the per-session `forge` MCP server. ONE server name;
@@ -1534,7 +1539,7 @@ impl Workspace {
                 let project = self.config.default_project();
                 Self::apply_lead_delegation(&mut settings, session_kind);
                 let cwd = project.path.to_string_lossy().to_string();
-                let resume_target = self.lead_session_to_resume(project, settings.force_new);
+                let resume_target = self.lead_session_to_resume(project, settings.force_new)?;
                 match resume_target {
                     Some(lead) => {
                         handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
@@ -1552,7 +1557,7 @@ impl Workspace {
                 let project = self.find_project_by_name(&name)?;
                 Self::apply_lead_delegation(&mut settings, session_kind);
                 let cwd = project.path.to_string_lossy().to_string();
-                let resume_target = self.lead_session_to_resume(project, settings.force_new);
+                let resume_target = self.lead_session_to_resume(project, settings.force_new)?;
                 match resume_target {
                     Some(lead) => {
                         handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
@@ -2416,11 +2421,11 @@ impl Workspace {
     ) -> Result<SessionKey, WorkspaceError> {
         match target {
             SessionTarget::Default => {
-                Ok(self.lead_session_key_for(self.config.default_project(), force_new))
+                self.lead_session_key_for(self.config.default_project(), force_new)
             }
             SessionTarget::Named(name) => {
                 let project = self.find_project_by_name(name)?;
-                Ok(self.lead_session_key_for(project, force_new))
+                self.lead_session_key_for(project, force_new)
             }
             SessionTarget::Session(key) => Ok(key.clone()),
             SessionTarget::FreshInProject { session_id, .. } => {
@@ -2458,41 +2463,65 @@ impl Workspace {
     }
 
     /// Map a project to the `SessionKey` of its lead: the id the store
-    /// holds, the catalog's on a boot that finds no row, or a freshly
-    /// minted one when there is nothing to resume, so the pool key IS the
-    /// id from the first instant rather than something renamed onto it
-    /// later.
+    /// holds, or a freshly minted one when there is nothing to resume,
+    /// so the pool key IS the id from the first instant rather than
+    /// something renamed onto it later.
     ///
     /// The mint is not written to the store here: this runs before the
     /// account and model checks, and a refusal after it would pin an id
-    /// no child ever adopts while `lead_session_to_resume` prefers the
-    /// stored row over the catalog. The record lands once those checks
-    /// pass, in [`Self::get_agent_handle_at_key`].
-    fn lead_session_key_for(&self, project: &LoadedProject, force_new: bool) -> SessionKey {
-        self.lead_session_to_resume(project, force_new)
-            .unwrap_or_else(|| SessionKey::from_session_id(uuid::Uuid::new_v4().to_string()))
+    /// no child ever adopts while [`Self::lead_session_to_resume`]
+    /// prefers the stored row. The record lands once those checks pass,
+    /// in [`Self::get_agent_handle_at_key`].
+    fn lead_session_key_for(
+        &self,
+        project: &LoadedProject,
+        force_new: bool,
+    ) -> Result<SessionKey, WorkspaceError> {
+        match self.lead_session_to_resume(project, force_new)? {
+            Some(key) => Ok(key),
+            None => Ok(SessionKey::from_session_id(uuid::Uuid::new_v4().to_string())),
+        }
     }
 
     /// Resume target for a project-rooted spawn: the id the store holds
     /// for this project's lead, unless `--new` (`force_new`) forces a
-    /// fresh session. `Some(id)` => resume that session; `None` => start
-    /// fresh (`new_session`). `force_new` overrides a stored id - that is
-    /// what makes the boot wave's leads come up fresh under `--new`,
-    /// while every non-boot spawn leaves `force_new` false and resumes.
+    /// fresh session. `Some(id)` => resume that session; `Ok(None)` =>
+    /// start fresh (`new_session`). `force_new` overrides a stored id -
+    /// that is what makes the boot wave's leads come up fresh under
+    /// `--new`, while every non-boot spawn leaves `force_new` false and
+    /// resumes.
     ///
     /// The store is the only source. A row with no id is a session that
     /// has never run, so the mint in [`Self::lead_session_key_for`]
     /// starts it fresh rather than re-deriving one from the transcripts.
+    /// A store that cannot be read is an error rather than a mint: the
+    /// session it names would be forked, and the new id written over the
+    /// row that could not be read.
     fn lead_session_to_resume(
         &self,
         project: &LoadedProject,
         force_new: bool,
-    ) -> Option<SessionKey> {
+    ) -> Result<Option<SessionKey>, WorkspaceError> {
         if force_new {
-            return None;
+            return Ok(None);
         }
-        self.stored_session_id(&project.org, &project.name, LEAD_LABEL)
-            .map(SessionKey::from_session_id)
+        match self.stored_session_id(&project.org, &project.name, LEAD_LABEL) {
+            Ok(id) => Ok(id.map(SessionKey::from_session_id)),
+            Err(source) => {
+                tracing::error!(
+                    target: "forge_workspace::sessions",
+                    org = %project.org,
+                    project = %project.name,
+                    %source,
+                    "reading the lead's session row failed; refusing the spawn rather than minting over it",
+                );
+                Err(WorkspaceError::SessionStoreUnreadable {
+                    org: project.org.clone(),
+                    project: project.name.clone(),
+                    label: LEAD_LABEL.to_owned(),
+                })
+            }
+        }
     }
 
     /// The row a live session's id belongs to: its org and project from
@@ -2519,7 +2548,18 @@ impl Workspace {
         let Some((org, project, label)) = self.session_row_for_key(key) else {
             return;
         };
-        if self.stored_session_id(&org, &project, &label).as_deref() == Some(session_id) {
+        let stored = match self.stored_session_id(&org, &project, &label) {
+            Ok(stored) => stored,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::sessions",
+                    org, project, label, %error,
+                    "reading the session row failed; not recording the adopted id over it",
+                );
+                return;
+            }
+        };
+        if stored.as_deref() == Some(session_id) {
             return;
         }
         tracing::info!(
@@ -2540,28 +2580,33 @@ impl Workspace {
         Some(id)
     }
 
-    /// The session id the store holds for `(org, project, label)`, if the
-    /// row exists and carries one.
-    fn stored_session_id(&self, org: &str, project: &str, label: &str) -> Option<String> {
+    /// The session id the store holds for `(org, project, label)`.
+    ///
+    /// `Ok(None)` means no id: the row is absent, or it carries none.
+    /// That is a session which has never run, and a caller may mint for
+    /// it. `Err` means the row could not be read, which is a different
+    /// answer and must never be treated as absence: a caller that minted
+    /// there would fork the session and write the new id over the row it
+    /// failed to read.
+    fn stored_session_id(
+        &self,
+        org: &str,
+        project: &str,
+        label: &str,
+    ) -> Result<Option<String>, anyhow::Error> {
         let db = self.db.lock();
-        let db = db.as_ref()?;
-        match crate::store::sessions::get(db, org, project, label) {
-            Ok(row) => row.and_then(|row| row.session_id),
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_workspace::sessions",
-                    org, project, label, %error,
-                    "reading the session row failed; treating it as absent",
-                );
-                None
-            }
-        }
+        let Some(db) = db.as_ref() else {
+            // No store at all, so there is no row to read and none a mint
+            // could overwrite.
+            return Ok(None);
+        };
+        Ok(crate::store::sessions::get(db, org, project, label)?.and_then(|row| row.session_id))
     }
 
     /// Record `id` as the session for `(org, project, label)`, keeping the
     /// fields a worker's row already carries. A write that cannot land is
     /// warned and not retried: the session still runs under `id`, and the
-    /// next boot derives or mints again.
+    /// next boot reads whatever the row held.
     pub(crate) fn record_session_id(&self, org: &str, project: &str, label: &str, id: &str) {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
@@ -3239,9 +3284,26 @@ impl Workspace {
         // row spawns fresh rather than resuming its stored id.
         let project = if force_new { None } else { self.project_for_key(project_key) };
         for worker in dynamic {
-            let resume_existing = project
+            let resume_existing = match project
                 .as_ref()
-                .and_then(|p| self.stored_session_id(&p.org, &p.name, &worker.label));
+                .map(|p| self.stored_session_id(&p.org, &p.name, &worker.label))
+            {
+                None | Some(Ok(None)) => None,
+                Some(Ok(Some(id))) => Some(id),
+                Some(Err(error)) => {
+                    // A row that cannot be read is not a row without an
+                    // id: spawning fresh here would mint over it and fork
+                    // the worker's session.
+                    tracing::error!(
+                        target: "forge_workspace::workers",
+                        project = %project_key.as_str(),
+                        label = %worker.label,
+                        %error,
+                        "reading the worker's session row failed; skipping this worker rather than spawning fresh over it",
+                    );
+                    continue;
+                }
+            };
             let kick = if resume_existing.is_some() {
                 worker.resume_kick.clone().or_else(|| Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned()))
             } else {
@@ -3344,7 +3406,7 @@ impl Workspace {
         org: &str,
         project: &str,
         label: &str,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, anyhow::Error> {
         self.stored_session_id(org, project, label)
     }
 
@@ -7442,8 +7504,8 @@ provider = "anthropic"
     }
 
     /// The migration's other half: a boot has to run the copy, or the
-    /// table stays empty and every worker's id is derived from disk on
-    /// every boot forever.
+    /// table stays empty and every persisted worker starts fresh on
+    /// every boot.
     #[tokio::test]
     async fn booting_copies_the_persisted_workers_into_the_sessions_table() {
         let dir = make_workspace_dir_with_two_accounts();
@@ -7501,13 +7563,16 @@ provider = "anthropic"
 
         let id = workspace
             .stored_session_id("Default", "forge", LEAD_LABEL)
+            .expect("the store is readable")
             .expect("the lead's id reaches the store");
         assert!(
             uuid::Uuid::parse_str(&id).is_ok(),
             "the id is a uuid, which is what the catalog's validators accept: {id}",
         );
         assert_eq!(
-            workspace.lead_session_to_resume(workspace.config.default_project(), false),
+            workspace
+                .lead_session_to_resume(workspace.config.default_project(), false)
+                .expect("the store is readable"),
             Some(SessionKey::from_session_id(id)),
             "a later start re-enters the recorded session",
         );
@@ -7532,13 +7597,14 @@ provider = "anthropic"
                 .expect("spawn");
             workspace
                 .stored_session_id("Default", "forge", LEAD_LABEL)
+                .expect("the store is readable")
                 .expect("the lead's id reaches the store")
         };
 
         let restarted = Workspace::new_for_test(dir.path().to_owned()).expect("second boot");
         let project = restarted.config.default_project().clone();
         assert_eq!(
-            restarted.lead_session_to_resume(&project, false),
+            restarted.lead_session_to_resume(&project, false).expect("the store is readable"),
             Some(SessionKey::from_session_id(id)),
             "the second boot re-enters the session the first one recorded",
         );
@@ -7567,6 +7633,7 @@ provider = "anthropic"
 
         let id = workspace
             .stored_session_id(&project.org, &project.name, LEAD_LABEL)
+            .expect("the store is readable")
             .expect("the row still holds an id");
         assert_ne!(id, "stored-lead-id", "`--new` must not reuse the id the store held");
         assert!(
@@ -7630,9 +7697,52 @@ provider = "anthropic"
         seed_session_row(&workspace, &project.org, &project.name, LEAD_LABEL);
 
         assert_eq!(
-            workspace.lead_session_to_resume(&project, false),
+            workspace.lead_session_to_resume(&project, false).expect("the store is readable"),
             None,
             "a row with no id has nothing to resume, whatever the catalog holds",
+        );
+    }
+
+    /// A row that cannot be read is not a row without an id. Minting on a
+    /// read error would fork the session and write the new id over the
+    /// row it failed to read, so the spawn is refused instead.
+    #[tokio::test]
+    async fn an_unreadable_session_row_refuses_the_spawn_rather_than_forking() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let project = workspace.config.default_project().clone();
+        {
+            let db = workspace.db.lock();
+            crate::store::sessions::put_raw_for_test(
+                db.as_ref().expect("test store"),
+                &project.org,
+                &project.name,
+                LEAD_LABEL,
+                b"not a session record",
+            )
+            .expect("plant the undecodable row");
+        }
+
+        assert!(
+            matches!(
+                workspace.lead_session_to_resume(&project, false),
+                Err(crate::error::WorkspaceError::SessionStoreUnreadable { .. })
+            ),
+            "a row that cannot be read is refused, not treated as absent",
+        );
+        assert!(
+            workspace.resolve_target(&SessionTarget::Named(project.name.clone()), false).is_err(),
+            "and the refusal reaches the spawn's target resolution, so nothing mints over it",
+        );
+        assert!(
+            crate::store::sessions::get(
+                workspace.db.lock().as_ref().expect("test store"),
+                &project.org,
+                &project.name,
+                LEAD_LABEL,
+            )
+            .is_err(),
+            "the refused spawn left the unreadable row exactly as it found it",
         );
     }
 
@@ -7652,14 +7762,20 @@ provider = "anthropic"
 
         workspace.note_running_session_id(&key, "adopted-id");
         assert_eq!(
-            workspace.stored_session_id("TestOrg", "forge", LEAD_LABEL).as_deref(),
+            workspace
+                .stored_session_id("TestOrg", "forge", LEAD_LABEL)
+                .expect("the store is readable")
+                .as_deref(),
             Some("adopted-id"),
             "the row holds the id the CLI adopted, not a stale one",
         );
 
         workspace.note_running_session_id(&key, "adopted-id");
         assert_eq!(
-            workspace.stored_session_id("TestOrg", "forge", LEAD_LABEL).as_deref(),
+            workspace
+                .stored_session_id("TestOrg", "forge", LEAD_LABEL)
+                .expect("the store is readable")
+                .as_deref(),
             Some("adopted-id"),
             "and re-noting the same id leaves it alone",
         );
@@ -10042,8 +10158,8 @@ mod tag_retry_tests {
     /// `apply_worker_tag_or_rollback` on EVERY Connected (not just
     /// the first), so the post-/new JSONL gets tagged in lockstep
     /// with the entry's session_key migration. Without this, the
-    /// resume scan from #157/#164 picks the orphaned pre-/new
-    /// JSONL on the next forge restart.
+    /// post-/new transcript carries no `forge:worker` tag, so the boot
+    /// scan lists it as one of the project's own sessions.
     ///
     /// Workspace-level test: simulate the /new flow by calling the
     /// tagger twice, migrating the WorkerEntry's session_key between
@@ -10898,7 +11014,7 @@ provider = "anthropic"
         );
     }
 
-    /// A `resume_session` spawn for a label with no prior tagged session
+    /// A `resume_session` spawn for a label the store holds no id for
     /// refuses before dispatching anything, so the lead learns the label
     /// has nothing to resume instead of silently getting a fresh spawn.
     #[tokio::test]

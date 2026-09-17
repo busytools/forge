@@ -4,8 +4,7 @@
 //! restart can re-spawn it; the row is the only thing that brings one
 //! back. Keyed by `(project_key, label)` - at most one row per label per
 //! project. The whole record is stored as serde-json; the session_id is
-//! deliberately NOT stored, since resume is recovered from the
-//! `forge:worker:<label>` catalog tag.
+//! deliberately NOT stored, since the `sessions` table holds it.
 
 use std::collections::HashMap;
 

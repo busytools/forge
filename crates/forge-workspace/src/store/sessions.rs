@@ -90,14 +90,34 @@ pub fn put(db: &Db, record: &SessionRecord) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Write raw bytes at a row, so a test can plant a record that will not
+/// decode. Test-only: every production write goes through [`put`].
+#[cfg(test)]
+pub(crate) fn put_raw_for_test(
+    db: &Db,
+    org: &str,
+    project: &str,
+    label: &str,
+    value: &[u8],
+) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(SESSIONS)?;
+        table.insert((org, project, label), value)?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
 /// Fill `sessions` from `dynamic_workers`, once.
 ///
-/// Runs on the first boot after this table exists: a worker's persisted
-/// row carries no id, so the derivation fills that in when the row is
-/// read. Does nothing once `sessions` holds any row, which is what makes
-/// the second boot a no-op. A worker whose project the config no longer
-/// names cannot be keyed by `(org, project, label)` and is left where it
-/// is, warned rather than dropped silently. Returns how many rows it
+/// Runs on the first boot after this table exists. A worker's persisted
+/// row carries no id, so the session it names starts fresh under a newly
+/// minted id rather than resuming. Does nothing once `sessions` holds any
+/// row, which is what makes the second boot a no-op. A worker whose
+/// project the config no longer names cannot be keyed by
+/// `(org, project, label)` and is left where it is, warned rather than
+/// dropped silently. Returns how many rows it
 /// moved.
 pub fn migrate_from_dynamic_workers(
     db: &Db,
@@ -134,11 +154,11 @@ pub fn migrate_from_dynamic_workers(
         moved += 1;
     }
     if moved > 0 {
-        tracing::warn!(
+        tracing::info!(
             target: "forge_workspace::store::sessions",
             rows = moved,
-            "migrated persisted workers into the sessions table; their session ids are \
-             derived from disk on this boot",
+            "migrated persisted workers into the sessions table; each carries no id, so the \
+             session it names starts fresh under a newly minted one",
         );
     }
     Ok(moved)
@@ -201,7 +221,8 @@ mod tests {
 
     /// The first boot after this table exists is the migration: every
     /// persisted worker crosses over with its fields, and its id is left
-    /// for the derivation because `dynamic_workers` never stored one.
+    /// empty because `dynamic_workers` never stored one - so the session
+    /// it names starts fresh rather than resuming.
     #[test]
     fn the_first_open_copies_the_persisted_workers_over_once() {
         let dir = tempdir().expect("tempdir");
@@ -269,7 +290,7 @@ mod tests {
     }
 
     /// A row written before this table existed has a NULL id, and a row
-    /// the derivation has filled carries one: both decode, so a store
+    /// a spawn has since filled carries one: both decode, so a store
     /// written by the previous build is readable rather than skipped.
     #[test]
     fn a_row_without_an_id_and_one_with_it_both_round_trip() {
@@ -290,8 +311,8 @@ mod tests {
         assert_eq!(get(&db, "Personal", "forge", "ghost").expect("get"), None);
     }
 
-    /// An empty id is absence, not an id: the derivation must not treat
-    /// a blank as an answer it can resume.
+    /// An empty id is absence, not an id: a blank is not an answer a
+    /// spawn can resume onto.
     #[test]
     fn an_empty_session_id_is_absent() {
         let dir = tempdir().expect("tempdir");
