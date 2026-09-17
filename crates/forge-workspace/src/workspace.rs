@@ -10304,13 +10304,38 @@ mod tag_retry_tests {
     /// stays in `live_workers` (NO rollback), transitions to Running,
     /// and `needs_tag` remains true so the opportunistic retry on the
     /// first turn can try again. A single `StatusChanged` event fires.
+    ///
+    /// The durable row stays too, and it is the store that makes that
+    /// assertion mean something: the worker is live and Running, so a
+    /// delete reaching this arm would drop the only handle on a worker
+    /// nothing has rolled back.
     #[tokio::test]
     async fn notfound_keeps_worker_with_needs_tag_flag() {
         let (workspace, mut rx) = Workspace::testing_stub();
-        let project_key = ProjectKey::new("forge");
+        workspace.seed_test_project("forge", "/tmp/notfound-tag-keeps");
+        let db_dir = tempdir().expect("db tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                "/tmp/notfound-tag-keeps",
+            )));
         let session_id = "550e8400-e29b-41d4-a716-446655440010";
         let session_key = SessionSlot::worker("TestOrg", "forge", "idle");
         workspace.insert_live_worker(&project_key, fake_spawning_entry("idle", &session_key, true));
+        workspace
+            .record_worker_row(
+                &project_key,
+                "idle",
+                session_id,
+                "charter",
+                Some("kick"),
+                None,
+                false,
+                false,
+            )
+            .expect("seed the row this arm must keep");
 
         let cfg = tempdir().expect("cfg");
         let cwd = tempdir().expect("cwd");
@@ -10367,6 +10392,11 @@ mod tag_retry_tests {
         assert_eq!(entries[0].label, "idle");
         assert!(entries[0].needs_tag, "needs_tag stays true so opportunistic retry can fire");
         assert!(matches!(entries[0].status, forge_primitives::WorkerLiveness::Running));
+        assert!(
+            !workspace.worker_rows_for_project(&project_key).is_empty(),
+            "the durable row stays: nothing was rolled back, and the row is what re-spawns this \
+             worker after a restart",
+        );
     }
 
     /// Drive a non-NotFound tag failure over a seeded row and live worker,
