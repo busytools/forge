@@ -788,7 +788,11 @@ fn push_worker_rows(
         let is_last = idx + 1 == count;
         let tree_glyph = if is_last { "└─" } else { "├─" };
         let lifecycle = worker_lifecycle(app, live, label);
-        let (glyph, glyph_color) = glyph_for_row(lifecycle, app.active_spinner_glyph());
+        let (glyph, glyph_color) = glyph_for_worker_row(
+            lifecycle,
+            worker_has_background_work(app, live, label),
+            app.active_spinner_glyph(),
+        );
         let chip_info = workspace.session_chip_for(&project.key);
         let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
         let name_label = truncate_to(label, WORKER_NAME_WIDTH);
@@ -907,6 +911,34 @@ fn push_unspawnable_hint_row(lines: &mut Vec<Line<'static>>, area_width: u16, me
     let budget = usize::from(area_width).saturating_sub(pad + 2);
     let truncated = truncate_to(message, budget);
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(truncated, style)]));
+}
+
+/// The worker row's glyph: [`glyph_for_row`] plus the promotion the
+/// Projects pane applies to a worker with a live backgrounded task. A
+/// worker running one is working, so its row spins rather than reading
+/// as an idle dot.
+fn glyph_for_worker_row(
+    lifecycle: SessionLifecycleState,
+    has_background_work: bool,
+    spinner_glyph: char,
+) -> (String, Color) {
+    if crate::app::session::session_shows_spinner(lifecycle, has_background_work) {
+        return (spinner_glyph.to_string(), theme::RUST_ORANGE);
+    }
+    glyph_for_row(lifecycle, spinner_glyph)
+}
+
+/// Whether the worker labelled `label` has a live backgrounded task
+/// drawing an Inspector row. `false` for a label with no live entry.
+fn worker_has_background_work(
+    app: &App,
+    live: &[forge_workspace::LiveWorkerState],
+    label: &str,
+) -> bool {
+    live.iter()
+        .find(|worker| worker.label == label)
+        .and_then(|entry| app.sessions.get(&entry.slot))
+        .is_some_and(crate::app::session::UiSession::has_live_background_work)
 }
 
 fn glyph_for_row(lifecycle: SessionLifecycleState, spinner_glyph: char) -> (String, Color) {
@@ -1646,6 +1678,57 @@ mod tests {
             worker_lifecycle(&app, &live, "never-spawned"),
             SessionLifecycleState::Sleeping,
             "a label with no live worker at all is sleeping",
+        );
+    }
+
+    /// A worker running a backgrounded task is working, so its launchpad
+    /// row spins rather than reading as an idle dot - the same promotion
+    /// the Projects pane applies to that worker.
+    #[test]
+    fn a_worker_with_live_background_work_spins_like_the_projects_pane() {
+        use crate::app::{BackgroundTask, SessionTaskCard};
+        use forge_primitives::WorkerLiveness;
+
+        let mut app = App::test_default();
+        let live = vec![worker_entry("watcher", "worker-watcher", WorkerLiveness::Running)];
+        let key = SessionSlot::from_str_for_test("worker-watcher".to_owned());
+        let mut bucket = UiSession::new(key.clone(), "test-project");
+        bucket.lifecycle_state = SessionLifecycleState::Idle;
+        app.sessions.insert(key.clone(), bucket);
+
+        let glyph = |app: &App| {
+            glyph_for_worker_row(
+                worker_lifecycle(app, &live, "watcher"),
+                worker_has_background_work(app, &live, "watcher"),
+                'X',
+            )
+            .0
+        };
+        assert_eq!(glyph(&app), "\u{25cf}", "an idle worker with no task keeps the idle dot");
+
+        let bucket = app.sessions.get_mut(&key).expect("bucket");
+        bucket.background_tasks.push(BackgroundTask {
+            task_id: "t1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "gh run watch".to_owned(),
+        });
+        bucket.session_task_tool_use_ids.insert(
+            "t1".to_owned(),
+            SessionTaskCard {
+                tool_use_id: "tu-1".to_owned(),
+                card_seen: true,
+                command: Some("gh run watch 123".to_owned()),
+            },
+        );
+
+        assert!(
+            worker_has_background_work(&app, &live, "watcher"),
+            "precondition: the task paints an Inspector row",
+        );
+        assert_eq!(
+            glyph(&app),
+            "X",
+            "an idle worker with a live backgrounded task spins, matching the Projects pane",
         );
     }
 
