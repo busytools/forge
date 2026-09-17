@@ -28,11 +28,6 @@ pub(crate) struct SessionTask {
     pub(crate) command_rx: mpsc::UnboundedReceiver<Command>,
     pub(crate) domain: Arc<Mutex<DomainSession>>,
     pub(crate) update_tx: mpsc::UnboundedSender<SessionUpdate>,
-    /// Synthetic key tagged by `Workspace::get_agent_handle_with_spawn_key` so the
-    /// task can emit `SessionUpdate::KeyRenamed { from: spawn_key,
-    /// to: real_key }` ahead of the first `Connected` emit. Cleared
-    /// after the first migration.
-    pub(crate) spawn_key: Option<SessionKey>,
     /// The slot this session fills, set at spawn where the role is
     /// decided. A spawn that never connects expires that slot's parked
     /// payloads, which nothing can reach from the key once it is gone.
@@ -68,9 +63,8 @@ impl SessionTask {
                 key = %self.key.as_str(),
                 "AgentHandle::take_events returned None; session task aborting"
             );
-            let fail_key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
             self.emit(SessionUpdate::ConnectionFailed {
-                key: fail_key,
+                key: self.key.clone(),
                 message: "agent event receiver unavailable".to_owned(),
                 fatal: false,
             });
@@ -81,8 +75,7 @@ impl SessionTask {
         // picks an account. Emit ForgeAccountIdentity now so welcome
         // rendering shows the right label from the first frame.
         if let Some(display_name) = self.handle.display_name() {
-            let id_key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-            self.emit(SessionUpdate::ForgeAccountIdentity { key: id_key, display_name });
+            self.emit(SessionUpdate::ForgeAccountIdentity { key: self.key.clone(), display_name });
         }
 
         loop {
@@ -175,10 +168,8 @@ impl SessionTask {
         }
     }
 
-    /// Translate one `AgentEvent` into the matching `SessionUpdate`
-    /// (or pair of updates for `Connected`, which also emits
-    /// `KeyRenamed` if a synthetic spawn key is pending). Updates
-    /// `DomainSession` in-place before each emit.
+    /// Translate one `AgentEvent` into the matching `SessionUpdate`.
+    /// Updates `DomainSession` in-place before each emit.
     ///
     /// Returns `true` to keep the run loop running; `false` when the
     /// event is terminal for this task and the loop must exit (so the
@@ -201,10 +192,8 @@ impl SessionTask {
             // live_workers and their JSONL carries the forge:worker tag,
             // but a tag-less mirror here lets a just-connected worker win
             // resolve_lead_session's untagged-latest fallback during the
-            // boot window before that tag lands. The WorkerEntry is keyed
-            // by the synth/spawn key at this point (pre-rekey).
-            let lookup_key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-            if workspace.worker_lookup_for_session(&lookup_key).is_none() {
+            // boot window before that tag lands.
+            if workspace.worker_lookup_for_session(&self.key).is_none() {
                 workspace.record_connected_session(cwd, session_id, None);
             }
         }
@@ -354,18 +343,6 @@ impl SessionTask {
                         );
                         maybe_kick_worker_on_connected(&workspace, &self.slot, real_key.as_str());
                     }
-                    // First Connected: emit KeyRenamed { from:
-                    // spawn_key, to: real_key } so the TUI migrates
-                    // its synthetic spawn bucket onto the real
-                    // session UUID atomically.
-                    if let Some(spawn_key) = self.spawn_key.take()
-                        && spawn_key.as_str() != real_key.as_str()
-                    {
-                        self.emit(SessionUpdate::KeyRenamed {
-                            from: spawn_key,
-                            to: real_key.clone(),
-                        });
-                    }
                     // A boot resolves a session from the store, so the id
                     // the CLI adopted is recorded rather than left to the
                     // next boot to guess wrong.
@@ -399,11 +376,14 @@ impl SessionTask {
                 }
             }
             AgentEvent::AuthRequired { method_name, method_description } => {
-                let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-                self.emit(SessionUpdate::AuthRequired { key, method_name, method_description });
+                self.emit(SessionUpdate::AuthRequired {
+                    key: self.key.clone(),
+                    method_name,
+                    method_description,
+                });
             }
             AgentEvent::ConnectionFailed { message } => {
-                let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
+                let key = self.key.clone();
                 // A `/new` or `/resume` that fails to respawn ends the
                 // live turn without a Result, so flush the same way the
                 // peer-ask expiry below does.
@@ -452,17 +432,11 @@ impl SessionTask {
                 // dead handle back to every later click / cron fire /
                 // peer ask and the retry "succeeds" into nothing.
                 // Release both registrations (the resolved key the
-                // workspace maps hold, and the synth key while the TUI
-                // may still route to it); `release_session_if_current`
-                // no-ops on absent keys. The run loop then exits, so
-                // Drop's expiry backstop fires too.
+                // workspace maps hold; `release_session_if_current` no-ops
+                // on an absent key. The run loop then exits, so Drop's
+                // expiry backstop fires too.
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.release_session_if_current(&self.key, &self.handle);
-                    if let Some(spawn_key) = self.spawn_key.clone()
-                        && spawn_key != self.key
-                    {
-                        workspace.release_session_if_current(&spawn_key, &self.handle);
-                    }
                 }
                 return false;
             }
@@ -587,15 +561,7 @@ impl SessionTask {
                 });
             }
             AgentEvent::SessionsListed { sessions } => {
-                // Route via `spawn_key` while the pre-Connect bucket
-                // is still in place - same pattern as `AuthRequired`
-                // and `ForgeAccountIdentity`. After the first Connected
-                // the synth_key migrates to the real session UUID
-                // (via `KeyRenamed`); subsequent SessionsListed events
-                // land via `self.key` directly because `spawn_key` is
-                // cleared in the Connected arm.
-                let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-                self.emit(SessionUpdate::SessionsListed { key, sessions });
+                self.emit(SessionUpdate::SessionsListed { key: self.key.clone(), sessions });
             }
             AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
                 self.emit(SessionUpdate::StatusSnapshot { session_id, account, forge_account });
@@ -620,19 +586,15 @@ impl SessionTask {
                 // binding - the CLI's next request re-selects. The
                 // trigger is literal: `allowed_warning` and unknown
                 // statuses rotate too, because a warning already means
-                // the window is closing. Both this task's key and its
-                // pre-rename spawn key are tried, since the binding is
-                // keyed by whichever one the child's base URL was
-                // stamped with.
+                // the window is closing. The binding is keyed by the
+                // segment the child's base URL was stamped with, which
+                // is this task's key.
                 if let forge_primitives::Message::RateLimitEvent { rate_limit_info, .. } = &msg
                     && rate_limit_info.status != forge_primitives::RateLimitStatus::Allowed
                     && let Some(workspace) = self.workspace.upgrade()
                 {
                     let reset_at = rate_limit_info.resets_at.and_then(|t| u64::try_from(t).ok());
                     workspace.gateway.report_rate_limit(self.key.as_str(), reset_at);
-                    if let Some(spawn_key) = &self.spawn_key {
-                        workspace.gateway.report_rate_limit(spawn_key.as_str(), reset_at);
-                    }
                 }
                 // Clear the turn-commit marker on the turn boundary so
                 // the in-flight guards stop refusing once the turn
@@ -1539,7 +1501,6 @@ mod tests {
             command_rx,
             domain,
             update_tx,
-            spawn_key: None,
             slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(workspace),
@@ -1586,7 +1547,6 @@ mod tests {
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            spawn_key: None,
             slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -1623,16 +1583,16 @@ mod tests {
     }
 
     /// The drain runs after `rekey_to`, so the echo and the dispatch both carry
-    /// the real session key rather than the key the task was created with.
-    /// Driven through Connected with a distinct synth key, so moving the rekey
+    /// the key Connected reported rather than the key the task was created
+    /// with. Driven through Connected with a distinct key, so moving the rekey
     /// below the drains fails here.
     #[test]
     fn first_connected_drains_slack_under_the_real_key_after_rekey() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         workspace.seed_test_project("slack-rekey", "/tmp/slack-rekey");
-        let synth_key = SessionKey::from_str_for_test("__spawn_slack-rekey__");
+        let first_key = SessionKey::from_str_for_test("slack-rekey-first");
         let real_key = SessionKey::from_session_id("slack-rekey-uuid");
-        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(synth_key.clone(), None)));
+        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(first_key.clone(), None)));
         workspace.park_slack(&test_slot(), buffered_slack("buffered while asleep"));
 
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
@@ -1640,12 +1600,11 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
         let update_tx = workspace.update_sender();
         let mut task = SessionTask {
-            key: synth_key.clone(),
+            key: first_key.clone(),
             handle: Arc::new(handle),
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            spawn_key: Some(synth_key.clone()),
             slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -1660,7 +1619,7 @@ mod tests {
                 c, crate::protocol::Command::Prompt { key, text, .. }
                     if key == &real_key && text.contains("buffered while asleep")
             )),
-            "the drained prompt rides the real key, not the synth one: {dispatched:?}",
+            "the drained prompt rides the key Connected reported: {dispatched:?}",
         );
 
         let mut echoed = false;
@@ -1673,7 +1632,7 @@ mod tests {
                 echoed = true;
             }
         }
-        assert!(echoed, "and the echo carries the real key, not the synthetic one");
+        assert!(echoed, "and the echo carries the key Connected reported");
     }
 
     /// The review-activity notice a task emitted, if any.
@@ -1747,24 +1706,16 @@ mod tests {
     /// since the binding is keyed by whichever one the child's base
     /// URL was stamped with. An `allowed` frame reports nothing.
     #[test]
-    fn a_rate_limit_event_not_allowed_reports_the_gateway_through_both_keys() {
+    fn a_rate_limit_event_not_allowed_reports_the_gateway_for_the_session_key() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
         let key = SessionKey::from_session_id("w-uuid");
-        let spawn_key = SessionKey::from_str_for_test("__spawn_w__");
         let (mut task, _update_rx) = review_task_for(&workspace, &key);
-        task.spawn_key = Some(spawn_key.clone());
 
         workspace.gateway.bindings.bind(
             "Org",
             "forge",
             key.as_str(),
             forge_gateway::AccountKey("A".to_owned()),
-        );
-        workspace.gateway.bindings.bind(
-            "Org",
-            "forge",
-            spawn_key.as_str(),
-            forge_gateway::AccountKey("B".to_owned()),
         );
 
         let rejected = forge_primitives::Message::RateLimitEvent {
@@ -1788,11 +1739,7 @@ mod tests {
 
         assert!(
             workspace.gateway.bindings.binding_for("Org", "forge", key.as_str()).is_none(),
-            "the report drops the current key's binding",
-        );
-        assert!(
-            workspace.gateway.bindings.binding_for("Org", "forge", spawn_key.as_str()).is_none(),
-            "the report also drops the pre-rename spawn key's binding",
+            "the report drops the session's own binding",
         );
 
         // The re-bound key must survive the allowed frame: allowed
@@ -1936,7 +1883,6 @@ mod tests {
             command_rx,
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
-            spawn_key: None,
             slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -1961,14 +1907,13 @@ mod tests {
         );
     }
 
-    /// A `ConnectionFailed` on a task that still carries its synthetic
-    /// spawn key releases BOTH registrations - the synth key the TUI
-    /// may still route to, and the resolved key the pool holds.
+    /// A `ConnectionFailed` releases the task's registrations, so a
+    /// later click or delivery does not find a dead handle still
+    /// registered under the key.
     #[tokio::test]
-    async fn connection_failed_releases_spawn_key_registrations_too() {
+    async fn connection_failed_releases_the_session_registrations() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let key = SessionKey::from_str_for_test("real-key");
-        let spawn_key = SessionKey::from_str_for_test("__spawn_proj__");
         let (handle, _cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let (cmd_tx, command_rx) = mpsc::unbounded_channel();
@@ -1990,7 +1935,6 @@ mod tests {
             command_rx,
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
-            spawn_key: Some(spawn_key.clone()),
             slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -2019,7 +1963,6 @@ mod tests {
     async fn connection_failed_expires_the_buffers_parked_for_its_slot() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let key = SessionKey::from_str_for_test("real-key");
-        let spawn_key = SessionKey::from_str_for_test("__spawn_proj__");
         let (handle, _cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let (cmd_tx, command_rx) = mpsc::unbounded_channel();
@@ -2035,7 +1978,6 @@ mod tests {
             },
         );
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
-        workspace.register_domain_session(spawn_key.clone(), Some(Arc::clone(&handle)));
         workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
         workspace.park_slack(&test_slot(), buffered_slack("parked while spawning"));
 
@@ -2045,7 +1987,6 @@ mod tests {
             command_rx,
             domain: Arc::new(Mutex::new(DomainSession::new(key.clone(), None))),
             update_tx,
-            spawn_key: Some(spawn_key.clone()),
             slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -2081,7 +2022,6 @@ mod tests {
                 Some(Arc::clone(&handle)),
             ))),
             update_tx,
-            spawn_key: None,
             slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -2141,7 +2081,6 @@ mod tests {
                 Some(Arc::clone(&handle)),
             ))),
             update_tx,
-            spawn_key: None,
             slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -2468,7 +2407,6 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            spawn_key: None,
             slot: test_slot(),
             connected_once: true,
             workspace: std::sync::Weak::new(),
@@ -2542,10 +2480,10 @@ provider = "anthropic"
             );
         }
 
-        // spawn_key=None + connected_once=false → first-Connected arm
-        // that drains the parked buckets. Matching self.key to the
-        // event's session_id makes rekey_to a no-op so the test doesn't
-        // have to register against the workspace pool.
+        // connected_once=false → first-Connected arm that drains the
+        // parked buckets. Matching self.key to the event's session_id
+        // makes rekey_to a no-op so the test doesn't have to register
+        // against the workspace pool.
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
@@ -2556,7 +2494,6 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            spawn_key: None,
             slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -2691,7 +2628,6 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            spawn_key: None,
             slot: test_slot(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -2760,7 +2696,6 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            spawn_key: None,
             slot: worker_slot,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -2804,7 +2739,6 @@ provider = "anthropic"
                 command_rx,
                 domain: Arc::clone(&domain),
                 update_tx: workspace.update_sender(),
-                spawn_key: None,
                 slot: test_slot(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
@@ -2854,7 +2788,6 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx,
-            spawn_key: None,
             slot: test_slot(),
             // The seed a session-replacing re-spawn installs.
             connected_once: true,
@@ -2936,7 +2869,6 @@ provider = "anthropic"
             command_rx,
             domain: Arc::clone(&domain),
             update_tx: workspace.update_sender(),
-            spawn_key: None,
             slot: test_slot(),
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
@@ -3020,7 +2952,6 @@ provider = "anthropic"
             command_rx,
             domain,
             update_tx: workspace.update_sender(),
-            spawn_key: None,
             slot: test_slot(),
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),

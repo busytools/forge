@@ -163,7 +163,7 @@ impl super::App {
     /// project + locking the workspace every render. Scopes by the active
     /// tab's stamped project NAME ([`Self::active_project_name`]): every
     /// bucket carries its project from the moment it is minted, so the
-    /// per-tick read never re-derives it from a stale / synthetic cwd.
+    /// per-tick read never re-derives it from a stale cwd.
     /// Then narrows to the session's own `team_role`, so a lead and its
     /// workers each see only what they can act on.
     /// Empty when no session is focused or the session created no cron.
@@ -527,7 +527,7 @@ mod tests {
         };
         ws.seed_test_cron(cron.clone());
 
-        let key = forge_workspace::SessionKey::from_session_id("__spawn_web-api__");
+        let key = forge_workspace::SessionKey::from_session_id("web-api-uuid");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "web-api");
         bucket.cwd_raw = "~/Projects/web-api".to_owned();
         app.sessions.insert(key.clone(), bucket);
@@ -597,10 +597,9 @@ mod tests {
     }
 
     /// The Inspector scopes SCHEDULES by the stamped project name, so it
-    /// surfaces the project's crons no matter what the active session key
-    /// looks like - a real claude UUID (project lead), a worker session
-    /// key, or a synthetic spawn placeholder. The bucket cwd is left
-    /// blank to prove the resolution no longer depends on it.
+    /// surfaces the project's crons whatever the active session key is -
+    /// a real claude UUID (project lead) or a worker's key. The bucket
+    /// cwd is left blank to prove the resolution does not depend on it.
     #[test]
     fn refresh_forge_crons_resolves_across_active_key_shapes() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
@@ -617,8 +616,7 @@ mod tests {
             team_role: None,
         };
 
-        for key_str in ["11111111-2222-3333-4444-555555555555", "worker-uuid", "__spawn_cronproj__"]
-        {
+        for key_str in ["11111111-2222-3333-4444-555555555555", "worker-uuid"] {
             let mut app = App::test_default();
             let ws = app.workspace.clone().expect("test workspace");
             ws.seed_test_project("cronproj", "/tmp/cronproj-shapes");
@@ -696,7 +694,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
         });
 
-        let key = forge_workspace::SessionKey::from_session_id("__spawn_gproj__");
+        let key = forge_workspace::SessionKey::from_session_id("gproj-uuid");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "gproj");
         bucket.cwd_raw = format!("{path}/.claude/worktrees/reviewer");
         app.sessions.insert(key.clone(), bucket);

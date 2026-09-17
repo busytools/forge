@@ -1972,7 +1972,7 @@ mod tests {
         let mut app = App::test_default();
         app.sessions.clear();
         app.active_session_key = None;
-        let from = forge_workspace::SessionKey::from_session_id("__spawn_worker_beta__");
+        let from = forge_workspace::SessionKey::from_session_id("beta-uuid");
         let to = forge_workspace::SessionKey::from_session_id("replacement-uuid");
 
         apply_session_update(
@@ -4013,9 +4013,10 @@ mod tests {
         assert_eq!(app.session_usage().expect("active session").compaction_count, 7);
     }
 
-    /// The background arm reaches the bucket through `key_renamed` rather
-    /// than `reset_for_new_session`, so it seeds by a different route and
-    /// a `session_mut` miss here would no-op in silence.
+    /// The background arm reaches the bucket through the `SessionReplaced`
+    /// carry rather than `reset_for_new_session`, so it seeds by a
+    /// different route and a `session_mut` miss here would no-op in
+    /// silence.
     #[test]
     fn session_replaced_seeds_the_count_on_the_background_arm() {
         let mut app = make_test_app();

@@ -1032,9 +1032,9 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
-        // Re-key first: the id rename mints a fresh bucket, so the stub
-        // has to be installed after it or the conn lands on the fixture
-        // bucket the rename abandons.
+        // Re-key first: `set_session_id` moves the seeded fixture
+        // bucket onto the new id, so the stub has to be installed after
+        // it or the conn lands on the bucket the re-key abandoned.
         app.set_session_id(Some(model::SessionId::new("session-1")));
         let rx = app.install_testing_stub();
         (app, rx)

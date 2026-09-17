@@ -1465,25 +1465,21 @@ impl Workspace {
         settings: SessionLaunchSettings,
         role: &crate::protocol::SpawnRole,
     ) -> Result<Arc<AgentHandle>> {
-        self.get_agent_handle_with_spawn_key(target, settings, None, role)
+        self.get_agent_handle_at_key(target, settings, None, role)
     }
 
-    /// Like [`Self::get_agent_handle`] but threads a synthetic
-    /// `spawn_key` onto the spawned `SessionTask`. The first
-    /// `AgentEvent::Connected` arriving on the task drives a
-    /// `SessionUpdate::KeyRenamed { from: spawn_key, to: real_key }`
-    /// emit before the matching `Connected` so TUI re-keys its
-    /// `UiSession` map atomically. `None` for re-entrant callers (the
-    /// pooled handle path) where no key migration is needed.
+    /// Like [`Self::get_agent_handle`] but takes the key the caller
+    /// already resolved, so the pool entry lands under the same key the
+    /// caller announced. `None` for callers that have not resolved one.
     ///
     /// `role` is what the caller states this spawn to be. It is the one
     /// source for both the tool surface and the slot's label, so a worker
     /// cannot be handed a lead's tool surface or a lead's address.
-    pub(crate) fn get_agent_handle_with_spawn_key(
+    pub(crate) fn get_agent_handle_at_key(
         self: &Arc<Self>,
         target: SessionTarget,
         mut settings: SessionLaunchSettings,
-        spawn_key: Option<SessionKey>,
+        resolved_key: Option<SessionKey>,
         role: &crate::protocol::SpawnRole,
     ) -> Result<Arc<AgentHandle>> {
         // The boot gate is a spawn precondition, not just a launchpad
@@ -1499,23 +1495,28 @@ impl Workspace {
             }
             .into());
         }
-        let session_key = self.resolve_target(&target, settings.force_new)?;
+        // The caller may already have resolved the key - the spawn
+        // handlers do, because the bucket they announce under
+        // `Spawning` has to be the one the child connects under. A
+        // second resolve is not equivalent: a lead with nothing to
+        // resume mints a fresh id each time it runs.
+        let session_key = match resolved_key {
+            Some(key) => key,
+            None => self.resolve_target(&target, settings.force_new)?,
+        };
         // One shared config dir: every account's child reads the same
         // MCP servers, plugins and settings, so the per-account dir is
         // gone along with the field that carried it.
         let account_dir = self.config_dir.clone();
 
         // Fast path: cache hit. A wake that resolved to a session already
-        // in the pool retires its own empty bucket; parked payloads are
-        // not a concern here, because they are addressed to an owner
-        // rather than to a key and this path never moved one.
+        // in the pool hands back its handle; parked payloads are not a
+        // concern here, because they are addressed to a slot rather than
+        // to a key and this path never moved one.
         {
             let pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_key) {
-                let handle = Arc::clone(&existing.handle);
-                drop(pool);
-                self.retire_spawn_key_bucket(&session_key, spawn_key.as_ref());
-                return Ok(handle);
+                return Ok(Arc::clone(&existing.handle));
             }
         }
 
@@ -1806,7 +1807,6 @@ impl Workspace {
                 command_rx: cmd_rx,
                 domain,
                 update_tx: self.update_tx.clone(),
-                spawn_key,
                 slot,
                 // Every spawn now emits Connected on its first connect:
                 // nothing replaces a live session's agent in-process any
@@ -1822,29 +1822,6 @@ impl Workspace {
         }
 
         Ok(arc)
-    }
-
-    /// Retire the caller's synthetic `spawn_key` bucket: the pool fast
-    /// path builds no `SessionTask`, so nothing else emits the
-    /// `KeyRenamed` that would migrate it, and the task that did
-    /// connect consumed its own `spawn_key`.
-    ///
-    /// Unconditional because the reducer, not this, decides whether the
-    /// bucket is redundant yet - it is the only side that can see
-    /// whether one already stands at `session_key`.
-    ///
-    /// A self-rename would reach the reducer with the live bucket as
-    /// both ends, so the equal-keys guard is load-bearing: the worker
-    /// fresh-spawn path resolves `FreshInProject` to its own synth key.
-    fn retire_spawn_key_bucket(&self, session_key: &SessionKey, spawn_key: Option<&SessionKey>) {
-        let Some(spawn_key) = spawn_key else { return };
-        if spawn_key == session_key {
-            return;
-        }
-        let _ = self.update_tx.send(SessionUpdate::SpawnBucketRetired {
-            key: spawn_key.clone(),
-            superseded_by: session_key.clone(),
-        });
     }
 
     /// Crate-internal accessor for the boot-time loading task to
@@ -2590,7 +2567,7 @@ impl Workspace {
     /// before the spawn - so the pool key IS the session id and nothing
     /// has to move later. For `Named` with no matching project, returns
     /// [`WorkspaceError::ProjectNotFound`].
-    fn resolve_target(
+    pub(crate) fn resolve_target(
         &self,
         target: &SessionTarget,
         force_new: bool,
@@ -2648,7 +2625,7 @@ impl Workspace {
     /// account and model checks, and a refusal after it would pin an id
     /// no child ever adopts while `lead_session_to_resume` prefers the
     /// stored row over the catalog. The record lands once those checks
-    /// pass, in [`Self::get_agent_handle_with_spawn_key`].
+    /// pass, in [`Self::get_agent_handle_at_key`].
     fn lead_session_key_for(&self, project: &LoadedProject, force_new: bool) -> SessionKey {
         self.lead_session_to_resume(project, force_new)
             .unwrap_or_else(|| SessionKey::from_session_id(uuid::Uuid::new_v4().to_string()))
@@ -3113,7 +3090,7 @@ impl Workspace {
             }
             let key = key.clone();
             // /new and /resume re-spawn on the already-pooled handle, where
-            // get_agent_handle_with_spawn_key's stamp never runs.
+            // get_agent_handle_at_key's stamp never runs.
             if let Command::NewSession { launch_settings, .. }
             | Command::ResumeSession { launch_settings, .. } = &mut cmd
             {
@@ -3254,7 +3231,7 @@ impl Workspace {
                 }
             }
             // App-level commands. The `spawn::*` handlers are sync -
-            // they emit one event, kick off `get_agent_handle_with_spawn_key`
+            // they emit one event, kick off `get_agent_handle_at_key`
             // (which internally tokio::spawns the agent), and return.
             // Run them inline under the span; no detach needed.
             match cmd {
@@ -3780,7 +3757,6 @@ impl Workspace {
     ///   orphaned session_key as a lead and drain every OTHER worker.
     /// - The lead-cascade loop inside `release_session_with_cascade`
     ///   itself, when releasing each worker.
-    /// - Synthetic spawn-key cleanup (launchpad retry path).
     ///
     /// Use `release_session_with_cascade` instead when the caller is
     /// the lead-row close gesture.
@@ -4748,12 +4724,12 @@ impl Workspace {
                     .map(|entry| (project_key.clone(), entry.clone()))
             })
         };
-        // A failed RESUME-path worker spawn emits ConnectionFailed keyed
-        // by the spawn key, but the entry was registered under the real
-        // session id being resumed - the direct match above misses, the
-        // label stays "already live" until restart, and asks wait the
-        // full timeout. The slot names the worker in that case: its label
-        // is the worker's and its project locates the registry.
+        // A failed worker spawn can emit ConnectionFailed under a key
+        // that is not the entry's own session_key, so the direct match
+        // above misses, the label stays "already live" until restart,
+        // and asks wait the full timeout. The slot names the worker in
+        // that case: its label is the worker's and its project locates
+        // the registry.
         let (project_key, entry, matched_directly) = if let Some(hit) = direct {
             (hit.0, hit.1, true)
         } else {
@@ -4770,7 +4746,7 @@ impl Workspace {
         };
         if !matched_directly {
             // The direct match missed, so `session_key` is the dead
-            // spawn's synth key: release its registrations so the label
+            // spawn's own key: release its registrations so the label
             // is spawnable again instead of "already live".
             self.release_session(session_key);
         }
@@ -4795,9 +4771,9 @@ impl Workspace {
             // entry may sit under the real resumed session id.
             self.remove_worker_by_session_key(&entry.session_key);
             // Same release the tag-rollback arm runs: without it the
-            // synth-keyed pool entry + command sender + domain handle +
-            // SessionTask leak per failed fresh spawn, unbounded across
-            // retries. No-op when the fallback release above ran first.
+            // pool entry + command sender + domain handle + SessionTask
+            // leak per failed fresh spawn, unbounded across retries.
+            // No-op when the fallback release above ran first.
             self.release_session(session_key);
             // A dynamic worker persisted its row on the optimistic spawn
             // reply, before this async failure. A worktree-creation
@@ -4872,8 +4848,8 @@ impl Workspace {
 
     /// Tag a worker session's JSONL with `forge:worker:<label>` and
     /// transition its `WorkerEntry` from `Spawning` to `Running`.
-    /// Called from `SessionTask::translate_event` immediately after the
-    /// first `Connected` rekey lands.
+    /// Called from `SessionTask::translate_event` on the worker's first
+    /// `Connected`.
     ///
     /// `cwd` is the worker's project path (the `directory` discriminator
     /// `tag_session` uses to find the right `.jsonl` when CONFIG_DIR
@@ -5254,7 +5230,7 @@ impl Workspace {
 
     /// OS PID of the `claude` subprocess bound to `key`. Returns
     /// `None` when the session has no live client (pre-spawn /
-    /// post-disconnect / synthetic spawn bucket). The PID is stable
+    /// post-disconnect). The PID is stable
     /// for the lifetime of the subprocess, so consumers (e.g. the
     /// Inspector pane's PROCESSES OS walk) can cache snapshots
     /// keyed off this value.
@@ -5400,9 +5376,9 @@ impl Workspace {
 
     /// Migrate an existing `DomainSession` registration from `from` to
     /// `to`. Called by the TUI's `Connected` reducer when it moves a
-    /// bucket the workspace still holds under the spawn key onto the id
-    /// the event carried, and by `set_session_id`. No-op when `from` is
-    /// not registered.
+    /// bucket the workspace still holds under the previous key onto the
+    /// id the event carried, and by `set_session_id`. No-op when `from`
+    /// is not registered.
     pub fn rekey_domain_session(&self, from: &SessionKey, to: SessionKey) {
         let mut handles = self.domain_handles.lock();
         if let Some(domain) = handles.remove(from) {
@@ -5461,10 +5437,10 @@ impl Workspace {
             handles.insert(to.clone(), domain);
         }
         drop((pool, senders, handles));
-        // Worker entries are keyed by `session_key` which initially
-        // matches the synthetic spawn key; rekey here so subsequent
-        // lookups (close-worker by label, deliver-worker-prompt) find
-        // the worker under its real claude-issued UUID.
+        // Worker entries are keyed by the id they run under, which a
+        // `/new` rekey moves; rekey here so subsequent lookups
+        // (close-worker by label, deliver-worker-prompt) find the
+        // worker under its current id.
         // `spawned_by_session_id` stays at its spawn-time value
         // (historical record); current-lead lookups now go through
         // `caller_context::caller_context` and don't depend on this
@@ -7413,9 +7389,13 @@ provider = "anthropic"
                 .all(|cmd| !matches!(cmd, crate::protocol::Command::SpawnProject { .. })),
             "a running lead must not fire the asleep spawn path",
         );
-        assert!(
-            ws.domain_session_for(&SessionKey::from_session_id("__spawn_glead__")).is_none(),
-            "nothing buffers on the synthetic spawn key",
+        assert_eq!(
+            ws.parked_by_slot
+                .lock()
+                .get(&crate::parked::Slot::lead("TestOrg", "glead"))
+                .map_or(0, |parked| parked.slack.len()),
+            0,
+            "a running lead's delivery is dispatched, not parked",
         );
 
         // The delivery ALSO echoes the block into the lead's chat: the CLI
@@ -7475,8 +7455,8 @@ provider = "anthropic"
         assert!(!echoed, "a failed lead dispatch must not echo a SlackMessageAppended");
     }
 
-    /// With no running session, the message buffers on the synthetic spawn
-    /// key and the project's spawn is fired to pick it up.
+    /// With no running session, the message parks for the project
+    /// lead's slot and the project's spawn is fired to pick it up.
     #[test]
     fn slack_delivery_to_an_asleep_lead_buffers_and_spawns_the_project() {
         let dir = tempdir().expect("tempdir");
@@ -8566,7 +8546,7 @@ provider = "anthropic"
     }
 
     /// `/new` and `/resume` re-spawn on the already-pooled handle, where
-    /// the spawn-path stamp in `get_agent_handle_with_spawn_key` never
+    /// the spawn-path stamp in `get_agent_handle_at_key` never
     /// runs - the launch settings must pick the pooled session's mode up
     /// at dispatch instead.
     #[test]
@@ -8869,7 +8849,6 @@ provider = "anthropic"
             command_rx,
             domain,
             update_tx,
-            spawn_key: None,
             slot: crate::parked::Slot::lead("TestOrg", "forge"),
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
@@ -8887,46 +8866,46 @@ provider = "anthropic"
     }
 
     /// A binding is keyed by the segment the child's base URL was
-    /// stamped with, and a rename leaves that segment behind: the
-    /// session's own key stops matching after `KeyRenamed`, so a
-    /// lookup on it returns None exactly where the panel is rendered.
+    /// stamped with, and a `/new` rekey leaves that segment behind: the
+    /// pooled key moves, so the new key only resolves through the
+    /// registration's stamped segment.
     #[test]
-    fn the_bound_account_survives_a_rename_and_follows_a_rebind() {
+    fn the_bound_account_survives_a_rekey_and_follows_a_rebind() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let spawn_key = SessionKey::from_session_id("__fresh__:forge");
+        let first_key = SessionKey::from_session_id("first-uuid");
         let real_key = SessionKey::from_session_id("real-uuid");
-        install_fake_session_task(&workspace, &spawn_key);
-        workspace.pool.lock().get_mut(&spawn_key).expect("pooled").registration =
+        install_fake_session_task(&workspace, &first_key);
+        workspace.pool.lock().get_mut(&first_key).expect("pooled").registration =
             Some(forge_gateway::binding::Registration {
                 org: "Org".to_owned(),
                 project: "forge".to_owned(),
-                session: spawn_key.as_str().to_owned(),
+                session: first_key.as_str().to_owned(),
                 account: AccountKey("A".to_owned()),
                 provider: forge_primitives::account::Provider::Anthropic,
             });
         workspace.gateway.bindings.bind(
             "Org",
             "forge",
-            spawn_key.as_str(),
+            first_key.as_str(),
             AccountKey("A".to_owned()),
         );
 
         assert_eq!(
-            workspace.bound_account_for(&spawn_key),
+            workspace.bound_account_for(&first_key),
             Some(AccountKey("A".to_owned())),
-            "the spawn key is what the binding is keyed by",
+            "the stamped segment is what the binding is keyed by",
         );
 
-        assert!(workspace.migrate_session_task(&spawn_key, &real_key), "the rename migrates");
+        assert!(workspace.migrate_session_task(&first_key, &real_key), "the rekey migrates");
         assert_eq!(
             workspace.gateway.bindings.binding_for("Org", "forge", real_key.as_str()),
             None,
-            "precondition: the rename does not re-key the binding",
+            "precondition: the rekey does not re-key the binding",
         );
         assert_eq!(
             workspace.bound_account_for(&real_key),
             Some(AccountKey("A".to_owned())),
-            "the renamed session still resolves to its stamped segment's binding",
+            "the rekeyed session still resolves to its stamped segment's binding",
         );
 
         // The gateway re-selecting on the next request is the whole
@@ -8935,7 +8914,7 @@ provider = "anthropic"
         workspace.gateway.bindings.bind(
             "Org",
             "forge",
-            spawn_key.as_str(),
+            first_key.as_str(),
             AccountKey("B".to_owned()),
         );
         assert_eq!(
@@ -9067,46 +9046,41 @@ provider = "anthropic"
         (ws, update_rx, lead, dir)
     }
 
-    /// Fold an emitted update stream down to the buckets still standing
-    /// at a synthetic spawn key: `Spawning` opens one,
-    /// `SpawnBucketRetired` closes it.
-    fn standing_spawn_buckets(
-        update_rx: &mut mpsc::UnboundedReceiver<SessionUpdate>,
-    ) -> Vec<SessionKey> {
-        let mut standing: Vec<SessionKey> = Vec::new();
+    /// Every `Spawning` key an update stream carried, in order.
+    fn spawning_keys(update_rx: &mut mpsc::UnboundedReceiver<SessionUpdate>) -> Vec<SessionKey> {
+        let mut keys: Vec<SessionKey> = Vec::new();
         while let Ok(update) = update_rx.try_recv() {
-            match update {
-                SessionUpdate::Spawning { key, .. } => standing.push(key),
-                SessionUpdate::SpawnBucketRetired { key, .. } => standing.retain(|k| k != &key),
-                _ => {}
+            if let SessionUpdate::Spawning { key, .. } = update {
+                keys.push(key);
             }
         }
-        standing
+        keys
     }
 
     /// Any second wake of a live project reaches the fast path: a cron,
     /// a peer prompt, a gotify message, a slack delivery or the boot
-    /// auto-start wave landing after one of them.
+    /// auto-start wave landing after one of them. It announces the same
+    /// key the live session already holds, so the TUI has one bucket
+    /// rather than a second one to retire.
     #[test]
-    fn respawn_of_connected_project_retires_its_spawn_bucket() {
-        let (ws, mut update_rx, _lead, _dir) = stub_with_connected_lead();
+    fn respawn_of_connected_project_announces_the_live_key() {
+        let (ws, mut update_rx, lead, _dir) = stub_with_connected_lead();
 
         crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
 
-        let standing = standing_spawn_buckets(&mut update_rx);
-        assert!(
-            standing.is_empty(),
-            "re-spawning an already-connected project must leave no bucket at its \
-             __spawn_<name>__ key; stranded: {standing:?}",
+        let announced = spawning_keys(&mut update_rx);
+        assert_eq!(
+            announced,
+            vec![lead],
+            "a re-spawn announces the key the live session already holds, not a second one",
         );
     }
 
     /// A background rate-limit clears `DomainSession.session_id` while
-    /// the pool entry lives, and the connected task already consumed
-    /// its `spawn_key`, so nothing else can retire the bucket. The emit
-    /// must not read that mirror.
+    /// the pool entry lives. The emit must not read that mirror: the key
+    /// it announces is the session's own, whatever the mirror says.
     #[test]
-    fn a_rate_limited_session_still_gets_its_spawn_bucket_retired() {
+    fn a_rate_limited_session_still_announces_its_own_key() {
         let (ws, mut update_rx, lead, _dir) = stub_with_connected_lead();
         // What `apply_session_update_connection_failed` does to a
         // rate-limited background session: clear the mirror, leave the
@@ -9115,10 +9089,10 @@ provider = "anthropic"
 
         crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
 
-        let standing = standing_spawn_buckets(&mut update_rx);
-        assert!(
-            standing.is_empty(),
-            "a cleared session_id must not suppress the retire; stranded: {standing:?}",
+        assert_eq!(
+            spawning_keys(&mut update_rx),
+            vec![lead],
+            "a cleared session_id must not change the key announced",
         );
     }
 
@@ -9935,12 +9909,12 @@ mod workers_state_tests {
     /// `session_key` field in lockstep with the pool / command_senders
     /// / domain_handles maps. Without this fix-up, `close_worker` and
     /// `deliver_worker_prompt` would address the wrong session after
-    /// the synth -> real rekey on first Connected.
+    /// the `/new` rekey.
     #[test]
     fn migrate_session_task_rekeys_live_workers() {
         let (ws, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
-        let from = SessionKey::from_session_id("__spawn_worker_forge_r__");
+        let from = SessionKey::from_session_id("first-uuid");
         let to = SessionKey::from_session_id("real-uuid");
         ws.insert_live_worker(&project, fake_entry("r", from.as_str()));
         // Seed the three maps at `from` so migrate doesn't short-circuit
@@ -12258,11 +12232,11 @@ mod async_worker_spawn_failure_tests {
     use super::*;
     use crate::mcp::workers::types::WorkerEntry;
 
-    fn fake_worker(label: &str, synth_key: &str, lead_id: &str, is_git: bool) -> WorkerEntry {
+    fn fake_worker(label: &str, worker_key: &str, lead_id: &str, is_git: bool) -> WorkerEntry {
         WorkerEntry {
             label: label.to_owned(),
             charter: "test".to_owned(),
-            session_key: SessionKey::from_session_id(synth_key),
+            session_key: SessionKey::from_session_id(worker_key),
             status: forge_primitives::WorkerLiveness::Spawning,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: lead_id.to_owned(),
@@ -12302,13 +12276,13 @@ mod async_worker_spawn_failure_tests {
     fn worker_lookup_drives_catalog_mirror_skip() {
         let (workspace, _rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let worker_key = "worker-uuid";
         workspace.insert_live_worker(
             &project_key,
-            fake_worker("reviewer", synth_key, "lead-uuid", false),
+            fake_worker("reviewer", worker_key, "lead-uuid", false),
         );
         assert!(
-            workspace.worker_lookup_for_session(&SessionKey::from_session_id(synth_key)).is_some(),
+            workspace.worker_lookup_for_session(&SessionKey::from_session_id(worker_key)).is_some(),
             "seeded worker must be detected so its tag-less catalog mirror is skipped"
         );
         assert!(
@@ -12333,15 +12307,15 @@ mod async_worker_spawn_failure_tests {
         workspace.enable_test_dispatch_intercept();
 
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let worker_key = "worker-uuid";
         let lead_id = "lead-uuid";
         workspace
-            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+            .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         let lead_key = install_lead_in_pool(&workspace, lead_id);
 
         let handled = workspace.handle_async_worker_spawn_failure(
             &worker_slot("proj-x", "reviewer"),
-            &SessionKey::from_session_id(synth_key),
+            &SessionKey::from_session_id(worker_key),
             "fatal: 'reviewer' is already used by worktree at /a/b/c",
         );
         assert!(handled, "async worker failure path must consume the failure");
@@ -12375,15 +12349,15 @@ mod async_worker_spawn_failure_tests {
         workspace.enable_test_dispatch_intercept();
 
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let worker_key = "worker-uuid";
         let lead_id = "lead-uuid";
         workspace
-            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+            .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         install_lead_in_pool(&workspace, lead_id);
 
         let handled = workspace.handle_async_worker_spawn_failure(
             &worker_slot("proj-x", "reviewer"),
-            &SessionKey::from_session_id(synth_key),
+            &SessionKey::from_session_id(worker_key),
             "agent spawn failed: subprocess exited with code 2",
         );
         assert!(handled);
@@ -12442,13 +12416,13 @@ mod async_worker_spawn_failure_tests {
         workspace.enable_test_dispatch_intercept();
 
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let worker_key = "worker-uuid";
         let lead_id = "lead-uuid";
         workspace
-            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+            .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         install_lead_in_pool(&workspace, lead_id);
 
-        let session_key = SessionKey::from_session_id(synth_key);
+        let session_key = SessionKey::from_session_id(worker_key);
         let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
         // Pin the test's premise: this message must classify as
         // WorktreeCreationFailed so we exercise the remove-then-no-op
@@ -12509,7 +12483,7 @@ mod async_worker_spawn_failure_tests {
         workspace.enable_test_dispatch_intercept();
 
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let worker_key = "worker-uuid";
         let lead_id = "lead-uuid";
         let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
             project_key: "proj-x".to_owned(),
@@ -12520,10 +12494,10 @@ mod async_worker_spawn_failure_tests {
             interactive: false,
         });
         workspace
-            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+            .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         install_lead_in_pool(&workspace, lead_id);
 
-        let session_key = SessionKey::from_session_id(synth_key);
+        let session_key = SessionKey::from_session_id(worker_key);
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
         workspace.pool.lock().insert(
@@ -12566,13 +12540,13 @@ mod async_worker_spawn_failure_tests {
         let (workspace, mut update_rx) = Workspace::testing_stub();
 
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let worker_key = "worker-uuid";
         let lead_id = "lead-uuid";
         workspace
-            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+            .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         install_lead_in_pool(&workspace, lead_id);
 
-        let session_key = SessionKey::from_session_id(synth_key);
+        let session_key = SessionKey::from_session_id(worker_key);
         let worktree_msg = "Error creating worktree: failed to resolve base branch";
         // The call below returns true on either classifier outcome, so
         // only this pins which path ran: the other transitions to
@@ -12617,13 +12591,13 @@ mod async_worker_spawn_failure_tests {
 
         workspace.seed_test_project("proj-x", "/tmp/proj-x");
         let project_key = workspace.project_key_for_name("proj-x").expect("seeded project");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let worker_key = "worker-uuid";
         let real_id = "real-worker-uuid";
         // Resume spawn: the entry sits under the REAL session id.
         workspace
             .insert_live_worker(&project_key, fake_worker("reviewer", real_id, "lead-uuid", true));
         // The synth spawn key still holds its registrations.
-        let session_key = SessionKey::from_session_id(synth_key);
+        let session_key = SessionKey::from_session_id(worker_key);
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
         workspace.pool.lock().insert(
@@ -12671,7 +12645,7 @@ mod async_worker_spawn_failure_tests {
         let _dir = install_db(&workspace);
 
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let worker_key = "worker-uuid";
         let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
             project_key: "proj-x".to_owned(),
             label: "reviewer".to_owned(),
@@ -12684,10 +12658,10 @@ mod async_worker_spawn_failure_tests {
         // driving the transition-to-Failed (visible) path.
         workspace.insert_live_worker(
             &project_key,
-            fake_worker("reviewer", synth_key, "lead-uuid", false),
+            fake_worker("reviewer", worker_key, "lead-uuid", false),
         );
 
-        let session_key = SessionKey::from_session_id(synth_key);
+        let session_key = SessionKey::from_session_id(worker_key);
         assert!(workspace.handle_async_worker_spawn_failure(
             &worker_slot("proj-x", "reviewer"),
             &session_key,
@@ -12715,12 +12689,12 @@ mod async_worker_spawn_failure_tests {
     async fn transition_worker_to_failed_idempotent_for_identical_diagnostic() {
         let (workspace, mut update_rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
-        let session_key = SessionKey::from_session_id(synth_key);
+        let worker_key = "worker-uuid";
+        let session_key = SessionKey::from_session_id(worker_key);
         // Worker starts Spawning + needs_tag = true (mirrors
         // fresh-spawn state pre-Connected).
         workspace
-            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, "lead", true));
+            .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, "lead", true));
 
         // First call: flips to Failed, records diagnostic, clears
         // needs_tag, emits WorkerStatusChanged.
@@ -12775,9 +12749,10 @@ mod async_worker_spawn_failure_tests {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk};
         let (workspace, _update_rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_builder_abc__";
-        let session_key = SessionKey::from_session_id(synth_key);
-        workspace.insert_live_worker(&project_key, fake_worker("builder", synth_key, "lead", true));
+        let worker_key = "builder-uuid";
+        let session_key = SessionKey::from_session_id(worker_key);
+        workspace
+            .insert_live_worker(&project_key, fake_worker("builder", worker_key, "lead", true));
 
         let id = CorrelationId::new_ask();
         workspace.inflight_asks.lock().insert(
@@ -12812,10 +12787,10 @@ mod async_worker_spawn_failure_tests {
     async fn transition_worker_to_running_clears_prior_failed_diagnostic() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
-        let session_key = SessionKey::from_session_id(synth_key);
+        let worker_key = "worker-uuid";
+        let session_key = SessionKey::from_session_id(worker_key);
         workspace
-            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, "lead", true));
+            .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, "lead", true));
 
         // Flip to Failed with a diagnostic.
         transition_worker_to_failed(
@@ -12855,15 +12830,15 @@ mod async_worker_spawn_failure_tests {
         workspace.enable_test_dispatch_intercept();
 
         let project_key = ProjectKey::new("proj-x");
-        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let worker_key = "worker-uuid";
         let lead_id = "lead-gone-uuid";
         workspace
-            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+            .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         // DELIBERATELY skip install_lead_in_pool - lead is "gone".
 
         let handled = workspace.handle_async_worker_spawn_failure(
             &worker_slot("proj-x", "reviewer"),
-            &SessionKey::from_session_id(synth_key),
+            &SessionKey::from_session_id(worker_key),
             "fatal: 'reviewer' is already used by worktree at /a",
         );
         assert!(handled, "still consumes the failure even when lead is gone");
@@ -14068,7 +14043,7 @@ provider = "anthropic"
         }
 
         // The re-dispatched spawn keys to the lead's session id: this
-        // is the lookup `get_agent_handle_with_spawn_key` pools under.
+        // is the lookup `get_agent_handle_at_key` pools under.
         assert_eq!(
             workspace
                 .resolve_target(&SessionTarget::Named("proj".to_owned()), false)

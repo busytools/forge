@@ -3092,6 +3092,59 @@ mod tests {
         );
     }
 
+    /// A worker bucket shares the project's `cwd_raw`, so resolving a
+    /// row by cwd alone can return the worker non-deterministically
+    /// (HashMap order) and the launchpad Enter or pane click lands on
+    /// the worker instead of the lead. The live-worker set is what
+    /// keeps the lead.
+    #[test]
+    fn live_lead_key_excludes_a_worker_sharing_the_cwd() {
+        use crate::app::session::UiSession;
+        use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
+
+        let project_path = "/tmp/shared-cwd-project";
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+
+        let mut app = App::test_default();
+        app.sessions.clear();
+        for key in [&lead_key, &worker_key] {
+            let mut bucket = UiSession::new(key.clone(), "shared-cwd-project");
+            bucket.cwd_raw = project_path.to_owned();
+            app.sessions.insert(key.clone(), bucket);
+        }
+        let workspace = app.workspace.clone().expect("workspace stub");
+        workspace.insert_live_worker(
+            &ProjectKey::new_for_test("shared-cwd-project"),
+            WorkerEntry {
+                label: "reviewer".to_owned(),
+                charter: "noop".to_owned(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: lead_key.as_str().to_owned(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        let project = ProjectView::new_for_test(
+            ProjectKey::new_for_test("shared-cwd-project"),
+            "shared-cwd-project",
+            project_path,
+            Vec::new(),
+        );
+
+        for _ in 0..16 {
+            assert_eq!(
+                live_lead_key(&app, &project, project_path, &live_worker_keys(&app)).as_ref(),
+                Some(&lead_key),
+                "the lead's bucket wins, never the worker sharing its cwd",
+            );
+        }
+    }
+
     // ----------------------------------------------------------------
     // Worker selection pins the highlight to the worker row alone.
     // For resumed workers, cwd_raw carries the worktree path (not the

@@ -26,12 +26,9 @@ fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionKey) {
     }
 }
 
-/// Apply chain for `Connected` events that runs after the
-/// synthetic-key → real-key migration completes. The migration
-/// itself runs via `SessionUpdate::KeyRenamed` (emitted by
-/// `SessionTask::translate_event` ahead of the matching `Connected`).
-/// This chain handles the welcome / file-index / runtime-tabs / trust
-/// / tab-title work that follows.
+/// Apply chain for `Connected` events. This chain handles the welcome
+/// / file-index / runtime-tabs / trust / tab-title work that follows
+/// the connection.
 ///
 /// `was_active` indicates whether the user is watching this session
 /// (active path: full apply chain) or whether it completed in the
@@ -766,34 +763,7 @@ pub(super) fn apply_session_update_connected(
     compaction_count: u32,
 ) {
     use super::super::connect::type_converters::map_available_models;
-    // Defensive spawn-key to session-id migration: the workspace emits
-    // `SessionUpdate::KeyRenamed` ahead of `Connected`, so in production
-    // the bucket already lives at `key`. A test that fires `Connected`
-    // directly, and the legacy single-session bridge, rely on this
-    // reducer to move the active bucket when its key is still a spawn
-    // placeholder. `is_synthetic_key` and this block are deleted in the
-    // change that removes `KeyRenamed` - the producer - and not before.
-    let spawn_keyed = if !app.sessions.contains_key(key)
-        && let Some(active_key) = app.active_session_key.clone()
-        && is_synthetic_key(&active_key)
-    {
-        Some(active_key)
-    } else {
-        None
-    };
-    if let Some(spawn_key) = spawn_keyed.as_ref() {
-        if let Some(mut existing) = app.sessions.remove(spawn_key) {
-            existing.key = Some(key.clone());
-            app.sessions.insert(key.clone(), existing);
-            app.active_session_key = Some(key.clone());
-            // Mirror the bucket re-key onto the workspace's
-            // `DomainSession` handle map so the migrated bucket's
-            // accessors (`cwd_raw`, `session_id`, …) keep resolving.
-            if let Some(workspace) = app.workspace.as_ref() {
-                workspace.rekey_domain_session(spawn_key, key.clone());
-            }
-        }
-    } else if !app.sessions.contains_key(key) {
+    if !app.sessions.contains_key(key) {
         // Nothing seeded this key: the boot project and workers reach
         // Connected without a preceding Spawning, so the project comes
         // from the session's own cwd here. A cwd that maps to no
@@ -859,15 +829,6 @@ pub(super) fn apply_session_update_connected(
     seed_compaction_count(app, key, compaction_count);
 }
 
-/// Spawn-placeholder check: every key the `SessionTask` mints before the
-/// CLI reports an id wraps a name in double underscores. Deleted in the
-/// change that removes `KeyRenamed`, whose emission is the only thing
-/// that produces a bucket for this to migrate.
-fn is_synthetic_key(key: &SessionKey) -> bool {
-    let s = key.as_str();
-    s.len() >= 4 && s.starts_with("__") && s.ends_with("__")
-}
-
 pub(super) fn apply_session_update_session_replaced(
     app: &mut App,
     key: &SessionKey,
@@ -898,11 +859,22 @@ pub(super) fn apply_session_update_session_replaced(
         seed_compaction_count(app, key, compaction_count);
         return;
     }
-    // The replaced session is not the one on screen. Migrate its bucket
+    // The replaced session is not the one on screen. Carry its bucket
     // onto the replacement key and re-seed it through the same
     // background chain `Connected` uses, leaving every App-global
     // surface (focus, input, status, terminals, overlays) untouched.
-    super::client::apply_session_update_key_renamed(app, previous_key, key.clone());
+    // This is the re-key those four paths need: `/new`, `/clear`, a
+    // login and a logout all move a session's id without forge choosing
+    // it, and the TUI's bucket has to follow.
+    if let Some(mut bucket) = app.sessions.remove(previous_key) {
+        bucket.key = Some(key.clone());
+        app.sessions.insert(key.clone(), bucket);
+        // Mirror the bucket re-key onto the workspace's `DomainSession`
+        // handle map so subsequent dispatches resolve via the new key.
+        if let Some(workspace) = app.workspace.as_ref() {
+            workspace.rekey_domain_session(previous_key, key.clone());
+        }
+    }
     if !app.sessions.contains_key(key) {
         // No bucket to carry across, so the replacement's project comes
         // from the cwd it resumed into. Without one there is nothing to

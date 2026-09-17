@@ -39,12 +39,11 @@ use crate::workspace::Workspace;
 /// Snapshot the caller's current [`SessionKey`] on demand.
 ///
 /// Each session's peer-MCP tools hold a `CallerKeyResolver` instead of
-/// a bare `SessionKey` because the session's key isn't stable - it
-/// rekeys from a synthetic placeholder (e.g. `__spawn_forge__`) to the
-/// real claude-issued UUID once `Connected` fires
-/// ([`Workspace::migrate_session_task`]). Tools that baked the
-/// synthetic key in at server-build time would see stale lookups
-/// after the rekey.
+/// a bare `SessionKey` because the session's key isn't stable - `/new`
+/// and `/clear` move the pooled key when the CLI adopts a different id,
+/// through [`Workspace::migrate_session_task`]. Tools that baked the
+/// key in at server-build time would see stale lookups after the
+/// rekey.
 ///
 /// Production resolver reads from `DomainSession.key` via the
 /// session's shared `Arc<Mutex<DomainSession>>`. The migrate path

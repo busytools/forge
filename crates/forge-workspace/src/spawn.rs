@@ -1,15 +1,9 @@
 //! App-level spawn command handlers. Called from
 //! [`crate::Workspace::dispatch`] when an App-level
 //! `Command::SpawnProject` / `SpawnSession` / `StartDefault` arrives.
-//! Each handler synthesizes a spawning key, emits
-//! `SessionUpdate::Spawning`, kicks off the agent spawn, then
-//! emits `SessionUpdate::KeyRenamed` + `Connected` when the agent
-//! reaches its first `system/init` with the real session UUID.
-//!
-//! The lifecycle from synthetic-key → real-key migration runs
-//! inside the spawned `SessionTask`'s `translate_event` (the
-//! `AgentEvent::Connected` arm). This module just kicks off the
-//! spawn and seeds the synthetic key.
+//! Each handler resolves the id the session will run under, emits
+//! `SessionUpdate::Spawning` under it, and kicks off the agent spawn.
+//! The matching `Connected` arrives later under the same key.
 
 use std::sync::Arc;
 
@@ -138,11 +132,11 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
     }
 }
 
-/// Synthesize a `__spawn_<project_name>__` placeholder bucket key,
-/// emit `SessionUpdate::Spawning`, then spawn the agent. The first
-/// `Connected` event from the resulting `SessionTask` emits
-/// `KeyRenamed` + `Connected` to migrate the synthetic bucket onto
-/// the real claude session UUID.
+/// Resolve the id the project's lead will run under, emit
+/// `SessionUpdate::Spawning` under it, then spawn the agent. The
+/// `Connected` event from the resulting `SessionTask` lands under the
+/// same key, so the announced bucket is the one the child connects
+/// under.
 pub(crate) fn handle_spawn_project(
     workspace: &Arc<Workspace>,
     project_name: &str,
@@ -167,29 +161,60 @@ pub(crate) fn handle_spawn_project(
 
     apply_lead_charter(&mut launch_settings);
 
-    let synth_key = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
+    // The id this lead will run under, resolved before the spawn so the
+    // bucket announced here is the bucket the child connects under.
+    let session_key = match workspace
+        .resolve_target(&SessionTarget::Named(project_name.to_owned()), launch_settings.force_new)
+    {
+        Ok(key) => key,
+        Err(err) => {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = project_name,
+                error = %err,
+                "spawn_project: target resolution failed",
+            );
+            // No spawn will happen, so record what this project's lead
+            // has parked rather than leaving it for a connect that never
+            // comes.
+            workspace.expire_parked_for_slot(
+                &crate::parked::Slot::lead(&project.org, &project.name),
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+            );
+            try_emit(
+                workspace,
+                "spawn_project::ConnectionFailed",
+                SessionUpdate::ConnectionFailed {
+                    key: SessionKey::from_session_id(project_name.to_owned()),
+                    message: format!("agent spawn failed: {err}"),
+                    fatal: false,
+                },
+            );
+            return;
+        }
+    };
     try_emit(
         workspace,
         "spawn_project::Spawning",
         SessionUpdate::Spawning {
-            key: synth_key.clone(),
+            key: session_key.clone(),
             project_name: project_name.to_owned(),
             cwd: project.path.to_string_lossy().to_string(),
             display_name: project.display_path.clone(),
         },
     );
 
-    match workspace.get_agent_handle_with_spawn_key(
+    match workspace.get_agent_handle_at_key(
         SessionTarget::Named(project_name.to_owned()),
         launch_settings,
-        Some(synth_key.clone()),
+        Some(session_key.clone()),
         &crate::protocol::SpawnRole::Lead,
     ) {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
                 project = project_name,
-                spawn_key = %synth_key.as_str(),
+                session_id = %session_key.as_str(),
                 // The pool fast path returns a live handle without
                 // building a task, so `forge_sdk_options_built` is the
                 // per-subprocess signal.
@@ -215,7 +240,7 @@ pub(crate) fn handle_spawn_project(
                 workspace,
                 "spawn_project::ConnectionFailed",
                 SessionUpdate::ConnectionFailed {
-                    key: synth_key,
+                    key: session_key,
                     message: format!("agent spawn failed: {err}"),
                     fatal: false,
                 },
@@ -838,18 +863,16 @@ pub(crate) fn push_slack_message_into_chat(
     });
 }
 
-/// Spawn for a non-lead session row. Synthesizes
-/// `__resume_<session_id>__` and resumes via
-/// `SessionTarget::Session`.
+/// Spawn for a non-lead session row. The session being resumed is the
+/// key it runs under, so this resumes via `SessionTarget::Session`.
 pub(crate) fn handle_spawn_session(
     workspace: &Arc<Workspace>,
     session_id: &str,
     role: &crate::protocol::SpawnRole,
     launch_settings: SessionLaunchSettings,
 ) {
-    let synth_key = SessionKey::from_session_id(format!("__resume_{session_id}__"));
-
-    // Locate parent project so we can seed Spawning with the cwd.
+    // The session being resumed is the key it runs under: the caller
+    // named it, so there is nothing to rename onto it later.
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let Some(parent) = workspace.find_project_for_session(&session_key) else {
         tracing::warn!(
@@ -880,7 +903,7 @@ pub(crate) fn handle_spawn_session(
         workspace,
         "spawn_session::Spawning",
         SessionUpdate::Spawning {
-            key: synth_key.clone(),
+            key: session_key.clone(),
             project_name: parent.name.clone(),
             cwd,
             display_name,
@@ -893,17 +916,17 @@ pub(crate) fn handle_spawn_session(
         }
         crate::protocol::SpawnRole::Lead => crate::parked::Slot::lead(&parent.org, &parent.name),
     };
-    match workspace.get_agent_handle_with_spawn_key(
-        SessionTarget::Session(session_key),
+    match workspace.get_agent_handle_at_key(
+        SessionTarget::Session(session_key.clone()),
         launch_settings,
-        Some(synth_key.clone()),
+        Some(session_key.clone()),
         role,
     ) {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
                 session_id,
-                spawn_key = %synth_key.as_str(),
+                session = %session_key.as_str(),
                 "spawn dispatched for session resume"
             );
         }
@@ -926,7 +949,7 @@ pub(crate) fn handle_spawn_session(
                 workspace,
                 "spawn_session::ConnectionFailed",
                 SessionUpdate::ConnectionFailed {
-                    key: synth_key,
+                    key: session_key,
                     message: format!("agent spawn failed: {err}"),
                     fatal: false,
                 },
@@ -936,15 +959,14 @@ pub(crate) fn handle_spawn_session(
 }
 
 /// Startup spawn. Resolves the default project (or the named one
-/// passed on argv) and spawns under the `__conn_pending__` synthetic
-/// key. Failure before the first Connected emits
-/// `SessionUpdate::FatalError` so TUI exits cleanly.
+/// passed on argv) and spawns its lead under the id it will run under.
+/// Failure before the first Connected emits `SessionUpdate::FatalError`
+/// so TUI exits cleanly.
 pub(crate) fn handle_start_default(
     workspace: &Arc<Workspace>,
     project_name: Option<String>,
     mut launch_settings: SessionLaunchSettings,
 ) {
-    let synth_key = SessionKey::from_session_id("__conn_pending__".to_owned());
     // Resolved before `target` takes `project_name`: a spawn that fails
     // has to expire what this project's lead has parked.
     let lead_project = match project_name.as_deref() {
@@ -958,16 +980,49 @@ pub(crate) fn handle_start_default(
 
     apply_lead_charter(&mut launch_settings);
 
-    match workspace.get_agent_handle_with_spawn_key(
+    let session_key = match workspace.resolve_target(&target, launch_settings.force_new) {
+        Ok(key) => key,
+        Err(err) => {
+            tracing::error!(
+                target: "forge_workspace::spawn",
+                error = %err,
+                "start_default: target resolution failed"
+            );
+            // The same shape the spawn's own Err arm emits: startup is
+            // fatal, so the typed failure follows the connection one.
+            // No key was resolved, so the failure names the project it
+            // was asked for.
+            try_emit(
+                workspace,
+                "start_default::ConnectionFailed",
+                SessionUpdate::ConnectionFailed {
+                    key: SessionKey::from_session_id(
+                        lead_project
+                            .as_ref()
+                            .map_or_else(|| "unknown".to_owned(), |p| p.name.clone()),
+                    ),
+                    message: format!("agent spawn failed: {err}"),
+                    fatal: true,
+                },
+            );
+            try_emit(
+                workspace,
+                "start_default::FatalError",
+                SessionUpdate::FatalError(forge_primitives::error::AppError::ConnectionFailed),
+            );
+            return;
+        }
+    };
+    match workspace.get_agent_handle_at_key(
         target,
         launch_settings,
-        Some(synth_key.clone()),
+        Some(session_key.clone()),
         &crate::protocol::SpawnRole::Lead,
     ) {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
-                spawn_key = %synth_key.as_str(),
+                session = %session_key.as_str(),
                 "startup spawn dispatched"
             );
         }
@@ -989,7 +1044,7 @@ pub(crate) fn handle_start_default(
                 workspace,
                 "start_default::ConnectionFailed",
                 SessionUpdate::ConnectionFailed {
-                    key: synth_key,
+                    key: session_key,
                     message: format!("agent spawn failed: {err}"),
                     fatal: true,
                 },
@@ -1181,7 +1236,7 @@ pub(crate) fn handle_spawn_worker(
             session_id: session_key.as_str().to_owned(),
         }
     };
-    match workspace.get_agent_handle_with_spawn_key(
+    match workspace.get_agent_handle_at_key(
         target,
         settings,
         None,
@@ -1909,11 +1964,11 @@ provider = "anthropic"
     }
 
     /// `handle_spawn_project` for a known project must emit a
-    /// `SessionUpdate::Spawning` carrying a `__spawn_<name>__`
-    /// synthetic key so the TUI can show a Waking placeholder
-    /// before the agent reaches Connected.
+    /// `SessionUpdate::Spawning` under the id the lead will run under,
+    /// so the TUI can show a Waking placeholder before the agent reaches
+    /// Connected and the bucket it draws is the one that connects.
     #[tokio::test]
-    async fn spawn_project_known_project_emits_spawning_with_synth_key() {
+    async fn spawn_project_known_project_announces_the_id_it_will_run_under() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
@@ -1924,7 +1979,11 @@ provider = "anthropic"
         let update = rx.try_recv().expect("Spawning emit");
         match update {
             SessionUpdate::Spawning { key, project_name, .. } => {
-                assert_eq!(key.as_str(), "__spawn_forge__");
+                assert!(
+                    uuid::Uuid::parse_str(key.as_str()).is_ok(),
+                    "the announced key is the session id, not a placeholder: {}",
+                    key.as_str(),
+                );
                 assert_eq!(project_name, "forge");
             }
             other => panic!("expected Spawning update; got {other:?}"),
@@ -2384,7 +2443,7 @@ provider = "anthropic"
             slack_msg("parked while asleep"),
         );
 
-        let result = ws.get_agent_handle_with_spawn_key(
+        let result = ws.get_agent_handle_at_key(
             crate::target::SessionTarget::FreshInProject {
                 project_key: crate::ProjectKey::new_for_test("not-in-config"),
                 session_id: "minted-worker-id".to_owned(),
@@ -3724,7 +3783,7 @@ provider = "anthropic"
             .find(|v| v.name == "forge")
             .expect("seeded project")
             .key;
-        let worker_key = SessionKey::from_session_id("__spawn_worker_forge_builder_abc__");
+        let worker_key = SessionKey::from_session_id("builder-uuid");
         workspace.insert_live_worker(
             &project,
             crate::mcp::workers::types::WorkerEntry {
