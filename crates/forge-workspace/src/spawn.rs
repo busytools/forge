@@ -1338,7 +1338,14 @@ pub(crate) fn handle_spawn_worker(
         target,
         settings,
         None,
-        &crate::protocol::SpawnRole::Worker(label.to_owned()),
+        &crate::protocol::SpawnRole::Worker {
+            label: label.to_owned(),
+            // The same predicate the synchronous rollback below deletes
+            // under: a resume and a boot re-spawn adopt a row that was
+            // already there, so only a spawn that minted this one may
+            // take it away.
+            wrote_row: !is_resume && !from_boot_respawn,
+        },
     ) {
         Ok(handle) => {
             tracing::info!(
@@ -2809,7 +2816,7 @@ provider = "anthropic"
             },
             forge_agent::client::SessionLaunchSettings::default(),
             None,
-            &crate::protocol::SpawnRole::Worker("reviewer".to_owned()),
+            &crate::protocol::SpawnRole::Worker { label: "reviewer".to_owned(), wrote_row: false },
         );
 
         assert!(result.is_err(), "a target mapping to no project is refused");

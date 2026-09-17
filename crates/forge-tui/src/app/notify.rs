@@ -201,7 +201,7 @@ impl crate::app::App {
                 .workspace
                 .as_ref()
                 .and_then(|ws| ws.worker_lookup_for_session(session_key))
-                .map(|(_, label, _)| label),
+                .map(|(_, label, _, _)| label),
         })
     }
 }

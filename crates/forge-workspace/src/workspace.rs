@@ -1336,7 +1336,7 @@ impl Workspace {
             crate::protocol::SpawnRole::Lead => {
                 crate::SessionSlot::lead(&project.org, &project.name)
             }
-            crate::protocol::SpawnRole::Worker(label) => {
+            crate::protocol::SpawnRole::Worker { label, .. } => {
                 crate::SessionSlot::worker(&project.org, &project.name, label)
             }
         }
@@ -1554,6 +1554,11 @@ impl Workspace {
         // Connected-time respawn skips the store lookup and brings its
         // workers up fresh alongside the fresh lead.
         domain_arc.lock().spawned_force_new = settings.force_new;
+        // Carry the row's provenance the same way: the tag-write
+        // rollback runs long after this spawn returned and needs to know
+        // whether the row it would delete is this spawn's to take.
+        domain_arc.lock().spawn_wrote_row =
+            matches!(role, crate::protocol::SpawnRole::Worker { wrote_row: true, .. });
 
         // Build the per-session `forge` MCP server. ONE server name;
         // tool surface depends on whether this spawn is for a project
@@ -4483,19 +4488,21 @@ impl Workspace {
         self.live_workers.lock().remove(project_key).unwrap_or_default()
     }
 
-    /// Locate `(project_key, label, is_git_repo_at_spawn)` for any
-    /// worker matching `session_key` across every project's
+    /// Locate `(project_key, label, is_git_repo_at_spawn, needs_tag)`
+    /// for any worker matching `session_key` across every project's
     /// `live_workers`. Used by the Connected handler in
     /// `SessionTask::translate_event` to decide whether a just-
     /// connected session is a worker (and what tag to write).
     /// `is_git_repo_at_spawn` lets the tag-write path route to the
     /// worktree-derived JSONL via `worker_tag_dir` in
-    /// `crate::mcp::workers::types`.
+    /// `crate::mcp::workers::types`, and `needs_tag` says whether that
+    /// write has ever landed - the rollback reads it to tell a worker
+    /// that never established itself from one that is simply re-tagging.
     /// `None` when the session is a lead (or not a worker at all).
     pub fn worker_lookup_for_session(
         &self,
         session_key: &SessionSlot,
-    ) -> Option<(ProjectKey, String, bool)> {
+    ) -> Option<(ProjectKey, String, bool, bool)> {
         let workers = self.live_workers.lock();
         for (project_key, entries) in workers.iter() {
             if let Some(entry) = entries.iter().find(|e| e.slot == *session_key) {
@@ -4503,6 +4510,7 @@ impl Workspace {
                     project_key.clone(),
                     entry.label.clone(),
                     entry.is_git_repo_at_spawn,
+                    entry.needs_tag,
                 ));
             }
         }
@@ -4530,7 +4538,7 @@ impl Workspace {
         if let Some(cwd) = self.session_cwd_for(session_key) {
             return Some(cwd);
         }
-        let (project_key, label, is_git) = self.worker_lookup_for_session(session_key)?;
+        let (project_key, label, is_git, _) = self.worker_lookup_for_session(session_key)?;
         let Some(root) = self.project_root_for_key(&project_key) else {
             // Unreachable while `forge.toml` and `live_workers` agree,
             // so treat a firing as drift rather than a normal miss.
@@ -4664,7 +4672,7 @@ impl Workspace {
         session_key: &SessionSlot,
         cwd_raw: &std::path::Path,
     ) -> std::path::PathBuf {
-        let Some((project_key, label, is_git_repo_at_spawn)) =
+        let Some((project_key, label, is_git_repo_at_spawn, _)) =
             self.worker_lookup_for_session(session_key)
         else {
             // Trace-level so a real lookup-miss (race during
@@ -4886,8 +4894,9 @@ impl Workspace {
         session_key: &SessionSlot,
         session_id: &str,
         cwd: &str,
+        wrote_row: bool,
     ) {
-        let Some((project_key, label, is_git_repo_at_spawn)) =
+        let Some((project_key, label, is_git_repo_at_spawn, needs_tag)) =
             self.worker_lookup_for_session(session_key)
         else {
             return;
@@ -4909,6 +4918,8 @@ impl Workspace {
             &label,
             cwd,
             is_git_repo_at_spawn,
+            needs_tag,
+            wrote_row,
             &config_dir,
         );
     }
@@ -4925,6 +4936,9 @@ impl Workspace {
     /// [`crate::mcp::workers::types::worker_tag_dir`] so the lookup
     /// matches where claude's `--worktree <label>` actually wrote
     /// the JSONL.
+    ///
+    /// `needs_tag` and `wrote_row` together decide whether a rollback
+    /// takes the worker's durable row with it; see the arm below.
     pub(crate) fn apply_worker_tag_or_rollback_with_config_dir(
         self: &Arc<Self>,
         session_key: &SessionSlot,
@@ -4933,6 +4947,8 @@ impl Workspace {
         label: &str,
         cwd: &str,
         is_git_repo_at_spawn: bool,
+        needs_tag: bool,
+        wrote_row: bool,
         config_dir: &std::path::Path,
     ) {
         use tracing::Instrument;
@@ -4998,11 +5014,24 @@ impl Workspace {
                     );
                     let removed = workspace.remove_latest_worker(&project_key, &label);
                     if let Some(entry) = removed {
-                        // The row goes with the worker: rolled back it
-                        // re-spawns on the next boot, and with no live entry
-                        // left it is a row `workers__despawn` answers
-                        // NotFound over and cannot clear (#1142).
-                        workspace.delete_worker_row(&project_key, &label);
+                        // The row goes with the worker only when this
+                        // spawn minted it and the worker never got as far
+                        // as a tag. Every other shape of this arm - a
+                        // resume, a boot re-spawn, a `/new` re-tag - runs
+                        // over a row that pre-existed and holds the
+                        // worker's charter, kick and the id being resumed,
+                        // and the row is the worker rather than this
+                        // spawn's leftover: deleting it loses a worker
+                        // that only failed to write a JSONL tag.
+                        //
+                        // `needs_tag` is what separates those from the
+                        // case this arm exists for. The spawn sets it and
+                        // the first successful tag write clears it, so a
+                        // row still carrying it belongs to a worker that
+                        // never established itself on disk.
+                        if wrote_row && needs_tag {
+                            workspace.delete_worker_row(&project_key, &label);
+                        }
                         let worktree = crate::protocol::WorktreeDisposition::untouched(
                             entry.is_git_repo_at_spawn,
                         );
@@ -10285,6 +10314,8 @@ mod tag_retry_tests {
             "idle",
             &cwd.path().to_string_lossy(),
             false,
+            true,
+            true,
             cfg.path(),
         );
 
@@ -10322,12 +10353,15 @@ mod tag_retry_tests {
         assert!(matches!(entries[0].status, forge_primitives::WorkerLiveness::Running));
     }
 
-    /// The non-NotFound rollback discards the spawn, so the durable row
-    /// must go with it: left behind, it is a row with no live worker -
-    /// which `workers__despawn` cannot clear - and the next boot re-spawns
-    /// the worker this arm just rolled back (#1142).
-    #[tokio::test]
-    async fn a_non_notfound_tag_failure_rolls_back_the_row_with_the_worker() {
+    /// Drive a non-NotFound tag failure over a seeded row and live worker,
+    /// and return the row that survived it. `needs_tag` and `wrote_row`
+    /// are the two facts the rollback decides the row on; the malformed
+    /// session id is the failure, since no amount of waiting puts a JSONL
+    /// on disk that makes that write succeed.
+    async fn non_notfound_rollback_leftover_row(
+        needs_tag: bool,
+        wrote_row: bool,
+    ) -> Option<crate::store::sessions::SessionRecord> {
         let (workspace, mut rx) = Workspace::testing_stub();
         workspace.seed_test_project("proj-x", "/tmp/proj-x");
         let db_dir = tempdir().expect("db tempdir");
@@ -10338,8 +10372,10 @@ mod tag_retry_tests {
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
         );
         let session_key = SessionSlot::worker("TestOrg", "proj-x", "crashed");
-        workspace
-            .insert_live_worker(&project_key, fake_spawning_entry("crashed", &session_key, true));
+        workspace.insert_live_worker(
+            &project_key,
+            fake_spawning_entry("crashed", &session_key, needs_tag),
+        );
         workspace
             .record_worker_row(
                 &project_key,
@@ -10351,13 +10387,10 @@ mod tag_retry_tests {
                 false,
                 false,
             )
-            .expect("seed the row the rollback must take with the worker");
+            .expect("seed the row the rollback judges");
 
         let cfg = tempdir().expect("cfg");
         let cwd = tempdir().expect("cwd");
-        // A malformed session id is the non-NotFound failure: no amount of
-        // waiting puts a JSONL on disk that makes the write succeed, so the
-        // retry loop returns at once on the parse error.
         workspace.apply_worker_tag_or_rollback_with_config_dir(
             &session_key,
             "not-a-uuid",
@@ -10365,6 +10398,8 @@ mod tag_retry_tests {
             "crashed",
             &cwd.path().to_string_lossy(),
             false,
+            needs_tag,
+            wrote_row,
             cfg.path(),
         );
 
@@ -10377,15 +10412,50 @@ mod tag_retry_tests {
                 break;
             }
         }
-
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
-            "the rollback removes the live entry",
+            "the rollback removes the live entry whatever becomes of the row",
         );
+
+        let db = workspace.db.lock();
+        crate::store::sessions::get(db.as_ref().expect("db"), "TestOrg", "proj-x", "crashed")
+            .expect("read the row the rollback left")
+    }
+
+    /// The non-NotFound rollback discards a spawn that minted its own row,
+    /// so the row goes with it: left behind, it is a row with no live
+    /// worker - which `workers__despawn` cannot clear - and the next boot
+    /// re-spawns the worker this arm just rolled back (#1142).
+    #[tokio::test]
+    async fn a_non_notfound_tag_failure_rolls_back_the_row_with_the_worker() {
         assert!(
-            workspace.worker_rows_for_project(&project_key).is_empty(),
-            "the row must not outlive the rolled-back worker: no live entry is left to clear it, \
-             and the next boot re-spawns it",
+            non_notfound_rollback_leftover_row(true, true).await.is_none(),
+            "a spawn that wrote the row takes it with it",
+        );
+    }
+
+    /// A resume and a boot re-spawn are handed a row that pre-existed and
+    /// holds the worker's charter, kick and the id being resumed. Taking
+    /// it away loses a worker that only failed to write a JSONL tag, and
+    /// leaves nothing to resume it from.
+    #[tokio::test]
+    async fn a_non_notfound_tag_failure_keeps_a_row_this_spawn_did_not_mint() {
+        assert_eq!(
+            non_notfound_rollback_leftover_row(true, false).await.and_then(|row| row.charter),
+            Some("charter".to_owned()),
+            "a row this spawn did not write is not this spawn's to delete",
+        );
+    }
+
+    /// The arm also fires on every `/new` re-tag, over a row whose worker
+    /// has already been tagged on disk. That row belongs to the worker,
+    /// not to the connection that failed to re-tag it.
+    #[tokio::test]
+    async fn a_non_notfound_tag_failure_keeps_a_row_the_worker_already_holds() {
+        assert_eq!(
+            non_notfound_rollback_leftover_row(false, true).await.and_then(|row| row.charter),
+            Some("charter".to_owned()),
+            "a worker already tagged on disk keeps its row when a later tag write fails",
         );
     }
 
@@ -10415,6 +10485,8 @@ mod tag_retry_tests {
             "prompt-driven",
             &cwd.path().to_string_lossy(),
             false,
+            true,
+            true,
             cfg.path(),
         );
 
@@ -10529,6 +10601,8 @@ mod tag_retry_tests {
             "reviewer",
             &cwd.path().to_string_lossy(),
             false,
+            true,
+            true,
             cfg.path(),
         );
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -10574,6 +10648,8 @@ mod tag_retry_tests {
             "reviewer",
             &cwd.path().to_string_lossy(),
             false,
+            true,
+            true,
             cfg.path(),
         );
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -10651,6 +10727,8 @@ mod tag_retry_tests {
             &project_key,
             "debugger",
             &repo_root.path().to_string_lossy(),
+            true,
+            true,
             true,
             cfg.path(),
         );
@@ -10845,7 +10923,8 @@ mod worker_respawn_tests {
     fn a_worker_spawn_carries_its_label_and_a_worker_tool_surface() {
         let (ws, _rx) = Workspace::testing_stub();
         let project = seed_project_and_return(&ws, "forge", "/tmp/role-worker");
-        let role = crate::protocol::SpawnRole::Worker("implementer".to_owned());
+        let role =
+            crate::protocol::SpawnRole::Worker { label: "implementer".to_owned(), wrote_row: true };
 
         let slot = Workspace::slot_for_spawn(&role, &project);
         assert_eq!(slot.label(), "implementer", "the slot names the worker");

@@ -44,6 +44,12 @@ pub struct DomainSession {
     /// up fresh alongside their fresh lead. `false` for every non-boot
     /// spawn.
     pub spawned_force_new: bool,
+    /// Whether the spawn that opened this session wrote the worker's
+    /// durable row rather than adopting one that was already there.
+    /// Stamped at spawn time from the spawn's role, and read by the
+    /// tag-write rollback to decide whether the row goes with the spawn
+    /// it is discarding. `false` for every lead and every non-worker.
+    pub spawn_wrote_row: bool,
     /// Latest runtime liveness mirrored from the session's
     /// `session_state_changed` wire messages. Operational turn state
     /// otherwise lives on the TUI's `UiSession`; this one signal is
@@ -76,6 +82,7 @@ impl DomainSession {
             conn,
             pending_interactions: HashMap::new(),
             spawned_force_new: false,
+            spawn_wrote_row: false,
             runtime_state: None,
             turn_pending: false,
             dictate_overrides: crate::dictate::DictateOverrides::default(),

@@ -735,7 +735,16 @@ pub enum DictateOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpawnRole {
     Lead,
-    Worker(String),
+    Worker {
+        label: String,
+        /// Whether this spawn wrote the worker's durable row rather than
+        /// adopting one that was already there. A rollback may take the
+        /// row away only when it did: a resume and a boot re-spawn are
+        /// handed a row that holds the worker's charter, kick and the id
+        /// being resumed, so the row is the worker, not this spawn's
+        /// leftover.
+        wrote_row: bool,
+    },
 }
 
 /// Update envelope: forge-workspace -> forge-tui.

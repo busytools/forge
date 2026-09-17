@@ -353,7 +353,16 @@ impl SessionTask {
                 // JSONL, and an untagged one is listed by the boot scan
                 // as one of the project's own sessions.
                 if let Some(workspace) = self.workspace.upgrade() {
-                    workspace.apply_worker_tag_or_rollback(&key, &session_id, &cwd_for_tag);
+                    // The spawn's row provenance rides the domain, so a
+                    // rollback can tell a row this spawn minted from one
+                    // a resume or a `/new` inherited.
+                    let wrote_row = self.domain.lock().spawn_wrote_row;
+                    workspace.apply_worker_tag_or_rollback(
+                        &key,
+                        &session_id,
+                        &cwd_for_tag,
+                        wrote_row,
+                    );
                 }
             }
             AgentEvent::AuthRequired { method_name, method_description } => {
