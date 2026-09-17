@@ -512,6 +512,15 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         );
     }
 
+    if parsed.ui.retired_notifications_osc9.is_some() {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "ui_notifications_osc9_ignored",
+            "[ui] notifications_osc9 is no longer read; forge writes the escape \
+             unconditionally, whatever the terminal reports",
+        );
+    }
+
     if parsed.selection.is_some() {
         tracing::warn!(
             target: "forge_workspace::config",
