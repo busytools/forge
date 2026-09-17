@@ -2951,17 +2951,103 @@ provider = "anthropic"
         assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Stargate"));
     }
 
-    /// A retired `[selection]` section is a declared ghost, not an
-    /// unknown key: it still loads, so a stale synced forge.toml boots,
-    /// and the load warns about it. Every other unknown top-level table
-    /// fails the load.
+    /// The three retired top-level sections are declared ghosts, not
+    /// unknown keys: each still loads, so a stale synced forge.toml
+    /// boots. The top level denies unknown fields now, so each ghost is
+    /// load-bearing - dropping one as dead weight refuses the boot of
+    /// every config still carrying it. That the load also warns about
+    /// them is [`every_ignored_key_warns`]'s half.
     #[test]
-    fn a_legacy_selection_section_still_loads() {
-        let dir = tempdir().expect("tempdir");
-        let mut config_text = minimal_config().to_owned();
-        config_text.push_str("\n[selection]\npolicy = \"round_robin\"\n");
-        write_config(dir.path(), &config_text);
-        let config = load_from_dir(dir.path()).expect("a retired [selection] still loads");
-        assert_eq!(config.default_project().name, "forge");
+    fn retired_top_level_sections_still_load() {
+        let cases = [
+            ("[selection]", "\n[selection]\npolicy = \"round_robin\"\n"),
+            ("[workers]", "\n[workers]\nmax_workers = 4\n"),
+            ("[projects.<name>]", "\n[projects.forge]\nmodel = \"claude-sonnet-5\"\n"),
+        ];
+        for (label, stanza) in cases {
+            let dir = tempdir().expect("tempdir");
+            write_config(dir.path(), &format!("{}{stanza}", minimal_config()));
+            let config = load_from_dir(dir.path())
+                .unwrap_or_else(|err| panic!("a retired {label} still loads: {err}"));
+            assert_eq!(config.default_project().name, "forge", "{label} left the load intact");
+        }
+    }
+
+    /// Every key the load ignores is warned about, at WARN, by its own
+    /// event name. A config that declares something forge no longer
+    /// reads must not go quiet, and the level is half of that: these
+    /// targets are not raised by the default filters, so a warn demoted
+    /// to debug is a warn that stopped being seen.
+    #[test]
+    fn every_ignored_key_warns() {
+        use std::sync::{Arc, Mutex};
+
+        /// One logged event: its level and the `event_name` it carries.
+        #[derive(Default, Clone)]
+        struct LoggedEvents(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+
+        struct CollectEventName(String);
+
+        impl tracing::field::Visit for CollectEventName {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "event_name" {
+                    self.0 = format!("{value:?}").trim_matches('"').to_owned();
+                }
+            }
+        }
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LoggedEvents {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut visitor = CollectEventName(String::new());
+                event.record(&mut visitor);
+                if !visitor.0.is_empty() {
+                    self.0.lock().expect("capture").push((*event.metadata().level(), visitor.0));
+                }
+            }
+        }
+
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let cases = [
+            (
+                "[selection]",
+                "\n[selection]\npolicy = \"round_robin\"\n",
+                "selection_section_ignored",
+            ),
+            ("[workers]", "\n[workers]\nmax_workers = 4\n", "workers_section_ignored"),
+            (
+                "[projects.<name>]",
+                "\n[projects.forge]\nmodel = \"x\"\n",
+                "projects_section_ignored",
+            ),
+            (
+                "[ui] notifications_osc9",
+                "\n[ui]\nnotifications_osc9 = \"off\"\n",
+                "ui_notifications_osc9_ignored",
+            ),
+            (
+                "a gateway key in an env layer",
+                "\n[env]\nANTHROPIC_BASE_URL = \"https://proxy.example\"\n",
+                "gateway_keys_dropped_from_env_layer",
+            ),
+        ];
+        for (label, stanza, event) in cases {
+            let dir = tempdir().expect("tempdir");
+            write_config(dir.path(), &format!("{}{stanza}", minimal_config()));
+            let logged = LoggedEvents::default();
+            let subscriber = tracing_subscriber::registry().with(logged.clone());
+            let loaded =
+                tracing::subscriber::with_default(subscriber, || load_from_dir(dir.path()));
+            assert!(loaded.is_ok(), "{label} still loads");
+            let seen = logged.0.lock().expect("capture");
+            assert!(
+                seen.iter().any(|(level, name)| name == event && *level == tracing::Level::WARN),
+                "{label} warns at WARN with {event}; saw {seen:?}",
+            );
+        }
     }
 }
