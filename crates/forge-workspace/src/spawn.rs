@@ -1711,6 +1711,22 @@ pub(crate) fn handle_despawn_worker(
     // back the already-completed teardown.
     let mut branch_cleanup_warning = None;
     let worktree_cleanup_warning = match worktree_path.as_ref() {
+        // A stranded row whose worktree is already gone is the definition
+        // of that state - it is why the boot wave skips the row - so there
+        // is nothing to remove and git's failure over an untracked path
+        // would be a warning about nothing. A live worker's worktree
+        // vanishing is the opposite: anomalous, and the live shape below
+        // keeps reporting what git said.
+        Some(path) if live.is_none() && !path.exists() => {
+            tracing::debug!(
+                target: "forge_workspace::spawn",
+                project = %project_key.as_str(),
+                label = %label,
+                worktree = %path.display(),
+                "despawn: the stranded row's worktree is already gone; nothing to remove",
+            );
+            None
+        }
         Some(path) => match forge_agent::env::worktree::remove_worktree(path, force) {
             Ok(()) => {
                 tracing::info!(
@@ -4212,6 +4228,37 @@ provider = "anthropic"
         assert!(
             workspace.worker_rows_for_project(&project_key).is_empty(),
             "with the row it was resolved from",
+        );
+    }
+
+    /// A stranded row whose worktree is already gone is the shape the boot
+    /// wave skips, so the despawn has nothing to remove and must not report
+    /// a removal failure over it. The live shape reports git's failure for
+    /// the same state, which `despawn_reports_removed_when_the_worktree_is_
+    /// already_off_disk` pins.
+    #[tokio::test]
+    async fn a_stranded_row_whose_worktree_is_gone_despawns_quietly() {
+        let (workspace, project_key, wt, repo, _config) = stranded_git_despawn_fixture("reviewer");
+        run_git(repo.path(), &["worktree", "remove", wt.to_str().expect("utf8 path")]);
+        assert!(!wt.exists(), "nothing on disk before the despawn");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", true, tx);
+        let result = resp_rx.await.expect("result");
+
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned {
+                    worktree_cleanup_warning: None,
+                    branch_cleanup_warning: None,
+                }
+            ),
+            "a worktree that was never there is not a cleanup failure: {result:?}"
+        );
+        assert!(
+            workspace.worker_rows_for_project(&project_key).is_empty(),
+            "and the row still goes, which is the whole point of the call",
         );
     }
 
