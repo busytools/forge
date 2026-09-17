@@ -304,11 +304,11 @@ impl Tool for Delete {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionKey;
+    use crate::SessionSlot;
     use crate::mcp::cron::facade::MockCronFacade;
 
     fn resolver() -> CallerKeyResolver {
-        CallerKeyResolver::from_fixed(SessionKey::from_session_id("caller"))
+        CallerKeyResolver::from_fixed(SessionSlot::from_session_id("caller"))
     }
 
     fn sample_entry(id: &str) -> CronEntry {

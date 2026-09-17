@@ -1,4 +1,4 @@
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 use std::borrow::Cow;
 
 /// Events that can trigger a user notification.
@@ -110,7 +110,7 @@ impl NotificationManager {
     /// It is intentionally cheap when focused (just a bool check).
     /// `session_key` is the event's own session, logged beside the
     /// resolved context so a wrong title is diagnosable from the log.
-    pub fn notify(&self, event: NotifyEvent, session_key: &SessionKey, context: &NotifyContext) {
+    pub fn notify(&self, event: NotifyEvent, session_key: &SessionSlot, context: &NotifyContext) {
         if self.terminal_focused {
             return;
         }
@@ -155,7 +155,7 @@ impl crate::app::App {
     /// notify: the manager's own terminal-focus check decides that.
     /// The notification text comes from the event session's project +
     /// worker label.
-    pub(crate) fn notify(&self, event: NotifyEvent, session_key: &SessionKey) {
+    pub(crate) fn notify(&self, event: NotifyEvent, session_key: &SessionSlot) {
         // A session with no bucket has nothing to notify about, so this
         // is where an event for a closed or never-spawned key stops.
         let Some(context) = self.notification_context(session_key) else {
@@ -193,7 +193,7 @@ impl crate::app::App {
     /// the live-worker registry: a worker's bucket is minted by its
     /// `Connected`, which carries no label, so the registry is the only
     /// source.
-    fn notification_context(&self, session_key: &SessionKey) -> Option<NotifyContext> {
+    fn notification_context(&self, session_key: &SessionSlot) -> Option<NotifyContext> {
         let bucket = self.sessions.get(session_key)?;
         Some(NotifyContext {
             project: bucket.project.clone(),
@@ -405,7 +405,7 @@ mod tests {
         let mut app = App::test_default();
         app.notifications = NotificationManager::new();
         app.notifications.on_focus_lost();
-        let unknown = forge_workspace::SessionKey::from_session_id("no-such-session");
+        let unknown = forge_workspace::SessionSlot::from_session_id("no-such-session");
 
         app.notify(NotifyEvent::TurnComplete, &unknown);
 
@@ -415,8 +415,8 @@ mod tests {
         );
     }
 
-    fn seed_bucket(app: &mut App, id: &str, project: &str) -> forge_workspace::SessionKey {
-        let key = forge_workspace::SessionKey::from_str_for_test(id);
+    fn seed_bucket(app: &mut App, id: &str, project: &str) -> forge_workspace::SessionSlot {
+        let key = forge_workspace::SessionSlot::from_str_for_test(id);
         let bucket = UiSession::new(key.clone(), project);
         app.sessions.insert(key.clone(), bucket);
         key
@@ -425,7 +425,7 @@ mod tests {
     fn seed_worker(
         app: &App,
         project_key: &forge_workspace::ProjectKey,
-        key: &forge_workspace::SessionKey,
+        key: &forge_workspace::SessionSlot,
         label: &str,
     ) {
         let ws = app.workspace.as_ref().expect("test workspace");
@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn notification_context_is_none_for_an_unknown_session() {
         let app = App::test_default();
-        let unknown = forge_workspace::SessionKey::from_session_id("no-such-session");
+        let unknown = forge_workspace::SessionSlot::from_session_id("no-such-session");
         assert_eq!(app.notification_context(&unknown), None);
     }
 

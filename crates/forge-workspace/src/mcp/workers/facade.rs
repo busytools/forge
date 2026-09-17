@@ -8,7 +8,7 @@ use std::sync::{Arc, Weak};
 
 use forge_primitives::WorkerStatus;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::mcp::peers::facade::{PeerStatsDelta, ReplyDeliverError};
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedPrompt};
 use crate::protocol::{Command, WorkerSpawnReply};
@@ -261,7 +261,7 @@ pub struct WorkerCapacity {
 pub trait WorkerFacade: Send + Sync {
     /// Resolve the caller's project key + lead/worker flag.
     /// Returns `None` when `caller` matches no known session.
-    fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject>;
+    fn caller_project(&self, caller: &SessionSlot) -> Option<CallerProject>;
 
     /// Resolve a display identity for `caller`. Always returns a value
     /// (no `Option`); the production impl falls back to the raw
@@ -273,7 +273,7 @@ pub trait WorkerFacade: Send + Sync {
     ///   `(label, "worker in <project_key>")`
     /// - worker caller whose entry was reaped (detached, mid-shutdown) →
     ///   `(session_id, "worker in <project_key> (detached)")`
-    fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity;
+    fn caller_identity(&self, caller: &SessionSlot) -> WorkerIdentity;
 
     /// Dispatch a `Command::SpawnWorker` and await its synchronous
     /// reply. Gating (lead-only, non-empty label, non-empty charter)
@@ -287,7 +287,7 @@ pub trait WorkerFacade: Send + Sync {
     /// `NoPriorSession` when the label has none.
     async fn spawn_worker(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         label: String,
         charter: String,
         kick: Option<String>,
@@ -304,7 +304,7 @@ pub trait WorkerFacade: Send + Sync {
     /// prompt is fixed when the session spawns.
     fn update_worker(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         label: &str,
         charter: Option<String>,
         kick: Option<String>,
@@ -317,14 +317,14 @@ pub trait WorkerFacade: Send + Sync {
     /// blocks the despawn (`DespawnOutcome::Blocked`).
     async fn despawn_worker(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         label: &str,
         force: bool,
     ) -> Result<DespawnOutcome, WorkerDespawnError>;
 
     /// Snapshot of every worker in the caller's project. Returns an
     /// empty Vec when the caller resolves to no project.
-    fn list_workers(&self, caller: &SessionKey) -> Vec<WorkerStatus>;
+    fn list_workers(&self, caller: &SessionSlot) -> Vec<WorkerStatus>;
 
     /// The caller's project worker capacity: the cap the spawn path
     /// enforces (`max_workers` in the project's `[[orgs.projects]]`
@@ -333,7 +333,7 @@ pub trait WorkerFacade: Send + Sync {
     /// A plain data read - the same one the spawn path's cap check
     /// performs. Returns `None` when the caller resolves to no
     /// project.
-    fn capacity(&self, caller: &SessionKey) -> Option<WorkerCapacity>;
+    fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity>;
 
     /// Dispatch a worker-bound wrapped prompt. Returns immediately
     /// with `Delivered` (target was in `live_workers` and the
@@ -341,7 +341,7 @@ pub trait WorkerFacade: Send + Sync {
     /// `UnknownLabel` (no live match).
     fn deliver_worker_prompt(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         target_label: &str,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerDeliverError>;
@@ -354,17 +354,17 @@ pub trait WorkerFacade: Send + Sync {
     /// wire-shape contract as `deliver_worker_prompt`.
     fn deliver_prompt_to_lead(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError>;
 
     /// Deliver a Reply straight to the asker's session, bypassing
-    /// label resolution (the asker is addressed by `SessionKey`).
+    /// label resolution (the asker is addressed by `SessionSlot`).
     /// Shares the peer-MCP by-session delivery path. Returns `Err`
     /// only when the caller session closed.
     fn deliver_reply_to_caller(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError>;
 
@@ -389,7 +389,7 @@ pub trait WorkerFacade: Send + Sync {
     /// caller when it fires, workers__tell with `in_reply_to`
     /// decrements `OutgoingMinus1` on the original asker and
     /// `IncomingMinus1` on the replier.
-    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta);
+    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta);
 }
 
 /// Validation chain shared by the production and mock `spawn_worker`
@@ -424,7 +424,7 @@ fn classify_worker_identity(
     is_lead: bool,
     project_key: &crate::ProjectKey,
     matched_label: Option<String>,
-    caller: &SessionKey,
+    caller: &SessionSlot,
 ) -> WorkerIdentity {
     if is_lead {
         return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: PERSONAL_ORG.to_owned() };
@@ -479,13 +479,13 @@ impl ProdWorkerFacade {
 
 #[async_trait::async_trait]
 impl WorkerFacade for ProdWorkerFacade {
-    fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject> {
+    fn caller_project(&self, caller: &SessionSlot) -> Option<CallerProject> {
         let ws = self.workspace.upgrade()?;
         let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
         Some(CallerProject { project_key: cx.project_key, is_lead: cx.is_lead })
     }
 
-    fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
+    fn caller_identity(&self, caller: &SessionSlot) -> WorkerIdentity {
         let Some(ws) = self.workspace.upgrade() else {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
@@ -505,7 +505,7 @@ impl WorkerFacade for ProdWorkerFacade {
 
     async fn spawn_worker(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         label: String,
         charter: String,
         kick: Option<String>,
@@ -641,7 +641,7 @@ impl WorkerFacade for ProdWorkerFacade {
 
     fn update_worker(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         label: &str,
         charter: Option<String>,
         kick: Option<String>,
@@ -663,7 +663,7 @@ impl WorkerFacade for ProdWorkerFacade {
 
     async fn despawn_worker(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         label: &str,
         force: bool,
     ) -> Result<DespawnOutcome, WorkerDespawnError> {
@@ -709,7 +709,7 @@ impl WorkerFacade for ProdWorkerFacade {
         }
     }
 
-    fn list_workers(&self, caller: &SessionKey) -> Vec<WorkerStatus> {
+    fn list_workers(&self, caller: &SessionSlot) -> Vec<WorkerStatus> {
         let Some(cp) = self.caller_project(caller) else {
             return Vec::new();
         };
@@ -722,7 +722,7 @@ impl WorkerFacade for ProdWorkerFacade {
             .collect()
     }
 
-    fn capacity(&self, caller: &SessionKey) -> Option<WorkerCapacity> {
+    fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity> {
         let cp = self.caller_project(caller)?;
         let ws = self.workspace.upgrade()?;
         let (cap, cap_source) = ws
@@ -741,7 +741,7 @@ impl WorkerFacade for ProdWorkerFacade {
 
     fn deliver_worker_prompt(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         target_label: &str,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerDeliverError> {
@@ -779,7 +779,7 @@ impl WorkerFacade for ProdWorkerFacade {
 
     fn deliver_prompt_to_lead(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError> {
         let Some(ws) = self.workspace.upgrade() else {
@@ -822,7 +822,7 @@ impl WorkerFacade for ProdWorkerFacade {
 
     fn deliver_reply_to_caller(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError> {
         let Some(ws) = self.workspace.upgrade() else {
@@ -853,7 +853,7 @@ impl WorkerFacade for ProdWorkerFacade {
         ws.inflight_asks.lock().get(id).cloned()
     }
 
-    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
+    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
         // Reuse the peer-MCP facade's identical implementation by
         // routing through `ProdWorkspaceFacade`. Same `peer_stats`
         // map; one Mutex shared between peer + worker traffic.
@@ -867,12 +867,12 @@ impl WorkerFacade for ProdWorkerFacade {
 /// `(caller, label, resolved charter, kick, resume_kick, interactive,
 /// resume_session)`.
 #[cfg(any(test, feature = "testing"))]
-type RecordedSpawnCall = (SessionKey, String, String, Option<String>, Option<String>, bool, bool);
+type RecordedSpawnCall = (SessionSlot, String, String, Option<String>, Option<String>, bool, bool);
 
 /// A captured `MockWorkerFacade::update_worker` call:
 /// `(caller, label, charter, kick, resume_kick)`.
 #[cfg(any(test, feature = "testing"))]
-type RecordedUpdateCall = (SessionKey, String, Option<String>, Option<String>, Option<String>);
+type RecordedUpdateCall = (SessionSlot, String, Option<String>, Option<String>, Option<String>);
 
 /// Mock for unit-testing the four Tool impls. Captures every
 /// dispatched call into a Vec so tests can assert "tool X
@@ -883,7 +883,7 @@ type RecordedUpdateCall = (SessionKey, String, Option<String>, Option<String>, O
 pub struct MockWorkerFacade {
     /// Pre-loaded caller -> project mapping. Tests insert entries
     /// before invoking the tool.
-    pub callers: parking_lot::Mutex<std::collections::HashMap<SessionKey, CallerProject>>,
+    pub callers: parking_lot::Mutex<std::collections::HashMap<SessionSlot, CallerProject>>,
     /// Pre-loaded `live_workers` snapshot per project_key string.
     /// `list_workers` and `deliver_worker_prompt` both read from
     /// this.
@@ -900,10 +900,10 @@ pub struct MockWorkerFacade {
     /// passed through does not have to set it.
     pub update_result: parking_lot::Mutex<Option<Result<(), WorkerUpdateError>>>,
     /// Captured `deliver_worker_prompt` calls.
-    pub deliver_calls: parking_lot::Mutex<Vec<(SessionKey, String, WrappedPrompt)>>,
+    pub deliver_calls: parking_lot::Mutex<Vec<(SessionSlot, String, WrappedPrompt)>>,
     /// Captured `deliver_reply_to_caller` calls so tests can assert
     /// the reply's target + kind.
-    pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionKey, WrappedPrompt)>>,
+    pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionSlot, WrappedPrompt)>>,
     /// If set, `deliver_reply_to_caller` returns this error instead of
     /// recording + Ok, so tests can exercise the failed-reply path
     /// (the ask must stay open and no counters decrement).
@@ -913,9 +913,9 @@ pub struct MockWorkerFacade {
     /// Captured `bump_inflight_stats` calls so tests can assert the
     /// expected delta sequence (e.g. `OutgoingPlus1` on ask, then
     /// `IncomingMinus1` + `OutgoingMinus1` on a reply tell).
-    pub bumps: parking_lot::Mutex<Vec<(SessionKey, PeerStatsDelta)>>,
+    pub bumps: parking_lot::Mutex<Vec<(SessionSlot, PeerStatsDelta)>>,
     /// Captured `despawn_worker` calls: (caller, label, force).
-    pub despawn_calls: parking_lot::Mutex<Vec<(SessionKey, String, bool)>>,
+    pub despawn_calls: parking_lot::Mutex<Vec<(SessionSlot, String, bool)>>,
     /// Pre-loaded outcome for `despawn_worker` on a known label. When
     /// `None`, defaults to `Despawned` with neither warning set.
     pub despawn_outcome: parking_lot::Mutex<Option<DespawnOutcome>>,
@@ -939,11 +939,11 @@ impl MockWorkerFacade {
 #[cfg(any(test, feature = "testing"))]
 #[async_trait::async_trait]
 impl WorkerFacade for MockWorkerFacade {
-    fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject> {
+    fn caller_project(&self, caller: &SessionSlot) -> Option<CallerProject> {
         self.callers.lock().get(caller).cloned()
     }
 
-    fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
+    fn caller_identity(&self, caller: &SessionSlot) -> WorkerIdentity {
         let Some(cp) = self.caller_project(caller) else {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
@@ -959,7 +959,7 @@ impl WorkerFacade for MockWorkerFacade {
 
     async fn spawn_worker(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         label: String,
         charter: String,
         kick: Option<String>,
@@ -985,7 +985,7 @@ impl WorkerFacade for MockWorkerFacade {
 
     fn update_worker(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         label: &str,
         charter: Option<String>,
         kick: Option<String>,
@@ -1004,7 +1004,7 @@ impl WorkerFacade for MockWorkerFacade {
 
     async fn despawn_worker(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         label: &str,
         force: bool,
     ) -> Result<DespawnOutcome, WorkerDespawnError> {
@@ -1033,14 +1033,14 @@ impl WorkerFacade for MockWorkerFacade {
         }))
     }
 
-    fn list_workers(&self, caller: &SessionKey) -> Vec<WorkerStatus> {
+    fn list_workers(&self, caller: &SessionSlot) -> Vec<WorkerStatus> {
         let Some(cp) = self.caller_project(caller) else {
             return Vec::new();
         };
         self.workers.lock().get(cp.project_key.as_str()).cloned().unwrap_or_default()
     }
 
-    fn capacity(&self, caller: &SessionKey) -> Option<WorkerCapacity> {
+    fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity> {
         let cp = self.caller_project(caller)?;
         Some(self.capacity_reply.lock().clone().unwrap_or(WorkerCapacity {
             project: cp.project_key.as_str().to_owned(),
@@ -1052,7 +1052,7 @@ impl WorkerFacade for MockWorkerFacade {
 
     fn deliver_worker_prompt(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         target_label: &str,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerDeliverError> {
@@ -1077,7 +1077,7 @@ impl WorkerFacade for MockWorkerFacade {
 
     fn deliver_prompt_to_lead(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError> {
         let cp = self.caller_project(caller).ok_or(WorkerLeadDeliverError::UnknownCaller)?;
@@ -1112,7 +1112,7 @@ impl WorkerFacade for MockWorkerFacade {
 
     fn deliver_reply_to_caller(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError> {
         if let Some(err) = self.force_reply_error.lock().clone() {
@@ -1134,7 +1134,7 @@ impl WorkerFacade for MockWorkerFacade {
         self.inflight.lock().get(id).cloned()
     }
 
-    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
+    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
         self.bumps.lock().push((key.clone(), delta));
     }
 }
@@ -1148,10 +1148,10 @@ mod mock_tests {
     fn mock_caller_project_returns_preloaded() {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(
-            SessionKey::from_session_id("k1"),
+            SessionSlot::from_session_id("k1"),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
-        let cp = mock.caller_project(&SessionKey::from_session_id("k1")).unwrap();
+        let cp = mock.caller_project(&SessionSlot::from_session_id("k1")).unwrap();
         assert!(cp.is_lead);
         assert_eq!(cp.project_key.as_str(), "forge");
     }
@@ -1160,12 +1160,12 @@ mod mock_tests {
     async fn mock_spawn_rejects_non_lead() {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(
-            SessionKey::from_session_id("k1"),
+            SessionSlot::from_session_id("k1"),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: false },
         );
         let res = mock
             .spawn_worker(
-                &SessionKey::from_session_id("k1"),
+                &SessionSlot::from_session_id("k1"),
                 "reviewer".into(),
                 "charter".into(),
                 None,
@@ -1181,7 +1181,7 @@ mod mock_tests {
     async fn mock_spawn_records_call_and_returns_preloaded_reply() {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(
-            SessionKey::from_session_id("lead-key"),
+            SessionSlot::from_session_id("lead-key"),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
@@ -1192,7 +1192,7 @@ mod mock_tests {
         }));
         let res = mock
             .spawn_worker(
-                &SessionKey::from_session_id("lead-key"),
+                &SessionSlot::from_session_id("lead-key"),
                 "reviewer".into(),
                 "charter".into(),
                 None,
@@ -1232,7 +1232,7 @@ mod mock_tests {
     #[tokio::test]
     async fn mock_spawn_empty_inline_charter_errors_empty_charter() {
         let mock = MockWorkerFacade::new();
-        let lead = SessionKey::from_session_id("lead-key");
+        let lead = SessionSlot::from_session_id("lead-key");
         mock.callers.lock().insert(
             lead.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
@@ -1256,7 +1256,7 @@ mod mock_tests {
         let entry = |label: &str, status: WorkerLiveness| WorkerEntry {
             label: label.to_owned(),
             charter: "c".into(),
-            session_key: SessionKey::from_session_id("w-uuid"),
+            session_key: SessionSlot::from_session_id("w-uuid"),
             status,
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead".into(),
@@ -1292,7 +1292,7 @@ mod mock_tests {
         // surfaces to render `▶ Message lead` instead of the
         // hyphenated env-key path.
         let mock = MockWorkerFacade::new();
-        let lead = SessionKey::from_session_id("lead-uuid");
+        let lead = SessionSlot::from_session_id("lead-uuid");
         mock.callers.lock().insert(
             lead.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
@@ -1305,7 +1305,7 @@ mod mock_tests {
     #[test]
     fn caller_identity_worker_with_live_entry_returns_label_and_worker_in_project() {
         let mock = MockWorkerFacade::new();
-        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_session_id("worker-uuid");
         mock.callers.lock().insert(
             worker_key.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: false },
@@ -1331,7 +1331,7 @@ mod mock_tests {
     #[test]
     fn caller_identity_detached_worker_falls_back_to_session_id() {
         let mock = MockWorkerFacade::new();
-        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_session_id("worker-uuid");
         mock.callers.lock().insert(
             worker_key.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: false },
@@ -1346,7 +1346,7 @@ mod mock_tests {
     #[test]
     fn caller_identity_unknown_caller_returns_session_id_with_empty_org() {
         let mock = MockWorkerFacade::new();
-        let unknown = SessionKey::from_session_id("ghost-uuid");
+        let unknown = SessionSlot::from_session_id("ghost-uuid");
         // No entry in mock.callers - mirrors the genuinely-unresolved case.
         let id = mock.caller_identity(&unknown);
         assert_eq!(id.name, "ghost-uuid");
@@ -1356,7 +1356,7 @@ mod mock_tests {
     #[test]
     fn mock_deliver_unknown_label_errors() {
         let mock = MockWorkerFacade::new();
-        let caller = SessionKey::from_session_id("k1");
+        let caller = SessionSlot::from_session_id("k1");
         mock.callers.lock().insert(
             caller.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
@@ -1377,7 +1377,7 @@ mod mock_tests {
     fn mock_capacity_fallback_derives_live_from_workers_map() {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(
-            SessionKey::from_session_id("k1"),
+            SessionSlot::from_session_id("k1"),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
         mock.workers.lock().insert(
@@ -1405,7 +1405,7 @@ mod mock_tests {
                 },
             ],
         );
-        let capacity = mock.capacity(&SessionKey::from_session_id("k1")).expect("caller resolves");
+        let capacity = mock.capacity(&SessionSlot::from_session_id("k1")).expect("caller resolves");
         assert_eq!(capacity.project, "forge");
         assert_eq!(capacity.cap, crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT);
         assert_eq!(capacity.cap_source, WorkerCapSource::Default);
@@ -1435,7 +1435,7 @@ mod prod_list_workers_tests {
 
         // The caller IS the worker, which is enough for
         // `caller_context` to resolve it into the project.
-        let caller = SessionKey::from_session_id("worker-uuid");
+        let caller = SessionSlot::from_session_id("worker-uuid");
         ws.insert_live_worker(
             &project,
             crate::mcp::workers::types::WorkerEntry {
@@ -1480,7 +1480,7 @@ mod capacity_tests {
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "test charter".into(),
-            session_key: SessionKey::from_session_id(session_id),
+            session_key: SessionSlot::from_session_id(session_id),
             status: WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
@@ -1500,7 +1500,7 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project_with_max_workers("forge", "/tmp/forge", 1);
         let project = project_key_of(&ws, "forge");
-        let caller = SessionKey::from_session_id("worker-uuid");
+        let caller = SessionSlot::from_session_id("worker-uuid");
         ws.insert_live_worker(&project, entry("implementer", "worker-uuid"));
 
         let facade = ProdWorkerFacade::from_arc(&ws);
@@ -1516,7 +1516,7 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/forge");
         let project = project_key_of(&ws, "forge");
-        let caller = SessionKey::from_session_id("worker-uuid");
+        let caller = SessionSlot::from_session_id("worker-uuid");
         ws.insert_live_worker(&project, entry("implementer", "worker-uuid"));
 
         let facade = ProdWorkerFacade::from_arc(&ws);
@@ -1531,7 +1531,7 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/forge");
         let project = project_key_of(&ws, "forge");
-        let caller = SessionKey::from_session_id("worker-a");
+        let caller = SessionSlot::from_session_id("worker-a");
         ws.insert_live_worker(&project, entry("a", "worker-a"));
         ws.insert_live_worker(&project, entry("b", "worker-b"));
 
@@ -1544,7 +1544,7 @@ mod capacity_tests {
     fn capacity_none_for_unknown_caller() {
         let (ws, _rx) = Workspace::testing_stub();
         let facade = ProdWorkerFacade::from_arc(&ws);
-        assert!(facade.capacity(&SessionKey::from_session_id("ghost")).is_none());
+        assert!(facade.capacity(&SessionSlot::from_session_id("ghost")).is_none());
     }
 
     #[test]
@@ -1552,7 +1552,7 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project_with_max_workers("forge", "/tmp/forge", 2);
         let project = project_key_of(&ws, "forge");
-        let caller = SessionKey::from_session_id("worker-running");
+        let caller = SessionSlot::from_session_id("worker-running");
         ws.insert_live_worker(&project, entry("running", "worker-running"));
         let mut failed = entry("failed", "worker-failed");
         failed.status = WorkerLiveness::Failed;
@@ -1571,7 +1571,7 @@ mod capacity_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/forge");
         let project = project_key_of(&ws, "forge");
-        let caller = SessionKey::from_session_id("worker-only");
+        let caller = SessionSlot::from_session_id("worker-only");
         let mut failed = entry("only", "worker-only");
         failed.status = WorkerLiveness::Failed;
         ws.insert_live_worker(&project, failed);

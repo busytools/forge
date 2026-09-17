@@ -33,7 +33,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 
 /// Typed correlation id for an ask or tell. Format:
 /// `q-XXXXXXXX` for asks, `t-XXXXXXXX` for tells, where `XXXXXXXX`
@@ -171,12 +171,12 @@ pub struct InflightAsk {
     /// `caller`; a reply arriving on the other channel is rejected
     /// with a steer to the right tool.
     pub channel: AskChannel,
-    pub caller: SessionKey,
+    pub caller: SessionSlot,
     pub target_project: String,
     /// Session stamped with this ask's `IncomingPlus1` at delivery
     /// (`None` until delivered) so expiry can clear the target's
     /// incoming badge, not just the caller's outgoing.
-    pub target_session: Option<SessionKey>,
+    pub target_session: Option<SessionSlot>,
 }
 
 /// Outcome of classifying a `tell` with an optional `in_reply_to`
@@ -185,7 +185,7 @@ pub struct InflightAsk {
 pub(crate) enum ReplyRouting {
     /// `in_reply_to` resolved to an ask on THIS channel: route the
     /// Reply straight to `caller`'s session, closing `correlation`.
-    Reply { caller: SessionKey, correlation: CorrelationId },
+    Reply { caller: SessionSlot, correlation: CorrelationId },
     /// No `in_reply_to`, or one that resolved to no open ask: deliver
     /// as an unsolicited Message to the tell's declared target.
     Message,

@@ -4667,7 +4667,7 @@ mod tests {
 
     fn app_with_git_gate(repo_gate: RepoGate) -> App {
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_session_id("inspector-git-test");
+        let key = forge_workspace::SessionSlot::from_session_id("inspector-git-test");
         let mut session = crate::app::session::UiSession::new(key.clone(), "test-project");
         session.git_diff_snapshot = Some(forge_primitives::git_diff::GitDiffSnapshot {
             branch: forge_primitives::git::GitBranch::NoRepo,
@@ -5457,7 +5457,7 @@ mod tests {
     /// row resolves without a workspace catalog.
     fn app_with_waiting_session(name: &str) -> App {
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_session_id(name);
+        let key = forge_workspace::SessionSlot::from_session_id(name);
         let mut session = crate::app::session::UiSession::new(key.clone(), name);
         let prompt = crate::app::prompt::PromptState::from_permission(
             format!("tc-{name}"),
@@ -5497,7 +5497,7 @@ mod tests {
     #[test]
     fn attention_band_renders_a_waiting_review_replies_row() {
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_session_id("reviewer");
+        let key = forge_workspace::SessionSlot::from_session_id("reviewer");
         let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.review_replies_waiting = crate::app::ReviewRepliesWaiting::merge(None, "feat", 2);
         app.sessions.insert(key, session);
@@ -5529,7 +5529,7 @@ mod tests {
         use std::time::{Duration, SystemTime};
         let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let perm = AttentionEntry {
-            session_key: forge_workspace::SessionKey::from_session_id("p"),
+            session_key: forge_workspace::SessionSlot::from_session_id("p"),
             name: "gateway-backend".to_owned(),
             role: None,
             kind: AttentionKind::Permission { tool: "Bash".to_owned() },
@@ -5563,7 +5563,7 @@ mod tests {
         use std::time::{Duration, SystemTime};
         let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let entry = AttentionEntry {
-            session_key: forge_workspace::SessionKey::from_session_id("f"),
+            session_key: forge_workspace::SessionSlot::from_session_id("f"),
             name: "gateway-backend".to_owned(),
             role: None,
             kind: AttentionKind::Failed {
@@ -5596,7 +5596,7 @@ mod tests {
     #[test]
     fn attention_row_renders_failure_in_red_cross() {
         let entry = AttentionEntry {
-            session_key: forge_workspace::SessionKey::from_session_id("f"),
+            session_key: forge_workspace::SessionSlot::from_session_id("f"),
             name: "gateway-backend".to_owned(),
             role: None,
             kind: AttentionKind::Failed {
@@ -5660,7 +5660,7 @@ mod tests {
     fn attention_rows_fit_within_inner_width() {
         let now = std::time::SystemTime::UNIX_EPOCH;
         let entry = AttentionEntry {
-            session_key: forge_workspace::SessionKey::from_session_id("s"),
+            session_key: forge_workspace::SessionSlot::from_session_id("s"),
             name: "a-very-long-project-name-that-must-truncate".to_owned(),
             role: Some("steward".to_owned()),
             kind: AttentionKind::Permission { tool: "mcp__forge__workers__spawn".to_owned() },
@@ -5686,7 +5686,7 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let mut app = app_with_waiting_session("gateway-backend");
-        let bg = forge_workspace::SessionKey::from_session_id("gateway-backend");
+        let bg = forge_workspace::SessionSlot::from_session_id("gateway-backend");
         assert_ne!(
             app.active_session_key.as_ref(),
             Some(&bg),
@@ -5739,7 +5739,7 @@ mod tests {
         let names = ["alpha-project", "beta-project"];
         let mut app = App::test_default();
         for name in names {
-            let key = forge_workspace::SessionKey::from_session_id(name);
+            let key = forge_workspace::SessionSlot::from_session_id(name);
             let mut session = crate::app::session::UiSession::new(key.clone(), name);
             let prompt = crate::app::prompt::PromptState::from_permission(
                 format!("tc-{name}"),
@@ -5749,8 +5749,8 @@ mod tests {
             app.sessions.insert(key, session);
         }
         assert_eq!(app.needs_attention_sessions().len(), 2, "two background waiters");
-        let expected: std::collections::HashMap<forge_workspace::SessionKey, &str> =
-            names.iter().map(|n| (forge_workspace::SessionKey::from_session_id(*n), *n)).collect();
+        let expected: std::collections::HashMap<forge_workspace::SessionSlot, &str> =
+            names.iter().map(|n| (forge_workspace::SessionSlot::from_session_id(*n), *n)).collect();
 
         let width = 60u16;
         let area = Rect { x: 0, y: 0, width, height: 24 };
@@ -5794,7 +5794,7 @@ mod tests {
         // row's hit target. Locks the invariant against a future
         // "fold the band into the scroll body" refactor.
         let mut app = app_with_waiting_session("gateway-backend");
-        let bg = forge_workspace::SessionKey::from_session_id("gateway-backend");
+        let bg = forge_workspace::SessionSlot::from_session_id("gateway-backend");
         let area = Rect { x: 0, y: 0, width: 40, height: 24 };
 
         let row_y_at = |app: &mut App, offset: u16| -> u16 {
@@ -5830,7 +5830,7 @@ mod tests {
 
         let mut app = App::test_default();
         for i in 0..6 {
-            let key = forge_workspace::SessionKey::from_session_id(format!("bg-{i}"));
+            let key = forge_workspace::SessionSlot::from_session_id(format!("bg-{i}"));
             let mut session = crate::app::session::UiSession::new(key.clone(), format!("proj-{i}"));
             let prompt = crate::app::prompt::PromptState::from_permission(
                 format!("tc-{i}"),
@@ -5884,7 +5884,7 @@ mod tests {
         // Clock skew: `now` earlier than `enqueued_at` -> duration_since
         // Err -> "0s", not a panic or a bogus huge age.
         let entry = AttentionEntry {
-            session_key: forge_workspace::SessionKey::from_session_id("s"),
+            session_key: forge_workspace::SessionSlot::from_session_id("s"),
             name: "p".to_owned(),
             role: None,
             kind: AttentionKind::Question,

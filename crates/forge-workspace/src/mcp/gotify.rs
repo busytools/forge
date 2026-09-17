@@ -378,12 +378,12 @@ impl Tool for Recent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionKey;
+    use crate::SessionSlot;
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use std::time::SystemTime;
 
     fn resolver() -> CallerKeyResolver {
-        CallerKeyResolver::from_fixed(SessionKey::from_session_id("caller"))
+        CallerKeyResolver::from_fixed(SessionSlot::from_session_id("caller"))
     }
 
     fn sample_sub(id: Uuid, project: &str) -> GotifySubscription {

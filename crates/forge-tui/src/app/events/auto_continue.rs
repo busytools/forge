@@ -14,7 +14,7 @@
 
 use crate::app::{App, AppStatus, SystemSeverity};
 use forge_primitives::ApiRetryError;
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 use std::time::{Duration, SystemTime};
 
 /// How many continuations forge sends before handing the session to
@@ -34,7 +34,7 @@ const BACKOFF: [Duration; MAX_ATTEMPTS as usize] =
 /// once the budget is spent, so the failure reaches the band.
 pub(crate) fn arm_if_transient(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     error: ApiRetryError,
     now: SystemTime,
 ) -> bool {
@@ -54,7 +54,7 @@ pub(crate) fn arm_if_transient(
 /// [`super::rate_limit::maybe_recover_from_rate_limit_lock`].
 pub(crate) fn maybe_fire(app: &mut App) {
     let now = SystemTime::now();
-    let due: Vec<SessionKey> = app
+    let due: Vec<SessionSlot> = app
         .sessions
         .iter()
         .filter(|(_, session)| session.auto_continue_due_at.is_some_and(|at| now >= at))
@@ -67,7 +67,7 @@ pub(crate) fn maybe_fire(app: &mut App) {
 
 /// Send one continuation turn into `key`. Disarms first, so a burst of
 /// ticks can only ever produce one dispatch per armed timer.
-fn fire(app: &mut App, key: &SessionKey) {
+fn fire(app: &mut App, key: &SessionSlot) {
     let Some(bucket) = app.sessions.get_mut(key) else { return };
     bucket.auto_continue_due_at = None;
     bucket.auto_continue_attempts = bucket.auto_continue_attempts.saturating_add(1);
@@ -120,7 +120,7 @@ fn fire(app: &mut App, key: &SessionKey) {
 /// gets the full budget. Deliberately not wired to the `Running`
 /// transition: the continuation's own turn goes `Running`, and
 /// resetting there would uncap the loop.
-pub(crate) fn note_turn_completed(app: &mut App, key: &SessionKey) {
+pub(crate) fn note_turn_completed(app: &mut App, key: &SessionSlot) {
     if let Some(bucket) = app.sessions.get_mut(key) {
         bucket.auto_continue_attempts = 0;
         bucket.auto_continue_due_at = None;
@@ -159,14 +159,14 @@ mod tests {
     use super::*;
     use crate::app::App;
     use forge_primitives::ApiRetryError;
-    use forge_workspace::SessionKey;
+    use forge_workspace::SessionSlot;
     use std::time::{Duration, SystemTime};
 
     /// A live session bucket with a `session_id` registered against the
     /// testing stub, so a dispatched `Command::Prompt` reaches the wire
     /// and shows up on the returned receiver.
     fn app_with_session()
-    -> (App, SessionKey, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
+    -> (App, SessionSlot, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
         let rx = app.install_testing_stub();
         app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
@@ -176,7 +176,7 @@ mod tests {
 
     /// Record the classification the way the wire does - via the
     /// retry that preceded the failure.
-    fn seed_retry(app: &mut App, key: &SessionKey, error: ApiRetryError, status: Option<u16>) {
+    fn seed_retry(app: &mut App, key: &SessionSlot, error: ApiRetryError, status: Option<u16>) {
         app.sessions.get_mut(key).expect("bucket").last_api_retry = Some((error, status));
     }
 

@@ -241,7 +241,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     // state is needed - the UI never sees a stale pending phase.
     apply_optimistic_mode_change(app, requested_mode);
 
-    let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());
+    let session_key = forge_workspace::SessionSlot::from_session_id(sid.to_string());
     if let Err(e) =
         app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
     {
@@ -340,7 +340,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    switch_model(app, forge_workspace::SessionKey::from_session_id(sid.to_string()), model_name);
+    switch_model(app, forge_workspace::SessionSlot::from_session_id(sid.to_string()), model_name);
     true
 }
 
@@ -352,7 +352,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
 /// picker's rows come from that same list, so it always passes.
 pub(crate) fn switch_model(
     app: &mut App,
-    session_key: forge_workspace::SessionKey,
+    session_key: forge_workspace::SessionSlot,
     model_name: &str,
 ) {
     let models = app.available_models().unwrap_or_default();

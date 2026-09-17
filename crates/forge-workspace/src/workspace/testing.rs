@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::config::LoadedConfig;
 use crate::protocol::SessionUpdate;
-use crate::target::{ProjectKey, SessionKey};
+use crate::target::{ProjectKey, SessionSlot};
 use crate::workspace::{KickRequest, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
 
@@ -23,7 +23,7 @@ impl Workspace {
     /// that assert a live worker/lead receives a prompt need it set -
     /// in production every Running session has it stamped by `Connected`.
     #[cfg(test)]
-    pub(crate) fn mark_session_connected_for_test(&self, key: &SessionKey, session_id: &str) {
+    pub(crate) fn mark_session_connected_for_test(&self, key: &SessionSlot, session_id: &str) {
         let domain = self
             .domain_session_for(key)
             .unwrap_or_else(|| self.register_domain_session(key.clone(), None));
@@ -42,7 +42,7 @@ impl Workspace {
     /// because that's what the bridge's dispatcher accepts; this is
     /// distinct from [`crate::protocol::Command`] (the workspace's
     /// outer envelope) that wraps these primitives under a
-    /// `SessionKey`.
+    /// `SessionSlot`.
     pub fn testing_stub_handle()
     -> (forge_agent::AgentHandle, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         forge_agent::Agent::testing_stub()
@@ -61,7 +61,7 @@ impl Workspace {
     /// `DomainSession.conn` slot.
     pub fn install_testing_stub(
         &self,
-        key: &SessionKey,
+        key: &SessionSlot,
     ) -> mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         let (handle, rx) = forge_agent::Agent::testing_stub();
         let arc = Arc::new(handle);
@@ -340,7 +340,7 @@ impl Workspace {
     /// cross-crate test can render the account panel against a real
     /// binding without spawning a CLI. Test-only.
     #[cfg(any(test, feature = "testing"))]
-    pub fn seed_test_bound_session(&self, key: &SessionKey, account: &str) {
+    pub fn seed_test_bound_session(&self, key: &SessionSlot, account: &str) {
         let (handle, _rx) = forge_agent::Agent::testing_stub();
         let account = AccountKey(account.to_owned());
         self.pool.lock().insert(

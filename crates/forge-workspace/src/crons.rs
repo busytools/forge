@@ -286,7 +286,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::SessionKey;
+    use crate::SessionSlot;
     use crate::protocol::Command;
     use crate::workspace::PooledAgent;
     use forge_gateway::AccountKey;
@@ -321,7 +321,7 @@ mod tests {
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "c".to_owned(),
-            session_key: SessionKey::from_session_id(key),
+            session_key: SessionSlot::from_session_id(key),
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".to_owned(),
@@ -612,7 +612,7 @@ mod tests {
         // list_projects derives `is_open` from pool membership.
         let cwd = project_expanded_path(&ws, "cronlead");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -657,7 +657,7 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/wc-live");
         let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
         ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-uuid"));
-        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_session_id("worker-uuid");
         ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
 
         ws.enable_test_dispatch_intercept();
@@ -745,7 +745,7 @@ mod tests {
             resume_kick: None,
             interactive: false,
         });
-        let worker_key = SessionKey::from_session_id("worker-spawning-cron");
+        let worker_key = SessionSlot::from_session_id("worker-spawning-cron");
         ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-spawning-cron"));
         // Registered but not connected: session_id stays None.
         ws.register_domain_session(worker_key.clone(), None);
@@ -1022,7 +1022,7 @@ provider = "anthropic"
         ws.seed_test_project("proj", "/tmp/wc-missed");
         let cwd = project_expanded_path(&ws, "proj");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -1062,7 +1062,7 @@ provider = "anthropic"
         ws.seed_test_project("proj", "/tmp/wc-thresh");
         let cwd = project_expanded_path(&ws, "proj");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),

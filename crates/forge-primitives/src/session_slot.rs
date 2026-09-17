@@ -1,4 +1,4 @@
-//! `SessionKey` - opaque routing key the TUI ↔ workspace boundary
+//! `SessionSlot` - opaque routing key the TUI ↔ workspace boundary
 //! uses to address one session task. Newtype around a string so the
 //! call site can't confuse it with `session_id` or a project name.
 //!
@@ -10,15 +10,15 @@
 /// per-session routing key on the workspace's Command / SessionUpdate
 /// channels.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct SessionKey(String);
+pub struct SessionSlot(String);
 
-impl SessionKey {
+impl SessionSlot {
     /// Borrow the inner id as a `&str`.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Construct a `SessionKey` from a claude-issued session UUID.
+    /// Construct a `SessionSlot` from a claude-issued session UUID.
     /// Used by the workspace's event multiplexer to tag incoming
     /// events with the bound session's key.
     pub fn from_session_id(id: impl Into<String>) -> Self {

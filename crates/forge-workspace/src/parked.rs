@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::mcp::gotify::types::GotifyNotification;
 use crate::mcp::peers::types::{PeerFailureReason, WrappedPrompt};
 
@@ -90,7 +90,7 @@ impl crate::Workspace {
     /// slot is read from its pooled registration, the spawn-time triple.
     pub(crate) fn expire_parked_for_session(
         self: &Arc<Self>,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         reason: PeerFailureReason,
     ) {
         let Some(slot) = self.slot_for_session_key(session_key) else { return };
@@ -108,7 +108,7 @@ impl crate::Workspace {
         self: &Arc<Self>,
         project_key: &crate::ProjectKey,
         label: &str,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         reason: PeerFailureReason,
     ) {
         let project = self.project_for_key(project_key);
@@ -121,7 +121,7 @@ impl crate::Workspace {
     /// wrote while the pool holds it, else its label under `project`.
     pub(crate) fn delivery_slot_for_worker(
         &self,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         project: Option<(String, String)>,
         label: &str,
     ) -> Option<Slot> {
@@ -137,7 +137,7 @@ impl crate::Workspace {
     /// `forge.toml` since the worker spawned, with no pooled entry left.
     fn worker_slot_or(
         &self,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         project: Option<(String, String)>,
         label: &str,
     ) -> Option<Slot> {
@@ -188,7 +188,7 @@ impl crate::Workspace {
     /// registry answers with the lead's slot for a worker whose entry is
     /// gone, and this feeds the expiry that has to reach the worker's OWN
     /// bucket.
-    pub(crate) fn slot_for_session_key(&self, session_key: &SessionKey) -> Option<Slot> {
+    pub(crate) fn slot_for_session_key(&self, session_key: &SessionSlot) -> Option<Slot> {
         Some(self.pool.lock().get(session_key)?.slot.clone())
     }
 }
@@ -196,7 +196,7 @@ impl crate::Workspace {
 #[cfg(test)]
 mod tests {
     use super::{ParkedForSlot, Slot};
-    use crate::SessionKey;
+    use crate::SessionSlot;
     use crate::mcp::peers::types::{
         AskChannel, CorrelationId, InflightAsk, PeerFailureReason, WrappedKind, WrappedPrompt,
     };
@@ -297,7 +297,7 @@ mod tests {
             InflightAsk {
                 correlation_id: id.clone(),
                 channel: AskChannel::Peers,
-                caller: SessionKey::from_str_for_test("asker"),
+                caller: SessionSlot::from_str_for_test("asker"),
                 target_project: "parked-proj".to_owned(),
                 target_session: None,
             },

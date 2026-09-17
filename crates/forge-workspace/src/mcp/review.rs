@@ -666,11 +666,11 @@ mod tests {
         );
     }
 
-    use crate::SessionKey;
+    use crate::SessionSlot;
     use crate::mcp::review::facade::{MockReviewFacade, ScopeError};
 
     fn resolver() -> CallerKeyResolver {
-        CallerKeyResolver::from_fixed(SessionKey::from_session_id("caller"))
+        CallerKeyResolver::from_fixed(SessionSlot::from_session_id("caller"))
     }
 
     fn summary(review_id: &str, number: u32) -> ReviewSummary {

@@ -18,7 +18,7 @@ use crate::protocol::{
 use crate::target::ProjectKey;
 use crate::workspace::LiveWorkerRefusal;
 use crate::workspace::Workspace;
-use crate::{SessionKey, SessionTarget};
+use crate::{SessionSlot, SessionTarget};
 use std::fmt::Write as _;
 
 use forge_primitives::slack::SlackMessage;
@@ -29,7 +29,7 @@ use forge_primitives::slack::SlackMessage;
 /// compensation). Per-site warns stay at the call sites.
 pub(crate) fn send_dispatch_turn_error(
     workspace: &Workspace,
-    key: SessionKey,
+    key: SessionSlot,
     err: &crate::protocol::DispatchError,
 ) {
     let _ = workspace.update_sender().send(SessionUpdate::TurnError {
@@ -185,7 +185,7 @@ pub(crate) fn handle_spawn_project(
                 workspace,
                 "spawn_project::ConnectionFailed",
                 SessionUpdate::ConnectionFailed {
-                    key: SessionKey::from_session_id(project_name.to_owned()),
+                    key: SessionSlot::from_session_id(project_name.to_owned()),
                     message: format!("agent spawn failed: {err}"),
                     fatal: false,
                 },
@@ -255,7 +255,7 @@ pub(crate) fn handle_spawn_project(
 /// prompt as a regular `Command::Prompt`.
 pub(crate) fn handle_deliver_peer_prompt(
     workspace: &Arc<Workspace>,
-    _caller: SessionKey,
+    _caller: SessionSlot,
     target_project: String,
     wrapped: WrappedPrompt,
 ) {
@@ -481,7 +481,7 @@ fn live_cron_owner(
     workspace: &Arc<Workspace>,
     view: &crate::views::ProjectView,
     team_role: Option<&str>,
-) -> Option<SessionKey> {
+) -> Option<SessionSlot> {
     let live = workspace.list_live_workers(&view.key);
     let candidate = if let Some(label) = team_role {
         live.into_iter().find(|w| w.label == label).map(|w| w.session_key)
@@ -821,7 +821,7 @@ pub(crate) fn deliver_slack_message(
 /// The team worker labelled `label` in `project`, if a live entry
 /// exists - regardless of whether it has finished connecting. The
 /// caller checks connectedness to decide dispatch-vs-buffer.
-fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Option<SessionKey> {
+fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Option<SessionSlot> {
     let view = workspace.list_projects().into_iter().find(|v| v.name == project)?;
     workspace
         .list_live_workers(&view.key)
@@ -842,7 +842,7 @@ fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Op
 /// is text-shaped and stays that way.
 pub(crate) fn push_peer_user_turn_into_chat(
     workspace: &Workspace,
-    target_key: &SessionKey,
+    target_key: &SessionSlot,
     wrapped: &WrappedPrompt,
 ) {
     let _ = workspace.update_sender().send(SessionUpdate::PeerEnvelopeAppended {
@@ -858,7 +858,7 @@ pub(crate) fn push_peer_user_turn_into_chat(
 /// this only drives the visible chat echo.
 pub(crate) fn push_gotify_notification_into_chat(
     workspace: &Workspace,
-    target_key: &SessionKey,
+    target_key: &SessionSlot,
     notification: &GotifyNotification,
 ) {
     let _ = workspace.update_sender().send(SessionUpdate::GotifyNotificationAppended {
@@ -874,7 +874,7 @@ pub(crate) fn push_gotify_notification_into_chat(
 /// `Command::Prompt`; this only drives the visible chat echo.
 pub(crate) fn push_cron_prompt_into_chat(
     workspace: &Workspace,
-    target_key: &SessionKey,
+    target_key: &SessionSlot,
     text: &str,
 ) {
     let _ = workspace.update_sender().send(SessionUpdate::CronPromptAppended {
@@ -890,7 +890,7 @@ pub(crate) fn push_cron_prompt_into_chat(
 /// only drives the visible chat echo.
 pub(crate) fn push_slack_message_into_chat(
     workspace: &Workspace,
-    target_key: &SessionKey,
+    target_key: &SessionSlot,
     prose: &str,
 ) {
     let _ = workspace.update_sender().send(SessionUpdate::SlackMessageAppended {
@@ -909,7 +909,7 @@ pub(crate) fn handle_spawn_session(
 ) {
     // The session being resumed is the key it runs under: the caller
     // named it, so there is nothing to rename onto it later.
-    let session_key = SessionKey::from_session_id(session_id.to_owned());
+    let session_key = SessionSlot::from_session_id(session_id.to_owned());
     let Some(parent) = workspace.find_project_for_session(&session_key) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -1032,7 +1032,7 @@ pub(crate) fn handle_start_default(
                 workspace,
                 "start_default::ConnectionFailed",
                 SessionUpdate::ConnectionFailed {
-                    key: SessionKey::from_session_id(
+                    key: SessionSlot::from_session_id(
                         lead_project
                             .as_ref()
                             .map_or_else(|| "unknown".to_owned(), |p| p.name.clone()),
@@ -1147,11 +1147,11 @@ pub(crate) fn handle_spawn_worker(
     // `Connected`. A resume keys on the id being resumed instead.
     let is_resume = resume_existing.is_some();
     let session_key = if let Some(resuming) = resume_existing {
-        SessionKey::from_session_id(resuming.to_owned())
+        SessionSlot::from_session_id(resuming.to_owned())
     } else {
         let id = uuid::Uuid::new_v4().to_string();
         workspace.record_session_id(&view.org, &view.name, label, &id);
-        SessionKey::from_session_id(id)
+        SessionSlot::from_session_id(id)
     };
     let tag = forge_primitives::worker_tag(label);
 
@@ -1680,7 +1680,7 @@ fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
 fn buffer_prompt_until_connected(
     workspace: &Arc<Workspace>,
     slot: Option<crate::parked::Slot>,
-    target_key: &SessionKey,
+    target_key: &SessionSlot,
     wrapped: WrappedPrompt,
 ) -> Option<WrappedPrompt> {
     let Some(domain) = workspace.domain_session_for(target_key) else {
@@ -1702,7 +1702,7 @@ fn buffer_prompt_until_connected(
 
 pub(crate) fn handle_deliver_worker_prompt(
     workspace: &Arc<Workspace>,
-    _caller: SessionKey,
+    _caller: SessionSlot,
     project_key: &ProjectKey,
     target_label: &str,
     wrapped: WrappedPrompt,
@@ -1801,7 +1801,7 @@ pub(crate) fn handle_deliver_worker_prompt(
 
 /// Handle a `Command::DeliverWorkerPromptToLead`: route a wrapped
 /// peer-style prompt from a worker back to its lead, addressed by
-/// the lead's `SessionKey` (resolved at Tool dispatch from the
+/// the lead's `SessionSlot` (resolved at Tool dispatch from the
 /// worker's `spawned_by_session_id`). Same wire shape as
 /// `DeliverWorkerPrompt` - PeerEnvelopeAppended echo + Command::Prompt
 /// dispatch - so the lead's TUI renders the message identically to
@@ -1814,8 +1814,8 @@ pub(crate) fn handle_deliver_worker_prompt(
 /// authorized to make.
 pub(crate) fn handle_deliver_worker_prompt_to_lead(
     workspace: &Arc<Workspace>,
-    _caller: SessionKey,
-    target_lead_key: &SessionKey,
+    _caller: SessionSlot,
+    target_lead_key: &SessionSlot,
     wrapped: WrappedPrompt,
 ) {
     // Defensive: confirm the lead session is still in the pool. If it
@@ -2120,7 +2120,7 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        let caller = SessionKey::from_str_for_test("caller-1");
+        let caller = SessionSlot::from_str_for_test("caller-1");
         handle_deliver_peer_prompt(
             &workspace,
             caller,
@@ -2176,7 +2176,7 @@ provider = "anthropic"
         // binary the spawn's failure arm releases the slot, which is the
         // production behaviour but hides the parking under test.
         workspace.enable_test_dispatch_intercept();
-        let caller = SessionKey::from_str_for_test("caller-sleep");
+        let caller = SessionSlot::from_str_for_test("caller-sleep");
         let w = fixture_wrapped();
 
         handle_deliver_peer_prompt(&workspace, caller, "gateway-backend".to_owned(), w.clone());
@@ -2237,7 +2237,7 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        let caller = SessionKey::from_str_for_test("caller-tell");
+        let caller = SessionSlot::from_str_for_test("caller-tell");
         let w = fixture_wrapped(); // WrappedKind::Message (tell)
 
         handle_deliver_peer_prompt(&workspace, caller, "gateway-backend".to_owned(), w);
@@ -2266,7 +2266,7 @@ provider = "anthropic"
         crate::mcp::workers::types::WorkerEntry {
             label: label.into(),
             charter: "c".into(),
-            session_key: SessionKey::from_session_id(key),
+            session_key: SessionSlot::from_session_id(key),
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
@@ -2328,7 +2328,7 @@ provider = "anthropic"
         ws.seed_test_project("forge", "/tmp/slack-worker-echo");
         let key = ws.list_projects().into_iter().find(|v| v.name == "forge").expect("seeded").key;
         ws.insert_live_worker(&key, fake_worker_entry("tester", "worker-uuid"));
-        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_session_id("worker-uuid");
         ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
         ws.enable_test_dispatch_intercept();
 
@@ -2417,7 +2417,7 @@ provider = "anthropic"
             "the registry entry is keyed by that same id",
         );
         assert!(
-            ws.pool.lock().contains_key(&SessionKey::from_session_id(reply.session_id.clone())),
+            ws.pool.lock().contains_key(&SessionSlot::from_session_id(reply.session_id.clone())),
             "and so is the pool",
         );
         let stored = {
@@ -2548,7 +2548,7 @@ provider = "anthropic"
         ws.seed_test_project("forge", "/tmp/slack-worker-doomed");
         let key = ws.list_projects().into_iter().find(|v| v.name == "forge").expect("seeded").key;
         ws.insert_live_worker(&key, fake_worker_entry("tester", "worker-uuid"));
-        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_session_id("worker-uuid");
         // Connected, but with no pooled handle and no conn: the dispatch fails.
         ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
 
@@ -2788,7 +2788,7 @@ provider = "anthropic"
             reply.err()
         );
         if let Ok(reply) = reply {
-            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+            workspace.release_session(&SessionSlot::from_session_id(reply.session_id));
         }
 
         // notes fills to its own default cap of 2 and refuses past it.
@@ -2872,7 +2872,7 @@ provider = "anthropic"
             "the admitted spawn creates its worker"
         );
         if let Ok(reply) = reply {
-            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+            workspace.release_session(&SessionSlot::from_session_id(reply.session_id));
         }
     }
 
@@ -2910,7 +2910,7 @@ provider = "anthropic"
             Some("Stargate"),
             "the bailed account is named in the reply, which is what raises the notice",
         );
-        workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+        workspace.release_session(&SessionSlot::from_session_id(reply.session_id));
     }
 
     /// The atomicity pin, at the layer it lives: concurrent
@@ -2998,7 +2998,7 @@ provider = "anthropic"
             match handle.await.expect("spawn task joins") {
                 Ok(reply) => {
                     winners += 1;
-                    winner_sessions.push(SessionKey::from_session_id(reply.session_id));
+                    winner_sessions.push(SessionSlot::from_session_id(reply.session_id));
                 }
                 Err(message) => {
                     assert!(
@@ -3054,7 +3054,7 @@ provider = "anthropic"
             "the exempt spawn creates its worker"
         );
         if let Ok(reply) = reply {
-            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+            workspace.release_session(&SessionSlot::from_session_id(reply.session_id));
         }
     }
 
@@ -3106,7 +3106,7 @@ provider = "anthropic"
         let reply = rx.await.expect("reply");
         assert!(reply.is_ok(), "the freed slot lets the next spawn through: {:?}", reply.err());
         if let Ok(reply) = reply {
-            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+            workspace.release_session(&SessionSlot::from_session_id(reply.session_id));
         }
     }
 
@@ -3137,7 +3137,7 @@ provider = "anthropic"
         let reply = rx.await.expect("reply");
         assert!(reply.is_ok(), "the Failed worker must not consume the slot: {:?}", reply.err());
         if let Ok(reply) = reply {
-            workspace.release_session(&SessionKey::from_session_id(reply.session_id));
+            workspace.release_session(&SessionSlot::from_session_id(reply.session_id));
         }
     }
 
@@ -3639,7 +3639,7 @@ provider = "anthropic"
         run_git(&wt, &["commit", "-q", "-m", "real work"]);
         workspace.save_review_threads("forge", "feature-x", &[review_thread("a")]);
         workspace
-            .submit_review("forge", "feature-x", None, &[], SessionKey::from_session_id("reviewer"))
+            .submit_review("forge", "feature-x", None, &[], SessionSlot::from_session_id("reviewer"))
             .expect("seal a review on the feature branch");
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -3701,7 +3701,7 @@ provider = "anthropic"
         workspace.save_review_threads("forge", &branch, &[thread("a")]);
         workspace.save_review_threads("forge", "survivor", &[thread("b")]);
         // Seal a review on each branch (empty thread set just mints the row).
-        let origin = SessionKey::from_session_id("reviewer");
+        let origin = SessionSlot::from_session_id("reviewer");
         workspace
             .submit_review("forge", &branch, None, &[], origin.clone())
             .expect("seal torn-down review");
@@ -3799,7 +3799,7 @@ provider = "anthropic"
     async fn deliver_worker_prompt_unknown_label_is_noop() {
         let (workspace, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
-        let caller = SessionKey::from_str_for_test("caller-1");
+        let caller = SessionSlot::from_str_for_test("caller-1");
 
         handle_deliver_worker_prompt(&workspace, caller, &project, "missing", fixture_wrapped());
         // No panic, no dispatch attempted. (We can't easily observe
@@ -3820,7 +3820,7 @@ provider = "anthropic"
             .find(|v| v.name == "forge")
             .expect("seeded project")
             .key;
-        let worker_key = SessionKey::from_session_id("builder-uuid");
+        let worker_key = SessionSlot::from_session_id("builder-uuid");
         workspace.insert_live_worker(
             &project,
             crate::mcp::workers::types::WorkerEntry {
@@ -3844,7 +3844,7 @@ provider = "anthropic"
 
         handle_deliver_worker_prompt(
             &workspace,
-            SessionKey::from_str_for_test("lead"),
+            SessionSlot::from_str_for_test("lead"),
             &project,
             "builder",
             fixture_wrapped(),
@@ -3919,7 +3919,7 @@ provider = "anthropic"
         // the shared /tmp/forge-testing-stub. Must be a valid UUID
         // since `tag_session` rejects non-UUID with `MessageParse`.
         let session_id = uuid::Uuid::new_v4().hyphenated().to_string();
-        let session_key = SessionKey::from_session_id(&session_id);
+        let session_key = SessionSlot::from_session_id(&session_id);
 
         // Install the testing stub so config_dir_for resolves (to
         // /tmp/forge-testing-stub via the bridge's default config_dir).
@@ -3965,7 +3965,7 @@ provider = "anthropic"
         // looks up the project view's path, and kicks the retry task.
         // It also dispatches Command::Prompt which the stub agent
         // accepts (the side-effect we don't assert on here).
-        let caller = SessionKey::from_str_for_test("caller-1");
+        let caller = SessionSlot::from_str_for_test("caller-1");
         handle_deliver_worker_prompt(&workspace, caller, &project_key, "idle", fixture_wrapped());
 
         // Wait briefly for the spawned task to finish the retry +
@@ -4134,7 +4134,7 @@ provider = "anthropic"
             InflightAsk {
                 correlation_id: cid.clone(),
                 channel: AskChannel::Workers,
-                caller: SessionKey::from_session_id("lead-uuid"),
+                caller: SessionSlot::from_session_id("lead-uuid"),
                 target_project: composite,
                 target_session: None,
             },
@@ -4163,7 +4163,7 @@ provider = "anthropic"
             .expect("seeded project")
             .key;
         workspace.insert_live_worker(&project, fake_worker_entry("reviewer", "worker-1"));
-        let worker_key = SessionKey::from_session_id("worker-1");
+        let worker_key = SessionSlot::from_session_id("worker-1");
         workspace.register_domain_session(worker_key, None);
         workspace.park_slack(
             &crate::parked::Slot::worker("TestOrg", "forge", "reviewer"),

@@ -19,7 +19,7 @@ use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use forge_primitives::git_diff::GitDiffSnapshot;
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 
 use crate::app::App;
 use crate::app::session::UiSession;
@@ -51,7 +51,7 @@ pub enum GitDiffEvent {
     /// was kicked off. The snapshot is boxed to keep the
     /// `TimerTick` variant from being dominated by it - the
     /// snapshot grew once layer-2 stats joined the type.
-    SnapshotReady { key: SessionKey, generation: u64, snapshot: Box<GitDiffSnapshot> },
+    SnapshotReady { key: SessionSlot, generation: u64, snapshot: Box<GitDiffSnapshot> },
     /// The 10s idle ticker fired. `drain_events` resolves the
     /// current active session + cwd at consume time and issues a
     /// fresh refresh request - embedding the key here would let it
@@ -90,7 +90,7 @@ impl Drop for ScanInFlightGuard {
 ///   previous scan hasn't completed; let it win).
 pub fn request_refresh(
     tx: std_mpsc::Sender<GitDiffEvent>,
-    key: SessionKey,
+    key: SessionSlot,
     cwd: std::path::PathBuf,
     generation: u64,
     scan_in_flight: Arc<AtomicBool>,
@@ -167,7 +167,7 @@ fn apply_event(app: &mut App, event: GitDiffEvent) {
 
 fn apply_snapshot_ready(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     generation: u64,
     snapshot: GitDiffSnapshot,
 ) {
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn apply_snapshot_ready_writes_when_generation_matches() {
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_str_for_test("project-a");
+        let key = forge_workspace::SessionSlot::from_str_for_test("project-a");
         app.sessions.insert(key.clone(), session_with_generation(7));
         // `test_default` seeds `needs_redraw = true`; reset so the
         // post-apply check actually proves the flip rather than just
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn apply_snapshot_ready_drops_when_generation_stale() {
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_str_for_test("project-a");
+        let key = forge_workspace::SessionSlot::from_str_for_test("project-a");
         app.sessions.insert(key.clone(), session_with_generation(7));
         // `test_default` seeds `needs_redraw = true`; reset so the
         // post-apply check is meaningful.
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn apply_snapshot_ready_drops_for_unknown_session() {
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_str_for_test("vanished");
+        let key = forge_workspace::SessionSlot::from_str_for_test("vanished");
         // No entry inserted into `app.sessions` for `key`.
         // `test_default` seeds `needs_redraw = true`; reset so the
         // post-apply check is meaningful.
@@ -429,7 +429,7 @@ mod tests {
 
         request_refresh(
             tx,
-            forge_workspace::SessionKey::from_str_for_test("project-a"),
+            forge_workspace::SessionSlot::from_str_for_test("project-a"),
             std::path::PathBuf::new(), // empty
             0,
             Arc::clone(&scan_in_flight),
@@ -451,7 +451,7 @@ mod tests {
 
         request_refresh(
             tx,
-            forge_workspace::SessionKey::from_str_for_test("project-a"),
+            forge_workspace::SessionSlot::from_str_for_test("project-a"),
             std::path::PathBuf::from("/tmp/some-cwd"),
             0,
             Arc::clone(&scan_in_flight),

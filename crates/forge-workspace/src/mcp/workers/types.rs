@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use forge_primitives::{WorkerLiveness, WorkerStatus};
 
-use crate::SessionKey;
+use crate::SessionSlot;
 
 /// Cwd a worker's tag-write should land at. For git-repo workers,
 /// claude's `--worktree <label>` flag forks the subprocess into
@@ -35,7 +35,7 @@ pub fn worker_tag_dir(project_root: &Path, label: &str, is_git_repo_at_spawn: bo
 pub struct LiveWorkerState {
     pub label: String,
     pub status: WorkerLiveness,
-    pub session_key: SessionKey,
+    pub session_key: SessionSlot,
 }
 
 /// In-memory entry stored in `Workspace.live_workers[project_key]`.
@@ -52,7 +52,7 @@ pub struct LiveWorkerState {
 pub struct WorkerEntry {
     pub label: String,
     pub charter: String,
-    pub session_key: SessionKey,
+    pub session_key: SessionSlot,
     pub status: WorkerLiveness,
     pub spawned_at: SystemTime,
     pub spawned_by_session_id: String,
@@ -134,14 +134,14 @@ pub(crate) fn live_worker_count(entries: &[WorkerEntry]) -> usize {
 #[cfg(test)]
 mod is_git_repo_at_spawn_tests {
     use super::*;
-    use crate::SessionKey;
+    use crate::SessionSlot;
     use std::time::SystemTime;
 
     fn fake_entry(is_git: bool) -> WorkerEntry {
         WorkerEntry {
             label: "reviewer".into(),
             charter: "review the diff".into(),
-            session_key: SessionKey::from_session_id("uuid-1"),
+            session_key: SessionSlot::from_session_id("uuid-1"),
             status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),

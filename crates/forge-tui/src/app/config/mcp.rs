@@ -284,7 +284,7 @@ pub(crate) fn is_mcp_action_available(
 
 pub(crate) fn handle_mcp_operation_error(
     app: &mut App,
-    key: &forge_workspace::SessionKey,
+    key: &forge_workspace::SessionSlot,
     error: &forge_primitives::McpOperationError,
 ) {
     let formatted = format_mcp_operation_error(error);

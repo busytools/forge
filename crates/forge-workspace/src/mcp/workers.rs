@@ -1114,14 +1114,14 @@ fn format_update_error(err: &WorkerUpdateError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionKey;
+    use crate::SessionSlot;
     use crate::mcp::workers::facade::{
         CallerProject, MockWorkerFacade, WorkerCapSource, WorkerCapacity,
     };
     use crate::protocol::WorkerSpawnReply;
 
-    fn fake_key(s: &str) -> SessionKey {
-        SessionKey::from_session_id(s)
+    fn fake_key(s: &str) -> SessionSlot {
+        SessionSlot::from_session_id(s)
     }
 
     fn lead_caller(name: &str) -> CallerProject {
@@ -2384,7 +2384,7 @@ mod tests {
     fn register_ask(
         mock: &MockWorkerFacade,
         correlation_id: &str,
-        caller: SessionKey,
+        caller: SessionSlot,
         target_composite: &str,
     ) -> CorrelationId {
         let id = CorrelationId(correlation_id.to_owned());

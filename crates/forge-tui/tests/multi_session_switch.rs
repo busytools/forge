@@ -7,13 +7,13 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_tui::app::App;
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 
 #[test]
 fn two_sessions_maintain_isolated_state() {
     let mut app = App::test_default();
-    let key_a = SessionKey::from_str_for_test("session-a");
-    let key_b = SessionKey::from_str_for_test("session-b");
+    let key_a = SessionSlot::from_str_for_test("session-a");
+    let key_b = SessionSlot::from_str_for_test("session-b");
 
     // Set up two sessions in the map.
     app.sessions.insert(
@@ -57,7 +57,7 @@ fn two_sessions_maintain_isolated_state() {
 #[test]
 fn switch_to_same_session_is_noop() {
     let mut app = App::test_default();
-    let key = SessionKey::from_str_for_test("same");
+    let key = SessionSlot::from_str_for_test("same");
     app.sessions
         .insert(key.clone(), forge_tui::app::session::UiSession::new(key.clone(), "test-project"));
     app.active_session_key = Some(key.clone());
@@ -70,8 +70,8 @@ fn switch_to_same_session_is_noop() {
 #[test]
 fn switch_to_unknown_key_is_noop() {
     let mut app = App::test_default();
-    let known = SessionKey::from_str_for_test("known");
-    let unknown = SessionKey::from_str_for_test("unknown");
+    let known = SessionSlot::from_str_for_test("known");
+    let unknown = SessionSlot::from_str_for_test("unknown");
     app.sessions.insert(
         known.clone(),
         forge_tui::app::session::UiSession::new(known.clone(), "test-project"),
@@ -92,8 +92,8 @@ fn switch_to_unknown_key_is_noop() {
 #[test]
 fn switch_round_trip_preserves_state() {
     let mut app = App::test_default();
-    let key_a = SessionKey::from_str_for_test("session-a");
-    let key_b = SessionKey::from_str_for_test("session-b");
+    let key_a = SessionSlot::from_str_for_test("session-a");
+    let key_b = SessionSlot::from_str_for_test("session-b");
     app.sessions.insert(
         key_a.clone(),
         forge_tui::app::session::UiSession::new(key_a.clone(), "test-project"),

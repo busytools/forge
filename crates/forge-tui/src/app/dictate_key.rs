@@ -631,7 +631,7 @@ mod tests {
     fn the_stop_routes_to_the_session_holding_the_live_take() {
         let (mut app, workspace) = app_with_dictate_enabled();
         let active = app.active_session_key.clone().expect("active session");
-        let background = forge_workspace::SessionKey::from_session_id("background-take");
+        let background = forge_workspace::SessionSlot::from_session_id("background-take");
         app.sessions.insert(
             background.clone(),
             crate::app::session::UiSession::new(background.clone(), "test-project"),

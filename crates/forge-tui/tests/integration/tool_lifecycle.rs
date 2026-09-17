@@ -19,7 +19,7 @@ use crate::message_helpers::{
     assistant_message, assistant_message_with_parent, result_success_message, send_msg, text_block,
     tool_result_block, tool_result_error_block, tool_use_block, user_message,
 };
-use forge_workspace::{SessionKey, SessionUpdate};
+use forge_workspace::{SessionSlot, SessionUpdate};
 
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
     let (message_index, block_index) = app.lookup_tool_call(id).expect("missing tool index");
@@ -1230,7 +1230,7 @@ fn seed_active_backgrounded_bash(app: &mut App) {
 }
 
 /// A non-active bucket carrying a mapped, still-open backgrounded bash card.
-fn bg_bucket_with_backgrounded_bash(key: &SessionKey) -> UiSession {
+fn bg_bucket_with_backgrounded_bash(key: &SessionSlot) -> UiSession {
     let mut session = UiSession::new(key.clone(), "test-project");
     session.messages.push(ChatMessage::new(
         MessageRole::Assistant,
@@ -1318,7 +1318,7 @@ async fn connection_failed_background_teardown_fails_a_backgrounded_card() {
     let mut app = test_app();
     // Establish a different active session so the target is genuinely non-active.
     send_msg(&mut app, assistant_message(vec![text_block("active")]));
-    let bg_key = SessionKey::from_str_for_test("bg-session");
+    let bg_key = SessionSlot::from_str_for_test("bg-session");
     app.sessions.insert(bg_key.clone(), bg_bucket_with_backgrounded_bash(&bg_key));
 
     send_client_event(
@@ -1342,7 +1342,7 @@ async fn connection_failed_background_teardown_fails_a_backgrounded_card() {
 async fn auth_required_background_teardown_fails_a_backgrounded_card() {
     let mut app = test_app();
     send_msg(&mut app, assistant_message(vec![text_block("active")]));
-    let bg_key = SessionKey::from_str_for_test("bg-session");
+    let bg_key = SessionSlot::from_str_for_test("bg-session");
     app.sessions.insert(bg_key.clone(), bg_bucket_with_backgrounded_bash(&bg_key));
 
     send_client_event(
@@ -1708,7 +1708,7 @@ async fn the_background_sweep_spares_a_live_backgrounded_subagents_children() {
     // Somebody else is active, so the target bucket is genuinely background.
     send_msg(&mut app, assistant_message(vec![text_block("active")]));
 
-    let bg_key = SessionKey::from_str_for_test("bg-subagent");
+    let bg_key = SessionSlot::from_str_for_test("bg-subagent");
     let mut bg = UiSession::new(bg_key.clone(), "test-project");
     let mut root = backgrounded_bash_card("toolu_root");
     root.sdk_tool_name = "Agent".to_owned();

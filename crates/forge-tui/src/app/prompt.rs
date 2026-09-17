@@ -54,7 +54,7 @@ pub enum PromptSource {
     SlackDraft {
         /// The session that asked. The answer goes back addressed to it,
         /// never to whichever session happens to be focused.
-        key: forge_primitives::SessionKey,
+        key: forge_primitives::SessionSlot,
         draft: forge_primitives::slack::SlackDraft,
     },
 }
@@ -172,7 +172,7 @@ impl PromptState {
     /// options, Post focused by default: the draft is only sent when the
     /// user picks it, and every other exit rejects.
     pub fn from_slack_draft(
-        key: forge_primitives::SessionKey,
+        key: forge_primitives::SessionSlot,
         draft: forge_primitives::slack::SlackDraft,
     ) -> Self {
         use forge_primitives::permission_ui::{
@@ -615,7 +615,7 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
 /// incorrectly. The snapshot itself is only stored when there's text
 /// worth restoring. Keyed to the prompt's own session, so a prompt for a
 /// background session leaves the focused editor untouched.
-pub fn snapshot_draft_if_needed(app: &mut crate::app::App, key: &forge_workspace::SessionKey) {
+pub fn snapshot_draft_if_needed(app: &mut crate::app::App, key: &forge_workspace::SessionSlot) {
     let Some(session) = app.session_mut(key) else {
         return;
     };
@@ -1490,7 +1490,7 @@ pub(crate) mod tests {
         let active = app.active_session_key.clone().expect("session");
         app.input_mut().expect("active session").set_text("half-typed message");
 
-        let background = forge_workspace::SessionKey::from_session_id("bg");
+        let background = forge_workspace::SessionSlot::from_session_id("bg");
         app.sessions.insert(
             background.clone(),
             crate::app::session::UiSession::new(background.clone(), "test-project"),
@@ -1516,7 +1516,7 @@ pub(crate) mod tests {
         let a = app.active_session_key.clone().expect("session");
         app.input_mut().expect("active session").set_text("session A draft");
 
-        let b = forge_workspace::SessionKey::from_session_id("session-b");
+        let b = forge_workspace::SessionSlot::from_session_id("session-b");
         app.sessions
             .insert(b.clone(), crate::app::session::UiSession::new(b.clone(), "test-project"));
 

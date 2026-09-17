@@ -1136,7 +1136,7 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
 /// clear. Resolving through the catalog would leave the stub in place
 /// and the row reading failed.
 fn retry_project(app: &mut App, project_name: &str) {
-    let failed: Vec<forge_workspace::SessionKey> = app
+    let failed: Vec<forge_workspace::SessionSlot> = app
         .sessions
         .iter()
         .filter(|(_, bucket)| {
@@ -1177,7 +1177,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::app::session::UiSession;
-    use forge_workspace::SessionKey;
+    use forge_workspace::SessionSlot;
     use std::time::Duration;
 
     /// Retrying a failed project clears its bucket. Found by the bucket's
@@ -1188,7 +1188,7 @@ mod tests {
     #[test]
     fn retry_clears_a_failed_bucket_the_catalog_never_saw() {
         let mut app = App::test_default();
-        let stub = SessionKey::from_session_id("failed-stub");
+        let stub = SessionSlot::from_session_id("failed-stub");
         let mut bucket = UiSession::new(stub.clone(), "forge");
         bucket.lifecycle_state = SessionLifecycleState::Failed;
         app.sessions.insert(stub.clone(), bucket);
@@ -1207,7 +1207,7 @@ mod tests {
     #[test]
     fn retry_leaves_a_settled_bucket_alone() {
         let mut app = App::test_default();
-        let settled = SessionKey::from_session_id("settled-uuid");
+        let settled = SessionSlot::from_session_id("settled-uuid");
         let mut bucket = UiSession::new(settled.clone(), "forge");
         bucket.lifecycle_state = SessionLifecycleState::Idle;
         app.sessions.insert(settled.clone(), bucket);
@@ -1609,7 +1609,7 @@ mod tests {
         forge_workspace::LiveWorkerState {
             label: label.to_owned(),
             status,
-            session_key: SessionKey::from_session_id(session.to_owned()),
+            session_key: SessionSlot::from_session_id(session.to_owned()),
         }
     }
 
@@ -1627,7 +1627,7 @@ mod tests {
             worker_entry("settled", "worker-settled", WorkerLiveness::Running),
             worker_entry("unbucketed", "worker-unbucketed", WorkerLiveness::Running),
         ];
-        let settled_key = SessionKey::from_session_id("worker-settled".to_owned());
+        let settled_key = SessionSlot::from_session_id("worker-settled".to_owned());
         let mut bucket = UiSession::new(settled_key.clone(), "test-project");
         bucket.lifecycle_state = SessionLifecycleState::Running;
         app.sessions.insert(settled_key, bucket);

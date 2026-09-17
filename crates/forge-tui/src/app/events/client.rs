@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::{App, session, turn};
-use forge_workspace::{SessionKey, SessionUpdate};
+use forge_workspace::{SessionSlot, SessionUpdate};
 
 /// Side-effects shared by `Connected` and `SessionReplaced`: refresh
 /// MCP + status + oauth-credentials + context-usage snapshots, and
@@ -12,7 +12,7 @@ use forge_workspace::{SessionKey, SessionUpdate};
 /// accessors, so they run under an active-bucket pivot onto `key` -
 /// the session that just connected, which is not necessarily the one
 /// the user is looking at.
-fn post_connect_refreshes(app: &mut App, key: &SessionKey) {
+fn post_connect_refreshes(app: &mut App, key: &SessionSlot) {
     crate::app::active_bucket_scope::with_pivoted(app, key.clone(), |app| {
         crate::app::config::refresh_mcp_snapshot(app);
         crate::app::session_runtime::request_status_snapshot_refresh(app);
@@ -473,14 +473,14 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // worker's history instead of the lead's.
             if matches!(action, forge_workspace::protocol::WorkerStatusAction::Removed) {
                 let toast = crate::ui::worker_status::format_close_toast(&status.label, worktree);
-                let lead_key = SessionKey::from_session_id(status.spawned_by_session_id.clone());
+                let lead_key = SessionSlot::from_session_id(status.spawned_by_session_id.clone());
                 super::push_system_message_to_session(
                     app,
                     &lead_key,
                     Some(crate::app::SystemSeverity::Info),
                     &toast,
                 );
-                let worker_key = SessionKey::from_session_id(status.session_id.clone());
+                let worker_key = SessionSlot::from_session_id(status.session_id.clone());
                 let was_active = app.active_session_key.as_ref() == Some(&worker_key);
                 let drawn = if was_active { super::drawn_session_order(app) } else { Vec::new() };
                 app.sessions.remove(&worker_key);
@@ -718,7 +718,7 @@ enum DictateLanding {
     Fallback,
 }
 
-fn dictate_landing(app: &App, key: &forge_workspace::SessionKey) -> DictateLanding {
+fn dictate_landing(app: &App, key: &forge_workspace::SessionSlot) -> DictateLanding {
     if app.active_session_key.as_ref() != Some(key) {
         return DictateLanding::Fallback;
     }
@@ -762,7 +762,7 @@ fn stamp_truncation_warning(app: &mut App, landing: DictateLanding) {
 /// is open. The take stays bound to its session whatever the focus.
 fn dictate_destination<'a>(
     app: &'a mut App,
-    key: &forge_workspace::SessionKey,
+    key: &forge_workspace::SessionSlot,
 ) -> Option<&'a mut crate::app::input::InputState> {
     if app.active_session_key.as_ref() != Some(key) {
         return None;
@@ -841,7 +841,7 @@ fn apply_dictate_outcome(
 /// this reducer at all: the click handler switches or refuses directly.
 fn apply_session_update_spawning(
     app: &mut App,
-    key: SessionKey,
+    key: SessionSlot,
     project_name: &str,
     cwd: &str,
     display_name: &str,
@@ -967,7 +967,7 @@ fn shorten_cwd_display_path(cwd: &str) -> String {
 /// active-session welcome snapshot.
 pub(super) fn apply_session_update_forge_account_identity(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     display_name: String,
 ) {
     apply_forge_account_identity_presentation(app, key, display_name);
@@ -975,7 +975,7 @@ pub(super) fn apply_session_update_forge_account_identity(
 
 fn apply_forge_account_identity_presentation(
     app: &mut App,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     display_name: String,
 ) {
     if app.active_session_key.as_ref() == Some(session_key) {
@@ -1022,7 +1022,7 @@ fn apply_status_snapshot_presentation(
     account: forge_primitives::AccountInfo,
     forge_account: Option<forge_primitives::ForgeAccountIdentity>,
 ) {
-    let session_key = SessionKey::from_session_id(session_id.to_owned());
+    let session_key = SessionSlot::from_session_id(session_id.to_owned());
     let has_email = account.email.as_deref().is_some_and(|email| !email.trim().is_empty());
     let has_organization = account.organization.is_some();
     let subscription_type = account.subscription_type.clone();
@@ -1084,7 +1084,7 @@ fn apply_oauth_credentials_snapshot_presentation(
     session_id: &str,
     credentials: Option<forge_primitives::cloud::oauth_credentials::OauthCredentials>,
 ) {
-    let session_key = SessionKey::from_session_id(session_id.to_owned());
+    let session_key = SessionSlot::from_session_id(session_id.to_owned());
     let has_credentials = credentials.is_some();
     let has_expiry = credentials.as_ref().is_some_and(|info| info.expires_at.is_some());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
@@ -1137,7 +1137,7 @@ fn apply_context_usage_snapshot_presentation(
     percentage: Option<u8>,
     max_tokens: Option<u64>,
 ) {
-    let session_key = SessionKey::from_session_id(session_id.to_owned());
+    let session_key = SessionSlot::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     if is_active {
         crate::app::session_runtime::apply_context_usage_snapshot(app, percentage, max_tokens);
@@ -1185,7 +1185,7 @@ fn apply_mcp_snapshot_presentation(
     servers: Vec<forge_primitives::McpServerStatus>,
     error: Option<String>,
 ) -> bool {
-    let session_key = SessionKey::from_session_id(session_id.to_owned());
+    let session_key = SessionSlot::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     let server_count = servers.len();
     let error_present = error.is_some();
@@ -1299,7 +1299,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
     // boot sentinel) otherwise inherits the background session's id
     // and `set_session_id` drags focus there.
     let frame_bucket = (!session_id.is_empty())
-        .then(|| SessionKey::from_session_id(session_id.to_owned()))
+        .then(|| SessionSlot::from_session_id(session_id.to_owned()))
         .filter(|key| app.sessions.contains_key(key));
     if active_session_id_str.is_empty() && !session_id.is_empty() && frame_bucket.is_none() {
         // The active bucket exists but has no id yet - adopt the
@@ -1337,7 +1337,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
         // bucket whose pane glyph says Attention but whose chat
         // buffer still only shows what was on screen at switch-out.
         let session_key =
-            frame_bucket.unwrap_or_else(|| SessionKey::from_session_id(session_id.to_owned()));
+            frame_bucket.unwrap_or_else(|| SessionSlot::from_session_id(session_id.to_owned()));
         // An id-less focused bucket routing a bucketed frame is the
         // adoption gate's complement - stub/sentinel windows only, so
         // rare enough to log. The regular per-frame background route
@@ -1451,7 +1451,7 @@ fn apply_hook_observation_presentation(
     use crate::agent::model::EffortLevel;
     use forge_workspace::PermissionMode;
 
-    let session_key = SessionKey::from_session_id(session_id.to_owned());
+    let session_key = SessionSlot::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
 
     let parsed_permission_mode = permission_mode.and_then(PermissionMode::from_wire);
@@ -1519,7 +1519,7 @@ pub(super) fn apply_session_update_runtime_reload_completed(app: &mut App, sessi
 }
 
 fn apply_runtime_reload_completed_presentation(app: &mut App, session_id: &str) {
-    let session_key = SessionKey::from_session_id(session_id.to_owned());
+    let session_key = SessionSlot::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     if is_active {
         crate::app::extensions::apply_runtime_reload_success(app);
@@ -1560,7 +1560,7 @@ pub(super) fn apply_session_update_runtime_reload_failed(
 }
 
 fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, message: &str) {
-    let session_key = SessionKey::from_session_id(session_id.to_owned());
+    let session_key = SessionSlot::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     if is_active {
         crate::app::extensions::apply_runtime_reload_failure(app, message);
@@ -1705,9 +1705,9 @@ mod tests {
         assert!(app.needs_redraw, "every session's readout renders from this field");
     }
 
-    fn seed_two_sessions(app: &mut App) -> (SessionKey, SessionKey) {
-        let key_a = SessionKey::from_str_for_test("session-a");
-        let key_b = SessionKey::from_str_for_test("session-b");
+    fn seed_two_sessions(app: &mut App) -> (SessionSlot, SessionSlot) {
+        let key_a = SessionSlot::from_str_for_test("session-a");
+        let key_b = SessionSlot::from_str_for_test("session-b");
         let mut bucket_a = UiSession::new(key_a.clone(), "test-project");
         bucket_a.session_id = Some(forge_primitives::SessionId::new(key_a.as_str()));
         let mut bucket_b = UiSession::new(key_b.clone(), "test-project");
@@ -1756,7 +1756,7 @@ mod tests {
     /// Read the `account_info` field on the bucket for `key`.
     fn bucket_account_info_for(
         app: &App,
-        key: &SessionKey,
+        key: &SessionSlot,
     ) -> Option<forge_primitives::AccountInfo> {
         app.sessions.get(key).and_then(|s| s.account_info.clone())
     }
@@ -1808,12 +1808,12 @@ mod tests {
     }
 
     fn session_replaced_for(
-        previous_key: &SessionKey,
+        previous_key: &SessionSlot,
         session_id: &str,
         cwd: &str,
     ) -> SessionUpdate {
         SessionUpdate::SessionReplaced {
-            key: SessionKey::from_session_id(session_id.to_owned()),
+            key: SessionSlot::from_session_id(session_id.to_owned()),
             previous_key: previous_key.clone(),
             session_id: forge_primitives::SessionId::new(session_id),
             cwd: cwd.to_owned(),
@@ -1840,7 +1840,7 @@ mod tests {
 
         apply_session_update(&mut app, session_replaced_for(&key_b, "b-replacement", "/proj-b"));
 
-        let replacement = SessionKey::from_session_id("b-replacement".to_owned());
+        let replacement = SessionSlot::from_session_id("b-replacement".to_owned());
         assert_eq!(app.active_session_key.as_ref(), Some(&key_a), "focus stays on A");
         assert!(app.sessions.contains_key(&key_a), "A's bucket survives B's replacement");
         assert_eq!(
@@ -1875,7 +1875,7 @@ mod tests {
 
         apply_session_update(&mut app, session_replaced_for(&key_b, "b-replacement", "/proj-b"));
 
-        let replacement = SessionKey::from_session_id("b-replacement".to_owned());
+        let replacement = SessionSlot::from_session_id("b-replacement".to_owned());
         let bucket = app.sessions.get(&replacement).expect("B migrated");
         assert!(!bucket.pending_cancel, "a replaced session has no cancel in flight");
         assert!(!bucket.is_compacting);
@@ -1891,7 +1891,7 @@ mod tests {
 
         apply_session_update(&mut app, session_replaced_for(&key_a, "a-replacement", "/proj-a"));
 
-        let replacement = SessionKey::from_session_id("a-replacement".to_owned());
+        let replacement = SessionSlot::from_session_id("a-replacement".to_owned());
         assert_eq!(app.active_session_key.as_ref(), Some(&replacement), "focus follows A");
         assert!(!app.sessions.contains_key(&key_a), "A's outgoing bucket is dropped");
         assert!(app.sessions.contains_key(&key_b), "background B is untouched");
@@ -2026,7 +2026,7 @@ mod tests {
     #[test]
     fn active_session_event_flips_needs_redraw() {
         let mut app = App::test_default();
-        let key_a = SessionKey::from_str_for_test("a");
+        let key_a = SessionSlot::from_str_for_test("a");
         app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone(), "test-project"));
         if let Some(ws) = app.workspace.as_ref() {
             let (h, _) = forge_workspace::Workspace::testing_stub_handle();
@@ -2295,7 +2295,7 @@ mod tests {
     fn unknown_session_event_drops_cleanly() {
         let mut app = App::test_default();
         let (_key_a, _key_b) = seed_two_sessions(&mut app);
-        let unknown = SessionKey::from_str_for_test("nope");
+        let unknown = SessionSlot::from_str_for_test("nope");
         let account = forge_primitives::AccountInfo {
             email: Some("ghost@example.com".to_owned()),
             ..Default::default()
@@ -2330,7 +2330,7 @@ mod tests {
         app.sessions.clear();
         app.active_session_key = None;
 
-        let session_key = SessionKey::from_session_id("forge-session-uuid".to_owned());
+        let session_key = SessionSlot::from_session_id("forge-session-uuid".to_owned());
         // Simulate the workspace's spawn-path: it would normally
         // register a DomainSession under `session_key` before emitting
         // the SessionUpdate::Spawning. Tests bypass the workspace
@@ -2378,7 +2378,7 @@ mod tests {
         app.sessions.clear();
         app.active_session_key = None;
 
-        let session_key = SessionKey::from_session_id("forge-session-uuid".to_owned());
+        let session_key = SessionSlot::from_session_id("forge-session-uuid".to_owned());
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::Spawning {
@@ -2409,7 +2409,7 @@ mod tests {
         let mut app = App::test_default();
         app.sessions.clear();
         app.active_session_key = None;
-        let key = SessionKey::from_session_id("a-session-uuid".to_owned());
+        let key = SessionSlot::from_session_id("a-session-uuid".to_owned());
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::Spawning {
@@ -2920,7 +2920,7 @@ mod tests {
         let mut app = App::test_default();
         app.sessions.clear();
         let active_before = app.active_session_key.clone();
-        let key = SessionKey::from_session_id("proj-session-uuid".to_owned());
+        let key = SessionSlot::from_session_id("proj-session-uuid".to_owned());
         // First Spawning seeds the bucket.
         apply_session_update(
             &mut app,
@@ -2973,14 +2973,14 @@ mod tests {
     #[test]
     fn spawning_follows_the_focus_a_user_click_asked_for() {
         let mut app = App::test_default();
-        let elsewhere = SessionKey::from_session_id("some-other-session");
+        let elsewhere = SessionSlot::from_session_id("some-other-session");
         app.sessions.insert(
             elsewhere.clone(),
             crate::app::session::UiSession::new(elsewhere.clone(), "test-project"),
         );
         app.active_session_key = Some(elsewhere);
 
-        let key = SessionKey::from_session_id("cold-uuid".to_owned());
+        let key = SessionSlot::from_session_id("cold-uuid".to_owned());
         app.pending_spawn_focus = Some("cold".to_owned());
         apply_session_update(
             &mut app,
@@ -3009,13 +3009,13 @@ mod tests {
     #[test]
     fn switching_away_before_the_spawn_lands_abandons_the_pending_focus() {
         let mut app = App::test_default();
-        let chosen = SessionKey::from_session_id("session-picked-instead");
+        let chosen = SessionSlot::from_session_id("session-picked-instead");
         app.sessions.insert(
             chosen.clone(),
             crate::app::session::UiSession::new(chosen.clone(), "test-project"),
         );
 
-        let waking = SessionKey::from_session_id("cold-uuid".to_owned());
+        let waking = SessionSlot::from_session_id("cold-uuid".to_owned());
         app.pending_spawn_focus = Some("cold".to_owned());
         app.switch_active_session(chosen.clone());
         assert!(
@@ -3046,7 +3046,7 @@ mod tests {
     #[test]
     fn spawning_leaves_focus_alone_when_no_click_asked_for_it() {
         let mut app = App::test_default();
-        let watching = SessionKey::from_session_id("session-the-user-is-reading");
+        let watching = SessionSlot::from_session_id("session-the-user-is-reading");
         app.sessions.insert(
             watching.clone(),
             crate::app::session::UiSession::new(watching.clone(), "test-project"),
@@ -3057,7 +3057,7 @@ mod tests {
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::Spawning {
-                key: SessionKey::from_session_id("autostart-session-uuid".to_owned()),
+                key: SessionSlot::from_session_id("autostart-session-uuid".to_owned()),
                 project_name: "autostart".to_owned(),
                 cwd: "/p/autostart".to_owned(),
                 display_name: "autostart".to_owned(),
@@ -3084,7 +3084,7 @@ mod tests {
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::Spawning {
-                key: SessionKey::from_session_id("autostart-session-uuid".to_owned()),
+                key: SessionSlot::from_session_id("autostart-session-uuid".to_owned()),
                 project_name: "autostart".to_owned(),
                 cwd: "/p/autostart".to_owned(),
                 display_name: "autostart".to_owned(),
@@ -3107,7 +3107,7 @@ mod tests {
         app.sessions.clear();
         app.active_session_key = None;
         app.startup_project = None;
-        let key = SessionKey::from_session_id("autostart-session-uuid".to_owned());
+        let key = SessionSlot::from_session_id("autostart-session-uuid".to_owned());
         app.sessions
             .insert(key.clone(), crate::app::session::UiSession::new(key.clone(), "autostart"));
 
@@ -3142,7 +3142,7 @@ mod tests {
         let ws = app.workspace.clone().expect("test workspace");
         ws.seed_test_project("boot-proj", "/tmp/boot-proj");
 
-        let real = SessionKey::from_session_id("real-uuid");
+        let real = SessionSlot::from_session_id("real-uuid");
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::Connected {
@@ -3179,7 +3179,7 @@ mod tests {
 
         // The user clicked project A; its Spawning honored the pending
         // focus and sits mid-boot on the waking stub.
-        let clicked = SessionKey::from_session_id("wake-a-uuid".to_owned());
+        let clicked = SessionSlot::from_session_id("wake-a-uuid".to_owned());
         app.pending_spawn_focus = Some("a".to_owned());
         apply_session_update(
             &mut app,
@@ -3199,7 +3199,7 @@ mod tests {
         // Project B failed to spawn earlier; its stub survived. A cron,
         // peer prompt, gotify or slack delivery wakes B in the background
         // during A's boot window.
-        let stale = SessionKey::from_session_id("stale-b-uuid".to_owned());
+        let stale = SessionSlot::from_session_id("stale-b-uuid".to_owned());
         app.sessions.insert(stale.clone(), crate::app::session::UiSession::new(stale.clone(), "b"));
         app.needs_redraw = false;
         apply_session_update(
@@ -3231,9 +3231,9 @@ mod tests {
 
         // The user clicked cold project A: its intent is armed but the
         // bucket has not appeared yet. Project B's stub exists.
-        let clicked = SessionKey::from_session_id("wake-a-uuid".to_owned());
+        let clicked = SessionSlot::from_session_id("wake-a-uuid".to_owned());
         app.pending_spawn_focus = Some("a".to_owned());
-        let stale = SessionKey::from_session_id("stale-b-uuid".to_owned());
+        let stale = SessionSlot::from_session_id("stale-b-uuid".to_owned());
         app.sessions.insert(stale.clone(), crate::app::session::UiSession::new(stale.clone(), "b"));
 
         apply_session_update(
@@ -3383,7 +3383,7 @@ mod tests {
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::SessionReplaced {
-                key: SessionKey::from_session_id("session-2".to_owned()),
+                key: SessionSlot::from_session_id("session-2".to_owned()),
                 previous_key: pending_key,
                 session_id: forge_primitives::SessionId::new("session-2"),
                 cwd: replaced_cwd.clone(),
@@ -3429,11 +3429,11 @@ mod tests {
 
         // The user is on another tab, so the replaced key takes the
         // background arm rather than the on-screen one.
-        app.active_session_key = Some(SessionKey::from_str_for_test("on-screen"));
+        app.active_session_key = Some(SessionSlot::from_str_for_test("on-screen"));
 
-        let previous = SessionKey::from_session_id("old-uuid".to_owned());
+        let previous = SessionSlot::from_session_id("old-uuid".to_owned());
 
-        let replacement = SessionKey::from_session_id("new-uuid".to_owned());
+        let replacement = SessionSlot::from_session_id("new-uuid".to_owned());
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::SessionReplaced {
@@ -3468,14 +3468,14 @@ mod tests {
         let ws = app.workspace.clone().expect("test workspace");
         ws.seed_test_project("resumed-proj", canonical.to_str().expect("utf-8 path"));
 
-        app.active_session_key = Some(SessionKey::from_str_for_test("on-screen"));
+        app.active_session_key = Some(SessionSlot::from_str_for_test("on-screen"));
 
-        let previous = SessionKey::from_session_id("old-uuid".to_owned());
+        let previous = SessionSlot::from_session_id("old-uuid".to_owned());
         let mut bucket = UiSession::new(previous.clone(), "test-project");
         bucket.project = "preset".to_owned();
         app.sessions.insert(previous.clone(), bucket);
 
-        let replacement = SessionKey::from_session_id("new-uuid".to_owned());
+        let replacement = SessionSlot::from_session_id("new-uuid".to_owned());
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::SessionReplaced {
@@ -3682,7 +3682,7 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::QuestionRequest {
-                key: forge_workspace::SessionKey::from_session_id("no-such-session"),
+                key: forge_workspace::SessionSlot::from_session_id("no-such-session"),
                 tool_id: "tc-orphan".into(),
                 request: crate::app::prompt::tests::make_question_request(false),
             },
@@ -3759,7 +3759,7 @@ mod tests {
     #[test]
     fn worker_removed_event_pushes_close_toast_for_git_repo_worker() {
         let mut app = App::test_default();
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         app.sessions.insert(
             lead_key.clone(),
             crate::app::session::UiSession::new(lead_key.clone(), "test-project"),
@@ -3785,7 +3785,7 @@ mod tests {
     #[test]
     fn worker_removed_event_pushes_plain_toast_for_an_absent_worktree() {
         let mut app = App::test_default();
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         app.sessions.insert(
             lead_key.clone(),
             crate::app::session::UiSession::new(lead_key.clone(), "test-project"),
@@ -3807,8 +3807,8 @@ mod tests {
     #[test]
     fn worker_removed_event_routes_close_toast_to_lead_not_active() {
         let mut app = App::test_default();
-        let lead_key = SessionKey::from_session_id("lead-uuid");
-        let focused_key = SessionKey::from_session_id("other-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
+        let focused_key = SessionSlot::from_session_id("other-uuid");
         app.sessions.insert(
             lead_key.clone(),
             crate::app::session::UiSession::new(lead_key.clone(), "test-project"),
@@ -3870,7 +3870,7 @@ mod tests {
     #[test]
     fn worker_removed_event_drops_worker_session_bucket() {
         let mut app = App::test_default();
-        let worker_key = SessionKey::from_session_id("uuid-1");
+        let worker_key = SessionSlot::from_session_id("uuid-1");
         app.sessions.insert(
             worker_key.clone(),
             crate::app::session::UiSession::new(worker_key.clone(), "test-project"),
@@ -3893,8 +3893,8 @@ mod tests {
     #[test]
     fn worker_removed_event_falls_back_active_to_lead_when_worker_was_active() {
         let mut app = App::test_default();
-        let lead_key = SessionKey::from_session_id("lead-uuid");
-        let worker_key = SessionKey::from_session_id("uuid-1");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
+        let worker_key = SessionSlot::from_session_id("uuid-1");
         app.sessions.insert(
             lead_key.clone(),
             crate::app::session::UiSession::new(lead_key.clone(), "test-project"),
@@ -3923,7 +3923,7 @@ mod tests {
     #[test]
     fn worker_removed_event_falls_back_to_any_session_when_lead_gone() {
         let mut app = App::test_default();
-        let worker_key = SessionKey::from_session_id("uuid-1");
+        let worker_key = SessionSlot::from_session_id("uuid-1");
         // Note: no lead-uuid bucket present. The test_default()
         // helper already seeded an active session under
         // `App::TEST_SESSION_KEY`; that bucket plays the role of
@@ -3959,7 +3959,7 @@ mod tests {
         let ws = app.workspace.clone().expect("test workspace");
         for project in ["bravo", "alpha"] {
             ws.seed_test_project(project, &format!("/tmp/{project}"));
-            let lead = SessionKey::from_session_id(format!("{project}-lead"));
+            let lead = SessionSlot::from_session_id(format!("{project}-lead"));
             let mut bucket = UiSession::new(lead.clone(), project);
             bucket.cwd_raw = format!("/tmp/{project}");
             app.sessions.insert(lead, bucket);
@@ -3967,7 +3967,7 @@ mod tests {
         let alpha =
             ws.list_projects().into_iter().find(|p| p.name == "alpha").expect("seeded project").key;
         for (label, has_bucket) in workers {
-            let key = SessionKey::from_session_id(*label);
+            let key = SessionSlot::from_session_id(*label);
             if *has_bucket {
                 app.sessions.insert(key.clone(), UiSession::new(key.clone(), "alpha"));
             }
@@ -4015,12 +4015,12 @@ mod tests {
         for (closing, expected) in cases {
             let mut app = App::test_default();
             seed_projects_with_workers(&mut app, &workers);
-            app.active_session_key = Some(SessionKey::from_session_id(closing));
+            app.active_session_key = Some(SessionSlot::from_session_id(closing));
 
             apply_session_update(&mut app, worker_removed_orphaned(closing));
 
             assert_eq!(
-                app.active_session_key.as_ref().map(SessionKey::as_str),
+                app.active_session_key.as_ref().map(SessionSlot::as_str),
                 Some(expected),
                 "removing {closing} must land on the row drawn under it",
             );
@@ -4040,12 +4040,12 @@ mod tests {
             &mut app,
             &[("w-one", true), ("w-two", false), ("w-three", true)],
         );
-        app.active_session_key = Some(SessionKey::from_session_id("w-one"));
+        app.active_session_key = Some(SessionSlot::from_session_id("w-one"));
 
         apply_session_update(&mut app, worker_removed_orphaned("w-one"));
 
         assert_eq!(
-            app.active_session_key.as_ref().map(SessionKey::as_str),
+            app.active_session_key.as_ref().map(SessionSlot::as_str),
             Some("w-three"),
             "the spawning worker's row has no bucket to focus, so the pick moves past it",
         );
@@ -4057,8 +4057,8 @@ mod tests {
     #[test]
     fn worker_removed_event_leaves_active_unchanged_when_not_active() {
         let mut app = App::test_default();
-        let lead_key = SessionKey::from_session_id("lead-uuid");
-        let worker_key = SessionKey::from_session_id("uuid-1");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
+        let worker_key = SessionSlot::from_session_id("uuid-1");
         app.sessions.insert(
             lead_key.clone(),
             crate::app::session::UiSession::new(lead_key.clone(), "test-project"),
@@ -4082,7 +4082,7 @@ mod tests {
         assert!(!app.sessions.contains_key(&worker_key));
     }
 
-    fn review_notice(key: &SessionKey, waiting: usize) -> SessionUpdate {
+    fn review_notice(key: &SessionSlot, waiting: usize) -> SessionUpdate {
         SessionUpdate::ReviewActivityNotice {
             key: key.clone(),
             branch: "feat".to_owned(),
@@ -4199,13 +4199,13 @@ mod focus_seam_tests {
 
     /// A live worker bucket plus the user sitting on a cold project's
     /// spawn stub.
-    fn app_with_worker_and_focused_stub() -> (App, SessionKey, SessionKey) {
+    fn app_with_worker_and_focused_stub() -> (App, SessionSlot, SessionSlot) {
         let mut app = App::test_default();
-        let worker = SessionKey::from_session_id("worker-uuid");
+        let worker = SessionSlot::from_session_id("worker-uuid");
         let mut worker_bucket = UiSession::new(worker.clone(), "test-project");
         worker_bucket.session_id = Some(forge_primitives::SessionId::new("worker-uuid"));
         app.sessions.insert(worker.clone(), worker_bucket);
-        let stub = SessionKey::from_session_id("busymail-session-uuid");
+        let stub = SessionSlot::from_session_id("busymail-session-uuid");
         app.sessions.insert(stub.clone(), UiSession::new(stub.clone(), "busymail"));
         app.active_session_key = Some(stub.clone());
         (app, stub, worker)
@@ -4296,10 +4296,10 @@ mod focus_seam_tests {
     #[test]
     fn background_boot_connects_never_take_focus() {
         let mut app = App::test_default();
-        let conn_pending = SessionKey::from_session_id(crate::app::App::TEST_SESSION_KEY);
+        let conn_pending = SessionSlot::from_session_id(crate::app::App::TEST_SESSION_KEY);
         // One key for the whole wake: the spawn announces the id the
         // session will connect under, so there is no stub to carry.
-        let real = SessionKey::from_session_id("bg-uuid");
+        let real = SessionSlot::from_session_id("bg-uuid");
         let stub = real.clone();
 
         apply_session_update(

@@ -113,7 +113,7 @@ pub fn build_forge_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionKey;
+    use crate::SessionSlot;
     use crate::mcp::cron::facade::MockCronFacade;
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
@@ -121,8 +121,8 @@ mod tests {
     use crate::mcp::slack::facade::MockSlackFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
 
-    fn fake_key(s: &str) -> SessionKey {
-        SessionKey::from_session_id(s)
+    fn fake_key(s: &str) -> SessionSlot {
+        SessionSlot::from_session_id(s)
     }
 
     #[test]

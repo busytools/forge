@@ -18,7 +18,7 @@ use std::sync::Arc;
 use forge_primitives::{ReviewStatus, ReviewThread};
 
 use crate::protocol::SessionUpdate;
-use crate::target::SessionKey;
+use crate::target::SessionSlot;
 use crate::workspace::Workspace;
 
 impl Workspace {
@@ -385,7 +385,7 @@ impl Workspace {
         branch: &str,
         summary: Option<String>,
         thread_ids: &[String],
-        origin: SessionKey,
+        origin: SessionSlot,
     ) -> Option<forge_primitives::ReviewSet> {
         // Scope the `db` guard to the store write and drop it BEFORE taking
         // `review_origin` - `drain_review_activity` locks these in the
@@ -452,7 +452,7 @@ impl Workspace {
     /// rather than silently ignored.
     pub fn review_reply(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         project: &str,
         branch: &str,
         comment_id: &str,
@@ -494,7 +494,7 @@ impl Workspace {
     /// scope.
     pub fn review_resolve(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         project: &str,
         branch: &str,
         comment_id: &str,
@@ -535,7 +535,7 @@ impl Workspace {
     /// in. An unfiled comment is skipped: there's no review to notify about.
     fn note_review_activity(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         project: &str,
         branch: &str,
         comment_id: &str,
@@ -576,7 +576,7 @@ impl Workspace {
     /// multi-comment review turn produces a single batched tally instead of
     /// one line per reply. Empty when the caller took no review actions this
     /// turn.
-    pub(crate) fn drain_review_activity(&self, caller: &SessionKey) -> Vec<SessionUpdate> {
+    pub(crate) fn drain_review_activity(&self, caller: &SessionSlot) -> Vec<SessionUpdate> {
         let touches = { self.review_activity.lock().remove(caller).unwrap_or_default() };
         if touches.is_empty() {
             return Vec::new();
@@ -911,7 +911,7 @@ mod tests {
         sweep_git(&root, &["update-ref", "refs/remotes/origin/feat/pushed", "HEAD"]);
 
         let (ws, _rx) = sweep_ws(dir.path(), "myproj", &root);
-        let reviewer = SessionKey::from_session_id("lead-uuid");
+        let reviewer = SessionSlot::from_session_id("lead-uuid");
         // Four live to three dead, so the pass stays under the refusal
         // bound - a sweep is meant to be a trickle, and the ratio that
         // trips the bound is asserted separately.
@@ -1105,7 +1105,7 @@ mod tests {
             crate::WorkerEntry {
                 label: "reviewer".to_owned(),
                 charter: "review".to_owned(),
-                session_key: SessionKey::from_session_id("worker-uuid"),
+                session_key: SessionSlot::from_session_id("worker-uuid"),
                 status: forge_primitives::WorkerLiveness::Spawning,
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead".to_owned(),
@@ -1167,7 +1167,7 @@ mod tests {
                 .map(str::to_owned)
         };
 
-        let origin = SessionKey::from_session_id("reviewer");
+        let origin = SessionSlot::from_session_id("reviewer");
         let r1 = ws
             .submit_review(
                 "forge",
@@ -1223,14 +1223,14 @@ mod tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         ws.save_review_threads("forge", "feat", &[make("a"), make("b")]);
-        let caller = SessionKey::from_session_id("worker");
+        let caller = SessionSlot::from_session_id("worker");
         let r1 = ws
             .submit_review(
                 "forge",
                 "feat",
                 Some("overview".to_owned()),
                 &["a".to_owned(), "b".to_owned()],
-                SessionKey::from_session_id("reviewer"),
+                SessionSlot::from_session_id("reviewer"),
             )
             .expect("submit");
 
@@ -1310,8 +1310,8 @@ mod tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
-        let reviewer = SessionKey::from_session_id("reviewer");
-        let worker = SessionKey::from_session_id("worker");
+        let reviewer = SessionSlot::from_session_id("reviewer");
+        let worker = SessionSlot::from_session_id("worker");
         ws.submit_review(
             "forge",
             "feat",
@@ -1400,7 +1400,7 @@ mod tests {
 
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.install_db_for_test(db);
-        let worker = SessionKey::from_session_id("worker");
+        let worker = SessionSlot::from_session_id("worker");
         ws.review_reply(&worker, "forge", "feat", "a", "impl", "fixed", "t").expect("reply");
 
         assert!(
@@ -1441,8 +1441,8 @@ mod tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
-        let reviewer = SessionKey::from_session_id("reviewer");
-        let worker = SessionKey::from_session_id("worker");
+        let reviewer = SessionSlot::from_session_id("reviewer");
+        let worker = SessionSlot::from_session_id("worker");
         ws.submit_review(
             "forge",
             "feat",

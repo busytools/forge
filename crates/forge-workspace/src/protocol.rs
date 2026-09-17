@@ -5,12 +5,12 @@
 //! ## Dual Command shape (deliberate)
 //!
 //! Two `Command` enums exist in the workspace: this one, keyed by
-//! [`SessionKey`], and [`forge_primitives::AgentCommand`], keyed by
+//! [`SessionSlot`], and [`forge_primitives::AgentCommand`], keyed by
 //! `session_id: String`. They overlap on variant names (Prompt,
 //! Cancel, SetMode, …) but serve different boundary layers:
 //!
 //! - **`forge_workspace::protocol::Command`** is the TUI ↔ workspace
-//!   envelope. SessionKey routing, App-level variants
+//!   envelope. SessionSlot routing, App-level variants
 //!   (SpawnProject / SpawnSession / StartDefault), the
 //!   workspace-internal Respond* + MCP cluster.
 //! - **`forge_primitives::AgentCommand`** is the workspace ↔ agent
@@ -19,7 +19,7 @@
 //!
 //! Collapsing them would force the AgentHandle dispatcher to handle
 //! App-level variants it has no business in (SpawnProject is a
-//! workspace concern; SessionKey is a routing concern; neither
+//! workspace concern; SessionSlot is a routing concern; neither
 //! belongs in the agent layer). The current split keeps each
 //! envelope minimal at its respective boundary. The translation
 //! happens in `session_task::execute_command_via_handle`.
@@ -45,7 +45,7 @@ use forge_primitives::{
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::mcp::peers::types::WrappedPrompt;
 
 // `TurnErrorClass` lives in forge-primitives so the classifier (in
@@ -160,39 +160,39 @@ impl WorktreeDisposition {
 
 /// Command envelope: forge-tui -> forge-workspace.
 ///
-/// Every variant carries a `SessionKey` identifying the target
+/// Every variant carries a `SessionSlot` identifying the target
 /// session task. `Workspace::dispatch` fans the variant into the
 /// matching task's command receiver.
 pub enum Command {
     Prompt {
-        key: SessionKey,
+        key: SessionSlot,
         text: String,
         attachments: Vec<ImageAttachment>,
     },
     Cancel {
-        key: SessionKey,
+        key: SessionSlot,
     },
     SetMode {
-        key: SessionKey,
+        key: SessionSlot,
         mode: PermissionMode,
     },
     SetModel {
-        key: SessionKey,
+        key: SessionSlot,
         model: String,
     },
     NewSession {
-        key: SessionKey,
+        key: SessionSlot,
         cwd: String,
         launch_settings: SessionLaunchSettings,
     },
     ResumeSession {
-        key: SessionKey,
+        key: SessionSlot,
         session_id: String,
         cwd: String,
         launch_settings: SessionLaunchSettings,
     },
     RespondPermission {
-        key: SessionKey,
+        key: SessionSlot,
         tool_id: String,
         outcome: PermissionOutcome,
     },
@@ -202,12 +202,12 @@ pub enum Command {
     /// workspace state, and `key` names the owner the answer is
     /// checked against, not a SessionTask route.
     RespondSlackPost {
-        key: SessionKey,
+        key: SessionSlot,
         id: uuid::Uuid,
         approved: bool,
     },
     RespondQuestion {
-        key: SessionKey,
+        key: SessionSlot,
         tool_id: String,
         outcome: QuestionOutcome,
     },
@@ -216,29 +216,29 @@ pub enum Command {
     /// never routed to the agent; the echo lands as
     /// `SessionUpdate::DictateOverrides`.
     SetDictateOverride {
-        key: SessionKey,
+        key: SessionSlot,
         update: crate::dictate::DictateOverrideUpdate,
     },
     /// Clear every `/dictate` override this session holds.
     ResetDictateOverrides {
-        key: SessionKey,
+        key: SessionSlot,
     },
     /// Set the `/dictate` input-device pick, or clear it back to the
     /// configured pin. Workspace state shared by every session, never
     /// routed to the agent; the echo lands as
     /// `SessionUpdate::DictateDevicePin`.
     SetDictateDevice {
-        key: SessionKey,
+        key: SessionSlot,
         pick: Option<crate::dictate::DictateDeviceChoice>,
     },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
-        key: SessionKey,
+        key: SessionSlot,
         server_name: String,
     },
     /// Toggle a configured MCP server on/off.
     ToggleMcpServer {
-        key: SessionKey,
+        key: SessionSlot,
         server_name: String,
         enabled: bool,
     },
@@ -279,7 +279,7 @@ pub enum Command {
     /// `mcp__forge__peers__ask_agent` / `peers__tell_agent` tool
     /// impls via `WorkspaceFacade::deliver_peer_prompt`. Routed to
     /// `spawn::handle_deliver_peer_prompt` which: (a) resolves
-    /// `target_project` to a `SessionKey`; (b) if target is running,
+    /// `target_project` to a `SessionSlot`; (b) if target is running,
     /// dispatches a plain `Command::Prompt` carrying the wrapper
     /// prose; (c) if sleeping, parks `wrapped` for target's owner and
     /// dispatches `Command::SpawnProject`;
@@ -291,7 +291,7 @@ pub enum Command {
     /// the source session's key for routing failure notifications and
     /// for in_reply_to validation lookups.
     DeliverPeerPrompt {
-        caller: SessionKey,
+        caller: SessionSlot,
         target_project: String,
         wrapped: WrappedPrompt,
     },
@@ -373,7 +373,7 @@ pub enum Command {
     /// as `DeliverPeerPrompt` but addressed by worker label within
     /// the caller's project rather than by cross-project name.
     DeliverWorkerPrompt {
-        caller: SessionKey,
+        caller: SessionSlot,
         project_key: crate::ProjectKey,
         target_label: String,
         wrapped: WrappedPrompt,
@@ -381,15 +381,15 @@ pub enum Command {
     /// Deliver a wrapped peer-style prompt from a worker back to its
     /// lead. Dispatched by the `workers__tell` / `workers__ask` Tool
     /// impls when the caller addresses `label="lead"`. The target
-    /// `SessionKey` is resolved at Tool dispatch time from the
+    /// `SessionSlot` is resolved at Tool dispatch time from the
     /// worker's `spawned_by_session_id` so the handler can deliver
     /// directly without re-doing the lookup against a possibly-mutated
     /// `live_workers` map. Wire shape is identical to
     /// `DeliverWorkerPrompt` (same PeerEnvelopeAppended echo + same
     /// `Command::Prompt` dispatch into the target session).
     DeliverWorkerPromptToLead {
-        caller: SessionKey,
-        target_lead_key: SessionKey,
+        caller: SessionSlot,
+        target_lead_key: SessionSlot,
         wrapped: WrappedPrompt,
     },
     /// Deliver a matched Gotify notification into `project` as a plain
@@ -412,13 +412,13 @@ pub enum Command {
     /// on `Workspace` rather than on one `SessionTask`, while the
     /// events route back to the session that started it.
     DictateStart {
-        key: SessionKey,
+        key: SessionSlot,
     },
     /// Submit (`submit = true`) or abandon the take started by `key`.
     /// During recording this is release-to-submit vs discard; during a
     /// transcription in flight it abandons the ticket.
     DictateStop {
-        key: SessionKey,
+        key: SessionSlot,
         submit: bool,
     },
     /// Overwrite the review-thread set for `(project, branch)`.
@@ -460,7 +460,7 @@ pub enum Command {
     /// dispatch. App-level command (`key()` returns `None`); routed
     /// inline.
     CloseSession {
-        session_key: SessionKey,
+        session_key: SessionSlot,
     },
     /// Insert or replace one review thread by id in `(project, branch)`.
     /// `respond` carries whether the write was confirmed, so the
@@ -482,19 +482,19 @@ pub enum Command {
         branch: String,
         summary: Option<String>,
         thread_ids: Vec<String>,
-        origin: SessionKey,
+        origin: SessionSlot,
         respond: oneshot::Sender<Option<forge_primitives::ReviewSet>>,
     },
 }
 
 impl Command {
-    /// The `SessionKey` this command routes to, or `None` for
+    /// The `SessionSlot` this command routes to, or `None` for
     /// App-level commands (`SpawnProject`, `SpawnSession`,
     /// `StartDefault`). `Workspace::dispatch` routes `None` commands
     /// to its app-level handler (which resolves the id the new session
     /// will run under and spawns the agent); `Some(key)` commands route
     /// to the matching SessionTask.
-    pub fn key(&self) -> Option<&SessionKey> {
+    pub fn key(&self) -> Option<&SessionSlot> {
         match self {
             Self::Prompt { key, .. }
             | Self::Cancel { key }
@@ -746,13 +746,13 @@ pub enum SessionUpdate {
     /// under `key` and shows the "Waking {display_name}…" message. The
     /// matching `Connected` lands soon after, under the same key.
     Spawning {
-        key: SessionKey,
+        key: SessionSlot,
         project_name: String,
         cwd: String,
         display_name: String,
     },
     Connected {
-        key: SessionKey,
+        key: SessionSlot,
         session_id: SessionId,
         cwd: String,
         current_model: CurrentModel,
@@ -769,8 +769,8 @@ pub enum SessionUpdate {
     /// needs `previous_key` to find the outgoing bucket - it is not
     /// derivable from anything else on the envelope.
     SessionReplaced {
-        key: SessionKey,
-        previous_key: SessionKey,
+        key: SessionSlot,
+        previous_key: SessionSlot,
         session_id: SessionId,
         cwd: String,
         current_model: CurrentModel,
@@ -782,17 +782,17 @@ pub enum SessionUpdate {
         compaction_count: u32,
     },
     ConnectionFailed {
-        key: SessionKey,
+        key: SessionSlot,
         message: String,
         fatal: bool,
     },
     AuthRequired {
-        key: SessionKey,
+        key: SessionSlot,
         method_name: String,
         method_description: String,
     },
     SlashCommandError {
-        key: SessionKey,
+        key: SessionSlot,
         message: String,
     },
     RuntimeReloadCompleted {
@@ -806,7 +806,7 @@ pub enum SessionUpdate {
     /// request for `key`. `message` carries the underlying error text;
     /// the TUI rolls the optimistic mode chip back and surfaces it.
     SetModeFailed {
-        key: SessionKey,
+        key: SessionSlot,
         mode: PermissionMode,
         message: String,
     },
@@ -814,37 +814,37 @@ pub enum SessionUpdate {
     /// `key`. `message` carries the underlying error text; the TUI
     /// rolls the optimistic model change back and surfaces it.
     SetModelFailed {
-        key: SessionKey,
+        key: SessionSlot,
         model: String,
         message: String,
     },
     /// Permission prompt. No response_tx - TUI replies via
     /// `Command::RespondPermission { tool_id, outcome }`.
     PermissionRequest {
-        key: SessionKey,
+        key: SessionSlot,
         tool_id: String,
         request: PermissionRequest,
     },
     /// AskUserQuestion prompt. Same shape; reply via
     /// `Command::RespondQuestion { tool_id, outcome }`.
     QuestionRequest {
-        key: SessionKey,
+        key: SessionSlot,
         tool_id: String,
         request: QuestionRequest,
     },
     McpOperationError {
-        key: SessionKey,
+        key: SessionSlot,
         error: McpOperationError,
     },
     TurnComplete {
-        key: SessionKey,
+        key: SessionSlot,
         terminal_reason: Option<TerminalReason>,
     },
     TurnCancelled {
-        key: SessionKey,
+        key: SessionSlot,
     },
     TurnError {
-        key: SessionKey,
+        key: SessionSlot,
         message: String,
         class: Option<TurnErrorClass>,
         terminal_reason: Option<TerminalReason>,
@@ -867,7 +867,7 @@ pub enum SessionUpdate {
         forge_account: Option<ForgeAccountIdentity>,
     },
     ForgeAccountIdentity {
-        key: SessionKey,
+        key: SessionSlot,
         display_name: String,
     },
     /// The full override set a session holds after a `/dictate` edit
@@ -875,7 +875,7 @@ pub enum SessionUpdate {
     /// `ResetDictateOverrides` so the dialog's markers and its reset
     /// row read from this, not from a TUI-side copy.
     DictateOverrides {
-        key: SessionKey,
+        key: SessionSlot,
         overrides: crate::dictate::DictateOverrides,
     },
     /// The input-device pick in force after a `/dictate` device edit
@@ -883,7 +883,7 @@ pub enum SessionUpdate {
     /// every `SetDictateDevice`, and alongside the overrides echo by
     /// a Reset.
     DictateDevicePin {
-        key: SessionKey,
+        key: SessionSlot,
         pick: Option<crate::dictate::DictateDeviceChoice>,
     },
     OauthCredentialsSnapshot {
@@ -908,7 +908,7 @@ pub enum SessionUpdate {
         /// `cwd`, so the listing is project-scoped - routing onto
         /// the requesting bucket prevents another session's `/resume`
         /// autocomplete from inheriting a stale project's list.
-        key: SessionKey,
+        key: SessionSlot,
         sessions: Vec<SessionListEntry>,
     },
     ServiceStatus {
@@ -978,7 +978,7 @@ pub enum SessionUpdate {
     /// failure). TUI reducer arm updates the sidebar peer-activity
     /// badge in the Projects pane.
     PeerInflightStatsChanged {
-        key: SessionKey,
+        key: SessionSlot,
         stats: PeerInflightStats,
     },
     /// Workspace pushed a change to `live_workers[project_key]`. The
@@ -1039,13 +1039,13 @@ pub enum SessionUpdate {
     /// until `Command::RespondSlackPost` answers it, so nothing posts
     /// while this is outstanding.
     SlackPostPending {
-        key: SessionKey,
+        key: SessionSlot,
         draft: forge_primitives::slack::SlackDraft,
     },
     /// A held Slack draft expired without a decision. The TUI retires
     /// the dock prompt; nothing was sent.
     SlackDraftExpired {
-        key: SessionKey,
+        key: SessionSlot,
         id: Uuid,
     },
     /// A workspace-originated prompt (cron fire, peer, gotify or slack
@@ -1054,7 +1054,7 @@ pub enum SessionUpdate {
     /// so the spinner stays open across the gap; the prompt itself
     /// rides the usual `Command::Prompt` dispatch.
     PromptQueuedWhileBusy {
-        key: SessionKey,
+        key: SessionSlot,
     },
     /// A worker's review turn addressed review comments; `key` is the
     /// session that authored the review (the submit origin). The TUI drops
@@ -1063,7 +1063,7 @@ pub enum SessionUpdate {
     /// `branch` now await a reviewer turn - as the persistent signal both
     /// the Inspector GIT badge and the NEEDS ATTENTION band read.
     ReviewActivityNotice {
-        key: SessionKey,
+        key: SessionSlot,
         branch: String,
         waiting: usize,
         message: String,
@@ -1081,7 +1081,7 @@ pub enum SessionUpdate {
     /// arrives after a newer take started carries a stale one, and the
     /// composer resets on its own generation only.
     DictateStarted {
-        key: SessionKey,
+        key: SessionSlot,
         floor_db: f32,
         generation: u64,
     },
@@ -1089,12 +1089,12 @@ pub enum SessionUpdate {
     /// window since the previous reading, in dBFS. Emitted on the
     /// meter clock, not the repaint clock.
     DictateLevel {
-        key: SessionKey,
+        key: SessionSlot,
         peak_db: f32,
     },
     /// The take from `key` was submitted and a transcript is in flight.
     DictateTranscribing {
-        key: SessionKey,
+        key: SessionSlot,
     },
     /// A take from `key` has settled `done` segments of its
     /// transcription. `total` is `None` while the recording is still
@@ -1104,7 +1104,7 @@ pub enum SessionUpdate {
     /// composer renders only what it wants to. `generation` is the
     /// take's own, as handed out by [`SessionUpdate::DictateStarted`].
     DictateProgress {
-        key: SessionKey,
+        key: SessionSlot,
         generation: u64,
         done: usize,
         total: Option<usize>,
@@ -1113,7 +1113,7 @@ pub enum SessionUpdate {
     /// [`DictateOutcome`]. `generation` is the take's own, as handed
     /// out by [`SessionUpdate::DictateStarted`].
     DictateEnded {
-        key: SessionKey,
+        key: SessionSlot,
         outcome: DictateOutcome,
         generation: u64,
     },
@@ -1121,11 +1121,11 @@ pub enum SessionUpdate {
 }
 
 impl SessionUpdate {
-    /// The [`SessionKey`] this update routes to, or `None` for
+    /// The [`SessionSlot`] this update routes to, or `None` for
     /// updates that target App-level state (`SessionsListed`,
     /// `ServiceStatus`, usage, plugin, fatal-error).
     /// Variants carrying a raw `session_id` synthesize a key from it.
-    pub fn session_key(&self) -> Option<SessionKey> {
+    pub fn session_key(&self) -> Option<SessionSlot> {
         match self {
             Self::Spawning { key, .. }
             | Self::Connected { key, .. }
@@ -1167,7 +1167,7 @@ impl SessionUpdate {
             | Self::GotifyNotificationAppended { session_id, .. }
             | Self::CronPromptAppended { session_id, .. }
             | Self::SlackMessageAppended { session_id, .. } => {
-                Some(SessionKey::from_session_id(session_id.clone()))
+                Some(SessionSlot::from_session_id(session_id.clone()))
             }
             Self::ServiceStatus { .. }
             | Self::CatalogLoaded
@@ -1406,9 +1406,9 @@ impl std::fmt::Debug for SessionUpdate {
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchError {
     #[error("no session task registered for key {0:?}")]
-    UnknownSession(SessionKey),
+    UnknownSession(SessionSlot),
     #[error("session task for key {0:?} has closed its command channel")]
-    SessionClosed(SessionKey),
+    SessionClosed(SessionSlot),
 }
 
 #[cfg(test)]

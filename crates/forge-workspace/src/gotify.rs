@@ -296,7 +296,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::target::SessionKey;
+    use crate::target::SessionSlot;
 
     /// The Gotify notifications parked for `(project, label)`, under the
     /// org the project is declared in.
@@ -331,7 +331,7 @@ mod tests {
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "c".to_owned(),
-            session_key: SessionKey::from_session_id(key),
+            session_key: SessionSlot::from_session_id(key),
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".to_owned(),
@@ -555,7 +555,7 @@ mod tests {
         // "scratch" is not the lead: durability
         // must come solely from its dynamic_workers row.
         let _ = ws.persist_dynamic_worker(&dynamic_worker_row(view_key.as_str(), "scratch"));
-        let caller = SessionKey::from_session_id("scratch-session");
+        let caller = SessionSlot::from_session_id("scratch-session");
         ws.insert_live_worker(&view_key, live_worker_entry("scratch", "scratch-session"));
 
         let (name, team_role, durable) = crate::mcp::gotify::facade::resolve_identity(&ws, &caller)
@@ -750,7 +750,7 @@ mod tests {
             .find(|v| v.name == "forge")
             .map(|v| v.key)
             .expect("seeded project view");
-        let worker_key = SessionKey::from_session_id("worker-reviewer");
+        let worker_key = SessionSlot::from_session_id("worker-reviewer");
         ws.insert_live_worker(
             &view_key,
             crate::mcp::workers::types::WorkerEntry {
@@ -839,7 +839,7 @@ mod tests {
             .find(|v| v.name == "forge")
             .map(|v| v.key)
             .expect("seeded project view");
-        let worker_key = SessionKey::from_session_id("worker-spawning");
+        let worker_key = SessionSlot::from_session_id("worker-spawning");
         ws.insert_live_worker(&view_key, live_worker_entry("reviewer", "worker-spawning"));
         // Register the domain WITHOUT stamping session_id: still Spawning.
         ws.register_domain_session(worker_key.clone(), None);

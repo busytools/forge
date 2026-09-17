@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 use forge_workspace::env::processes::ProcessSnapshot;
 
 use crate::app::App;
@@ -49,7 +49,7 @@ pub enum ProcessScanEvent {
     /// A scanner task finished. `generation` lets `drain_events`
     /// drop stale results when the session's claude PID has changed
     /// (e.g. spawn-time → new session swap) since the scan started.
-    SnapshotReady { key: SessionKey, generation: u64, snapshot: ProcessSnapshot },
+    SnapshotReady { key: SessionSlot, generation: u64, snapshot: ProcessSnapshot },
     /// The 1 s ticker fired. `drain_events` resolves the current
     /// active session at consume time and issues a fresh refresh.
     TimerTick,
@@ -101,7 +101,7 @@ impl Drop for ScanInFlightGuard {
 /// - The session's `scan_in_flight` guard is already set.
 pub fn request_refresh(
     tx: std_mpsc::Sender<ProcessScanEvent>,
-    key: SessionKey,
+    key: SessionSlot,
     claude_pid: Option<u32>,
     generation: u64,
     scan_in_flight: Arc<AtomicBool>,
@@ -185,7 +185,7 @@ fn apply_event(app: &mut App, event: ProcessScanEvent) {
 
 fn apply_snapshot_ready(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     generation: u64,
     snapshot: ProcessSnapshot,
 ) {

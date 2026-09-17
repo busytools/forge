@@ -11,7 +11,7 @@
 //! info line).
 
 use crossterm::event::{KeyCode, KeyEvent};
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 
 use super::App;
 use crate::agent::model;
@@ -25,7 +25,7 @@ pub struct ModelPickerState {
     pub highlight: usize,
     /// Session the rows were snapshotted from. A commit is refused when
     /// this is no longer the active session.
-    pub session_key: Option<SessionKey>,
+    pub session_key: Option<SessionSlot>,
 }
 
 /// The pickable rows for the active session: the CLI-advertised models
@@ -75,7 +75,7 @@ pub(crate) fn open(app: &mut App) -> bool {
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     enum Action {
         Move(usize),
-        Commit(String, Option<SessionKey>),
+        Commit(String, Option<SessionSlot>),
         Close,
     }
     let Some(state) = app.model_picker.as_ref() else {
@@ -348,7 +348,7 @@ mod tests {
         }
         assert!(open(&mut app));
 
-        let other = forge_workspace::SessionKey::from_session_id("other-session");
+        let other = forge_workspace::SessionSlot::from_session_id("other-session");
         let mut bucket = crate::app::session::UiSession::new(other.clone(), "test-project");
         bucket.session_id = Some(forge_primitives::SessionId::new("other-session"));
         app.sessions.insert(other.clone(), bucket);

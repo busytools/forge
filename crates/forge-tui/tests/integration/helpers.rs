@@ -1,5 +1,5 @@
 use forge_tui::app::App;
-use forge_workspace::{SessionKey, SessionUpdate};
+use forge_workspace::{SessionSlot, SessionUpdate};
 
 /// Build a minimal `App` for in-process integration-style testing.
 /// This exercises app state and event handling directly, without a real bridge or TUI boundary.
@@ -12,12 +12,12 @@ pub fn send_client_event(app: &mut App, event: SessionUpdate) {
     forge_tui::app::apply_session_update(app, event);
 }
 
-/// Borrow the currently-active [`SessionKey`] from the app, for
+/// Borrow the currently-active [`SessionSlot`] from the app, for
 /// tagging synthetic [`SessionUpdate`]s emitted by integration tests.
 /// Falls back to a deterministic test sentinel when the test app
 /// hasn't seeded an active session yet.
-pub fn active_session_key(app: &App) -> SessionKey {
+pub fn active_session_key(app: &App) -> SessionSlot {
     app.active_session_key
         .clone()
-        .unwrap_or_else(|| SessionKey::from_str_for_test("__test_pre_connect__"))
+        .unwrap_or_else(|| SessionSlot::from_str_for_test("__test_pre_connect__"))
 }

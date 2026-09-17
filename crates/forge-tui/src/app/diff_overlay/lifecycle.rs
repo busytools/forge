@@ -553,7 +553,7 @@ mod tests {
         // to the worker's worktree so the diff opens against the
         // worker's branch, not an empty lead diff.
         use forge_primitives::WorkerLiveness;
-        use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
+        use forge_workspace::{ProjectKey, SessionSlot, WorkerEntry};
 
         let mut app = App::test_default();
         let workspace =
@@ -569,7 +569,7 @@ mod tests {
         let project_key = ProjectKey::new_for_test(
             forge_workspace::userdata::catalog::scan::project_key_for_directory(Some(project_root)),
         );
-        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let worker_key = SessionSlot::from_session_id("worker-uuid");
         workspace.insert_live_worker(
             &project_key,
             WorkerEntry {
@@ -601,7 +601,7 @@ mod tests {
         // `cwd_raw` back unchanged - the worker resolution short-
         // circuits via `worker_lookup_for_session` returning None.
         let mut app = App::test_default();
-        let lead_key = forge_workspace::SessionKey::from_session_id("lead-uuid");
+        let lead_key = forge_workspace::SessionSlot::from_session_id("lead-uuid");
         let mut session = crate::app::session::UiSession::new(lead_key.clone(), "forge");
         session.cwd_raw = "/tmp/project".into();
         app.sessions.insert(lead_key.clone(), session);

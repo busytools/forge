@@ -681,7 +681,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         use std::time::{Duration, Instant};
 
-        fn active_key(app: &App) -> forge_workspace::SessionKey {
+        fn active_key(app: &App) -> forge_workspace::SessionSlot {
             app.active_session_key.clone().expect("test_default has an active bucket")
         }
 

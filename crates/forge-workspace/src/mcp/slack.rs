@@ -1429,7 +1429,7 @@ mod tests {
     }
 
     fn resolver() -> CallerKeyResolver {
-        CallerKeyResolver::from_fixed(crate::SessionKey::from_session_id("caller"))
+        CallerKeyResolver::from_fixed(crate::SessionSlot::from_session_id("caller"))
     }
 
     #[tokio::test]

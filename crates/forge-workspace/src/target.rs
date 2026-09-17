@@ -1,13 +1,13 @@
 //! Identifiers + the `SessionTarget` enum used to address sessions.
 
-// `SessionKey` lives in forge-primitives so the same routing key
+// `SessionSlot` lives in forge-primitives so the same routing key
 // flows through the TUI → workspace → agent layers without each crate
 // growing its own near-identical newtype. Re-exported here so call
-// sites continue to import via `forge_workspace::SessionKey`.
-pub use forge_primitives::SessionKey;
+// sites continue to import via `forge_workspace::SessionSlot`.
+pub use forge_primitives::SessionSlot;
 
 // `ProjectKey` lives in forge-primitives for the same reason
-// `SessionKey` does: the gateway's account selection keys on it and the
+// `SessionSlot` does: the gateway's account selection keys on it and the
 // workspace keys its own maps on it. Re-exported here so call sites
 // continue to import via `forge_workspace::ProjectKey`.
 pub use forge_primitives::ProjectKey;
@@ -24,7 +24,7 @@ pub enum SessionTarget {
     Named(String),
     /// A specific session by id. Used by the click-to-resume flow
     /// in the Projects pane and by `Workspace::spawn_session`.
-    Session(SessionKey),
+    Session(SessionSlot),
     /// Spawn a FRESH session in the project identified by `project_key`,
     /// bypassing the lead-resume path. Used by the workers MCP so a
     /// worker is always a brand-new session, not a resume of the

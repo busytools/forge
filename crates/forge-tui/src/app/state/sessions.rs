@@ -46,7 +46,7 @@ impl super::App {
     /// route background-session events to their bucket).
     pub fn session_mut(
         &mut self,
-        key: &forge_workspace::SessionKey,
+        key: &forge_workspace::SessionSlot,
     ) -> Option<&mut crate::app::session::UiSession> {
         self.sessions.get_mut(key)
     }
@@ -89,7 +89,7 @@ impl super::App {
     /// Drops any [`Self::pending_spawn_focus`]: landing somewhere by
     /// any route settles where the user wants to be, so a spawn they
     /// asked for earlier must not pull them back when it arrives.
-    pub fn switch_active_session(&mut self, key: forge_workspace::SessionKey) {
+    pub fn switch_active_session(&mut self, key: forge_workspace::SessionSlot) {
         // Cleared before the early returns: a click that lands on the
         // session already focused is still the user settling where
         // they want to be.
@@ -237,7 +237,7 @@ impl super::App {
             return;
         };
         let prev_active_was_none = self.active_session_key.is_none();
-        let key = forge_workspace::SessionKey::from_session_id(id.to_string());
+        let key = forge_workspace::SessionSlot::from_session_id(id.to_string());
         let primitive_id = forge_primitives::SessionId::new(id.to_string());
         if !self.sessions.contains_key(&key) {
             // Adopting an id is this same session acquiring the key
@@ -367,7 +367,7 @@ impl super::App {
         // common case (nothing waiting) returns here without touching the
         // workspace - no `list_projects` clone, no live-workers lock -
         // since this runs on every inspector render.
-        let waiting: Vec<(&forge_workspace::SessionKey, &crate::app::session::UiSession)> = self
+        let waiting: Vec<(&forge_workspace::SessionSlot, &crate::app::session::UiSession)> = self
             .sessions
             .iter()
             .filter(|(key, session)| active != Some(*key) && session_needs_attention(session))
@@ -380,7 +380,7 @@ impl super::App {
         // (project, role) row per live worker so the per-session lookup
         // is a map hit, not a nested per-project scan.
         let projects = self.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
-        let mut worker_index: HashMap<forge_workspace::SessionKey, (String, String)> =
+        let mut worker_index: HashMap<forge_workspace::SessionSlot, (String, String)> =
             HashMap::new();
         if let Some(ws) = self.workspace.as_ref() {
             for project in &projects {
@@ -500,8 +500,8 @@ mod tests {
     /// Seed a background session carrying one pending permission prompt
     /// enqueued `secs` after the UNIX epoch; stamps a project name so
     /// the row resolves without a workspace catalog. Returns its key.
-    fn seed_attention_session(app: &mut App, id: &str, secs: u64) -> forge_workspace::SessionKey {
-        let key = forge_workspace::SessionKey::from_session_id(id);
+    fn seed_attention_session(app: &mut App, id: &str, secs: u64) -> forge_workspace::SessionSlot {
+        let key = forge_workspace::SessionSlot::from_session_id(id);
         let mut session = crate::app::session::UiSession::new(key.clone(), format!("proj-{id}"));
         let mut prompt = crate::app::prompt::PromptState::from_permission(
             format!("tc-{id}"),
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn attention_first_pass_ignores_a_settled_session() {
         let settled = crate::app::session::UiSession::new(
-            forge_workspace::SessionKey::from_session_id("quiet"),
+            forge_workspace::SessionSlot::from_session_id("quiet"),
             "test-project",
         );
         assert!(
@@ -536,7 +536,7 @@ mod tests {
         );
 
         let mut waiting = crate::app::session::UiSession::new(
-            forge_workspace::SessionKey::from_session_id("quiet"),
+            forge_workspace::SessionSlot::from_session_id("quiet"),
             "test-project",
         );
         waiting.review_replies_waiting = Some(crate::app::ReviewRepliesWaiting {
@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn needs_input_sessions_reports_question_kind() {
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_session_id("q");
+        let key = forge_workspace::SessionSlot::from_session_id("q");
         let mut session = crate::app::session::UiSession::new(key.clone(), "test-project");
         let mut prompt = crate::app::prompt::PromptState::from_question(
             "tc-q".to_owned(),
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn needs_input_sessions_resolves_worker_role_from_live_worker() {
-        use forge_workspace::{SessionKey, WorkerEntry};
+        use forge_workspace::{SessionSlot, WorkerEntry};
 
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
@@ -621,7 +621,7 @@ mod tests {
             .find(|p| p.name == "core-v1")
             .expect("seeded project")
             .key;
-        let worker_key = SessionKey::from_session_id("worker-steward-uuid");
+        let worker_key = SessionSlot::from_session_id("worker-steward-uuid");
         ws.insert_live_worker(
             &project_key,
             WorkerEntry {
@@ -664,8 +664,8 @@ mod tests {
         secs: u64,
         error: forge_primitives::ApiRetryError,
         status: Option<u16>,
-    ) -> forge_workspace::SessionKey {
-        let key = forge_workspace::SessionKey::from_session_id(id);
+    ) -> forge_workspace::SessionSlot {
+        let key = forge_workspace::SessionSlot::from_session_id(id);
         let mut session = crate::app::session::UiSession::new(key.clone(), format!("proj-{id}"));
         session.failed_turn = Some(crate::app::FailedTurn {
             error,
@@ -723,8 +723,8 @@ mod tests {
         id: &str,
         secs: u64,
         count: usize,
-    ) -> forge_workspace::SessionKey {
-        let key = forge_workspace::SessionKey::from_session_id(id);
+    ) -> forge_workspace::SessionSlot {
+        let key = forge_workspace::SessionSlot::from_session_id(id);
         let mut session = crate::app::session::UiSession::new(key.clone(), format!("proj-{id}"));
         session.review_replies_waiting = Some(crate::app::ReviewRepliesWaiting {
             branch: "feat".to_owned(),
@@ -823,7 +823,7 @@ mod tests {
         );
         // A second bucket so there is somewhere to switch away to.
         seed_failed_session(&mut app, "other", 50, forge_primitives::ApiRetryError::Unknown, None);
-        app.active_session_key = Some(forge_workspace::SessionKey::from_session_id("other"));
+        app.active_session_key = Some(forge_workspace::SessionSlot::from_session_id("other"));
 
         app.switch_active_session(key.clone());
         assert!(
@@ -831,7 +831,7 @@ mod tests {
             "attending to the session clears its failure",
         );
 
-        app.switch_active_session(forge_workspace::SessionKey::from_session_id("other"));
+        app.switch_active_session(forge_workspace::SessionSlot::from_session_id("other"));
         assert!(
             !app.needs_attention_sessions().iter().any(|e| e.session_key == key),
             "the attended failure does not come back on switch-away",
@@ -846,7 +846,7 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Connecting;
         let uuid = "11111111-2222-3333-4444-555555555555";
-        let real = forge_workspace::SessionKey::from_session_id(uuid);
+        let real = forge_workspace::SessionSlot::from_session_id(uuid);
         let mut bucket = crate::app::session::UiSession::new(real.clone(), "test-project");
         bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         app.sessions.insert(real.clone(), bucket);
@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn same_key_switch_still_derives_status_from_the_bucket() {
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_session_id("same");
+        let key = forge_workspace::SessionSlot::from_session_id("same");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "test-project");
         bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         app.sessions.insert(key.clone(), bucket);
@@ -894,7 +894,7 @@ mod tests {
     fn boot_adoption_then_same_key_pick_leaves_the_composer_typable() {
         let mut app = App::test_default();
         app.status = AppStatus::Connecting;
-        let real = forge_workspace::SessionKey::from_session_id("boot-resumed");
+        let real = forge_workspace::SessionSlot::from_session_id("boot-resumed");
         let mut bucket = crate::app::session::UiSession::new(real.clone(), "test-project");
         bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         app.sessions.insert(real.clone(), bucket);
@@ -968,7 +968,7 @@ mod tests {
         // synthetic test bucket so call sites stay infallible before
         // Connect lands.
         assert_eq!(app.sessions.len(), 1);
-        let test_key = forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY);
+        let test_key = forge_workspace::SessionSlot::from_session_id(App::TEST_SESSION_KEY);
         assert_eq!(app.active_session_key.as_ref(), Some(&test_key));
         assert!(app.active_session().is_some());
     }
@@ -976,7 +976,7 @@ mod tests {
     #[test]
     fn inserting_a_session_makes_it_active_via_accessors() {
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_str_for_test("abc-123");
+        let key = forge_workspace::SessionSlot::from_str_for_test("abc-123");
         app.sessions
             .entry(key.clone())
             .or_insert_with(|| crate::app::session::UiSession::new(key.clone(), "test-project"));
@@ -1001,7 +1001,7 @@ mod tests {
         let _seeded_outbox = app.install_testing_stub();
         // Seed a second bucket and stamp it with a session_id so the
         // refresh fns clear their session_id gate after the switch.
-        let dest_key = forge_workspace::SessionKey::from_str_for_test("destination-session");
+        let dest_key = forge_workspace::SessionSlot::from_str_for_test("destination-session");
         let mut dest_bucket = crate::app::session::UiSession::new(dest_key.clone(), "test-project");
         dest_bucket.session_id =
             Some(forge_primitives::SessionId::new(dest_key.as_str().to_owned()));
@@ -1054,7 +1054,7 @@ mod tests {
     #[test]
     fn test_default_seeded_bucket_does_not_collide_with_project_paths() {
         let app = App::test_default();
-        let test_key = forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY);
+        let test_key = forge_workspace::SessionSlot::from_session_id(App::TEST_SESSION_KEY);
         let test_bucket = app.sessions.get(&test_key).expect("seeded bucket");
         // `test_default` seeds `/test` for stable rendering; production
         // launchpad-mode seeding uses an empty `cwd_raw`. Either
@@ -1137,7 +1137,7 @@ mod tests {
     #[test]
     fn set_session_id_logs_the_focus_move_it_makes() {
         let mut app = App::test_default();
-        let seeded = forge_workspace::SessionKey::from_session_id(App::TEST_SESSION_KEY);
+        let seeded = forge_workspace::SessionSlot::from_session_id(App::TEST_SESSION_KEY);
         assert_eq!(app.active_session_key.as_ref(), Some(&seeded));
 
         let log = capture_logs(|| {

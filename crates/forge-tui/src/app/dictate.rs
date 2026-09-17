@@ -1209,7 +1209,7 @@ mod tests {
         let mut app = App::test_default();
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
-        let other = forge_workspace::SessionKey::from_session_id("other-project");
+        let other = forge_workspace::SessionSlot::from_session_id("other-project");
         app.sessions.insert(other.clone(), UiSession::new(other.clone(), "other-project"));
         {
             let bucket = app.sessions.get_mut(&other).expect("bucket");

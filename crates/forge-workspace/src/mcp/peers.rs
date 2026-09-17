@@ -14,7 +14,7 @@
 //! - `peers__whoami` - caller's own identity (project name, org,
 //!   path, model, permission mode).
 //!
-//! All four tools take a closure-bound [`SessionKey`] identifying the
+//! All four tools take a closure-bound [`SessionSlot`] identifying the
 //! caller plus an [`Arc<dyn WorkspaceFacade>`] for the workspace
 //! state surface. [`build_server`] bakes both into each tool's
 //! struct fields when the per-session MCP server is constructed.
@@ -636,12 +636,12 @@ impl Tool for AskAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionKey;
+    use crate::SessionSlot;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::peers::types::{InflightAsk, PeerLiveness, PeerStatus};
 
-    fn fake_key(s: &str) -> SessionKey {
-        SessionKey::from_session_id(s)
+    fn fake_key(s: &str) -> SessionSlot {
+        SessionSlot::from_session_id(s)
     }
 
     fn fake_peer(name: &str) -> PeerStatus {

@@ -144,7 +144,7 @@ pub(crate) fn app_with_target_snapshot(
     snapshot: Option<forge_primitives::git_diff::GitDiffSnapshot>,
 ) -> App {
     let mut app = App::test_default();
-    let key = forge_workspace::SessionKey::from_session_id("diff-target-test");
+    let key = forge_workspace::SessionSlot::from_session_id("diff-target-test");
     let mut session = crate::app::session::UiSession::new(key.clone(), "test-project");
     session.git_diff_snapshot = snapshot;
     app.sessions.insert(key.clone(), session);
@@ -334,7 +334,7 @@ pub(crate) fn review_app() -> (App, tempfile::TempDir) {
     workspace.install_db_for_test(
         forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
     );
-    let key = forge_workspace::SessionKey::from_session_id("review-session");
+    let key = forge_workspace::SessionSlot::from_session_id("review-session");
     let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
     session.cwd_raw = "/tmp/repo".into();
     app.sessions.insert(key.clone(), session);

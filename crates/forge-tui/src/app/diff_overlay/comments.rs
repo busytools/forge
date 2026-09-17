@@ -1543,7 +1543,7 @@ mod tests {
         // open, so upsert returns false - the comment must stay at-risk
         // (persisted = false), not be marked durable on scope alone.
         let mut app = App::test_default();
-        let key = forge_workspace::SessionKey::from_session_id("review-session");
+        let key = forge_workspace::SessionSlot::from_session_id("review-session");
         let mut session = crate::app::session::UiSession::new(key.clone(), "forge");
         session.cwd_raw = "/tmp/repo".into();
         app.sessions.insert(key.clone(), session);

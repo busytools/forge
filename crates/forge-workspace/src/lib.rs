@@ -95,7 +95,7 @@ pub use error::WorkspaceError;
 pub use forge_dictate::Device;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
 pub use protocol::{Command, DictateOutcome, DispatchError, SessionUpdate, TurnErrorClass};
-pub use target::{ProjectKey, SessionKey, SessionTarget};
+pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use ui::{RepaintCadence, SpinnerStyle};
 pub use views::{
     AccountAuth, AccountBudget, AccountLoadingRow, AccountRow, GatewayOrgView, ProjectView,

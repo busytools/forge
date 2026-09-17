@@ -5,7 +5,7 @@ use super::super::{
 use super::clear_compaction_state;
 use super::rate_limit::{format_rate_limit_summary, rate_limit_notice_key};
 use crate::agent::model;
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 use forge_workspace::translate::error_handling::{
     TurnErrorClass, classify_turn_error, summarize_internal_error,
 };
@@ -42,7 +42,7 @@ struct TurnExitState {
 /// workspace.
 pub(crate) fn dispatch_permission_outcome(
     app: &App,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     tool_id: &str,
     outcome: forge_primitives::PermissionOutcome,
 ) {
@@ -148,7 +148,7 @@ pub(crate) mod test_capture {
 /// [`dispatch_permission_outcome`] - same test-capture rule applies.
 pub(crate) fn dispatch_slack_post_outcome(
     app: &App,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     id: uuid::Uuid,
     approved: bool,
 ) {
@@ -183,7 +183,7 @@ pub(crate) fn dispatch_slack_post_outcome(
 /// [`dispatch_permission_outcome`] - same test-capture rule applies.
 pub(crate) fn dispatch_question_outcome(
     app: &App,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     tool_id: &str,
     outcome: forge_primitives::QuestionOutcome,
 ) {
@@ -233,11 +233,11 @@ pub(crate) fn dispatch_question_outcome(
 /// in the SDK message flow upstream; this reducer is the TUI-side
 /// projection. (For the direct call from `sdk_message.rs` the
 /// operational hook is run there.)
-pub(super) fn apply_session_update_turn_cancelled(app: &mut App, key: &SessionKey) {
+pub(super) fn apply_session_update_turn_cancelled(app: &mut App, key: &SessionSlot) {
     apply_turn_cancelled_presentation(app, key);
 }
 
-fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
+fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionSlot) {
     if app.active_session_key.as_ref() == Some(session_key) {
         if !app.pending_cancel() {
             app.set_pending_cancel(true);
@@ -380,7 +380,7 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
 /// the bucket writes inside `apply_turn_complete_presentation`.
 pub(super) fn handle_turn_complete_event(
     app: &mut App,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
     apply_turn_complete_presentation(app, session_key, terminal_reason);
@@ -394,7 +394,7 @@ pub(super) fn handle_turn_complete_event(
 /// hook.)
 pub(super) fn apply_session_update_turn_complete(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
     apply_turn_complete_presentation(app, key, terminal_reason);
@@ -402,7 +402,7 @@ pub(super) fn apply_session_update_turn_complete(
 
 fn apply_turn_complete_presentation(
     app: &mut App,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
     // The outage passed: give a later unrelated one the full budget.
@@ -578,7 +578,7 @@ fn anticipate_buffered_next_turn(app: &mut App, tail_assistant_idx_before: Optio
 /// the bucket writes inside `apply_turn_error_presentation`.
 pub(super) fn handle_turn_error_event(
     app: &mut App,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     msg: &str,
     classified: Option<TurnErrorClass>,
     terminal_reason: Option<forge_primitives::TerminalReason>,
@@ -595,7 +595,7 @@ pub(super) fn handle_turn_error_event(
 /// it has consumed since before the protocol layer existed.
 pub(super) fn apply_session_update_turn_error(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     message: &str,
     class: Option<forge_workspace::TurnErrorClass>,
     terminal_reason: Option<forge_primitives::TerminalReason>,
@@ -615,7 +615,7 @@ fn map_workspace_turn_error_class(class: forge_workspace::TurnErrorClass) -> Tur
 
 fn apply_turn_error_presentation(
     app: &mut App,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     msg: &str,
     classified: Option<TurnErrorClass>,
     terminal_reason: Option<forge_primitives::TerminalReason>,
@@ -816,7 +816,7 @@ fn apply_turn_error_presentation(
 /// with budget left gets continued by forge itself (see
 /// [`super::auto_continue`]); everything else - and an exhausted budget
 /// - falls through to the attention band.
-fn handle_dead_turn(app: &mut App, key: &SessionKey) {
+fn handle_dead_turn(app: &mut App, key: &SessionSlot) {
     let error = app
         .sessions
         .get(key)
@@ -831,7 +831,7 @@ fn handle_dead_turn(app: &mut App, key: &SessionKey) {
 /// A turn that ended in error has no duration to settle, so drop the
 /// live clock and every assistant's unsettled row: a failed dispatch
 /// must not leave a bar counting forever.
-fn clear_failed_turn_clock(app: &mut App, key: &SessionKey) {
+fn clear_failed_turn_clock(app: &mut App, key: &SessionSlot) {
     let Some(bucket) = app.sessions.get_mut(key) else {
         return;
     };
@@ -853,7 +853,7 @@ fn clear_failed_turn_clock(app: &mut App, key: &SessionKey) {
 /// without any. Drives the Inspector NEEDS ATTENTION row and the
 /// Projects-pane `✕` until the user attends to the session or it runs
 /// another turn.
-pub(crate) fn record_failed_turn(app: &mut App, key: &SessionKey) {
+pub(crate) fn record_failed_turn(app: &mut App, key: &SessionSlot) {
     if let Some(bucket) = app.sessions.get_mut(key) {
         let (error, status) =
             bucket.last_api_retry.unwrap_or((forge_primitives::ApiRetryError::Unknown, None));
@@ -966,8 +966,8 @@ mod tests {
     use crate::app::App;
     use crate::app::state::types::SessionTaskCard;
 
-    fn seed_bucket(app: &mut App, id: &str, project: &str) -> SessionKey {
-        let key = SessionKey::from_str_for_test(id);
+    fn seed_bucket(app: &mut App, id: &str, project: &str) -> SessionSlot {
+        let key = SessionSlot::from_str_for_test(id);
         let bucket = crate::app::session::UiSession::new(key.clone(), project);
         app.sessions.insert(key.clone(), bucket);
         key
@@ -1124,7 +1124,7 @@ mod tests {
         use crate::app::session::UiSession;
         use forge_workspace::SessionUpdate;
         let mut app = App::test_default();
-        let bg_key = SessionKey::from_str_for_test("background-session");
+        let bg_key = SessionSlot::from_str_for_test("background-session");
         let mut bg = UiSession::new(bg_key.clone(), "beta");
         bg.lifecycle_state = crate::app::session::SessionLifecycleState::Running;
         app.sessions.insert(bg_key.clone(), bg);
@@ -1169,7 +1169,7 @@ mod tests {
         )
     }
 
-    fn active_session_key(app: &App) -> SessionKey {
+    fn active_session_key(app: &App) -> SessionSlot {
         app.active_session_key.clone().expect("active session key seeded by App::test_default")
     }
 
@@ -1274,7 +1274,7 @@ mod tests {
         app.active_messages_mut().expect("active session").push(empty_assistant_message());
         let active_messages_before = app.messages().expect("active session").len();
 
-        let bg_key = SessionKey::from_str_for_test("background-session");
+        let bg_key = SessionSlot::from_str_for_test("background-session");
         let mut bg_session = UiSession::new(bg_key.clone(), "test-project");
         bg_session.messages.push(user_message("bg hello"));
         bg_session.messages.push(empty_assistant_message());
@@ -1296,7 +1296,7 @@ mod tests {
     fn turn_cancelled_for_background_session_marks_only_target_bucket() {
         use crate::app::session::UiSession;
         let mut app = App::test_default();
-        let bg_key = SessionKey::from_str_for_test("background-session");
+        let bg_key = SessionSlot::from_str_for_test("background-session");
         let bg_session = UiSession::new(bg_key.clone(), "test-project");
         app.sessions.insert(bg_key.clone(), bg_session);
 
@@ -1317,7 +1317,7 @@ mod tests {
     fn turn_error_for_background_session_does_not_set_should_quit() {
         use crate::app::session::UiSession;
         let mut app = App::test_default();
-        let bg_key = SessionKey::from_str_for_test("background-session");
+        let bg_key = SessionSlot::from_str_for_test("background-session");
         let bg_session = UiSession::new(bg_key.clone(), "test-project");
         app.sessions.insert(bg_key.clone(), bg_session);
 
@@ -1378,7 +1378,7 @@ mod tests {
         use crate::app::state::types::BackgroundTask;
 
         let mut app = App::test_default();
-        let bg_key = SessionKey::from_str_for_test("background-session");
+        let bg_key = SessionSlot::from_str_for_test("background-session");
         let mut bg_session = UiSession::new(bg_key.clone(), "test-project");
         bg_session.messages.push(bg_tool_message("tu-bg", model::ToolCallStatus::InProgress));
         bg_session.messages.push(bg_tool_message("tu-ord", model::ToolCallStatus::InProgress));

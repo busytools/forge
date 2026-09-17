@@ -31,15 +31,15 @@ use crate::mcp::peers::types::{
 };
 use tracing::warn;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::domain_session::DomainSession;
 use crate::protocol::{Command, SessionUpdate};
 use crate::workspace::Workspace;
 
-/// Snapshot the caller's current [`SessionKey`] on demand.
+/// Snapshot the caller's current [`SessionSlot`] on demand.
 ///
 /// Each session's peer-MCP tools hold a `CallerKeyResolver` instead of
-/// a bare `SessionKey` because the session's key isn't stable - `/new`
+/// a bare `SessionSlot` because the session's key isn't stable - `/new`
 /// and `/clear` move the pooled key when the CLI adopts a different id,
 /// through [`Workspace::migrate_session_task`]. Tools that baked the
 /// key in at server-build time would see stale lookups after the
@@ -53,14 +53,14 @@ use crate::workspace::Workspace;
 /// Test resolvers can be any closure (typically returning a fixed
 /// fake key).
 #[derive(Clone)]
-pub struct CallerKeyResolver(Arc<dyn Fn() -> Result<SessionKey, ResolverDetached> + Send + Sync>);
+pub struct CallerKeyResolver(Arc<dyn Fn() -> Result<SessionSlot, ResolverDetached> + Send + Sync>);
 
 /// Returned by [`CallerKeyResolver::current`] when the underlying
 /// `DomainSession` has been dropped (typically: workspace shutdown
 /// happening concurrently with a peer/worker tool invocation). The
 /// Tool impl should surface this as an `is_error` tool response -
 /// the recipient session is dying, the LLM call won't have anywhere
-/// to land anyway. Replaces the prior `__detached__` SessionKey
+/// to land anyway. Replaces the prior `__detached__` SessionSlot
 /// sentinel which forced every consumer to compare against a magic
 /// string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,23 +104,23 @@ impl CallerKeyResolver {
     /// invocation), `current()` returns `Err(ResolverDetached)`.
     /// Tools handle this by returning a tool-level error so the LLM
     /// sees the failure cleanly rather than silently routing against
-    /// a synthetic sentinel SessionKey.
+    /// a synthetic sentinel SessionSlot.
     pub fn from_domain(domain: &Arc<parking_lot::Mutex<DomainSession>>) -> Self {
         let weak = Arc::downgrade(domain);
         Self(Arc::new(move || weak.upgrade().map(|d| d.lock().key.clone()).ok_or(ResolverDetached)))
     }
 
-    /// Build a resolver that returns a fixed `SessionKey`. Use this
+    /// Build a resolver that returns a fixed `SessionSlot`. Use this
     /// in tests where the session never rekeys.
     #[cfg(any(test, feature = "testing"))]
-    pub fn from_fixed(key: SessionKey) -> Self {
+    pub fn from_fixed(key: SessionSlot) -> Self {
         Self(Arc::new(move || Ok(key.clone())))
     }
 
-    /// Resolve the caller's current `SessionKey`. Returns
+    /// Resolve the caller's current `SessionSlot`. Returns
     /// `Err(ResolverDetached)` when the underlying `DomainSession`
     /// has been dropped (workspace shutdown race).
-    pub fn current(&self) -> Result<SessionKey, ResolverDetached> {
+    pub fn current(&self) -> Result<SessionSlot, ResolverDetached> {
         (self.0)()
     }
 }
@@ -154,7 +154,7 @@ pub enum DeliverError {
 
 /// Why delivering a Reply straight to the asker's session failed.
 /// Reply delivery bypasses name/label resolution (the asker is
-/// addressed by `SessionKey`), so the only failure mode is a caller
+/// addressed by `SessionSlot`), so the only failure mode is a caller
 /// session that closed before the reply could land.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplyDeliverError {
@@ -200,7 +200,7 @@ pub trait WorkspaceFacade: Send + Sync {
     /// doesn't resolve to any known project (defensive - the tools
     /// closure-bind a real key at spawn time, so this should be
     /// `Some` in practice).
-    fn whoami(&self, caller: &SessionKey) -> Option<PeerStatus>;
+    fn whoami(&self, caller: &SessionSlot) -> Option<PeerStatus>;
 
     /// Deliver a wrapped peer prompt to `target_project`.
     ///
@@ -218,7 +218,7 @@ pub trait WorkspaceFacade: Send + Sync {
     /// `Command::DeliverPeerPrompt` handler (lands in C11).
     fn deliver_peer_prompt(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError>;
@@ -230,7 +230,7 @@ pub trait WorkspaceFacade: Send + Sync {
     /// `Err` only when the caller session closed.
     fn deliver_reply_to_caller(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError>;
 
@@ -253,7 +253,7 @@ pub trait WorkspaceFacade: Send + Sync {
     /// Apply a delta to `peer_stats[key]` and emit
     /// `SessionUpdate::PeerInflightStatsChanged` so the TUI reducer
     /// can update the sidebar peer-activity badge.
-    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta);
+    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta);
 }
 
 /// Production impl. Holds a `Weak<Workspace>` rather than
@@ -323,7 +323,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
             .collect()
     }
 
-    fn whoami(&self, caller: &SessionKey) -> Option<PeerStatus> {
+    fn whoami(&self, caller: &SessionSlot) -> Option<PeerStatus> {
         let ws = self.0.upgrade()?;
         let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
         // Liveness + stats key off the LEAD's session, not the
@@ -358,7 +358,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
 
     fn deliver_peer_prompt(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError> {
@@ -392,7 +392,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
 
     fn deliver_reply_to_caller(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError> {
         let Some(ws) = self.0.upgrade() else {
@@ -424,7 +424,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         ws.inflight_asks.lock().remove(id)
     }
 
-    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
+    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
         let Some(ws) = self.0.upgrade() else { return };
         let stats_snapshot = {
             let mut stats = ws.peer_stats.lock();
@@ -475,16 +475,16 @@ pub struct MockWorkspaceFacade {
     /// Pre-loaded peer status snapshot returned by `list_peers`.
     pub peers: parking_lot::Mutex<Vec<PeerStatus>>,
     /// Captured calls to `deliver_peer_prompt`.
-    pub deliver_calls: parking_lot::Mutex<Vec<(SessionKey, String, WrappedPrompt)>>,
+    pub deliver_calls: parking_lot::Mutex<Vec<(SessionSlot, String, WrappedPrompt)>>,
     /// Captured calls to `deliver_reply_to_caller` (by-session reply
     /// delivery) so tests can assert the reply's target + kind.
-    pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionKey, WrappedPrompt)>>,
+    pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionSlot, WrappedPrompt)>>,
     /// Captured calls to `register_inflight_ask`.
     pub register_calls: parking_lot::Mutex<Vec<InflightAsk>>,
     /// Captured calls to `complete_inflight_ask`.
     pub complete_calls: parking_lot::Mutex<Vec<CorrelationId>>,
     /// Captured calls to `bump_inflight_stats`.
-    pub bump_calls: parking_lot::Mutex<Vec<(SessionKey, PeerStatsDelta)>>,
+    pub bump_calls: parking_lot::Mutex<Vec<(SessionSlot, PeerStatsDelta)>>,
     /// Pre-loaded `InflightAsk`s that `resolve_correlation` may return.
     pub inflight: parking_lot::Mutex<std::collections::HashMap<CorrelationId, InflightAsk>>,
     /// If set, `deliver_peer_prompt` returns this error instead of
@@ -516,7 +516,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         self.peers.lock().clone()
     }
 
-    fn whoami(&self, caller: &SessionKey) -> Option<PeerStatus> {
+    fn whoami(&self, caller: &SessionSlot) -> Option<PeerStatus> {
         // Mock's `whoami` does the same "find by caller's lead session"
         // shape as the prod impl, but works against the mock's
         // pre-loaded peers list. Tests that want a specific identity
@@ -527,7 +527,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
 
     fn deliver_peer_prompt(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError> {
@@ -551,7 +551,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
 
     fn deliver_reply_to_caller(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         reply: &WrappedPrompt,
     ) -> Result<(), ReplyDeliverError> {
         if let Some(err) = self.force_reply_error.lock().clone() {
@@ -575,7 +575,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         self.inflight.lock().remove(id)
     }
 
-    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
+    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
         self.bump_calls.lock().push((key.clone(), delta));
     }
 }
@@ -586,11 +586,11 @@ mod tests {
     use crate::mcp::peers::types::{AskChannel, WrappedKind};
     use std::path::PathBuf;
 
-    fn fake_key(s: &str) -> SessionKey {
+    fn fake_key(s: &str) -> SessionSlot {
         // Tests use the production constructor (no test-helpers feature
-        // here) - SessionKey is just a String newtype, so this aligns
+        // here) - SessionSlot is just a String newtype, so this aligns
         // with how the workspace itself constructs keys at runtime.
-        SessionKey::from_session_id(s)
+        SessionSlot::from_session_id(s)
     }
 
     fn fake_peer(name: &str, liveness: PeerLiveness) -> PeerStatus {
@@ -716,7 +716,7 @@ mod tests {
         mock.peers.lock().push(fake_peer("alpha", PeerLiveness::Running));
         mock.peers.lock().push(fake_peer("beta", PeerLiveness::Sleeping));
         // Convention in the mock: caller key string == project name.
-        // The prod impl matches by SessionKey ↔ lead-session lookup.
+        // The prod impl matches by SessionSlot ↔ lead-session lookup.
         let identity = mock.whoami(&fake_key("alpha"));
         assert!(identity.is_some());
         assert_eq!(identity.unwrap().name, "alpha");
@@ -760,15 +760,15 @@ mod lead_resolution_tests {
     use crate::target::ProjectKey;
     use crate::views::{ProjectView, SessionView};
     use crate::workspace::Workspace;
-    use crate::{CorrelationId, SessionKey, WorkerEntry, WrappedPrompt};
+    use crate::{CorrelationId, SessionSlot, WorkerEntry, WrappedPrompt};
     use forge_primitives::WorkerLiveness;
     use std::time::SystemTime;
 
     fn session(id: &str) -> SessionView {
-        SessionView::new_for_test(SessionKey::from_session_id(id), id, true, None)
+        SessionView::new_for_test(SessionSlot::from_session_id(id), id, true, None)
     }
 
-    fn worker_entry(session_key: SessionKey) -> WorkerEntry {
+    fn worker_entry(session_key: SessionSlot) -> WorkerEntry {
         WorkerEntry {
             label: "reviewer".into(),
             charter: "review the diff".into(),
@@ -844,7 +844,7 @@ mod lead_resolution_tests {
         let (ws, _rx) = Workspace::testing_stub();
         let facade = ProdWorkspaceFacade::from_arc(&ws);
         let result = facade.deliver_peer_prompt(
-            &SessionKey::from_session_id("caller"),
+            &SessionSlot::from_session_id("caller"),
             "no-such-project",
             wrapped(),
         );
@@ -857,7 +857,7 @@ mod lead_resolution_tests {
     fn whoami_none_when_caller_leads_no_project() {
         let (ws, _rx) = Workspace::testing_stub();
         let facade = ProdWorkspaceFacade::from_arc(&ws);
-        assert!(facade.whoami(&SessionKey::from_session_id("nobody")).is_none());
+        assert!(facade.whoami(&SessionSlot::from_session_id("nobody")).is_none());
     }
 
     /// #298 Cause 1: workers can call `peers__whoami` and see their
@@ -871,11 +871,11 @@ mod lead_resolution_tests {
         let pk = crate::ProjectKey::new(
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/myproj")),
         );
-        ws.insert_live_worker(&pk, worker_entry(SessionKey::from_session_id("worker-uuid")));
+        ws.insert_live_worker(&pk, worker_entry(SessionSlot::from_session_id("worker-uuid")));
 
         let facade = ProdWorkspaceFacade::from_arc(&ws);
         let status = facade
-            .whoami(&SessionKey::from_session_id("worker-uuid"))
+            .whoami(&SessionSlot::from_session_id("worker-uuid"))
             .expect("worker caller resolves to its project's peer identity");
         assert_eq!(status.name, "myproj");
         assert_eq!(status.org, "TestOrg");
@@ -883,7 +883,7 @@ mod lead_resolution_tests {
         // Regression lock: the pre-existing lead-only path still
         // resolves to the same project identity.
         let lead_status = facade
-            .whoami(&SessionKey::from_session_id("lead-uuid"))
+            .whoami(&SessionSlot::from_session_id("lead-uuid"))
             .expect("lead caller still resolves");
         assert_eq!(lead_status.name, "myproj");
     }

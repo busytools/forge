@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::target::ProjectKey;
 use crate::views::{ProjectView, SessionView};
 use crate::workspace::Workspace;
@@ -48,7 +48,7 @@ pub(crate) struct CallerContext {
 /// Returns the project the caller belongs to plus the lead's session
 /// view + an `is_lead` flag. `None` when the caller doesn't appear in
 /// any project (caller hasn't connected yet, or transient race).
-pub(crate) fn caller_context(ws: &Workspace, caller: &SessionKey) -> Option<CallerContext> {
+pub(crate) fn caller_context(ws: &Workspace, caller: &SessionSlot) -> Option<CallerContext> {
     ws.list_projects().into_iter().find_map(|view| caller_context_in_view(ws, &view, caller))
 }
 
@@ -60,7 +60,7 @@ pub(crate) fn caller_context(ws: &Workspace, caller: &SessionKey) -> Option<Call
 fn caller_context_in_view(
     ws: &Workspace,
     view: &ProjectView,
-    caller: &SessionKey,
+    caller: &SessionSlot,
 ) -> Option<CallerContext> {
     let live = ws.list_live_workers(&view.key);
     let worker_label = live.iter().find(|w| w.session_key == *caller).map(|w| w.label.clone());
@@ -96,10 +96,10 @@ mod tests {
     use std::time::SystemTime;
 
     fn session(id: &str) -> SessionView {
-        SessionView::new_for_test(SessionKey::from_session_id(id), id, true, None)
+        SessionView::new_for_test(SessionSlot::from_session_id(id), id, true, None)
     }
 
-    fn worker_entry(session_key: SessionKey) -> WorkerEntry {
+    fn worker_entry(session_key: SessionSlot) -> WorkerEntry {
         WorkerEntry {
             label: "reviewer".into(),
             charter: "review the diff".into(),
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn caller_context_returns_none_for_unknown_caller() {
         let (ws, view, _, _) = fixture();
-        let cx = caller_context_in_view(&ws, &view, &SessionKey::from_session_id("ghost-uuid"));
+        let cx = caller_context_in_view(&ws, &view, &SessionSlot::from_session_id("ghost-uuid"));
         assert!(cx.is_none(), "caller not in the project must return None");
     }
 

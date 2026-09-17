@@ -333,7 +333,7 @@ pub struct FailedTurn {
 #[derive(Debug, Clone)]
 pub struct AttentionEntry {
     /// Session to switch to when the row is clicked.
-    pub session_key: forge_workspace::SessionKey,
+    pub session_key: forge_workspace::SessionSlot,
     /// Project name (white bold in the row).
     pub name: String,
     /// Worker role in parens (dim), when the session is a worker.

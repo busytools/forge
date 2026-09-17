@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use crate::target::{ProjectKey, SessionKey};
+use crate::target::{ProjectKey, SessionSlot};
 
 pub use forge_primitives::usage::AccountBudget;
 
@@ -173,7 +173,7 @@ pub struct AccountLoadingRow {
 /// One session under a project.
 #[derive(Clone, Debug)]
 pub struct SessionView {
-    pub session: SessionKey,
+    pub session: SessionSlot,
     /// Display label for the session - the title set via the
     /// session-rename flow if any, otherwise a derivation from the
     /// session id or first message. Rendered in the Projects pane.
@@ -188,7 +188,7 @@ pub struct SessionView {
 impl SessionView {
     /// Test-only constructor for cross-crate fixtures.
     pub fn new_for_test(
-        session: SessionKey,
+        session: SessionSlot,
         label: impl Into<String>,
         is_open: bool,
         last_activity: Option<SystemTime>,

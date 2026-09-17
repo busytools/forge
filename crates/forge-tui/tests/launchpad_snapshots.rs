@@ -10,13 +10,13 @@ use forge_tui::app::ActiveView;
 use forge_tui::app::App;
 use forge_tui::app::session::UiSession;
 use forge_tui::ui::launchpad;
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 /// Force-set a UiSession bucket with the given lifecycle so the
 /// launchpad picker resolves the row to that state.
-fn register_bucket(app: &mut App, key: &SessionKey, lifecycle: SessionLifecycleState) {
+fn register_bucket(app: &mut App, key: &SessionSlot, lifecycle: SessionLifecycleState) {
     let bucket = app
         .sessions
         .entry(key.clone())
@@ -26,7 +26,7 @@ fn register_bucket(app: &mut App, key: &SessionKey, lifecycle: SessionLifecycleS
 
 /// Convenience: stamp a Failed bucket carrying an error message for
 /// the launchpad's per-row error tail.
-fn register_failed_bucket(app: &mut App, key: &SessionKey, message: &str) {
+fn register_failed_bucket(app: &mut App, key: &SessionSlot, message: &str) {
     let bucket = app
         .sessions
         .entry(key.clone())
@@ -104,7 +104,7 @@ fn keyboard_clamps_selection_when_picker_empty() {
 fn last_connection_error_stamped_on_failed_buckets() {
     // Verify the bucket-side machinery the picker reads.
     let mut app = App::test_default();
-    let key = SessionKey::from_str_for_test("session-failed");
+    let key = SessionSlot::from_str_for_test("session-failed");
     register_failed_bucket(&mut app, &key, "OAuth token expired");
     let bucket = app.sessions.get(&key).expect("bucket inserted");
     assert_eq!(bucket.lifecycle_state, SessionLifecycleState::Failed);
@@ -114,7 +114,7 @@ fn last_connection_error_stamped_on_failed_buckets() {
 #[test]
 fn spawning_lifecycle_round_trips_through_session_state() {
     let mut app = App::test_default();
-    let key = SessionKey::from_str_for_test("session-spawning");
+    let key = SessionSlot::from_str_for_test("session-spawning");
     register_bucket(&mut app, &key, SessionLifecycleState::Spawning);
     let bucket = app.sessions.get(&key).expect("bucket inserted");
     assert_eq!(bucket.lifecycle_state, SessionLifecycleState::Spawning);

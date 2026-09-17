@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 use forge_primitives::cron::{CronEntry, CronId, CronKind};
 
-use crate::SessionKey;
+use crate::SessionSlot;
 use crate::mcp::caller_context::caller_context;
 use crate::mcp::cron::schedule;
 use crate::workspace::Workspace;
@@ -45,19 +45,19 @@ pub(crate) trait CronFacade: Send + Sync {
     /// blank).
     fn create_cron(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         kind: CronKind,
         prompt: String,
         description: Option<String>,
     ) -> Result<CronEntry, CronCreateError>;
 
     /// The crons registered for the caller's project.
-    fn list_crons(&self, caller: &SessionKey) -> Vec<CronEntry>;
+    fn list_crons(&self, caller: &SessionSlot) -> Vec<CronEntry>;
 
     /// Delete a cron by id within the caller's project. `Ok(true)` if an
     /// entry was removed, `Ok(false)` if no such cron belongs to the
     /// caller's project.
-    fn delete_cron(&self, caller: &SessionKey, id: &CronId) -> Result<bool, CronDeleteError>;
+    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<bool, CronDeleteError>;
 }
 
 /// Production facade over `Weak<Workspace>` (weak to avoid a cycle with
@@ -75,7 +75,7 @@ impl ProdCronFacade {
 impl CronFacade for ProdCronFacade {
     fn create_cron(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         kind: CronKind,
         prompt: String,
         description: Option<String>,
@@ -105,7 +105,7 @@ impl CronFacade for ProdCronFacade {
         Ok(entry)
     }
 
-    fn list_crons(&self, caller: &SessionKey) -> Vec<CronEntry> {
+    fn list_crons(&self, caller: &SessionSlot) -> Vec<CronEntry> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
         // Symmetric: every caller sees only its own crons - a lead
@@ -116,7 +116,7 @@ impl CronFacade for ProdCronFacade {
             .collect()
     }
 
-    fn delete_cron(&self, caller: &SessionKey, id: &CronId) -> Result<bool, CronDeleteError> {
+    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<bool, CronDeleteError> {
         let ws = self.workspace.upgrade().ok_or(CronDeleteError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(CronDeleteError::UnknownCallerProject)?;
         Ok(ws.remove_cron_owned_by(&cx.project_name, id, cx.worker_label.as_deref()))
@@ -125,7 +125,7 @@ impl CronFacade for ProdCronFacade {
 
 /// One recorded `create_cron` call: caller, kind, prompt, description.
 #[cfg(test)]
-type CreateCall = (SessionKey, CronKind, String, Option<String>);
+type CreateCall = (SessionSlot, CronKind, String, Option<String>);
 
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
@@ -136,7 +136,7 @@ pub(crate) struct MockCronFacade {
     pub crons: parking_lot::Mutex<Vec<CronEntry>>,
     pub create_calls: parking_lot::Mutex<Vec<CreateCall>>,
     pub create_result: parking_lot::Mutex<Option<Result<CronEntry, CronCreateError>>>,
-    pub delete_calls: parking_lot::Mutex<Vec<(SessionKey, CronId)>>,
+    pub delete_calls: parking_lot::Mutex<Vec<(SessionSlot, CronId)>>,
     pub delete_result: parking_lot::Mutex<Option<Result<bool, CronDeleteError>>>,
 }
 
@@ -154,7 +154,7 @@ impl MockCronFacade {
 impl CronFacade for MockCronFacade {
     fn create_cron(
         &self,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         kind: CronKind,
         prompt: String,
         description: Option<String>,
@@ -181,11 +181,11 @@ impl CronFacade for MockCronFacade {
         })
     }
 
-    fn list_crons(&self, _caller: &SessionKey) -> Vec<CronEntry> {
+    fn list_crons(&self, _caller: &SessionSlot) -> Vec<CronEntry> {
         self.crons.lock().clone()
     }
 
-    fn delete_cron(&self, caller: &SessionKey, id: &CronId) -> Result<bool, CronDeleteError> {
+    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<bool, CronDeleteError> {
         self.delete_calls.lock().push((caller.clone(), id.clone()));
         self.delete_result.lock().clone().unwrap_or(Ok(false))
     }
@@ -204,7 +204,7 @@ mod prod_facade_tests {
         WorkerEntry {
             label: label.to_owned(),
             charter: "review".to_owned(),
-            session_key: SessionKey::from_session_id(session_id),
+            session_key: SessionSlot::from_session_id(session_id),
             status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".to_owned(),
@@ -215,7 +215,7 @@ mod prod_facade_tests {
         }
     }
 
-    fn fixture() -> (Arc<Workspace>, Arc<dyn CronFacade>, SessionKey, SessionKey) {
+    fn fixture() -> (Arc<Workspace>, Arc<dyn CronFacade>, SessionSlot, SessionSlot) {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("myproj", "/tmp/b2-myproj");
         let key =
@@ -226,8 +226,8 @@ mod prod_facade_tests {
         (
             ws,
             facade,
-            SessionKey::from_session_id("lead-uuid"),
-            SessionKey::from_session_id("worker-uuid"),
+            SessionSlot::from_session_id("lead-uuid"),
+            SessionSlot::from_session_id("worker-uuid"),
         )
     }
 

@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 
 use crate::agent::model;
 use crate::app::file_index::FileIndexState;
@@ -42,7 +42,7 @@ use forge_primitives::{AccountInfo, PeerInflightStats, SessionId};
 pub struct UiSession {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
-    pub key: Option<SessionKey>,
+    pub key: Option<SessionSlot>,
     /// This session's `/dictate` normalizer-axis overrides, mirrored
     /// from the workspace's `DomainSession` via
     /// `SessionUpdate::DictateOverrides` echoes. The `/dictate`
@@ -204,7 +204,7 @@ pub struct UiSession {
     /// rather than per-account: each session fetches independently
     /// (idempotent + TTL-gated; redundant fetches across same-account
     /// sessions are cheap). Read by the Projects-pane account/status
-    /// panel. Routed by `SessionKey` in the `Usage*` `SessionUpdate`
+    /// panel. Routed by `SessionSlot` in the `Usage*` `SessionUpdate`
     /// envelopes so an in-flight fetch that lands after the user has
     /// switched sessions still writes to the bucket that requested it.
     pub usage: UsageState,
@@ -533,7 +533,7 @@ pub struct UiSession {
 }
 
 impl UiSession {
-    pub fn new(key: SessionKey, project: impl Into<String>) -> Self {
+    pub fn new(key: SessionSlot, project: impl Into<String>) -> Self {
         Self::blank(Some(key), project.into())
     }
 
@@ -829,7 +829,7 @@ impl UiSession {
     /// seeds to 1; every other field takes its type default, so a new
     /// field lands here without further thought. A new non-defaulted
     /// field belongs on [`Self::new`] instead.
-    pub(crate) fn blank(key: Option<SessionKey>, project: String) -> Self {
+    pub(crate) fn blank(key: Option<SessionSlot>, project: String) -> Self {
         Self {
             key,
             project,
@@ -993,7 +993,7 @@ mod tests {
     #[test]
     fn set_session_id_preserves_the_real_key_bucket_state() {
         let mut app = App::test_default();
-        let real = forge_workspace::SessionKey::from_session_id("real-uuid");
+        let real = forge_workspace::SessionSlot::from_session_id("real-uuid");
         app.sessions
             .insert(real.clone(), super::UiSession::new(real.clone(), App::TEST_SESSION_PROJECT));
         app.active_session_key = Some(real.clone());
@@ -1033,7 +1033,7 @@ mod tests {
             command: command.map(str::to_owned),
         };
         let mut session = super::UiSession::new(
-            forge_workspace::SessionKey::from_session_id("bg"),
+            forge_workspace::SessionSlot::from_session_id("bg"),
             "test-project",
         );
         assert!(!session.has_live_background_work(), "empty registry is not live work");
@@ -1096,7 +1096,7 @@ mod tests {
         use crate::app::state::types::BackgroundTask;
 
         let mut session = super::UiSession::new(
-            forge_workspace::SessionKey::from_session_id("bg"),
+            forge_workspace::SessionSlot::from_session_id("bg"),
             "test-project",
         );
         for (task_id, task_type) in

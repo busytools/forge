@@ -151,7 +151,7 @@ fn active_session_label(app: &App) -> Option<String> {
 mod tests {
     use super::*;
     use crate::app::session::{SessionLifecycleState, UiSession};
-    use forge_workspace::SessionKey;
+    use forge_workspace::SessionSlot;
 
     /// The wake window is the one moment the strip has an id but no
     /// session behind it: the bucket exists under the id the spawn
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn the_strip_says_waking_while_the_focused_bucket_has_not_connected() {
         let mut app = App::test_default();
-        let key = SessionKey::from_session_id("9f1c2b3a-4d5e-4f60-8a7b-0c1d2e3f4a5b");
+        let key = SessionSlot::from_session_id("9f1c2b3a-4d5e-4f60-8a7b-0c1d2e3f4a5b");
         let mut bucket = UiSession::new(key.clone(), "forge");
         bucket.lifecycle_state = SessionLifecycleState::Spawning;
         app.sessions.insert(key.clone(), bucket);

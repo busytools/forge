@@ -790,7 +790,7 @@ mod tests {
         app.tools_collapsed = true;
         let a_key = app.active_session_key.clone().expect("an active session");
 
-        let b_key = forge_workspace::SessionKey::from_str_for_test("collapse-cross-session");
+        let b_key = forge_workspace::SessionSlot::from_str_for_test("collapse-cross-session");
         let mut b_bucket = crate::app::session::UiSession::new(b_key.clone(), "test-project");
         b_bucket.messages = vec![ungrouped_tool_message("cross-session")];
         app.sessions.insert(b_key.clone(), b_bucket);
@@ -861,7 +861,7 @@ mod tests {
         *app.active_messages_mut().expect("active session") =
             vec![ungrouped_tool_message("cross-session")];
 
-        let b_key = forge_workspace::SessionKey::from_str_for_test("collapse-background-height");
+        let b_key = forge_workspace::SessionSlot::from_str_for_test("collapse-background-height");
         let mut b_bucket = crate::app::session::UiSession::new(b_key.clone(), "test-project");
         b_bucket.messages = vec![ungrouped_tool_message("cross-session")];
         app.sessions.insert(b_key.clone(), b_bucket);

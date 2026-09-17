@@ -3719,9 +3719,9 @@ mod inbound_message_surfacing_tests {
         );
     }
 
-    fn seed_background_bucket(app: &mut App, session_id: &str) -> forge_workspace::SessionKey {
+    fn seed_background_bucket(app: &mut App, session_id: &str) -> forge_workspace::SessionSlot {
         use crate::app::session::UiSession;
-        let key = forge_workspace::SessionKey::from_session_id(session_id.to_owned());
+        let key = forge_workspace::SessionSlot::from_session_id(session_id.to_owned());
         let mut bucket = UiSession::new(key.clone(), "test-project");
         bucket.session_id = Some(crate::agent::model::SessionId::new(session_id.to_owned()));
         app.sessions.insert(key.clone(), bucket);

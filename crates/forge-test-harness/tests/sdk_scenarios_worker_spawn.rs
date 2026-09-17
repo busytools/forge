@@ -31,7 +31,7 @@ use std::time::SystemTime;
 
 use forge_sdk::{OptionsBuilder, PermissionMode};
 use forge_test_harness::sdk_wire::run_live_scenario;
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 use forge_workspace::protocol::WorkerSpawnReply;
 use forge_workspace::{
     CallerKeyResolver, CallerProject, MockWorkerFacade, WorkerFacade, build_workers_server,
@@ -40,7 +40,7 @@ use forge_workspace::{
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn worker_spawn_scenario() {
-    let caller_key = SessionKey::from_session_id("lead-test-session");
+    let caller_key = SessionSlot::from_session_id("lead-test-session");
     let project_key = forge_workspace::ProjectKey::new_for_test("forge");
 
     let mock = MockWorkerFacade::new();

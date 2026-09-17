@@ -9,7 +9,7 @@ use crate::agent::model;
 use crate::app::session::SessionLifecycleState;
 use crate::error::AppError;
 use forge_primitives::cloud::service_status::ServiceSeverity;
-use forge_workspace::SessionKey;
+use forge_workspace::SessionSlot;
 
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
@@ -20,7 +20,7 @@ const TURN_ERROR_INPUT_LOCK_HINT: &str =
 /// session) use this helper instead of the
 /// `App::bump_session_scope_epoch` accessor, which targets the
 /// *active* session. No-op when no bucket is registered for `key`.
-fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionKey) {
+fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionSlot) {
     if let Some(bucket) = app.sessions.get_mut(key) {
         bucket.session_scope_epoch = bucket.session_scope_epoch.saturating_add(1);
     }
@@ -35,7 +35,7 @@ fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionKey) {
 /// background (background path: write into the bucket directly).
 fn apply_connected_presentation(
     app: &mut App,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     session_id: model::SessionId,
     cwd: String,
     current_model: model::CurrentModel,
@@ -151,7 +151,7 @@ fn apply_connected_presentation(
 
 pub(super) fn handle_sessions_listed_event(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     sessions: Vec<forge_primitives::SessionListEntry>,
 ) {
     let session_count = sessions.len();
@@ -190,7 +190,7 @@ pub(super) fn handle_sessions_listed_event(
 
 pub(super) fn handle_auth_required_event(
     app: &mut App,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     method_name: String,
     method_description: String,
 ) {
@@ -284,7 +284,7 @@ pub(super) fn handle_auth_required_event(
     );
 }
 
-pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &SessionKey, msg: &str) {
+pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &SessionSlot, msg: &str) {
     let is_rate_limited = is_rate_limited_failure(msg);
     if app.active_session_key.as_ref() != Some(session_key) {
         // Bump workspace's epoch BEFORE acquiring the session's mut
@@ -450,7 +450,7 @@ fn is_rate_limited_failure(msg: &str) -> bool {
         || lower.contains("all accounts")
 }
 
-pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &SessionKey, msg: &str) {
+pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &SessionSlot, msg: &str) {
     if app.active_session_key.as_ref() != Some(session_key) {
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
@@ -506,8 +506,8 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
 /// is the replacement.
 fn handle_session_replaced_event(
     app: &mut App,
-    session_key: &SessionKey,
-    previous_key: &SessionKey,
+    session_key: &SessionSlot,
+    previous_key: &SessionSlot,
     session_id: model::SessionId,
     cwd: String,
     current_model: model::CurrentModel,
@@ -727,7 +727,7 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
 /// moved, which is the one case the name it was minted with no longer
 /// holds. No-op when the cwd maps to no configured project - the
 /// existing name stands rather than being cleared.
-fn restamp_bucket_project_from_cwd(app: &mut App, key: &SessionKey) {
+fn restamp_bucket_project_from_cwd(app: &mut App, key: &SessionSlot) {
     let cwd = app.sessions.get(key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
     let Some(name) = app.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd)) else {
         return;
@@ -753,7 +753,7 @@ fn restamp_bucket_project_from_cwd(app: &mut App, key: &SessionKey) {
 
 pub(super) fn apply_session_update_connected(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     session_id: forge_primitives::SessionId,
     cwd: String,
     current_model: forge_primitives::CurrentModel,
@@ -831,8 +831,8 @@ pub(super) fn apply_session_update_connected(
 
 pub(super) fn apply_session_update_session_replaced(
     app: &mut App,
-    key: &SessionKey,
-    previous_key: &SessionKey,
+    key: &SessionSlot,
+    previous_key: &SessionSlot,
     session_id: forge_primitives::SessionId,
     cwd: String,
     current_model: forge_primitives::CurrentModel,
@@ -943,7 +943,7 @@ pub(super) fn apply_session_update_session_replaced(
 /// Assignment, not accumulation: the transcript already holds every
 /// boundary counted live this run, so re-seeding on a later Connected
 /// lands on the same total.
-fn seed_compaction_count(app: &mut App, key: &SessionKey, compaction_count: u32) {
+fn seed_compaction_count(app: &mut App, key: &SessionSlot, compaction_count: u32) {
     if let Some(session) = app.session_mut(key) {
         session.session_usage.compaction_count = compaction_count;
     } else {
@@ -962,7 +962,7 @@ fn seed_compaction_count(app: &mut App, key: &SessionKey, compaction_count: u32)
 
 pub(super) fn apply_session_update_sessions_listed(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     sessions: Vec<forge_primitives::SessionListEntry>,
 ) {
     handle_sessions_listed_event(app, key, sessions);
@@ -970,7 +970,7 @@ pub(super) fn apply_session_update_sessions_listed(
 
 pub(super) fn apply_session_update_auth_required(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     method_name: String,
     method_description: String,
 ) {
@@ -979,7 +979,7 @@ pub(super) fn apply_session_update_auth_required(
 
 pub(super) fn apply_session_update_connection_failed(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     message: &str,
     _fatal: bool,
 ) {
@@ -988,7 +988,7 @@ pub(super) fn apply_session_update_connection_failed(
 
 pub(super) fn apply_session_update_slash_command_error(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     message: &str,
 ) {
     handle_slash_command_error_event(app, key, message);
@@ -1002,7 +1002,7 @@ pub(super) fn apply_session_update_slash_command_error(
 /// the newer optimistic apply (and its snapshot) alone.
 pub(super) fn apply_session_update_set_mode_failed(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     mode: forge_workspace::PermissionMode,
     message: &str,
 ) {
@@ -1041,7 +1041,7 @@ pub(super) fn apply_session_update_set_mode_failed(
 
 pub(super) fn apply_session_update_set_model_failed(
     app: &mut App,
-    key: &SessionKey,
+    key: &SessionSlot,
     model: &str,
     message: &str,
 ) {
@@ -1102,7 +1102,7 @@ mod restamp_project_tests {
         let path = "/tmp/stamp-proj";
         ws.seed_test_project("stampproj", path);
 
-        let lead = forge_workspace::SessionKey::from_session_id("lead-uuid");
+        let lead = forge_workspace::SessionSlot::from_session_id("lead-uuid");
         let mut bucket = crate::app::session::UiSession::new(lead.clone(), "test-project");
         bucket.cwd_raw = path.to_owned();
         app.sessions.insert(lead.clone(), bucket);
@@ -1113,7 +1113,7 @@ mod restamp_project_tests {
             "a project-root cwd re-derives the project name",
         );
 
-        let worker = forge_workspace::SessionKey::from_session_id("worker-uuid");
+        let worker = forge_workspace::SessionSlot::from_session_id("worker-uuid");
         let mut bucket = crate::app::session::UiSession::new(worker.clone(), "test-project");
         bucket.cwd_raw = format!("{path}/.claude/worktrees/reviewer");
         app.sessions.insert(worker.clone(), bucket);
@@ -1133,7 +1133,7 @@ mod restamp_project_tests {
         let ws = app.workspace.clone().expect("test workspace");
         ws.seed_test_project("stampproj", "/tmp/stamp-force-proj");
 
-        let key = forge_workspace::SessionKey::from_session_id("k");
+        let key = forge_workspace::SessionSlot::from_session_id("k");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "preset");
         bucket.cwd_raw = "/tmp/somewhere-else".to_owned();
         app.sessions.insert(key.clone(), bucket);
@@ -1152,7 +1152,7 @@ mod seed_compaction_count_tests {
     use super::seed_compaction_count;
     use crate::app::App;
     use crate::app::session::UiSession;
-    use forge_workspace::SessionKey;
+    use forge_workspace::SessionSlot;
 
     /// Assignment, not accumulation. The transcript the seed comes from
     /// already contains every boundary counted live this run, so adding
@@ -1163,7 +1163,7 @@ mod seed_compaction_count_tests {
     #[test]
     fn seeding_replaces_a_live_count_rather_than_adding_to_it() {
         let mut app = App::test_default();
-        let key = SessionKey::from_session_id("seeded".to_owned());
+        let key = SessionSlot::from_session_id("seeded".to_owned());
         let mut bucket = UiSession::new(key.clone(), "test-project");
         bucket.session_usage.compaction_count = 3;
         app.sessions.insert(key.clone(), bucket);
@@ -1186,7 +1186,7 @@ mod teardown_clears_background_registry_tests {
     use crate::app::BackgroundTask;
     use crate::app::session::UiSession;
     use crate::app::state::types::SessionTaskCard;
-    use forge_workspace::SessionKey;
+    use forge_workspace::SessionSlot;
 
     fn seed_task(bucket: &mut UiSession) {
         bucket.background_tasks.push(BackgroundTask {
@@ -1207,7 +1207,7 @@ mod teardown_clears_background_registry_tests {
     #[test]
     fn background_connection_failure_clears_background_registry() {
         let mut app = App::test_default();
-        let key = SessionKey::from_session_id("bg-fail");
+        let key = SessionSlot::from_session_id("bg-fail");
         let mut bucket = UiSession::new(key.clone(), "test-project");
         seed_task(&mut bucket);
         app.sessions.insert(key.clone(), bucket);
@@ -1244,7 +1244,7 @@ mod teardown_clears_background_registry_tests {
     #[test]
     fn background_auth_required_clears_background_registry() {
         let mut app = App::test_default();
-        let key = SessionKey::from_session_id("bg-auth");
+        let key = SessionSlot::from_session_id("bg-auth");
         let mut bucket = UiSession::new(key.clone(), "test-project");
         seed_task(&mut bucket);
         app.sessions.insert(key.clone(), bucket);
@@ -1271,7 +1271,7 @@ mod teardown_clears_background_registry_tests {
         use super::apply_session_update_session_replaced;
 
         let mut app = App::test_default();
-        let previous = SessionKey::from_session_id("replaced-uuid");
+        let previous = SessionSlot::from_session_id("replaced-uuid");
         let mut bucket = UiSession::new(previous.clone(), "test-project");
         seed_task(&mut bucket);
         app.sessions.insert(previous.clone(), bucket);
@@ -1282,7 +1282,7 @@ mod teardown_clears_background_registry_tests {
         );
         let current_model = app.current_model().cloned().expect("test_default seeds a model");
 
-        let replacement = SessionKey::from_session_id("replacement-uuid");
+        let replacement = SessionSlot::from_session_id("replacement-uuid");
         apply_session_update_session_replaced(
             &mut app,
             &replacement,
@@ -1321,7 +1321,7 @@ mod connected_log_tests {
     use super::apply_connected_presentation;
     use crate::agent::model;
     use crate::app::{App, session::UiSession};
-    use forge_workspace::SessionKey;
+    use forge_workspace::SessionSlot;
 
     /// The session_connected log must carry the CONNECTING session's cwd
     /// and model, not whatever session the user has focused. A background
@@ -1330,13 +1330,13 @@ mod connected_log_tests {
     #[test]
     fn background_connect_logs_the_event_cwd_not_the_focused_cwd() {
         let mut app = App::test_default();
-        let focused = SessionKey::from_session_id("focused-uuid");
+        let focused = SessionSlot::from_session_id("focused-uuid");
         let mut focused_bucket = UiSession::new(focused.clone(), "test-project");
         focused_bucket.cwd_raw = "/Users/vedhavyas/Projects/granite-backend".to_owned();
         app.sessions.insert(focused.clone(), focused_bucket);
         app.active_session_key = Some(focused);
 
-        let worker = SessionKey::from_session_id("worker-uuid");
+        let worker = SessionSlot::from_session_id("worker-uuid");
         let log = capture_logs(|| {
             apply_connected_presentation(
                 &mut app,
@@ -1370,13 +1370,13 @@ mod connected_log_tests {
     #[test]
     fn empty_event_cwd_falls_back_to_the_buckets_seeded_cwd() {
         let mut app = App::test_default();
-        let focused = SessionKey::from_session_id("focused-uuid");
+        let focused = SessionSlot::from_session_id("focused-uuid");
         let mut focused_bucket = UiSession::new(focused.clone(), "test-project");
         focused_bucket.cwd_raw = "/Users/vedhavyas/Projects/granite-backend".to_owned();
         app.sessions.insert(focused.clone(), focused_bucket);
         app.active_session_key = Some(focused);
 
-        let worker = SessionKey::from_session_id("worker-uuid");
+        let worker = SessionSlot::from_session_id("worker-uuid");
         let mut worker_bucket = UiSession::new(worker.clone(), "test-project");
         worker_bucket.cwd_raw =
             "/Users/vedhavyas/Projects/forge/.claude/worktrees/reviewer".to_owned();
@@ -1437,7 +1437,7 @@ mod connected_log_tests {
 mod process_scan_generation_tests {
     use super::apply_session_cwd;
     use crate::app::App;
-    use forge_workspace::SessionKey;
+    use forge_workspace::SessionSlot;
 
     /// A cwd change swaps the session's identity - the process scanner's
     /// in-flight scan keyed on the OLD claude_pid must land stale. The
@@ -1445,7 +1445,7 @@ mod process_scan_generation_tests {
     #[test]
     fn changed_cwd_bumps_process_scan_generation_and_clears_the_snapshot() {
         let mut app = App::test_default();
-        let key = SessionKey::from_session_id("swap-uuid");
+        let key = SessionSlot::from_session_id("swap-uuid");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "test-project");
         bucket.cwd_raw = "/tmp/old-cwd".to_owned();
         bucket.process_snapshot = Some(forge_workspace::env::processes::ProcessSnapshot {
@@ -1474,7 +1474,7 @@ mod process_scan_generation_tests {
     #[test]
     fn same_cwd_keeps_the_generation() {
         let mut app = App::test_default();
-        let key = SessionKey::from_session_id("steady-uuid");
+        let key = SessionSlot::from_session_id("steady-uuid");
         let mut bucket = crate::app::session::UiSession::new(key.clone(), "test-project");
         bucket.cwd_raw = "/tmp/steady-cwd".to_owned();
         app.sessions.insert(key.clone(), bucket);

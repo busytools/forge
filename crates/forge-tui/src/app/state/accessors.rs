@@ -407,7 +407,7 @@ impl super::App {
     /// payload onto the bucket that requested the scan.
     pub fn recent_sessions_mut_for(
         &mut self,
-        key: &forge_workspace::SessionKey,
+        key: &forge_workspace::SessionSlot,
     ) -> Option<&mut Vec<RecentSessionInfo>> {
         self.sessions.get_mut(key).map(|s| &mut s.recent_sessions)
     }

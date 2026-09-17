@@ -26,7 +26,7 @@ use crate::protocol::{Command, DispatchError, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::store::sessions::LEAD_LABEL;
-use crate::target::{ProjectKey, SessionKey, SessionTarget};
+use crate::target::{ProjectKey, SessionSlot, SessionTarget};
 use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 
 #[cfg(any(test, feature = "testing"))]
@@ -127,7 +127,7 @@ const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. 
 /// part of a kick prompt - kicks are pure text).
 #[derive(Debug)]
 pub(crate) struct KickRequest {
-    pub session_key: SessionKey,
+    pub session_key: SessionSlot,
     pub prompt_body: String,
 }
 
@@ -201,7 +201,7 @@ pub struct Workspace {
     /// `mcp::workers::facade::ProdWorkerFacade`) can probe pool
     /// membership for lead-delivery gating without an extra method
     /// wrapper.
-    pub(crate) pool: Mutex<HashMap<SessionKey, PooledAgent>>,
+    pub(crate) pool: Mutex<HashMap<SessionSlot, PooledAgent>>,
     /// The account state map, owned by the gateway and reached through
     /// its pool. It carries picker/health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
@@ -235,9 +235,9 @@ pub struct Workspace {
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
     /// key; cleared on [`Self::release_session_with_cascade`] and [`Self::shutdown`].
     #[cfg(any(test, feature = "testing"))]
-    pub(crate) command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
+    pub(crate) command_senders: Mutex<HashMap<SessionSlot, mpsc::UnboundedSender<Command>>>,
     #[cfg(not(any(test, feature = "testing")))]
-    command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
+    command_senders: Mutex<HashMap<SessionSlot, mpsc::UnboundedSender<Command>>>,
     /// Per-project list of live worker sessions. In-memory only -
     /// wiped on forge restart by design (workers are ephemeral at the
     /// forge UI level; their JSONLs persist on disk). Mutated via
@@ -246,7 +246,7 @@ pub struct Workspace {
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
     /// `pub(crate)` so crate-internal spawn and delivery paths can
     /// reach a session's `DomainSession` directly.
-    pub(crate) domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
+    pub(crate) domain_handles: Mutex<HashMap<SessionSlot, Arc<Mutex<DomainSession>>>>,
     /// Wire-shape state for in-flight peer-coordination asks
     /// (`mcp__forge__peers__ask_agent`). One entry per outstanding ask
     /// keyed by [`CorrelationId`]. Registered by
@@ -267,19 +267,19 @@ pub struct Workspace {
     /// delivery-failed. Read by `list_peers` and `whoami`. Drives
     /// `SessionUpdate::PeerInflightStatsChanged` which the TUI
     /// reducer turns into sidebar peer-activity badges.
-    pub(crate) peer_stats: Mutex<HashMap<SessionKey, PeerInflightStats>>,
+    pub(crate) peer_stats: Mutex<HashMap<SessionSlot, PeerInflightStats>>,
     /// The session that submitted the reviews on a `(project, branch)` -
     /// the target for a worker's review-activity notice. Set by
     /// [`Self::submit_review`]; latest submit wins (the reviewer is one
     /// human whose session may rekey across a resume). `pub(crate)` so
     /// the impl block in [`crate::review`] can reach it.
-    pub(crate) review_origin: Mutex<HashMap<(String, String), SessionKey>>,
+    pub(crate) review_origin: Mutex<HashMap<(String, String), SessionSlot>>,
     /// Review actions a caller took during its current turn, keyed by the
-    /// caller's [`SessionKey`]. Appended by [`Self::review_reply`] /
+    /// caller's [`SessionSlot`]. Appended by [`Self::review_reply`] /
     /// [`Self::review_resolve`] and drained into one notice per review at
     /// the caller's turn end ([`Self::drain_review_activity`]).
     /// `pub(crate)` so the impl block in [`crate::review`] can reach it.
-    pub(crate) review_activity: Mutex<HashMap<SessionKey, Vec<crate::mcp::review::ReviewActivity>>>,
+    pub(crate) review_activity: Mutex<HashMap<SessionSlot, Vec<crate::mcp::review::ReviewActivity>>>,
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
@@ -400,7 +400,7 @@ pub struct Workspace {
     /// what answers it. The owner is stored beside it so an answer is
     /// only ever applied by the session it was addressed to.
     pub(crate) slack_drafts:
-        Mutex<HashMap<uuid::Uuid, (SessionKey, tokio::sync::oneshot::Sender<bool>)>>,
+        Mutex<HashMap<uuid::Uuid, (SessionSlot, tokio::sync::oneshot::Sender<bool>)>>,
     /// Slack messages handed to a session recently, keyed by
     /// `(project, owner, conversation, ts)`. A sweep re-runs a batch
     /// whenever a 429 lands mid-sweep, a watermark write fails, or the
@@ -473,7 +473,7 @@ pub(crate) struct PooledAgent {
 #[derive(Debug)]
 pub enum LiveWorkerRefusal {
     /// A live (non-`Failed`) worker already holds the label.
-    LabelLive(SessionKey),
+    LabelLive(SessionSlot),
     /// The project's worker cap is reached: `live` workers are up
     /// against a cap of `cap`.
     AtCap { live: usize, cap: usize },
@@ -1185,7 +1185,7 @@ impl Workspace {
     /// the lead. Empty `sessions` means the project has nothing on
     /// disk yet; the project still surfaces in the returned Vec.
     pub fn list_projects(&self) -> Vec<ProjectView> {
-        let open_sessions: std::collections::HashSet<SessionKey> =
+        let open_sessions: std::collections::HashSet<SessionSlot> =
             self.pool.lock().keys().cloned().collect();
 
         // One catalog acquire for the whole walk - the loop body is
@@ -1225,7 +1225,7 @@ impl Workspace {
                     entries
                         .iter()
                         .map(|info| {
-                            let session = SessionKey::from_session_id(info.session_id.clone());
+                            let session = SessionSlot::from_session_id(info.session_id.clone());
                             SessionView {
                                 session: session.clone(),
                                 label: info.summary.clone(),
@@ -1326,7 +1326,7 @@ impl Workspace {
         self: &Arc<Self>,
         target: SessionTarget,
         mut settings: SessionLaunchSettings,
-        resolved_key: Option<SessionKey>,
+        resolved_key: Option<SessionSlot>,
         role: &crate::protocol::SpawnRole,
     ) -> Result<Arc<AgentHandle>> {
         // The boot gate is a spawn precondition, not just a launchpad
@@ -2328,7 +2328,7 @@ impl Workspace {
     /// pick. The lookup goes through the pooled registration: bindings
     /// are keyed by the segment the child's base URL was stamped with,
     /// which survives the rename that re-keys the session.
-    pub fn bound_account_for(&self, key: &SessionKey) -> Option<AccountKey> {
+    pub fn bound_account_for(&self, key: &SessionSlot) -> Option<AccountKey> {
         let (org, project, session) = {
             let pool = self.pool.lock();
             let registration = pool.get(key).and_then(|entry| entry.registration.as_ref())?;
@@ -2433,7 +2433,7 @@ impl Workspace {
             .collect()
     }
 
-    /// Resolves a `SessionTarget` to the `SessionKey` used to look up
+    /// Resolves a `SessionTarget` to the `SessionSlot` used to look up
     /// the pool. A project-rooted target resolves to the id its lead will
     /// run under - the stored one, or a freshly minted one, recorded
     /// before the spawn - so the pool key IS the session id and nothing
@@ -2443,7 +2443,7 @@ impl Workspace {
         &self,
         target: &SessionTarget,
         force_new: bool,
-    ) -> Result<SessionKey, WorkspaceError> {
+    ) -> Result<SessionSlot, WorkspaceError> {
         match target {
             SessionTarget::Default => {
                 self.lead_session_key_for(self.config.default_project(), force_new)
@@ -2454,7 +2454,7 @@ impl Workspace {
             }
             SessionTarget::Session(key) => Ok(key.clone()),
             SessionTarget::FreshInProject { session_id, .. } => {
-                Ok(SessionKey::from_session_id(session_id.clone()))
+                Ok(SessionSlot::from_session_id(session_id.clone()))
             }
         }
     }
@@ -2487,7 +2487,7 @@ impl Workspace {
         })
     }
 
-    /// Map a project to the `SessionKey` of its lead: the id the store
+    /// Map a project to the `SessionSlot` of its lead: the id the store
     /// holds, or a freshly minted one when there is nothing to resume,
     /// so the pool key IS the id from the first instant rather than
     /// something renamed onto it later.
@@ -2501,10 +2501,10 @@ impl Workspace {
         &self,
         project: &LoadedProject,
         force_new: bool,
-    ) -> Result<SessionKey, WorkspaceError> {
+    ) -> Result<SessionSlot, WorkspaceError> {
         match self.lead_session_to_resume(project, force_new)? {
             Some(key) => Ok(key),
-            None => Ok(SessionKey::from_session_id(uuid::Uuid::new_v4().to_string())),
+            None => Ok(SessionSlot::from_session_id(uuid::Uuid::new_v4().to_string())),
         }
     }
 
@@ -2526,12 +2526,12 @@ impl Workspace {
         &self,
         project: &LoadedProject,
         force_new: bool,
-    ) -> Result<Option<SessionKey>, WorkspaceError> {
+    ) -> Result<Option<SessionSlot>, WorkspaceError> {
         if force_new {
             return Ok(None);
         }
         match self.stored_session_id(&project.org, &project.name, LEAD_LABEL) {
-            Ok(id) => Ok(id.map(SessionKey::from_session_id)),
+            Ok(id) => Ok(id.map(SessionSlot::from_session_id)),
             Err(source) => {
                 tracing::error!(
                     target: "forge_workspace::sessions",
@@ -2552,7 +2552,7 @@ impl Workspace {
     /// The row a live session's id belongs to: its org and project from
     /// the pooled registration, and the label that carries its role.
     /// `None` for a session this process has no registration for.
-    pub(crate) fn session_row_for_key(&self, key: &SessionKey) -> Option<(String, String, String)> {
+    pub(crate) fn session_row_for_key(&self, key: &SessionSlot) -> Option<(String, String, String)> {
         let (org, project) = {
             let pool = self.pool.lock();
             let registration = pool.get(key).and_then(|entry| entry.registration.as_ref())?;
@@ -2569,7 +2569,7 @@ impl Workspace {
     /// `key` must be the one the task is registered under: a refused
     /// rekey leaves it on the old slot, and the row at the key the event
     /// named belongs to the session already holding it.
-    pub(crate) fn note_running_session_id(&self, key: &SessionKey, session_id: &str) {
+    pub(crate) fn note_running_session_id(&self, key: &SessionSlot, session_id: &str) {
         let Some((org, project, label)) = self.session_row_for_key(key) else {
             return;
         };
@@ -2598,7 +2598,7 @@ impl Workspace {
     /// A fresh id for a session starting now, recorded against the row
     /// `key` belongs to. `None` when the key has no row, which leaves the
     /// CLI to pick its own id.
-    pub(crate) fn fresh_session_id_for(&self, key: &SessionKey) -> Option<String> {
+    pub(crate) fn fresh_session_id_for(&self, key: &SessionSlot) -> Option<String> {
         let (org, project, label) = self.session_row_for_key(key)?;
         let id = uuid::Uuid::new_v4().to_string();
         self.record_session_id(&org, &project, &label, &id);
@@ -2675,7 +2675,7 @@ impl Workspace {
     /// the agent boots.
     pub(crate) fn find_project_for_session(
         &self,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
     ) -> Option<LoadedProject> {
         let catalog = self.catalog.lock();
         let owning_project_key = catalog.iter().find_map(|(project_key, entries)| {
@@ -2712,7 +2712,7 @@ impl Workspace {
     /// resume hits "No conversation found with session ID ..." even
     /// when the `.jsonl` exists. Returns `None` when the catalog has
     /// no entry for `session_id` or the entry lacks a cwd.
-    pub fn session_cwd_for(&self, session_id: &SessionKey) -> Option<String> {
+    pub fn session_cwd_for(&self, session_id: &SessionSlot) -> Option<String> {
         self.catalog
             .lock()
             .values()
@@ -2793,7 +2793,7 @@ impl Workspace {
     /// Callers should hold the lock for the shortest scope possible;
     /// concurrent reducers and the per-session `SessionTask` share
     /// this mutex.
-    pub fn domain_session_for(&self, key: &SessionKey) -> Option<Arc<Mutex<DomainSession>>> {
+    pub fn domain_session_for(&self, key: &SessionSlot) -> Option<Arc<Mutex<DomainSession>>> {
         self.domain_handles.lock().get(key).cloned()
     }
 
@@ -2802,7 +2802,7 @@ impl Workspace {
     /// presence check so callers don't need to peek at
     /// `DomainSession.conn` directly - the field layout is a
     /// workspace internal.
-    pub fn has_agent_for(&self, key: &SessionKey) -> bool {
+    pub fn has_agent_for(&self, key: &SessionSlot) -> bool {
         self.domain_session_for(key).is_some_and(|d| d.lock().conn.is_some())
     }
 
@@ -2816,7 +2816,7 @@ impl Workspace {
     /// is registered for the key.
     fn apply_dictate_override(
         self: &Arc<Self>,
-        key: &SessionKey,
+        key: &SessionSlot,
         update: crate::dictate::DictateOverrideUpdate,
     ) -> Result<(), DispatchError> {
         let Some(domain) = self.domain_session_for(key) else {
@@ -2852,7 +2852,7 @@ impl Workspace {
     /// the configured pin for every capture until the process ends.
     fn apply_dictate_device(
         self: &Arc<Self>,
-        key: &SessionKey,
+        key: &SessionSlot,
         pick: Option<crate::dictate::DictateDeviceChoice>,
     ) -> Result<(), DispatchError> {
         if self.domain_session_for(key).is_none() {
@@ -2870,7 +2870,7 @@ impl Workspace {
     /// flight so the TUI bridges the spinner across the gap.
     pub fn dispatch_workspace_prompt(
         self: &Arc<Self>,
-        key: &SessionKey,
+        key: &SessionSlot,
         text: String,
     ) -> Result<(), DispatchError> {
         // Busy is captured before the dispatch: dispatching first would
@@ -3450,7 +3450,7 @@ impl Workspace {
     /// that take a session_id.
     pub fn set_session_id_in_domain(
         &self,
-        key: &SessionKey,
+        key: &SessionSlot,
         value: Option<forge_primitives::SessionId>,
     ) {
         let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
@@ -3508,7 +3508,7 @@ impl Workspace {
     /// `sessions[0]` is not a reliable lead marker after a worker
     /// reaches Running. `live_workers` is the authoritative
     /// "this session is a child agent" registry.
-    pub fn release_session_with_cascade(self: &Arc<Self>, session_key: &SessionKey) {
+    pub fn release_session_with_cascade(self: &Arc<Self>, session_key: &SessionSlot) {
         let cascade_project = self.list_projects().into_iter().find(|view| {
             let in_catalog = view.sessions.iter().any(|s| s.session == *session_key);
             let is_worker =
@@ -3548,7 +3548,7 @@ impl Workspace {
     ///
     /// Use `release_session_with_cascade` instead when the caller is
     /// the lead-row close gesture.
-    pub(crate) fn release_session(self: &Arc<Self>, session_key: &SessionKey) {
+    pub(crate) fn release_session(self: &Arc<Self>, session_key: &SessionSlot) {
         crate::dictate::teardown_for_closed_session(self, session_key);
         // Anything parked for this session's owner was waiting on a
         // session that is now gone: fail the peer asks so their callers
@@ -3565,7 +3565,7 @@ impl Workspace {
 
     /// Whether a session task still exists for `key`, which is what
     /// makes it live: its command channel is registered and routable.
-    pub(crate) fn session_is_live(&self, key: &SessionKey) -> bool {
+    pub(crate) fn session_is_live(&self, key: &SessionSlot) -> bool {
         self.command_senders.lock().contains_key(key)
     }
 
@@ -3580,7 +3580,7 @@ impl Workspace {
     /// half-cleaning its successor.
     pub(crate) fn release_session_if_current(
         &self,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         handle: &Arc<AgentHandle>,
     ) {
         let mut pool = self.pool.lock();
@@ -3723,7 +3723,7 @@ impl Workspace {
 
     /// The worker label owning `session_key` across all projects, or `None`
     /// when it is not a live worker (a lead or other session).
-    pub(crate) fn worker_label_for_session(&self, session_key: &SessionKey) -> Option<String> {
+    pub(crate) fn worker_label_for_session(&self, session_key: &SessionSlot) -> Option<String> {
         self.live_workers
             .lock()
             .values()
@@ -4067,7 +4067,7 @@ impl Workspace {
     /// The canonical model forge stamped for `key`'s session: the
     /// project's declared `model`. `None` when the session has no
     /// project registration or the project declares no model.
-    pub(crate) fn canonical_model_for_session(&self, key: &SessionKey) -> Option<String> {
+    pub(crate) fn canonical_model_for_session(&self, key: &SessionSlot) -> Option<String> {
         let project_name = self
             .pool
             .lock()
@@ -4085,7 +4085,7 @@ impl Workspace {
     /// the session's org's accounts, in pin order, deduped.
     pub(crate) fn declared_models_for_session(
         &self,
-        key: &SessionKey,
+        key: &SessionSlot,
     ) -> Vec<forge_primitives::runtime::AvailableModel> {
         let org = self
             .pool
@@ -4132,7 +4132,7 @@ impl Workspace {
     /// Used by the TUI's `live_worker_keys` to exclude worker buckets
     /// from project-row click routing without depending on
     /// `list_projects()` for enumeration.
-    pub fn all_live_worker_session_keys(&self) -> Vec<SessionKey> {
+    pub fn all_live_worker_session_keys(&self) -> Vec<SessionSlot> {
         self.live_workers
             .lock()
             .values()
@@ -4223,7 +4223,7 @@ impl Workspace {
     /// matches.
     pub fn remove_worker_by_session_key(
         &self,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
     ) -> Option<(ProjectKey, crate::mcp::workers::types::WorkerEntry)> {
         let mut map = self.live_workers.lock();
         for (project_key, entries) in map.iter_mut() {
@@ -4255,7 +4255,7 @@ impl Workspace {
     /// `None` when the session is a lead (or not a worker at all).
     pub fn worker_lookup_for_session(
         &self,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
     ) -> Option<(ProjectKey, String, bool)> {
         let workers = self.live_workers.lock();
         for (project_key, entries) in workers.iter() {
@@ -4287,7 +4287,7 @@ impl Workspace {
     /// while the review MCP reports `SessionCwdUnknown` to the caller.
     ///
     /// [`worker_tag_dir`]: crate::mcp::workers::types::worker_tag_dir
-    pub(crate) fn cwd_for_session(&self, session_key: &SessionKey) -> Option<String> {
+    pub(crate) fn cwd_for_session(&self, session_key: &SessionSlot) -> Option<String> {
         if let Some(cwd) = self.session_cwd_for(session_key) {
             return Some(cwd);
         }
@@ -4327,7 +4327,7 @@ impl Workspace {
     /// project's sanitised dir, miss the worker JSONL (which lives
     /// under the worktree's sanitised dir), and exit with "No
     /// conversation found with session ID:" (#245 Layer B).
-    pub(crate) fn resume_cwd_for_session(&self, session_key: &SessionKey) -> String {
+    pub(crate) fn resume_cwd_for_session(&self, session_key: &SessionSlot) -> String {
         self.cwd_for_session(session_key).unwrap_or_else(|| {
             tracing::warn!(
                 target: "forge_workspace::workspace",
@@ -4422,7 +4422,7 @@ impl Workspace {
     /// whose root can't be resolved, returns `cwd_raw` unchanged.
     pub fn git_scan_cwd_for_session(
         &self,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         cwd_raw: &std::path::Path,
     ) -> std::path::PathBuf {
         let Some((project_key, label, is_git_repo_at_spawn)) =
@@ -4495,7 +4495,7 @@ impl Workspace {
     /// [`classify_worker_spawn_failure`]: crate::mcp::workers::facade::classify_worker_spawn_failure
     pub(crate) fn handle_async_worker_spawn_failure(
         self: &Arc<Self>,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         message: &str,
     ) -> bool {
         // Look up the worker entry WITHOUT removing it yet - the
@@ -4554,7 +4554,7 @@ impl Workspace {
             // the envelope as a user turn and the TUI render path
             // picks up the bracketed prefix via peer_block::detect_inbound.
             let lead_session_id = entry.spawned_by_session_id.clone();
-            let lead_key = SessionKey::from_session_id(lead_session_id.clone());
+            let lead_key = SessionSlot::from_session_id(lead_session_id.clone());
             let pool_has_lead = self.pool.lock().contains_key(&lead_key);
             if pool_has_lead {
                 let wrapped = WrappedPrompt {
@@ -4643,7 +4643,7 @@ impl Workspace {
     /// if the entry is already `Running`.
     pub(crate) fn apply_worker_tag_or_rollback(
         self: &Arc<Self>,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         cwd: &str,
     ) {
         let Some((project_key, label, is_git_repo_at_spawn)) =
@@ -4685,7 +4685,7 @@ impl Workspace {
     /// the JSONL.
     pub(crate) fn apply_worker_tag_or_rollback_with_config_dir(
         self: &Arc<Self>,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         project_key: &ProjectKey,
         label: &str,
         cwd: &str,
@@ -4788,7 +4788,7 @@ impl Workspace {
     pub(crate) fn retry_worker_tag_opportunistic(
         self: &Arc<Self>,
         project_key: &ProjectKey,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         label: &str,
         cwd: &str,
         is_git_repo_at_spawn: bool,
@@ -4818,7 +4818,7 @@ impl Workspace {
     pub(crate) fn retry_worker_tag_opportunistic_with_config_dir(
         self: &Arc<Self>,
         project_key: &ProjectKey,
-        session_key: &SessionKey,
+        session_key: &SessionSlot,
         label: &str,
         cwd: &str,
         is_git_repo_at_spawn: bool,
@@ -4909,7 +4909,7 @@ impl Workspace {
     /// Returns [`DispatchError::UnknownSession`] when no agent is
     /// registered for `key` (e.g., the session was just closed) or
     /// when the bridge hasn't stamped a `session_id` yet.
-    pub fn refresh_status_snapshot(&self, key: &SessionKey) -> Result<(), DispatchError> {
+    pub fn refresh_status_snapshot(&self, key: &SessionSlot) -> Result<(), DispatchError> {
         let (handle, sid) = self.handle_and_session_id(key)?;
         handle.get_status_snapshot(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
     }
@@ -4922,7 +4922,7 @@ impl Workspace {
     /// See [`Self::refresh_status_snapshot`].
     pub fn refresh_oauth_credentials_snapshot(
         &self,
-        key: &SessionKey,
+        key: &SessionSlot,
     ) -> Result<(), DispatchError> {
         let (handle, sid) = self.handle_and_session_id(key)?;
         handle
@@ -4936,7 +4936,7 @@ impl Workspace {
     /// # Errors
     ///
     /// See [`Self::refresh_status_snapshot`].
-    pub fn refresh_context_usage(&self, key: &SessionKey) -> Result<(), DispatchError> {
+    pub fn refresh_context_usage(&self, key: &SessionSlot) -> Result<(), DispatchError> {
         let (handle, sid) = self.handle_and_session_id(key)?;
         handle.get_context_usage(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
     }
@@ -4947,7 +4947,7 @@ impl Workspace {
     /// # Errors
     ///
     /// See [`Self::refresh_status_snapshot`].
-    pub fn reload_plugins(&self, key: &SessionKey) -> Result<(), DispatchError> {
+    pub fn reload_plugins(&self, key: &SessionSlot) -> Result<(), DispatchError> {
         let (handle, sid) = self.handle_and_session_id(key)?;
         handle.reload_plugins(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
     }
@@ -4958,7 +4958,7 @@ impl Workspace {
     /// # Errors
     ///
     /// See [`Self::refresh_status_snapshot`].
-    pub fn refresh_mcp_snapshot(&self, key: &SessionKey) -> Result<(), DispatchError> {
+    pub fn refresh_mcp_snapshot(&self, key: &SessionSlot) -> Result<(), DispatchError> {
         let (handle, sid) = self.handle_and_session_id(key)?;
         handle.get_mcp_snapshot(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
     }
@@ -4968,7 +4968,7 @@ impl Workspace {
     /// Resolve the auto-memory path the bridge would consult for
     /// `cwd`, scoped to `key`'s configured account. Returns `None`
     /// when no agent is registered for `key`.
-    pub fn project_memory_path(&self, key: &SessionKey, cwd: &std::path::Path) -> Option<PathBuf> {
+    pub fn project_memory_path(&self, key: &SessionSlot, cwd: &std::path::Path) -> Option<PathBuf> {
         let handle = self.agent_handle_for(key)?;
         Some(handle.project_memory_path(cwd))
     }
@@ -4977,7 +4977,7 @@ impl Workspace {
     /// Returns `None` when no agent is registered for `key`.
     pub fn settings_documents(
         &self,
-        key: &SessionKey,
+        key: &SessionSlot,
         cwd: Option<&std::path::Path>,
     ) -> Option<forge_agent::userdata::settings::SettingsDocuments> {
         let handle = self.agent_handle_for(key)?;
@@ -4986,7 +4986,7 @@ impl Workspace {
 
     /// Resolve the agent's configured config_dir for `key`. Returns
     /// `None` when no agent is registered for `key`.
-    pub fn config_dir_for(&self, key: &SessionKey) -> Option<PathBuf> {
+    pub fn config_dir_for(&self, key: &SessionSlot) -> Option<PathBuf> {
         let handle = self.agent_handle_for(key)?;
         Some(handle.config_dir())
     }
@@ -4997,14 +4997,14 @@ impl Workspace {
     /// for the lifetime of the subprocess, so consumers (e.g. the
     /// Inspector pane's PROCESSES OS walk) can cache snapshots
     /// keyed off this value.
-    pub fn claude_pid(&self, key: &SessionKey) -> Option<u32> {
+    pub fn claude_pid(&self, key: &SessionSlot) -> Option<u32> {
         self.agent_handle_for(key).and_then(|handle| handle.claude_pid())
     }
 
     /// Borrow the [`Arc<AgentHandle>`] registered against `key`.
     /// Workspace-internal helper - surfaces a sometimes-`None` to keep
     /// the early-init / disconnected branches explicit.
-    fn agent_handle_for(&self, key: &SessionKey) -> Option<Arc<AgentHandle>> {
+    fn agent_handle_for(&self, key: &SessionSlot) -> Option<Arc<AgentHandle>> {
         let pool = self.pool.lock();
         if let Some(pooled) = pool.get(key) {
             return Some(Arc::clone(&pooled.handle));
@@ -5021,7 +5021,7 @@ impl Workspace {
     /// uniform error handling.
     fn handle_and_session_id(
         &self,
-        key: &SessionKey,
+        key: &SessionSlot,
     ) -> Result<(Arc<AgentHandle>, String), DispatchError> {
         let handle =
             self.agent_handle_for(key).ok_or_else(|| DispatchError::UnknownSession(key.clone()))?;
@@ -5115,7 +5115,7 @@ impl Workspace {
     /// can seed fields on the same handle they just registered.
     pub fn register_domain_session(
         &self,
-        key: SessionKey,
+        key: SessionSlot,
         handle: Option<Arc<forge_agent::AgentHandle>>,
     ) -> Arc<Mutex<DomainSession>> {
         let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), handle)));
@@ -5142,7 +5142,7 @@ impl Workspace {
     /// bucket the workspace still holds under the previous key onto the
     /// id the event carried, and by `set_session_id`. No-op when `from`
     /// is not registered.
-    pub fn rekey_domain_session(&self, from: &SessionKey, to: SessionKey) {
+    pub fn rekey_domain_session(&self, from: &SessionSlot, to: SessionSlot) {
         let mut handles = self.domain_handles.lock();
         if let Some(domain) = handles.remove(from) {
             handles.insert(to, domain);
@@ -5166,7 +5166,7 @@ impl Workspace {
     /// `active_session_key` has flipped to the new one.
     ///
     /// No-op when `from == to` or when `from` is not registered.
-    pub fn migrate_session_task(&self, from: &SessionKey, to: &SessionKey) -> bool {
+    pub fn migrate_session_task(&self, from: &SessionSlot, to: &SessionSlot) -> bool {
         if from == to {
             return true;
         }
@@ -5251,7 +5251,7 @@ impl Workspace {
     /// its `InflightAsk`, paired with every Question delivery so a
     /// later `expire_inflight_ask_failed` can clear that session's
     /// incoming badge (no-op once the ask completes).
-    pub(crate) fn stamp_inflight_target(&self, id: &CorrelationId, target: &SessionKey) {
+    pub(crate) fn stamp_inflight_target(&self, id: &CorrelationId, target: &SessionSlot) {
         if let Some(ask) = self.inflight_asks.lock().get_mut(id) {
             ask.target_session = Some(target.clone());
         }
@@ -5275,7 +5275,7 @@ impl Workspace {
     /// Idempotent. Safe to call from a Drop impl via Weak<Workspace>.
     pub(crate) fn expire_target_inflight(
         self: &Arc<Self>,
-        closing_key: &SessionKey,
+        closing_key: &SessionSlot,
         reason: crate::mcp::peers::types::PeerFailureReason,
     ) {
         // Find the project this closing session belongs to. Workers
@@ -5384,14 +5384,14 @@ impl Workspace {
     }
 
     /// Deliver a Reply straight to the asker's session, bypassing
-    /// name/label resolution. The asker is identified by `SessionKey`
+    /// name/label resolution. The asker is identified by `SessionSlot`
     /// (a worker asker has no addressable project name), so this
     /// by-session path is load-bearing for closing a cross-agent ask.
     /// Confirms the caller session is still live before dispatching.
     /// Shared by the peers + workers facades.
     pub(crate) fn deliver_reply_to_caller(
         self: &Arc<Self>,
-        caller: &SessionKey,
+        caller: &SessionSlot,
         reply: &WrappedPrompt,
     ) -> Result<(), crate::mcp::peers::facade::ReplyDeliverError> {
         use crate::mcp::peers::facade::ReplyDeliverError;
@@ -5470,7 +5470,7 @@ enum TagWriteResult {
 fn transition_worker_to_running(
     workspace: &Arc<Workspace>,
     project_key: &ProjectKey,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     result: TagWriteResult,
 ) {
     let updated = {
@@ -5520,7 +5520,7 @@ fn transition_worker_to_running(
 pub(crate) fn transition_worker_to_failed(
     workspace: &Arc<Workspace>,
     project_key: &ProjectKey,
-    session_key: &SessionKey,
+    session_key: &SessionSlot,
     diagnostic: Option<String>,
 ) {
     let updated = {
@@ -6084,7 +6084,7 @@ mod tests {
     #[test]
     fn release_session_if_current_is_supersession_safe() {
         let (ws, _rx) = Workspace::testing_stub();
-        let key = SessionKey::from_str_for_test("sup-key");
+        let key = SessionSlot::from_str_for_test("sup-key");
 
         let (ha, _rxa) = Workspace::testing_stub_handle();
         let arc_a = Arc::new(ha);
@@ -6550,7 +6550,7 @@ provider = "anthropic"
         ws.seed_test_project("gone", "/tmp/gone");
         let project =
             ws.list_projects().into_iter().find(|v| v.name == "gone").expect("seeded project");
-        let key = SessionKey::from_session_id("resumed-uuid");
+        let key = SessionSlot::from_session_id("resumed-uuid");
         ws.catalog.lock().insert(
             project.key.clone(),
             vec![forge_primitives::SDKSessionInfo {
@@ -6669,7 +6669,7 @@ provider = "anthropic"
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "c".to_owned(),
-            session_key: SessionKey::from_session_id(key),
+            session_key: SessionSlot::from_session_id(key),
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".to_owned(),
@@ -6881,7 +6881,7 @@ provider = "anthropic"
         ws.seed_test_project("qkey", "/tmp/q-dispatch");
         let cwd = project_expanded_path(&ws, "qkey");
         ws.record_connected_session(&cwd, "q-uuid", None);
-        let key = SessionKey::from_session_id("q-uuid");
+        let key = SessionSlot::from_session_id("q-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             key.clone(),
@@ -6922,7 +6922,7 @@ provider = "anthropic"
         ws.seed_test_project("cronlead", "/tmp/cron-lead-queued");
         let cwd = project_expanded_path(&ws, "cronlead");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -6965,7 +6965,7 @@ provider = "anthropic"
     fn failed_dispatch_does_not_signal_queued_while_busy() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        let key = SessionKey::from_session_id("doomed-uuid");
+        let key = SessionSlot::from_session_id("doomed-uuid");
         ws.mark_session_connected_for_test(&key, "doomed-uuid");
         ws.domain_session_for(&key).expect("domain").lock().turn_pending = true;
 
@@ -6989,7 +6989,7 @@ provider = "anthropic"
         ws.seed_test_project("glead", "/tmp/gotify-lead-queued");
         let cwd = project_expanded_path(&ws, "glead");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -7043,7 +7043,7 @@ provider = "anthropic"
         ws.seed_test_project("glead", "/tmp/slack-lead-running");
         let cwd = project_expanded_path(&ws, "glead");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -7110,7 +7110,7 @@ provider = "anthropic"
         ws.seed_test_project("glead", "/tmp/slack-lead-doomed");
         let cwd = project_expanded_path(&ws, "glead");
         ws.record_connected_session(&cwd, "lead-uuid", None);
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         ws.pool.lock().insert(
             lead_key.clone(),
@@ -7598,7 +7598,7 @@ provider = "anthropic"
             workspace
                 .lead_session_to_resume(workspace.config.default_project(), false)
                 .expect("the store is readable"),
-            Some(SessionKey::from_session_id(id)),
+            Some(SessionSlot::from_session_id(id)),
             "a later start re-enters the recorded session",
         );
     }
@@ -7630,7 +7630,7 @@ provider = "anthropic"
         let project = restarted.config.default_project().clone();
         assert_eq!(
             restarted.lead_session_to_resume(&project, false).expect("the store is readable"),
-            Some(SessionKey::from_session_id(id)),
+            Some(SessionSlot::from_session_id(id)),
             "the second boot re-enters the session the first one recorded",
         );
     }
@@ -7781,7 +7781,7 @@ provider = "anthropic"
     async fn the_store_follows_the_id_the_cli_adopted() {
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let key = SessionKey::from_str_for_test("lead-session");
+        let key = SessionSlot::from_str_for_test("lead-session");
         workspace.seed_test_bound_session(&key, "Stargate");
         seed_session_row(&workspace, "TestOrg", "forge", LEAD_LABEL);
 
@@ -8030,9 +8030,9 @@ provider = "anthropic"
     /// stub. Returns the workspace, the matching primitives command
     /// receiver, and the registered key.
     fn ws_with_stub_session()
-    -> (Arc<Workspace>, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>, SessionKey) {
+    -> (Arc<Workspace>, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>, SessionSlot) {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let key = SessionKey::from_str_for_test("refresh-test");
+        let key = SessionSlot::from_str_for_test("refresh-test");
         let rx = workspace.install_testing_stub(&key);
         // Stamp a session_id so refresh paths don't bail on
         // "no session_id yet".
@@ -8086,7 +8086,7 @@ provider = "anthropic"
     #[test]
     fn refresh_status_snapshot_unknown_session_errors() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let key = SessionKey::from_str_for_test("never-registered");
+        let key = SessionSlot::from_str_for_test("never-registered");
         let err = workspace.refresh_status_snapshot(&key).expect_err("unknown session");
         assert!(matches!(err, DispatchError::UnknownSession(_)));
     }
@@ -8175,7 +8175,7 @@ provider = "anthropic"
     fn respawn_commands_on_a_pooled_session_carry_its_mode() {
         use forge_primitives::permission::PermissionMode;
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let key = SessionKey::from_str_for_test("respawn-mode-test");
+        let key = SessionSlot::from_str_for_test("respawn-mode-test");
         let (handle, mut agent_rx) = Workspace::testing_stub_handle();
         workspace.pool.lock().insert(
             key.clone(),
@@ -8271,7 +8271,7 @@ provider = "anthropic"
     fn respawn_commands_on_a_pooled_session_carry_the_project_model() {
         let dir = make_workspace_dir_declaring_model();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let key = SessionKey::from_str_for_test("respawn-model-test");
+        let key = SessionSlot::from_str_for_test("respawn-model-test");
         let (handle, mut agent_rx) = Workspace::testing_stub_handle();
         workspace.pool.lock().insert(
             key.clone(),
@@ -8346,7 +8346,7 @@ provider = "anthropic"
     #[test]
     fn respawn_commands_on_a_session_with_no_mode_keep_the_launcher_default() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let key = SessionKey::from_str_for_test("respawn-modeless-test");
+        let key = SessionSlot::from_str_for_test("respawn-modeless-test");
         let (handle, mut agent_rx) = Workspace::testing_stub_handle();
         workspace.pool.lock().insert(
             key.clone(),
@@ -8417,7 +8417,7 @@ provider = "anthropic"
     /// receiver so the test can assert on what flows through.
     fn install_fake_session_task(
         workspace: &Arc<Workspace>,
-        key: &SessionKey,
+        key: &SessionSlot,
     ) -> mpsc::UnboundedReceiver<Command> {
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         let arc = Arc::new(handle);
@@ -8449,7 +8449,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn session_task_exit_releases_dead_pooled_session() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let key = SessionKey::from_str_for_test("lead-uuid");
+        let key = SessionSlot::from_str_for_test("lead-uuid");
         // Register the session as a connected lead (pool + command_senders
         // + domain_handles).
         let command_rx = install_fake_session_task(&workspace, &key);
@@ -8494,8 +8494,8 @@ provider = "anthropic"
     #[test]
     fn the_bound_account_survives_a_rekey_and_follows_a_rebind() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let first_key = SessionKey::from_session_id("first-uuid");
-        let real_key = SessionKey::from_session_id("real-uuid");
+        let first_key = SessionSlot::from_session_id("first-uuid");
+        let real_key = SessionSlot::from_session_id("real-uuid");
         install_fake_session_task(&workspace, &first_key);
         workspace.pool.lock().get_mut(&first_key).expect("pooled").registration =
             Some(forge_gateway::binding::Registration {
@@ -8552,8 +8552,8 @@ provider = "anthropic"
     #[test]
     fn migrate_session_task_moves_all_three_maps() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let from = SessionKey::from_str_for_test("old-pool-key");
-        let to = SessionKey::from_str_for_test("real-session-uuid");
+        let from = SessionSlot::from_str_for_test("old-pool-key");
+        let to = SessionSlot::from_str_for_test("real-session-uuid");
         let _cmd_rx = install_fake_session_task(&workspace, &from);
 
         assert!(workspace.command_senders.lock().contains_key(&from));
@@ -8579,8 +8579,8 @@ provider = "anthropic"
     #[test]
     fn dispatch_after_migrate_routes_to_new_key() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let from = SessionKey::from_str_for_test("pre-new-session");
-        let to = SessionKey::from_str_for_test("post-new-session");
+        let from = SessionSlot::from_str_for_test("pre-new-session");
+        let to = SessionSlot::from_str_for_test("post-new-session");
         let mut cmd_rx = install_fake_session_task(&workspace, &from);
 
         // Before migrate: dispatch at `to` fails because no entry
@@ -8611,7 +8611,7 @@ provider = "anthropic"
     #[test]
     fn migrate_session_task_no_op_when_from_equals_to() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let key = SessionKey::from_str_for_test("same-key");
+        let key = SessionSlot::from_str_for_test("same-key");
         let _cmd_rx = install_fake_session_task(&workspace, &key);
 
         workspace.migrate_session_task(&key, &key);
@@ -8627,7 +8627,7 @@ provider = "anthropic"
     /// `session_id` the retire gate reads. The returned `TempDir`
     /// guards the config dir for the caller's lifetime.
     fn stub_with_connected_lead()
-    -> (Arc<Workspace>, mpsc::UnboundedReceiver<SessionUpdate>, SessionKey, tempfile::TempDir) {
+    -> (Arc<Workspace>, mpsc::UnboundedReceiver<SessionUpdate>, SessionSlot, tempfile::TempDir) {
         let dir = tempdir().expect("tempdir");
         let root = dir.path().join("companies");
         fs::create_dir_all(&root).expect("project root");
@@ -8656,7 +8656,7 @@ provider = "anthropic"
         let (ws, update_rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config)
             .expect("the stub config's [[slack]] entries are well-formed");
 
-        let lead = SessionKey::from_session_id("lead-uuid".to_owned());
+        let lead = SessionSlot::from_session_id("lead-uuid".to_owned());
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
@@ -8675,8 +8675,8 @@ provider = "anthropic"
     }
 
     /// Every `Spawning` key an update stream carried, in order.
-    fn spawning_keys(update_rx: &mut mpsc::UnboundedReceiver<SessionUpdate>) -> Vec<SessionKey> {
-        let mut keys: Vec<SessionKey> = Vec::new();
+    fn spawning_keys(update_rx: &mut mpsc::UnboundedReceiver<SessionUpdate>) -> Vec<SessionSlot> {
+        let mut keys: Vec<SessionSlot> = Vec::new();
         while let Ok(update) = update_rx.try_recv() {
             if let SessionUpdate::Spawning { key, .. } = update {
                 keys.push(key);
@@ -8728,8 +8728,8 @@ provider = "anthropic"
     #[test]
     fn migrate_session_task_no_op_when_from_unregistered() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let from = SessionKey::from_str_for_test("never-registered");
-        let to = SessionKey::from_str_for_test("destination");
+        let from = SessionSlot::from_str_for_test("never-registered");
+        let to = SessionSlot::from_str_for_test("destination");
 
         workspace.migrate_session_task(&from, &to);
 
@@ -8747,8 +8747,8 @@ provider = "anthropic"
     fn migrate_session_task_moves_peer_stats_and_open_ask_keys() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk};
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let from = SessionKey::from_str_for_test("old-key");
-        let to = SessionKey::from_str_for_test("real-uuid");
+        let from = SessionSlot::from_str_for_test("old-key");
+        let to = SessionSlot::from_str_for_test("real-uuid");
         let _cmd_rx = install_fake_session_task(&workspace, &from);
 
         workspace.peer_stats.lock().entry(from.clone()).or_default().incoming = 1;
@@ -8772,7 +8772,7 @@ provider = "anthropic"
                 InflightAsk {
                     correlation_id: as_target.clone(),
                     channel: crate::mcp::peers::types::AskChannel::Peers,
-                    caller: SessionKey::from_str_for_test("someone-else"),
+                    caller: SessionSlot::from_str_for_test("someone-else"),
                     target_project: "forge".to_owned(),
                     target_session: Some(from.clone()),
                 },
@@ -8807,8 +8807,8 @@ provider = "anthropic"
     #[test]
     fn migrate_session_task_merges_peer_stats_into_existing_to() {
         let (workspace, _update_rx) = Workspace::testing_stub();
-        let from = SessionKey::from_str_for_test("old-key");
-        let to = SessionKey::from_str_for_test("real-uuid");
+        let from = SessionSlot::from_str_for_test("old-key");
+        let to = SessionSlot::from_str_for_test("real-uuid");
         let _cmd_rx = install_fake_session_task(&workspace, &from);
 
         {
@@ -8985,7 +8985,7 @@ provider = "anthropic"
         let dir = forge_toml_with_two_projects();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
-        let caller = SessionKey::from_str_for_test("caller-1");
+        let caller = SessionSlot::from_str_for_test("caller-1");
         let id = CorrelationId::new_ask();
         workspace.inflight_asks.lock().insert(
             id.clone(),
@@ -9019,7 +9019,7 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        let caller = SessionKey::from_str_for_test("caller-notice");
+        let caller = SessionSlot::from_str_for_test("caller-notice");
         let id = CorrelationId::new_ask();
         workspace.inflight_asks.lock().insert(
             id.clone(),
@@ -9057,7 +9057,7 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        let caller = SessionKey::from_str_for_test("caller-notice-echo");
+        let caller = SessionSlot::from_str_for_test("caller-notice-echo");
         let id = CorrelationId::new_ask();
         workspace.inflight_asks.lock().insert(
             id.clone(),
@@ -9097,14 +9097,14 @@ provider = "anthropic"
         let dir = forge_toml_with_two_projects();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
-        let worker_key = SessionKey::from_str_for_test("worker-sess-1");
+        let worker_key = SessionSlot::from_str_for_test("worker-sess-1");
         let id = CorrelationId::new_ask();
         workspace.inflight_asks.lock().insert(
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
                 channel: crate::mcp::peers::types::AskChannel::Workers,
-                caller: SessionKey::from_str_for_test("lead-1"),
+                caller: SessionSlot::from_str_for_test("lead-1"),
                 target_project: crate::mcp::workers::worker_target_project_key("forge", "builder"),
                 target_session: Some(worker_key.clone()),
             },
@@ -9127,8 +9127,8 @@ provider = "anthropic"
         let dir = forge_toml_with_two_projects();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
-        let caller = SessionKey::from_str_for_test("asker");
-        let target = SessionKey::from_str_for_test("replier");
+        let caller = SessionSlot::from_str_for_test("asker");
+        let target = SessionSlot::from_str_for_test("replier");
         let id = CorrelationId::new_ask();
         workspace.inflight_asks.lock().insert(
             id.clone(),
@@ -9171,13 +9171,13 @@ provider = "anthropic"
         use crate::mcp::peers::types::{CorrelationId, InflightAsk};
         let (workspace, _rx) = Workspace::testing_stub();
         let id = CorrelationId::new_ask();
-        let target = SessionKey::from_str_for_test("replier");
+        let target = SessionSlot::from_str_for_test("replier");
         workspace.inflight_asks.lock().insert(
             id.clone(),
             InflightAsk {
                 correlation_id: id.clone(),
                 channel: crate::mcp::peers::types::AskChannel::Peers,
-                caller: SessionKey::from_str_for_test("asker"),
+                caller: SessionSlot::from_str_for_test("asker"),
                 target_project: "gateway-backend".to_owned(),
                 target_session: None,
             },
@@ -9202,7 +9202,7 @@ provider = "anthropic"
         let (ws, _rx) = Workspace::testing_stub();
         ws.enable_test_dispatch_intercept();
 
-        let caller = SessionKey::from_str_for_test("asker");
+        let caller = SessionSlot::from_str_for_test("asker");
         let reply = WrappedPrompt {
             correlation_id: CorrelationId::new_tell(),
             kind: WrappedKind::Reply,
@@ -9237,7 +9237,7 @@ provider = "anthropic"
         }
 
         // Pool-miss: unknown caller -> CallerSessionGone, nothing dispatched.
-        let ghost = SessionKey::from_str_for_test("ghost");
+        let ghost = SessionSlot::from_str_for_test("ghost");
         assert_eq!(
             ws.deliver_reply_to_caller(&ghost, &reply),
             Err(ReplyDeliverError::CallerSessionGone),
@@ -9256,7 +9256,7 @@ provider = "anthropic"
         let (ws, mut rx) = Workspace::testing_stub();
         ws.enable_test_dispatch_intercept();
 
-        let caller = SessionKey::from_str_for_test("asker");
+        let caller = SessionSlot::from_str_for_test("asker");
         let reply = WrappedPrompt {
             correlation_id: CorrelationId::new_tell(),
             kind: WrappedKind::Reply,
@@ -9342,9 +9342,9 @@ provider = "anthropic"
 
         // Three inflight asks: two targeting gateway-backend (must
         // expire), one targeting forge (must survive).
-        let caller_a = SessionKey::from_str_for_test("caller-a");
-        let caller_b = SessionKey::from_str_for_test("caller-b");
-        let caller_c = SessionKey::from_str_for_test("caller-c");
+        let caller_a = SessionSlot::from_str_for_test("caller-a");
+        let caller_b = SessionSlot::from_str_for_test("caller-b");
+        let caller_c = SessionSlot::from_str_for_test("caller-c");
         let id_a = CorrelationId::new_ask();
         let id_b = CorrelationId::new_ask();
         let id_c = CorrelationId::new_ask();
@@ -9386,7 +9386,7 @@ provider = "anthropic"
         // Command::Prompt (DeliveryFailureNotice) for each targeted
         // ask without spinning up real caller session tasks.
         workspace.enable_test_dispatch_intercept();
-        let closing_key = SessionKey::from_session_id(target_session_id);
+        let closing_key = SessionSlot::from_session_id(target_session_id);
         workspace.expire_target_inflight(&closing_key, PeerFailureReason::TargetConnectionFailed);
 
         // Targeted asks are gone; the orthogonally-targeted ask survives.
@@ -9403,7 +9403,7 @@ provider = "anthropic"
         // routed back to each ask's caller. Sort by caller key before
         // comparing; HashMap iteration order isn't pinned.
         let buffered = workspace.drain_test_dispatch_buffer();
-        let mut notice_callers: Vec<SessionKey> = buffered
+        let mut notice_callers: Vec<SessionSlot> = buffered
             .into_iter()
             .filter_map(|cmd| match cmd {
                 crate::protocol::Command::Prompt { key, text, .. }
@@ -9436,7 +9436,7 @@ mod workers_state_tests {
         WorkerEntry {
             label: label.into(),
             charter: "test charter".into(),
-            session_key: SessionKey::from_session_id(key),
+            session_key: SessionSlot::from_session_id(key),
             status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
@@ -9542,8 +9542,8 @@ mod workers_state_tests {
     fn migrate_session_task_rekeys_live_workers() {
         let (ws, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
-        let from = SessionKey::from_session_id("first-uuid");
-        let to = SessionKey::from_session_id("real-uuid");
+        let from = SessionSlot::from_session_id("first-uuid");
+        let to = SessionSlot::from_session_id("real-uuid");
         ws.insert_live_worker(&project, fake_entry("r", from.as_str()));
         // Seed the three maps at `from` so migrate doesn't short-circuit
         // on the "not registered" branch.
@@ -9572,7 +9572,7 @@ mod worker_activity_tests {
         WorkerEntry {
             label: "implementer".into(),
             charter: "test charter".into(),
-            session_key: SessionKey::from_session_id(key),
+            session_key: SessionSlot::from_session_id(key),
             status,
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
@@ -9589,7 +9589,7 @@ mod worker_activity_tests {
     #[test]
     fn connected_worker_with_no_turn_in_flight_reports_idle() {
         let (ws, _rx) = Workspace::testing_stub();
-        let key = SessionKey::from_session_id("w-idle");
+        let key = SessionSlot::from_session_id("w-idle");
         ws.register_domain_session(key.clone(), None);
         let worker = entry("w-idle", WorkerLiveness::Running);
 
@@ -9608,7 +9608,7 @@ mod worker_activity_tests {
         let (ws, _rx) = Workspace::testing_stub();
 
         let with_domain = |name: &str, f: &dyn Fn(&mut DomainSession)| {
-            let key = SessionKey::from_session_id(name);
+            let key = SessionSlot::from_session_id(name);
             let domain = ws.register_domain_session(key, None);
             f(&mut domain.lock());
             ws.worker_activity(&entry(name, WorkerLiveness::Running))
@@ -9666,7 +9666,7 @@ mod worker_activity_tests {
     #[test]
     fn stranded_interaction_slot_on_an_idle_session_reports_idle() {
         let (ws, _rx) = Workspace::testing_stub();
-        let key = SessionKey::from_session_id("w-stranded");
+        let key = SessionSlot::from_session_id("w-stranded");
         let domain = ws.register_domain_session(key, None);
         {
             let mut guard = domain.lock();
@@ -9690,7 +9690,7 @@ mod worker_activity_tests {
     #[test]
     fn event_path_leaves_activity_none() {
         let (ws, _rx) = Workspace::testing_stub();
-        let key = SessionKey::from_session_id("w-both");
+        let key = SessionSlot::from_session_id("w-both");
         ws.register_domain_session(key.clone(), None);
         let worker = entry("w-both", WorkerLiveness::Running);
 
@@ -9717,7 +9717,7 @@ mod release_session_cascade_tests {
         WorkerEntry {
             label: label.into(),
             charter: "test charter".into(),
-            session_key: SessionKey::from_session_id(key),
+            session_key: SessionSlot::from_session_id(key),
             status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
@@ -9767,7 +9767,7 @@ provider = "anthropic"
         // `list_projects` reports a session matching `lead_key`.
         let project = workspace.list_projects().into_iter().next().expect("forge project");
         let project_key = project.key.clone();
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         workspace.record_connected_session(
             &project.path.to_string_lossy(),
             lead_key.as_str(),
@@ -9811,7 +9811,7 @@ provider = "anthropic"
         let project_key = workspace.list_projects().into_iter().next().expect("forge").key;
         workspace.insert_live_worker(&project_key, fake_entry("r1", "worker-1"));
 
-        let unknown = SessionKey::from_session_id("unknown-session");
+        let unknown = SessionSlot::from_session_id("unknown-session");
         workspace.release_session_with_cascade(&unknown);
         assert_eq!(
             workspace.list_live_workers(&project_key).len(),
@@ -9840,8 +9840,8 @@ provider = "anthropic"
         // inserts at index 0, so after both calls catalog[0] is the
         // worker and catalog[1] is the lead - the exact shape that
         // breaks the old `sessions.first()` discriminator.
-        let lead_key = SessionKey::from_session_id("lead-uuid");
-        let worker_key = SessionKey::from_session_id("worker-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
+        let worker_key = SessionSlot::from_session_id("worker-uuid");
         workspace.record_connected_session(&project_path, lead_key.as_str(), None);
         workspace.record_connected_session(&project_path, worker_key.as_str(), None);
         workspace.insert_live_worker(&project_key, fake_entry("reviewer", worker_key.as_str()));
@@ -10002,7 +10002,7 @@ mod tag_retry_tests {
         crate::mcp::workers::types::WorkerEntry {
             label: label.into(),
             charter: "test".into(),
-            session_key: SessionKey::from_session_id(key),
+            session_key: SessionSlot::from_session_id(key),
             status: forge_primitives::WorkerLiveness::Spawning,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead".into(),
@@ -10023,7 +10023,7 @@ mod tag_retry_tests {
         let (workspace, mut rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("forge");
         let session_id = "550e8400-e29b-41d4-a716-446655440010";
-        let session_key = SessionKey::from_session_id(session_id);
+        let session_key = SessionSlot::from_session_id(session_id);
         workspace.insert_live_worker(&project_key, fake_spawning_entry("idle", session_id, true));
 
         let cfg = tempdir().expect("cfg");
@@ -10088,7 +10088,7 @@ mod tag_retry_tests {
         let (workspace, mut rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("forge");
         let session_id = "550e8400-e29b-41d4-a716-446655440011";
-        let session_key = SessionKey::from_session_id(session_id);
+        let session_key = SessionSlot::from_session_id(session_id);
         workspace.insert_live_worker(
             &project_key,
             fake_spawning_entry("prompt-driven", session_id, true),
@@ -10138,7 +10138,7 @@ mod tag_retry_tests {
         let (workspace, mut rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("forge");
         let session_id = "550e8400-e29b-41d4-a716-446655440012";
-        let session_key = SessionKey::from_session_id(session_id);
+        let session_key = SessionSlot::from_session_id(session_id);
         // Pre-state: worker is Running but needs_tag=true (it landed
         // here via the deferred-NotFound branch earlier).
         let mut entry = fake_spawning_entry("idle", session_id, true);
@@ -10198,8 +10198,8 @@ mod tag_retry_tests {
         // Two distinct session_ids: first Connected, then post-/new.
         let session_id_1 = "550e8400-e29b-41d4-a716-446655440021";
         let session_id_2 = "550e8400-e29b-41d4-a716-446655440022";
-        let key_1 = SessionKey::from_session_id(session_id_1);
-        let key_2 = SessionKey::from_session_id(session_id_2);
+        let key_1 = SessionSlot::from_session_id(session_id_1);
+        let key_2 = SessionSlot::from_session_id(session_id_2);
 
         // Seed the WorkerEntry with the FIRST session's key. The
         // production flow keys the entry at the id the worker runs
@@ -10311,7 +10311,7 @@ mod tag_retry_tests {
         let (workspace, mut rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("repo");
         let session_id = "550e8400-e29b-41d4-a716-446655440099";
-        let session_key = SessionKey::from_session_id(session_id);
+        let session_key = SessionSlot::from_session_id(session_id);
 
         // is_git_repo_at_spawn=true is the production shape that
         // triggers claude's --worktree fork.
@@ -10375,7 +10375,7 @@ mod tag_retry_tests {
         let (workspace, mut rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("repo");
         let session_id = "550e8400-e29b-41d4-a716-446655440100";
-        let session_key = SessionKey::from_session_id(session_id);
+        let session_key = SessionSlot::from_session_id(session_id);
 
         // Pre-state: worker is Running (the apply_* path already ran
         // and exhausted into DeferredNotFound). is_git_repo_at_spawn=true.
@@ -10440,7 +10440,7 @@ mod worker_respawn_tests {
         crate::mcp::workers::types::WorkerEntry {
             label: label.to_owned(),
             charter: "test".to_owned(),
-            session_key: SessionKey::from_session_id(session_id),
+            session_key: SessionSlot::from_session_id(session_id),
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: lead_id.to_owned(),
@@ -10468,7 +10468,7 @@ mod worker_respawn_tests {
             crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
             crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
             crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
-            crate::mcp::peers::facade::CallerKeyResolver::from_fixed(SessionKey::from_session_id(
+            crate::mcp::peers::facade::CallerKeyResolver::from_fixed(SessionSlot::from_session_id(
                 "caller",
             )),
             kind,
@@ -10966,7 +10966,7 @@ provider = "anthropic"
         let spawner = tokio::spawn(async move {
             let _ = facade
                 .spawn_worker(
-                    &SessionKey::from_session_id(session_id),
+                    &SessionSlot::from_session_id(session_id),
                     "reviewer".to_owned(),
                     "charter".to_owned(),
                     None,
@@ -11010,7 +11010,7 @@ provider = "anthropic"
         let spawner = tokio::spawn(async move {
             facade
                 .spawn_worker(
-                    &SessionKey::from_session_id("lead-uuid"),
+                    &SessionSlot::from_session_id("lead-uuid"),
                     "steward".to_owned(),
                     "charter".to_owned(),
                     None,
@@ -11052,7 +11052,7 @@ provider = "anthropic"
 
         let err = facade
             .spawn_worker(
-                &SessionKey::from_session_id("lead-uuid"),
+                &SessionSlot::from_session_id("lead-uuid"),
                 "never-used".to_owned(),
                 "charter".to_owned(),
                 None,
@@ -11161,7 +11161,7 @@ provider = "anthropic"
 
         let err = facade
             .spawn_worker(
-                &SessionKey::from_session_id("lead-uuid"),
+                &SessionSlot::from_session_id("lead-uuid"),
                 "typo".to_owned(),
                 "charter".to_owned(),
                 None,
@@ -11213,7 +11213,7 @@ provider = "anthropic"
 
         let err = facade
             .spawn_worker(
-                &SessionKey::from_session_id("lead-uuid"),
+                &SessionSlot::from_session_id("lead-uuid"),
                 "steward".to_owned(),
                 "charter".to_owned(),
                 None,
@@ -11259,7 +11259,7 @@ provider = "anthropic"
 
         let err = facade
             .spawn_worker(
-                &SessionKey::from_session_id("lead-uuid"),
+                &SessionSlot::from_session_id("lead-uuid"),
                 "steward".to_owned(),
                 "charter".to_owned(),
                 None,
@@ -11300,7 +11300,7 @@ provider = "anthropic"
 
         let err = facade
             .spawn_worker(
-                &SessionKey::from_session_id("lead-uuid"),
+                &SessionSlot::from_session_id("lead-uuid"),
                 "steward".to_owned(),
                 "charter".to_owned(),
                 None,
@@ -11413,7 +11413,7 @@ provider = "anthropic"
         let spawner = tokio::spawn(async move {
             facade
                 .spawn_worker(
-                    &SessionKey::from_session_id("lead-uuid"),
+                    &SessionSlot::from_session_id("lead-uuid"),
                     "steward".to_owned(),
                     "charter".to_owned(),
                     None,
@@ -11538,7 +11538,7 @@ mod async_worker_spawn_failure_tests {
         WorkerEntry {
             label: label.to_owned(),
             charter: "test".to_owned(),
-            session_key: SessionKey::from_session_id(worker_key),
+            session_key: SessionSlot::from_session_id(worker_key),
             status: forge_primitives::WorkerLiveness::Spawning,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: lead_id.to_owned(),
@@ -11553,8 +11553,8 @@ mod async_worker_spawn_failure_tests {
     /// dispatch's `pool.lock().contains_key(&lead_key)` lead-
     /// resolution check passes. Mirrors the `install_fake_session_task`
     /// helper used by the migration tests.
-    fn install_lead_in_pool(workspace: &Arc<Workspace>, lead_id: &str) -> SessionKey {
-        let key = SessionKey::from_session_id(lead_id);
+    fn install_lead_in_pool(workspace: &Arc<Workspace>, lead_id: &str) -> SessionSlot {
+        let key = SessionSlot::from_session_id(lead_id);
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         workspace.pool.lock().insert(
             key.clone(),
@@ -11584,12 +11584,12 @@ mod async_worker_spawn_failure_tests {
             fake_worker("reviewer", worker_key, "lead-uuid", false),
         );
         assert!(
-            workspace.worker_lookup_for_session(&SessionKey::from_session_id(worker_key)).is_some(),
+            workspace.worker_lookup_for_session(&SessionSlot::from_session_id(worker_key)).is_some(),
             "seeded worker must be detected so its tag-less catalog mirror is skipped"
         );
         assert!(
             workspace
-                .worker_lookup_for_session(&SessionKey::from_session_id("lead-uuid"))
+                .worker_lookup_for_session(&SessionSlot::from_session_id("lead-uuid"))
                 .is_none(),
             "the lead is not a live worker, so it is still mirrored into the catalog"
         );
@@ -11611,7 +11611,7 @@ mod async_worker_spawn_failure_tests {
         let lead_key = install_lead_in_pool(&workspace, lead_id);
 
         let handled = workspace.handle_async_worker_spawn_failure(
-            &SessionKey::from_session_id(worker_key),
+            &SessionSlot::from_session_id(worker_key),
             "fatal: 'reviewer' is already used by worktree at /a/b/c",
         );
         assert!(handled, "async worker failure path must consume the failure");
@@ -11652,7 +11652,7 @@ mod async_worker_spawn_failure_tests {
         install_lead_in_pool(&workspace, lead_id);
 
         let handled = workspace.handle_async_worker_spawn_failure(
-            &SessionKey::from_session_id(worker_key),
+            &SessionSlot::from_session_id(worker_key),
             "agent spawn failed: subprocess exited with code 2",
         );
         assert!(handled);
@@ -11682,7 +11682,7 @@ mod async_worker_spawn_failure_tests {
     async fn async_failure_on_non_worker_session_is_no_op() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        let unknown = SessionKey::from_session_id("not-a-worker");
+        let unknown = SessionSlot::from_session_id("not-a-worker");
         let handled = workspace.handle_async_worker_spawn_failure(&unknown, "some unrelated error");
         assert!(!handled);
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
@@ -11713,7 +11713,7 @@ mod async_worker_spawn_failure_tests {
             .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         install_lead_in_pool(&workspace, lead_id);
 
-        let session_key = SessionKey::from_session_id(worker_key);
+        let session_key = SessionSlot::from_session_id(worker_key);
         let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
         // Pin the test's premise: this message must classify as
         // WorktreeCreationFailed so we exercise the remove-then-no-op
@@ -11780,7 +11780,7 @@ mod async_worker_spawn_failure_tests {
             .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         install_lead_in_pool(&workspace, lead_id);
 
-        let session_key = SessionKey::from_session_id(worker_key);
+        let session_key = SessionSlot::from_session_id(worker_key);
         let (handle, _agent_rx) = Workspace::testing_stub_handle();
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
         workspace.pool.lock().insert(
@@ -11825,7 +11825,7 @@ mod async_worker_spawn_failure_tests {
             .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         install_lead_in_pool(&workspace, lead_id);
 
-        let session_key = SessionKey::from_session_id(worker_key);
+        let session_key = SessionSlot::from_session_id(worker_key);
         let worktree_msg = "Error creating worktree: failed to resolve base branch";
         // The call below returns true on either classifier outcome, so
         // only this pins which path ran: the other transitions to
@@ -11879,7 +11879,7 @@ mod async_worker_spawn_failure_tests {
             fake_worker("reviewer", worker_key, "lead-uuid", false),
         );
 
-        let session_key = SessionKey::from_session_id(worker_key);
+        let session_key = SessionSlot::from_session_id(worker_key);
         assert!(
             workspace
                 .handle_async_worker_spawn_failure(&session_key, "subprocess exited with code 2")
@@ -11907,7 +11907,7 @@ mod async_worker_spawn_failure_tests {
         let (workspace, mut update_rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("proj-x");
         let worker_key = "worker-uuid";
-        let session_key = SessionKey::from_session_id(worker_key);
+        let session_key = SessionSlot::from_session_id(worker_key);
         // Worker starts Spawning + needs_tag = true (mirrors
         // fresh-spawn state pre-Connected).
         workspace
@@ -11967,7 +11967,7 @@ mod async_worker_spawn_failure_tests {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("proj-x");
         let worker_key = "builder-uuid";
-        let session_key = SessionKey::from_session_id(worker_key);
+        let session_key = SessionSlot::from_session_id(worker_key);
         workspace
             .insert_live_worker(&project_key, fake_worker("builder", worker_key, "lead", true));
 
@@ -11977,7 +11977,7 @@ mod async_worker_spawn_failure_tests {
             InflightAsk {
                 correlation_id: id.clone(),
                 channel: crate::mcp::peers::types::AskChannel::Workers,
-                caller: SessionKey::from_str_for_test("lead-1"),
+                caller: SessionSlot::from_str_for_test("lead-1"),
                 target_project: crate::mcp::workers::worker_target_project_key("proj-x", "builder"),
                 target_session: None,
             },
@@ -12001,7 +12001,7 @@ mod async_worker_spawn_failure_tests {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("proj-x");
         let worker_key = "worker-uuid";
-        let session_key = SessionKey::from_session_id(worker_key);
+        let session_key = SessionSlot::from_session_id(worker_key);
         workspace
             .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, "lead", true));
 
@@ -12050,7 +12050,7 @@ mod async_worker_spawn_failure_tests {
         // DELIBERATELY skip install_lead_in_pool - lead is "gone".
 
         let handled = workspace.handle_async_worker_spawn_failure(
-            &SessionKey::from_session_id(worker_key),
+            &SessionSlot::from_session_id(worker_key),
             "fatal: 'reviewer' is already used by worktree at /a",
         );
         assert!(handled, "still consumes the failure even when lead is gone");
@@ -12074,7 +12074,7 @@ mod git_scan_cwd_tests {
     use forge_primitives::WorkerLiveness;
     use std::time::SystemTime;
 
-    fn worker_entry(label: &str, session_key: &SessionKey, is_git: bool) -> WorkerEntry {
+    fn worker_entry(label: &str, session_key: &SessionSlot, is_git: bool) -> WorkerEntry {
         WorkerEntry {
             label: label.into(),
             charter: "test charter".into(),
@@ -12099,12 +12099,12 @@ mod git_scan_cwd_tests {
         worker_label: &str,
         worker_session: &str,
         is_git: bool,
-    ) -> (std::path::PathBuf, SessionKey) {
+    ) -> (std::path::PathBuf, SessionSlot) {
         ws.seed_test_project(project_name, project_root);
         let project_key = ProjectKey::new(
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some(project_root)),
         );
-        let session_key = SessionKey::from_session_id(worker_session);
+        let session_key = SessionSlot::from_session_id(worker_session);
         ws.insert_live_worker(&project_key, worker_entry(worker_label, &session_key, is_git));
         (std::path::PathBuf::from(project_root), session_key)
     }
@@ -12164,7 +12164,7 @@ mod git_scan_cwd_tests {
         // for the lead.
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("forge", "/tmp/test-forge-lead");
-        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_key = SessionSlot::from_session_id("lead-uuid");
         let lead_cwd = std::path::PathBuf::from("/tmp/test-forge-lead");
         let resolved = ws.git_scan_cwd_for_session(&lead_key, &lead_cwd);
         assert_eq!(resolved, lead_cwd, "lead sessions must get cwd_raw unchanged");
@@ -12248,7 +12248,7 @@ mod git_scan_cwd_tests {
         // empty string and lets the bridge surface ConnectionFailed
         // (current behaviour for genuinely-orphan sessions).
         let (ws, _rx) = Workspace::testing_stub();
-        let unknown = SessionKey::from_session_id("not-a-known-session");
+        let unknown = SessionSlot::from_session_id("not-a-known-session");
         assert_eq!(ws.resume_cwd_for_session(&unknown), "");
     }
 
@@ -12280,7 +12280,7 @@ mod git_scan_cwd_tests {
         // matches that key, so no path can be composed. Unreachable
         // while forge.toml and `live_workers` agree.
         let (ws, _rx) = Workspace::testing_stub();
-        let session_key = SessionKey::from_session_id("worker-uuid-orphan");
+        let session_key = SessionSlot::from_session_id("worker-uuid-orphan");
         ws.insert_live_worker(
             &ProjectKey::new("stale-key".to_owned()),
             worker_entry("implementer", &session_key, true),
@@ -12462,7 +12462,7 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.seed_test_gateway_ready(true);
         workspace.seed_test_ready_account("Stargate");
-        let target = SessionTarget::Session(SessionKey::from_session_id("orphan-uuid"));
+        let target = SessionTarget::Session(SessionSlot::from_session_id("orphan-uuid"));
         let error = workspace
             .get_agent_handle(
                 target,
@@ -12993,20 +12993,20 @@ mod kick_dispatcher_tests {
     use std::time::Duration;
 
     /// Helper: a session key for kick tests.
-    fn sk(name: &str) -> SessionKey {
-        SessionKey::from_session_id(format!("kick-test-{name}"))
+    fn sk(name: &str) -> SessionSlot {
+        SessionSlot::from_session_id(format!("kick-test-{name}"))
     }
 
     /// Helper: assert the intercept buffer's Prompt commands match
-    /// `expected` SessionKeys in order. Filters out any non-Prompt
+    /// `expected` SessionSlots in order. Filters out any non-Prompt
     /// commands the dispatch path might queue.
     fn assert_dispatched_kick_keys(
         workspace: &Arc<Workspace>,
-        expected: &[SessionKey],
+        expected: &[SessionSlot],
         context: &str,
     ) {
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let keys: Vec<SessionKey> = dispatched
+        let keys: Vec<SessionSlot> = dispatched
             .into_iter()
             .filter_map(|c| match c {
                 Command::Prompt { key, .. } => Some(key),
@@ -13059,7 +13059,7 @@ mod kick_dispatcher_tests {
         workspace.enable_test_dispatch_intercept();
         workspace.start_kick_dispatcher();
 
-        let keys: Vec<SessionKey> = (0..7).map(|i| sk(&format!("worker-{i}"))).collect();
+        let keys: Vec<SessionSlot> = (0..7).map(|i| sk(&format!("worker-{i}"))).collect();
         for key in &keys {
             workspace.enqueue_kick(KickRequest {
                 session_key: key.clone(),

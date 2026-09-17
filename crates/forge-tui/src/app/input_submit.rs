@@ -104,7 +104,7 @@ pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     app.set_pending_cancel(true);
     app.set_cancelled_turn_pending_hint(true);
-    let session_key = forge_workspace::SessionKey::from_session_id(session_id.clone());
+    let session_key = forge_workspace::SessionSlot::from_session_id(session_id.clone());
     let _ = app.update_tx.send(forge_workspace::SessionUpdate::TurnCancelled { key: session_key });
     tracing::info!(
         target: crate::logging::targets::APP_INPUT,
@@ -237,7 +237,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
             );
         }
         Err(e) => {
-            let session_key = forge_workspace::SessionKey::from_session_id(session_id);
+            let session_key = forge_workspace::SessionSlot::from_session_id(session_id);
             let _ = tx.send(forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: e.to_string(),
