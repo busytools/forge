@@ -70,18 +70,14 @@ fn render_view(
 }
 
 fn extensions_help_text(app: &App) -> String {
-    if crate::app::extensions::search_enabled(app.plugins.active_tab) {
-        if app.plugins.search_focused {
-            "Left/Right switch tab | Down list | Type to filter | Backspace erase | Del clear | Esc close".to_owned()
-        } else if crate::app::extensions::tab_takes_available(app.plugins.active_tab) {
-            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close"
-                .to_owned()
-        } else {
-            "Left/Right switch tab | Up filter | Up/Down move | Enter actions | u update all | c check updates | Esc close"
-                .to_owned()
-        }
+    if !app.plugins.active_tab.filters_rows() {
+        return "Left/Right switch tab | Up/Down move | Enter actions | Esc close".to_owned();
+    }
+    if app.plugins.search_focused {
+        "Left/Right switch tab | Down list | Type to filter | Backspace erase | Del clear | Esc close".to_owned()
     } else {
-        "Left/Right switch tab | Up/Down move | Enter actions | Esc close".to_owned()
+        "Left/Right switch tab | Up filter | Up/Down move | Enter actions | a available | u update all | c check updates | Esc close"
+            .to_owned()
     }
 }
 
