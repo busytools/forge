@@ -843,6 +843,38 @@ mod tests {
         );
     }
 
+    /// A shut boot gate refuses every spawn, and the boot catch-up fires
+    /// before the listener's bind task has necessarily run. That refusal
+    /// is transient, so the fire stays unconsumed for the next tick
+    /// rather than advancing past a prompt that never landed.
+    #[test]
+    fn deliver_cron_with_a_shut_boot_gate_leaves_the_fire_for_the_next_tick() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("proj", "/tmp/wc-gate");
+        ws.enable_test_dispatch_intercept();
+
+        // Control: with the gate open this same fire is delivered, so the
+        // refusal below is the gate and not the owner check.
+        let open = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert!(
+            matches!(open, crate::spawn::CronFireOutcome::Delivered),
+            "the same fire with the gate open is delivered",
+        );
+        ws.drain_test_dispatch_buffer();
+
+        ws.seed_test_gateway_ready(false);
+        let shut = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert!(
+            matches!(shut, crate::spawn::CronFireOutcome::DispatchFailed),
+            "a shut gate is a transient refusal, not a delivered fire",
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", None).len(),
+            1,
+            "the deferred fire parked nothing, so the retry parks it once rather than twice",
+        );
+    }
+
     #[test]
     fn deliver_cron_marks_an_overdue_fire_as_missed() {
         let dir = tempdir().expect("tempdir");

@@ -415,6 +415,20 @@ pub(crate) fn deliver_cron_prompt(
         CronOwnerCheck::Absent => return CronFireOutcome::TargetGone,
         CronOwnerCheck::Unknown => return CronFireOutcome::DispatchFailed,
     }
+    // A spawn is refused while the gateway listener is unbound, and the
+    // boot catch-up fires before the bind task has necessarily run. That
+    // refusal is transient rather than the target being gone, so leave the
+    // fire unconsumed and let the next tick park and wake it once - the
+    // scheduler retries, where advancing past it would drop the prompt.
+    if !workspace.gateway_ready() {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project_name,
+            "cron fire deferred: the gateway listener has not bound yet, so the wake would be \
+             refused and its parked prompt expired",
+        );
+        return CronFireOutcome::DispatchFailed;
+    }
     // Buffer by owner, then wake via resume: SpawnProject resumes the lead,
     // whose reconnect re-spawns the persisted workers; each drains its own
     // bucket on connect.
