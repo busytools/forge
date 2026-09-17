@@ -716,7 +716,8 @@ impl App {
     /// Dispatch a workspace [`forge_workspace::Command`] for the
     /// active session. Stamps the active `SessionSlot` onto
     /// `builder`'s output before dispatching. No-op (returns
-    /// `Err(UnknownSession)`) when there is no active session.
+    /// `Err(NoActiveSession)`) when there is no workspace or no active
+    /// session, neither of which leaves a slot to name.
     ///
     /// # Errors
     ///
@@ -726,16 +727,12 @@ impl App {
         &self,
         builder: impl FnOnce(forge_workspace::SessionSlot) -> forge_workspace::Command,
     ) -> Result<(), forge_workspace::DispatchError> {
-        let workspace = self.workspace.as_ref().ok_or_else(|| {
-            forge_workspace::DispatchError::UnknownSession(
-                forge_workspace::SessionSlot::from_str_for_test("__no_workspace__"),
-            )
-        })?;
-        let key = self.active_session_key.clone().ok_or_else(|| {
-            forge_workspace::DispatchError::UnknownSession(
-                forge_workspace::SessionSlot::from_str_for_test("__no_active__"),
-            )
-        })?;
+        let Some(workspace) = self.workspace.as_ref() else {
+            return Err(forge_workspace::DispatchError::NoActiveSession);
+        };
+        let Some(key) = self.active_session_key.clone() else {
+            return Err(forge_workspace::DispatchError::NoActiveSession);
+        };
         workspace.dispatch(builder(key))
     }
 

@@ -1394,9 +1394,12 @@ impl std::fmt::Debug for SessionUpdate {
     }
 }
 
-/// Errors from `Workspace::dispatch`.
+/// Errors from `Workspace::dispatch`: a missing or closed session task,
+/// or a caller with no session selected to dispatch for.
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchError {
+    #[error("no active session")]
+    NoActiveSession,
     #[error("no session task registered for key {0:?}")]
     UnknownSession(SessionSlot),
     #[error("session task for key {0:?} has closed its command channel")]
