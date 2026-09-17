@@ -2752,6 +2752,55 @@ provider = "anthropic"
         );
     }
 
+    /// A first spawn writes the kick it opened the worker with: the row's
+    /// `kick` is the worker's first turn, and a later `--new` re-spawn
+    /// delivers it. A row that never got it opens the worker with nothing.
+    #[tokio::test]
+    async fn a_first_spawn_writes_the_kick_it_was_given() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: Some("opening turn".to_owned()),
+                resume_kick: None,
+                interactive: false,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert!(reply.is_ok(), "the first spawn succeeds: {reply:?}");
+
+        let stored = ws
+            .worker_rows_for_project(&key)
+            .into_iter()
+            .find(|row| row.label == "tester")
+            .expect("the row the spawn wrote");
+        assert_eq!(
+            stored.kick.as_deref(),
+            Some("opening turn"),
+            "the row keeps the kick the spawn opened the worker with; dropped, a later --new \
+             re-spawn opens the worker with no first turn at all",
+        );
+    }
+
     /// The spawn composes the working directory from the gitness the ROW
     /// records, in preference to probing the project - that is what keeps
     /// it on the directory the launchpad already cleared. A fixture whose
