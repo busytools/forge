@@ -3943,9 +3943,10 @@ impl Workspace {
 
     /// Delete a worker's persisted row so it never re-spawns. The row is
     /// the only thing that brings one back, so a delete that cannot land
-    /// is an error rather than a warn. Called from
-    /// `spawn::teardown_worker`, the shared close/despawn routine.
-    pub(crate) fn delete_worker_row(&self, project_key: &ProjectKey, label: &str) {
+    /// is an error rather than a warn. Returns whether a row was there to
+    /// remove - `spawn::handle_despawn_worker` reports NotFound from it
+    /// when no live worker matched either.
+    pub(crate) fn delete_worker_row(&self, project_key: &ProjectKey, label: &str) -> bool {
         let Some((org, project)) = self.project_identity_for_key(project_key) else {
             tracing::warn!(
                 target: "forge_workspace::workspace",
@@ -3953,18 +3954,24 @@ impl Workspace {
                 label = %label,
                 "no configured project for this worker's key; its row is left where it is",
             );
-            return;
+            return false;
         };
-        if let Some(db) = self.db.lock().as_ref()
-            && let Err(error) = crate::store::sessions::delete(db, &org, &project, label)
-        {
-            tracing::error!(
-                target: "forge_workspace::workspace",
-                %error,
-                project = %project_key.as_str(),
-                label = %label,
-                "deleting a persisted worker failed; it may re-spawn on restart",
-            );
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return false;
+        };
+        match crate::store::sessions::delete(db, &org, &project, label) {
+            Ok(existed) => existed,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    project = %project_key.as_str(),
+                    label = %label,
+                    "deleting a persisted worker failed; it may re-spawn on restart",
+                );
+                false
+            }
         }
     }
 
@@ -4991,6 +4998,11 @@ impl Workspace {
                     );
                     let removed = workspace.remove_latest_worker(&project_key, &label);
                     if let Some(entry) = removed {
+                        // The row goes with the worker: rolled back it
+                        // re-spawns on the next boot, and with no live entry
+                        // left it is a row `workers__despawn` answers
+                        // NotFound over and cannot clear (#1142).
+                        workspace.delete_worker_row(&project_key, &label);
                         let worktree = crate::protocol::WorktreeDisposition::untouched(
                             entry.is_git_repo_at_spawn,
                         );
@@ -10308,6 +10320,73 @@ mod tag_retry_tests {
         assert_eq!(entries[0].label, "idle");
         assert!(entries[0].needs_tag, "needs_tag stays true so opportunistic retry can fire");
         assert!(matches!(entries[0].status, forge_primitives::WorkerLiveness::Running));
+    }
+
+    /// The non-NotFound rollback discards the spawn, so the durable row
+    /// must go with it: left behind, it is a row with no live worker -
+    /// which `workers__despawn` cannot clear - and the next boot re-spawns
+    /// the worker this arm just rolled back (#1142).
+    #[tokio::test]
+    async fn a_non_notfound_tag_failure_rolls_back_the_row_with_the_worker() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj-x", "/tmp/proj-x");
+        let db_dir = tempdir().expect("db tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+        );
+        let session_key = SessionSlot::worker("TestOrg", "proj-x", "crashed");
+        workspace
+            .insert_live_worker(&project_key, fake_spawning_entry("crashed", &session_key, true));
+        workspace
+            .record_worker_row(
+                &project_key,
+                "crashed",
+                "crashed-uuid",
+                "charter",
+                Some("kick"),
+                None,
+                false,
+                false,
+            )
+            .expect("seed the row the rollback must take with the worker");
+
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        // A malformed session id is the non-NotFound failure: no amount of
+        // waiting puts a JSONL on disk that makes the write succeed, so the
+        // retry loop returns at once on the parse error.
+        workspace.apply_worker_tag_or_rollback_with_config_dir(
+            &session_key,
+            "not-a-uuid",
+            &project_key,
+            "crashed",
+            &cwd.path().to_string_lossy(),
+            false,
+            cfg.path(),
+        );
+
+        loop {
+            let update = rx.recv().await.expect("the rollback emits an update");
+            if let SessionUpdate::WorkerStatusChanged { action, status, .. } = update
+                && action == crate::protocol::WorkerStatusAction::Removed
+            {
+                assert_eq!(status.label, "crashed", "the rolled-back worker is the one removed");
+                break;
+            }
+        }
+
+        assert!(
+            workspace.list_live_workers(&project_key).is_empty(),
+            "the rollback removes the live entry",
+        );
+        assert!(
+            workspace.worker_rows_for_project(&project_key).is_empty(),
+            "the row must not outlive the rolled-back worker: no live entry is left to clear it, \
+             and the next boot re-spawns it",
+        );
     }
 
     /// `apply_worker_tag_or_rollback_with_config_dir`: when the JSONL

@@ -1529,7 +1529,28 @@ pub(crate) fn handle_despawn_worker(
     let Some(entry) =
         workspace.list_live_workers(project_key).into_iter().rev().find(|w| w.label == label)
     else {
-        let _ = respond.send(DespawnResult::NotFound);
+        // No live worker, but the label can still hold a durable row - the
+        // tag-write rollback removes the entry without it - and then this
+        // tool, the one that removes a durable worker, answers NotFound
+        // over the row it exists to clear (#1142). Clear it.
+        //
+        // Nothing live was torn down, so the worktree step below has no
+        // entry to read its gitness from and no `Removed` event to emit;
+        // the row is the whole of this case.
+        if !workspace.delete_worker_row(project_key, label) {
+            let _ = respond.send(DespawnResult::NotFound);
+            return;
+        }
+        tracing::info!(
+            target: "forge_workspace::spawn",
+            project = %project_key.as_str(),
+            label = %label,
+            "despawn: no live worker matched; cleared its stranded durable row",
+        );
+        let _ = respond.send(DespawnResult::Despawned {
+            worktree_cleanup_warning: None,
+            branch_cleanup_warning: None,
+        });
         return;
     };
 
@@ -3686,6 +3707,54 @@ provider = "anthropic"
             drain_removed_dispositions(&mut rx),
             vec![WorktreeDisposition::Absent],
             "a worker that never had a worktree must not claim one",
+        );
+    }
+
+    /// A durable row can outlive its live worker - the tag-write rollback
+    /// removes the entry without the row - and the row is then the only
+    /// handle on a worker the next boot re-spawns. Despawn is the tool a
+    /// lead reaches for to remove a durable worker, so it must clear the
+    /// row rather than report NotFound over it (#1142).
+    #[tokio::test]
+    async fn despawn_clears_a_stranded_row_with_no_live_worker() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj-x", "/tmp/proj-x");
+        let dir = tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+        );
+        workspace
+            .record_worker_row(
+                &project,
+                "stranded",
+                "stranded-id",
+                "charter",
+                Some("kick"),
+                None,
+                false,
+                false,
+            )
+            .expect("seed the row whose live worker is gone");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "stranded", false, tx);
+        let result = resp_rx.await.expect("despawn result");
+
+        assert!(
+            matches!(result, crate::protocol::DespawnResult::Despawned { .. }),
+            "clearing the row is a despawn, not a NotFound over the row it just removed: \
+             {result:?}",
+        );
+        assert!(
+            workspace.worker_rows_for_project(&project).is_empty(),
+            "the stranded row must not survive the despawn that reported the worker gone",
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing live was torn down, so there is no Removed event to emit",
         );
     }
 
