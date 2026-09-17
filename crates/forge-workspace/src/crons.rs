@@ -843,36 +843,132 @@ mod tests {
         );
     }
 
-    /// A shut boot gate refuses every spawn, and the boot catch-up fires
-    /// before the listener's bind task has necessarily run. That refusal
+    /// A spawn needs the account map settled, and one half of that is the
+    /// gateway listener, which the boot catch-up can outrun. That refusal
     /// is transient, so the fire stays unconsumed for the next tick
     /// rather than advancing past a prompt that never landed.
     #[test]
-    fn deliver_cron_with_a_shut_boot_gate_leaves_the_fire_for_the_next_tick() {
+    fn deliver_cron_with_the_listener_unbound_leaves_the_fire_for_the_next_tick() {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("proj", "/tmp/wc-gate");
         ws.enable_test_dispatch_intercept();
 
-        // Control: with the gate open this same fire is delivered, so the
-        // refusal below is the gate and not the owner check.
-        let open = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        // Control: with the listener bound this same fire is delivered, so
+        // the refusal below is the map and not the owner check.
+        let bound = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
         assert!(
-            matches!(open, crate::spawn::CronFireOutcome::Delivered),
-            "the same fire with the gate open is delivered",
+            matches!(bound, crate::spawn::CronFireOutcome::Delivered),
+            "the same fire with the listener bound is delivered",
         );
         ws.drain_test_dispatch_buffer();
 
         ws.seed_test_gateway_ready(false);
-        let shut = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        let unbound = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
         assert!(
-            matches!(shut, crate::spawn::CronFireOutcome::DispatchFailed),
-            "a shut gate is a transient refusal, not a delivered fire",
+            matches!(unbound, crate::spawn::CronFireOutcome::DispatchFailed),
+            "an unbound listener is a transient refusal, not a delivered fire",
         );
         assert_eq!(
             parked_crons(&ws, "proj", None).len(),
             1,
             "the deferred fire parked nothing, so the retry parks it once rather than twice",
         );
+    }
+
+    /// The other half of an unsettled map is the accounts themselves: the
+    /// walk skips every account still `Loading`, so a project whose only
+    /// account has not settled is refused there. Also pins the boundary -
+    /// `Bailed` is terminal, so it settles the map and the walk falls back
+    /// to it rather than refusing.
+    #[test]
+    fn deliver_cron_with_an_unsettled_account_map_leaves_the_fire_for_the_next_tick() {
+        let (ws, _dir) = workspace_with_one_unsettled_account();
+        ws.enable_test_dispatch_intercept();
+
+        // Nothing runs the account loader here, so the one account starts
+        // `Loading`: the fire is left rather than parked.
+        let unsettled = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert_eq!(
+            outcome_name(&unsettled),
+            "DispatchFailed",
+            "an account still loading is a transient refusal, not a delivered fire",
+        );
+        assert!(
+            parked_crons(&ws, "proj", None).is_empty(),
+            "and nothing is parked, so the retry parks it once rather than twice",
+        );
+
+        // Controls: the same fire is delivered once the map settles, so
+        // the refusal above is the account map and not the owner check.
+        ws.seed_test_ready_account("acct-a");
+        let ready = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert_eq!(
+            outcome_name(&ready),
+            "Delivered",
+            "the same fire with the account settled is delivered",
+        );
+
+        // `Bailed` is terminal too, so it settles the map as well, and the
+        // walk falls back to it as the last resort rather than refusing.
+        ws.seed_test_account_state("acct-a", forge_gateway::LoadingState::Bailed);
+        let bailed = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        assert_eq!(
+            outcome_name(&bailed),
+            "Delivered",
+            "a Bailed account settles the map and the walk falls back to it",
+        );
+        assert_eq!(
+            parked_crons(&ws, "proj", None).len(),
+            2,
+            "both settled fires parked their prompt",
+        );
+    }
+
+    /// The outcome's own name, so a failure says which variant it got
+    /// rather than only that it was not the expected one.
+    fn outcome_name(outcome: &crate::spawn::CronFireOutcome) -> &'static str {
+        match outcome {
+            crate::spawn::CronFireOutcome::Delivered => "Delivered",
+            crate::spawn::CronFireOutcome::TargetGone => "TargetGone",
+            crate::spawn::CronFireOutcome::DispatchFailed => "DispatchFailed",
+        }
+    }
+
+    /// A workspace over a forge.toml declaring one account and one
+    /// project. Nothing runs the account loader in a test, so the account
+    /// map starts unsettled. The tempdir must outlive the caller.
+    ///
+    /// `new_for_test` rather than a stubbed workspace on purpose: the
+    /// stubs carry an EMPTY account pool, where `all_loaded` is vacuously
+    /// true and `set_loading` is a no-op, so they cannot tell the two
+    /// halves of the predicate apart.
+    fn workspace_with_one_unsettled_account()
+    -> (std::sync::Arc<crate::Workspace>, tempfile::TempDir) {
+        let dir = tempdir().expect("tempdir");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+
+[[orgs.projects]]
+name = "proj"
+path = "/tmp/wc-unsettled"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let ws = std::sync::Arc::new(
+            crate::Workspace::new_for_test(dir.path().to_owned()).expect("boot from the fixture"),
+        );
+        (ws, dir)
     }
 
     #[test]

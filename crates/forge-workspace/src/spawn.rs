@@ -415,17 +415,25 @@ pub(crate) fn deliver_cron_prompt(
         CronOwnerCheck::Absent => return CronFireOutcome::TargetGone,
         CronOwnerCheck::Unknown => return CronFireOutcome::DispatchFailed,
     }
-    // A spawn is refused while the gateway listener is unbound, and the
-    // boot catch-up fires before the bind task has necessarily run. That
-    // refusal is transient rather than the target being gone, so leave the
-    // fire unconsumed and let the next tick park and wake it once - the
-    // scheduler retries, where advancing past it would drop the prompt.
-    if !workspace.gateway_ready() {
+    // A spawn needs the account map settled: the walk skips every account
+    // still `Loading`, so a project whose only account for its model has
+    // not settled is refused at the walk, and that refusal is transient
+    // where a dead target is not. Deferring the fire is a delay rather
+    // than a drop, because the next tick retries once the map settles;
+    // parking now would have the spawn refusal expire the prompt instead.
+    //
+    // This is NOT a boot gate. It reads "is the account map mid-flight
+    // right now", which goes false again long after boot: a usage poll
+    // that flips an account Ready to Bailed on a 401, and the recovery
+    // poll that walks it back through `Loading`, leaves the map unsettled
+    // mid-session while the user is working. A fire deferred there is a
+    // delay for the same reason. Do not simplify it into a boot check.
+    if !workspace.all_accounts_loaded() {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project_name,
-            "cron fire deferred: the gateway listener has not bound yet, so the wake would be \
-             refused and its parked prompt expired",
+            "cron fire deferred: the account map has not settled, so a spawn would be refused \
+             and its parked prompt expired",
         );
         return CronFireOutcome::DispatchFailed;
     }
