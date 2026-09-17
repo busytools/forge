@@ -1738,10 +1738,17 @@ impl Workspace {
     }
 
     /// Whether a spawn in `project_key` would be refused because every
-    /// account serving its model is cooling. Narrower than
-    /// [`Self::project_would_bind`] on purpose: that is also false for a
-    /// model no account declares, which is permanent, and a wake refused
-    /// for it must not be left retrying forever.
+    /// account serving its model is cooling.
+    ///
+    /// Matches the walk's budget failure alone, rather than taking any
+    /// error, because that failure is the one carrying a reset to wait
+    /// for - and only a refusal that clears on its own is owed a
+    /// deferral. The walk's other failure is the config-level one, and
+    /// `forge.toml` refuses a project whose model no account in its org
+    /// serves (`ProjectModelUndeclared`), so it is not reachable from a
+    /// loaded config today. Keep the match narrow anyway: an empty walk
+    /// with nothing to wait for must fail as before rather than retry
+    /// forever, and this is the line that says so.
     pub(crate) fn project_walk_is_cooling(&self, project_key: &ProjectKey) -> bool {
         let Some(project) = self.project_for_key(project_key) else {
             return false;

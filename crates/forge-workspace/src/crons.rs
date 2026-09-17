@@ -976,9 +976,10 @@ mod tests {
     }
 
     /// A workspace over a forge.toml declaring one account and one project
-    /// with a model, so the account walk is the thing a spawn would reach.
-    /// Nothing runs the account loader in a test, so the account map
-    /// starts unsettled. The tempdir must outlive the caller.
+    /// with the model that account serves, so the account walk is the
+    /// thing a spawn would reach. Nothing runs the account loader in a
+    /// test, so the account map starts unsettled. The tempdir must
+    /// outlive the caller.
     ///
     /// `new_for_test` rather than a stubbed workspace on purpose: the
     /// stubs carry an EMPTY account pool, where `all_loaded` is vacuously
