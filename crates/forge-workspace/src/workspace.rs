@@ -961,6 +961,29 @@ impl Workspace {
                 ),
             }
         }
+        // The catalog table outlived its module: deleting the machinery
+        // left the rows behind, and nothing reads or writes them now, so
+        // there is nothing to drain first. A store that never cached a
+        // catalog drops nothing.
+        if let Some(db) = db.as_mut() {
+            match crate::store::model_catalog::drop_table(db) {
+                Ok(true) => {
+                    if let Err(error) = db.compact() {
+                        tracing::warn!(
+                            target: "forge_workspace::workspace",
+                            %error,
+                            "compacting the store after dropping the retired model catalog table failed",
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "dropping the retired model_catalog table failed; it stays for the next boot",
+                ),
+            }
+        }
 
         // Resolved here rather than lazily so a malformed `[[slack]]`
         // entry refuses the boot, the way the rest of forge.toml does.
@@ -2417,16 +2440,13 @@ impl Workspace {
     /// `fallback_accounts`
     /// is the org's fallback list: unioned in (deduped) even when the
     /// pin does not name them, and flagged so a fallback-only row can
-    /// carry its dim `fallback` suffix. `current_account` is the
-    /// session's active account
-    /// display name, used to mark the current row. Returns owned
+    /// carry its dim `fallback` suffix. Returns owned
     /// [`crate::AccountRow`]s so the TUI holds a snapshot rather than
     /// the `AccountStateMap` lock.
     pub fn project_accounts_snapshot(
         &self,
         allowed_accounts: &[String],
         fallback_accounts: &[String],
-        current_account: Option<&str>,
     ) -> Vec<crate::AccountRow> {
         // Resolve the allow-list to concrete account names, falling
         // back to every configured account when the project pins none.
@@ -2446,9 +2466,7 @@ impl Workspace {
             .into_iter()
             .filter_map(|name| {
                 let key = AccountKey(name.clone());
-                let config_dir = self.config_dir.clone();
                 let unusable = self.accounts.unusable_reason(&key);
-                let is_current = current_account == Some(name.as_str());
                 // A dual-listed account is primary-tier: the pin's
                 // membership wins over the fallback list. An empty pin
                 // means every account is primary (the un-pinned shape).
@@ -2458,8 +2476,6 @@ impl Workspace {
                 let budget = account_budget(&name, provider, self.accounts.usage(&name).as_ref());
                 Some(crate::AccountRow {
                     display_name: name,
-                    config_dir,
-                    is_current,
                     unusable,
                     budget,
                     fallback,
@@ -2483,8 +2499,7 @@ impl Workspace {
             .org_pins()
             .into_iter()
             .map(|(org, pin)| {
-                let rows =
-                    self.project_accounts_snapshot(&pin.accounts, &pin.fallback_accounts, None);
+                let rows = self.project_accounts_snapshot(&pin.accounts, &pin.fallback_accounts);
                 crate::views::GatewayOrgView {
                     org,
                     accounts: pin.accounts,
@@ -5973,19 +5988,13 @@ mod tests {
             ws.accounts.replace_state_for_test(map);
         }
 
-        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &[], Some("A"));
+        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &[]);
 
         assert_eq!(rows.len(), 2, "one row per allow-list entry");
         assert_eq!(rows[0].display_name, "A", "allow-list order preserved");
         assert_eq!(rows[1].display_name, "B");
 
-        // A: current + saturated -> unusable as Saturated, carries a
-        // reset ETA.
-        assert!(rows[0].is_current, "A is the session's active account");
-        assert_eq!(
-            rows[0].config_dir, ws.config_dir,
-            "one shared config dir: every row names the workspace's own",
-        );
+        // A: saturated -> unusable as Saturated, carries a reset ETA.
         assert_eq!(
             rows[0].unusable,
             Some(forge_gateway::Unusable::Saturated),
@@ -6003,10 +6012,7 @@ mod tests {
             }
             ref other => panic!("a window-billed account renders as a subscription, got {other:?}"),
         }
-        assert_eq!(rows[0].config_dir, ws.config_dir);
-
-        // B: not current + under cap -> usable, no reset ETA.
-        assert!(!rows[1].is_current);
+        // B: under cap -> usable, no reset ETA.
         assert_eq!(rows[1].unusable, None, "B under cap on both windows");
         match rows[1].budget {
             crate::views::AccountBudget::Subscription { five_hour_util, resets_at, .. } => {
@@ -6049,11 +6055,10 @@ mod tests {
             ws.accounts.replace_state_for_test(map);
         }
 
-        let rows = ws.project_accounts_snapshot(&[], &[], None);
+        let rows = ws.project_accounts_snapshot(&[], &[]);
         let names: Vec<&str> = rows.iter().map(|r| r.display_name.as_str()).collect();
         assert_eq!(names, vec!["One", "Two"], "empty pin lists all accounts in order");
         assert!(rows.iter().all(|r| r.unusable.is_none()), "both under cap -> usable");
-        assert!(rows.iter().all(|r| !r.is_current), "no current account when None passed");
     }
 
     /// Fallback rows are flagged against the org `fallback_accounts`
@@ -6087,7 +6092,7 @@ mod tests {
             ws.accounts.replace_state_for_test(map);
         }
 
-        let rows = ws.project_accounts_snapshot(&["A".to_owned()], &["B".to_owned()], Some("A"));
+        let rows = ws.project_accounts_snapshot(&["A".to_owned()], &["B".to_owned()]);
 
         assert_eq!(rows[0].display_name, "A", "regular rows lead");
         assert!(!rows[0].fallback, "a primary row is not flagged fallback");
@@ -6128,11 +6133,8 @@ mod tests {
             ws.accounts.replace_state_for_test(map);
         }
 
-        let rows = ws.project_accounts_snapshot(
-            &["A".to_owned(), "B".to_owned()],
-            &["B".to_owned()],
-            Some("A"),
-        );
+        let rows =
+            ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], &["B".to_owned()]);
 
         assert_eq!(rows.len(), 2, "no duplicate row for the dual-listed account");
         assert_eq!(rows[1].display_name, "B");

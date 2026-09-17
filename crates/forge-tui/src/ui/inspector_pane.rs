@@ -3683,7 +3683,6 @@ mod tests {
         ProcessRow {
             kind,
             headline: headline.to_owned(),
-            detail: None,
             metadata: metadata.to_owned(),
             status: ToolCallStatus::InProgress,
             memory_bytes: Some(memory_bytes),

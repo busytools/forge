@@ -15,6 +15,9 @@
 //! `/usage` view's per-file token summaries ([`token_usage`]), cached
 //! model pricing ([`pricing`]), plugin update history ([`plugins`]),
 //! and the catalog's per-file worker-tag scans ([`session_tags`]).
+//!
+//! [`model_catalog`] is retired rather than live: it exists only to drop
+//! the table the deleted catalog machinery left behind in older stores.
 
 use std::path::Path;
 
@@ -23,6 +26,7 @@ use anyhow::Context;
 pub mod cron;
 pub mod dynamic_workers;
 pub mod gotify;
+pub mod model_catalog;
 pub mod plugins;
 pub mod pricing;
 pub mod review;
