@@ -7,8 +7,8 @@
 //! as serde-json and the worker-only fields are absent on a lead's row.
 //!
 //! A row written by [`migrate_from_dynamic_workers`] carries no id: the
-//! `dynamic_workers` table never stored one, so the derivation fills it
-//! in on the boot that reads the row.
+//! `dynamic_workers` table never stored one, so the session it names
+//! starts fresh under a newly minted id rather than resuming.
 
 use anyhow::Context;
 use redb::{ReadableTable, TableDefinition};

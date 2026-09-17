@@ -500,8 +500,8 @@ fn cron_owner_exists(
 /// turn AND echo it into the target's chat as a notification block. When
 /// `team_role` names a running team worker, deliver straight to it;
 /// otherwise deliver to the project lead - echo + dispatch a
-/// `Command::Prompt` if it's running, else buffer on the synthetic
-/// its owner's parked bucket and dispatch `Command::SpawnProject`
+/// `Command::Prompt` if it's running, else park it for the target's slot
+/// and dispatch `Command::SpawnProject`
 /// (`SessionTask` drains + echoes on Connected via
 /// `deliver_parked_gotify`). A team-worker subscription with NO live entry
 /// falls through to lead delivery (spawning the project brings the team
@@ -1069,21 +1069,17 @@ pub(crate) fn worker_limit_reached_message(project: &str, live: usize, cap: usiz
 }
 
 /// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
-/// in `live_workers[project_key]`, dispatch a fresh-session spawn
-/// via `SessionTarget::FreshInProject` with the charter threaded
-/// onto `SessionLaunchSettings`, then reply on `return_to` with the
-/// synthetic session_id + the tag value. The Connected handler in
+/// in `live_workers[project_key]`, dispatch a spawn for the id the
+/// worker will run under (or the id being resumed) with the charter
+/// threaded onto `SessionLaunchSettings`, then reply on `return_to`
+/// with that id and the tag value. The Connected handler in
 /// `session_task::translate_event` writes the actual JSONL tag row
 /// and transitions the entry from Spawning to Running (or rolls back
 /// on tag-write failure).
 ///
-/// The synth_key reply works because the LLM's `workers__spawn`
-/// caller doesn't USE the session_id to address subsequent calls
-/// (those go by label); the field exists in `WorkerStatus` for v2
-/// describe-by-id workflows and to give the caller a stable
-/// identifier to log. The synth -> real rekey is handled inside
-/// `Workspace::migrate_session_task`, which also fixes up
-/// `live_workers[project_key]`'s `session_key` field in lockstep.
+/// The reply's session id is informational: the LLM's `workers__spawn`
+/// caller addresses the worker by label, not by id, and logs the id to
+/// have a stable handle on the row.
 pub(crate) fn handle_spawn_worker(
     workspace: &Arc<Workspace>,
     project_key: ProjectKey,
@@ -1096,7 +1092,7 @@ pub(crate) fn handle_spawn_worker(
     from_boot_respawn: bool,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
-    // Verify the project exists before claiming a synth key. Probe its
+    // Verify the project exists before minting the worker's id. Probe its
     // filesystem path for git-repo-ness exactly once here - a blocking FS
     // call, deliberately BEFORE the live_workers critical section below so
     // it never widens the dedup window - and feed the result into both the
@@ -2139,6 +2135,11 @@ provider = "anthropic"
         )
         .expect("write forge.toml");
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        // Intercept dispatch so the spawn this delivery triggers does not
+        // run inline and expire the park it just made: with no `claude`
+        // binary the spawn's failure arm releases the slot, which is the
+        // production behaviour but hides the parking under test.
+        workspace.enable_test_dispatch_intercept();
         let caller = SessionKey::from_str_for_test("caller-sleep");
         let w = fixture_wrapped();
 

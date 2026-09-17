@@ -419,7 +419,7 @@ impl SessionTask {
                     // handle_spawn_worker). Lead-session and
                     // non-worker callers see no behavioural change
                     // - this branch is a no-op for them.
-                    workspace.handle_async_worker_spawn_failure(&self.slot, &key, &message);
+                    workspace.handle_async_worker_spawn_failure(&key, &message);
                 }
                 self.emit(SessionUpdate::ConnectionFailed {
                     key: key.clone(),
@@ -927,7 +927,7 @@ impl SessionTask {
     /// Deliver the Gotify notifications parked for this session's slot.
     /// Each is echoed into chat as a notification block and re-dispatched
     /// as a plain `Command::Prompt`, landing as an ordinary user turn.
-    /// Mirrors [`Self::drain_pending_cron_prompts`], which echoes its own
+    /// Mirrors [`Self::deliver_parked_crons`], which echoes its own
     /// block before dispatching.
     fn deliver_parked_gotify(
         &self,
@@ -1031,28 +1031,22 @@ fn maybe_respawn_workers_on_connected(
     if slot.label.is_some() {
         return;
     }
-    let Some(project) = workspace.find_project_view_by_name(&slot.project) else {
+    if workspace.find_project_view_by_name(&slot.project).is_none() {
         return;
-    };
+    }
     let Some(project_key) = workspace.project_key_for_name(&slot.project) else {
         return;
     };
     if !workspace.list_live_workers(&project_key).is_empty() {
         return;
     }
-    // Scan the project's catalog for previously-spawned worker
-    // sessions (tagged `forge:worker:<label>`) so each worker resumes
-    // its existing session instead of starting fresh. The scan is
-    // async (filesystem I/O); workspace claims a per-project
-    // in-flight guard synchronously so a fast double-Connected
-    // can't slip a second worker-spawn through. The guard is
-    // released after the SpawnWorker commands are dispatched.
-    workspace.respawn_workers_for_lead(
-        real_session_id.to_owned(),
-        project_key,
-        project.path.clone(),
-        force_new,
-    );
+    // Re-spawn the project's persisted workers on a lead reconnect, so
+    // each resumes the id the store holds for its label instead of
+    // starting fresh. Workspace claims a per-project in-flight guard
+    // synchronously so a fast double-Connected can't slip a second
+    // worker-spawn through; the guard is released after the SpawnWorker
+    // commands are dispatched.
+    workspace.respawn_workers_for_lead(real_session_id.to_owned(), project_key, force_new);
 }
 
 /// Shared worker-kick hook: when the session that connected is a worker,
@@ -1513,8 +1507,8 @@ mod tests {
     /// `SlackMessageAppended` so a message that arrived while the project was
     /// asleep shows its block once the session connects. Driven through
     /// Connected rather than the private drain so the ordering is pinned -
-    /// `rekey_to` runs first, so the echo has to carry the real key, not the
-    /// synthetic one.
+    /// `rekey_to` runs first, so the echo has to carry the key Connected
+    /// reported.
     #[test]
     fn first_connected_drains_parked_slack_and_echoes_block() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();

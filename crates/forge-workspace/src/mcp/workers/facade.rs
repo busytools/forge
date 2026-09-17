@@ -525,12 +525,11 @@ impl WorkerFacade for ProdWorkerFacade {
         // against this one; a duplicate MCP spawn surfaces from there as
         // a dispatch error.
         //
-        // The worktree is recreated BEFORE the resume scan: a despawn
-        // removes it, the transcript lives under the worktree's storage
-        // key, and that key only matches the scan's run-dir key while
-        // the worktree stands (a missing path canonicalises to nothing,
-        // so on a symlinked root the two spellings diverge). What ensure
-        // did is kept so a later refusal can undo exactly that work.
+        // The worktree is recreated before the spawn: a despawn removes
+        // it, and `--worktree <label>` needs it to exist so the resumed
+        // session lands back in the directory it first ran in. What
+        // ensure did is kept so a later refusal can undo exactly that
+        // work.
         let mut ensured = None;
         let resume_existing = if resume_session {
             if is_git_repo_at_spawn {
@@ -550,7 +549,7 @@ impl WorkerFacade for ProdWorkerFacade {
                     }
                 }
             }
-            let Some(session_id) = ws.resolve_worker_resume_session(&view.path, &label).await
+            let Some(session_id) = ws.resolve_worker_resume_session(&view.org, &view.name, &label)
             else {
                 discard_refused_worktree(&view.path, &label, ensured.take());
                 return Err(WorkerSpawnError::NoPriorSession { label });

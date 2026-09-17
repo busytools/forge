@@ -188,7 +188,6 @@ impl Workspace {
             gotify_subs: Mutex::new(Vec::new()),
             db: Arc::new(Mutex::new(None)),
             catalog_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            catalog_ready_notify: Arc::new(tokio::sync::Notify::new()),
             catalog_scan_started: std::sync::atomic::AtomicBool::new(false),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
