@@ -1536,6 +1536,15 @@ pub(crate) fn handle_despawn_worker(
     let Some(entry) =
         workspace.list_live_workers(project_key).into_iter().rev().find(|w| w.label == label)
     else {
+        // `lead` is not a worker label: it is the project lead's own row,
+        // the stored id an ordinary boot resumes the lead from, and the
+        // spawn path reserves the label so no worker can hold it. The
+        // fall-through below would clear that row and report a despawn,
+        // orphaning the lead's conversation.
+        if label == crate::store::sessions::LEAD_LABEL {
+            let _ = respond.send(DespawnResult::NotFound);
+            return;
+        }
         // No live worker, but the label can still hold a durable row - the
         // tag-write rollback removes the entry without it - and then this
         // tool, the one that removes a durable worker, answers NotFound
@@ -3763,6 +3772,97 @@ provider = "anthropic"
             rx.try_recv().is_err(),
             "nothing live was torn down, so there is no Removed event to emit",
         );
+    }
+
+    /// `lead` is the project lead's own row, not a worker: it is the
+    /// stored id an ordinary boot resumes the lead from. A despawn for it
+    /// finds no live worker, and the fall-through must not treat that as a
+    /// stranded worker row and clear it.
+    #[tokio::test]
+    async fn despawn_refuses_to_clear_the_lead_row() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj-x", "/tmp/proj-x");
+        let dir = tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+        );
+        workspace
+            .record_worker_row(
+                &project,
+                crate::store::sessions::LEAD_LABEL,
+                "lead-uuid",
+                "the lead's charter",
+                None,
+                None,
+                false,
+                false,
+            )
+            .expect("seed the lead's row");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, crate::store::sessions::LEAD_LABEL, false, tx);
+
+        assert!(
+            matches!(resp_rx.await.expect("result"), crate::protocol::DespawnResult::NotFound),
+            "there is no worker by that label, so the answer is NotFound",
+        );
+        // Read the row directly: `worker_rows_for_project` excludes the
+        // lead's row by design, so it cannot witness this either way.
+        let stored = {
+            let db = workspace.db.lock();
+            crate::store::sessions::get(
+                db.as_ref().expect("db"),
+                "TestOrg",
+                "proj-x",
+                crate::store::sessions::LEAD_LABEL,
+            )
+            .expect("read")
+        };
+        assert!(
+            stored.is_some(),
+            "the lead's row must survive a despawn for its label; cleared, the next boot mints a \
+             fresh id and orphans the lead's conversation",
+        );
+        assert!(rx.try_recv().is_err(), "nothing live was torn down, so no Removed event");
+    }
+
+    /// The store-backed control for the fall-through's negative arm: with
+    /// the project configured and no row at the label, nothing was cleared
+    /// and the answer is NotFound. The stub-based test above cannot tell
+    /// that from a delete that reports success over an absent row.
+    #[tokio::test]
+    async fn despawn_reports_not_found_when_the_label_holds_no_row() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj-x", "/tmp/proj-x");
+        let dir = tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+        );
+        // A sibling row, so "nothing was cleared" cannot pass because the
+        // store was empty.
+        workspace
+            .record_worker_row(&project, "other", "other-id", "c", None, None, false, false)
+            .expect("seed a row the despawn must leave alone");
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "ghost", false, tx);
+
+        assert!(
+            matches!(resp_rx.await.expect("result"), crate::protocol::DespawnResult::NotFound),
+            "a label with no row was not cleared, so the answer is NotFound rather than Despawned",
+        );
+        assert_eq!(
+            workspace.worker_rows_for_project(&project).len(),
+            1,
+            "and the sibling row is untouched",
+        );
+        assert!(rx.try_recv().is_err(), "no Removed event for a label that was never live");
     }
 
     /// Despawning an unknown label reports NotFound and emits nothing.
