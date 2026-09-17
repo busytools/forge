@@ -88,7 +88,7 @@ An array of tables. At least one is required, or the load fails with
 | `models` | list of strings | yes | | The canonical model names the account serves. Selection and the route's model gate match against this list; an empty list fails the load (`AccountModelsRequired`). |
 | `model_slugs` | table | no | `{}` | Canonical name -> upstream spelling, only where they differ. Every slug key must be in `models`, or the load fails (`AccountSlugUndeclared`). |
 | `model_aliases` | table | no | `{}` | Written as `[accounts.model_aliases]`. Canonical name -> the other names a request may arrive under for that model. Every key must be in `models`, or the load fails (`AccountAliasUndeclared`); an empty list fails (`AccountAliasEmpty`). |
-| `env` | table | no | `{}` | Written as `[accounts.env]`. Provider-behaviour extras only - timeouts, context caps, fallback switches. Gateway keys (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) are rejected here and in the global `[env]` layer (`AccountEnvCarriesGatewayKeys`): the flat `base_url` and `token` keys own them. |
+| `env` | table | no | `{}` | Written as `[accounts.env]`. Provider-behaviour extras only - timeouts, context caps, fallback switches. Gateway keys (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) may be declared here and in the global `[env]` layer, but they are inert: the spawned session's env is stamped with the gateway's own values last. The flat `base_url` and `token` keys own them. |
 
 All accounts share one `claude` config directory, so MCP servers,
 plugins and settings are declared once for every account; what varies

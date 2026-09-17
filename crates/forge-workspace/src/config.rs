@@ -541,37 +541,16 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             });
         };
         let mut env = global_env.clone();
-        // The gateway keys are the flat keys' job, in every env layer:
-        // a base_url, credential or API key carried in [env] or
-        // [accounts.env] would sit beside its flat twin and silently
-        // lose or win depending on layering. Each conflict is named.
+        // A gateway key declared in an env layer is inert: the stamp
+        // lands last over the merged env and overwrites all four. A
+        // blank one still reads as absent rather than being carried
+        // downstream as an empty credential.
         let gateway_keys = [
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_API_KEY",
         ];
-        let gateway_conflicts: Vec<String> = gateway_keys
-            .iter()
-            .filter(|k| {
-                let present = |env: &HashMap<String, String>| {
-                    env.get(**k).is_some_and(|v| !v.trim().is_empty())
-                };
-                present(&entry.env) || present(&global_env)
-            })
-            .map(|k| (*k).to_owned())
-            .collect();
-        if !gateway_conflicts.is_empty() {
-            let keys = gateway_conflicts.join(", ");
-            return Err(WorkspaceError::AccountEnvCarriesGatewayKeys {
-                path,
-                name: entry.display_name.clone(),
-                keys,
-            });
-        }
-        // A blank gateway key reads as absent for the conflict check
-        // and must read as absent downstream too: scrub it here rather
-        // than stamping an empty credential onto the child.
         for key in gateway_keys {
             for env in [&mut global_env, &mut entry.env] {
                 if env.get(key).is_some_and(|v| v.trim().is_empty()) {
@@ -1520,34 +1499,51 @@ base_url = "   "
         assert_eq!(account.env.len(), 1, "nothing else is injected");
     }
 
-    /// The boot gate for the real forge.toml: each of the four load
-    /// errors must fire and name what the user has to fix.
+    /// A gateway key declared in an env layer loads and rides through
+    /// untouched: the stamp is what makes it inert, and it lands after
+    /// the layers merge, so a second load-time gate on the same keys
+    /// would only decide the same question twice.
     #[test]
-    fn an_account_env_carrying_gateway_keys_fails_the_load() {
+    fn a_gateway_key_in_an_env_layer_loads_and_rides_through() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
             r#"
+[env]
+ANTHROPIC_BASE_URL = "https://proxy.example"
+
 [[orgs]]
 name = "Personal"
-accounts = ["Codex"]
+accounts = ["Personal"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
 [[accounts]]
-display_name = "Codex"
+display_name = "Personal"
 token = "t"
 models = ["claude-sonnet-5"]
-provider = "codex"
+provider = "anthropic"
 [accounts.env]
 ANTHROPIC_API_KEY = "sk-ant-123"
+ANTHROPIC_AUTH_TOKEN = "t2"
 "#,
         );
-        let err = load_from_dir(dir.path()).expect_err("a gateway env key must not load");
-        let message = err.to_string();
-        assert!(
-            message.contains("ANTHROPIC_API_KEY"),
-            "the error names the offending key, got: {message}",
+        let config = load_from_dir(dir.path()).expect("a gateway env key is not refused");
+        let env = &config.accounts[0].env;
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://proxy.example"),
+            "the global layer's key survives the merge",
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("sk-ant-123"),
+            "the account layer's key survives the merge",
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
+            Some("t2"),
+            "a key beside the flat token survives the merge",
         );
     }
 
@@ -1575,69 +1571,8 @@ ANTHROPIC_API_KEY = "   "
         );
         let config = load_from_dir(dir.path()).expect("a blank gateway key is absent");
         assert!(
-            config.accounts[0].env.get("ANTHROPIC_API_KEY").is_none_or(|v| v.trim().is_empty()),
-            "the blank key rides through as a blank value, not a rejection",
-        );
-    }
-
-    #[test]
-    fn two_conflicting_gateway_keys_are_both_named() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Codex"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Codex"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "codex"
-base_url = "http://localhost:18765"
-[accounts.env]
-ANTHROPIC_API_KEY = "sk-1"
-ANTHROPIC_AUTH_TOKEN = "t2"
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("two conflicts must not load");
-        let message = err.to_string();
-        assert!(
-            message.contains("ANTHROPIC_API_KEY") && message.contains("ANTHROPIC_AUTH_TOKEN"),
-            "the error names both conflicting keys, got: {message}",
-        );
-    }
-
-    #[test]
-    fn a_global_env_gateway_key_fails_the_load_for_every_account() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[env]
-ANTHROPIC_BASE_URL = "https://proxy.example"
-
-[[orgs]]
-name = "Personal"
-accounts = ["Codex"]
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-[[accounts]]
-display_name = "Codex"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "codex"
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("a global gateway key must not load");
-        let message = err.to_string();
-        assert!(
-            message.contains("ANTHROPIC_BASE_URL"),
-            "the error names the offending global key, got: {message}",
+            config.accounts[0].env.get("ANTHROPIC_API_KEY").is_none(),
+            "a blank key is scrubbed, not carried downstream as an empty credential",
         );
     }
 
