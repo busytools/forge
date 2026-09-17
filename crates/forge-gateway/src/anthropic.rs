@@ -524,6 +524,7 @@ mod tests {
 
         fn streaming_http_client(
             &self,
+            _connect_timeout: Duration,
             _idle_timeout: Duration,
         ) -> Result<reqwest::Client, String> {
             unreachable!("no probe streams a response")
@@ -544,6 +545,7 @@ mod tests {
 
         fn streaming_http_client(
             &self,
+            _connect_timeout: Duration,
             _idle_timeout: Duration,
         ) -> Result<reqwest::Client, String> {
             unreachable!("the probe must not build a client for a missing credential")

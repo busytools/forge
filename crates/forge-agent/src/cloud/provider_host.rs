@@ -30,10 +30,16 @@ impl ProviderHost for AgentHost {
             .map_err(|error| error.to_string())
     }
 
-    fn streaming_http_client(&self, idle_timeout: Duration) -> Result<reqwest::Client, String> {
-        crate::http_trust::with_extra_roots(reqwest::Client::builder().read_timeout(idle_timeout))
-            .build()
-            .map_err(|error| error.to_string())
+    fn streaming_http_client(
+        &self,
+        connect_timeout: Duration,
+        idle_timeout: Duration,
+    ) -> Result<reqwest::Client, String> {
+        crate::http_trust::with_extra_roots(
+            reqwest::Client::builder().connect_timeout(connect_timeout).read_timeout(idle_timeout),
+        )
+        .build()
+        .map_err(|error| error.to_string())
     }
 
     async fn user_agent(&self) -> Result<String, String> {

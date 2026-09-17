@@ -45,6 +45,13 @@ const ANTHROPIC_UPSTREAM: &str = "https://api.anthropic.com";
 /// only silence means the leg is wedged.
 pub const FORWARD_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// How long the connect and the TLS handshake may take before the
+/// request is abandoned. Well under the idle bound: a host that
+/// blackholes the SYN never reaches the first byte, so the idle bound
+/// alone would hold the turn open for it, longer than the kernel's own
+/// connect timeout did before the leg carried any bound at all.
+pub const FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The error type a streamed body yields.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -77,8 +84,9 @@ pub struct Gateway {
 
 impl Gateway {
     /// The caller builds `client` through `ProviderHost`, so the
-    /// forward leg carries the TLS trust and the idle bound every other
-    /// outbound path does: `host.streaming_http_client(FORWARD_IDLE_TIMEOUT)`.
+    /// forward leg carries the TLS trust and the bounds every other
+    /// outbound path does:
+    /// `host.streaming_http_client(FORWARD_CONNECT_TIMEOUT, FORWARD_IDLE_TIMEOUT)`.
     pub fn new(pool: Arc<crate::AccountPool>, client: reqwest::Client) -> Self {
         Self {
             bindings: Bindings::default(),
@@ -646,8 +654,16 @@ mod tests {
             unreachable!("the forward harness runs no probe")
         }
 
-        fn streaming_http_client(&self, idle_timeout: Duration) -> Result<reqwest::Client, String> {
-            reqwest::Client::builder().read_timeout(idle_timeout).build().map_err(|e| e.to_string())
+        fn streaming_http_client(
+            &self,
+            connect_timeout: Duration,
+            idle_timeout: Duration,
+        ) -> Result<reqwest::Client, String> {
+            reqwest::Client::builder()
+                .connect_timeout(connect_timeout)
+                .read_timeout(idle_timeout)
+                .build()
+                .map_err(|e| e.to_string())
         }
 
         async fn user_agent(&self) -> Result<String, String> {
@@ -714,8 +730,12 @@ mod tests {
                 env: anthropic_env,
             },
         ]));
-        let client = crate::ProviderHost::streaming_http_client(&TestHost, idle_timeout)
-            .expect("the test host builds a client");
+        let client = crate::ProviderHost::streaming_http_client(
+            &TestHost,
+            FORWARD_CONNECT_TIMEOUT,
+            idle_timeout,
+        )
+        .expect("the test host builds a client");
         let gateway = Arc::new(Gateway::new(Arc::clone(&pool), client));
 
         let listener_port = free_port().await;
@@ -1000,6 +1020,20 @@ mod tests {
         let second = response.chunk().await.expect("a second chunk").expect("chunk bytes");
         assert!(!second.is_empty());
         assert!(started.elapsed() >= Duration::from_millis(1000), "the tail respects the gap");
+    }
+
+    /// The connect bound is the tighter inner one, and that ordering is
+    /// its whole reason for existing: it is what a host that never
+    /// produces a first byte runs into, where the idle bound would hold
+    /// the turn open far longer than a connect ever should.
+    #[test]
+    fn the_connect_bound_stays_well_under_the_idle_bound() {
+        assert!(
+            FORWARD_CONNECT_TIMEOUT <= FORWARD_IDLE_TIMEOUT / 10,
+            "the connect bound is the tighter one; {FORWARD_CONNECT_TIMEOUT:?} against an idle \
+             bound of {FORWARD_IDLE_TIMEOUT:?} lets a blackholed connect outlast the wedge the \
+             leg is bounded to stop",
+        );
     }
 
     /// The forward leg's client is the host's, and a host that bounds
