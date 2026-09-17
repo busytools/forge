@@ -98,14 +98,34 @@ impl Bindings {
     /// API key. The account and project env already live in the bridge
     /// from the original spawn, so carrying the whole env here would
     /// let a key declared in both layers revert to its account value.
+    ///
+    /// `registration.session` is the segment the respawned child runs
+    /// under; `replaced_session` is the one the child it replaces ran
+    /// under, dropped under the same lock as the insert, so no lookup
+    /// lands between the two. Without that drop a session keeps one
+    /// binding for every id it has ever held.
     pub fn respawn_env_overrides(
         &self,
         registration: &Registration,
+        replaced_session: &str,
         listener_base: &str,
     ) -> HashMap<String, String> {
-        let segments =
-            (registration.org.clone(), registration.project.clone(), registration.session.clone());
-        self.by_session.lock().insert(segments, registration.account.clone());
+        {
+            let mut map = self.by_session.lock();
+            map.remove(&(
+                registration.org.clone(),
+                registration.project.clone(),
+                replaced_session.to_owned(),
+            ));
+            map.insert(
+                (
+                    registration.org.clone(),
+                    registration.project.clone(),
+                    registration.session.clone(),
+                ),
+                registration.account.clone(),
+            );
+        }
         stamped_gateway_keys(registration, listener_base).into_iter().collect()
     }
 
@@ -115,6 +135,15 @@ impl Bindings {
             .lock()
             .get(&(org.to_owned(), project.to_owned(), session.to_owned()))
             .cloned()
+    }
+
+    /// Remove and return the binding for the three routing segments,
+    /// read and removed under one acquisition. A caller that acts on
+    /// what it read - cooling the account it has proved exhausted - must
+    /// not race a re-bind of the same triple between the two, or it
+    /// cools one account and drops another's binding.
+    pub fn take_binding(&self, org: &str, project: &str, session: &str) -> Option<AccountKey> {
+        self.by_session.lock().remove(&(org.to_owned(), project.to_owned(), session.to_owned()))
     }
 
     /// Bind a selected account to the three routing segments.
@@ -127,15 +156,6 @@ impl Bindings {
     /// Drop the binding, so the session's next request selects again.
     pub fn unbind(&self, org: &str, project: &str, session: &str) {
         self.by_session.lock().remove(&(org.to_owned(), project.to_owned(), session.to_owned()));
-    }
-
-    /// Remove and return the binding whose session segment matches,
-    /// however the first two segments read. The CLI's rate-limit
-    /// reports arrive on a stream that knows only its session id.
-    pub fn unbind_for_session(&self, session: &str) -> Option<AccountKey> {
-        let mut map = self.by_session.lock();
-        let triple = map.keys().find(|key| key.2 == session)?.clone();
-        map.remove(&triple)
     }
 
     /// Drop every binding onto `account`, so those sessions select
@@ -341,6 +361,37 @@ mod tests {
             bindings.binding_for("Busytools", "forge", "session-1"),
             Some(AccountKey("OpenRouter".to_owned())),
             "a respawn's registration replaces the previous generation's binding",
+        );
+    }
+
+    #[test]
+    fn a_respawn_binding_names_the_segment_the_child_runs_under() {
+        let bindings = Bindings::default();
+        bindings.register(
+            &registration(Provider::Anthropic),
+            "http://127.0.0.1:8787",
+            &anthropic_env(),
+        );
+        let mut respawned = registration(Provider::Anthropic);
+        respawned.session = "session-2".to_owned();
+
+        let overrides =
+            bindings.respawn_env_overrides(&respawned, "session-1", "http://127.0.0.1:8787");
+
+        assert_eq!(
+            overrides.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("http://127.0.0.1:8787/Busytools/forge/session-2"),
+            "the respawned child's base URL names the id it runs under",
+        );
+        assert_eq!(
+            bindings.binding_for("Busytools", "forge", "session-2"),
+            Some(AccountKey("OpenRouter".to_owned())),
+            "the binding moves to the new segment",
+        );
+        assert_eq!(
+            bindings.binding_for("Busytools", "forge", "session-1"),
+            None,
+            "the id the session left behind keeps no binding",
         );
     }
 

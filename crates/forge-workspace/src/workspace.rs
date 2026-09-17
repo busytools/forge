@@ -2347,7 +2347,7 @@ impl Workspace {
     /// now, which a re-selection may have moved off the spawn-time
     /// pick. The lookup goes through the pooled registration: bindings
     /// are keyed by the segment the child's base URL was stamped with,
-    /// which survives the rename that re-keys the session.
+    /// which is the id the occupant runs under.
     pub fn bound_account_for(&self, key: &SessionSlot) -> Option<AccountKey> {
         let (org, project, session) = {
             let pool = self.pool.lock();
@@ -2355,6 +2355,36 @@ impl Workspace {
             (registration.org.clone(), registration.project.clone(), registration.session.clone())
         };
         self.gateway.bindings.binding_for(&org, &project, &session)
+    }
+
+    /// Stamp a respawn's gateway registration for a child that runs
+    /// under `session_id`: the four gateway-owned keys ride
+    /// `launch_settings` as overrides, the binding moves to that
+    /// segment, and the one it replaces is dropped. The pool entry
+    /// records the same id, so `bound_account_for` reads the binding the
+    /// child actually answers to. A no-op when the slot is not pooled or
+    /// carries no registration: the launch then keeps the account env
+    /// the original spawn laid down.
+    pub(crate) fn stamp_respawn_overrides(
+        &self,
+        slot: &SessionSlot,
+        session_id: &str,
+        launch_settings: &mut SessionLaunchSettings,
+    ) {
+        let (registration, replaced) = {
+            let mut pool = self.pool.lock();
+            let Some(entry) = pool.get_mut(slot) else { return };
+            let Some(registration) = entry.registration.as_mut() else { return };
+            let replaced = std::mem::replace(&mut registration.session, session_id.to_owned());
+            let owned = registration.clone();
+            session_id.clone_into(&mut entry.session_id);
+            (owned, replaced)
+        };
+        launch_settings.env_overrides = self.gateway.bindings.respawn_env_overrides(
+            &registration,
+            &replaced,
+            &self.gateway_listener_url(),
+        );
     }
 
     /// Read the last poll-attempt failure for an account, if any.
@@ -3018,18 +3048,6 @@ impl Workspace {
                                  this session, so there is no permission mode to stamp",
                             );
                         }
-                        // Re-register the session with the gateway so
-                        // the respawned child answers to this
-                        // generation. Only the four gateway-owned keys
-                        // ride the overrides, stamped after all other
-                        // layering: the account and project env already
-                        // live in the bridge from the original spawn.
-                        if let Some(registration) = registration {
-                            launch_settings.env_overrides = self
-                                .gateway
-                                .bindings
-                                .respawn_env_overrides(&registration, &self.gateway_listener_url());
-                        }
                     }
                 }
             }
@@ -3069,6 +3087,23 @@ impl Workspace {
                 } else {
                     None
                 };
+                // A respawn moves the id the child runs under, so its
+                // gateway binding moves with it. The routed path stamps
+                // in the `SessionTask`, where `/new`'s id is minted;
+                // this fallback holds the same id here, so it stamps the
+                // same way rather than leaving the child on the previous
+                // occupant's segment.
+                let respawn_id = match &cmd {
+                    Command::NewSession { .. } => fresh.clone(),
+                    Command::ResumeSession { session_id, .. } => Some(session_id.clone()),
+                    _ => None,
+                };
+                if let Some(respawn_id) = respawn_id.as_deref()
+                    && let Command::NewSession { launch_settings, .. }
+                    | Command::ResumeSession { launch_settings, .. } = &mut cmd
+                {
+                    self.stamp_respawn_overrides(&key, respawn_id, launch_settings);
+                }
                 crate::session_task::execute_command_via_handle(
                     &handle,
                     &key,
@@ -8384,7 +8419,12 @@ provider = "anthropic"
         };
         let first = agent_rx.try_recv().expect("new session agent command");
         let second = agent_rx.try_recv().expect("resume agent command");
-        let forge_primitives::AgentCommand::NewSession { launch_settings: new, .. } = first else {
+        let forge_primitives::AgentCommand::NewSession {
+            session_id: new_id,
+            launch_settings: new,
+            ..
+        } = first
+        else {
             panic!("expected a NewSession agent command");
         };
         let forge_primitives::AgentCommand::ResumeSession { launch_settings: resume, .. } = second
@@ -8403,17 +8443,41 @@ provider = "anthropic"
         );
         // The respawn also re-registers with the gateway: the fresh env
         // set rides the launch settings as overrides, so the respawned
-        // child is pointed at this generation's listener.
-        assert_eq!(
-            new.get("env_overrides")
+        // child is pointed at this generation's listener - under the id
+        // it will run as, not the one it replaces.
+        let base_url = |value: &serde_json::Value| -> Option<String> {
+            value
+                .get("env_overrides")
                 .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
-                .and_then(serde_json::Value::as_str),
-            Some(format!(
-                "http://127.0.0.1:{}/Busytools/forge/respawn-mode-test",
-                workspace.gateway_port
-            ))
-            .as_deref(),
-            "a respawn re-registers and stamps a fresh base URL",
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let minted = new_id.expect("`/new` starts under a minted id");
+        assert_eq!(
+            base_url(&new).as_deref(),
+            Some(
+                format!("http://127.0.0.1:{}/Busytools/forge/{minted}", workspace.gateway_port)
+                    .as_str()
+            ),
+            "`/new` stamps the base URL with the id it mints for the child",
+        );
+        assert_eq!(
+            base_url(&resume).as_deref(),
+            Some(
+                format!("http://127.0.0.1:{}/Busytools/forge/old-uuid", workspace.gateway_port)
+                    .as_str()
+            ),
+            "`/resume` stamps the base URL with the transcript it re-enters",
+        );
+        assert_eq!(
+            workspace.gateway.bindings.binding_for("Busytools", "forge", "old-uuid"),
+            Some(AccountKey("Openrouter".to_owned())),
+            "the binding follows the occupant the resume leaves running",
+        );
+        assert_eq!(
+            workspace.gateway.bindings.binding_for("Busytools", "forge", &minted),
+            None,
+            "and the segment the new session left behind is dropped",
         );
         // The overrides carry ONLY the four gateway-owned keys. Carrying
         // the whole env would let a key declared in both layers revert

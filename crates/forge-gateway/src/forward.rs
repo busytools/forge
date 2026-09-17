@@ -298,8 +298,14 @@ impl Gateway {
     /// agree on a reset time or its absence; nothing else is read.
     /// A session with no binding (gateway not in use) has nothing to
     /// rotate.
-    pub fn report_rate_limit(&self, session: &str, reset_at: Option<u64>) {
-        let Some(account) = self.bindings.unbind_for_session(session) else {
+    pub fn report_rate_limit(
+        &self,
+        org: &str,
+        project: &str,
+        session: &str,
+        reset_at: Option<u64>,
+    ) {
+        let Some(account) = self.bindings.take_binding(org, project, session) else {
             return;
         };
         let now = SystemTime::now();
@@ -1068,7 +1074,7 @@ mod tests {
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .expect("future reset")
             .as_secs();
-        harness.gateway.report_rate_limit("session-1", Some(reset_secs));
+        harness.gateway.report_rate_limit("Busytools", "forge", "session-1", Some(reset_secs));
         assert_eq!(
             harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
             None,
@@ -1081,7 +1087,7 @@ mod tests {
             "the account is cooling until the frame's reset time",
         );
         // An unbound session has nothing to rotate and must not panic.
-        harness.gateway.report_rate_limit("ghost", None);
+        harness.gateway.report_rate_limit("Busytools", "forge", "ghost", None);
     }
 
     #[tokio::test]
@@ -1300,7 +1306,7 @@ mod tests {
     async fn a_zero_reset_in_a_rate_limit_report_still_cools_the_account() {
         let harness = harness(Duration::ZERO).await;
         pin_only(&harness, "OpenRouter");
-        harness.gateway.report_rate_limit("session-1", Some(0));
+        harness.gateway.report_rate_limit("Busytools", "forge", "session-1", Some(0));
         let ghost_url = harness.client_url.replacen("session-1", "ghost", 1);
         let response = post_model(&ghost_url, "glm-5.3-flash").await;
         assert_eq!(
