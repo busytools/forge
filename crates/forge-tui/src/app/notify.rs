@@ -293,14 +293,27 @@ fn notification_escape_sequence(title: &str, body: &str) -> String {
 /// One OSC 777 field, made safe to embed. `;` becomes a space the way
 /// CR and LF do: it is content this encoding cannot carry, not a
 /// control character.
+///
+/// What is dropped is ECMA-48's sequence-control characters in both
+/// halves, because any one of them opens or closes a sequence the rest
+/// of the field would be read as: BEL and ESC terminate this OSC, CAN
+/// and SUB abort a sequence, and the C1 half is its introducers and
+/// terminator (DCS, SOS, SCI, CSI, ST, OSC, PM, APC).
+///
+/// A field whose every character was dropped becomes a space rather
+/// than nothing, so the escape always carries two non-empty fields.
 fn sanitize_notification_field(field: &str) -> String {
     let mut sanitized = String::with_capacity(field.len());
     for ch in field.chars() {
         match ch {
-            '\u{07}' | '\u{1b}' | '\u{9c}' | '\u{18}' | '\u{1a}' => {}
+            '\u{07}' | '\u{18}' | '\u{1a}' | '\u{1b}' | '\u{90}' | '\u{98}' | '\u{9a}'
+            | '\u{9b}' | '\u{9c}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => {}
             '\r' | '\n' | ';' => sanitized.push(' '),
             _ => sanitized.push(ch),
         }
+    }
+    if sanitized.is_empty() && !field.is_empty() {
+        sanitized.push(' ');
     }
     sanitized
 }
@@ -628,6 +641,43 @@ mod tests {
             fields,
             vec!["notify", "a b", "c d"],
             "a delimiter inside a field must not add a field",
+        );
+    }
+
+    /// Every C1 introducer and terminator is a sequence the rest of the
+    /// field would be read as, so none may survive into the escape.
+    #[test]
+    fn every_c1_sequence_control_character_is_stripped_from_both_fields() {
+        for introducer in
+            ['\u{90}', '\u{98}', '\u{9a}', '\u{9b}', '\u{9c}', '\u{9d}', '\u{9e}', '\u{9f}']
+        {
+            let title = format!("a{introducer}b");
+            let escape = notification_escape_sequence(&title, "Turn complete");
+            assert_eq!(
+                escape, "\u{1b}]777;notify;ab;Turn complete\u{1b}\\",
+                "a C1 sequence control in the title must be dropped, not embedded",
+            );
+            assert_eq!(
+                notification_escape_sequence("companies", &title),
+                "\u{1b}]777;notify;companies;ab\u{1b}\\",
+                "and the same in the body",
+            );
+        }
+    }
+
+    /// A field made only of dropped characters still has to reach the
+    /// terminal as a field, so it becomes a space rather than nothing.
+    #[test]
+    fn a_field_that_sanitizes_to_nothing_becomes_a_space() {
+        assert_eq!(
+            notification_escape_sequence("\u{9b}\u{1b}\u{07}", "Turn complete").as_str(),
+            "\u{1b}]777;notify; ;Turn complete\u{1b}\\",
+            "an all-stripped title is a space, so the field is never empty",
+        );
+        assert_eq!(
+            notification_escape_sequence("companies", "\u{9d}\u{9e}").as_str(),
+            "\u{1b}]777;notify;companies; \u{1b}\\",
+            "and the same for the body",
         );
     }
 
